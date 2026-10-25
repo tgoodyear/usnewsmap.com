@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { americanStoriesNote, americanStoriesOnlyNote } from "./matchSource";
+import { americanStoriesNote, americanStoriesOnlyNote, locOriginalNote } from "./matchSource";
 
 describe("americanStoriesNote", () => {
   it("explains a page that matched only in American Stories' text, with its snippet", () => {
@@ -25,6 +25,41 @@ describe("americanStoriesNote", () => {
   it("never uses an em dash", () => {
     for (const snippet_source of ["american_stories", undefined] as const) {
       expect(americanStoriesNote({ matched_in: ["american_stories"], snippet_source })).not.toMatch(/—/);
+    }
+  });
+});
+
+describe("locOriginalNote", () => {
+  it("explains a page that matched only in the Library of Congress text our OCR replaced, with its snippet", () => {
+    expect(locOriginalNote({ matched_in: ["loc_original"], snippet_source: "loc_original" })).toBe(
+      "Our OCR text for this page doesn't contain the match. " +
+        "It was found in the Library of Congress OCR text of the page, which the search keeps beside ours. " +
+        "The snippet comes from that text. The page image at the Library of Congress shows what was printed.",
+    );
+  });
+
+  it("says where the snippet is from when it is not that text", () => {
+    expect(
+      locOriginalNote({ matched_in: ["american_stories", "loc_original"], snippet_source: "american_stories" }),
+    ).toMatch(/beside ours\. The snippet comes from American Stories' text\. The page image/);
+    expect(locOriginalNote({ matched_in: ["american_stories", "loc_original"] })).toMatch(
+      /beside ours\. The snippet comes from our OCR text, which matches only part of the search\. The page image/,
+    );
+  });
+
+  it("says nothing for a page that matched in our text, in the original and ours, or without the field", () => {
+    expect(locOriginalNote({ matched_in: ["loc"] })).toBeNull();
+    expect(locOriginalNote({ matched_in: ["loc", "loc_original"] })).toBeNull();
+    expect(locOriginalNote({ matched_in: ["loc", "american_stories", "loc_original"] })).toBeNull();
+    expect(locOriginalNote({ matched_in: ["american_stories"] })).toBeNull();
+    expect(locOriginalNote({})).toBeNull();
+  });
+
+  it("is not the American Stories note, and never uses an em dash", () => {
+    const h = { matched_in: ["loc_original" as const], snippet_source: "loc_original" as const };
+    expect(americanStoriesNote(h)).toBeNull();
+    for (const snippet_source of ["loc_original", "american_stories", undefined] as const) {
+      expect(locOriginalNote({ matched_in: ["loc_original"], snippet_source })).not.toMatch(/—/);
     }
   });
 });

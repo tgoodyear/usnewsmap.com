@@ -267,6 +267,17 @@ mod tests {
     }
 
     #[test]
+    fn records_the_layout_that_keeps_locs_original_text() {
+        let mut b = built(true, false);
+        b.text_layout = usnm_core::text_layout::TextLayout::SingleWithLoc;
+        let v = record(&b);
+        assert_eq!(v["features"]["text_layout"], 3);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("name: text_all,") && yaml.contains("name: text_loc,"));
+        assert!(!yaml.contains("name: text_cg,"));
+    }
+
+    #[test]
     fn records_the_analyzer_versions_the_run_built_with() {
         let mut b = built(true, true);
         b.analyzer = usnm_core::text::Analyzer::V1;

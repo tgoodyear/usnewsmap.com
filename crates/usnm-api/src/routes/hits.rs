@@ -127,14 +127,18 @@ pub(crate) struct Item {
     seq: u16,
     front_page: bool,
     snippets: Vec<String>,
-    /// Where the snippets come from when it isn't LoC's text:
+    /// Where the snippets come from when it isn't the page's own text:
     /// `american_stories` when the query matched only in American Stories'
-    /// text (05 §5.5.4).
+    /// text (05 §5.5.4), `loc_original` when it matched only in the Library
+    /// of Congress's text of a page our OCR replaced it on (05 §5.5.7).
     #[serde(skip_serializing_if = "Option::is_none")]
     snippet_source: Option<&'static str>,
-    /// Which of the page's texts the query matches: `["loc"]`,
-    /// `["american_stories"]` or both (05 §5.5.4). Only when the version
-    /// searches American Stories' text, and not on Japanese pages.
+    /// Which of the page's texts the whole query matches: `loc` (the page's
+    /// own text, the Library of Congress's, or ours where it replaced it),
+    /// `american_stories`, and `loc_original` (the Library of Congress's
+    /// text of a page our OCR replaced it on), one or more (05 §5.5.4,
+    /// §5.5.7). Only when the version searches American Stories' text or
+    /// keeps the original text, and not on Japanese pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_in: Option<Vec<&'static str>>,
     /// When the text is our own OCR, not LoC's: the Japanese index's pages

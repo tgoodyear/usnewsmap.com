@@ -69,8 +69,10 @@ pub struct Current {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decades: Option<u32>,
     /// The `usnm_core::text_layout::TextLayout` of every main index (05
-    /// §5.5.7, #283): absent for a searched field per text (1), 2 for one
-    /// field for both. A layout this API doesn't know isn't loaded.
+    /// §5.5.7, #283, #925): absent for a searched field per text (1), 2 for
+    /// one field for both texts, 3 for one field that also holds LoC's
+    /// original text of the pages our OCR replaced it on. A layout this API
+    /// doesn't know isn't loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_layout: Option<u32>,
     /// The `usnm_core::page_language::VERSION` every main index's page
@@ -494,20 +496,21 @@ impl RefData {
                     TextLayout::LATEST.version()
                 ))
             }
-            // One field for both texts holds the words as the version's
+            // One field for all the texts holds the words as the version's
             // analyzer folded them, and American Stories' text if the
             // version has any: queries folded by another analyzer would
             // silently miss, and text of an unknown version would be
             // searched without `matched_in` saying so. So both versions must
             // be ones this API knows.
-            Some(TextLayout::Single) => {
+            Some(layout) if layout.searches_one_field() => {
+                let n = layout.version();
                 if current
                     .common_grams
                     .and_then(usnm_core::common_grams::analyzer)
                     .is_none()
                 {
                     return Err(format!(
-                        "current.json's text_layout 2 needs a common_grams version this API \
+                        "current.json's text_layout {n} needs a common_grams version this API \
                          knows, not {:?}",
                         current.common_grams
                     ));
@@ -517,13 +520,13 @@ impl RefData {
                     .is_some_and(|v| v != usnm_core::american_stories::VERSION)
                 {
                     return Err(format!(
-                        "current.json's text_layout 2 holds American Stories' text of version \
+                        "current.json's text_layout {n} holds American Stories' text of version \
                          {:?}, which this API doesn't know",
                         current.american_stories
                     ));
                 }
             }
-            Some(TextLayout::Separate) => {}
+            Some(_) => {}
         }
         let place_pages: HashMap<String, u64> = baselines
             .iter()
@@ -661,11 +664,11 @@ impl RefData {
 
     /// Whether searches cover American Stories' text: the version has it and
     /// `USNM_AMERICAN_STORIES_SEARCH` doesn't switch it off. With one field
-    /// for both texts the setting can't: the text is searched whatever it
+    /// for all the texts the setting can't: the text is searched whatever it
     /// says (05 §5.5.7).
     pub fn searches_american_stories(&self) -> bool {
         self.has_american_stories()
-            && (self.american_stories_search || self.text_layout() == TextLayout::Single)
+            && (self.american_stories_search || self.text_layout().searches_one_field())
     }
 
     /// Whether the setting leaves out the American Stories' text the version
@@ -681,7 +684,7 @@ impl RefData {
     pub fn american_stories_setting_ignored(&self) -> bool {
         self.has_american_stories()
             && !self.american_stories_search
-            && self.text_layout() == TextLayout::Single
+            && self.text_layout().searches_one_field()
     }
 
     /// The response caches' key (in process and, hashed, in Blob, 06 §6.5)

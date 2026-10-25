@@ -49,10 +49,12 @@ export interface Meta {
    */
   ja?: { indexes: string[]; fold: number; pages: number } | null;
   /**
-   * The main indexes' text fields (#285): 1, a searched field per text; 2,
-   * one field for both. Absent from older APIs.
+   * The main indexes' text fields (#285, #925): 1, a searched field per
+   * text; 2, one field for both texts; 3, one field that also holds the
+   * Library of Congress's text of the pages our OCR replaced it on. Absent
+   * from older APIs.
    */
-  text_layout?: 1 | 2;
+  text_layout?: 1 | 2 | 3;
   /**
    * The Congress pages (#229), searched with `source=congress`: their series
    * and the one place they all sit at for now. Null or absent when the
@@ -242,13 +244,17 @@ export interface HitItem {
   ocr?: { source: string; engine: string | null };
   /**
    * `american_stories` when the query matched only in American Stories' text
-   * of the page, so the snippets come from it (#218). Absent otherwise.
+   * of the page, so the snippets come from it (#218); `loc_original` when it
+   * matched only in the Library of Congress's text of a page our OCR
+   * replaced it on (#925). Absent otherwise.
    */
-  snippet_source?: "american_stories";
+  snippet_source?: "american_stories" | "loc_original";
   /**
-   * Which of the page's texts the whole query matches (#218): LoC's OCR,
-   * American Stories', or both (also a page found with a word from each).
-   * Only when the version searches American Stories' text.
+   * Which of the page's texts the whole query matches (#218, #925): the
+   * page's own, American Stories', the Library of Congress's original text
+   * of a page our OCR replaced it on, or several (also a page found with a
+   * word from each). Only when the version searches American Stories' text
+   * or keeps the original text.
    */
   matched_in?: MatchedText[];
   /**
@@ -278,8 +284,12 @@ export interface HitCongress {
   text_engine?: string;
 }
 
-/** A page's text: LoC's OCR, or American Stories' (Dell et al. 2023). */
-export type MatchedText = "loc" | "american_stories";
+/**
+ * A page's text: `loc`, the text the page is searched by (LoC's OCR, or ours
+ * where it replaced LoC's), American Stories' (Dell et al. 2023), or
+ * `loc_original`, LoC's OCR of a page where ours replaced it.
+ */
+export type MatchedText = "loc" | "american_stories" | "loc_original";
 
 export interface HitsResponse {
   index_version: string;

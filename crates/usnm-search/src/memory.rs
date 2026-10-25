@@ -47,8 +47,8 @@ struct Words {
     /// a word of 255 bytes or more dropped, a shorter one kept however
     /// long ([`index_tokens`], #286).
     separate: Vec<Option<String>>,
-    /// As the release writes `text_all` (layout 2,
-    /// `usnm_core::text_layout::index_fields`), where that differs: words
+    /// As the release writes `text_all` (layouts 2 and 3,
+    /// `usnm_core::text_layout::index_texts`), where that differs: words
     /// over [`MAX_TOKEN_CHARS`] dropped too, keeping their positions.
     single: Option<Vec<Option<String>>>,
 }
@@ -69,9 +69,10 @@ impl Words {
     }
 
     fn get(&self, layout: TextLayout) -> &[Option<String>] {
-        match layout {
-            TextLayout::Separate => &self.separate,
-            TextLayout::Single => self.single.as_deref().unwrap_or(&self.separate),
+        if layout.searches_one_field() {
+            self.single.as_deref().unwrap_or(&self.separate)
+        } else {
+            &self.separate
         }
     }
 }
@@ -85,17 +86,23 @@ struct Indexed {
     tokens: Words,
     /// American Stories' text's tokens (05 §5.5.4), when the page has it.
     as_tokens: Option<Words>,
+    /// LoC's original text's tokens (#925), when the page has it. Searched
+    /// only on [`TextLayout::SingleWithLoc`].
+    loc_tokens: Option<Words>,
 }
 
 impl Indexed {
     /// The token streams a search of `indexes` reads, as its layout has
-    /// them: LoC's text, and American Stories' when the index set searches
-    /// it.
+    /// them: the page's text, American Stories' when the index set searches
+    /// it, and LoC's original text when the layout keeps it.
     fn texts(&self, indexes: &IndexSet) -> Vec<&[Option<String>]> {
         let layout = indexes.text_layout();
         let mut out = vec![self.tokens.get(layout)];
         if indexes.american_stories() {
             out.extend(self.as_tokens.as_ref().map(|t| t.get(layout)));
+        }
+        if layout.keeps_loc_original() {
+            out.extend(self.loc_tokens.as_ref().map(|t| t.get(layout)));
         }
         out
     }
@@ -182,6 +189,10 @@ impl MemoryBackend {
                 }),
                 as_tokens: doc
                     .text_as
+                    .as_deref()
+                    .map(|t| Words::new(index_tokens(t, USNM_TEXT))),
+                loc_tokens: doc
+                    .text_loc
                     .as_deref()
                     .map(|t| Words::new(index_tokens(t, USNM_TEXT))),
                 doc,
@@ -432,14 +443,21 @@ impl SearchBackend for MemoryBackend {
                         None => page_snippets(
                             &d.text,
                             d.text_as.as_deref(),
+                            d.text_loc.as_deref(),
                             query,
                             indexes.american_stories(),
                             indexes.text_layout(),
                         ),
                     };
                     let matched_in =
-                        (indexes.american_stories() && d.printed.is_none()).then(|| {
-                            matched_in(&d.text, d.text_as.as_deref(), query, indexes.text_layout())
+                        (indexes.reports_matched_in() && d.printed.is_none()).then(|| {
+                            matched_in(
+                                &d.text,
+                                d.text_as.as_deref(),
+                                d.text_loc.as_deref(),
+                                query,
+                                indexes.text_layout(),
+                            )
                         });
                     hit(d, snippets, snippet_source, matched_in)
                 })
@@ -495,9 +513,9 @@ impl SearchBackend for MemoryBackend {
         query: &Node,
         filters: &Filters,
     ) -> Result<u64, SearchError> {
-        // As the engine: one field for both texts can't be searched for
+        // As the engine: one field for all the texts can't be searched for
         // LoC's alone (05 §5.5.7).
-        if indexes.text_layout() == TextLayout::Single {
+        if indexes.text_layout().searches_one_field() {
             return Err(SearchError::Unsupported(
                 "counting the pages only American Stories' text matches, on these indexes".into(),
             ));
@@ -807,6 +825,7 @@ mod shard_tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            text_loc: None,
             page_language: Vec::new(),
             page_language_set: None,
             congress: Default::default(),
@@ -965,6 +984,186 @@ mod shard_tests {
             b.american_stories_only(&single, &gold, &f).await,
             Err(SearchError::Unsupported(_))
         ));
+    }
+
+    /// On a page our OCR replaced LoC's text on, the layout that keeps LoC's
+    /// original text searches it as a third text (#925): the page counts
+    /// once, a phrase can't span two texts, and the hit says which texts
+    /// matched and takes its snippets from LoC's text when ours marks nothing.
+    /// Layouts 1 and 2 never search it, whatever the document holds.
+    #[tokio::test]
+    async fn the_original_text_is_a_third_text_when_the_layout_keeps_it() {
+        // Ours has a line of the next column inside the sentence.
+        let mut replaced = doc(1, 1);
+        replaced.text =
+            "waren auf dem Wege Dubnaue, Jowa. ben ist ersichtlich nach Mailand begriffen".into();
+        replaced.text_loc = Some("Die Frauen waren auf dem Wege nach Mailand begriffen.".into());
+        let mut plain = doc(2, 1);
+        plain.text = "sie waren auf dem Wege nach Mailand".into();
+        let mut stories = doc(3, 1);
+        stories.text = "ours only".into();
+        stories.text_as = Some("BRYAN SPEAKS in Chicago".into());
+        stories.text_loc = Some("Bryan spoke at Chicago".into());
+        let (one, two, three) = (
+            replaced.doc_id.clone(),
+            plain.doc_id.clone(),
+            stories.doc_id.clone(),
+        );
+        let mut b = MemoryBackend::new();
+        b.add_index("i", [replaced, plain, stories]);
+        let layout2 = IndexSet::new(vec!["i".into()])
+            .with_american_stories(true)
+            .with_text_layout(TextLayout::Single);
+        let layout3 = layout2.clone().with_text_layout(TextLayout::SingleWithLoc);
+        let separate = layout2.clone().with_text_layout(TextLayout::Separate);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            limit: 10,
+            sort: HitSort::Oldest,
+            ..HitsQuery::default()
+        };
+        let hits = |set: &IndexSet, q: &str| {
+            let (b, f, page, set) = (&b, &f, &page, set.clone());
+            let q = usnm_core::query::parse(q).unwrap();
+            async move { b.hits(&set, &q, f, page).await.unwrap() }
+        };
+        let ids = |p: &HitsPage| p.hits.iter().map(|h| h.doc_id.clone()).collect::<Vec<_>>();
+
+        // The phrase LoC's text has intact is found on layout 3 only.
+        let phrase = r#""Wege nach Mailand""#;
+        for set in [&separate, &layout2] {
+            assert_eq!(ids(&hits(set, phrase).await), std::slice::from_ref(&two));
+        }
+        let found = hits(&layout3, phrase).await;
+        assert_eq!(ids(&found), [one.clone(), two.clone()]);
+        assert_eq!(found.total, 2);
+        assert_eq!(
+            found.hits[0].snippets,
+            ["Die Frauen waren auf dem <mark>Wege nach Mailand</mark> begriffen."]
+        );
+        assert_eq!(
+            found.hits[0].snippet_source,
+            Some(crate::SNIPPETS_FROM_LOC_ORIGINAL)
+        );
+        assert_eq!(found.hits[0].matched_in, Some(vec!["loc_original"]));
+        // A page whose own text has it: nothing is said of another text.
+        assert_eq!(found.hits[1].snippet_source, None);
+        assert_eq!(found.hits[1].matched_in, Some(vec!["loc"]));
+
+        // A word in both of a page's texts counts the page once, and ours
+        // marks the snippet.
+        let found = hits(&layout3, "Mailand").await;
+        assert_eq!(ids(&found), [one.clone(), two.clone()]);
+        assert_eq!(found.total, 2);
+        assert_eq!(found.hits[0].snippet_source, None);
+        assert_eq!(found.hits[0].matched_in, Some(vec!["loc", "loc_original"]));
+        // The same word on layout 2 and layout 1: the same pages, and
+        // LoC's original text is neither searched nor reported.
+        for set in [&separate, &layout2] {
+            let found = hits(set, "Mailand").await;
+            assert_eq!(ids(&found), [one.clone(), two.clone()]);
+            assert_eq!(found.hits[0].matched_in, Some(vec!["loc"]));
+        }
+        // American Stories' text and LoC's original are different texts.
+        let found = hits(&layout3, "bryan").await;
+        assert_eq!(ids(&found), std::slice::from_ref(&three));
+        assert_eq!(
+            found.hits[0].matched_in,
+            Some(vec!["american_stories", "loc_original"])
+        );
+        assert_eq!(
+            found.hits[0].snippet_source,
+            Some(crate::SNIPPETS_FROM_AMERICAN_STORIES)
+        );
+        // Only LoC's original text has this word; the snippet comes from it.
+        let found = hits(&layout3, "spoke").await;
+        assert_eq!(ids(&found), std::slice::from_ref(&three));
+        assert_eq!(found.hits[0].matched_in, Some(vec!["loc_original"]));
+        assert_eq!(
+            found.hits[0].snippets,
+            ["Bryan <mark>spoke</mark> at Chicago"]
+        );
+        assert!(hits(&layout2, "spoke").await.hits.is_empty());
+
+        // No phrase or NEAR search across two texts, in either order: a
+        // word near the end of ours and one near the start of LoC's
+        // original, and a word only American Stories' text has with one
+        // only LoC's original has, are within the largest slop of each
+        // other but for the gap.
+        let slop = usnm_core::query::MAX_SLOP;
+        for q in [
+            r#""ersichtlich frauen""#.to_owned(),
+            format!(r#""ersichtlich frauen"~{slop}"#),
+            format!(r#""frauen ersichtlich"~{slop}"#),
+            format!(r#""speaks spoke"~{slop}"#),
+            format!(r#""spoke speaks"~{slop}"#),
+        ] {
+            assert!(hits(&layout3, &q).await.hits.is_empty(), "{q}");
+        }
+        // Within one text the same NEAR search finds the page.
+        let q = format!(r#""wege mailand"~{slop}"#);
+        assert_eq!(ids(&hits(&layout3, &q).await), [one.clone(), two.clone()]);
+        // But a word from each of two texts finds the page, once, listing both.
+        let found = hits(&layout3, "Dubnaue Frauen").await;
+        assert_eq!(ids(&found), std::slice::from_ref(&one));
+        assert_eq!(found.hits[0].matched_in, Some(vec!["loc", "loc_original"]));
+        // NOT excludes a page with the word in any of its texts.
+        let found = hits(&layout3, "Mailand -Frauen").await;
+        assert_eq!(ids(&found), std::slice::from_ref(&two));
+        assert_eq!(ids(&hits(&layout2, "Mailand -Frauen").await).len(), 2);
+
+        // The count only American Stories' text matches is refused, as for
+        // layout 2.
+        let q = usnm_core::query::parse("bryan").unwrap();
+        assert!(matches!(
+            b.american_stories_only(&layout3, &q, &f).await,
+            Err(SearchError::Unsupported(_))
+        ));
+    }
+
+    /// With the third text but no American Stories' text in the version,
+    /// hits still say which texts matched.
+    #[tokio::test]
+    async fn matched_in_is_reported_with_the_original_text_alone() {
+        let mut replaced = doc(1, 1);
+        replaced.text = "ours".into();
+        replaced.text_loc = Some("the original".into());
+        let mut b = MemoryBackend::new();
+        b.add_index("i", [replaced, doc(2, 1)]);
+        let set = IndexSet::new(vec!["i".into()]);
+        assert!(!set.reports_matched_in());
+        let kept = set.with_text_layout(TextLayout::SingleWithLoc);
+        assert!(kept.reports_matched_in() && !kept.american_stories());
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+            series: Vec::new(),
+        };
+        let page = HitsQuery {
+            limit: 10,
+            sort: HitSort::Oldest,
+            ..HitsQuery::default()
+        };
+        let q = usnm_core::query::parse("original").unwrap();
+        let hits = b.hits(&kept, &q, &f, &page).await.unwrap().hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].matched_in, Some(vec!["loc_original"]));
+        // A page with no second text says it matched in its own.
+        let q = usnm_core::query::parse("gold").unwrap();
+        let hits = b.hits(&kept, &q, &f, &page).await.unwrap().hits;
+        assert_eq!(hits[0].matched_in, Some(vec!["loc"]));
     }
 
     /// Pages are read as Quickwit's `usnm_text` reads them whatever the

@@ -7,6 +7,7 @@ use std::path::Path;
 use chrono::{TimeZone, Utc};
 use serde_json::Value;
 use usnm_core::text::Analyzer;
+use usnm_core::text_layout::TextLayout;
 use usnm_ingest::release::{Published, Release};
 use usnm_ingest::sink::JsonlSink;
 use usnm_store::ObjectStore;
@@ -25,11 +26,12 @@ fn fixture(index_id: &str) -> BTreeMap<String, Value> {
 }
 
 impl Env {
-    /// A main index laid out with one searched field for both texts (05
-    /// §5.5.7): each document's `text_all` and `text_all_cg` checked against
-    /// its stored texts and returned without them, as the fixtures hold.
-    /// None has a pairs field of one text.
-    fn index_single(&self, id: &str) -> BTreeMap<String, Value> {
+    /// A main index laid out with one searched field for all the texts (05
+    /// §5.5.7) as `layout` has them: each document's `text_all` and
+    /// `text_all_cg` checked against its stored texts and returned without
+    /// them, as the fixtures hold. None has a pairs field of one text, and
+    /// only layout 3 may have `text_loc` (#925).
+    fn index_single(&self, id: &str, layout: TextLayout) -> BTreeMap<String, Value> {
         let mut docs = by_id(read_jsonl(
             &self.root.join(format!("reference/indexes/{id}.jsonl")),
         ));
@@ -43,9 +45,14 @@ impl Env {
             let pairs = o
                 .remove("text_all_cg")
                 .unwrap_or_else(|| panic!("{doc_id}"));
-            let want = usnm_core::text_layout::index_fields(
-                doc["text"].as_str().unwrap(),
-                doc["text_as"].as_str(),
+            assert!(
+                layout.keeps_loc_original() || doc.get("text_loc").is_none(),
+                "{doc_id}"
+            );
+            let want = usnm_core::text_layout::index_texts(
+                std::iter::once(doc["text"].as_str().unwrap())
+                    .chain(doc["text_as"].as_str())
+                    .chain(doc["text_loc"].as_str()),
                 Analyzer::LATEST,
             );
             assert_eq!(
@@ -248,11 +255,11 @@ async fn a_version_without_american_stories_is_rebuilt_in_full_when_it_is_turned
     assert!(p3.full);
 }
 
-/// A full release with `--single-text-field` searches both texts in one
+/// A full release with `--single-text-field` searches all the texts in one
 /// field (05 §5.5.7): the documents have `text_all` and `text_all_cg` and
-/// no pairs field of one text, and the version says so. Deltas follow the
-/// published version whatever the setting says; a full release without it
-/// goes back to a field per text.
+/// no pairs field of one text, and the version says so (layout 3, the
+/// latest, #925). Deltas follow the published version whatever the setting
+/// says; a full release without it goes back to a field per text.
 #[tokio::test]
 async fn one_text_field_is_built_by_a_full_release_and_followed_by_deltas() {
     let e = env().await;
@@ -262,11 +269,11 @@ async fn one_text_field_is_built_by_a_full_release_and_followed_by_deltas() {
     let p1 = e.release_single(1, true, true).await;
     assert!(p1.full);
     assert_eq!(
-        e.index_single(&p1.indexes[0]),
+        e.index_single(&p1.indexes[0], TextLayout::LATEST),
         fixture("pages-base-fixture")
     );
     let current = e.reference_json("current.json").await;
-    assert_eq!(current["text_layout"], 2);
+    assert_eq!(current["text_layout"], 3);
     assert_eq!(
         current["american_stories"],
         usnm_core::american_stories::VERSION
@@ -274,19 +281,17 @@ async fn one_text_field_is_built_by_a_full_release_and_followed_by_deltas() {
     let manifest = e
         .reference_json(&format!("{}/manifest.json", p1.index_version))
         .await;
-    assert_eq!(manifest["build"]["features"]["text_layout"], 2);
+    assert_eq!(manifest["build"]["features"]["text_layout"], 3);
     let yaml = manifest["build"]["templates"]["pages"]["yaml"]
         .as_str()
         .unwrap();
     assert!(yaml.contains("name: text_all,") && !yaml.contains("name: text_cg,"));
+    assert!(yaml.contains("name: text_loc,"), "{yaml}");
     let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
         .await
         .unwrap();
     let set = refdata.index_set();
-    assert_eq!(
-        set.text_layout(),
-        usnm_core::text_layout::TextLayout::Single
-    );
+    assert_eq!(set.text_layout(), TextLayout::SingleWithLoc);
     assert!(set.american_stories() && !set.counts_american_stories_only());
 
     // A delta without the setting is laid out as the version is.
@@ -294,10 +299,10 @@ async fn one_text_field_is_built_by_a_full_release_and_followed_by_deltas() {
     let p2 = e.release_single(8, false, false).await;
     assert!(!p2.full);
     assert_eq!(
-        e.index_single(p2.indexes.last().unwrap()),
+        e.index_single(p2.indexes.last().unwrap(), TextLayout::LATEST),
         fixture("pages-delta-fixture-1")
     );
-    assert_eq!(e.reference_json("current.json").await["text_layout"], 2);
+    assert_eq!(e.reference_json("current.json").await["text_layout"], 3);
 
     // Leaving American Stories' text out can't be done in a delta here:
     // a full base, with a field per text again.
@@ -346,7 +351,7 @@ async fn a_text_layout_the_release_does_not_know_is_rebuilt_in_full() {
     curate(&e, early).await;
     e.release_single(1, true, true).await;
     let mut pointer = e.reference_json("current.json").await;
-    pointer["text_layout"] = serde_json::json!(3);
+    pointer["text_layout"] = serde_json::json!(TextLayout::LATEST.version() + 1);
     e.reference
         .put(
             "current.json",
@@ -358,10 +363,60 @@ async fn a_text_layout_the_release_does_not_know_is_rebuilt_in_full() {
     curate(&e, late).await;
     let p = e.release_single(8, false, true).await;
     assert!(p.full);
-    assert_eq!(e.reference_json("current.json").await["text_layout"], 2);
+    assert_eq!(
+        e.reference_json("current.json").await["text_layout"],
+        TextLayout::LATEST.version()
+    );
     let mut both = fixture("pages-base-fixture");
     both.extend(fixture("pages-delta-fixture-1"));
-    assert_eq!(e.index_single(&p.indexes[0]), both);
+    assert_eq!(e.index_single(&p.indexes[0], TextLayout::LATEST), both);
+}
+
+/// A published version with one field for both texts (layout 2, before
+/// #925) takes its deltas in layout 2, whatever `--single-text-field` now
+/// builds: the documents have no `text_loc`, `text_all` holds two texts,
+/// the index's mapping has no `text_loc`, and `current.json` still says 2.
+#[tokio::test]
+async fn a_published_layout_2_version_takes_deltas_in_layout_2() {
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    e.release_single(1, true, true).await;
+    // The version as a release before #925 would have published it.
+    let mut pointer = e.reference_json("current.json").await;
+    pointer["text_layout"] = serde_json::json!(TextLayout::Single.version());
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    curate(&e, late).await;
+    // Asking for the latest layout changes nothing for a delta.
+    let p = e.release_single(8, false, true).await;
+    assert!(!p.full);
+    assert_eq!(
+        e.index_single(p.indexes.last().unwrap(), TextLayout::Single),
+        fixture("pages-delta-fixture-1")
+    );
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["text_layout"], 2, "{current}");
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p.index_version))
+        .await;
+    assert_eq!(manifest["build"]["features"]["text_layout"], 2);
+    let yaml = manifest["build"]["templates"]["pages"]["yaml"]
+        .as_str()
+        .unwrap();
+    assert!(yaml.contains("name: text_all,") && !yaml.contains("name: text_loc,"));
+    // The API reads the version as layout 2.
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(refdata.index_set().text_layout(), TextLayout::Single);
 }
 
 /// A full release with `--split-docs` (#283) creates its main index with
@@ -632,10 +687,11 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
     node.stop().await.unwrap();
 }
 
-/// One searched field for both texts (05 §5.5.7) goes into a real Quickwit
-/// writer under the strict mapping: a base and a delta with `text_all` and
-/// `text_all_cg`, `text` and `text_as` stored, and a phrase can't span the
-/// two texts. Runs when `QUICKWIT_BIN` is set.
+/// One searched field for all the texts (05 §5.5.7) goes into a real
+/// Quickwit writer under the strict mapping: a base and a delta with
+/// `text_all` and `text_all_cg`, `text`, `text_as` and `text_loc` stored
+/// (layout 3, #925), and a phrase can't span the two texts. Runs when
+/// `QUICKWIT_BIN` is set.
 #[tokio::test]
 async fn releases_one_text_field_into_a_quickwit_writer_node() {
     let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
@@ -670,7 +726,7 @@ async fn releases_one_text_field_into_a_quickwit_writer_node() {
     }
     let p = published.last().unwrap();
     assert_eq!(p.indexes.len(), 2);
-    assert_eq!(e.reference_json("current.json").await["text_layout"], 2);
+    assert_eq!(e.reference_json("current.json").await["text_layout"], 3);
     let http = reqwest::Client::new();
     let search = |q: String| {
         let url = format!("{}/api/v1/{}/search", node.url, p.indexes.join(","));

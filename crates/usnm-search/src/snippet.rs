@@ -9,7 +9,9 @@ use usnm_core::text::{fold, index_tokens, MAX_TOKEN_CHARS, REMOVE_LONG_BYTES, US
 use usnm_core::text_layout::TextLayout;
 
 use crate::memory::{as_analyzed, eval, term_matches, word_matches};
-use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
+use crate::{
+    mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES, SNIPPETS_FROM_LOC_ORIGINAL,
+};
 
 /// Fragments per page.
 pub const MAX_FRAGMENTS: usize = 3;
@@ -27,17 +29,18 @@ struct Word {
 
 /// A word as the searched field of `layout` holds it (05 §5.5.7): on
 /// `text` and `text_as` (layout 1) `None` for 255 bytes or more as split
-/// ([`index_tokens`], #286), on `text_all` (layout 2) also for a folded word
-/// over [`MAX_TOKEN_CHARS`].
+/// ([`index_tokens`], #286), on `text_all` (layouts 2 and 3) also for a
+/// folded word over [`MAX_TOKEN_CHARS`].
 fn indexed(raw: &str, layout: TextLayout) -> Option<String> {
     (raw.len() < REMOVE_LONG_BYTES)
         .then(|| fold(raw, USNM_TEXT))
         .and_then(|t| single_keeps(t, layout))
 }
 
-/// `None` for a word layout 2's `text_all` drops (over [`MAX_TOKEN_CHARS`]).
+/// `None` for a word the one searched field of `layout` drops (over
+/// [`MAX_TOKEN_CHARS`]).
 fn single_keeps(word: String, layout: TextLayout) -> Option<String> {
-    (layout == TextLayout::Separate || word.chars().count() <= MAX_TOKEN_CHARS).then_some(word)
+    (!layout.searches_one_field() || word.chars().count() <= MAX_TOKEN_CHARS).then_some(word)
 }
 
 /// The text's words as the searched field of `layout` splits and folds
@@ -211,50 +214,89 @@ pub fn text_snippets(text: &str, query: &Node, layout: TextLayout) -> Vec<String
     out
 }
 
-/// A page's snippets and, when they aren't from LoC's text, where they come
-/// from (05 §5.5.4): LoC's `text` first; when the query marks nothing there
-/// and the search covers American Stories' text (`american_stories`), that
-/// text's, from [`SNIPPETS_FROM_AMERICAN_STORIES`]. Both backends use it.
+/// The texts of a page that `layout` keeps beside its own: LoC's original
+/// text only where the layout keeps it (#925), so a caller can pass what
+/// the index stores whatever the layout.
+fn kept_loc_original(text_loc: Option<&str>, layout: TextLayout) -> Option<&str> {
+    text_loc.filter(|_| layout.keeps_loc_original())
+}
+
+/// A page's snippets and, when they aren't from the page's own text, where
+/// they come from (05 §5.5.4): its `text` first (LoC's, or our OCR's where it
+/// replaced LoC's); when the query marks nothing there and the search covers
+/// American Stories' text (`american_stories`), that text's, from
+/// [`SNIPPETS_FROM_AMERICAN_STORIES`]; when it marks nothing in either and
+/// the layout keeps LoC's original text of the page (`text_loc`, #925),
+/// that text's, from [`SNIPPETS_FROM_LOC_ORIGINAL`]. Both backends use it.
 pub fn page_snippets(
     text: &str,
     text_as: Option<&str>,
+    text_loc: Option<&str>,
     query: &Node,
     american_stories: bool,
     layout: TextLayout,
 ) -> (Vec<String>, Option<&'static str>) {
-    let loc = text_snippets(text, query, layout);
-    match text_as {
-        Some(text_as) if loc.is_empty() && american_stories => {
-            let other = text_snippets(text_as, query, layout);
-            if other.is_empty() {
-                (loc, None)
-            } else {
-                (other, Some(SNIPPETS_FROM_AMERICAN_STORIES))
+    let own = text_snippets(text, query, layout);
+    if !own.is_empty() {
+        return (own, None);
+    }
+    let others = [
+        (
+            text_as.filter(|_| american_stories),
+            SNIPPETS_FROM_AMERICAN_STORIES,
+        ),
+        (
+            kept_loc_original(text_loc, layout),
+            SNIPPETS_FROM_LOC_ORIGINAL,
+        ),
+    ];
+    for (other, source) in others {
+        if let Some(other) = other {
+            let snippets = text_snippets(other, query, layout);
+            if !snippets.is_empty() {
+                return (snippets, Some(source));
             }
         }
-        _ => (loc, None),
     }
+    (own, None)
 }
 
 /// Which of a page's texts the query matches (05 §5.5.4), from the texts
-/// the hit already carries for its snippets: [`MATCHED_IN_LOC`] when LoC's
-/// `text` matches the whole query on its own, [`SNIPPETS_FROM_AMERICAN_STORIES`]
-/// when American Stories' text does. A page found only by taking a word
-/// from each text (`a b` with `a` in one and `b` in the other) lists both.
-/// Evaluated as the memory backend evaluates a query, so a page listed
-/// without `loc` is one a search of LoC's text alone doesn't find: the
-/// pages `/v1/aggregate` counts in `total.american_stories_only`. Both
-/// backends use it. The texts are read as the searched field of `layout`
-/// holds them ([`indexed`]).
+/// the hit already carries for its snippets: [`MATCHED_IN_LOC`] when the
+/// page's own `text` matches the whole query on its own,
+/// [`SNIPPETS_FROM_AMERICAN_STORIES`] when American Stories' text does, and
+/// [`SNIPPETS_FROM_LOC_ORIGINAL`] when LoC's original text of a page our OCR
+/// replaced it on does (#925). A page found only by taking a word from each
+/// of several texts (`a b` with `a` in one and `b` in the other) lists them
+/// all. Evaluated as the memory backend evaluates a query, so a page listed
+/// without `loc` is one a search of the page's own text alone doesn't find:
+/// the pages `/v1/aggregate` counts in `total.american_stories_only`, on a
+/// layout where that can be searched. Both backends use it. The texts are
+/// read as the searched field of `layout` holds them ([`indexed`]).
 pub fn matched_in(
     text: &str,
     text_as: Option<&str>,
+    text_loc: Option<&str>,
     query: &Node,
     layout: TextLayout,
 ) -> Vec<&'static str> {
-    let Some(text_as) = text_as else {
+    let others = [
+        (text_as, SNIPPETS_FROM_AMERICAN_STORIES),
+        (
+            kept_loc_original(text_loc, layout),
+            SNIPPETS_FROM_LOC_ORIGINAL,
+        ),
+    ];
+    let texts: Vec<(&'static str, &str)> = std::iter::once((MATCHED_IN_LOC, text))
+        .chain(
+            others
+                .into_iter()
+                .filter_map(|(t, source)| t.map(|t| (source, t))),
+        )
+        .collect();
+    if texts.len() == 1 {
         return vec![MATCHED_IN_LOC];
-    };
+    }
     let query = as_analyzed(query);
     let read = |t: &str| -> Vec<Option<String>> {
         index_tokens(t, USNM_TEXT)
@@ -262,12 +304,15 @@ pub fn matched_in(
             .map(|w| w.and_then(|w| single_keeps(w, layout)))
             .collect()
     };
-    let loc = eval(&query, &read(text));
-    let american = eval(&query, &read(text_as));
-    match (loc, american) {
-        (true, false) => vec![MATCHED_IN_LOC],
-        (false, true) => vec![SNIPPETS_FROM_AMERICAN_STORIES],
-        _ => vec![MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES],
+    let matching: Vec<&'static str> = texts
+        .iter()
+        .filter(|(_, t)| eval(&query, &read(t)))
+        .map(|(source, _)| *source)
+        .collect();
+    if matching.is_empty() {
+        texts.into_iter().map(|(source, _)| source).collect()
+    } else {
+        matching
     }
 }
 
@@ -534,11 +579,11 @@ mod tests {
         let q = parse("yyyyy*").unwrap();
         assert!(text_snippets(&long, &q, TextLayout::Single).is_empty());
         assert_eq!(
-            matched_in("gold", Some(&long), &q, TextLayout::Separate),
+            matched_in("gold", Some(&long), None, &q, TextLayout::Separate),
             [SNIPPETS_FROM_AMERICAN_STORIES]
         );
         assert_eq!(
-            matched_in("gold", Some(&long), &q, TextLayout::Single),
+            matched_in("gold", Some(&long), None, &q, TextLayout::Single),
             [MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES]
         );
     }
@@ -565,11 +610,11 @@ mod tests {
         let american = "BRYAN AT CHICAGO the boy orator spoke";
         // Off: LoC's text only.
         assert_eq!(
-            page_snippets(loc, Some(american), &q, false, TextLayout::Separate),
+            page_snippets(loc, Some(american), None, &q, false, TextLayout::Separate),
             (Vec::new(), None)
         );
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true, TextLayout::Separate),
+            page_snippets(loc, Some(american), None, &q, true, TextLayout::Separate),
             (
                 vec!["<mark>BRYAN</mark> AT CHICAGO the boy orator spoke".to_owned()],
                 Some(SNIPPETS_FROM_AMERICAN_STORIES)
@@ -578,17 +623,17 @@ mod tests {
         // A match in LoC's text keeps its snippets.
         let q = parse("orator").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true, TextLayout::Separate),
+            page_snippets(loc, Some(american), None, &q, true, TextLayout::Separate),
             (vec!["the boy <mark>orator</mark> spoke".to_owned()], None)
         );
         // Nothing in either text, or no second text.
         let q = parse("silver").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true, TextLayout::Separate),
+            page_snippets(loc, Some(american), None, &q, true, TextLayout::Separate),
             (Vec::new(), None)
         );
         assert_eq!(
-            page_snippets(loc, None, &q, true, TextLayout::Separate),
+            page_snippets(loc, None, None, &q, true, TextLayout::Separate),
             (Vec::new(), None)
         );
     }
@@ -596,7 +641,13 @@ mod tests {
     #[test]
     fn matched_in_names_the_texts_that_match_the_whole_query() {
         let m = |q: &str, loc: &str, american: Option<&str>| {
-            matched_in(loc, american, &parse(q).unwrap(), TextLayout::Separate)
+            matched_in(
+                loc,
+                american,
+                None,
+                &parse(q).unwrap(),
+                TextLayout::Separate,
+            )
         };
         let loc = "a cross of goid, said the boy orator";
         let american = "BRYAN AT CHICAGO a cross of gold, said the boy oratar";
@@ -618,5 +669,118 @@ mod tests {
         assert_eq!(m("gold", "", Some(american)), ["american_stories"]);
         // No American Stories text: LoC's.
         assert_eq!(m("orator", loc, None), ["loc"]);
+    }
+
+    // Our OCR's text with a line of the next column inside the sentence, and
+    // LoC's original text of the same page (#925).
+    const OURS: &str =
+        "waren auf dem Wege Dubnaue, Jowa. ben ist ersichtlich nach Mailand begriffen";
+    const LOC_ORIGINAL: &str = "waren auf dem Wege nach Mailand begriffen";
+
+    #[test]
+    fn loc_original_snippets_only_when_nothing_else_marks() {
+        let layout = TextLayout::SingleWithLoc;
+        let american = Some("BRYAN AT CHICAGO the boy orator spoke");
+        // Ours marks the word: its snippets, whatever else matches.
+        let q = parse("Mailand").unwrap();
+        let (snippets, source) = page_snippets(OURS, None, Some(LOC_ORIGINAL), &q, true, layout);
+        assert_eq!(source, None);
+        assert!(snippets[0].contains("<mark>Mailand</mark>"), "{snippets:?}");
+        assert!(snippets[0].contains("Dubnaue"), "{snippets:?}");
+        // The phrase is only in LoC's original text.
+        let q = parse(r#""Wege nach Mailand""#).unwrap();
+        assert_eq!(
+            page_snippets(OURS, None, Some(LOC_ORIGINAL), &q, true, layout),
+            (
+                vec!["waren auf dem <mark>Wege nach Mailand</mark> begriffen".to_owned()],
+                Some(SNIPPETS_FROM_LOC_ORIGINAL)
+            )
+        );
+        // American Stories' text comes before LoC's original.
+        let q = parse("bryan").unwrap();
+        let both = page_snippets(OURS, american, Some("bryan was here"), &q, true, layout);
+        assert_eq!(both.1, Some(SNIPPETS_FROM_AMERICAN_STORIES));
+        let q = parse("here").unwrap();
+        let both = page_snippets(OURS, american, Some("bryan was here"), &q, true, layout);
+        assert_eq!(both.1, Some(SNIPPETS_FROM_LOC_ORIGINAL));
+        // With American Stories' text left out of the search it isn't marked.
+        let q = parse("bryan").unwrap();
+        assert_eq!(
+            page_snippets(OURS, american, Some("bryan was here"), &q, false, layout),
+            (
+                vec!["<mark>bryan</mark> was here".to_owned()],
+                Some(SNIPPETS_FROM_LOC_ORIGINAL)
+            )
+        );
+        // Nothing marks in any text.
+        let q = parse("silver").unwrap();
+        assert_eq!(
+            page_snippets(OURS, american, Some(LOC_ORIGINAL), &q, true, layout),
+            (Vec::new(), None)
+        );
+    }
+
+    #[test]
+    fn a_layout_without_the_original_text_ignores_it() {
+        // Layouts 1 and 2 never index the text, so a stray `text_loc` on a
+        // document changes neither snippets nor `matched_in`.
+        let q = parse(r#""Wege nach Mailand""#).unwrap();
+        for layout in [TextLayout::Separate, TextLayout::Single] {
+            assert_eq!(
+                page_snippets(OURS, None, Some(LOC_ORIGINAL), &q, true, layout),
+                (Vec::new(), None)
+            );
+            assert_eq!(
+                matched_in(OURS, None, Some(LOC_ORIGINAL), &q, layout),
+                [MATCHED_IN_LOC]
+            );
+        }
+    }
+
+    #[test]
+    fn matched_in_names_the_original_text_beside_ours_and_american_stories() {
+        let m = |q: &str, american: Option<&str>, original: Option<&str>| {
+            matched_in(
+                OURS,
+                american,
+                original,
+                &parse(q).unwrap(),
+                TextLayout::SingleWithLoc,
+            )
+        };
+        let american = Some("BRYAN AT CHICAGO the boy orator spoke");
+        // Words in ours and in LoC's original, or in the original alone.
+        assert_eq!(
+            m("Mailand", None, Some(LOC_ORIGINAL)),
+            ["loc", "loc_original"]
+        );
+        assert_eq!(
+            m(r#""Wege nach Mailand""#, None, Some(LOC_ORIGINAL)),
+            ["loc_original"]
+        );
+        assert_eq!(m("Dubnaue", None, Some(LOC_ORIGINAL)), ["loc"]);
+        // Three texts, each found alone.
+        assert_eq!(
+            m("bryan", american, Some(LOC_ORIGINAL)),
+            ["american_stories"]
+        );
+        assert_eq!(
+            m("waren", american, Some(LOC_ORIGINAL)),
+            ["loc", "loc_original"]
+        );
+        assert_eq!(
+            m(r#""auf dem Wege""#, american, Some(LOC_ORIGINAL)),
+            ["loc", "loc_original"]
+        );
+        // A word from each of two texts: neither matches alone, all are listed.
+        assert_eq!(
+            m("Dubnaue bryan", american, Some(LOC_ORIGINAL)),
+            ["loc", "american_stories", "loc_original"]
+        );
+        // No original text: ours, as before.
+        assert_eq!(m("Mailand", None, None), ["loc"]);
+        assert_eq!(m("bryan", american, None), ["american_stories"]);
+        // An original text with no word in common with the query.
+        assert_eq!(m("Dubnaue", None, Some("")), ["loc"]);
     }
 }

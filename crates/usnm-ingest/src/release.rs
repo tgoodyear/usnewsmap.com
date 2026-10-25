@@ -66,7 +66,7 @@ use crate::state::{
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
 
-pub use document::{main_doc, page_doc, DocFormat};
+pub use document::{main_doc, page_doc, DocFormat, SideTexts};
 pub use lease::{lock_writer, unlock_writer, WriterLease};
 
 use lease::LEASE_TTL;
@@ -120,9 +120,13 @@ pub struct Release {
     /// Search a full base's texts in one field (05 §5.5.7, #283): `text_all`
     /// and `text_all_cg` hold LoC's and American Stories' words with a gap
     /// between them, `text` and `text_as` are stored only, and
-    /// `current.json` says so (`text_layout`). Only a full base takes it: a
-    /// delta follows the published version, whatever this says. Off: the
-    /// documents, the index config and `current.json` are as before.
+    /// `current.json` says so (`text_layout`). The layout is the latest one
+    /// field ([`TextLayout::LATEST`]): since #925, on a page our own OCR
+    /// replaced LoC's text on (`ocr_local`), LoC's text is a third text of
+    /// `text_all`, after another gap, and stored in `text_loc`. Only a full
+    /// base takes it: a delta follows the published version, whatever this
+    /// says. Off: the documents, the index config and `current.json` are as
+    /// before.
     pub single_text_field: bool,
     /// Give a full base's pages their own languages, found from their
     /// words (05 §5.5.8, #289): `page_language` and `page_language_set` on
@@ -594,7 +598,9 @@ impl Release {
         // its own: a release without it rebuilds them all.
         let dropping_stories = !self.american_stories
             && previous_as.is_some()
-            && published_layout == Some(Some(TextLayout::Single));
+            && published_layout
+                .flatten()
+                .is_some_and(TextLayout::searches_one_field);
         if dropping_stories {
             tracing::info!(
                 "the published version searches American Stories' text in one field with \
@@ -1504,16 +1510,18 @@ impl Release {
     fn text_layout(&self, full: bool, published: Option<TextLayout>) -> TextLayout {
         if full {
             return if self.single_text_field {
-                TextLayout::Single
+                TextLayout::LATEST
             } else {
                 TextLayout::Separate
             };
         }
         let layout = published.unwrap_or_default();
-        if self.single_text_field && layout == TextLayout::Separate {
+        if self.single_text_field && layout != TextLayout::LATEST {
             tracing::info!(
-                "the published version searches a field per text: --single-text-field \
-                 takes effect at the next full release"
+                from = layout.version(),
+                to = TextLayout::LATEST.version(),
+                "the published version's text fields are laid out differently from what \
+                 --single-text-field builds: it takes effect at the next full release"
             );
         }
         layout

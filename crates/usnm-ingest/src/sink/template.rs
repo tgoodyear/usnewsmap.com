@@ -264,11 +264,12 @@ const TEMPLATE_SEARCH_FIELDS: &str = "default_search_fields: [text]";
 /// `template` with the text fields of `layout` (05 §5.5.7). `Separate`
 /// leaves it as it is. `Single` keeps `text` and `text_as` stored but not
 /// indexed, drops their pairs, and adds `text_all` and `text_all_cg`, each
-/// with the comment lines above it replaced. Each line it changes must be
-/// there exactly once, so a template change can't silently keep a searched
-/// field of one text.
+/// with the comment lines above it replaced. `SingleWithLoc` also stores
+/// `text_loc`, LoC's original text of a page our OCR replaced it on (#925),
+/// not indexed either. Each line it changes must be there exactly once, so a
+/// template change can't silently keep a searched field of one text.
 pub fn text_fields(layout: TextLayout, template: &str) -> anyhow::Result<String> {
-    if layout == TextLayout::Separate {
+    if !layout.searches_one_field() {
         return Ok(template.to_owned());
     }
     let mut found = [0usize; 5];
@@ -286,7 +287,9 @@ pub fn text_fields(layout: TextLayout, template: &str) -> anyhow::Result<String>
                 out.pop();
             }
             if i == 0 {
-                for l in [
+                // Layout 2's lines are as they were: its mapping, comments
+                // included, is recorded in the manifest of every version.
+                let mut lines = vec![
                     "# One searched field for both texts (05 §5.5.7, #283). LoC's text (or",
                     "# our OCR's Latin text, #203) and American Stories' (05 §5.5.4) are",
                     "# stored for snippets and `matched_in`, not searched.",
@@ -298,7 +301,25 @@ pub fn text_fields(layout: TextLayout, template: &str) -> anyhow::Result<String>
                     "# pairs (05 §5.5.3), made separately for each text.",
                     "- { name: text_all, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
                     "- { name: text_all_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
-                ] {
+                ];
+                if layout.keeps_loc_original() {
+                    lines = vec![
+                        "# One searched field for all the texts (05 §5.5.7, #283, #925). The page's",
+                        "# text (LoC's, or our OCR's where it replaced LoC's, #296), American",
+                        "# Stories' (05 §5.5.4) and LoC's original text of a page our OCR replaced",
+                        "# are stored for snippets and `matched_in`, not searched.",
+                        "- { name: text, type: text, indexed: false, stored: true }",
+                        "- { name: text_as, type: text, indexed: false, stored: true }",
+                        "- { name: text_loc, type: text, indexed: false, stored: true }",
+                        "# All the texts' words, one token per word as the release folds them,",
+                        "# with 32 positions no query can match between one text and the next",
+                        "# (usnm_core::text_layout::index_texts), and their common-word",
+                        "# pairs (05 §5.5.3), made separately for each text.",
+                        "- { name: text_all, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+                        "- { name: text_all_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+                    ];
+                }
+                for l in lines {
                     out.push(format!("{indent}{l}"));
                 }
             }
@@ -544,6 +565,66 @@ mod tests {
         let no_pairs = INDEX_TEMPLATE.replace(TEMPLATE_TEXT_FIELDS[1], "");
         assert!(text_fields(TextLayout::Single, &no_pairs).is_err());
         assert!(text_fields(TextLayout::Single, "version: 0.9").is_err());
+    }
+
+    /// Layout 3 (#925) stores LoC's original text beside the other two,
+    /// not indexed, and searches the same `text_all`; layout 2's mapping,
+    /// comments included, is the one every earlier version recorded.
+    #[test]
+    fn the_original_text_is_a_stored_field_of_layout_3() {
+        let two = text_fields(TextLayout::Single, INDEX_TEMPLATE).unwrap();
+        let three = text_fields(TextLayout::SingleWithLoc, INDEX_TEMPLATE).unwrap();
+        let fields = |yaml: &str| -> Vec<String> {
+            yaml.lines()
+                .map(str::trim)
+                .filter(|l| l.starts_with("- { name: text"))
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(
+            fields(&three),
+            [
+                "- { name: text, type: text, indexed: false, stored: true }",
+                "- { name: text_as, type: text, indexed: false, stored: true }",
+                "- { name: text_loc, type: text, indexed: false, stored: true }",
+                "- { name: text_all, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+                "- { name: text_all_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
+            ]
+        );
+        assert!(!two.contains("text_loc"), "{two}");
+        assert!(
+            three.contains("\n  default_search_fields: [text_all]"),
+            "{three}"
+        );
+        // Strict, as every main index, so a document with a field the
+        // layout doesn't have is refused: `text_loc` on layout 2.
+        assert!(three.contains("\n  mode: strict\n"));
+        // Everything but the text fields is the template's, and layout 2 is
+        // as it was.
+        let settings = |t: &str| t[t.find("    - { name: date").unwrap()..].to_owned();
+        assert_eq!(settings(&three), settings(&two));
+        assert!(!three.contains("Searched only when"), "{three}");
+        // With the writer's tuning, a decade layout and a split target too.
+        let layout = MainLayout {
+            decades: Decades::Partitioned,
+            text: TextLayout::SingleWithLoc,
+            page_language: true,
+            split_docs: Some(120_000),
+        };
+        let yaml = main_template(&WriterTuning::default(), layout).unwrap();
+        for field in [
+            "name: text_loc,",
+            "name: text_all,",
+            "name: decade,",
+            "name: page_language_set,",
+            "split_num_docs_target: 120000\n",
+        ] {
+            assert!(yaml.contains(field), "{field}");
+        }
+        // A template without one of the lines it changes is refused.
+        let no_pairs = INDEX_TEMPLATE.replace(TEMPLATE_TEXT_FIELDS[1], "");
+        assert!(text_fields(TextLayout::SingleWithLoc, &no_pairs).is_err());
+        assert!(text_fields(TextLayout::SingleWithLoc, "version: 0.9").is_err());
     }
 
     #[test]

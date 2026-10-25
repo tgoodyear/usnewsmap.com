@@ -41,23 +41,42 @@ pub fn page_doc(
         row.text.as_deref().unwrap_or_default(),
         title,
         place,
-        text_as,
+        SideTexts {
+            american_stories: text_as,
+            loc_original: None,
+        },
         format,
     )
 }
 
+/// The texts of a page besides its main one (`text`), as its document keeps
+/// them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SideTexts<'a> {
+    /// American Stories' text of the page (05 §5.5.4): `text_as`.
+    pub american_stories: Option<&'a str>,
+    /// LoC's original text of a page whose `text` is our own OCR in its
+    /// place (12 §12.5 Step 9): `text_loc`, #925. Only a layout that keeps it
+    /// ([`TextLayout::keeps_loc_original`]) writes it, and only when it has
+    /// a word the index keeps; layouts 1 and 2 write their documents as
+    /// they always did, whatever this holds.
+    pub loc_original: Option<&'a str>,
+}
+
 /// A main-index document for page `k` of `batch` with `text` as its text:
-/// [`page_doc`]'s, and the Latin-script text of our Japanese OCR on a page
-/// LoC ships without text (`ocr_ja::latin_doc`).
+/// [`page_doc`]'s, our own OCR's text in place of LoC's
+/// ([`SideTexts::loc_original`]), and the Latin-script text of our Japanese
+/// OCR on a page LoC ships without text (`ocr_ja::latin_doc`).
 pub fn main_doc(
     k: &usnm_core::ids::PageKey,
     batch: &str,
     text: &str,
     title: &Title,
     place: &Place,
-    text_as: Option<&str>,
+    side: SideTexts<'_>,
     format: DocFormat,
 ) -> Value {
+    let text_as = side.american_stories;
     let mut doc = json!({
         "doc_id": k.doc_id(),
         "day": day_number(k.date),
@@ -91,6 +110,22 @@ pub fn main_doc(
                 usnm_core::text_layout::index_fields(text, text_as, format.analyzer);
             doc[usnm_core::text_layout::FIELD] = words.into();
             doc[usnm_core::text_layout::PAIRS_FIELD] = pairs.into();
+        }
+        // The same, and LoC's original text of a page our OCR replaced it
+        // on as a third text after another gap, stored in `text_loc` (#925).
+        TextLayout::SingleWithLoc => {
+            let original = side
+                .loc_original
+                .filter(|t| usnm_core::text_layout::has_words(t, format.analyzer));
+            let (words, pairs) = usnm_core::text_layout::index_texts(
+                std::iter::once(text).chain(text_as).chain(original),
+                format.analyzer,
+            );
+            doc[usnm_core::text_layout::FIELD] = words.into();
+            doc[usnm_core::text_layout::PAIRS_FIELD] = pairs.into();
+            if let Some(t) = original {
+                doc[usnm_core::text_layout::LOC_FIELD] = t.into();
+            }
         }
     }
     if let Some(t) = text_as {

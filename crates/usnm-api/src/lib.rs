@@ -192,7 +192,7 @@ fn configure(config: &Config, snapshot: &mut Snapshot) {
         tracing::warn!(
             version = snapshot.refdata.version(),
             "USNM_AMERICAN_STORIES_SEARCH=false has no effect on this version: its indexes \
-             search LoC's and American Stories' text in one field (text_layout 2)"
+             search LoC's and American Stories' text in one field (text_layout 2 or 3)"
         );
     }
     snapshot.refdata.congress_search = config.congress_search;

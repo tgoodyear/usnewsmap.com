@@ -9,9 +9,9 @@ use usnm_ingest::sink::JsonlSink;
 use usnm_store::ObjectStore;
 
 use crate::common::{
-    curate, curate_early_and_late, env, fixture_pages, fixtures, garble, listed, local_row, prose,
-    put_overlay_part, put_overlay_part_with_engine, raw_run, sha256_file, write_archive, JaRow,
-    Page, JA_LATIN,
+    by_id, curate, curate_early_and_late, env, fixture_pages, fixtures, garble, listed, local_row,
+    prose, put_overlay_part, put_overlay_part_with_engine, raw_run, read_jsonl, sha256_file,
+    write_archive, JaRow, Page, JA_LATIN,
 };
 
 /// Our Japanese OCR (#139): a release indexes the overlay's pages in their own
@@ -318,6 +318,9 @@ async fn japanese_ocr_with_nothing_to_index_waits() {
 /// the rule, the parts and the verdicts in `ocr_local.json`, and the pages
 /// in `ocr_local_pages.bin`, which a delta carries forward, less a copy
 /// another batch's now wins over, and the API marks those hits as ours.
+/// A full release that searches all the texts in one field then keeps LoC's
+/// text of the pages ours replaced it on beside ours (#925): `text_loc`, and
+/// a third text in `text_all`, on those pages only.
 #[tokio::test]
 async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     use usnm_ingest::ocr_local::{pages, pages_path};
@@ -598,4 +601,72 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     assert!(refdata.ocr_local.get(&id(&late[g])).is_some());
     let frozen = e.reference_json(&format!("{v}/credits.json")).await;
     assert_eq!(refdata.ocr_credits, Some(frozen));
+
+    // A full release with the one-field layout: on a page ours replaced
+    // LoC's text on, `text` is ours, `text_loc` LoC's, and `text_all` holds
+    // ours and then LoC's. No other page has `text_loc`: not a page whose
+    // LoC text is kept (a, whose copy another batch keeps, and b), not the
+    // page the Japanese overlay's Latin text replaced LoC's on (j), and not
+    // one LoC had no text for (d).
+    let r3 = Release {
+        ja_latin: true,
+        ocr_local: true,
+        congress: false,
+        single_text_field: true,
+        ..e.releaser(7, true)
+    };
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+    let v3 = r3.run(&mut sink).await.unwrap().unwrap();
+    assert!(v3.full);
+    assert_eq!(e.reference_json("current.json").await["text_layout"], 3);
+    let (pages3, _) = bin(&v3.index_version).await;
+    assert_eq!(pages3.len(), 2, "d and g");
+    let docs3: std::collections::BTreeMap<String, Value> = v3
+        .indexes
+        .iter()
+        .filter(|i| !i.starts_with("pages-ja-"))
+        .flat_map(|i| {
+            by_id(read_jsonl(
+                &e.root.join(format!("reference/indexes/{i}.jsonl")),
+            ))
+        })
+        .collect();
+    let original = |p: &Page| docs3[&id(p)].get("text_loc").and_then(Value::as_str);
+    assert_eq!(docs3[&id(&late[g])]["text"], late_clean.as_str());
+    assert_eq!(original(&late[g]), Some(late[g].text.as_str()));
+    for p in [
+        &early[a], &early[b], &early[c], &early[d], &early[f], &early[j],
+    ] {
+        assert_eq!(original(p), None, "{}", id(p));
+    }
+    assert_eq!(docs3[&id(&early[d])]["text"], clean[3].as_str());
+    for (doc_id, doc) in &docs3 {
+        let words = doc["text_all"].as_str().unwrap();
+        let want = usnm_core::text_layout::index_texts(
+            std::iter::once(doc["text"].as_str().unwrap())
+                .chain(doc["text_as"].as_str())
+                .chain(doc["text_loc"].as_str()),
+            Analyzer::LATEST,
+        );
+        assert_eq!(words, want.0, "{doc_id}");
+        assert_eq!(doc["text_all_cg"].as_str().unwrap(), want.1, "{doc_id}");
+        assert!(doc.get("text_cg").is_none(), "{doc_id}");
+        // Only a page of our OCR's has a LoC original beside it.
+        assert!(
+            doc.get("text_loc").is_none() || pages3.get(doc_id).is_some(),
+            "{doc_id}"
+        );
+    }
+    // The gap sits between ours and LoC's: the first word of LoC's text
+    // is 33 positions after the last of ours.
+    let doc = &docs3[&id(&late[g])];
+    let gap = usnm_core::text_layout::GAP_POSITIONS;
+    let words: Vec<&str> = doc["text_all"].as_str().unwrap().split(' ').collect();
+    let ours = usnm_core::common_grams::index_words(&late_clean, Analyzer::LATEST)
+        .split(' ')
+        .count();
+    assert!(words[ours..ours + gap].iter().all(|w| *w == "_"));
+    assert_ne!(words[ours + gap], "_");
+    // The page counts once: one document.
+    assert_eq!(docs3.keys().filter(|k| **k == id(&late[g])).count(), 1);
 }

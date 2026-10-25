@@ -97,7 +97,7 @@ describe("featureChanges", () => {
       "New version of folding of old Japanese character forms (2)",
       "Added our own OCR in place of weak Library of Congress text",
       "Added each page's own language, which the language filter matches",
-      "Added one searched field for both texts",
+      "Added one searched field for the page's texts",
     ]);
     // A changed split size isn't a change either.
     const smaller = version({ full: true, build: { features: { ...now.build!.features, split_docs: 30000 } } });

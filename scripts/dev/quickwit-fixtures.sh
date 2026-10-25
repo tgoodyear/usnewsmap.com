@@ -152,6 +152,23 @@ for from in pages-base-fixture pages-delta-fixture-1; do
     --data-binary @"$work/${index}.jsonl" |
     grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }
 done
+# The same base and delta with one searched field for all the texts and LoC's
+# original text of the pages our OCR replaced it on (05 §5.5.7, #925): the
+# layout 3 mapping, `text_loc` on those pages (fixtures/loc_original.rs),
+# and `text_all` holding three texts where a page has them.
+for from in pages-base-fixture pages-delta-fixture-1; do
+  index="${from}-loc"
+  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example single_field_fixture -- \
+    --template --loc-original < "$root/infra/quickwit/pages-index.yaml" |
+    sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" |
+    curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
+      "$url/api/v1/indexes" > /dev/null
+  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example single_field_fixture -- \
+    --docs --loc-original < "$root/fixtures/data/indexes/${from}.jsonl" > "$work/${index}.jsonl"
+  curl -sf -XPOST "$url/api/v1/${index}/ingest?commit=force" \
+    --data-binary @"$work/${index}.jsonl" |
+    grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }
+done
 # The same base and delta with page languages (05 §5.5.8, #289): the two
 # fields in the mapping and on every page (fixtures/page_language.rs), as a
 # release writes them.

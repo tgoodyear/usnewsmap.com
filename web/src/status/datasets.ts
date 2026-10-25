@@ -51,7 +51,7 @@ const FEATURE_LABEL: Record<string, string> = {
   common_grams: "word pairs for phrase searches",
   ja_fold: "folding of old Japanese character forms",
   decades: "the index split by decade",
-  text_layout: "one searched field for both texts",
+  text_layout: "one searched field for the page's texts",
   page_language: "each page's own language, which the language filter matches",
   congress: "the records of Congress",
 };

@@ -459,8 +459,9 @@ describe("DatasetsPage", () => {
       'When a page matched only in American Stories\' text, the result says so with an "American Stories OCR" badge';
     const match = "a page when its Library of Congress and American Stories texts together have the words";
     for (const [meta, text] of [
-      // One field for both texts: always searched, and no count of the pages only it matched.
+      // One field for the texts: always searched, and no count of the pages only it matched.
       [{ ...fixtureMeta, text_layout: 2 }, `Every search reads both texts: it finds ${match}. ${badge}.`],
+      [{ ...fixtureMeta, text_layout: 3 }, `Every search reads both texts: it finds ${match}. ${badge}.`],
       [fixtureMeta, `A search finds ${match}. ${badge}, and the search's page count says how many pages that is.`],
       // /v1/meta for another version says nothing about this one.
       [{ ...fixtureMeta, index_version: "fixture-v2", text_layout: 1 }, `A search finds ${match}. ${badge}.`],
@@ -475,6 +476,39 @@ describe("DatasetsPage", () => {
       ).toBeTruthy();
       cleanup();
     }
+  });
+
+  it("says that layout 3 searches our OCR's text beside the Library of Congress's, whatever the setting", async () => {
+    const doc = {
+      ...body,
+      published: {
+        ...body.published,
+        sources: {
+          american_stories: { searched: false, pages: 1500, only_pages: 40, years: 3 },
+          ja_latin: null,
+          ocr_local: null,
+        },
+      },
+    };
+    serve(doc, noVersions, { ...fixtureMeta, text_layout: 3 });
+    renderPage();
+    // The American Stories setting is ignored on a one-field layout, so its text is not "switched off".
+    expect(await screen.findByText(/^Every search reads both texts:/)).toBeTruthy();
+    expect(screen.queryByText(/switched off/)).toBeNull();
+    expect(
+      screen.getByText(
+        "Every search reads the Library of Congress's text, and on the pages we read again ourselves (below) our text too. Each result links to the page image at the Library of Congress.",
+      ),
+    ).toBeTruthy();
+    cleanup();
+    // Before layout 3, our text is searched in its place.
+    serve(doc, noVersions, { ...fixtureMeta, text_layout: 2 });
+    renderPage();
+    expect(
+      await screen.findByText(
+        "Every search reads the Library of Congress's text, except on the pages we read again ourselves (below), where our text is searched in its place. Each result links to the page image at the Library of Congress.",
+      ),
+    ).toBeTruthy();
   });
 
   it("says what part of the pages has text to search", async () => {
