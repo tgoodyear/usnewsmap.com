@@ -35,7 +35,7 @@
 #   HANDOFF_STEP=release  HANDOFF_DOCS=<doc_id>[,<doc_id>...]
 #                         gives claimed pages back to their queue, for the nodes (a scan that
 #                         wasn't on the scan server after all)
-#   HANDOFF_STEP=dead-letter HANDOFF_DOCS=<doc_id>[,<doc_id>...]
+#   HANDOFF_STEP=dead-letter JOB_IDS=<id>[,<id>...]
 #                         puts claimed pages whose BOINC workunit failed for good on
 #                         ocr-deadletter and deletes their messages (#1154)
 #   HANDOFF_STEP=collect  JOB_ID [HOST_ID=<the canonical result's host id>], or JOB_IDS=<id>[,<id>...]
@@ -284,13 +284,12 @@ case "${HANDOFF_STEP:-}" in
     # Pages whose BOINC workunit failed for good (#1154): to ocr-deadletter, and their messages
     # deleted, so they aren't taken again as the same job.
     [ -n "${QUEUE_URL:-}" ] || fail "QUEUE_URL is not set (the job's own setting)"
-    [[ ${HANDOFF_DOCS:-} =~ ^[A-Za-z0-9_,-]+$ ]] || fail "HANDOFF_DOCS is a comma-separated list of doc ids"
-    IFS=, read -r -a docs <<< "$HANDOFF_DOCS"
-    [ "${#docs[@]}" -le 100 ] || fail "HANDOFF_DOCS is at most 100 doc ids"
-    doc_args=()
-    for d in "${docs[@]}"; do doc_args+=(--doc-id "$d"); done
-    usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${doc_args[@]}" \
-      --error "BOINC workunit failed for good (error results or no output); its journal stays in dispatch/" ;;
+    [[ ${JOB_IDS:-} =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
+    IFS=, read -r -a ids <<< "$JOB_IDS"
+    job_args=()
+    for id in "${ids[@]}"; do job_args+=(--job "$id"); done
+    # Each dead letter says why its workunit failed (the error mask), from the job's journal.
+    usnm-boinc claim dead-letter --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${job_args[@]}" ;;
   collect)
     [[ ${JOB_ID:-} =~ ^[0-9a-f]{64}$ ]] || fail "JOB_ID is a job id (64 hex)"
     usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "dispatch/jobs/$JOB_ID/record.json" \

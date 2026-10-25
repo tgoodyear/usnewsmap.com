@@ -815,9 +815,10 @@ class Transport:
         self.step("handoff", "release", HANDOFF_DOCS=",".join(doc_ids))
 
     @timed("dead-letter")
-    def dead_letter(self, doc_ids):
-        """Pages whose workunit failed for good go to ocr-deadletter (#1154)."""
-        self.step("handoff", "dead-letter", HANDOFF_DOCS=",".join(doc_ids))
+    def dead_letter(self, job_ids):
+        """Pages whose workunit failed for good go to ocr-deadletter (#1154), each dead letter
+        saying why from its job's journal (#1159)."""
+        self.step("handoff", "dead-letter", JOB_IDS=",".join(job_ids))
 
     @timed("submit")
     def submit(self, job_id):
@@ -926,17 +927,20 @@ def ocr_workunit_counts(snapshot, pending_jobs):
 
 
 def units_of(config, records):
-    """Split the records to submit into workunits (#1059): by queue, in their order, into groups
-    of at most that queue's pages_per_unit (1, a page alone, by default)."""
+    """Split the records to submit into workunits (#1059): by queue and page deadline (a bundle's
+    pages share one, #1159), in their order, into groups of at most that queue's pages_per_unit
+    (1, a page alone, by default)."""
     sizes = config.get("pages_per_unit", {})
-    queues = {}
+    groups = {}
     for record in records:
         queue = QUEUE_OF_REASON.get(record["job"]["message"].get("reason"), "ocr-bulk")
-        queues.setdefault(queue, []).append(record["job"]["id"])
+        deadline = record["job"].get("engine", {}).get("timeout_secs")
+        groups.setdefault(queue, {}).setdefault(deadline, []).append(record["job"]["id"])
     units = []
     for queue in QUEUES:
-        ids, size = queues.get(queue, []), sizes.get(queue, 1)
-        units += [ids[i:i + size] for i in range(0, len(ids), size)]
+        size = sizes.get(queue, 1)
+        for ids in groups.get(queue, {}).values():
+            units += [ids[i:i + size] for i in range(0, len(ids), size)]
     return units
 
 
@@ -1404,9 +1408,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(dead_letter_failed and feed is not None,
                 f"terminal BOINC failure: {names}; dead-letter it with --dead-letter-failed "
                 "(#1154) or reconcile it by hand")
-        docs = sorted(page.replace("/", "_") for page in failed)
-        for i in range(0, len(docs), 100):  # the step takes 100 doc ids at most
-            transport.dead_letter(docs[i:i + 100])
+        jobs = sorted(record["job"]["id"] for record in failed.values())
+        for i in range(0, len(jobs), 100):  # the step takes 100 job ids at most
+            transport.dead_letter(jobs[i:i + 100])
         for record in failed.values():
             letters[record["job"]["id"]] = int(now)
         persist()

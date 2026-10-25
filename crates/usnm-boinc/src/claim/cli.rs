@@ -79,12 +79,10 @@ pub enum ClaimCommands {
         handoff_url: String,
         #[arg(long)]
         queue_url: String,
-        /// A doc id; repeat for more.
-        #[arg(long = "doc-id", required = true)]
-        doc_ids: Vec<String>,
-        /// Why, kept in the dead letter (at most 200 characters).
-        #[arg(long)]
-        error: String,
+        /// A failed job's id (its journal in the hand-off container's dispatch/ names the page
+        /// and why it failed); repeat for more.
+        #[arg(long = "job", required = true)]
+        jobs: Vec<String>,
     },
     /// Hand-off job: give claimed pages back to the queue, for the nodes.
     Release {
@@ -237,19 +235,38 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
         ClaimCommands::DeadLetter {
             handoff_url,
             queue_url,
-            doc_ids,
-            error,
+            jobs,
         } => {
             let handoff = usnm_store::open(&handoff_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
             let mut lost = 0;
-            for doc_id in doc_ids {
+            for job in jobs {
                 anyhow::ensure!(
-                    usnm_core::ids::PageKey::from_doc_id(&doc_id).is_ok(),
-                    "invalid doc id"
+                    job.len() == 64 && job.bytes().all(|b| b.is_ascii_hexdigit()),
+                    "invalid job id"
                 );
-                let done =
-                    x::dead_letter(handoff.as_ref(), queue.as_ref(), &doc_id, &error).await?;
+                let path = format!("dispatch/jobs/{job}/record.json");
+                let bytes = handoff
+                    .get(&path)
+                    .await?
+                    .with_context(|| format!("no {path} in the hand-off container"))?;
+                let record: crate::Record = serde_json::from_slice(&bytes)?;
+                anyhow::ensure!(
+                    record.job.id == job && record.stage == crate::Stage::Failed,
+                    "job {job} has not failed; nothing to dead-letter"
+                );
+                let doc_id = record.job.message.key()?.doc_id();
+                let error = record
+                    .error
+                    .unwrap_or_else(|| "BOINC workunit failed for good".into());
+                let done = x::dead_letter(
+                    handoff.as_ref(),
+                    queue.as_ref(),
+                    &doc_id,
+                    &error,
+                    Some(&record.job.message),
+                )
+                .await?;
                 if done == x::DeadLettered::LeaseLost {
                     lost += 1;
                 }
