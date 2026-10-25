@@ -109,8 +109,11 @@ By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff c
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
 ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
-with it. `texts-export` stays in Azure. An on-prem `export` downloads each page's scan from
-the hand-off container, which Azure bills as egress; in Azure it doesn't. Like the batch flags, these are runtime
+with it. `texts-export` stays in Azure. With `--onprem-handoff export`, the controller's push
+sends the claimed pages' scans straight to the BOINC host (`usnm-boinc-step --target scans
+--step receive`, a tar over the step key into `/srv/usnm-boinc/project/handoff-scans`), not to
+the hand-off container. Export reads them there, and the bridge's `submit-remote` takes each
+job's page from them, so no scan goes through Azure (#1116). Like the batch flags, these are runtime
 flags, not configuration, so turning them on or off changes no hash. They need a plan with
 `step_command`, and the host needs `/etc/usnm-boinc/handoff.env`. A dry run prints the
 choice as `onprem_handoff`.
