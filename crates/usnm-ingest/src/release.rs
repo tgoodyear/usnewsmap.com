@@ -479,6 +479,71 @@ pub async fn unlock_writer(state: &State, owner: &str, lease: WriterLease) -> an
     state.unlock(WRITER_LOCK, owner).await
 }
 
+/// The live pointer, `current.json`: the version it names and the pointer
+/// itself, or `None` when there is none.
+pub async fn live_pointer(reference: &dyn ObjectStore) -> anyhow::Result<Option<(String, Value)>> {
+    let Some(bytes) = reference.get("current.json").await? else {
+        return Ok(None);
+    };
+    let pointer: Value = serde_json::from_slice(&bytes).context("current.json")?;
+    let version = pointer["index_version"]
+        .as_str()
+        .context("current.json has no index_version")?
+        .to_owned();
+    Ok(Some((version, pointer)))
+}
+
+/// What [`record_current_version`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentVersion {
+    /// The version `ops/current` names now.
+    pub version: String,
+    /// The one it named before: the same when nothing changed.
+    pub previous: Option<String>,
+}
+
+impl CurrentVersion {
+    pub fn changed(&self) -> bool {
+        self.previous.as_deref() != Some(self.version.as_str())
+    }
+}
+
+/// Make the pipeline state's `ops/current` name `live`, the version
+/// `current.json` names, if it names another. `run` must be that version's
+/// run, recorded as published: `ops/current` follows the live pointer and
+/// is never ahead of it. A release does this before it builds, after a
+/// publish that wasn't recorded or a staged one that was promoted
+/// (`published_run`), and `import-staged-run --current` does it after a
+/// promotion. `/v1/status` and the BOINC export read `ops/current`.
+pub async fn record_current_version(
+    state: &State,
+    live: &str,
+    run: &IndexRun,
+) -> anyhow::Result<CurrentVersion> {
+    if run.index_version != live {
+        bail!(
+            "current.json names `{live}`, not `{}`: promote it first; `ops/current` never names \
+             a version ahead of the live pointer",
+            run.index_version
+        );
+    }
+    if run.status != RunStatus::Published {
+        bail!(
+            "`{live}`'s run is {:?}, not published: the next release records an interrupted \
+             publish",
+            run.status
+        );
+    }
+    let previous = state.current_version().await?;
+    if previous.as_deref() != Some(live) {
+        state.set_current_version(live).await?;
+    }
+    Ok(CurrentVersion {
+        version: live.to_owned(),
+        previous,
+    })
+}
+
 impl Release {
     /// Take the writer lock and keep renewing it. Callers that run a
     /// Quickwit writer node take it before the node starts and release it
@@ -1508,13 +1573,10 @@ impl Release {
         if self.stage_index_storage {
             return Ok(None);
         }
-        let Some(bytes) = self.reference.get("current.json").await? else {
+        let Some((version, pointer)) = live_pointer(self.reference.as_ref()).await? else {
             return Ok(None);
         };
-        let pointer: Value = serde_json::from_slice(&bytes).context("current.json")?;
-        let version = pointer["index_version"]
-            .as_str()
-            .context("current.json has no index_version")?;
+        let version = version.as_str();
         // A version built on-prem has its run in its snapshot (onprem.rs).
         let (mut run, etag) = crate::onprem::import_staged_run(
             &self.state,
@@ -1537,8 +1599,13 @@ impl Release {
             run.published_at = pointer_at.or(run.published_at).or_else(|| Some(Utc::now()));
             self.state.update_run(&run, &etag).await?;
         }
-        if self.state.current_version().await?.as_deref() != Some(version) {
-            self.state.set_current_version(version).await?;
+        let current = record_current_version(&self.state, version, &run).await?;
+        if current.changed() {
+            tracing::warn!(
+                version,
+                previous = current.previous.as_deref().unwrap_or(""),
+                "ops/current repaired from current.json"
+            );
         }
         let feature = |key: &str| pointer[key].as_u64().and_then(|v| u32::try_from(v).ok());
         let published = PublishedPointer {

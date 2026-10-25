@@ -230,6 +230,20 @@ async fn index_storage_stages_a_fresh_base_without_changing_the_serving_version(
         .unwrap();
     assert_eq!(kept.rollback.as_deref(), Some(old.index_version.as_str()));
     assert!(kept.indexes.contains(&old.indexes[0]));
+    // Promoted, the staged version becomes the pipeline's current one
+    // (`import-staged-run --current`) without an ordinary release.
+    let (run, _) = e.state.run(&staged.index_version).await.unwrap().unwrap();
+    let recorded = usnm_ingest::onprem::record_current(&e.state, e.reference.as_ref(), &run)
+        .await
+        .unwrap();
+    assert_eq!(
+        recorded.previous.as_deref(),
+        Some(old.index_version.as_str())
+    );
+    assert_eq!(
+        e.state.current_version().await.unwrap().as_deref(),
+        Some(staged.index_version.as_str())
+    );
 }
 
 /// `prune` against a real writer node (#245): four versions, a rebuild
