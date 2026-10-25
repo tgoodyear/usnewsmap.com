@@ -147,6 +147,8 @@ if [ "$follow" = true ]; then
   in_ct systemctl enable --now usnm-quality-build.timer
   systemctl enable --now usnm-quality-ship.timer
 elif [ "$enable" = true ]; then
+  # One feeder at a time: the follower and the pass's manifests stop first.
+  in_ct systemctl disable --now usnm-quality-follow.service usnm-quality-build.timer 2> /dev/null || true
   in_ct test -s "/var/lib/usnm-quality-feed/$campaign/pages.jsonl" ||
     { echo "error: no page list for $campaign in CT $ct" >&2; exit 1; }
   in_ct systemctl restart usnm-quality-feed.service
