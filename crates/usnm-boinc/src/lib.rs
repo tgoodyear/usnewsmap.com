@@ -478,6 +478,19 @@ pub async fn export(
         "invalid base batch"
     );
     let _lock = Lock::take(&opts.root)?;
+    // A page this plan journaled already keeps the deadline it was exported with, so a resumed
+    // export builds the same job, whatever --timeout-secs is now (#1159).
+    let mut kept_timeouts: BTreeMap<String, u32> = BTreeMap::new();
+    if let Ok(entries) = std::fs::read_dir(opts.root.join("jobs")) {
+        for entry in entries.flatten() {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(old) = load(&opts.root, &id) {
+                if old.plan == opts.plan {
+                    kept_timeouts.insert(old.job.message.page.clone(), old.job.engine.timeout_secs);
+                }
+            }
+        }
+    }
     let selected: BTreeSet<String> = String::from_utf8(read(&opts.pages, 64 * 1024)?)?
         .lines()
         .map(str::trim)
@@ -531,6 +544,10 @@ pub async fn export(
     let snapshot = ocr_local::boinc::Snapshot::load(state, reference).await?;
     let mut records = Vec::new();
     for (page, row) in chosen {
+        let timeout_secs = kept_timeouts
+            .get(&page)
+            .copied()
+            .unwrap_or(opts.timeout_secs);
         let (scan, side) = cached(&opts.scans, &row)?;
         let title_languages = snapshot
             .titles
@@ -592,7 +609,7 @@ pub async fn export(
                     .to_string(),
                 psm: 3,
                 dpi: 300,
-                timeout_secs: opts.timeout_secs,
+                timeout_secs,
             },
         };
         job.id = job.identity()?;

@@ -472,10 +472,24 @@ pub async fn dead_letter(
     queue: &dyn Queue,
     doc_id: &str,
     error: &str,
+    failed: Option<&OcrMessage>,
 ) -> anyhow::Result<DeadLettered> {
     let Some(mut claim) = load(handoff, doc_id).await? else {
         bail!("no claim for {doc_id}");
     };
+    // The claim must be the failed job's message: a page claimed again after a failure has
+    // a newer claim, which this must not take off its queue.
+    if let Some(m) = failed {
+        let c = claim.message()?;
+        ensure!(
+            c.page == m.page
+                && c.batch == m.batch
+                && c.reason == m.reason
+                && c.language == m.language
+                && c.queued_at == m.queued_at,
+            "the claim for {doc_id} is not the failed job's message"
+        );
+    }
     match claim.ended.as_deref() {
         Some("dead_lettered") => return Ok(DeadLettered::Already),
         // The dead letter went but its message had come back: still the operator's to settle.

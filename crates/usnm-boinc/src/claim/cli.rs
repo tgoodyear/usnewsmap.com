@@ -259,8 +259,14 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 let error = record
                     .error
                     .unwrap_or_else(|| "BOINC workunit failed for good".into());
-                let done =
-                    x::dead_letter(handoff.as_ref(), queue.as_ref(), &doc_id, &error).await?;
+                let done = x::dead_letter(
+                    handoff.as_ref(),
+                    queue.as_ref(),
+                    &doc_id,
+                    &error,
+                    Some(&record.job.message),
+                )
+                .await?;
                 if done == x::DeadLettered::LeaseLost {
                     lost += 1;
                 }

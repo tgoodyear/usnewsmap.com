@@ -1492,6 +1492,24 @@ async fn handoff_get_file_copies_only_the_named_object_and_rejects_missing_or_un
     );
 }
 
+/// #1159: a page already journaled keeps the deadline it was exported with.
+#[tokio::test]
+async fn a_resumed_export_keeps_the_journaled_deadline() {
+    let mut fx = Fixture::new("eng").await;
+    fx.options.timeout_secs = 600;
+    let first = fx.export().await;
+    fx.options.timeout_secs = 1800;
+    assert_eq!(fx.export().await, first);
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &first)
+            .unwrap()
+            .job
+            .engine
+            .timeout_secs,
+        600
+    );
+}
+
 /// #1116: an export on the BOINC host puts only the job's record and request in the
 /// container; the bridge's pull takes the page from the scans the controller pushed there.
 #[cfg(unix)]
@@ -2480,9 +2498,15 @@ mod queue_feed {
         publish_claim(&f, &claims).await;
         let q = f.fx.stores.queue.as_ref();
         assert_eq!(
-            claim::dead_letter(f.handoff.as_ref(), q, DOC, "BOINC workunit failed for good")
-                .await
-                .unwrap(),
+            claim::dead_letter(
+                f.handoff.as_ref(),
+                q,
+                DOC,
+                "BOINC workunit failed for good",
+                Some(&f.message)
+            )
+            .await
+            .unwrap(),
             claim::DeadLettered::Done
         );
         assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
@@ -2497,7 +2521,7 @@ mod queue_feed {
         assert_eq!(letter.message.as_ref(), Some(&f.message));
         // Again: the claim is ended, nothing more goes.
         assert_eq!(
-            claim::dead_letter(f.handoff.as_ref(), q, DOC, "again")
+            claim::dead_letter(f.handoff.as_ref(), q, DOC, "again", None)
                 .await
                 .unwrap(),
             claim::DeadLettered::Already
@@ -2513,6 +2537,28 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_newer_claim_of_the_page_is_not_dead_lettered() {
+        // The failed job's message differs from the claim's (the page was claimed again).
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        let mut older = f.message.clone();
+        older.queued_at = "2026-01-01T00:00:00.000000Z".into();
+        let q = f.fx.stores.queue.as_ref();
+        assert!(
+            claim::dead_letter(f.handoff.as_ref(), q, DOC, "x", Some(&older))
+                .await
+                .is_err()
+        );
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn a_released_claim_is_not_dead_lettered() {
         let f = fed(true).await;
         let claims = f.fx.tmp.path().join("claims");
@@ -2520,7 +2566,7 @@ mod queue_feed {
         publish_claim(&f, &claims).await;
         let q = f.fx.stores.queue.as_ref();
         assert!(claim::release(f.handoff.as_ref(), q, DOC).await.unwrap());
-        assert!(claim::dead_letter(f.handoff.as_ref(), q, DOC, "x")
+        assert!(claim::dead_letter(f.handoff.as_ref(), q, DOC, "x", None)
             .await
             .is_err());
         assert!(q
@@ -2542,7 +2588,7 @@ mod queue_feed {
         assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
         for _ in 0..2 {
             assert_eq!(
-                claim::dead_letter(f.handoff.as_ref(), q, DOC, "failed for good")
+                claim::dead_letter(f.handoff.as_ref(), q, DOC, "failed for good", None)
                     .await
                     .unwrap(),
                 claim::DeadLettered::LeaseLost
