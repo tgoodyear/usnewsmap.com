@@ -8,6 +8,7 @@ pub(crate) mod congress;
 pub(crate) mod curate;
 pub(crate) mod ocr;
 pub(crate) mod onprem;
+pub(crate) mod pictures;
 pub(crate) mod prune;
 pub(crate) mod release;
 pub(crate) mod run;
