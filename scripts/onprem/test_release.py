@@ -118,7 +118,9 @@ class PublishAndRestore(ReleaseScript):
 
 
 class App(http.server.BaseHTTPRequestHandler):
-    """A stand-in API: /readyz and /v1/meta, as `served` says."""
+    """A stand-in API: /readyz and /v1/meta, as `served` says. With `meta_cut` set, /v1/meta
+    advertises more bytes than it sends and closes the connection: a complete JSON body that
+    curl still reports as a failed transfer."""
 
     def do_GET(self):
         served = self.server.served
@@ -128,13 +130,14 @@ class App(http.server.BaseHTTPRequestHandler):
             served["readyz_failures"] -= 1 if failing else 0
             self.reply(503 if failing else 200, b"not ready" if failing else b"ready")
         elif self.path == "/v1/meta":
-            self.reply(200, json.dumps({"index_version": served["version"], "pages": 1}).encode())
+            body = json.dumps({"index_version": served["version"], "pages": 1}).encode()
+            self.reply(200, body, advertised=len(body) + 100 if served["meta_cut"] else None)
         else:
             self.reply(404, b"")
 
-    def reply(self, status, body):
+    def reply(self, status, body, advertised=None):
         self.send_response(status)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(body) if advertised is None else advertised))
         self.end_headers()
         self.wfile.write(body)
 
@@ -143,9 +146,14 @@ class App(http.server.BaseHTTPRequestHandler):
 
 
 class Ready(ReleaseScript):
-    def serve(self, version=VERSION, readyz_failures=0):
+    def serve(self, version=VERSION, readyz_failures=0, meta_cut=False):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), App)
-        server.served = {"version": version, "readyz_failures": readyz_failures, "requests": []}
+        server.served = {
+            "version": version,
+            "readyz_failures": readyz_failures,
+            "meta_cut": meta_cut,
+            "requests": [],
+        }
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -180,6 +188,15 @@ class Ready(ReleaseScript):
         self.assertIn("after 3 tries", p.stderr)
         self.assertIn("/v1/meta names " + OTHER, p.stderr)
         self.assertEqual(server.served["requests"].count("/v1/meta"), 3)
+
+    def test_a_meta_response_that_fails_to_arrive_in_full_is_not_ready(self):
+        server = self.serve(meta_cut=True)
+        p = self.ready(server, USNM_READY_TRIES="2")
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertNotIn("ready: ", p.stdout)
+        self.assertIn("after 2 tries", p.stderr)
+        self.assertIn("/v1/meta doesn't answer", p.stderr)
+        self.assertEqual(server.served["requests"].count("/v1/meta"), 2)
 
     def test_an_app_that_never_gets_ready_fails_without_asking_its_version(self):
         server = self.serve(readyz_failures=100)

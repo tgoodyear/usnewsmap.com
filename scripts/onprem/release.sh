@@ -159,12 +159,16 @@ case "$STEP" in
     last="no try yet"
     for ((try = 1; try <= READY_TRIES; try++)); do
       if curl -fsS --max-time 10 -o /dev/null "$APP_URL/readyz"; then
-        seen=$(curl -fsS --max-time 10 "$APP_URL/v1/meta" | jq -r '.index_version // empty' || true)
-        if [ "$seen" = "$VERSION" ]; then
-          echo "ready: $APP_URL answers /readyz and serves $VERSION"
-          exit 0
+        # In the if, a failure of either command (pipefail) is a failed fetch, not a version.
+        if seen=$(curl -fsS --max-time 10 "$APP_URL/v1/meta" | jq -r '.index_version // empty'); then
+          if [ "$seen" = "$VERSION" ]; then
+            echo "ready: $APP_URL answers /readyz and serves $VERSION"
+            exit 0
+          fi
+          last="/readyz passes, and /v1/meta names ${seen:-no version}"
+        else
+          last="/readyz passes, and /v1/meta doesn't answer in full with JSON"
         fi
-        last="/readyz passes, and /v1/meta names ${seen:-no version}"
       else
         last="/readyz doesn't pass"
       fi
