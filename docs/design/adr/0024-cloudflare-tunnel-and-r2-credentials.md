@@ -36,7 +36,7 @@ An exception to ADR-0009 covers exactly these Cloudflare credentials:
    `/etc/cloudflared/usnm-ocrdash.env` (mode 0600). The LAN view and the hosts' pushes stay on the
    LAN listener.
 
-Rules for all three:
+Rules for all four:
 
 - Kept in Azure Key Vault, read through Entra RBAC; never in the repository or on a command line,
   and never printed. The one copy outside Key Vault of each tunnel token is on its host, in a
