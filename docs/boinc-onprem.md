@@ -39,15 +39,15 @@ the host's own automatic updates never reach them. Each image that serves Apache
 Debian's security updates when it is built: the server and bridge Containerfiles, the overlays
 and `security-overlay.Containerfile` run `apt-get upgrade` from the image's sources, which
 include `bookworm-security`. The build then fails if `php8.2-common` or `apache2` is older than
-`PHP_FLOOR` or `APACHE_FLOOR`, now 8.2.35-1~deb12u1 from DSA-6255-1 (21 October 2026) and
+`PHP_FLOOR` or `APACHE_FLOOR`, now 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
 2.4.67-1~deb12u3 from DSA-6323-1 (6 June 2026). Each floor is the version of bookworm's last
 advisory for that package, so a newer build from bookworm's own suite passes it too.
 `test_security_updates.py` in `contrib-compute/images/server` checks that every one of them
-upgrades and checks both floors.
+upgrades and enforces both floors.
 
 After a Debian security advisory for a package in the image (PHP, Apache, OpenSSL, curl):
 
-1. For PHP or Apache, raise `PHP_FLOOR` or `APACHE_FLOOR` in all of those Containerfiles to the fixed version, and the same flag in `usnm-image-security-check.service`, through a pull request. `test_image_security_check.py` fails when the unit and the Containerfiles disagree.
+1. For PHP or Apache, raise `PHP_FLOOR` or `APACHE_FLOOR` in all of those Containerfiles to the fixed version, and `--php-floor` or `--apache-floor` in `usnm-image-security-check.service`, through a pull request. `test_image_security_check.py` fails when the unit and the Containerfiles disagree.
 2. On the on-prem BOINC host, build `security-overlay.Containerfile` on the running image: `RUNTIME_IMAGE` is `SERVER_IMAGE` from `/etc/usnm-boinc/server.env`, and `SECURITY_REFRESH` is today's date, so a cached build runs the upgrade again. The file's header has the command. Only packages change; the project's code stays as it was.
 3. Set `SERVER_IMAGE` in `server.env` to the new image and restart `usnm-boinc-server.service`. The step runner reads the same file, so the next step uses it too.
 4. Check the running image: `podman exec usnm-boinc-server php -v`, and `podman exec usnm-boinc-server dpkg-query -W php8.2-common apache2 openssl libcurl3-gnutls` against the advisory's fixed versions. `systemctl start usnm-image-security-check.service` runs the scheduled check now and exits clean when nothing is pending. It reads `SERVER_IMAGE`, not the container, so it only vouches for what runs after step 3's restart.
@@ -62,14 +62,14 @@ host time, with up to 15 minutes of random delay; `Persistent=true` makes up for
 starts a throwaway container from `SERVER_IMAGE` (`podman run --rm --pull=never`, host network, so
 `apt-get update` works) and runs `apt-get update` and a simulated `apt-get upgrade` in it, then
 compares `php8.2-common` and `apache2` with the two floors, which the unit passes as `--php-floor`
-and `--apache-floor`. Nothing in the image or on the host changes. It fails the unit (exit 1) for:
+and `--apache-floor`. Nothing in the image changes and nothing restarts. It fails the unit (exit 1) for:
 
 - An upgrade the image's own apt sources offer. The journal line says `SECURITY` when it comes from the security archive and `UPDATE` otherwise: a security fix can also arrive in a point release, so both fail. Building `security-overlay.Containerfile` on the image clears them.
 - `BELOW-FLOOR`: `php8.2-common` or `apache2` older than its floor.
 - `MYSQL-DRIFT`, below.
 
-It exits 3, which also fails the unit, when it can't answer: `apt-get update` failed, the image's apt
-sources have no security archive, or the MySQL unit has no digest. A check that couldn't run never
+It exits 3, which also fails the unit, when it can't answer. Examples are a failed `apt-get update`, no security archive in the image's apt
+sources, and no digest in the MySQL unit. A check that couldn't run never
 reads as clean. The alert is the failed unit, in `systemctl --failed` and in
 `journalctl -u usnm-image-security-check.service`; nothing routes it anywhere else yet. The check
 sees what bookworm publishes: a CVE the Debian security tracker still lists as open for bookworm has

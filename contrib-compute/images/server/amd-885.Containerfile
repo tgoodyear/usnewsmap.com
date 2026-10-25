@@ -8,9 +8,9 @@ FROM ${RUNTIME_IMAGE}
 # Debian security updates at build time (#969): the image this builds on is pinned, so its
 # packages are frozen at whatever it was built with. A new SECURITY_REFRESH (a date) makes a
 # cached build run this layer again. PHP_FLOOR and APACHE_FLOOR are the oldest php8.2 and
-# apache2 the image may ship: DSA-6255-1 (CVE-2026-109618, CVE-2026-109619, 21 October 2026)
+# apache2 the image may ship: DLA-4848-1 (CVE-2026-109618, CVE-2026-109619, 21 October 2026)
 # and DSA-6323-1 (CVE-2026-49975, 6 June 2026). The build fails below either; raise it after
-# the next PHP or Apache DSA, here, in the other Containerfiles and in
+# the next PHP or Apache advisory, here, in the other Containerfiles and in
 # scripts/boinc/onprem/usnm-image-security-check.service.
 ARG SECURITY_REFRESH=2026-10-21
 ARG PHP_FLOOR=8.2.35-1~deb12u1
