@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] || usage
 cd "$(dirname "$0")/../.."
+# shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
 need() {
