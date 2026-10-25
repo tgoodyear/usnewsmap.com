@@ -152,6 +152,15 @@ The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists fo
 
 `usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](../design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrs-caj-<env>` (saved as `OCR_SYNC_JOB`; `usnm-ocrsync-caj-<env>` before the October 2026 rename, #309), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
 
+**On-prem (#917).** With `USNM_OCR_SYNC_ONPREM` (on in prod), the pickup runs on pve-laptop CT 215 (`usnm-batch`) as that container's own Arc machine identity (`USNM_BATCH_HOST`), and `USNM_OCR_SYNC_CRON=manual` stops the Azure job's schedule in the same provision. The container's `usnm-ocr-sync.timer` (home-infra `scripts/lab/batch-ct-ingest.sh`) runs `usnm-ingest ocr-sync --max-runtime-secs 3000` at minute 17, from a released ingest image's binary pinned by commit, with the job's settings in `/etc/usnm/ingest.env`. Its grants (`infra/modules/ocr-sync-runner.bicep`) are narrower than `id-usnm-ingest`'s:
+
+- the lake role (read, write, create; no delete) on `curated`, writing only under `ocr-local/`; on `reference`, writing only `status/ocr-local.json`; and on `ocr-requests`;
+- the exchange role (read, write, create, delete; no container actions) on `ocr-out` and `ocr-quarantine`;
+- Message Processor on `ocr-deadletter`, Message Sender on `ocr-priority` and `ocr-bulk`, and Queue Data Reader on all three;
+- Cosmos Data Contributor on `ops` only, Monitoring Metrics Publisher, and AcrPull to install the binary.
+
+The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); traces and metrics go to the environment's Application Insights as before. The two alerts below read the Azure job's console logs, so they stay quiet while the pickup runs on-prem.
+
 Each run:
 
 1. Deletes sources that an earlier run imported or quarantined but stopped before deleting. Its import record (`curated/ocr-local/import/<run>.json`) lists them with their ETags.
