@@ -526,6 +526,19 @@ row, and the export checks under the `ocr-sync` lock that the row is still the
 outstanding one (`ocr_local::boinc::adopt`). `collect` then imports against that
 row exactly as it does for the node's pages.
 
+### A page that fails for good
+
+When a queue-fed page's workunit fails for good (BOINC's error mask is set: too many error
+results, or no output), `collect` marks its journal `failed`. It can't simply go back to its
+queue: the copy would be the same job, with the same workunit name, which BOINC already has.
+By default the tick stops and names the page and its job. With `--dead-letter-failed` (#1154)
+the controller runs the hand-off `dead-letter` step instead. That step puts a v2 `permanent`
+dead letter on `ocr-deadletter`, keeping the message, deletes the message with the claim's pop
+receipt, and marks the claim `ended: dead_lettered`. The controller records the job in its
+state and passes over its journal after that; the journal stays in `dispatch/`. `ocr-sync`
+drains the dead letter into the ledger. The flag needs the on-prem host's Message Sender role
+on `ocr-deadletter`.
+
 ### The queue message's life
 
 | What happens                                               | The message                                                                                                                                                                                                                                 |

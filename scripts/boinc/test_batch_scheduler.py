@@ -828,6 +828,9 @@ class QueueFake(Fake):
         self.actions.append(("release", sorted(doc_ids)))
         self.released += doc_ids
 
+    def dead_letter(self, doc_ids):
+        self.actions.append(("dead-letter", sorted(doc_ids)))
+
     def export(self, pages, job_ids=()):
         by_batch = {}
         for page in pages:
@@ -855,6 +858,35 @@ class QueueModeTests(unittest.TestCase):
     def tick(self):
         return batch.tick(self.config, self.state, self.fake,
                           lambda: self.saved.append(copy.deepcopy(self.state)), NOW)
+
+    def test_a_page_that_failed_for_good_stops_the_tick_or_is_dead_lettered(self):
+        # #1154: without --dead-letter-failed the tick stops and names the page.
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.terminal = True
+        with self.assertRaisesRegex(ValueError, r"terminal BOINC failure: sn12345678/1900-01-01/ed-1/seq-1 .*--dead-letter-failed"):
+            self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter"])
+        # With it, both failed pages go to ocr-deadletter once, and the feed goes on.
+        self.fake.terminal = False
+        before = len(self.fake.actions)
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
+        # Not held: the feed claims and exports pages in their place.
+        after = self.fake.actions[before:]
+        self.assertTrue([a for a in after if a[0] == "claim"], after)
+        self.assertTrue([a for a in after if a[0] == "export"], after)
+        letters = [a for a in self.fake.actions if a[0] == "dead-letter"]
+        self.assertEqual(letters, [("dead-letter", ["sn12345678_1900-01-01_ed-1_seq-1",
+                                                    "sn12345678_1900-01-01_ed-1_seq-2"])])
+        self.assertEqual(len(self.state["dead_lettered"]), 2)
+        # The dead-lettered pages are not pending.
+        self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1",
+                         [page for page, record in batch.owned_records(self.config, self.fake.records()).items()
+                          if record["stage"] not in ("published", "failed")])
+        self.assertIn("selected", event)
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
+        self.assertEqual(len([a for a in self.fake.actions if a[0] == "dead-letter"]), 1)
 
     def test_claims_only_what_it_can_start_then_pushes_exports_and_submits(self):
         first = self.tick()

@@ -1426,6 +1426,15 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         r = self.handoff("release", QUEUE_URL="https://usnmst.queue.core.windows.net", HANDOFF_DOCS="a b")
         self.assertNotEqual(r.returncode, 0)
 
+    def test_handoff_dead_letter(self):
+        r = self.handoff("dead-letter", QUEUE_URL="https://usnmst.queue.core.windows.net",
+                         HANDOFF_DOCS="sn83045462_1890-05-03_ed-1_seq-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = self.calls()
+        self.assertIn("claim dead-letter --handoff-url https://usnmst.blob.core.windows.net/boinc-handoff", call)
+        self.assertIn("--doc-id sn83045462_1890-05-03_ed-1_seq-1 --error BOINC workunit failed for good", call)
+        self.assertNotEqual(self.handoff("dead-letter", HANDOFF_DOCS="a_b").returncode, 0)
+
     def test_handoff_export_with_claims_downloads_each_claim_first(self):
         self.stub(self.COPY_STUB)
         r = self.handoff(

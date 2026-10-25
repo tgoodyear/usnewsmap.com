@@ -2471,6 +2471,95 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_page_that_failed_for_good_is_dead_lettered() {
+        // #1154: the dead letter goes to ocr-deadletter and the message is deleted, so the page
+        // (which would come back as the same job and workunit) isn't taken again.
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        let q = f.fx.stores.queue.as_ref();
+        assert_eq!(
+            claim::dead_letter(f.handoff.as_ref(), q, DOC, "BOINC workunit failed for good")
+                .await
+                .unwrap(),
+            claim::DeadLettered::Done
+        );
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        let letters = q.peek(usnm_store::queue::DEADLETTER, 32).await.unwrap();
+        assert_eq!(letters.len(), 1);
+        let letter = usnm_ocr_contract::message::decode_dead_letter(&letters[0]).unwrap();
+        assert_eq!(
+            letter.cause,
+            Some(usnm_ocr_contract::message::Cause::Permanent)
+        );
+        assert_eq!(letter.from, BULK);
+        assert_eq!(letter.message.as_ref(), Some(&f.message));
+        // Again: the claim is ended, nothing more goes.
+        assert_eq!(
+            claim::dead_letter(f.handoff.as_ref(), q, DOC, "again")
+                .await
+                .unwrap(),
+            claim::DeadLettered::Already
+        );
+        assert_eq!(
+            q.peek(usnm_store::queue::DEADLETTER, 32)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!claim::release(f.handoff.as_ref(), q, DOC).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_released_claim_is_not_dead_lettered() {
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        let q = f.fx.stores.queue.as_ref();
+        assert!(claim::release(f.handoff.as_ref(), q, DOC).await.unwrap());
+        assert!(claim::dead_letter(f.handoff.as_ref(), q, DOC, "x")
+            .await
+            .is_err());
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_dead_letter_whose_lease_ran_out_stays_unsettled() {
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(1)).await;
+        publish_claim(&f, &claims).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let q = f.fx.stores.queue.as_ref();
+        // The lease ran out: the message is back on its queue.
+        assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
+        for _ in 0..2 {
+            assert_eq!(
+                claim::dead_letter(f.handoff.as_ref(), q, DOC, "failed for good")
+                    .await
+                    .unwrap(),
+                claim::DeadLettered::LeaseLost
+            );
+        }
+        // One dead letter only, and the copy is still there for the operator.
+        assert_eq!(
+            q.peek(usnm_store::queue::DEADLETTER, 32)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn an_answered_page_is_deleted_and_a_released_claim_goes_back() {
         let f = fed(true).await;
         let claims = f.fx.tmp.path().join("claims");

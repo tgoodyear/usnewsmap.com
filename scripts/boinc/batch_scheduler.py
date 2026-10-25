@@ -542,7 +542,8 @@ class ClaimFailed(RuntimeError):
 # minute of the hand-off job's 30-minute timeout.
 EXPORT_BATCHES = 20
 
-ONPREM_HANDOFF = {"claim": ("claim", "release"), "collect": ("collect",), "export": ("export",)}
+ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("collect",),
+                  "export": ("export",)}
 
 
 class Transport:
@@ -812,6 +813,11 @@ class Transport:
     @timed("release")
     def release(self, doc_ids):
         self.step("handoff", "release", HANDOFF_DOCS=",".join(doc_ids))
+
+    @timed("dead-letter")
+    def dead_letter(self, doc_ids):
+        """Pages whose workunit failed for good go to ocr-deadletter (#1154)."""
+        self.step("handoff", "dead-letter", HANDOFF_DOCS=",".join(doc_ids))
 
     @timed("submit")
     def submit(self, job_id):
@@ -1337,7 +1343,7 @@ def held_results(state, held_jobs, now):
     return len(since), int(max((now - at for at in since.values()), default=0))
 
 
-def tick(config, state, transport, persist, now=None, *, drain=False,
+def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None):
     if config.get("app") == SURYA_APP_NAME:
         return surya_tick(config, state, transport, persist, now, drain=drain,
@@ -1381,8 +1387,31 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     selected = state.setdefault("selected", {})
     for page in owned:
         selected.setdefault(page, now)
-    held_jobs = {record["job"]["id"] for record in owned.values() if record["stage"] != "published"
+    held_jobs = {record["job"]["id"] for record in owned.values()
+                 if record["stage"] not in ("published", "failed")
                  and server.get(record["job"]["id"], {}).get("spool")}
+
+    def settle_failed(owned):
+        """A page whose BOINC workunit failed for good stops the tick, naming it, unless
+        --dead-letter-failed sends it to ocr-deadletter (#1154): released, it would come back as
+        the same job and workunit. A dead-lettered job is recorded and passed over after."""
+        letters = state.setdefault("dead_lettered", {})
+        failed = {page: record for page, record in owned.items()
+                  if record["stage"] == "failed" and record["job"]["id"] not in letters}
+        if not failed:
+            return
+        names = ", ".join(f"{page} (job {record['job']['id'][:12]})" for page, record in sorted(failed.items()))
+        require(dead_letter_failed and feed is not None,
+                f"terminal BOINC failure: {names}; dead-letter it with --dead-letter-failed "
+                "(#1154) or reconcile it by hand")
+        docs = sorted(page.replace("/", "_") for page in failed)
+        for i in range(0, len(docs), 100):  # the step takes 100 doc ids at most
+            transport.dead_letter(docs[i:i + 100])
+        for record in failed.values():
+            letters[record["job"]["id"]] = int(now)
+        persist()
+
+    settle_failed(owned)
     held_results(state, held_jobs, now)
     persist()
     # Before collection: a host admitted now has its held results published by this tick's
@@ -1412,7 +1441,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         remote = server.get(job_id)
         require(not remote or remote["stage"] != "submitting",
                 "uncertain BOINC submission; reconcile explicitly, never automatically resubmit")
-        require(record["stage"] != "failed", "terminal failed page; operator investigation required")
+        if record["stage"] == "failed":
+            continue  # dead-lettered: settle_failed passed it
         if record["stage"] != "published" and remote and remote["spool"] and len(to_collect) < config["batch_size"]:
             spool = remote["spool"]
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
@@ -1427,8 +1457,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
     if count:
         records = transport.records()
         owned = owned_records(config, records)
-    require(not any(record["stage"] == "failed" for record in owned.values()),
-            "terminal BOINC failure; no replacement workload will be manufactured")
+    settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
     cohort_info = resolve_watermarks(
         config, snapshot, status,
@@ -1480,7 +1509,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
-    held = sum(record["stage"] != "published" and
+    held = sum(record["stage"] not in ("published", "failed") and
                bool(server.get(record["job"]["id"], {}).get("spool")) for record in owned.values())
 
     if high_target == 0:
@@ -1618,7 +1647,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
                 alerts.append({"code": "gold_onboarding_failed", "scope": run["scope"], "step": step,
                                "error": outcome})
     held_count, oldest_held = held_results(state, {
-        record["job"]["id"] for record in owned.values() if record["stage"] != "published"
+        record["job"]["id"] for record in owned.values() if record["stage"] not in ("published", "failed")
         and server.get(record["job"]["id"], {}).get("spool")}, now)
 
     published = sum(record["stage"] == "published" for record in owned.values())
@@ -1638,7 +1667,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),
         "oldest_pending_seconds": int(max((now - at for page, at in selected.items()
-                                          if page not in owned or owned[page]["stage"] != "published"),
+                                          if page not in owned
+                                          or owned[page]["stage"] not in ("published", "failed")),
                                          default=0)),
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
@@ -1694,6 +1724,10 @@ def main(argv=None):
                         help="spool out a tick's results in one bridge execution (needs spool-out with HANDOFF_SPOOLS)")
     parser.add_argument("--batch-collect", action="store_true",
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
+    parser.add_argument("--dead-letter-failed", action="store_true",
+                        help="send a queue-fed page whose BOINC workunit failed for good to ocr-deadletter and go on "
+                             "(#1154; needs the hand-off identity's sender role on ocr-deadletter); without it such a "
+                             "page stops the tick")
     parser.add_argument("--batch-export", action="store_true",
                         help="export a tick's pages from all their batches in one hand-off execution "
                              "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
@@ -1777,7 +1811,7 @@ def main(argv=None):
                 onprem_handoff=tuple(args.onprem_handoff),
                 timings=timings,
             )
-            tick_kwargs = {"drain": args.drain}
+            tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.low_watermark is not None:
                 tick_kwargs["low_watermark"] = args.low_watermark
             if args.high_watermark is not None:

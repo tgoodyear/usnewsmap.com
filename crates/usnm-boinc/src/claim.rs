@@ -34,11 +34,11 @@ use std::{
 use usnm_ingest::ocr_local::{boinc::Snapshot, ledger::Ledger};
 use usnm_ocr_contract::{
     fetched,
-    message::{self, OcrMessage},
+    message::{self, Cause, DeadLetter, OcrMessage},
 };
 use usnm_ocr_worker::engine;
 use usnm_store::{
-    queue::{LeaseLost, Queue, Received, PRIORITY},
+    queue::{LeaseLost, Queue, Received, DEADLETTER, PRIORITY},
     ObjectStore,
 };
 
@@ -72,7 +72,8 @@ pub struct Claim {
     pub claimed_at: String,
     pub lease_until: String,
     pub ledger: LedgerRow,
-    /// `finished`, `released` or `lease_lost` once the message is gone.
+    /// `finished`, `released`, `lease_lost` or `dead_lettered` once the message is gone;
+    /// `dead_letter_lease_lost` while a dead-lettered page's message is back on its queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
 }
@@ -447,6 +448,74 @@ pub async fn release(
     claim.ended = Some("released".into());
     save(handoff, doc_id, &claim).await?;
     Ok(true)
+}
+
+/// What `dead_letter` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadLettered {
+    /// A dead letter went to `ocr-deadletter` and the message was deleted.
+    Done,
+    /// The claim was ended already: nothing to do.
+    Already,
+    /// The dead letter went, but the message had come back to its queue (the lease ran out):
+    /// it is there twice now, and an operator decides which stays.
+    LeaseLost,
+}
+
+/// A page whose BOINC workunit failed for good (#1154): put its message on `ocr-deadletter`
+/// as a v2 `permanent` dead letter, then delete it with the claim's pop receipt, so the page
+/// is not taken again. A release would not do: the copy is the same job, with the same
+/// workunit name, which BOINC already has. The dead letter goes first, so a failed delete
+/// leaves the page on both queues rather than on neither.
+pub async fn dead_letter(
+    handoff: &dyn ObjectStore,
+    queue: &dyn Queue,
+    doc_id: &str,
+    error: &str,
+) -> anyhow::Result<DeadLettered> {
+    let Some(mut claim) = load(handoff, doc_id).await? else {
+        bail!("no claim for {doc_id}");
+    };
+    match claim.ended.as_deref() {
+        Some("dead_lettered") => return Ok(DeadLettered::Already),
+        // The dead letter went but its message had come back: still the operator's to settle.
+        Some("dead_letter_lease_lost") => return Ok(DeadLettered::LeaseLost),
+        // Released or lost: the message isn't held, so it can't be taken off its queue here.
+        Some(other) => {
+            bail!("the claim for {doc_id} ended {other}; its message isn't held to dead-letter")
+        }
+        None => {}
+    }
+    let msg = claim.message()?;
+    let letter = DeadLetter::new(
+        &claim.queue,
+        &claim.message_id,
+        Some(&msg),
+        Cause::Permanent,
+        None,
+        None,
+        error,
+        claim.dequeue_count,
+        "usnm-boinc",
+    );
+    letter
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e} for {doc_id}"))?;
+    queue.send(DEADLETTER, &letter.encode()).await?;
+    let done = match queue.delete(&claim.received()).await {
+        Ok(()) => DeadLettered::Done,
+        Err(e) if e.downcast_ref::<LeaseLost>().is_some() => DeadLettered::LeaseLost,
+        Err(e) => return Err(e),
+    };
+    claim.ended = Some(
+        match done {
+            DeadLettered::LeaseLost => "dead_letter_lease_lost",
+            _ => "dead_lettered",
+        }
+        .into(),
+    );
+    save(handoff, doc_id, &claim).await?;
+    Ok(done)
 }
 
 /// The claim file for `job`'s page in a local directory (the hand-off job
