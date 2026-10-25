@@ -498,7 +498,10 @@ the pages already claimed and not yet started, so backpressure holds back claims
 and the messages stay visible to the node. Every claim is saved to the
 controller's state before its scan is pushed. The controller then pushes each
 page with `push-boinc-scan.sh --keep-page <batch>/<lccn>/<date>/<edition>/<seq>`,
-which finds the scan's format (`.jp2` or `.jpg`) on the scan server. A page with no
+which finds the scan's format (`.jp2` or `.jpg`) on the scan server, in the fetcher's
+keep set and then its buffer set, where a queued OCR request's scan is (#1055). A
+buffer scan is copied up under its keep name, so the export reads it like any other,
+and evicting it from the buffer later doesn't affect the hand-off. A page with no
 cached scan, despite the list, is given back with the `release` step and dropped.
 Export runs once per batch with `HANDOFF_CLAIMS=1`.
 
