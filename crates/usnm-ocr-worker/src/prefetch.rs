@@ -30,6 +30,18 @@
 //! `<out>/sources-<tag>.jsonl` ([`SourceLine`]); the sidecar is the same as
 //! for LoC's.
 //!
+//! **LoC's bucket** ([`crate::loc::bucket`], off unless the client is given
+//! it): LoC's own S3 copy of the batches it holds, asked before
+//! `tile.loc.gov` for the bag manifest and the METS (inside the client) and
+//! for a full-size JP2, before the mirrors. It is checked, recorded and
+//! counted as a mirror is (`sources-<tag>.jsonl` with source
+//! `ndnp-batches`, `fetched_bucket` and the status's `bucket`), and like a
+//! mirror's, a page it served neither ends a run of failures nor clears a
+//! cool-off: it says nothing about `tile.loc.gov`. Its sidecar has the
+//! URL and IIIF base the client placed the page under: for a batch whose
+//! manifest came from the bucket, the guess its name gives until LoC
+//! confirms or moves it ([`crate::loc::Bag::guessed`]).
+//!
 //! **Item errors** (#414): when loc.gov answers 503 for one issue's item
 //! while serving others ([`FetchError::Item`], the client's notes say when;
 //! on the storage service, the issue's METS or a JP2), the issue's pages
@@ -94,6 +106,7 @@ use usnm_ocr_contract::prefetch::{self, ManifestRow};
 pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
 use crate::batch;
+use crate::loc::bucket::{self, BucketStatus};
 use crate::loc::mirror::{self, Mirrors};
 use crate::loc::{issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, USER_AGENT};
 
@@ -389,6 +402,13 @@ pub struct Status {
     /// Each mirror's counts and hold, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mirrors: BTreeMap<String, mirror::MirrorStatus>,
+    /// Of `fetched_jp2`: JP2s whose bytes came from LoC's bucket, matching
+    /// the bag's md5.
+    #[serde(default)]
+    pub fetched_bucket: u64,
+    /// LoC's bucket's counts and hold, when it is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<BucketStatus>,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -598,6 +618,7 @@ struct Counts {
     fetched_jp2: AtomicU64,
     fetched_item_api: AtomicU64,
     fetched_mirror: AtomicU64,
+    fetched_bucket: AtomicU64,
     /// The keep set's scans of this run on disk: found there or fetched.
     keep_bytes: AtomicU64,
     /// The buffer set's scans on disk, all of them: the last count plus
@@ -766,7 +787,7 @@ struct Run {
     index: BTreeMap<String, Lines>,
     failures: BTreeMap<String, Lines>,
     /// Where mirrored pages' bytes came from, by resolution tag (only
-    /// with mirrors).
+    /// with mirrors or LoC's bucket).
     sources: BTreeMap<String, Lines>,
     stop_rx: watch::Receiver<bool>,
     started: Instant,
@@ -798,6 +819,8 @@ impl Run {
         if let Some(m) = &self.opts.mirrors {
             s.mirrors = m.status();
         }
+        s.fetched_bucket = c.fetched_bucket.load(Ordering::SeqCst);
+        s.bucket = self.loc.bucket_status();
         s.buffer_bytes = c.buffer_bytes.load(Ordering::SeqCst);
         s.bytes_on_disk = self.on_disk();
         let secs = self.started.elapsed().as_secs_f64();
@@ -1018,11 +1041,17 @@ impl Run {
         }
         let resolved = match self.loc.resolve(key, &row.batch, row.batch_version).await {
             Ok(Some(p)) => {
-                // LoC placed the page; a mirror's copy of the JP2, if it is
-                // the bag's, saves LoC the image.
-                if let (ImageSize::Full, Some(m)) = (size, &self.opts.mirrors) {
-                    if let Some((scan, hit)) = m.jp2(&row.batch, key, &p).await {
+                // LoC's bag and METS placed the page; a copy of the JP2 that
+                // is the bag's, from LoC's bucket and then a mirror, saves
+                // tile.loc.gov the image.
+                if size == ImageSize::Full {
+                    if let Some((scan, hit)) = self.loc.bucket_jp2(&p).await {
                         return Fetched::Scan(scan, storage_issue, Via::Mirror(hit));
+                    }
+                    if let Some(m) = &self.opts.mirrors {
+                        if let Some((scan, hit)) = m.jp2(&row.batch, key, &p).await {
+                            return Fetched::Scan(scan, storage_issue, Via::Mirror(hit));
+                        }
                     }
                 }
                 self.loc.scan_resolved(key, &p, size).await
@@ -1117,7 +1146,12 @@ impl Run {
                         c.fetched_item_api.fetch_add(1, Ordering::SeqCst);
                     }
                     Via::Mirror(hit) => {
-                        c.fetched_mirror.fetch_add(1, Ordering::SeqCst);
+                        if hit.source == bucket::NAME {
+                            &c.fetched_bucket
+                        } else {
+                            &c.fetched_mirror
+                        }
+                        .fetch_add(1, Ordering::SeqCst);
                         if let Some(lines) = self.sources.get(&t) {
                             lines.push(&SourceLine {
                                 doc_id: side.doc_id.clone(),
@@ -1138,8 +1172,9 @@ impl Run {
                         c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
                     }
                 };
-                // A mirror's page says nothing about LoC: the run of
-                // failures and the route's cool-off are LoC's to end.
+                // A page from LoC's bucket or a mirror says nothing about
+                // tile.loc.gov: the run of failures and the route's cool-off
+                // are tile.loc.gov's to end.
                 if !matches!(via, Via::Mirror(_)) {
                     self.streak_ok();
                     self.cooling.clear(&route)?;
@@ -1200,16 +1235,17 @@ enum Via {
     Storage,
     /// The IIIF JPEG, through the item API.
     ItemApi,
-    /// The JP2 from a mirror, matching the bag's md5.
+    /// The JP2 from LoC's bucket or a mirror, matching the bag's md5.
     Mirror(mirror::Hit),
 }
 
-/// A line of `sources-<tag>.jsonl`: where a mirrored page's bytes came
-/// from.
+/// A line of `sources-<tag>.jsonl`: where the bytes of a page from LoC's
+/// bucket or a mirror came from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceLine {
     pub doc_id: String,
-    /// The mirror's name ([`mirror::Partner::name`] or [`mirror::WAYBACK`]).
+    /// [`bucket::NAME`], or the mirror's name ([`mirror::Partner::name`] or
+    /// [`mirror::WAYBACK`]).
     pub source: String,
     /// The URL the bytes were read from.
     pub url: String,
@@ -1327,8 +1363,8 @@ pub async fn run(
                 t.clone(),
                 Lines::open(&opts.out.join(format!("failures-{t}.jsonl")))?,
             );
-            // Only full-size pages are asked of a mirror.
-            if opts.mirrors.is_some() && size == ImageSize::Full {
+            // Only full-size pages are asked of LoC's bucket or a mirror.
+            if (opts.mirrors.is_some() || loc.has_bucket()) && size == ImageSize::Full {
                 sources.insert(
                     t.clone(),
                     Lines::open(&opts.out.join(format!("sources-{t}.jsonl")))?,
@@ -2485,23 +2521,24 @@ mod tests {
         ManifestRow::new(&key, "xx_test", 1, Some("deu".into()), "detected", 0.5)
     }
 
+    fn batch_cfg(s: &StandIn, cache: &Path) -> LocConfig {
+        LocConfig {
+            api_gap: Duration::from_millis(10),
+            tile_gap: Duration::from_millis(10),
+            storage_gap: Duration::from_millis(10),
+            attempts: 3,
+            backoff: Duration::from_millis(10),
+            api_root: s.root.clone(),
+            iiif_root: s.iiif_root(),
+            storage_root: s.storage_root(),
+            batches_root: s.batches_root(),
+            batch_cache: Some(cache.to_owned()),
+            ..LocConfig::default()
+        }
+    }
+
     fn batch_loc(s: &StandIn, cache: &Path) -> Arc<LocClient> {
-        Arc::new(
-            LocClient::new(LocConfig {
-                api_gap: Duration::from_millis(10),
-                tile_gap: Duration::from_millis(10),
-                storage_gap: Duration::from_millis(10),
-                attempts: 3,
-                backoff: Duration::from_millis(10),
-                api_root: s.root.clone(),
-                iiif_root: s.iiif_root(),
-                storage_root: s.storage_root(),
-                batches_root: s.batches_root(),
-                batch_cache: Some(cache.to_owned()),
-                ..LocConfig::default()
-            })
-            .unwrap(),
-        )
+        Arc::new(LocClient::new(batch_cfg(s, cache)).unwrap())
     }
 
     #[tokio::test]
@@ -2610,6 +2647,10 @@ mod tests {
         let index =
             read_index(&std::fs::read_to_string(out.join("index-full.jsonl")).unwrap()).unwrap();
         assert_eq!(index.len(), 2);
+        // LoC's bucket is off by default: nothing about it is written.
+        assert_eq!((st.fetched_bucket, st.bucket.as_ref()), (0, None));
+        assert!(serde_json::to_value(&st).unwrap().get("bucket").is_none());
+        assert!(!out.join("sources-full.jsonl").exists());
         // One manifest, one METS, one JP2, one item, one IIIF image.
         assert_eq!(
             (
@@ -2869,5 +2910,287 @@ mod tests {
         let st: Status =
             serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
         assert_eq!((st.state.as_str(), st.fetched_mirror), ("failed", 1));
+    }
+
+    /// The batch in LoC's bucket.
+    const IN_BUCKET: &str = "/xx_test_ver01/";
+
+    fn bucket_loc(s: &StandIn, b: &StandIn, cache: &Path) -> Arc<LocClient> {
+        Arc::new(
+            LocClient::new(LocConfig {
+                bucket: Some(bucket::BucketConfig {
+                    root: format!("{}/", b.root),
+                    gap: Duration::from_millis(10),
+                    ..bucket::BucketConfig::default()
+                }),
+                ..batch_cfg(s, cache)
+            })
+            .unwrap(),
+        )
+    }
+
+    /// Two pages of sn1 in a batch at `at`.
+    fn two_pages(s: &StandIn, at: &str) {
+        s.add_issue(
+            at,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[
+                Page {
+                    seq: 1,
+                    frame: "0011",
+                    jp2: b"jp2 one",
+                },
+                Page {
+                    seq: 2,
+                    frame: "0010",
+                    jp2: b"jp2 two",
+                },
+            ],
+        );
+    }
+
+    /// The two pages in LoC's bucket, whose manifest carries its md5 as S3
+    /// does.
+    fn in_bucket(b: &StandIn) {
+        two_pages(b, IN_BUCKET);
+        let manifest = format!("{IN_BUCKET}manifest-md5.txt");
+        let md5 = batch::md5_hex(&b.file(&manifest).unwrap());
+        b.header(&manifest, "x-amz-meta-md5", &md5);
+    }
+
+    fn sources(out: &Path) -> Vec<SourceLine> {
+        std::fs::read_to_string(out.join("sources-full.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn locs_bucket_serves_a_public_batch_with_nothing_from_loc() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, b) = (StandIn::start().await, StandIn::start().await);
+        two_pages(&s, BATCH);
+        in_bucket(&b);
+        // A partner has page 1 too: the bucket is asked first.
+        let partner = StandIn::start().await;
+        partner.put("/lccn/sn1/1890-05-03/ed-1/seq-1.jp2", b"jp2 one".to_vec());
+        let rows: Vec<ManifestRow> = (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows.clone()),
+            out: out.clone(),
+            concurrency: 1,
+            mirrors: Some(partner_mirrors(&partner)),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts, bucket_loc(&s, &b, &dir.path().join("batches")), rx)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                st.fetched,
+                st.fetched_jp2,
+                st.fetched_bucket,
+                st.fetched_mirror,
+                st.fetched_item_api
+            ),
+            (2, 2, 2, 0, 0)
+        );
+        assert_eq!((s.hits(""), partner.hits("")), (0, 0), "nothing from LoC");
+        let bs = st.bucket.unwrap();
+        assert_eq!((bs.manifests, bs.mets, bs.jp2s, bs.requests), (1, 1, 2, 4));
+        // The sidecar is LoC's.
+        let jp2 = scan_path(&out, &rows[0], ImageSize::Full, ScanFormat::Jp2);
+        assert_eq!(std::fs::read(&jp2).unwrap(), b"jp2 one");
+        let side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&jp2)).unwrap()).unwrap();
+        assert_eq!(
+            side.loc_url,
+            format!("{}{BATCH}data/sn1/0001A/1890050301/0011.jp2", s.root)
+        );
+        assert_eq!(
+            side.iiif_base,
+            format!(
+                "{}service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0011",
+                s.iiif_root()
+            )
+        );
+        assert_eq!(
+            (side.md5.as_deref(), side.sha256.as_str()),
+            (
+                Some(batch::md5_hex(b"jp2 one").as_str()),
+                sha256(b"jp2 one").as_str()
+            )
+        );
+        // Where the bytes came from.
+        let got = sources(&out);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|l| l.source == bucket::NAME), "{got:?}");
+        let one = got.iter().find(|l| l.doc_id == rows[0].doc_id).unwrap();
+        assert_eq!(
+            one.url,
+            format!("{}{IN_BUCKET}data/sn1/0001A/1890050301/0011.jp2", b.root)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bucket_jp2_that_isnt_the_bags_goes_to_loc() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, b) = (StandIn::start().await, StandIn::start().await);
+        two_pages(&s, BATCH);
+        in_bucket(&b);
+        b.put(
+            &format!("{IN_BUCKET}data/sn1/0001A/1890050301/0010.jp2"),
+            b"cut short".to_vec(),
+        );
+        let rows: Vec<ManifestRow> = (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows.clone()),
+            out: out.clone(),
+            concurrency: 1,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts, bucket_loc(&s, &b, &dir.path().join("batches")), rx)
+            .await
+            .unwrap();
+        assert_eq!((st.fetched, st.fetched_jp2, st.fetched_bucket), (2, 2, 1));
+        assert_eq!(st.bucket.unwrap().md5_mismatches, 1);
+        // Only page 2's JP2 came from LoC, and it is LoC's.
+        assert_eq!((s.hits(""), s.hits("/0010.jp2")), (1, 1));
+        let jp2 = scan_path(&out, &rows[1], ImageSize::Full, ScanFormat::Jp2);
+        assert_eq!(std::fs::read(&jp2).unwrap(), b"jp2 two");
+        let got = sources(&out);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].doc_id, rows[0].doc_id);
+    }
+
+    #[tokio::test]
+    async fn a_batch_the_bucket_doesnt_hold_still_gets_its_mirrors() {
+        let dir = tempfile::tempdir().unwrap();
+        // The bucket has nothing of the batch.
+        let (s, b) = (StandIn::start().await, StandIn::start().await);
+        two_pages(&s, BATCH);
+        let partner = StandIn::start().await;
+        partner.put("/lccn/sn1/1890-05-03/ed-1/seq-1.jp2", b"jp2 one".to_vec());
+        let rows: Vec<ManifestRow> = (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: out.clone(),
+            concurrency: 1,
+            mirrors: Some(partner_mirrors(&partner)),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts, bucket_loc(&s, &b, &dir.path().join("batches")), rx)
+            .await
+            .unwrap();
+        assert_eq!(
+            (st.fetched, st.fetched_bucket, st.fetched_mirror),
+            (2, 0, 1)
+        );
+        let bs = st.bucket.unwrap();
+        assert_eq!((bs.requests, bs.private_batches), (1, 1));
+        assert_eq!(
+            (
+                s.hits("manifest-md5.txt"),
+                s.hits(".xml"),
+                s.hits("/0011.jp2"),
+                s.hits("/0010.jp2")
+            ),
+            (1, 1, 0, 1)
+        );
+        let got = sources(&out);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "partner");
+    }
+
+    #[tokio::test]
+    async fn a_batch_loc_keeps_elsewhere_has_the_redirects_urls_in_its_sidecars() {
+        // LoC keeps the batch under another awardee's directory than its
+        // name's first part; Chronicling America's redirect says where.
+        const ELSEWHERE: &str = "/storage-services/service/ndnp/yy/batch_xx_test_ver01/";
+        const REDIRECT: &str = "/data/batches/xx_test_ver01/manifest-md5.txt";
+        let issue = |at: &str, f: &str| format!("{at}data/sn1/0001A/1890050301/{f}");
+        // LoC is asked under the guessed URL for the METS (not in the
+        // bucket) or for the JP2s (the bucket's aren't the bag's).
+        for case in ["mets", "jp2"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (s, b) = (StandIn::start().await, StandIn::start().await);
+            two_pages(&s, ELSEWHERE);
+            s.redirect(REDIRECT, &format!("{ELSEWHERE}manifest-md5.txt"));
+            in_bucket(&b);
+            if case == "mets" {
+                b.script(&issue(IN_BUCKET, "1890050301.xml"), Scripted::Status(404));
+            } else {
+                for f in ["0010.jp2", "0011.jp2"] {
+                    b.put(&issue(IN_BUCKET, f), b"cut short".to_vec());
+                }
+            }
+            let rows: Vec<ManifestRow> =
+                (1..=2).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+            let out = dir.path().join("scans");
+            let opts = Options {
+                manifest: write_manifest(dir.path(), rows.clone()),
+                out: out.clone(),
+                concurrency: 1,
+                ..Options::default()
+            };
+            let (_tx, rx) = watch::channel(false);
+            let cache = dir.path().join("batches");
+            let st = run(opts, bucket_loc(&s, &b, &cache), rx).await.unwrap();
+            let from_bucket = if case == "mets" { 2 } else { 0 };
+            assert_eq!(
+                (
+                    st.fetched,
+                    st.fetched_jp2,
+                    st.fetched_bucket,
+                    st.fetched_item_api
+                ),
+                (2, 2, from_bucket, 0),
+                "{case}"
+            );
+            // Every sidecar names the batch where it is.
+            for (row, frame) in rows.iter().zip(["0011", "0010"]) {
+                let jp2 = scan_path(&out, row, ImageSize::Full, ScanFormat::Jp2);
+                let side: Sidecar =
+                    serde_json::from_slice(&std::fs::read(sidecar_path(&jp2)).unwrap()).unwrap();
+                assert_eq!(
+                    side.loc_url,
+                    format!("{}{}", s.root, issue(ELSEWHERE, &format!("{frame}.jp2"))),
+                    "{case}"
+                );
+                assert_eq!(
+                    side.iiif_base,
+                    format!(
+                        "{}service:ndnp:yy:batch_xx_test_ver01:data:sn1:0001A:1890050301:{frame}",
+                        s.iiif_root()
+                    ),
+                    "{case}"
+                );
+            }
+            // One lookup; the manifest never from LoC; the checked URL kept.
+            assert_eq!(
+                (
+                    s.hits(REDIRECT),
+                    s.hits(&format!("{ELSEWHERE}manifest-md5.txt")),
+                    s.hits(&format!("{BATCH}manifest-md5.txt"))
+                ),
+                (1, 0, 0),
+                "{case}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(cache.join("xx_test_ver01/url")).unwrap(),
+                format!("{}{ELSEWHERE}", s.root),
+                "{case}"
+            );
+            assert!(!cache.join("xx_test_ver01/url.guessed").exists(), "{case}");
+        }
     }
 }

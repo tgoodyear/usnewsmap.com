@@ -453,6 +453,21 @@ enum Command {
         /// Between requests to the Wayback Machine.
         #[arg(long, env = "USNM_PREFETCH_WAYBACK_GAP_MS", default_value_t = 5000)]
         wayback_gap_ms: u64,
+        /// LoC's own S3 bucket of NDNP batches
+        /// (`https://ndnp-batches.s3.amazonaws.com/`), asked before
+        /// tile.loc.gov for the bag manifest, the issue METS and the JP2 of
+        /// each batch it holds (1,074 of 3,010 batches, 38.1% of pages, on 24
+        /// October 2026), each checked as LoC's are. A manifest from it is
+        /// kept under the LoC URL the batch's name gives, marked as a guess
+        /// until LoC confirms it. One request at a time, outside the host's
+        /// LoC budget; anything it can't serve goes to LoC. Only an
+        /// amazonaws.com host. Empty: off (the default).
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
+        loc_bucket: Option<String>,
+        /// From the end of one request to LoC's bucket to the start of the
+        /// next; at least 6000.
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 6000)]
+        loc_bucket_gap_ms: u64,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
         #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
@@ -619,8 +634,18 @@ enum Command {
 mod cli_tests {
     use super::*;
 
+    /// Held by every test here that sets the environment: parsing reads
+    /// all of the flags' variables, and tests run in parallel.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn run_metadata_flag_and_environment_are_opt_in() {
+        let _env = env_lock();
         const NAME: &str = "USNM_OCR_RUN_METADATA_DIR";
         struct Restore(Option<std::ffi::OsString>);
         impl Drop for Restore {
@@ -669,6 +694,7 @@ mod cli_tests {
 
     #[test]
     fn drain_on_stop_can_be_enabled_through_environment() {
+        let _env = env_lock();
         struct RestoreEnv(Option<std::ffi::OsString>);
 
         impl Drop for RestoreEnv {
@@ -697,6 +723,71 @@ mod cli_tests {
             Command::Run { drain_on_stop, .. } => assert!(drain_on_stop),
             _ => panic!("expected run command"),
         }
+    }
+
+    #[test]
+    fn locs_bucket_is_off_unless_named_and_never_under_six_seconds_apart() {
+        let _env = env_lock();
+        const NAMES: [&str; 2] = [
+            "USNM_PREFETCH_LOC_BUCKET",
+            "USNM_PREFETCH_LOC_BUCKET_GAP_MS",
+        ];
+        struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (name, value) in self.0.drain(..) {
+                    match value {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let _restore = Restore(NAMES.map(|n| (n, std::env::var_os(n))).to_vec());
+        for n in NAMES {
+            std::env::remove_var(n);
+        }
+        let bucket = |extra: &[&str]| {
+            let args = [
+                "usnm-ocr-worker",
+                "prefetch",
+                "--manifest",
+                "m",
+                "--out",
+                "o",
+            ];
+            let cli = Cli::try_parse_from(args.iter().chain(extra)).unwrap();
+            match cli.command {
+                Command::Prefetch {
+                    loc_bucket,
+                    loc_bucket_gap_ms,
+                    ..
+                } => loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms),
+                _ => panic!("expected prefetch"),
+            }
+        };
+        // Off by default, and when empty.
+        assert!(bucket(&[]).unwrap().is_none());
+        assert!(bucket(&["--loc-bucket", ""]).unwrap().is_none());
+        // The flag, 6 s apart unless told more.
+        let root = usnm_ocr_worker::loc::bucket::ROOT;
+        let b = bucket(&["--loc-bucket", root]).unwrap().unwrap();
+        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(6)));
+        let b = bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "9000"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.gap, Duration::from_secs(9));
+        assert!(bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "0"]).is_err());
+        assert!(bucket(&["--loc-bucket", "https://tile.loc.gov/"]).is_err());
+        // The environment, as the unit sets it.
+        std::env::set_var(NAMES[0], root);
+        std::env::set_var(NAMES[1], "7000");
+        let b = bucket(&[]).unwrap().unwrap();
+        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(7)));
+        std::env::set_var(NAMES[1], "5999");
+        assert!(bucket(&[]).is_err());
+        std::env::set_var(NAMES[0], "");
+        assert!(bucket(&[]).unwrap().is_none(), "empty: off");
     }
 }
 
@@ -749,6 +840,18 @@ enum PrefetchOrder {
 enum Priority {
     User,
     Bulk,
+}
+
+/// LoC's bucket from `--loc-bucket` and `--loc-bucket-gap-ms`: `None` when
+/// the flag is absent or empty.
+fn loc_bucket_config(
+    root: Option<&str>,
+    gap_ms: u64,
+) -> anyhow::Result<Option<usnm_ocr_worker::loc::bucket::BucketConfig>> {
+    usnm_ocr_worker::loc::bucket::BucketConfig::at(
+        root.unwrap_or_default(),
+        Duration::from_millis(gap_ms),
+    )
 }
 
 /// Turns true on SIGTERM or Ctrl-C.
@@ -1016,6 +1119,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             mirrors,
             partner_gap_ms,
             wayback_gap_ms,
+            loc_bucket,
+            loc_bucket_gap_ms,
             awardees,
         } => {
             let mirrors = {
@@ -1030,8 +1135,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     Some(Arc::new(usnm_ocr_worker::loc::mirror::Mirrors::new(cfg)?))
                 }
             };
+            let bucket = loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms)?;
             let loc = Arc::new(LocClient::new(LocConfig {
                 global_pacer: loc_global_pacer,
+                bucket,
                 api_gap: Duration::from_millis(api_gap_ms),
                 tile_gap: Duration::from_millis(tile_gap_ms),
                 storage_gap: Duration::from_millis(storage_gap_ms),

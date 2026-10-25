@@ -227,9 +227,10 @@ struct Counts {
 }
 
 /// One request at a time to a mirror host, each at least `gap` after the
-/// last one ended, and the host's hold.
+/// last one ended, and the host's hold. LoC's bucket ([`super::bucket`])
+/// has one too.
 #[derive(Debug)]
-struct Gate {
+pub(super) struct Gate {
     gap: Duration,
     one: Semaphore,
     /// No request before this: the gap after the last one, or a hold.
@@ -238,7 +239,7 @@ struct Gate {
 }
 
 impl Gate {
-    fn new(gap: Duration) -> Self {
+    pub(super) fn new(gap: Duration) -> Self {
         Self {
             gap,
             one: Semaphore::new(1),
@@ -247,12 +248,12 @@ impl Gate {
         }
     }
 
-    fn held_until(&self) -> Option<Instant> {
+    pub(super) fn held_until(&self) -> Option<Instant> {
         let held = *self.held.lock().expect("gate lock");
         held.filter(|h| *h > Instant::now())
     }
 
-    fn hold(&self, d: Duration) {
+    pub(super) fn hold(&self, d: Duration) {
         let until = Instant::now() + d;
         let mut held = self.held.lock().expect("gate lock");
         *held = Some(held.map_or(until, |h| h.max(until)));
@@ -264,7 +265,7 @@ impl Gate {
     /// held: the host is then the caller's alone until the permit drops,
     /// and [`Gate::done`] must be called when its request ends. Nothing is
     /// reserved for a caller who doesn't get its turn.
-    async fn turn(&self, deadline: Instant) -> Option<SemaphorePermit<'_>> {
+    pub(super) async fn turn(&self, deadline: Instant) -> Option<SemaphorePermit<'_>> {
         if self.held_until().is_some() {
             return None;
         }
@@ -286,9 +287,25 @@ impl Gate {
     }
 
     /// A request ended: the next waits the gap.
-    fn done(&self) {
+    pub(super) fn done(&self) {
         let mut next = self.next.lock().expect("gate lock");
         *next = (*next).max(Instant::now() + self.gap);
+    }
+
+    /// A request starts in this turn: [`Self::done`] runs when the guard
+    /// drops, so one the caller gave up on midway still makes the next
+    /// wait the gap. Drop it before the turn's permit.
+    pub(super) fn sending(&self) -> Sending<'_> {
+        Sending(self)
+    }
+}
+
+/// A request in its turn ([`Gate::sending`]).
+pub(super) struct Sending<'a>(&'a Gate);
+
+impl Drop for Sending<'_> {
+    fn drop(&mut self) {
+        self.0.done();
     }
 }
 
@@ -357,6 +374,10 @@ impl Mirrors {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
+            // No idle connections kept: requests are seconds apart, and a
+            // connection the server closed meanwhile fails the next request
+            // ("error sending request"), which would hold the host.
+            .pool_max_idle_per_host(0)
             // Followed by hand, within the host, each paced and counted.
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
@@ -605,8 +626,9 @@ impl Mirrors {
             c.skipped_held.fetch_add(1, Ordering::SeqCst);
             return Tried::Skipped;
         };
+        let sending = host.gate.sending();
         let tried = self.send(host, url, max, timeout).await;
-        host.gate.done();
+        drop(sending);
         tried
     }
 
@@ -634,7 +656,9 @@ impl Mirrors {
             let sent = Instant::now();
             let resp = match self.http.get(&url).timeout(timeout).send().await {
                 Ok(r) => r,
-                Err(e) => return hold(self.cfg.backoff, &url, e.without_url().to_string()),
+                Err(e) => {
+                    return hold(self.cfg.backoff, &url, super::error_chain(&e.without_url()))
+                }
             };
             let status = resp.status();
             if status.is_success() {

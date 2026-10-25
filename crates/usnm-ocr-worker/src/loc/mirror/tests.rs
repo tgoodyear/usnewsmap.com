@@ -637,3 +637,20 @@ async fn a_hold_set_while_a_caller_waits_out_the_gap_still_holds() {
     assert!(!waiting.await.unwrap(), "not sent during the hold");
     assert_eq!(m.status()["partner"].requests, 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_request_given_up_midway_still_makes_the_next_wait_the_gap() {
+    let gate = Gate::new(Duration::from_secs(5));
+    let wait = Duration::from_secs(30);
+    // The caller gives up while its request is out: its future drops.
+    let given_up = tokio::time::timeout(Duration::from_secs(1), async {
+        let _turn = gate.turn(Instant::now() + wait).await.unwrap();
+        let _sending = gate.sending();
+        std::future::pending::<()>().await;
+    })
+    .await;
+    assert!(given_up.is_err());
+    let t = Instant::now();
+    let _turn = gate.turn(Instant::now() + wait).await.unwrap();
+    assert!(t.elapsed() >= Duration::from_secs(5), "{:?}", t.elapsed());
+}

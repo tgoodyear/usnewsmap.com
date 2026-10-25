@@ -1,9 +1,10 @@
-//! The tests of [`super`], in four groups, with the stand-ins they share.
+//! The tests of [`super`], in five groups, with the stand-ins they share.
 
 use super::*;
 use crate::standin::StandIn;
 
 mod batch;
+mod bucket;
 mod challenge;
 mod item_errors;
 mod pacer_and_route;
@@ -32,6 +33,7 @@ pub(super) fn batch_client(
         item_probes: true,
         html_is_block: false,
         global_pacer: None,
+        bucket: None,
     })
     .unwrap()
 }

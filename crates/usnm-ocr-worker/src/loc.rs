@@ -10,6 +10,24 @@
 //! the issue, its METS or the page isn't there, and only then does the
 //! caller go to the item API.
 //!
+//! **LoC's bucket** ([`bucket`], off unless [`LocConfig::bucket`] names
+//! it): LoC's own S3 copy of the batches. When it is on, the bag manifest
+//! and each issue METS are asked of it first, for the batches it holds, and
+//! [`LocClient::bucket_jp2`] gives a page's JP2 from it. Each is checked as
+//! LoC's would be; the bucket is paced and held on its own, never in LoC's
+//! pacers or budget, and anything it can't serve (a private batch, a
+//! missing file, a mismatch, a hold) goes to LoC as before. The bucket's
+//! keys don't name the awardee, so a manifest from it is kept under the
+//! storage URL the batch's name gives as a guess ([`Bag::guessed`], the
+//! `url.guessed` file beside the manifest, not `url`), used only while the
+//! bucket is on: without it, the batch is looked up on LoC as if nothing
+//! were on disk. A METS or JP2 LoC serves under a guessed URL, matching
+//! the bag's md5, confirms it: the guess is kept as checked. When LoC
+//! answers 404 for a file under a guessed URL, Chronicling America's
+//! redirect is asked where the batch is (as for a manifest LoC doesn't
+//! have at the guessed path), and the batch's URL is moved there and kept
+//! as checked before anything goes to the item API.
+//!
 //! **The item API route** (the worker's, and the fetcher's fallback): for
 //! each issue, one request to loc.gov's item JSON
 //! (`https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json`) gives every
@@ -62,6 +80,7 @@ use usnm_core::ids::PageKey;
 use crate::batch::{self, BagIndex, Md5Sum};
 use crate::telemetry::Metrics;
 
+pub mod bucket;
 pub mod global;
 pub mod mirror;
 mod pacer;
@@ -100,6 +119,16 @@ pub const ITEM_ERROR_WINDOW: Duration = Duration::from_secs(30 * 60);
 /// not the items: the next one holds the server.
 pub const ITEM_ERROR_TITLES: usize = 3;
 
+/// Beside a batch's kept manifest: its directory on the storage service, as
+/// LoC served the manifest there or Chronicling America's redirect named it.
+const URL_FILE: &str = "url";
+/// Beside a manifest from LoC's bucket instead: only the guess the batch's
+/// name gives ([`Bag::guessed`]).
+const GUESSED_URL_FILE: &str = "url.guessed";
+/// A guess LoC's checked URL later replaced: the batch's earlier sidecars,
+/// fetched under the guess, name it.
+const WRONG_URL_FILE: &str = "url.wrong";
+
 type Pages = Arc<BTreeMap<u16, String>>;
 
 /// A batch's bag manifest, and where its files are.
@@ -109,6 +138,10 @@ pub struct Bag {
     pub dir: String,
     /// The batch's directory on the storage service, ending in `/`.
     pub url: String,
+    /// Whether `url` is only the guess the batch's name gives
+    /// (`<aw>/batch_<dir>/`), under which a manifest from LoC's bucket was
+    /// kept, with nothing from LoC to confirm it yet.
+    pub guessed: bool,
     pub index: BagIndex,
 }
 
@@ -167,6 +200,15 @@ pub struct LocClient {
     /// By `<batch dir>/<lccn>/<issue dir>`; `None` for an issue whose METS
     /// isn't there.
     mets: moka::future::Cache<String, Option<Pages>>,
+    /// LoC's bucket, when configured.
+    bucket: Option<bucket::Bucket>,
+    /// By batch directory: where Chronicling America's redirect put a
+    /// batch whose URL was a guess ([`LocClient::relocate`]); `None` where
+    /// it named nowhere on the storage service.
+    located: moka::future::Cache<String, Option<String>>,
+    /// Batches whose guessed URL is being kept as checked right now
+    /// ([`LocClient::confirm`]).
+    confirming: Mutex<std::collections::HashSet<String>>,
     health: Mutex<ApiHealth>,
     storage_health: Mutex<ApiHealth>,
     metrics: Metrics,
@@ -202,6 +244,28 @@ async fn write_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
     let part = PathBuf::from(part);
     tokio::fs::write(&part, body).await?;
     tokio::fs::rename(&part, path).await
+}
+
+/// Keep `url` as the checked URL of the batch kept in `dir`, in place of
+/// any guess. A guess that was right goes; a wrong one is kept as
+/// `url.wrong`, the record of which sidecars name it.
+async fn write_checked_url(dir: &Path, url: &str) -> std::io::Result<()> {
+    write_file(&dir.join(URL_FILE), url.as_bytes()).await?;
+    let guessed = dir.join(GUESSED_URL_FILE);
+    match tokio::fs::read_to_string(&guessed).await {
+        Ok(g) if g.trim() != url => {
+            tracing::warn!(
+                dir = %dir.display(),
+                guess = g.trim(),
+                url,
+                "a batch's guessed URL was wrong: the sidecars fetched under it name the guess"
+            );
+            tokio::fs::rename(&guessed, dir.join(WRONG_URL_FILE)).await
+        }
+        Ok(_) => tokio::fs::remove_file(&guessed).await,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 impl LocClient {
@@ -263,8 +327,14 @@ impl LocClient {
                 .max_capacity(4096)
                 .time_to_live(Duration::from_secs(3600))
                 .build(),
+            located: moka::future::Cache::builder()
+                .max_capacity(4096)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            confirming: Mutex::new(std::collections::HashSet::new()),
             health: Mutex::new(ApiHealth::default()),
             storage_health: Mutex::new(ApiHealth::default()),
+            bucket: cfg.bucket.clone().map(bucket::Bucket::new).transpose()?,
             cfg,
             http,
             http_here,
@@ -764,16 +834,7 @@ impl LocClient {
     pub async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
         let url = image_url(&base, size);
         let got = self.get(&url, Server::Tile, MAX_IMAGE_BYTES, None).await?;
-        Ok(Scan {
-            iiif_base: base,
-            url,
-            format: ScanFormat::Jpeg,
-            bytes: got.body,
-            md5: None,
-            download: got.took,
-            from_cache: false,
-            evict: None,
-        })
+        Ok(jpeg(base, url, got))
     }
 
     /// Where the batch's files go in the disk cache.
@@ -918,6 +979,16 @@ impl LocClient {
         ) else {
             return;
         };
+        // Only from the batch's checked URL: a JP2 fetched under a guess
+        // (its manifest came from LoC's bucket), right or wrong, may name a
+        // METS LoC doesn't have there.
+        let kept = cache.join(bdir);
+        match std::fs::read_to_string(kept.join(URL_FILE)) {
+            Ok(u) if !jp2_url.starts_with(u.trim()) => return,
+            Ok(_) => {}
+            Err(_) if kept.join(GUESSED_URL_FILE).is_file() => return,
+            Err(_) => {}
+        }
         for name in [format!("{issue}.xml"), format!("{issue}_1.xml")] {
             if cache
                 .join(bdir)
@@ -932,33 +1003,64 @@ impl LocClient {
         }
     }
 
+    /// A batch URL kept in `path`, if it is one under the storage root.
+    async fn url_on_disk(&self, path: &Path) -> Option<String> {
+        let url = tokio::fs::read_to_string(path).await.ok()?;
+        let url = url.trim();
+        (url.starts_with(&self.cfg.storage_root) && url.ends_with('/')).then(|| url.to_owned())
+    }
+
     async fn load_bag(&self, dir: &str) -> Result<Option<Arc<Bag>>, FetchError> {
         let cache = self.cache_dir(dir);
+        // A checked URL on disk, if there is one.
+        let mut checked = None;
         if let Some(c) = &cache {
-            let text = tokio::fs::read_to_string(c.join("manifest-md5.txt")).await;
-            let url = tokio::fs::read_to_string(c.join("url")).await;
-            if let (Ok(text), Ok(url)) = (text, url) {
-                let url = url.trim().to_owned();
-                if url.starts_with(&self.cfg.storage_root) && url.ends_with('/') {
+            checked = self.url_on_disk(&c.join(URL_FILE)).await;
+            // A guess is used only while LoC's bucket is: without it, the
+            // batch is looked up on LoC as if nothing were on disk.
+            let guessed = match (&checked, &self.bucket) {
+                (None, Some(_)) => self.url_on_disk(&c.join(GUESSED_URL_FILE)).await,
+                _ => None,
+            };
+            let url = checked
+                .clone()
+                .map(|u| (u, false))
+                .or(guessed.map(|u| (u, true)));
+            if let Some((url, guessed)) = url {
+                if let Ok(text) = tokio::fs::read_to_string(c.join("manifest-md5.txt")).await {
                     return Ok(Some(Arc::new(Bag {
                         dir: dir.to_owned(),
                         url,
+                        guessed,
                         index: BagIndex::parse(&text),
                     })));
                 }
             }
         }
         let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
-        let mut found = self
-            .fetch(
-                &format!("{guess}manifest-md5.txt"),
-                Server::Storage,
-                MAX_BAG_BYTES,
-                None,
-                true,
-            )
-            .await?
-            .map(|g| (guess.clone(), g));
+        // LoC's bucket first, for a batch it holds: the same file. Its keys
+        // don't name the awardee, so unless a checked URL is on disk, the
+        // batch's URL on LoC is only the guess its name gives, and is kept
+        // as one.
+        let mut found = match &self.bucket {
+            Some(b) => b.manifest(dir).await.map(|body| match &checked {
+                Some(url) => (url.clone(), body, bucket::NAME, false),
+                None => (guess.clone(), body, bucket::NAME, true),
+            }),
+            None => None,
+        };
+        if found.is_none() {
+            found = self
+                .fetch(
+                    &format!("{guess}manifest-md5.txt"),
+                    Server::Storage,
+                    MAX_BAG_BYTES,
+                    None,
+                    true,
+                )
+                .await?
+                .map(|g| (guess.clone(), g.body, Server::Storage.name(), false));
+        }
         if found.is_none() {
             // Chronicling America knows where the batch is: follow it, but
             // only onto the storage service.
@@ -972,7 +1074,7 @@ impl LocClient {
                         found = self
                             .fetch(&to, Server::Storage, MAX_BAG_BYTES, None, true)
                             .await?
-                            .map(|g| (u.to_owned(), g));
+                            .map(|g| (u.to_owned(), g.body, Server::Storage.name(), false));
                     }
                     None => {
                         tracing::warn!(
@@ -984,18 +1086,20 @@ impl LocClient {
                 }
             }
         }
-        let Some((url, got)) = found else {
+        let Some((url, body, from, guessed)) = found else {
             tracing::warn!(
                 batch = dir,
                 "LoC has no manifest for this batch; its pages go through the item API"
             );
             return Ok(None);
         };
-        let text = String::from_utf8_lossy(&got.body).into_owned();
+        let text = String::from_utf8_lossy(&body).into_owned();
         let index = BagIndex::parse(&text);
         tracing::info!(
             batch = dir,
             url,
+            url_guessed = guessed,
+            from,
             issues = index.issues(),
             jp2s = index.jp2s,
             conflicts = index.conflicts,
@@ -1004,7 +1108,11 @@ impl LocClient {
         if let Some(c) = &cache {
             let w = async {
                 write_file(&c.join("manifest-md5.txt"), text.as_bytes()).await?;
-                write_file(&c.join("url"), url.as_bytes()).await
+                if guessed {
+                    write_file(&c.join(GUESSED_URL_FILE), url.as_bytes()).await
+                } else {
+                    write_checked_url(c, &url).await
+                }
             };
             if let Err(e) = w.await {
                 tracing::warn!(batch = dir, error = %e, "can't keep the batch manifest on disk");
@@ -1013,8 +1121,164 @@ impl LocClient {
         Ok(Some(Arc::new(Bag {
             dir: dir.to_owned(),
             url,
+            guessed,
             index,
         })))
+    }
+
+    /// Where batch `bag` is, when its URL is only a guess and LoC answered
+    /// 404 for a file under it: Chronicling America's redirect
+    /// ([`Self::locate`], one paced request, as for a manifest LoC doesn't
+    /// have at the guessed path), asked once per batch at a time and
+    /// remembered for an hour. Its answer becomes the batch's checked URL,
+    /// on disk and in memory. `Some` only when the batch is elsewhere; when
+    /// the redirect confirms the guess, or names nowhere on the storage
+    /// service, the 404 stands.
+    async fn relocate(&self, bag: &Bag) -> Result<Option<Arc<Bag>>, FetchError> {
+        if !bag.guessed {
+            return Ok(None);
+        }
+        // Done already, for a caller that still has the guess.
+        if let Some(Some(now)) = self.bags.get(&bag.dir).await {
+            if !now.guessed {
+                return Ok((now.url != bag.url).then_some(now));
+            }
+        }
+        let dir = bag.dir.as_str();
+        let to = self
+            .located
+            .try_get_with(dir.to_owned(), async {
+                let via = format!("{}{dir}/manifest-md5.txt", self.cfg.batches_root);
+                let to = self.locate(&via).await?.and_then(|to| {
+                    to.strip_suffix("manifest-md5.txt")
+                        .filter(|u| u.starts_with(&self.cfg.storage_root))
+                        .map(str::to_owned)
+                });
+                if to.is_none() {
+                    tracing::warn!(
+                        batch = dir,
+                        url = bag.url,
+                        "LoC answered 404 under the guessed URL of a batch whose manifest came from LoC's bucket, and Chronicling America names no other place on the storage service; keeping the guess"
+                    );
+                }
+                Ok(to)
+            })
+            .await
+            .map_err(|e: Arc<FetchError>| e.cloned())?;
+        let Some(url) = to else {
+            return Ok(None);
+        };
+        let moved = url != bag.url;
+        if moved {
+            tracing::warn!(
+                batch = dir,
+                guessed = bag.url,
+                url,
+                "a batch whose manifest came from LoC's bucket isn't where its name says: moved to where Chronicling America's redirect says (pages of it already fetched keep the guessed URL in their sidecars)"
+            );
+        } else {
+            tracing::info!(
+                batch = dir,
+                url,
+                "Chronicling America confirms a batch's guessed URL"
+            );
+        }
+        if let Some(c) = self.cache_dir(dir) {
+            if let Err(e) = write_checked_url(&c, &url).await {
+                tracing::warn!(batch = dir, error = %e, "can't keep the batch's URL on disk");
+            }
+        }
+        let checked = Arc::new(Bag {
+            dir: bag.dir.clone(),
+            url,
+            guessed: false,
+            index: bag.index.clone(),
+        });
+        self.bags
+            .insert(bag.dir.clone(), Some(Arc::clone(&checked)))
+            .await;
+        Ok(moved.then_some(checked))
+    }
+
+    /// Keep batch `dir`'s guessed URL `url` as checked: LoC served one of
+    /// its files there, matching the bag's md5 (a METS in
+    /// [`Self::issue_frames`], a JP2 in [`Self::scan_resolved`]), as it
+    /// would the manifest. Only while the bag in memory is still that
+    /// guess, and once for the batch's pages in flight at once.
+    async fn confirm(&self, dir: &str, url: &str) {
+        let Some(Some(bag)) = self.bags.get(dir).await else {
+            return;
+        };
+        if !bag.guessed || bag.url != url {
+            return;
+        }
+        if !self.confirming.lock().unwrap().insert(dir.to_owned()) {
+            return;
+        }
+        tracing::info!(
+            batch = dir,
+            url,
+            "LoC serves a batch's files under its guessed URL; keeping it as checked"
+        );
+        if let Some(c) = self.cache_dir(dir) {
+            if let Err(e) = write_checked_url(&c, url).await {
+                tracing::warn!(batch = dir, error = %e, "can't keep the batch's URL on disk");
+            }
+        }
+        self.bags
+            .insert(
+                dir.to_owned(),
+                Some(Arc::new(Bag {
+                    dir: dir.to_owned(),
+                    url: url.to_owned(),
+                    guessed: false,
+                    index: bag.index.clone(),
+                })),
+            )
+            .await;
+        self.confirming.lock().unwrap().remove(dir);
+    }
+
+    /// `page` where its batch is, when it was placed under its batch's
+    /// guessed URL, LoC answered 404 for it there, and the batch is
+    /// elsewhere ([`Self::relocate`]). Only with LoC's bucket, the one
+    /// source of guesses.
+    async fn moved(&self, page: &BatchPage) -> Result<Option<BatchPage>, FetchError> {
+        if self.bucket.is_none() {
+            return Ok(None);
+        }
+        let Some((dir, _)) = bucket::key(&self.cfg.storage_root, &page.url) else {
+            return Ok(None);
+        };
+        let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
+        let Some(rest) = page.url.strip_prefix(&guess) else {
+            return Ok(None);
+        };
+        let Some(bag) = self
+            .bags
+            .try_get_with(dir.to_owned(), async { self.load_bag(dir).await })
+            .await
+            .map_err(|e: Arc<FetchError>| e.cloned())?
+        else {
+            return Ok(None);
+        };
+        let to = if bag.guessed {
+            self.relocate(&bag).await?
+        } else {
+            // Moved already, after this page was placed under the guess.
+            (bag.url != guess).then_some(bag)
+        };
+        let Some(to) = to else {
+            return Ok(None);
+        };
+        let url = format!("{}{rest}", to.url);
+        Ok(
+            iiif_base(&self.cfg.iiif_root, &url).map(|iiif_base| BatchPage {
+                url,
+                iiif_base,
+                md5: page.md5,
+            }),
+        )
     }
 
     /// seq → frame for an issue of `bag`, from its METS (checked against
@@ -1037,8 +1301,11 @@ impl LocClient {
             .cache_dir(&bag.dir)
             .map(|c| c.join("mets").join(lccn).join(&name));
         let url = batch::file_url(&bag.url, lccn, &files.reel, dir, &name);
+        // Its path in the bag, for LoC's bucket.
+        let rel = batch::file_url("", lccn, &files.reel, dir, &name);
         self.mets
             .try_get_with(key, async {
+                let mut url = url;
                 let mut body = None;
                 if let Some(p) = &disk {
                     if let Ok(b) = tokio::fs::read(p).await {
@@ -1050,26 +1317,64 @@ impl LocClient {
                 let body = match body {
                     Some(b) => b,
                     None => {
-                        let Some(got) = self
-                            .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
-                            .await?
-                        else {
-                            tracing::warn!(url, "the issue's METS isn't there");
-                            return Ok(None);
+                        // LoC's bucket first, checked against the bag's md5
+                        // the same way.
+                        let from_bucket = match &self.bucket {
+                            Some(b) => b.mets(&bag.dir, &rel, &md5).await,
+                            None => None,
                         };
-                        if batch::md5(&got.body) != md5 {
-                            return Err(FetchError::Transient(format!(
-                                "{url}: md5 {} isn't the bag's {}",
-                                batch::md5_hex(&got.body),
-                                batch::hex(&md5)
-                            )));
-                        }
+                        let body = match from_bucket {
+                            Some(b) => b,
+                            None => {
+                                let mut got = self
+                                    .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
+                                    .await?;
+                                let under_bag_url = got.is_some();
+                                // Not under a guessed URL: the batch may
+                                // be elsewhere.
+                                if got.is_none() {
+                                    if let Some(moved) = self.relocate(bag).await? {
+                                        url = batch::file_url(
+                                            &moved.url,
+                                            lccn,
+                                            &files.reel,
+                                            dir,
+                                            &name,
+                                        );
+                                        got = self
+                                            .fetch(
+                                                &url,
+                                                Server::Storage,
+                                                MAX_METS_BYTES,
+                                                Some(lccn),
+                                                true,
+                                            )
+                                            .await?;
+                                    }
+                                }
+                                let Some(got) = got else {
+                                    tracing::warn!(url, "the issue's METS isn't there");
+                                    return Ok(None);
+                                };
+                                if batch::md5(&got.body) != md5 {
+                                    return Err(FetchError::Transient(format!(
+                                        "{url}: md5 {} isn't the bag's {}",
+                                        batch::md5_hex(&got.body),
+                                        batch::hex(&md5)
+                                    )));
+                                }
+                                if under_bag_url && bag.guessed {
+                                    self.confirm(&bag.dir, &bag.url).await;
+                                }
+                                got.body
+                            }
+                        };
                         if let Some(p) = &disk {
-                            if let Err(e) = write_file(p, &got.body).await {
+                            if let Err(e) = write_file(p, &body).await {
                                 tracing::warn!(url, error = %e, "can't keep the METS on disk");
                             }
                         }
-                        got.body
+                        body
                     }
                 };
                 match batch::mets_pages(&body) {
@@ -1099,13 +1404,19 @@ impl LocClient {
         batch: &str,
         version: u16,
     ) -> Result<Option<BatchPage>, FetchError> {
-        let Some(bag) = self.bag(batch, version).await? else {
+        let Some(mut bag) = self.bag(batch, version).await? else {
             return Ok(None);
         };
         let dir = batch::issue_dir(key.date, key.edition);
         let Some(frames) = self.issue_frames(&bag, &key.lccn, &dir).await? else {
             return Ok(None);
         };
+        // Its METS may have shown a guessed URL to be wrong.
+        if bag.guessed {
+            if let Some(Some(now)) = self.bags.get(&bag.dir).await {
+                bag = now;
+            }
+        }
         let Some(files) = bag.index.issue(&key.lccn, &dir) else {
             return Ok(None);
         };
@@ -1132,9 +1443,33 @@ impl LocClient {
         }))
     }
 
-    /// The page `resolve` found: the JP2, checked against the bag's md5, at
-    /// full size; the IIIF JPEG of its base when scaled. `None` if the JP2
-    /// answers 404 though the bag lists it.
+    /// The page's JP2 from LoC's bucket, when it is configured and holds
+    /// the page's batch, matching the bag's md5, with LoC's URL and IIIF
+    /// base, and where the bytes came from. `None` sends the caller on, to
+    /// a mirror or [`Self::scan_resolved`]. Only a full-size scan is a JP2.
+    pub async fn bucket_jp2(&self, page: &BatchPage) -> Option<(Scan, mirror::Hit)> {
+        self.bucket
+            .as_ref()?
+            .jp2(page, &self.cfg.storage_root)
+            .await
+    }
+
+    /// Whether LoC's bucket is configured.
+    pub fn has_bucket(&self) -> bool {
+        self.bucket.is_some()
+    }
+
+    /// LoC's bucket's counts and hold, when it is configured.
+    pub fn bucket_status(&self) -> Option<bucket::BucketStatus> {
+        self.bucket.as_ref().map(bucket::Bucket::status)
+    }
+
+    /// The page `resolve` found: the JP2 from LoC's storage service, checked
+    /// against the bag's md5, at full size; the IIIF JPEG of its base when
+    /// scaled. `None` if the JP2 answers 404 though the bag lists it. A
+    /// page placed under a guessed URL ([`Bag::guessed`]) that answers 404
+    /// is asked again where Chronicling America says its batch is, and the
+    /// scan carries that URL and IIIF base.
     pub async fn scan_resolved(
         &self,
         key: &PageKey,
@@ -1142,20 +1477,48 @@ impl LocClient {
         size: ImageSize,
     ) -> Result<Option<Scan>, FetchError> {
         if let ImageSize::Pct(_) = size {
-            return self.iiif_scan(page.iiif_base.clone(), size).await.map(Some);
+            if self.bucket.is_none() {
+                return self.iiif_scan(page.iiif_base.clone(), size).await.map(Some);
+            }
+            // With LoC's bucket, the base may be under a guessed URL.
+            let url = image_url(&page.iiif_base, size);
+            if let Some(got) = self
+                .fetch(&url, Server::Tile, MAX_IMAGE_BYTES, None, true)
+                .await?
+            {
+                return Ok(Some(jpeg(page.iiif_base.clone(), url, got)));
+            }
+            return match self.moved(page).await? {
+                Some(p) => self.iiif_scan(p.iiif_base, size).await.map(Some),
+                None => Err(FetchError::Permanent(format!(
+                    "{url} returned HTTP 404 or 410"
+                ))),
+            };
         }
-        let Some(got) = self
-            .fetch(
-                &page.url,
+        let jp2 = |url: String| async move {
+            self.fetch(
+                &url,
                 Server::Storage,
                 MAX_IMAGE_BYTES,
                 Some(&key.lccn),
                 true,
             )
-            .await?
-        else {
-            tracing::warn!(url = page.url, "a JP2 the bag lists isn't there");
-            return Ok(None);
+            .await
+        };
+        let (page, got, first) = match jp2(page.url.clone()).await? {
+            Some(got) => (page.clone(), got, true),
+            None => {
+                let moved = self.moved(page).await?;
+                let got = match &moved {
+                    Some(p) => jp2(p.url.clone()).await?,
+                    None => None,
+                };
+                let (Some(p), Some(got)) = (moved, got) else {
+                    tracing::warn!(url = page.url, "a JP2 the bag lists isn't there");
+                    return Ok(None);
+                };
+                (p, got, false)
+            }
         };
         let md5 = batch::md5(&got.body);
         if md5 != page.md5 {
@@ -1165,6 +1528,15 @@ impl LocClient {
                 batch::hex(&md5),
                 batch::hex(&page.md5)
             )));
+        }
+        // Served where the bag put it: if that is a guess, it was right.
+        if first && self.bucket.is_some() {
+            if let Some((dir, _)) = bucket::key(&self.cfg.storage_root, &page.url) {
+                let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
+                if page.url.starts_with(&guess) {
+                    self.confirm(dir, &guess).await;
+                }
+            }
         }
         Ok(Some(Scan {
             iiif_base: page.iiif_base.clone(),
@@ -1176,6 +1548,20 @@ impl LocClient {
             from_cache: false,
             evict: None,
         }))
+    }
+}
+
+/// The IIIF JPEG at `url` of the page with IIIF base `base`.
+fn jpeg(base: String, url: String, got: Got) -> Scan {
+    Scan {
+        iiif_base: base,
+        url,
+        format: ScanFormat::Jpeg,
+        bytes: got.body,
+        md5: None,
+        download: got.took,
+        from_cache: false,
+        evict: None,
     }
 }
 
@@ -1220,6 +1606,19 @@ fn challenge(resp: &reqwest::Response) -> Option<String> {
         .then(|| "an HTML page from Cloudflare".into())
 }
 
+/// An error and its causes, for a log line: reqwest's own message
+/// ("error sending request") says nothing of why.
+pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
+}
+
 pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
     if resp.content_length().is_some_and(|n| n > max as u64) {
         return Err(format!("response over {max} bytes"));
@@ -1228,7 +1627,7 @@ pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Res
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| e.without_url().to_string())?
+        .map_err(|e| error_chain(&e.without_url()))?
     {
         if body.len() + chunk.len() > max {
             return Err(format!("response over {max} bytes"));
