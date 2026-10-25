@@ -227,13 +227,13 @@ Tesseract runs with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one
 Each page writes two objects to `--out-url`:
 
 1. `alto/<doc_id>.<node>.<UTC stamp>.xml`: the stored ALTO (13 §13.8.2), written first. The worker parses Tesseract's ALTO and writes ALTO 3.1 in pixels of the scan from the parsed values (`usnm-alto`), with `fileName` set to the scan's URL, the scan's sha256 (and a JP2's bag md5) in `fileIdentifier`, and the `ocr_engine` tag, granularity and dpi in `processingStepSettings`. Nothing of Tesseract's XML is copied but the words. A Tesseract ALTO that doesn't parse fails the page as transient `convert`.
-2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its text is derived from the stored ALTO in reading order and normalized (`normalize_ocr`), so the text and the ALTO hold the same words. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
+2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its text is derived from the stored ALTO in reading order and normalized (`normalize_ocr_for`), so the text and the ALTO hold the same words. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
 
 Values specific to this worker:
 
 - `ocr_source` is `usnm-tesseract`, named after the engine as the Japanese job's `usnm-ndlocr-lite` is. The node appears in the part name.
 - `loc_text` is the queue reason (`bulk` or `user`). The worker never sees LoC's text, so it can't say how that text failed. These values never match `missing`, so a release won't count the page as one curation never had.
-- `text` is normalized with `usnm_core::text::normalize_ocr`, as LoC's text is at curation (04 §4.5). `text_status`, `text_chars` and `text_sha256` are computed from the normalized text.
+- `text` is normalized as LoC's text is at curation (04 §4.5), with `usnm_core::text::normalize_ocr_for`: a word broken at a line end is rejoined whether the engine printed `-`, `⸗`, `¬` or `‐`, and for a German page or a Fraktur model (`frak2021`, `deu_latf`) also an em dash before a lowercase letter (`Hyphenation::for_page`, #1065). `text_status`, `text_chars` and `text_sha256` are computed from the normalized text.
 - `image_url` is the IIIF service base, as in the Japanese overlay.
 
 Both writes are create-only, and the names are unique per node and moment: the nodes' role on `ocr-out` can create blobs but not replace or delete them. Each page gets its own part, so a node writes many small files. The cloud copy-in job should merge them into larger parts as it copies them to `curated/ocr-local/pages/`.
