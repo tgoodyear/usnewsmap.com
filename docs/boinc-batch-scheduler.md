@@ -457,6 +457,12 @@ message only when all of these hold, and otherwise puts it back:
   and the language routes to an installed Tesseract model;
 - the page is on the newest fetched-scans list for the controller's manifest
   version, because volunteers never fetch from LoC;
+- the page is in that manifest (the cohort's prefetch manifest in the curated
+  store), at the batch version its ledger row names, because `export` builds a
+  job only from a manifest row. The fetched list also has pages fetched for other
+  manifests, such as queued OCR requests' (#1055); those go back for the nodes
+  instead of failing the export. `claim` reads the manifest once a run and keeps
+  only the rows on the fetched list;
 - with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
   language is one of them (#866).
 
@@ -498,7 +504,10 @@ the pages already claimed and not yet started, so backpressure holds back claims
 and the messages stay visible to the node. Every claim is saved to the
 controller's state before its scan is pushed. The controller then pushes each
 page with `push-boinc-scan.sh --keep-page <batch>/<lccn>/<date>/<edition>/<seq>`,
-which finds the scan's format (`.jp2` or `.jpg`) on the scan server. A page with no
+which finds the scan's format (`.jp2` or `.jpg`) on the scan server, in the fetcher's
+keep set and then its buffer set, where a queued OCR request's scan is (#1055). A
+buffer scan is copied up under its keep name, so the export reads it like any other,
+and evicting it from the buffer later doesn't affect the hand-off. A page with no
 cached scan, despite the list, is given back with the `release` step and dropped.
 Export runs once per batch with `HANDOFF_CLAIMS=1`.
 

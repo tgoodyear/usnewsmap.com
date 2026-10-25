@@ -42,7 +42,7 @@ The Japanese OCR's tools are in [`ja-ocr/tools/`](../ja-ocr/README.md), beside t
 | `settings-store.sh`   | Deploys the App Configuration store that holds the private settings, in its own stack.                                                                                                 |
 | `archive-store.sh`    | Deploys, or unlocks, the archival storage account, in its own stack.                                                                                                                   |
 | `build-quickwit.sh`   | Builds the patched Quickwit image ([ADR-0013](../docs/design/adr/0013-quickwit-from-our-fork.md)) in the environment's registry and records its digest in `infra/quickwit-image.json`. |
-| `start-job.sh`        | Starts one execution of a Container Apps job with other arguments, keeping the job's image and settings.                                                                               |
+| `start-job.sh`        | Starts one execution of a Container Apps job with other arguments, keeping the job's settings and its image (or, with `--image-tag`, another tag of it).                               |
 | `titles-seed.sh`      | Seeds an environment's title records and catalog from the archive's newest copy. `stand-up.sh` runs it.                                                                                |
 | `logs.sh`             | Runs a saved query from [`ops/queries/`](../ops/README.md) against the environment's Log Analytics workspace.                                                                          |
 | `searches.sh`         | Summarizes the anonymous search log: top queries, searches per day, searches that found nothing, date spans.                                                                           |

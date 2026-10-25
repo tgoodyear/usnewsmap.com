@@ -231,7 +231,7 @@ Before promotion ([Index storage cutover](#index-storage-cutover) step 4), recor
 scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
 ```
 
-Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none.
+Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none. After the switch, once the OCR side is ready for the version, the same command with `--current` makes `ops/current` name the version ([Index storage cutover](#index-storage-cutover) step 5).
 
 **Through Kafka (faster).** One writer node's v1 ingest API takes about 130 pages/s, however many requests are in flight. With `USNM_WRITER_KAFKA=127.0.0.1:9092` and `USNM_WRITER_INGEST=v1` (required: the release refuses Kafka with v2 before its writer starts), a decade-partitioned main index's decade files go to a Kafka topic instead, `usnm-<index id>`, with `USNM_WRITER_KAFKA_PARTITIONS` partitions (default 8). The index gets a Kafka source with one pipeline per partition, and the writer node gets the indexer capacity for them. Each file goes to one partition, the next file to the next, so splits stay one decade each. On pve-big, 1, 2 and 4 pipelines indexed 341, 509 and 754 pages/s of build pages. Everything else stays on v1: the last pages and the forced commit, the Japanese and Congress indexes, the exact count, the restart-based final merges. The source records its position in the metastore with each split, so the restart doesn't index anything twice. A produce whose answer was lost is worked out from the partition's end: the release is the topic's only producer, so the end shows whether the batch was written (go on), wasn't (send it again) or neither (fail). The topic's retention (3 hours) deletes records whether or not the index read them, so the producer keeps within reach of the index. Before a produce, at most every 10 s, it reads the index's Kafka checkpoint from the writer node:
 
@@ -293,8 +293,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    Congress indexes are rebuilt, including an unchanged Congress set.
    Reference snapshots stay in the lake. The run publishes
    `reference/index-storage-pending.json`, **not** `current.json`, and leaves
-   `ops/current` unchanged. The run record is `published` (to the pending
-   pointer); its `previous_version` retains the lake version for rollback.
+   `ops/current` unchanged (step 5 records it). The run record is
+   `published` (to the pending pointer); its `previous_version` retains the
+   lake version for rollback.
    A retry stages another fresh full base. Keep schedules off and do not
    start an ordinary release with hand-written arguments during migration.
 3. **Verify before promotion.** Check the release's counts, manifest and
@@ -338,23 +339,129 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    switch. The cutover is controlled, but it doesn't rule out cold starts
    between promoting the pointer and switching the readers.
 
-5. **Check and retain rollback.** Verify `/readyz`, `/v1/meta`, counts,
-   representative main, JA and Congress queries, and the index version on
-   every ready API replica. Restore the weekly schedule and clear the one-off
-   rebuild, scratch and E4 settings as above, but **keep both index settings
-   true**. The next ordinary release repairs `ops/current` from the live
-   pointer before it runs. Do not prune the lake's rollback yet.
+5. **Check, record and retain rollback.** Verify `/readyz`, `/v1/meta`,
+   counts, representative main, JA and Congress queries, and the index
+   version on every ready API replica. Then record the version as the
+   pipeline's current one, `ops/current`. The staged release left it naming
+   the old version. `/v1/status` (`indexing.current_version`) reads it, and
+   so does the OCR pipeline: the seeder and `ocr-enqueue` find pages in the
+   version it names, `ocr-sync` checks the nodes' output against that
+   version's batches and runs the seeder, and the BOINC export (the
+   priority controller's claims and reservations) takes the version's batch
+   list and fails with "published snapshot changed during export" if it
+   changes during one.
+
+   First get the OCR side ready for the new version. Otherwise every pickup
+   run (`ocr-sync`) fails at seeding once `ops/current` names it:
+
+   - **The damage tables' version list**,
+     `audit/damage/v2/versions/pages-v<date>-<n>.json` in the curated
+     store. The seeder refuses a version without it, and only `ocr-damage`
+     writes it; a release doesn't. The pass is incremental: it skips every
+     batch version already scored, so it pays only for new ones. Run it
+     again until its `ocr damage finished` line shows `left` 0. On 24
+     October 2026 the list existed for pages-v20261010-2 and not for
+     pages-v20261022-1; it was then written on-prem (#1090). Run the pass
+     on-prem first, as the damage writer's own identity (docs/operations/japanese-ocr.md,
+     "On-prem"); the ingest job is the fallback:
+
+     ```sh
+     scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v<date>-<n> --max-runtime-secs 165600
+     ```
+
+   - **The prefetch manifest**, with `USNM_OCR_SEED_SOURCE=fetched` (as in
+     prod). Without a `USNM_OCR_SEED_MANIFEST` pin the seeder reads the
+     manifest of the version `ops/current` names, and only the pages on
+     the newest fetched list for that manifest version
+     (`ocr-out/fetched/<version>/`). Either build the manifest once the
+     version list exists and have the node that publishes the fetched list
+     publish one for it (`USNM_OCR_PUBLISH_FETCHED`, or
+     `usnm-ocr-worker publish-fetched --manifest pages-v<date>-<n>` once):
+
+     ```sh
+     scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-prefetch-manifest --version pages-v<date>-<n>
+     ```
+
+     or pin `USNM_OCR_SEED_MANIFEST` to the version whose manifest and
+     fetched list the seeder reads now, with `scripts/azure/settings.sh`,
+     then provision.
+
+   Then record the version between two ticks of the BOINC priority
+   controller. On its host (CT 211, see
+   [the batch scheduler](../boinc-batch-scheduler.md#on-prem-controller-host-ct-211)),
+   stop the timer and wait until no tick is running, run the command, then
+   start the timer again:
+
+   ```sh
+   systemctl stop usnm-boinc-priority-controller.timer
+   systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
+   ```
+
+   ```sh
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <sha> --wait-mins 20 \
+     -- import-staged-run --version pages-v<date>-<n> --current
+   ```
+
+   ```sh
+   systemctl start usnm-boinc-priority-controller.timer
+   ```
+
+   `--image-tag` takes a commit sha, not an image name: the execution's
+   first container runs `usnewsmap-ingest:<sha>` from the job's registry.
+   Use it for as long as the job's pinned image
+   (`USNM_SCHEDULED_INGEST_IMAGE_TAG`) predates `--current`, with a main
+   commit that has `--current` and an image. CI's publish job runs only for
+   commits that change the images, and publishes only for the head of main,
+   or an older commit when no newer one changes them, so not every commit
+   has an image. Check first; it prints the sha when the tag is there:
+
+   ```sh
+   ACR=$(scripts/azure/settings.sh --env prod --key ACR_NAME)
+   az acr repository show-tags --name "$ACR" --repository usnewsmap-ingest --query "[?@=='<sha>']" -o tsv
+   ```
+
+   The command refuses unless `current.json` already names the version and
+   its run is published, so it never moves `ops/current` ahead of the live
+   pointer, and it takes the writer lock like a release. A rerun changes
+   nothing. Run it after the switch, not between promotion and the switch:
+   until the new API serves the version, `/v1/status` would announce it
+   early. This step records it at once; the next ordinary release would
+   also repair `ops/current` from the live pointer before it runs. Check
+   `indexing.current_version` in `/v1/status`, and that the next pickup
+   run succeeds, in the `job-executions` query of `scripts/azure/logs.sh`.
+   Restore the weekly schedule and clear the one-off rebuild, scratch and E4
+   settings as above, but **keep both index settings true**. Do not prune
+   the lake's rollback yet.
+
 6. **Rollback across accounts, if needed.** Pause the writers and prune,
    restore `serving-before.json` to `reference/current.json` with the same
    Entra upload command, then set only `USNM_INDEX_STORAGE_SERVE=false` and
    provision. The retained lake searcher serves the old indexes again. Until
-   then the new API keeps its loaded new version if its reload fails. Keep
-   schedules off: with SERVE false, a release stages a full rebuild again; it
-   does not send incremental writes back to the lake. Never turn
-   `USNM_INDEX_STORAGE` off: the deployment stack would delete the new
-   account and its data. Roll forward by promoting the saved pending pointer
-   and setting SERVE true again. A retained new-account rollback needs only
-   its pointer restored, not an account switch.
+   then the new API keeps its loaded new version if its reload fails. Once
+   the old version serves, record it in `ops/current` again as in step 5,
+   between controller ticks and with the same image. First check step 5's
+   OCR prerequisites for it: a version that served while seeding ran has
+   its version list and manifest, but the seeder also needs a fetched list
+   for the manifest version it reads.
+
+   ```sh
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <sha> --wait-mins 20 \
+     -- import-staged-run --version <rollback version> --current
+   ```
+
+   Its run is already in the state, so the import finds it and only
+   `ops/current` changes. Nothing else repairs `ops/current` here: with SERVE
+   false every release stages, and a staged release leaves it alone. Left
+   naming the new version, `/v1/status` keeps announcing that version and
+   the OCR pipeline keeps working on a version the site doesn't serve. Keep
+   schedules off: with SERVE false, a release stages a full rebuild again;
+   it does not send incremental writes back to the lake. Never turn `USNM_INDEX_STORAGE` off: the deployment stack would
+   delete the new account and its data. Roll forward by promoting the saved
+   pending pointer and setting SERVE true again, then recording the new
+   version with `--current` as in step 5. A retained new-account rollback
+   needs only its pointer restored, not an account switch, then `--current`
+   for the version it restored.
+
 7. **Prune each account explicitly.** After the new version serves, run
    the normal prune against the new account, a dry run and then the delete.
    `kept_absent` for the lake rollback there is expected. For the lake,
