@@ -38,10 +38,10 @@
 <g id="loc-kept-k-ingest" class="box azure" data-state="@@cls:ingest@@">
 <rect class="card" x="10" y="150" width="200" height="94" rx="4"/>
 <rect class="bar" x="10" y="151" width="6" height="92" rx="2"/>
-<text class="ttl" x="24" y="169">1  Ingest job</text>
-<text x="24" y="184">enqueue and curate: each</text>
-<text x="24" y="199">batch read once, paced</text>
-<text x="24" y="214">(Azure Container Apps job)</text>
+<text class="ttl" x="24" y="169">1  Ingest (off)</text>
+<text x="24" y="184">each batch read once, paced;</text>
+<text x="24" y="199">the Azure ingest job is gone;</text>
+<text x="24" y="214">resumes on-prem with #955</text>
 <text class="st" x="24" y="229">@@lbl:ingest@@</text>
 </g>
 <g id="loc-kept-k-cur" class="box azure" data-state="none">
@@ -56,18 +56,18 @@
 <rect class="card" x="450" y="150" width="200" height="94" rx="4"/>
 <rect class="bar" x="450" y="151" width="6" height="92" rx="2"/>
 <text class="ttl" x="464" y="169">3  Release</text>
-<text x="464" y="184">usnm-ingest release builds</text>
-<text x="464" y="199">the index and reference</text>
-<text x="464" y="214">snapshot from curated</text>
+<text x="464" y="184">full rebuild (#283) built</text>
+<text x="464" y="199">on-prem in the build</text>
+<text x="464" y="214">container, from curated</text>
 <text class="st" x="464" y="229">@@lbl:release-loc@@</text>
 </g>
 <g id="loc-kept-k-idx" class="box azure" data-state="@@cls:index-loc@@">
 <rect class="card" x="670" y="150" width="200" height="94" rx="4"/>
 <rect class="bar" x="670" y="151" width="6" height="92" rx="2"/>
 <text class="ttl" x="684" y="169">4  Search index</text>
-<text x="684" y="184">qw-index (Quickwit) and</text>
-<text x="684" y="199">reference/&lt;version&gt;;</text>
-<text x="684" y="214">the API searches these</text>
+<text x="684" y="184">own index storage account,</text>
+<text x="684" y="199">with reference/&lt;version&gt;;</text>
+<text x="684" y="214">the API reads it via searcher</text>
 <text class="st" x="684" y="229">@@lbl:index-loc@@</text>
 </g>
 <g id="loc-kept-k-dmg" class="box azure" data-state="@@cls:damage@@">
@@ -95,5 +95,5 @@
 <path class="arrow" d="M330 229 L330 268" marker-end="url(#ah-loc-kept)"/>
 <path class="arrow" d="M430 315 L450 315" marker-end="url(#ah-loc-kept)"/>
 <text class="lane x" x="14" y="22">Library of Congress</text>
-<text class="lane a" x="14" y="142">Azure (data lake, private)</text>
+<text class="lane a" x="14" y="142">Azure (data lake and index storage, private)</text>
 </svg>

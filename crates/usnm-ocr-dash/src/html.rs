@@ -1647,7 +1647,7 @@ pub fn render(v: &View) -> String {
             }
             o.push_str("</table>");
         }
-        None => o.push_str("<p class=\"note\">No seed plan file. The cloud seeder's settings (USNM_OCR_SEED_*) are on the ocr-sync job in Azure.</p>"),
+        None => o.push_str("<p class=\"note\">No seed plan file. The seeder's settings (USNM_OCR_SEED_*) are on the on-prem ocr-sync timer in the build container.</p>"),
     }
     o.push_str("</section>");
 

@@ -23,7 +23,7 @@ pub struct Diagram {
 
 pub const LEGEND: &str = include_str!("diagrams/legend.svg");
 
-pub const DIAGRAMS: [Diagram; 5] = [
+pub const DIAGRAMS: [Diagram; 6] = [
     Diagram {
         id: "loc-kept",
         heading: "LoC pages whose OCR text is kept",
@@ -31,7 +31,8 @@ pub const DIAGRAMS: [Diagram; 5] = [
         answers: [
             (
                 "Comes from",
-                "Chronicling America batches on loc.gov, read once by the ingest job in Azure, paced.",
+                "Chronicling America batches on loc.gov, each read once, paced. The Azure ingest job \
+                 is gone; new batches come in again with the first on-prem release (#955).",
             ),
             (
                 "Needs OCR",
@@ -40,8 +41,10 @@ pub const DIAGRAMS: [Diagram; 5] = [
             ),
             (
                 "Stored",
-                "Azure only: curated/ (Parquet), then the search index in qw-index and reference/. \
-                 This diagram covers the original-text publication path, not scan caching.",
+                "curated/ (Parquet) in the Azure data lake. The full rebuild (#283) was built on-prem in \
+                 the build container and published to a separate index storage account in Azure, which \
+                 the API reads through the searcher. This diagram covers the original-text path, not \
+                 scan caching.",
             ),
             (
                 "Searchable when",
@@ -51,55 +54,60 @@ pub const DIAGRAMS: [Diagram; 5] = [
     },
     Diagram {
         id: "loc-keep",
-        heading: "LoC keep set, read again on the nodes",
+        heading: "LoC keep set, read again through BOINC",
         svg: include_str!("diagrams/loc-keep.svg"),
         answers: [
             (
                 "Comes from",
-                "LoC's tile.loc.gov storage service: the batch's JP2 for each page. Only a page the batch \
-                 route cannot place goes through the loc.gov item API and the IIIF JPEG. The scan fetcher \
-                 fetches each scan once, paced, and holds when LoC asks it to. The keep set is every page \
-                 not detected as English, plus the worst English batches.",
+                "The batch's JP2 for each page, from LoC's S3 bucket ndnp-batches first (public batches \
+                 only, about 38% of the pages, md5-checked, one request at a time), then the state-partner \
+                 Chronicling America mirrors (nbu, pst, oru, scu) and the Wayback Machine, then LoC's \
+                 storage service, and last the loc.gov item API and IIIF JPEG. The scan fetcher \
+                 (usnm-loc-fetch) works through the queued manifests, queue-ocr-* (hourly) and then \
+                 queue-quality-*; the keep plan is nearly done. The keep set is every page not detected \
+                 as English, plus the worst English batches.",
             ),
             (
                 "Needs OCR",
-                "Yes. The on-prem OCR queue (ocr_priority for pages users find, ocr_bulk for the rest) feeds \
-                 the BOINC usnm_ocr app: pages are claimed from the queue, bundled into workunits, read by \
-                 volunteers and collected on-prem. The direct queue workers are retired (#1053).",
+                "Yes. ocr-sync's hourly seed puts the named plan's pages in ocr_bulk, and the API puts \
+                 pages users find in ocr_priority. The claim takes priority first, and only pages on the \
+                 fetched list; the BOINC usnm_ocr app bundles them into workunits, volunteers read them \
+                 and the results are collected on-prem. The direct queue workers are retired (#1053).",
             ),
             (
                 "Stored",
-                "Home: manifests/ (the plan and the hourly queue-ocr-* manifests) and keep/ on the scan \
-                 store (scans are kept for good). Azure: ocr-out (deleted after 30 days), then \
-                 curated/ocr-local/.",
+                "Home: manifests/ and keep/ on the scan store (scans are kept for good); scans are sent \
+                 on-prem to the BOINC server. Azure: ocr-out, the exchange container (deleted after 30 \
+                 days), then curated/ocr-local/.",
             ),
             (
                 "Searchable when",
-                "ocr-sync has imported the output and a release indexes that batch with USNM_OCR_LOCAL \
-                 enabled, selecting our text where the quality rule prefers it. Updating previously \
-                 published batches requires a full rebuild. Until then LoC's text stays searchable.",
+                "ocr-sync (on-prem, hourly) has imported the output and a release indexes that batch with \
+                 USNM_OCR_LOCAL enabled, selecting our text where the quality rule prefers it. Updating \
+                 previously published batches requires a full rebuild. Until then LoC's text stays \
+                 searchable.",
             ),
         ],
     },
     Diagram {
         id: "loc-buffer",
-        heading: "LoC buffer set, English pages read again",
+        heading: "LoC buffer set: queued and quality-pass pages",
         svg: include_str!("diagrams/loc-buffer.svg"),
         answers: [
             (
                 "Comes from",
-                "The same route as the keep set. These are the other badly damaged English pages, fetched \
-                 after the keep set.",
+                "The same sources and manifests as the keep set. The fetcher files queued pages outside \
+                 the keep set, and the quality pass's pages, under buffer/.",
             ),
             (
                 "Needs OCR",
-                "Yes, but only the pages the seed plan queues. Same queue, BOINC app and engine as the \
-                 keep set.",
+                "The queued pages, yes: the same seed, queues and BOINC app as the keep set. The quality \
+                 pass's pages go to BOINC's usnm_quality app instead (the last diagram).",
             ),
             (
                 "Stored",
-                "Home: buffer/ on the scan store, a rolling buffer. The fetcher waits while it is at its \
-                 cap. Azure as for the keep set.",
+                "Home: buffer/ on the scan store, read after keep/. OCR's buffer scans are kept; \
+                 quality-pass scans are deleted after their chunk ships. Azure as for the keep set.",
             ),
             (
                 "Searchable when",
@@ -115,8 +123,9 @@ pub const DIAGRAMS: [Diagram; 5] = [
         answers: [
             (
                 "Comes from",
-                "GovInfo's sitemaps, MODS and PDFs, public and without a key. usnm-sset fetches one \
-                 request at a time, paced. Run again to pick up new or changed volumes.",
+                "GovInfo's sitemaps, MODS and PDFs, public and without a key. usnm-sset fetched one \
+                 request at a time, paced. It ran on an OCR node that is now retired, and no host \
+                 runs it now: it is stopped.",
             ),
             (
                 "Needs OCR",
@@ -124,7 +133,7 @@ pub const DIAGRAMS: [Diagram; 5] = [
             ),
             (
                 "Stored",
-                "Home: a raw store of MODS and page texts on the host that runs it (the PDFs are deleted \
+                "Home: a raw store of MODS and page texts on the host that ran it (the PDFs are deleted \
                  after reading). Azure: curated/congress/serialset/.",
             ),
             (
@@ -143,11 +152,42 @@ pub const DIAGRAMS: [Diagram; 5] = [
                 Local OCR is not a prerequisite for volunteer full-page OCR."),
             ("Needs OCR", "Depends on the campaign: OCR, quality comparisons, reference checks \
                 and training are distinct workloads. Assignment does not prove active computation."),
-            ("Stored", "Campaign inputs and outputs use the project storage and controlled mirror. \
-                The public scheduler feed does not verify mirror coverage or execution results."),
+            ("Stored", "Campaign inputs and outputs are on the on-prem BOINC server. The R2 relay \
+                bucket was deleted on 22 Oct (ADR-0024). The public scheduler feed does not verify \
+                execution results."),
             ("Searchable when", "Only after the relevant validation, acceptance, import and publication \
                 gates. Scheduler counts do not establish those outcomes; campaign results are not \
                 connected to this dashboard."),
+        ],
+    },
+    Diagram {
+        id: "quality-bulk",
+        heading: "Quality pass and LoC bulk OCR archives",
+        svg: include_str!("diagrams/quality-bulk.svg"),
+        answers: [
+            (
+                "Comes from",
+                "Quality pass: queue-quality-* manifests, built every 2 h, fetched like the OCR scans. \
+                 Bulk: LoC's bulk OCR archives (ALTO with word confidence), downloaded by usnm-loc-bulk \
+                 one at a time through the LoC pacer.",
+            ),
+            (
+                "Needs OCR",
+                "The quality pass runs comparisons in BOINC's usnm_quality app. The bulk archives need \
+                 none: usnm-loc-alto-stats only parses LoC's ALTO.",
+            ),
+            (
+                "Stored",
+                "Home: quality results in the usnm_quality database; the archives and their Parquet \
+                 tables on the scan store's pool, loaded hourly into quality.loc_alto. The LoC and \
+                 American Stories text agreement run is a separate lane, loaded into \
+                 quality.text_compare.",
+            ),
+            (
+                "Searchable when",
+                "Neither lane changes the search index. loc_wc_mean feeds the OCR ranking and the image \
+                 pass's order.",
+            ),
         ],
     },
 ];
@@ -307,7 +347,37 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         }
     }
 
-    // The Serial Set, from the status its node pushes.
+    // The bulk OCR archive download, from its status file.
+    if let Some(b) = v.fetch.bulk.value.as_ref().filter(|_| {
+        v.fetch.bulk.error.is_none()
+            && v.fetch
+                .bulk
+                .modified
+                .is_some_and(|t| (v.generated_at - t).num_seconds() < 3600)
+    }) {
+        let class = match b.state.as_str() {
+            "running" => "running",
+            "done" | "finished" => "done",
+            "failed" => "failed",
+            _ => "waiting",
+        };
+        m.insert(
+            "bulk",
+            StepState::with(
+                class,
+                format!("{} of {} archives", int(b.done), int(b.archives)),
+            ),
+        );
+    }
+
+    // The Serial Set, from the status a runner pushes. No host runs it
+    // since its OCR node was retired, so without a fresh status it is
+    // stopped, not merely quiet.
+    if !v.serial_set.iter().any(|x| !x.stale) {
+        let mut step = StepState::new("none");
+        step.label = "stopped; status unknown";
+        m.insert("sset-fetch", step);
+    }
     if let Some(x) = v.serial_set.iter().find(|x| !x.stale) {
         let st = &x.status;
         let class = match x.state.as_str() {
@@ -671,7 +741,7 @@ mod tests {
         assert!(!flow.contains("@@"));
         assert!(flow.contains("&lt;worker&gt;&amp;"));
         assert!(flow.contains("running; rate unknown"));
-        assert!(flow.find("1  Damage pass") < flow.find("2  Manifest copy"));
+        assert!(flow.find("1  Damage pass") < flow.find("2  Manifests"));
         assert!(flow.find("6  Queues") < flow.find("7  BOINC usnm_ocr"));
         assert!(flow.contains("collected on-prem"));
         assert!(!flow.contains("node 3"));
@@ -730,8 +800,14 @@ mod tests {
                     assert!(!private, "private address {word}");
                 }
             }
-            for name in ["pve", "unifi", ".tjg.fyi"] {
+            for name in ["pve", "unifi", ".tjg.fyi", "/tank", "/srv/", "ocr-node", "node3"] {
                 assert!(!t.to_lowercase().contains(name), "internal name {name}");
+            }
+            // The public view shows these as they are: no container or VM
+            // numbers, and nothing the public scrubber would change.
+            assert!(!t.contains("CT ") && !t.contains("VM "), "a container number in {t}");
+            for line in t.split(['<', '>']).filter(|l| !l.contains('{')) {
+                assert_eq!(crate::public::scrub(line), line, "scrub changes {line}");
             }
         }
     }
@@ -749,7 +825,8 @@ mod tests {
             done: 0,
         });
         let st = steps(&v);
-        assert!(!st.contains_key("sset-fetch"));
+        assert_eq!(st["sset-fetch"].class, "none");
+        assert_eq!(st["sset-fetch"].label, "stopped; status unknown");
         for k in ["rebuild", "index-ocr", "ingest", "release-loc", "index-loc"] {
             assert!(!st.contains_key(k), "{k} is not read from anywhere");
         }
@@ -845,7 +922,7 @@ mod tests {
         v.serial_set[0].status.volumes_per_hour = f64::NAN;
         assert!(steps(&v)["sset-fetch"].rate.is_none());
         v.serial_set[0].stale = true;
-        assert!(!steps(&v).contains_key("sset-fetch"));
+        assert_eq!(steps(&v)["sset-fetch"].label, "stopped; status unknown");
     }
 
     #[test]
@@ -926,6 +1003,50 @@ mod tests {
             assert!(svg.contains("BOINC usnm_ocr"));
         }
         assert!(!DIAGRAMS[3].svg.contains("node 3"));
+    }
+
+    #[test]
+    fn bulk_download_state_comes_from_a_fresh_status_file() {
+        let mut v = empty_view();
+        v.fetch.bulk.value = Some(crate::fetch::BulkStatus {
+            state: "running".into(),
+            archives: 3011,
+            done: 120,
+            ..Default::default()
+        });
+        assert!(!steps(&v).contains_key("bulk"), "no modified time, not fresh");
+        v.fetch.bulk.modified = Some(v.generated_at - chrono::Duration::minutes(5));
+        let st = steps(&v);
+        assert_eq!(st["bulk"].class, "running");
+        assert_eq!(st["bulk"].text, "120 of 3,011 archives");
+        assert!(fill(DIAGRAMS[5].svg, &st).contains("120 of 3,011 archives"));
+        v.fetch.bulk.modified = Some(v.generated_at - chrono::Duration::hours(2));
+        assert!(!steps(&v).contains_key("bulk"));
+    }
+
+    #[test]
+    fn current_sources_and_hosts_are_drawn() {
+        let keep = DIAGRAMS[1].svg;
+        assert!(keep.contains("ndnp-batches"));
+        assert!(keep.contains("Wayback Machine"));
+        assert!(keep.contains("usnm-loc-fetch"));
+        assert!(!keep.contains("served to nodes"));
+        assert!(!DIAGRAMS[0].svg.contains("qw-index"));
+        assert!(!DIAGRAMS[1].svg.contains("qw-index"));
+        assert!(!DIAGRAMS[4].svg.contains("mirror coverage"));
+        assert!(DIAGRAMS[3].svg.contains("stopped"));
+        // Queues and ocr-sync are in the home band, above the Azure band.
+        for (svg, id) in [(DIAGRAMS[1].svg, "loc-keep"), (DIAGRAMS[2].svg, "loc-buffer")] {
+            let azure = svg.find("class=\"band a\"").unwrap();
+            let y = |g: &str| {
+                let at = svg.find(&format!("id=\"{id}-{g}\"")).unwrap();
+                let card = &svg[at..];
+                let y: u32 = card.split("y=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+                y
+            };
+            let band_y: u32 = svg[azure..].split("y=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+            assert!(y("q") < band_y && y("sync") < band_y && y("out") > band_y);
+        }
     }
 
     #[test]
