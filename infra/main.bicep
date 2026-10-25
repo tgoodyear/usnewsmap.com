@@ -132,6 +132,12 @@ param onPremServing bool = false
 @description('Object id of the on-prem serving container\'s Arc machine identity (with onPremServing). Settings only, never in the repository.')
 param onPremServingHost string = ''
 
+@description('Copy the search log\'s day files to a restricted dataset on tank each day (#1097, ADR-0027 settled decision 3): searchLogCopyHost gets Storage Blob Data Reader on the searches container (modules/searchlog-copy.bicep), and the data lake opens to ocrNodeIps only (the firewall denies everything else; the private endpoint stays). Use it or USNM_SEARCH_LOG_READERS for the host, not both.')
+param searchLogCopy bool = false
+
+@description('Object id of the search log copy host\'s Arc machine identity (with searchLogCopy). Settings only, never in the repository.')
+param searchLogCopyHost string = ''
+
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
 
@@ -489,12 +495,15 @@ module identities 'modules/identities.bicep' = {
 var ingestIdentityOn = (ingestJobs && useAcr) || ocr
 
 // The data lake opens to the node IPs only for the on-prem Serial Set
-// runner (serialSetOnPrem), the Japanese OCR, the release or the serving
-// container; the Cosmos account only for the serving container (#955). The
-// public-network policy then exempts each by resource id, like the accounts
-// below. Provision writes the policy's exemptions before the stack
-// (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem, ocrNodeIps)
+// runner (serialSetOnPrem), the Japanese OCR, the release, the serving
+// container, the on-prem OCR pickup (#917) or the search log copy (#1097); the
+// Cosmos account only for the serving container (#955). The public-network
+// policy then exempts each by resource id, like the accounts below. Provision
+// writes the policy's exemptions before the stack (policy-exemptions.bicep, #336).
+var dataLakeOpen = lakeOpen(
+  serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy,
+  ocrNodeIps
+)
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
 // on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
@@ -891,6 +900,16 @@ module onPremServingGrant 'modules/onprem-serving.bicep' = if (onPremServing && 
     registryName: registry.outputs.name
     principalId: trim(onPremServingHost)
     searchLogRoleName: rbac.outputs.searchLogRoleName
+  }
+}
+
+// The search log copy host's grant (#1097): its own identity only.
+module searchLogCopyGrant 'modules/searchlog-copy.bicep' = if (searchLogCopy && !empty(trim(searchLogCopyHost))) {
+  scope: rg
+  name: 'searchlog-copy'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(searchLogCopyHost)
   }
 }
 

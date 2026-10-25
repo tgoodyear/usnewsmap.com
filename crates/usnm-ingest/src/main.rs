@@ -7,7 +7,9 @@ mod cli;
 
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
-use cli::{batches, congress, curate, ocr, onprem, pictures, prune, release, run, titles};
+use cli::{
+    batches, congress, curate, ocr, onprem, pictures, prune, release, run, searchlog_copy, titles,
+};
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::owner_id;
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
@@ -64,6 +66,7 @@ enum Command {
     CongressGlobe(congress::CongressGlobeArgs),
     CongressSerialset(congress::CongressSerialsetArgs),
     CongressDamage(congress::CongressDamageArgs),
+    SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
     Pictures(pictures::PicturesArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
@@ -136,6 +139,7 @@ impl Command {
             Command::CongressGlobe { .. } => "congress-globe",
             Command::CongressSerialset { .. } => "congress-serialset",
             Command::CongressDamage { .. } => "congress-damage",
+            Command::SearchlogCopy { .. } => "searchlog-copy",
             Command::Pictures { .. } => "pictures",
             Command::Run { .. } => "run",
         }
@@ -172,6 +176,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::CongressGlobe { .. }
         | Command::CongressSerialset { .. }
         | Command::CongressDamage { .. }
+        | Command::SearchlogCopy { .. }
         | Command::Pictures { .. } => None,
     }
 }
@@ -256,6 +261,7 @@ async fn command(
             congress::congress_serialset_command(cli, state, start, args).await
         }
         Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
+        Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,
         Command::Pictures(args) => pictures::pictures_command(cli, args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
