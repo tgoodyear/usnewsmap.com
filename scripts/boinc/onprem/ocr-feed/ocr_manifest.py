@@ -330,6 +330,9 @@ def cmd_build(a):
         json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
+    # Every page OCR asked for: the quality feeder never deletes these scans.
+    with open(os.path.join(a.state, "ocr-docs.txt"), "a") as f:
+        f.write("".join(f"{r['doc_id']}\n" for r in rows))
     stamp = now.isoformat()
     for r in rows:
         t = tries.get(r["doc_id"])
@@ -341,6 +344,98 @@ def cmd_build(a):
     os.replace(tries_path + ".tmp", tries_path)
     log("queued a manifest", manifest=name, pages=len(rows), by_reason=by_reason, rechecked=checked,
         deferred=deferred)
+
+
+QUALITY_SQL = """
+COPY (
+  SELECT doc_id, batch, batch_version, coalesce(decision, 'detected'), coalesce(damage_rate, 0),
+         lccn, decade, stratum_rank
+  FROM (
+    SELECT s.doc_id, s.batch, s.batch_version, s.decision, s.damage_rate, s.lccn, s.decade,
+           row_number() OVER (PARTITION BY s.lccn, s.decade
+                              ORDER BY (s.damage_rate + coalesce(1 - s.loc_wc_mean, s.damage_rate)) / 2
+                                       DESC NULLS LAST, s.doc_id) AS stratum_rank,
+           (s.damage_rate + coalesce(1 - s.loc_wc_mean, s.damage_rate)) / 2 AS badness
+    FROM quality.page_summary s
+    WHERE NOT s.has_image_features
+      AND NOT EXISTS (SELECT FROM quality.staging g WHERE g.doc_id = s.doc_id)
+  ) r
+  WHERE stratum_rank <= {strata} + {slack}
+  ORDER BY stratum_rank, badness DESC NULLS LAST, doc_id
+) TO STDOUT WITH (FORMAT csv)
+"""
+
+
+def cmd_build_quality(a):
+    """The full image pass's next pages (usnm_quality's rank.sql query 2: worst first by
+    damage and LoC's own doubt, round-robin over title and decade, the first --strata ranks),
+    as a queue-quality-<stamp> manifest behind OCR's. Every row's lang is `eng`, so the fetcher
+    files the scan in its buffer set, which the quality feeder empties once the page's unit has
+    shipped; the page's own language stays in usnm_quality. Pages already in the scan
+    server's index are left out even if their scan is gone: the fetcher's `.done` markers keep
+    it from fetching a consumed buffer page again, so queueing one would only stall the pass."""
+    import csv
+    import subprocess
+
+    os.makedirs(a.state, exist_ok=True)
+    last_path = os.path.join(a.state, "last-quality.json")
+    docs_path = os.path.join(a.state, "quality-docs.txt")
+    index = staged_pairs(a.scan_server)
+    if os.path.exists(last_path):
+        with open(last_path) as f:
+            last = json.load(f)
+        pairs = [tuple(p) for p in last["pairs"]]
+        on = sum(1 for p in pairs if p in index)
+        age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
+        if on < 0.9 * len(pairs) and age < dt.timedelta(days=2):
+            log("the last quality manifest is still being fetched; nothing new", manifest=last["name"],
+                on_server=on, pages=len(pairs))
+            return
+    queued = set()
+    for path in (docs_path, os.path.join(a.state, "ocr-docs.txt")):
+        if os.path.exists(path):
+            with open(path) as f:
+                queued |= {line.strip() for line in f if line.strip()}
+    # Each stratum is read --slack ranks deep, so a page left out below (already queued, or
+    # already in the index) gives way to the stratum's next one instead of blocking it.
+    p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+                        QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack))],
+                       capture_output=True, text=True, timeout=3600)
+    if p.returncode:
+        sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
+    rows, taken = [], {}
+    for doc, batch, bv, decision, rate, lccn, decade, _rank in csv.reader(io.StringIO(p.stdout)):
+        if doc in queued or (batch, doc) in index or not DOC_RE.match(doc):
+            continue
+        key = (lccn, decade)
+        if taken.get(key, 0) >= a.strata:
+            continue
+        taken[key] = taken.get(key, 0) + 1
+        rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": "eng"},
+                           {doc: {"lang": "eng", "decision": decision, "damage_rate": float(rate)}}))
+        if len(rows) >= a.max_pages:
+            break
+    if not rows:
+        log("no quality pages left in these strata", strata=a.strata)
+        return
+    body = manifest_bytes(rows)
+    name = "queue-quality-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
+    if a.what_if:
+        log("would queue a quality manifest", manifest=name, pages=len(rows), bytes=len(body))
+        return
+    url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
+    req = urllib.request.Request(url, data=body, method="PUT",
+                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        if r.status not in (200, 201):
+            sys.exit(f"the scan server answered {r.status} for {url}")
+    with open(docs_path, "a") as f:
+        f.write("".join(f"{r['doc_id']}\n" for r in rows))
+    with open(last_path + ".tmp", "w") as f:
+        json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                   "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
+    os.replace(last_path + ".tmp", last_path)
+    log("queued a quality manifest", manifest=name, pages=len(rows))
 
 
 def main(argv=None):
@@ -355,7 +450,20 @@ def main(argv=None):
     b.add_argument("--curated-copy", default="/srv/curated")
     b.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     b.add_argument("--what-if", action="store_true")
+    q = sub.add_parser("build-quality")
+    q.add_argument("--state", required=True)
+    q.add_argument("--dsn", required=True, help="usnm_quality, a role that may read page_summary")
+    q.add_argument("--strata", type=int, default=1, help="ranks per (title, decade) stratum to take")
+    q.add_argument("--max-pages", type=int, default=2000)
+    q.add_argument("--slack", type=int, default=20, help="extra ranks read per stratum to refill it")
+    q.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
+    q.add_argument("--what-if", action="store_true")
     a = ap.parse_args(argv)
+    if a.cmd == "build-quality":
+        if not 1 <= a.max_pages <= 20000 or not 1 <= a.strata <= 1000:
+            sys.exit("--max-pages 1 to 20000, --strata 1 to 1000")
+        cmd_build_quality(a)
+        return
     if not 1 <= a.max_pages <= 20000 or not 1 <= a.days <= 60:
         sys.exit("--max-pages 1 to 20000, --days 1 to 60")
     cmd_build(a)
