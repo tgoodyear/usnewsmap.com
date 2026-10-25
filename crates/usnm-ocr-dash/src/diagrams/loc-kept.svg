@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" class="dg" viewBox="0 0 1100 380" width="1100" height="380" role="img" aria-labelledby="loc-kept-t loc-kept-d">
+<svg xmlns="http://www.w3.org/2000/svg" class="dg" viewBox="0 0 1100 520" width="1100" height="520" role="img" aria-labelledby="loc-kept-t loc-kept-d">
 <title id="loc-kept-t">LoC pages whose OCR text is kept</title>
-<desc id="loc-kept-d">Library of Congress page text goes through the Azure ingest job into curated storage, the release builds the search index from it, and the damage pass scores each page. Pages scored above 0.25 also take the keep-set and buffer-set paths.</desc>
+<desc id="loc-kept-d">Library of Congress page text is curated once into the Azure data lake (the Azure ingest job is gone until the first on-prem release), the release built on-prem builds the search index from it and publishes it to the index storage account, and the damage pass scores each page. Pages scored above 0.25 also take the keep-set and buffer-set paths.</desc>
 <style>
 .dg { --k:#0b0b0b; --k2:#52514e; --bg:#fcfcfb; --lx:#f4f1e6; --lh:#f1f1ee; --la:#e8f0fb; --bx:#ffffff;
   --good:#0ca30c; --run:#2a78d6; --wait:#fab219; --none:#898781; width:100%; height:auto; max-width:1500px; display:block;
@@ -25,9 +25,10 @@
 .dg .al { font-size:11px; fill:var(--k2); }
 </style>
 <defs><marker id="ah-loc-kept" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="tip" d="M0 0 L10 5 L0 10 z"/></marker></defs>
-<rect x="0" y="0" width="1100" height="380" fill="none"/>
+<rect x="0" y="0" width="1100" height="520" fill="none"/>
 <rect class="band x" x="4" y="6" width="1092" height="112" rx="6"/>
 <rect class="band a" x="4" y="126" width="1092" height="246" rx="6"/>
+<rect class="band h" x="4" y="380" width="1092" height="132" rx="6"/>
 <g id="loc-kept-k-loc" class="box x" data-state="none">
 <rect class="card" x="10" y="28" width="200" height="64" rx="4"/>
 <rect class="bar" x="10" y="29" width="6" height="62" rx="2"/>
@@ -52,14 +53,14 @@
 <text x="244" y="199">text, one copy of each</text>
 <text x="244" y="214">page (zstd)</text>
 </g>
-<g id="loc-kept-k-rel" class="box azure" data-state="@@cls:release-loc@@">
-<rect class="card" x="450" y="150" width="200" height="94" rx="4"/>
-<rect class="bar" x="450" y="151" width="6" height="92" rx="2"/>
-<text class="ttl" x="464" y="169">3  Release</text>
-<text x="464" y="184">full rebuild (#283) built</text>
-<text x="464" y="199">on-prem in the build</text>
-<text x="464" y="214">container, from curated</text>
-<text class="st" x="464" y="229">@@lbl:release-loc@@</text>
+<g id="loc-kept-k-rel" class="box local" data-state="@@cls:release-loc@@">
+<rect class="card" x="450" y="402" width="200" height="94" rx="4"/>
+<rect class="bar" x="450" y="403" width="6" height="92" rx="2"/>
+<text class="ttl" x="464" y="421">3  Release</text>
+<text x="464" y="436">full rebuild (#283) built</text>
+<text x="464" y="451">on-prem in the build</text>
+<text x="464" y="466">container, from curated</text>
+<text class="st" x="464" y="481">@@lbl:release-loc@@</text>
 </g>
 <g id="loc-kept-k-idx" class="box azure" data-state="@@cls:index-loc@@">
 <rect class="card" x="670" y="150" width="200" height="94" rx="4"/>
@@ -90,10 +91,12 @@
 </g>
 <path class="arrow" d="M110 92 L110 150" marker-end="url(#ah-loc-kept)"/>
 <path class="arrow" d="M210 197 L230 189.5" marker-end="url(#ah-loc-kept)"/>
-<path class="arrow" d="M430 189.5 L450 197" marker-end="url(#ah-loc-kept)"/>
-<path class="arrow" d="M650 197 L670 197" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M430 189.5 L440 189.5 L440 450 L450 450" marker-end="url(#ah-loc-kept)"/>
+<path class="arrow" d="M650 450 L770 450 L770 244" marker-end="url(#ah-loc-kept)"/>
+<text class="al" x="778" y="430">publish</text>
 <path class="arrow" d="M330 229 L330 268" marker-end="url(#ah-loc-kept)"/>
 <path class="arrow" d="M430 315 L450 315" marker-end="url(#ah-loc-kept)"/>
 <text class="lane x" x="14" y="22">Library of Congress</text>
+<text class="lane h" x="14" y="396">Home network (on-premises)</text>
 <text class="lane a" x="14" y="142">Azure (data lake and index storage, private)</text>
 </svg>
