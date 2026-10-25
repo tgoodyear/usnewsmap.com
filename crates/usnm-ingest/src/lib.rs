@@ -12,6 +12,7 @@ pub mod audit;
 pub mod build_info;
 pub mod catalog;
 pub mod cluster;
+pub mod congress_damage;
 pub mod decade_order;
 pub mod dedup;
 pub mod finish;

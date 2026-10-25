@@ -63,6 +63,7 @@ enum Command {
     OcrRequeue(ocr::OcrRequeueArgs),
     CongressGlobe(congress::CongressGlobeArgs),
     CongressSerialset(congress::CongressSerialsetArgs),
+    CongressDamage(congress::CongressDamageArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
 }
@@ -133,6 +134,7 @@ impl Command {
             Command::OcrRequeue { .. } => "ocr-requeue",
             Command::CongressGlobe { .. } => "congress-globe",
             Command::CongressSerialset { .. } => "congress-serialset",
+            Command::CongressDamage { .. } => "congress-damage",
             Command::Run { .. } => "run",
         }
     }
@@ -166,7 +168,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
         | Command::CongressGlobe { .. }
-        | Command::CongressSerialset { .. } => None,
+        | Command::CongressSerialset { .. }
+        | Command::CongressDamage { .. } => None,
     }
 }
 
@@ -249,6 +252,7 @@ async fn command(
         Command::CongressSerialset(args) => {
             congress::congress_serialset_command(cli, state, start, args).await
         }
+        Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,

@@ -16,7 +16,7 @@ use crate::common::{
 /// Serial Set pages curated from the recorded GovInfo responses (#229
 /// phase 2), as `congress-serialset` writes them: volume 33's two
 /// documents, their MODS and the page texts pdftotext gave.
-async fn put_serialset(e: &Env) -> usnm_ingest::congress::curated::Counts {
+pub(crate) async fn put_serialset(e: &Env) -> usnm_ingest::congress::curated::Counts {
     use usnm_ingest::congress::{curated, serialset};
     let dir = fixtures().join("../congress/govinfo");
     let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
