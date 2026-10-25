@@ -6,14 +6,14 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 
 ## What runs on the host
 
-| Unit                               | What                                                                                    | Notes                                                                                                                     |
-| ---------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`         | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
-| `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons          | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
-| `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job           | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
-| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job   | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
-| `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release` and `collect`, in place of the Azure hand-off job | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
-| `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`          | Public ingress with no inbound port                                                                                       |
+| Unit                               | What                                                                                              | Notes                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`                   | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
+| `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons                    | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
+| `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job                     | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
+| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job             | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
+| `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
+| `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                    | Public ingress with no inbound port                                                                                       |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
@@ -112,8 +112,9 @@ IMDS_ENDPOINT=http://localhost:40342
 The values are the job's environment: `az containerapp job show --name usnm-boinc-handoff-caj-<env>
 --resource-group rg-usnm-<env> --query "properties.template.containers[0].env"`. The
 controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
-([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-and-collect-967)). `export`
-and `texts-export` still run as the Azure job. Once claim and collect have run cleanly here
+([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-and-collect-967)), and
+`export` too with `--onprem-handoff export` (it downloads each scan from Azure, which is egress).
+`texts-export` still runs as the Azure job. Once claim and collect have run cleanly here
 for a day, a separate Bicep change retires the job's claim and collect use.
 
 ## Azure after the cutover

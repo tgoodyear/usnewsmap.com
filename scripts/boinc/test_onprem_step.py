@@ -51,7 +51,7 @@ class OnpremStep(unittest.TestCase):
     def test_refusals(self):
         cases = [
             (("--env", "prod", "--target", "export", "--step", "collect", "--what-if"), "does not run on-prem"),
-            (("--env", "prod", "--target", "handoff", "--step", "export", "--what-if"), "stays in Azure"),
+            (("--env", "prod", "--target", "handoff", "--step", "texts-export", "--what-if"), "stays in Azure"),
             (("--env", "prod", "--target", "handoff", "--step", "collect", "--what-if"), "no "),
             (("--env", "prod", "--step", "submit", "--var", "DB_HOST=x", "--what-if"), "set by the host"),
             (("--env", "prod", "--step", "submit", "--var", "BRIDGE_STEP=x", "--what-if"), "set by the host"),
@@ -189,7 +189,12 @@ class OnpremStep(unittest.TestCase):
         for command in ("--env prod --target handoff --step collect --var JOB_IDS=" + "a" * 64 + " --what-if",
                         "--env prod --target handoff --step collect --var JOB_ID=" + "a" * 64 +
                         " --var HOST_ID=7 --what-if",
-                        "--env prod --target handoff --step release --var HANDOFF_DOCS=a_b,c_d --what-if"):
+                        "--env prod --target handoff --step release --var HANDOFF_DOCS=a_b,c_d --what-if",
+                        "--env prod --target handoff --step export --var HANDOFF_PAGES=sn1/1890-05-03/ed-1/seq-7"
+                        " --var HANDOFF_BATCH=nbu_gage --var HANDOFF_PLAN=queue-feed-1"
+                        " --var HANDOFF_MANIFEST=pages-v1/manifest.parquet --var ENGINE_IMAGE=sha256:" + "c" * 64 +
+                        " --var HANDOFF_SCANS=keep/nbu_gage/sn1/1890-05-03/1/7.jp2 --var HANDOFF_JOBS=" + "d" * 64 +
+                        " --var HANDOFF_CLAIMS=1 --what-if"):
             with self.subTest(command=command):
                 done = self.run_step(ssh=command)
                 self.assertEqual(done.returncode, 0, done.stderr)
@@ -205,7 +210,7 @@ class OnpremStep(unittest.TestCase):
             ("--env prod --target handoff --step collect --var HANDOFF_SPOOL=/project/x --what-if", "takes only"),
             ("--env prod --target handoff --step claim --var JOB_ID=" + "a" * 64 + " --what-if", "takes only"),
             ("--env prod --target handoff --step release --var CLAIM_NONCE=abcdefgh12 --what-if", "takes only"),
-            ("--env prod --target handoff --step export --var HANDOFF_PAGES=x --what-if", "stays in Azure"),
+            ("--env prod --target handoff --step export --var JOB_ID=" + "a" * 64 + " --what-if", "takes only"),
             ("--env prod --target handoff --step texts-export --what-if", "stays in Azure"),
         ):
             with self.subTest(command=command):

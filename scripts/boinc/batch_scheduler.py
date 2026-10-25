@@ -538,7 +538,7 @@ class ClaimFailed(RuntimeError):
 
 # --onprem-handoff choices and the hand-off steps each one moves to the on-prem host. A claim's
 # release goes with it: both take pages off and back onto the work queues.
-ONPREM_HANDOFF = {"claim": ("claim", "release"), "collect": ("collect",)}
+ONPREM_HANDOFF = {"claim": ("claim", "release"), "collect": ("collect",), "export": ("export",)}
 
 
 class Transport:
@@ -557,9 +557,9 @@ class Transport:
         self.batch_collect = batch_collect
         # The hand-off steps that run on the on-prem BOINC host through step_command
         # (usnm-boinc-step --target handoff, #967 phase 3) instead of the Azure hand-off job:
-        # "claim" (with its release) and/or "collect". Off by default.
+        # "claim" (with its release), "collect" and/or "export". Off by default.
         unknown = set(onprem_handoff) - set(ONPREM_HANDOFF)
-        require(not unknown, "onprem_handoff is claim and/or collect")
+        require(not unknown, "onprem_handoff is claim, collect and/or export")
         require(not onprem_handoff or config.get("step_command"),
                 "on-prem hand-off steps need the config's step_command")
         self.onprem_steps = {step for choice in onprem_handoff for step in ONPREM_HANDOFF[choice]}

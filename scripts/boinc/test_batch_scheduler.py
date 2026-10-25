@@ -1582,7 +1582,9 @@ class QueueTransportTests(unittest.TestCase):
         cfg["step_command"] = ["ssh", "-o", "BatchMode=yes", "usnm-boinc-step@boinc.example"]
         launcher = ["bash", str(batch.REPO / "scripts/boinc/start-boinc-bridge.sh")]
         for choice, onprem in (((), set()), (("claim",), {"claim", "release"}), (("collect",), {"collect"}),
-                               (("claim", "collect"), {"claim", "release", "collect"})):
+                               (("claim", "collect"), {"claim", "release", "collect"}),
+                               (("export",), {"export"}),
+                               (("claim", "collect", "export"), {"claim", "release", "collect", "export"})):
             with self.subTest(choice=choice):
                 transport = batch.Transport(cfg, Path("."), onprem_handoff=choice)
                 with patch.object(transport, "run", return_value="") as run:
@@ -1600,8 +1602,8 @@ class QueueTransportTests(unittest.TestCase):
             batch.Transport(copy.deepcopy(self.config), Path("."), onprem_handoff=("claim",))
         cfg = copy.deepcopy(self.config)
         cfg["step_command"] = ["ssh", "usnm-boinc-step@boinc.example"]
-        with self.assertRaisesRegex(ValueError, "claim and/or collect"):
-            batch.Transport(cfg, Path("."), onprem_handoff=("export",))
+        with self.assertRaisesRegex(ValueError, "claim, collect and/or export"):
+            batch.Transport(cfg, Path("."), onprem_handoff=("texts-export",))
 
     def test_main_onprem_handoff_is_off_by_default_and_checked(self):
         cfg = config()

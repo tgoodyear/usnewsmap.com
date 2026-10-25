@@ -396,6 +396,38 @@ fn cached(scans: &Path, row: &ManifestRow) -> anyhow::Result<(Vec<u8>, prefetch:
     }
     bail!("selected page has no full-resolution cached scan")
 }
+/// The rows `export` builds queue-fed jobs from: one per selected page, from its claim file.
+/// The scan is then found and checked against its sidecar (doc id, batch, batch version,
+/// checksum) as a manifest page's is.
+fn claimed_rows(
+    dir: &Path,
+    batch: &str,
+    selected: &BTreeSet<String>,
+) -> anyhow::Result<Vec<ManifestRow>> {
+    selected
+        .iter()
+        .map(|page| {
+            let key: PageKey = page.parse()?;
+            let claim = claim::read_local(dir, &key.doc_id())?;
+            let message = claim.message()?;
+            ensure!(
+                message.page == *page
+                    && message.batch == batch
+                    && message.language == claim.ledger.language,
+                "the claim for {} is not this page and batch's queue message and ledger row",
+                key.doc_id()
+            );
+            Ok(ManifestRow::new(
+                &key,
+                &message.batch,
+                claim.ledger.batch_version,
+                Some(message.language.clone()),
+                "claim",
+                message.score.unwrap_or(0.0),
+            ))
+        })
+        .collect()
+}
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
     pub manifest: PathBuf,
@@ -460,10 +492,17 @@ pub async fn export(
         .iter()
         .map(|page| page.parse::<PageKey>().map(|key| key.doc_id()))
         .collect::<Result<_, _>>()?;
-    let rows = usnm_ocr_contract::prefetch::decode_where(
-        bytes::Bytes::from(read(&opts.manifest, 128 << 20)?),
-        |row| row.batch == opts.batch && selected_docs.contains(&row.doc_id),
-    )?;
+    // A queue-fed page comes from its claim: a user-requested page is in no prefetch
+    // manifest (#1055), and its claim already holds the batch version the ledger row and
+    // the published snapshot agreed on. A cohort page comes from the manifest.
+    let rows = if let Some(dir) = &opts.claims {
+        claimed_rows(dir, &opts.batch, &selected)?
+    } else {
+        usnm_ocr_contract::prefetch::decode_where(
+            bytes::Bytes::from(read(&opts.manifest, 128 << 20)?),
+            |row| row.batch == opts.batch && selected_docs.contains(&row.doc_id),
+        )?
+    };
     let mut chosen = BTreeMap::new();
     for row in rows {
         if row.batch == opts.batch && selected.contains(&row.key()?.to_string()) {
