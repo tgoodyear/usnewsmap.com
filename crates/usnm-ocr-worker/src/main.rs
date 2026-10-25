@@ -465,8 +465,8 @@ enum Command {
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
         loc_bucket: Option<String>,
         /// From the end of one request to LoC's bucket to the start of the
-        /// next; at least 6000.
-        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 6000)]
+        /// next; at least 1000.
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 2000)]
         loc_bucket_gap_ms: u64,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
@@ -742,7 +742,7 @@ mod cli_tests {
     }
 
     #[test]
-    fn locs_bucket_is_off_unless_named_and_never_under_six_seconds_apart() {
+    fn locs_bucket_is_off_unless_named_and_never_under_a_second_apart() {
         let _env = env_lock();
         const NAMES: [&str; 2] = [
             "USNM_PREFETCH_LOC_BUCKET",
@@ -785,10 +785,10 @@ mod cli_tests {
         // Off by default, and when empty.
         assert!(bucket(&[]).unwrap().is_none());
         assert!(bucket(&["--loc-bucket", ""]).unwrap().is_none());
-        // The flag, 6 s apart unless told more.
+        // The flag, 2 s apart unless told otherwise.
         let root = usnm_ocr_worker::loc::bucket::ROOT;
         let b = bucket(&["--loc-bucket", root]).unwrap().unwrap();
-        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(6)));
+        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(2)));
         let b = bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "9000"])
             .unwrap()
             .unwrap();
@@ -800,7 +800,7 @@ mod cli_tests {
         std::env::set_var(NAMES[1], "7000");
         let b = bucket(&[]).unwrap().unwrap();
         assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(7)));
-        std::env::set_var(NAMES[1], "5999");
+        std::env::set_var(NAMES[1], "999");
         assert!(bucket(&[]).is_err());
         std::env::set_var(NAMES[0], "");
         assert!(bucket(&[]).unwrap().is_none(), "empty: off");

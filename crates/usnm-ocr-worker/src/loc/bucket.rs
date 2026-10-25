@@ -33,8 +33,8 @@
 //! listing isn't allowed): it counts as a miss and the batch stays public.
 //!
 //! **Pacing.** As for a mirror ([`super::mirror`]): one request at a time,
-//! the next at least [`BucketConfig::gap`] (6 s, never less from the flag:
-//! [`MIN_GAP`]) after the last one ended, never through LoC's pacers or the
+//! the next at least [`BucketConfig::gap`] ([`DEFAULT_GAP`], never less from
+//! the flag than [`MIN_GAP`]) after the last one ended, never through LoC's pacers or the
 //! host's LoC budget. A request waits at most [`BucketConfig::max_wait`]
 //! for its turn and then goes to LoC. A 429 or 503 (S3's SlowDown) holds
 //! the bucket for `Retry-After` (at least [`BucketConfig::backoff`], at
@@ -77,15 +77,19 @@ const METS_TIMEOUT: Duration = Duration::from_secs(30);
 /// The uploader's md5 of an object.
 const META_MD5: &str = "x-amz-meta-md5";
 /// The shortest gap between requests to the bucket `--loc-bucket-gap-ms`
-/// may set: 6 s, the maintainer's of 24 October 2026.
-pub const MIN_GAP: Duration = Duration::from_secs(6);
+/// may set: 1 s, the maintainer's of 25 October 2026 (6 s before).
+pub const MIN_GAP: Duration = Duration::from_secs(1);
+/// The gap when `--loc-bucket-gap-ms` isn't given: 2 s, the maintainer's
+/// first step of 25 October 2026 towards 1 s.
+pub const DEFAULT_GAP: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct BucketConfig {
     /// The bucket's root, ending in `/` ([`ROOT`]; a stand-in in tests).
     pub root: String,
-    /// From the end of one request to the start of the next (6 s, the
-    /// maintainer's; [`BucketConfig::at`] takes nothing under [`MIN_GAP`]).
+    /// From the end of one request to the start of the next
+    /// ([`DEFAULT_GAP`]; [`BucketConfig::at`] takes nothing under
+    /// [`MIN_GAP`]).
     pub gap: Duration,
     /// A 5xx, a timeout, a network error or a body that can't be read
     /// holds the bucket this long, and a 429 or 503 at least this long.
@@ -104,7 +108,7 @@ impl Default for BucketConfig {
     fn default() -> Self {
         Self {
             root: ROOT.into(),
-            gap: MIN_GAP,
+            gap: DEFAULT_GAP,
             backoff: Duration::from_secs(60),
             block_hold: Duration::from_secs(3600),
             max_wait: Duration::from_secs(30),
@@ -662,7 +666,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(c.root, ROOT);
-        assert_eq!(c.gap, Duration::from_secs(6));
+        assert_eq!(c.gap, Duration::from_secs(1));
         // Path-style, and a longer gap.
         let c = BucketConfig::at(
             "https://s3.us-east-1.amazonaws.com/ndnp-batches",
@@ -693,8 +697,8 @@ mod tests {
         ] {
             assert!(BucketConfig::at(root, gap).is_err(), "{root}");
         }
-        // Nothing under 6 s apart.
-        for ms in [0, 10, 5_999] {
+        // Nothing under 1 s apart.
+        for ms in [0, 10, 999] {
             assert!(
                 BucketConfig::at(ROOT, Duration::from_millis(ms)).is_err(),
                 "{ms}"
