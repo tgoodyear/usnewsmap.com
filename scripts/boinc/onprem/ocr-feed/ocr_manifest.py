@@ -348,36 +348,120 @@ def cmd_build(a):
 
 QUALITY_SQL = """
 COPY (
-  SELECT doc_id, batch, batch_version, coalesce(decision, 'detected'), coalesce(damage_rate, 0),
-         lccn, decade, stratum_rank
-  FROM (
-    SELECT s.doc_id, s.batch, s.batch_version, s.decision, s.damage_rate, s.lccn, s.decade,
-           row_number() OVER (PARTITION BY s.lccn, s.decade
-                              ORDER BY (s.damage_rate + coalesce(1 - s.loc_wc_mean, s.damage_rate)) / 2
-                                       DESC NULLS LAST, s.doc_id) AS stratum_rank,
+  WITH p AS (
+    SELECT s.doc_id, s.batch, s.batch_version, s.decision, s.damage_rate, s.lccn, s.decade, s.date,
+           substring(s.doc_id from '_ed-([0-9]+)_seq-') AS ed,
            (s.damage_rate + coalesce(1 - s.loc_wc_mean, s.damage_rate)) / 2 AS badness
     FROM quality.page_summary s
     WHERE NOT s.has_image_features
-      AND NOT EXISTS (SELECT FROM quality.staging g WHERE g.doc_id = s.doc_id)
-  ) r
-  WHERE stratum_rank <= {strata} + {slack}
-  ORDER BY stratum_rank, badness DESC NULLS LAST, doc_id
+      AND NOT EXISTS (SELECT FROM quality.staging g WHERE g.doc_id = s.doc_id){batch_filter}
+  ), i AS (
+    SELECT lccn, decade, date, ed, max(badness) AS worst,
+           row_number() OVER (PARTITION BY lccn, decade
+                              ORDER BY max(badness) DESC NULLS LAST, date, ed) AS issue_rank
+    FROM p
+    GROUP BY lccn, decade, date, ed
+  )
+  SELECT p.doc_id, p.batch, p.batch_version, coalesce(p.decision, 'detected'),
+         coalesce(p.damage_rate, 0), p.lccn, p.decade, i.issue_rank
+  FROM p JOIN i USING (lccn, decade, date, ed)
+  WHERE i.issue_rank <= {strata} + {slack}
+  ORDER BY i.issue_rank, i.worst DESC NULLS LAST, p.lccn, p.date, p.ed, p.doc_id
 ) TO STDOUT WITH (FORMAT csv)
 """
 
+BATCH_RE = re.compile(r"^[a-z]+_[A-Za-z0-9]+_ver[0-9]{2}$")
+
+
+def read_batches(path):
+    """The batches a pass may take pages from, one name a line (`#` starts a comment); a
+    tab-separated line counts only when its second field is 200, so the bucket probe's
+    `<batch>\t<HTTP status>\t<time>` file can be given as it is."""
+    out = set()
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) > 1 and fields[1].strip() != "200":
+                continue
+            name = fields[0].strip()
+            if not BATCH_RE.match(name):
+                sys.exit(f"{path}: {name!r} isn't a batch name")
+            out.add(name)
+    if not out:
+        sys.exit(f"{path} names no batch")
+    return out
+
+
+def batch_pair(name):
+    """A batch's full name as usnm_quality keeps it: ak_goat_ver01 is ("ak_goat", 1)."""
+    base, ver = name.rsplit("_ver", 1)
+    return base, int(ver)
+
+
+def issue_of(doc):
+    m = DOC_RE.match(doc)
+    return (m["lccn"], m["date"], m["ed"]) if m else None
+
+
+def pick_issues(rows, queued, index, strata, max_pages):
+    """From the ranked rows (doc, batch, bv, decision, rate, lccn, decade, rank: each
+    stratum's issues worst first, every page of an issue), the first `strata` issues of each
+    (title, decade) stratum that still have a page to fetch, every such page of each, in
+    round-robin order, until `max_pages`. An issue is taken whole or not at all (the first
+    one always), so its METS and its batch's manifest are asked for once for all its pages;
+    a page already queued or in the scan server's index is left out, and an issue with
+    nothing left gives way to the stratum's next."""
+    issues, order = {}, []
+    for r in rows:
+        doc, batch = r[0], r[1]
+        key = issue_of(doc)
+        if key is None:
+            continue
+        if key not in issues:
+            issues[key] = {"stratum": (r[5], r[6]), "pages": []}
+            order.append(key)
+        if doc in queued or (batch, doc) in index:
+            continue
+        issues[key]["pages"].append(r)
+    out, taken = [], {}
+    for key in order:
+        it = issues[key]
+        if not it["pages"] or taken.get(it["stratum"], 0) >= strata:
+            continue
+        if out and len(out) + len(it["pages"]) > max_pages:
+            continue
+        taken[it["stratum"]] = taken.get(it["stratum"], 0) + 1
+        out.extend(it["pages"])
+        if len(out) >= max_pages:
+            break
+    return out
+
 
 def cmd_build_quality(a):
-    """The full image pass's next pages (usnm_quality's rank.sql query 2: worst first by
-    damage and LoC's own doubt, round-robin over title and decade, the first --strata ranks),
-    as a queue-quality-<stamp> manifest behind OCR's. Every row's lang is `eng`, so the fetcher
-    files the scan in its buffer set, which the quality feeder empties once the page's unit has
-    shipped; the page's own language stays in usnm_quality. Pages already in the scan
-    server's index are left out even if their scan is gone: the fetcher's `.done` markers keep
-    it from fetching a consumed buffer page again, so queueing one would only stall the pass."""
+    """The full image pass's next pages (usnm_quality's rank.sql query 2, by issue: worst
+    first by damage and LoC's own doubt, round-robin over title and decade, the first
+    --strata issues of each, every page of an issue), as a queue-quality-<stamp> manifest
+    behind OCR's. Taking whole issues lets the fetcher ask for each issue's METS, and each
+    batch's manifest, once for all their pages, about one request a page. --batches limits
+    the pass to those batches (LoC's bucket's public ones, say). Every row's lang is `eng`,
+    so the fetcher files the scan in its buffer set, which the quality feeder empties once
+    the page's unit has shipped; the page's own language stays in usnm_quality. Pages
+    already in the scan server's index are left out even if their scan is gone: the
+    fetcher's `.done` markers keep it from fetching a consumed buffer page again, so
+    queueing one would only stall the pass."""
     import csv
     import subprocess
 
     os.makedirs(a.state, exist_ok=True)
+    batch_filter = ""
+    if a.batches:
+        # usnm_quality keeps a batch's name without its version (ak_goat, 1 for ak_goat_ver01).
+        pairs = sorted(batch_pair(n) for n in read_batches(a.batches))
+        batch_filter = ("\n      AND (s.batch, s.batch_version) IN ("
+                        + ", ".join(f"('{b}', {v})" for b, v in pairs) + ")")
     last_path = os.path.join(a.state, "last-quality.json")
     docs_path = os.path.join(a.state, "quality-docs.txt")
     index = staged_pairs(a.scan_server)
@@ -396,32 +480,27 @@ def cmd_build_quality(a):
         if os.path.exists(path):
             with open(path) as f:
                 queued |= {line.strip() for line in f if line.strip()}
-    # Each stratum is read --slack ranks deep, so a page left out below (already queued, or
-    # already in the index) gives way to the stratum's next one instead of blocking it.
+    # Each stratum is read --slack issues deep, so an issue left out below (all its pages
+    # already queued, or already in the index) gives way to the stratum's next one.
     p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
-                        QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack))],
+                        QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack), batch_filter=batch_filter)],
                        capture_output=True, text=True, timeout=3600)
     if p.returncode:
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
-    rows, taken = [], {}
-    for doc, batch, bv, decision, rate, lccn, decade, _rank in csv.reader(io.StringIO(p.stdout)):
-        if doc in queued or (batch, doc) in index or not DOC_RE.match(doc):
-            continue
-        key = (lccn, decade)
-        if taken.get(key, 0) >= a.strata:
-            continue
-        taken[key] = taken.get(key, 0) + 1
-        rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": "eng"},
-                           {doc: {"lang": "eng", "decision": decision, "damage_rate": float(rate)}}))
-        if len(rows) >= a.max_pages:
-            break
+    picked = pick_issues(list(csv.reader(io.StringIO(p.stdout))), queued, index, a.strata, a.max_pages)
+    rows = [row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": "eng"},
+                   {doc: {"lang": "eng", "decision": decision, "damage_rate": float(rate)}})
+            for doc, batch, bv, decision, rate, *_ in picked]
     if not rows:
         log("no quality pages left in these strata", strata=a.strata)
         return
     body = manifest_bytes(rows)
     name = "queue-quality-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
+    issues = len({issue_of(r["doc_id"]) for r in rows})
+    batches = len({r["batch"] for r in rows})
     if a.what_if:
-        log("would queue a quality manifest", manifest=name, pages=len(rows), bytes=len(body))
+        log("would queue a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches,
+            bytes=len(body))
         return
     url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
     req = urllib.request.Request(url, data=body, method="PUT",
@@ -435,7 +514,7 @@ def cmd_build_quality(a):
         json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                    "pairs": [[r["batch"], r["doc_id"]] for r in rows]}, f)
     os.replace(last_path + ".tmp", last_path)
-    log("queued a quality manifest", manifest=name, pages=len(rows))
+    log("queued a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches)
 
 
 def main(argv=None):
@@ -453,9 +532,10 @@ def main(argv=None):
     q = sub.add_parser("build-quality")
     q.add_argument("--state", required=True)
     q.add_argument("--dsn", required=True, help="usnm_quality, a role that may read page_summary")
-    q.add_argument("--strata", type=int, default=1, help="ranks per (title, decade) stratum to take")
+    q.add_argument("--strata", type=int, default=1, help="issues per (title, decade) stratum to take")
+    q.add_argument("--batches", help="take pages only from these batches: one a line, or the bucket probe's TSV")
     q.add_argument("--max-pages", type=int, default=2000)
-    q.add_argument("--slack", type=int, default=20, help="extra ranks read per stratum to refill it")
+    q.add_argument("--slack", type=int, default=20, help="extra issues read per stratum to refill it")
     q.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     q.add_argument("--what-if", action="store_true")
     a = ap.parse_args(argv)

@@ -478,12 +478,17 @@ is mostly fetched (90% on the scan server) or a day old.
 ### The full image pass and the piggyback (#962)
 
 `ocr_manifest.py build-quality` (`usnm-quality-build.timer`, every 2 hours in CT215) takes
-the next pages from `usnm_quality`'s stored summary: no image features yet, not staged, ranked
-round-robin over (title, decade) with the worst first by the mean of the damage score and
-LoC's own doubt (`1 - wc_mean`), the first `--strata` ranks. It queues them through the scan
-server as `queue-quality-<stamp>`, which the fetcher runs behind OCR's manifests in one-hour
-slices, inside the host's 45-a-minute LoC budget. Rows are marked `eng`, so the scans go to the
-fetcher's buffer set.
+the next issues from `usnm_quality`'s stored summary: pages with no image features yet, not
+staged, grouped by issue, the issues ranked round-robin over (title, decade) with the worst
+first by their worst page (the mean of the damage score and LoC's own doubt, `1 - wc_mean`),
+the first `--strata` issues of each, every page of an issue. Whole issues let the fetcher
+ask for an issue's METS, and its batch's manifest, once for all its pages: about one request
+a page. The first stratum-1 manifest (25 October), one page per (title, decade), cost about
+three bucket requests a page. `--batches` (`--pass-batches` to the installer) limits the pass
+to the batches a file names, such as LoC's bucket's public ones. It queues the pages through
+the scan server as `queue-quality-<stamp>`, which the fetcher runs behind OCR's manifests in
+one-hour slices, inside the host's global LoC budget. Rows are marked `eng`, so the scans go
+to the fetcher's buffer set.
 
 `quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
 that no campaign has staged (OCR's and the pass's) a unit, in fetch order, and deletes the
