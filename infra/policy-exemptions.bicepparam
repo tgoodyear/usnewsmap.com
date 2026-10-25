@@ -13,3 +13,4 @@ param onPremRelease = bool(readEnvironmentVariable('USNM_ONPREM_RELEASE', 'false
 param indexStorage = bool(readEnvironmentVariable('USNM_INDEX_STORAGE', 'false'))
 param onPremServing = bool(readEnvironmentVariable('USNM_ONPREM_SERVING', 'false'))
 param cosmosOnPremAccess = bool(readEnvironmentVariable('USNM_COSMOS_ONPREM_ACCESS', 'false'))
+param ocrSyncOnPrem = bool(readEnvironmentVariable('USNM_OCR_SYNC_ONPREM', 'false'))

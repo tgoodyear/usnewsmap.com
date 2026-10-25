@@ -36,6 +36,8 @@ param indexStorage bool = false
 param onPremServing bool = false
 @description('As in main.bicep.')
 param cosmosOnPremAccess bool = false
+@description('The OCR pickup runs on-prem (main.bicep ocrSyncOnPrem, #917): the lake and Cosmos open to the node IPs.')
+param ocrSyncOnPrem bool = false
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -57,9 +59,9 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
           subscription().subscriptionId,
           n,
           ocrNodes,
-          lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps),
+          lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem, ocrNodeIps),
           indexOpen(onPremRelease, indexStorage, ocrNodeIps),
-          cosmosOpen(onPremServing || cosmosOnPremAccess, ocrNodeIps)
+          cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
         )
       }
     }

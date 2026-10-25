@@ -278,6 +278,16 @@
       "description": "Let USNM_OCR_DAMAGE_RUNNER (an on-prem host's own Arc machine identity, pve-laptop CT 215) write the OCR damage tables (#296, usnm-ingest ocr-damage): create new blobs under curated/audit/damage/ only, with no read, overwrite or delete. It reads curated and reference through the on-prem hosts' group, so pair it with USNM_JA_OCR_ONPREM.",
       "type": "boolean"
     },
+    "USNM_OCR_SYNC_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Run the OCR pickup (usnm-ingest ocr-sync, ocr-seed, ocr-enqueue, ocr-requeue) on-prem as USNM_BATCH_HOST, pve-laptop CT 215 (#917): the lake role on curated (writes under ocr-local/ only), reference (status/ocr-local.json only) and ocr-requests, the exchange role on ocr-out and ocr-quarantine, its queue roles, Cosmos ops, Monitoring Metrics Publisher and AcrPull. Needs USNM_OCR_NODES; pair with USNM_OCR_SYNC_CRON manual.",
+      "type": "boolean"
+    },
+    "USNM_BATCH_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The object id of the batch container's own Arc machine identity (usnm-batch-arcs-<env>, pve-laptop CT 215), with USNM_OCR_SYNC_ONPREM.",
+      "not": {}
+    },
     "USNM_OCR_DAMAGE_RUNNER": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The OCR damage tables' writer's object id (an on-prem host's own Arc machine identity, usnm-batch-arcs-<env>), with USNM_OCR_DAMAGE_ONPREM.",
