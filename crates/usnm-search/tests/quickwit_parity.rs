@@ -190,10 +190,11 @@ fn queries() -> Vec<(&'static str, Node)> {
         ),
         ("slash between digits", parse("1/2").unwrap()),
         // A fraction joined to a number is also searched as OCR prints it
-        // with a slash (#1067): `(text:61¼ OR text:"61 1 4" OR text:"611
-        // 4")`. The fixtures print `61¼` and `20¾` as the glyph only, so
-        // these count what the glyph counts and check the engine takes the
-        // query as the reference backend reads it, in every layout.
+        // with a slash (#1067), so `61¼` becomes
+        // `(text:61¼ OR text:"61 1 4" OR text:"611 4")`. The fixtures print
+        // `61¼` and `20¾` as the glyph only, so these count what the glyph
+        // counts and check the engine takes the query as the reference
+        // backend reads it, in every layout.
         (
             "phrase with a fraction in a number",
             parse(r#""higher at 61¼""#).unwrap(),
