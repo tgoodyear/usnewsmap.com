@@ -303,6 +303,9 @@ param ingestOnPrem bool = false
 @description('Let batchHost run backfill curation (`usnm-ingest curate --enqueue`, `enqueue`; #917), in place of caj-usnm-backfill: its curated grant also creates under pages/ (create-only), and Cosmos Data Contributor on `batches` and `issues`. Needs ocrSyncOnPrem. Off (the default) until a backfill is needed.')
 param backfillOnPrem bool = false
 
+@description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
+param ocrSyncAlerts bool = false
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -1216,9 +1219,29 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
       backfillReplicaSilent: n.backfillReplicaSilentAlert
       ocrSyncBacklog: n.ocrSyncBacklogAlert
     }
-    ocrSync: ocrNodes
+    // The Azure pickup job's backlog; ocr-sync-alerts below watches the on-prem pickup.
+    ocrSync: ocrNodes && !ocrSyncOnPrem
     // While a backfill lasts, it runs on USNM_BACKFILL_CRON.
     backfill: !empty(backfillCron)
+  }
+}
+
+// The on-prem OCR pickup (ocr-sync in pve-laptop CT 215, #1139): failed runs, no
+// run for more than 2 hours, and the ocr-out backlog, from the metrics it exports.
+module ocrSyncAlertRules 'modules/ocr-sync-alerts.bicep' = if (!empty(emails) && ocrSyncAlerts && ocrSyncOnPrem) {
+  scope: rg
+  name: 'ocr-sync-alerts'
+  params: {
+    location: location
+    tags: tags
+    workspaceId: monitoring.outputs.workspaceId
+    appInsightsId: monitoring.outputs.appInsightsId
+    actionGroupId: monitoring.outputs.actionGroupId
+    alertNames: {
+      failed: n.ocrSyncFailedAlert
+      stale: n.ocrSyncStaleAlert
+      backlog: n.ocrSyncBacklogAlert
+    }
   }
 }
 

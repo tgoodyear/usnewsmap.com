@@ -33,6 +33,7 @@
   "USNM_OCR_SEED_MAX_PAGES": "50000",
   "USNM_OCR_SEED_PLAN": "pilot-german-frak2021",
   "USNM_OCR_SEED_SOURCE": "fetched",
+  "USNM_OCR_SYNC_ALERTS": true,
   "USNM_OCR_SYNC_CRON": "manual",
   "USNM_OCR_SYNC_ONPREM": true,
   "USNM_PAGE_LANGUAGE": true,

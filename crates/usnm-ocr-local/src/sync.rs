@@ -744,6 +744,7 @@ async fn run_locked(
     let oldest = left.iter().filter_map(|p| p.created).min();
     let oldest_age_s = secs_since(oldest, now);
     metrics.ocr_out_oldest_age.record(oldest_age_s, &[]);
+    metrics.ocr_out_parts_left.record(left.len() as u64, &[]);
     let mut queues = BTreeMap::new();
     for q in [PRIORITY, BULK, DEADLETTER] {
         match stores.queue.approximate_count(q).await {

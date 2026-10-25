@@ -191,6 +191,8 @@ var nameTypes = {
   ocrNodeWriterRole: 'role'
   ocrNodesWorkbookTitle: 'title'
   ocrSyncBacklogAlert: 'alert'
+  ocrSyncFailedAlert: 'alert'
+  ocrSyncStaleAlert: 'alert'
   ocrSyncJob: 'caj'
   ocrVault: 'kv'
   ocrWorkspace: 'log'
@@ -301,6 +303,8 @@ type Names = {
   ocrNodeWriterRole: string
   ocrNodesWorkbookTitle: string
   ocrSyncBacklogAlert: string
+  ocrSyncFailedAlert: string
+  ocrSyncStaleAlert: string
   ocrSyncJob: string
   ocrVault: string
   ocrWorkspace: string
@@ -400,6 +404,8 @@ func names(env string, sfx string, pinned bool) Names => {
   ocrNodesWorkbookTitle: 'usnm OCR nodes (${env})'
   // 'ocrs', not 'ocrsync', the pickup job's first name (#386, ADR-0017).
   ocrSyncBacklogAlert: usnmName('ocrs-backlog', 'alert', env)
+  ocrSyncFailedAlert: usnmName('ocrs-failed', 'alert', env)
+  ocrSyncStaleAlert: usnmName('ocrs-stale', 'alert', env)
   ocrSyncJob: usnmName('ocrs', 'caj', env)
   ocrVault: usnmCompactName('ocr', 'kv', env, sfx)
   ocrWorkspace: usnmName('ocr', 'log', env)

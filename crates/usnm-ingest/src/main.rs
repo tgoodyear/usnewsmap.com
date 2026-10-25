@@ -100,6 +100,14 @@ async fn main() -> std::process::ExitCode {
                 error = %format!("{e:#}"),
                 "command failed"
             );
+            // Exported by the shutdown below, for the on-prem runs' alerts.
+            telemetry::metrics().command_failures.add(
+                1,
+                &[
+                    opentelemetry::KeyValue::new("command", cli.command.name()),
+                    opentelemetry::KeyValue::new("outcome", failure_outcome(e)),
+                ],
+            );
             std::process::ExitCode::FAILURE
         }
     };

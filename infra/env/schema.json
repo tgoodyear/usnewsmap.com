@@ -293,6 +293,11 @@
       "description": "Let USNM_BATCH_HOST run backfill curation (usnm-ingest curate --enqueue, enqueue; #917): create under curated/pages/, Cosmos Data Contributor on batches and issues. Needs USNM_OCR_SYNC_ONPREM. Off until a backfill is needed.",
       "type": "boolean"
     },
+    "USNM_OCR_SYNC_ALERTS": {
+      "x-usnm-visibility": "public",
+      "description": "Alert on the on-prem OCR pickup (#1139): a failed ocr-sync run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours (usnm-ocrs-failed-alert-<env>, usnm-ocrs-stale-alert-<env>, usnm-ocrs-backlog-alert-<env>), from the metrics it sends to the environment's Application Insights. With USNM_OCR_SYNC_ONPREM and alert emails.",
+      "type": "boolean"
+    },
     "USNM_BATCH_HOST": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The object id of the batch container's own Arc machine identity (usnm-batch-arcs-<env>, pve-laptop CT 215), with USNM_OCR_SYNC_ONPREM.",
