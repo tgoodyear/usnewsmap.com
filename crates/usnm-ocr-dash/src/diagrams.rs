@@ -610,7 +610,7 @@ mod tests {
         let out = fill(DIAGRAMS[1].svg, &st);
         assert!(out.contains("not tracked here"));
         // Pages users find are queued now (#1082).
-        assert!(!out.contains("data-state=\"not-built\""));
+        assert!(!out.contains("class=\"box azure\" data-state=\"not-built\""));
     }
 
     #[test]

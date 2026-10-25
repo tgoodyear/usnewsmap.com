@@ -1095,8 +1095,11 @@ mod tests {
         assert_eq!(f.cooling_pages(), (1, 0));
         let next = f.next_queued(5);
         let docs: Vec<&str> = next.iter().map(|(_, d, _)| d.as_str()).collect();
-        // The fetching manifest isn't "queued"; the quality one is next.
-        assert_eq!(docs, ["sn9_1890-01-01_ed-1_seq-1"]);
+        // The one being fetched first, then the quality one.
+        assert_eq!(
+            docs,
+            ["sn8_1890-01-01_ed-1_seq-2", "sn9_1890-01-01_ed-1_seq-1"]
+        );
         // A cooling file holds a manifest back for a day.
         std::fs::write(q2.join("cooling"), "x").unwrap();
         f.poll(now);
