@@ -167,6 +167,9 @@ enum Fail {
     Transient(String),
     /// Stopped, or the run's time is up, before a request went out.
     Stopped,
+    /// The host's global pacer was slowed (a push-back to any process) while this
+    /// request waited for its turn; it didn't go out.
+    Slowed(anyhow::Error),
 }
 
 /// The `Retry-After` of a response, capped at an hour.
@@ -223,6 +226,9 @@ impl Fetcher {
             if *stop.borrow() || Instant::now() >= deadline {
                 return Err(Fail::Stopped);
             }
+            // The waits above can outlast a push-back to another process: checked again
+            // just before the request (each redirect hop too), not only between archives.
+            not_slowed(&self.global).map_err(Fail::Slowed)?;
             let now = Instant::now();
             let since = prev.map(|p| (now - p).as_secs_f64());
             *self.last_sent.lock().expect("last_sent lock") = Some(now);
@@ -429,6 +435,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             .map_err(|e| match e {
                 Fail::Blocked(m) | Fail::Transient(m) => anyhow::anyhow!("the datasets list: {m}"),
                 Fail::Stopped => anyhow::anyhow!("stopped"),
+                Fail::Slowed(e) => e,
             })?;
         let mut body = Vec::new();
         while let Some(c) = resp.chunk().await? {
@@ -523,6 +530,11 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
                 } else {
                     "paused".into()
                 };
+                break;
+            }
+            Err(Fail::Slowed(e)) => {
+                s.state = "slowed".into();
+                result = Err(e);
                 break;
             }
             Err(Fail::Blocked(m)) => {

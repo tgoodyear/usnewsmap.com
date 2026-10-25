@@ -86,7 +86,7 @@ scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed
   "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" "$FOLLOW" "$STRATA" "$PASS_PAGES" "$PASS_BATCHES" <<'REMOTE'
 set -euo pipefail
 ct=$1 stage=$2 campaign=$3 scan=$4 chunk=$5 pending=$6 workers=$7 engine=$8 unsent=$9 chunks=${10} bundle=${11} enable=${12}
-follow=${13} strata=${14} pass_pages=${15} pass_batches=${16}
+follow=${13} strata=${14} pass_pages=${15} pass_batches=${16:-}  # ssh drops an empty last argument
 in_ct() { pct exec "$ct" -- "$@"; }
 in_ct test -d /srv/curated/pages || { echo "error: no curated copy in CT $ct: run batch-ct-quality.sh --mounts" >&2; exit 1; }
 in_ct bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get install -y -q python3-venv postgresql-client > /dev/null'

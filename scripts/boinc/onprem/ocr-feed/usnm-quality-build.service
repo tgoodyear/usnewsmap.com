@@ -16,6 +16,6 @@ Environment=LC_ALL=C.UTF-8
 EnvironmentFile=/etc/usnm/quality-build.env
 ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build-quality \
   --state /var/lib/usnm-ocr-manifest --dsn "$(cat /etc/usnm/quality-db/dsn)" --strata "$STRATA" \
-  --max-pages "$MAX_PAGES" --scan-server "$SCAN_SERVER" ${BATCHES:+--batches "$BATCHES"}'
+  --max-pages "$MAX_PAGES" --scan-server "$SCAN_SERVER" $${BATCHES:+--batches "$$BATCHES"}'
 Nice=10
 TimeoutStartSec=2h
