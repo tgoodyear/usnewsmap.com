@@ -373,20 +373,15 @@ class ImageSecurityCheck(unittest.TestCase):
         self.assertIn("SECURITY apache2", done.stdout)
         self.assertIn("COULD-NOT-CHECK podman image inspect", done.stdout)
 
-    def test_every_form_of_a_mysql_image_reference_finds_its_pin(self):
-        # The name a unit pins is the reference without its tag and digest. A colon before the last
-        # slash is a registry port, not a tag; an untagged name and a digest form have no tag to strip.
+    def test_every_tagged_form_of_a_mysql_image_reference_finds_its_pin(self):
+        # The name a unit pins is the reference without its tag. A colon before the last slash is a
+        # registry port, not a tag, so it stays in the name.
         cases = [
             ("registry.example:5000/library/mysql:8.4", "registry.example:5000/library/mysql"),
-            ("registry.example:5000/library/mysql", "registry.example:5000/library/mysql"),
-            ("registry.example:5000/mysql:8.4@" + PINNED, "registry.example:5000/mysql"),
-            ("registry.example:5000/mysql@" + PINNED, "registry.example:5000/mysql"),
-            ("docker.io/library/mysql", "docker.io/library/mysql"),
-            ("docker.io/library/mysql:8.4@" + PINNED, "docker.io/library/mysql"),
-            ("docker.io/library/mysql@" + PINNED, "docker.io/library/mysql"),
+            ("registry.example:5000/mysql:8.4", "registry.example:5000/mysql"),
+            ("docker.io/library/mysql:8.4", "docker.io/library/mysql"),
             ("localhost/mysql:8.4", "localhost/mysql"),
             ("mysql:8.4", "mysql"),
-            ("mysql", "mysql"),
         ]
         for image, name in cases:
             with self.subTest(image=image):
@@ -402,6 +397,46 @@ class ImageSecurityCheck(unittest.TestCase):
                 done = self.run_check("--mysql-image", image)
                 self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
                 self.assertIn(f"MYSQL-DRIFT {image} is {MOVED} now; the unit runs {PINNED}", done.stdout)
+
+    def test_a_mysql_image_without_a_tag_or_with_a_digest_is_refused(self):
+        # The drift check compares what podman pull gives for the tag with the unit's pin. With a
+        # digest, podman returns that digest whatever the tag now is; with no tag it pulls :latest,
+        # not the tag the pin was resolved from. Neither can show drift, so neither is run.
+        digest_message = "--mysql-image: a reference with a digest can't show a moved tag; give an image name with a tag"
+        tag_message = "--mysql-image: an image name with a tag, such as docker.io/library/mysql:8.4"
+        cases = [
+            ("docker.io/library/mysql", tag_message),
+            ("mysql", tag_message),
+            ("localhost/mysql", tag_message),
+            ("registry.example:5000/mysql", tag_message),
+            ("registry.example:5000/library/mysql", tag_message),
+            ("mysql:", tag_message),
+            ("registry.example:5000/mysql:", tag_message),
+            ("mysql:8.4:9", tag_message),
+            ("docker.io/library/mysql@" + PINNED, digest_message),
+            ("docker.io/library/mysql:8.4@" + PINNED, digest_message),
+            ("registry.example:5000/mysql@" + PINNED, digest_message),
+            ("registry.example:5000/mysql:8.4@" + PINNED, digest_message),
+            ("mysql@" + PINNED, digest_message),
+        ]
+        for image, message in cases:
+            with self.subTest(image=image):
+                done = self.run_check("--mysql-image", image)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertEqual(done.stdout, "")
+                self.assertEqual(self.calls(), [])
+
+    def test_a_mysql_image_with_other_characters_is_refused_for_them(self):
+        # The message names the character rule: the reference may be fine as to its tag.
+        message = "--mysql-image: an image name made only of letters, digits and . _ / : - (up to 200)"
+        for image in ("docker.io/library/mysql:8.4;id", "mysql:8.4 --pull", "my$ql:8.4", "docker.io/library/mysql:8.4" + "a" * 200):
+            with self.subTest(image=image):
+                done = self.run_check("--mysql-image", image)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertEqual(done.stdout, "")
+                self.assertEqual(self.calls(), [])
 
     def test_a_registry_port_is_part_of_the_name_the_unit_must_pin(self):
         image = "registry.example:5000/library/mysql:8.4"
@@ -457,6 +492,7 @@ class ImageSecurityCheck(unittest.TestCase):
         done = self.run_check("--help", defaults=False)
         self.assertEqual(done.returncode, 2)
         self.assertIn("--php-floor VERSION --apache-floor VERSION", done.stderr)
+        self.assertIn("--mysql-image must be a name with a tag", done.stderr)
 
 
 class Units(unittest.TestCase):

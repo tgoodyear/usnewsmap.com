@@ -22,6 +22,10 @@
 # mysql-setup.sh does). The MySQL drift is only reported: rolling it restarts the database
 # (docs/boinc-onprem.md, "Security updates").
 #
+# --mysql-image must be a name with a tag, as the default is (a registry port is fine). The check
+# asks what the tag resolves to now, so a name with no tag (podman pulls :latest) or a reference
+# with an @digest (podman returns that digest) is refused as a bad argument.
+#
 # Exit status: 0 nothing found; 1 a finding; 2 bad arguments; 3 a check could not run (no
 # network, no security source in the image's apt sources, no digest in the unit).
 set -euo pipefail
@@ -51,25 +55,26 @@ while [ $# -gt 0 ]; do
 done
 version_re='^[0-9][A-Za-z0-9.+~:-]{0,80}$'
 image_re='^[A-Za-z0-9._/:@-]{1,200}$'
+# The last path component of a MySQL image reference, name and tag: mysql:8.4.
+last_component_tagged_re='^[^:]+:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'
 [[ $PHP_FLOOR =~ $version_re ]] || bad_args "--php-floor: a Debian version, such as 8.2.35-1~deb12u1"
 [[ $APACHE_FLOOR =~ $version_re ]] || bad_args "--apache-floor: a Debian version, such as 2.4.67-1~deb12u3"
 [[ -z $IMAGE || $IMAGE =~ $image_re ]] || bad_args "--image: an image name or sha256:<id>"
-[[ $MYSQL_IMAGE =~ $image_re ]] || bad_args "--mysql-image: an image name with a tag"
+[[ $MYSQL_IMAGE =~ $image_re ]] || bad_args "--mysql-image: an image name made only of letters, digits and . _ / : - (up to 200), such as docker.io/library/mysql:8.4"
+# A colon in the last path component starts the tag; earlier, it is a registry port.
+[[ $MYSQL_IMAGE != *@* ]] || bad_args "--mysql-image: a reference with a digest can't show a moved tag; give an image name with a tag"
+[[ ${MYSQL_IMAGE##*/} =~ $last_component_tagged_re ]] || bad_args "--mysql-image: an image name with a tag, such as docker.io/library/mysql:8.4"
 
 findings=0 errors=0
 finding() { findings=$((findings + 1)); log "$*"; }
 cannot() { errors=$((errors + 1)); log "COULD-NOT-CHECK $*"; }
 
-# The name a unit pins with @sha256:..., from an image reference: no @digest, no :tag. A colon is
-# a tag only in the last path component; earlier, it is a registry port, so
-# registry.example:5000/library/mysql:8.4 gives registry.example:5000/library/mysql. An untagged
-# name, with or without a port, and name:tag@sha256:... come out right too.
+# The name a unit pins with @sha256:..., from an image reference: no :tag. A colon is a tag only in
+# the last path component; earlier, it is a registry port, so
+# registry.example:5000/library/mysql:8.4 gives registry.example:5000/library/mysql and
+# registry.example:5000/library/mysql (no tag) is left as it is.
 image_name() {
-  local ref=${1%%@*}
-  case ${ref##*/} in
-    *:*) ref=${ref%:*} ;;
-  esac
-  printf '%s\n' "$ref"
+  if [[ ${1##*/} == *:* ]]; then printf '%s\n' "${1%:*}"; else printf '%s\n' "$1"; fi
 }
 
 # The packages. The script runs in a container from the image, as root, and prints
