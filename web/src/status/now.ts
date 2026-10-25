@@ -556,7 +556,7 @@ export function ocrAudit(s: Status, now: number): AuditLine | null {
     const text =
       `Checked ${count(q.pages_sampled)} pages of ${q.version}, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.` +
       (q.version !== served
-        ? ` The site now searches ${served}, so pages added or changed since then weren't checked.`
+        ? ` The site now searches ${served}, so pages added or changed after ${q.version} weren't checked.`
         : "");
     // Each share is null when no page of its kind had text: leave its clause out.
     if (a.differs_share === null) return { text };

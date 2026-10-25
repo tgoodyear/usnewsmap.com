@@ -812,7 +812,7 @@ describe("ocrAudit of another version", () => {
       },
     });
     expect(ocrAudit(s, NOW)!.text).toBe(
-      "Checked 2,371,337 pages of pages-v20261003-1, a 10% sample of every batch, on Oct 7 at 1:42 AM EDT. The site now searches pages-v20261022-1, so pages added or changed since then weren't checked.",
+      "Checked 2,371,337 pages of pages-v20261003-1, a 10% sample of every batch, on Oct 7 at 1:42 AM EDT. The site now searches pages-v20261022-1, so pages added or changed after pages-v20261003-1 weren't checked.",
     );
   });
 });
