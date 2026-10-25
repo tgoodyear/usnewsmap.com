@@ -299,7 +299,9 @@ if [ -n "$archive" ]; then
   aset USNM_SEARCH_CLUSTER false
   # Keep the caller's exact ALLOW_RENAMES for this partial provision.
   # Never infer approvals from the final environment-deletion confirmation.
-  NO_EXPERIMENT_CHECK=true provision
+  # It only takes the environment apart, so it neither needs the experiment
+  # marker nor compares the API's pinned tag with the one running (#1071).
+  NO_EXPERIMENT_CHECK=true NO_API_PIN_CHECK=true provision
   # Nothing of the environment's may be left in the account's group: no
   # role assignment for one of its identities, and no endpoint connection
   # from one of its groups. Read only: the account isn't changed.

@@ -291,6 +291,12 @@ param ocrDamageOnPrem bool = false
 @description('Object id of the OCR damage tables\' writer, an on-prem host\'s own Arc machine identity (usnm-batch-arcs-<env>, with ocrDamageOnPrem), not the on-prem hosts\' group. Settings only, never in the repository.')
 param ocrDamageRunner string = ''
 
+@description('Run the OCR pickup on-prem (#917): `usnm-ingest ocr-sync` hourly, and ocr-seed, ocr-enqueue and ocr-requeue by hand, on batchHost (pve-laptop CT 215, usnm-batch) as its own Arc machine identity. It gets the lake role on curated (writes under ocr-local/ only), reference (status/ocr-local.json only) and ocr-requests, the exchange role on ocr-out and ocr-quarantine, the queue roles ocr-sync uses, Cosmos `ops`, Monitoring Metrics Publisher and AcrPull (modules/ocr-sync-runner.bicep). Needs ocrNodes. Pair it with USNM_OCR_SYNC_CRON `manual`, so the Azure job stops seeding. Off removes the grants and keeps the roles.')
+param ocrSyncOnPrem bool = false
+
+@description('Object id of the batch container\'s own Arc machine identity (usnm-batch-arcs-<env>, pve-laptop CT 215), for ocrSyncOnPrem. Settings only, never in the repository.')
+param batchHost string = ''
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -473,12 +479,13 @@ module identities 'modules/identities.bicep' = {
 // public-network policy then exempts each by resource id, like the accounts
 // below. Provision writes the policy's exemptions before the stack
 // (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps)
+var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem, ocrNodeIps)
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
-// on-prem BOINC host's claim and collect (#967). The on-prem release host's
-// index_runs write (#1096) needs one of the two; onPremRelease doesn't open it.
-var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess, ocrNodeIps)
+// on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
+// which also uses the lake. The on-prem release host's index_runs write (#1096) needs one of
+// these three; onPremRelease doesn't open it.
+var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -559,6 +566,34 @@ module damageWriterGrant 'modules/damage-writer.bicep' = if (ocrDamageOnPrem && 
     storageName: storage.outputs.name
     principalId: trim(ocrDamageRunner)
     writerRoleName: damageWriterRole!.outputs.name
+  }
+}
+
+// The on-prem OCR pickup's roles, kept while the batch host is set: the stack can't
+// delete them once ocrSyncOnPrem turns off (modules/ocr-sync-runner-role.bicep).
+module ocrSyncRunnerRole 'modules/ocr-sync-runner-role.bicep' = if (!empty(trim(batchHost))) {
+  scope: rg
+  name: 'ocr-sync-runner-role'
+  params: {
+    lakeRoleLabel: n.ocrSyncLakeRole
+    exchangeRoleLabel: n.ocrSyncExchangeRole
+  }
+}
+
+// The OCR pickup on-prem (#917): the batch container's own identity.
+module ocrSyncRunnerGrant 'modules/ocr-sync-runner.bicep' = if (ocrNodes && ocrSyncOnPrem && !empty(trim(batchHost))) {
+  scope: rg
+  name: 'ocr-sync-runner'
+  dependsOn: [ocrExchange]
+  params: {
+    storageName: storage.outputs.name
+    exchangeName: exchangeName
+    cosmosName: cosmos.outputs.name
+    appInsightsName: monitoring.outputs.appInsightsName
+    registryName: registry.outputs.name
+    principalId: trim(batchHost)
+    lakeRoleName: ocrSyncRunnerRole!.outputs.lakeName
+    exchangeRoleName: ocrSyncRunnerRole!.outputs.exchangeName
   }
 }
 

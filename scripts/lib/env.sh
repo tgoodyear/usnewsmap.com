@@ -517,6 +517,19 @@ LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 STACK="usnm-$ENV_NAME"
 # The region, with the same default as infra/main.bicepparam.
 stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
+# The API's image tag for one provision (#1071). An environment may pin it
+# (USNM_API_IMAGE_TAG, production's), and a CI roll of the API leaves the pin
+# behind, so a provision would put the API back on the old image. API_TAG_REQUEST
+# is provision.sh's --api-tag: "live" keeps the tag the API app runs, any
+# other value is the tag to deploy, and empty leaves the committed pin to
+# api_pin_check. Only provision.sh sets it, after sourcing this file (which
+# clears both, so nothing in the caller's shell sets them); bootstrap.sh,
+# stand-up.sh and teardown.sh leave it empty. API_TAG_OVERRIDE is the tag
+# api_pin_check settles on, which export_stack_settings exports over the pin.
+# IMAGE_TAG_RE is infra/env/schema.json's pattern for USNM_API_IMAGE_TAG.
+API_TAG_REQUEST="" API_TAG_OVERRIDE=""
+# shellcheck disable=SC2034 # used by scripts/azure/provision.sh
+IMAGE_TAG_RE='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
 # Export exactly the settings infra/main.bicepparam reads, when they have
 # a value; an unset one takes its default there. Each is read on its own
 # (aget), so the settings file never sets this script's own variables
@@ -530,6 +543,8 @@ export_stack_settings() {
     v=$(aget "$k") || return 1
     [ -z "$v" ] || export "$k=$v"
   done
+  # --api-tag wins over the committed pin, for this provision only.
+  [ -z "$API_TAG_OVERRIDE" ] || export USNM_API_IMAGE_TAG=$API_TAG_OVERRIDE
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
 }
@@ -744,6 +759,146 @@ ocr_nodes_off_check() {
   echo "offboard those nodes first (scripts/ocr-node/offboard.sh), or turn USNM_OCR_NODES back on" >&2
   return 1
 }
+# The API app's name and resource group from the stack's outputs (API_APP and
+# AZURE_RESOURCE_GROUP, whose case the stack may change), one per line. Nothing
+# when Azure says there's no app to read: the stack isn't there (the first
+# provision), or it deploys no API app (API_APP is ''). A stack that names no
+# app or no group, or a read that fails, fails.
+stack_api_app() {
+  local out err errf
+  errf=$(mktemp)
+  if ! out=$(az stack sub show -n "$STACK" --query outputs -o json 2> "$errf"); then
+    err=$(cat "$errf")
+    rm -f "$errf"
+    # Azure also says ResourceNotFound for a dependency, so that code only
+    # counts when it names the stack (as guard_stack_renames).
+    if grep -q 'DeploymentStackNotFound' <<< "$err" ||
+      { grep -q '^Code: ResourceNotFound$' <<< "$err" && grep -Fq "The resource '$STACK' was not found." <<< "$err"; }; then
+      return 0
+    fi
+    echo "error: can't read the stack $STACK's outputs: $err" >&2
+    return 1
+  fi
+  rm -f "$errf"
+  python3 -c 'import json, sys
+outs = {k.upper(): (v or {}).get("value") or "" for k, v in (json.loads(sys.argv[1] or "{}") or {}).items()}
+app, group = outs.get("API_APP"), outs.get("AZURE_RESOURCE_GROUP")
+if app == "":
+    sys.exit(0)
+if not app or not group:
+    print("error: the stack " + sys.argv[2] + " names no API_APP or no AZURE_RESOURCE_GROUP in its outputs", file=sys.stderr)
+    sys.exit(1)
+print(app)
+print(group)' "$out" "$STACK"
+}
+# One read of the API app (az containerapp ARGS), printed. Fails with 1, and
+# says why, on an error; with 2, and no message, when Azure says the app or its
+# group isn't there. APP only names the app in the message.
+api_read() {
+  local app=$1 err errf out
+  shift
+  errf=$(mktemp)
+  if ! out=$(az containerapp "$@" 2> "$errf"); then
+    err=$(cat "$errf")
+    rm -f "$errf"
+    if grep -qiE 'ResourceNotFound|ResourceGroupNotFound|could not be found' <<< "$err"; then
+      return 2
+    fi
+    echo "error: can't read the image of the API app $app: $err" >&2
+    return 1
+  fi
+  rm -f "$errf"
+  printf '%s\n' "$out"
+}
+# The image the environment's API app serves, printed: the one in its latest
+# ready revision, which in single-revision mode takes the traffic. Its
+# template is the latest requested revision, which a rollout that's pending or
+# failed moves ahead of what serves. The app's name and group are stack outputs
+# a provision saved here; without them (a machine that hasn't provisioned) the
+# stack names them. Nothing when Azure says there's no app to read. A
+# stack that doesn't name the app, an app with no ready revision, or any other
+# failed read fails: that's no reason to think there's nothing to roll back.
+api_live_image() {
+  local app rg ready out rc=0
+  app=$(aget API_APP) || return 1
+  rg=$(aget AZURE_RESOURCE_GROUP) || return 1
+  if [ -z "$app" ] || [ -z "$rg" ]; then
+    out=$(stack_api_app) || {
+      echo "  --api-tag=TAG deploys that tag without reading the API app" >&2
+      return 1
+    }
+    [ -n "$out" ] || return 0
+    { read -r app; read -r rg; } <<< "$out"
+  fi
+  ready=$(api_read "$app" show -n "$app" -g "$rg" --query properties.latestReadyRevisionName -o tsv) || rc=$?
+  [ "$rc" -ne 2 ] || return 0
+  [ "$rc" -eq 0 ] || return 1
+  if [ -z "$ready" ] || [ "$ready" = None ]; then
+    echo "error: the API app $app has no ready revision, so there's no serving image to compare or keep; --api-tag=TAG deploys that tag instead" >&2
+    return 1
+  fi
+  rc=0
+  out=$(api_read "$app" revision show -n "$app" -g "$rg" --revision "$ready" \
+    --query "properties.template.containers[?name=='api'] | [0].image" -o tsv) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ "$rc" -ne 2 ] || echo "error: can't read the image of the API app $app: its ready revision $ready is gone" >&2
+    return 1
+  fi
+  # tsv prints a missing value as None.
+  [ "$out" = None ] || printf '%s\n' "$out"
+}
+# Before a provision (or its what-if) rolls the API back (#1071): with
+# USNM_API_IMAGE_TAG pinned, the stack deploys the API at the pin, and CI's
+# rollouts don't update it, so a provision for any other change would put
+# the API back on the old image. Refuses when the pin differs from the tag
+# the API serves, unless the caller asked for one: --api-tag=live keeps the
+# serving tag, --api-tag=TAG deploys TAG, which needs no comparison. Both
+# set API_TAG_OVERRIDE for export_stack_settings. Nothing is compared, and
+# nothing refused, without a pin (the API then follows USNM_IMAGE_TAG, which
+# dev's stand-up sets on purpose), when Azure says the API app isn't there
+# (api_live_image refuses an app it can't find or read), or when it doesn't
+# serve an ACR usnewsmap-api:<tag> image (USNM_USE_ACR off runs
+# USNM_API_IMAGE, a public one, which no tag selects): the tag can't be
+# read, so a note says so. NO_API_PIN_CHECK=true skips it all (teardown.sh's
+# partial provision only takes the environment apart). Reads only; call it in
+# the shell that provisions, not a subshell, so the override is kept.
+api_pin_check() {
+  local pin image live
+  local image_re='^[a-z0-9-]+\.azurecr\.[a-z]+/usnewsmap-api:([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})$'
+  API_TAG_OVERRIDE=""
+  [ "${NO_API_PIN_CHECK:-}" != true ] || return 0
+  pin=$(aget USNM_API_IMAGE_TAG) || return 1
+  case $API_TAG_REQUEST in
+    "") [ -n "$pin" ] || return 0 ;;
+    live) ;;
+    *)
+      API_TAG_OVERRIDE=$API_TAG_REQUEST
+      [ -z "$pin" ] || [ "$pin" = "$API_TAG_OVERRIDE" ] ||
+        echo "deploying the API at $API_TAG_OVERRIDE (--api-tag), not the pin $pin in $COMMITTED_FILE"
+      return 0 ;;
+  esac
+  image=$(api_live_image) || return 1
+  if [ -z "$image" ]; then
+    [ -z "$API_TAG_REQUEST" ] || echo "note: --api-tag=live: $ENV_NAME has no API image to keep yet, so the stack's settings decide the tag"
+    return 0
+  fi
+  if ! [[ $image =~ $image_re ]]; then
+    echo "note: the API app runs $image, not an ACR usnewsmap-api:<tag> image, so no tag is compared or kept; the stack's settings decide the tag" >&2
+    return 0
+  fi
+  live=${BASH_REMATCH[1]}
+  if [ -n "$API_TAG_REQUEST" ]; then
+    API_TAG_OVERRIDE=$live
+    [ "$live" = "$pin" ] || echo "keeping the API on usnewsmap-api:$live (--api-tag=live), not the pin ${pin:-(none)} in $COMMITTED_FILE"
+    return 0
+  fi
+  [ "$live" != "$pin" ] || return 0
+  echo "error: the API app runs usnewsmap-api:$live, but $COMMITTED_FILE pins USNM_API_IMAGE_TAG to $pin, so this provision would roll the API to $pin (a CI rollout leaves the pin behind, #1071)" >&2
+  echo "  to keep the running image:  scripts/azure/provision.sh --env $ENV_NAME --api-tag=live" >&2
+  echo "  to deploy the pin on purpose:  scripts/azure/provision.sh --env $ENV_NAME --api-tag=$pin" >&2
+  echo "  or set the pin to $live in $COMMITTED_FILE through a pull request (a script other than provision.sh, such as bootstrap.sh, needs that)" >&2
+  return 1
+}
 # A deleted Key Vault stays soft-deleted, holding its name, for its
 # retention (7 days outside prod), and the stack can't create one under a
 # reserved name, so recover a soft-deleted vault of this environment first;
@@ -894,6 +1049,8 @@ deploy_env_guardrails() {
   deploy_guardrails "$location" "$emails" "$dev_location"
 }
 provision() {
+  # Reads only, so a refusal comes before anything changes.
+  api_pin_check || die "not provisioning $ENV_NAME"
   # A soft-deleted vault can't be taken over: recover it first.
   vaults_recover || die "not provisioning $ENV_NAME"
   settings_store_ensure || die "not provisioning $ENV_NAME"
@@ -921,6 +1078,7 @@ provision() {
 provision_what_if() {
   local endpoint location out
   SETTINGS_READ_ONLY=true
+  api_pin_check || die "no what-if for $ENV_NAME"
   endpoint=$(settings_store_endpoint) || die "no what-if for $ENV_NAME"
   location=$(stack_location) || die "no what-if for $ENV_NAME"
   if [ -z "$endpoint" ]; then

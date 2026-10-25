@@ -1,0 +1,37 @@
+// The fallback Worker's production configuration (ADR-0027, #1098). deploy.sh is the only
+// way it is deployed (README.md). config.test.mjs checks the settings the privacy and
+// fail-open rules depend on.
+{
+  "name": "usnm-fallback",
+  "main": "worker.mjs",
+  // Pinned, so a runtime change cannot alter the Worker's behaviour unnoticed. Change it
+  // deliberately, with the tests passing.
+  "compatibility_date": "2025-10-01",
+
+  // No workers.dev name and no preview URLs: the Worker answers on the site's routes only.
+  "workers_dev": false,
+  "preview_urls": false,
+
+  // Workers Logs stay off. The URLs this Worker sees carry the search words in `q`.
+  "observability": { "enabled": false },
+
+  // The Phase 3 production routes: the apex, www and api. A route covers every path, so
+  // /assets/* is included (ADR-0027 settled decision 10): an asset the edge does not hold
+  // also falls back to Azure. boinc.usnewsmap.com is not routed. The Phase 2 test
+  // hostname replaces these at deploy time (deploy.sh --drill-hostname).
+  //
+  // The route's failure mode, fail open, is a setting on the route in Cloudflare, not in
+  // this file (README.md).
+  "routes": [
+    { "pattern": "usnewsmap.com/*", "zone_name": "usnewsmap.com" },
+    { "pattern": "www.usnewsmap.com/*", "zone_name": "usnewsmap.com" },
+    { "pattern": "api.usnewsmap.com/*", "zone_name": "usnewsmap.com" }
+  ],
+
+  "vars": {
+    // The Container App's default name, https://<name>.azurecontainerapps.io. Not a secret, and
+    // not in the repository: it is the environment's random domain, which only Azure
+    // can say. deploy.sh --azure-origin sets it. Empty turns the fallback off.
+    "AZURE_FALLBACK_ORIGIN": ""
+  }
+}

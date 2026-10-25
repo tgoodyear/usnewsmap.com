@@ -72,7 +72,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 md-5 = "0.11"
 # The bounded ALTO reader (usnm-alto): streaming, no DTD processing.
 quick-xml = "0.42"
-parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
+# `snap`: Hugging Face's Parquet files (Newspaper Navigator, `usnm-ingest pictures`) are Snappy-compressed.
+parquet = { version = "60", default-features = false, features = ["arrow", "snap", "zstd"] }
 moka = { version = "0.12", features = ["future"] }
 # Telemetry to Application Insights (usnm-telemetry). The opentelemetry crates move together;
 # opentelemetry-application-insights 0.46 (opentelemetry 0.33) needs Rust 1.95.

@@ -3093,7 +3093,15 @@ mod tests {
         let doc = |date: &str| {
             let key = usnm_core::ids::PageKey::new("sn1", date.parse().unwrap(), 1, 2).unwrap();
             let place = catalog.place_on(&title, key.date).unwrap();
-            let main = main_doc(&key, "b", "the text", &title, place, None, format);
+            let main = main_doc(
+                &key,
+                "b",
+                "the text",
+                &title,
+                place,
+                SideTexts::default(),
+                format,
+            );
             let ja_page = ocr_ja::JaPage::for_test(key, "b", "empty", "日本語");
             let ja = ocr_ja::ja_doc(&ja_page, &title, place, Analyzer::LATEST);
             (main, ja)
@@ -3124,7 +3132,15 @@ mod tests {
         one.place_periods.clear();
         let key = usnm_core::ids::PageKey::new("sn1", "1828-05-14".parse().unwrap(), 1, 2).unwrap();
         let place = catalog.place("P1").unwrap();
-        let d = main_doc(&key, "b", "the text", &one, place, None, format);
+        let d = main_doc(
+            &key,
+            "b",
+            "the text",
+            &one,
+            place,
+            SideTexts::default(),
+            format,
+        );
         assert_eq!(d["state"], "NH");
     }
 

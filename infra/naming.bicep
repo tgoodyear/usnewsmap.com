@@ -178,6 +178,8 @@ var nameTypes = {
   jaocrJob: 'caj'
   jaocrWriterRole: 'role'
   ocrDamageWriterRole: 'role'
+  ocrSyncLakeRole: 'role'
+  ocrSyncExchangeRole: 'role'
   jaoneJob: 'caj'
   logCapAlert: 'alert'
   ocrAppInsights: 'appi'
@@ -286,6 +288,8 @@ type Names = {
   jaocrJob: string
   jaocrWriterRole: string
   ocrDamageWriterRole: string
+  ocrSyncLakeRole: string
+  ocrSyncExchangeRole: string
   jaoneJob: string
   logCapAlert: string
   ocrAppInsights: string
@@ -382,6 +386,8 @@ func names(env string, sfx string, pinned bool) Names => {
   jaocrJob: pinned ? 'caj-usnm-jaocr-${env}' : usnmName('jaocr', 'caj', env)
   jaocrWriterRole: usnmName('jaocr-writer', 'role', env)
   ocrDamageWriterRole: usnmName('ocr-damage-writer', 'role', env)
+  ocrSyncLakeRole: usnmName('ocr-sync-lake', 'role', env)
+  ocrSyncExchangeRole: usnmName('ocr-sync-exchange', 'role', env)
   jaoneJob: pinned ? 'caj-usnm-jaone-${env}' : usnmName('jaone', 'caj', env)
   logCapAlert: usnmName('core-log-cap', 'alert', env)
   ocrAppInsights: usnmName('ocr', 'appi', env)

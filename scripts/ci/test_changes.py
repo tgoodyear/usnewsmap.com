@@ -49,9 +49,10 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
                          {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 23)
+        self.assertEqual(len(flags), 24)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
+        self.assertEqual(flags["edge"], "false")
         self.assertEqual(flags["provision"], "false")
 
     def test_default_and_explicit_full_dispatch_preserve_bootstrap(self):
@@ -63,6 +64,7 @@ class Dispatch(unittest.TestCase):
                 self.assertEqual(flags["ocr_worker"], "true")
                 self.assertEqual(flags["rust"], "true")
                 self.assertEqual(flags["contrib"], "true")
+                self.assertEqual(flags["edge"], "true")
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -86,7 +88,14 @@ class Dispatch(unittest.TestCase):
         release = workflow.split("\n  ocr-worker-release:\n", 1)[1].split("\n  private-addresses:", 1)[0]
         self.assertIn("needs: [changes, rust, ocr-worker-el9, ocr-worker-check]", release)
         self.assertIn("github.ref == 'refs/heads/main'", release)
-        self.assertIn("scripts/ci/head-of-main.sh", release)
+        # An older commit publishes when main's newer commits change neither build (#1074), which
+        # needs the history from it to main's head.
+        self.assertIn("scripts/ci/head-of-main.sh --unless-changed ocr_worker,ocr_dash", release)
+        self.assertIn("fetch-depth: 0", release)
+        # The flags it waits on are the ones that start the job.
+        started_by = set(re.findall(r"needs\.changes\.outputs\.([a-z0-9_]+)", release.split("steps:", 1)[0]))
+        self.assertEqual(started_by, {"ocr_worker", "ocr_dash"})
+        self.assertEqual(set(re.search(r"--unless-changed (\S+)", release).group(1).split(",")), started_by)
         self.assertIn("actions/attest-build-provenance@", release)
         self.assertIn("if: steps.head.outputs.current == 'true'", release)
         rollout = workflow.split("name: publish and roll out", 1)[1]
@@ -582,6 +591,29 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn("infra", self.select(path))
 
+    def test_the_fallback_worker_runs_its_own_job_and_the_policy_scans_only(self):
+        # #1098: JavaScript, a Wrangler config and a shell script under edge/, which no crate,
+        # image or web build reads. Its README is documentation.
+        for path in ["edge/fallback-worker/worker.mjs", "edge/fallback-worker/worker.test.mjs",
+                     "edge/fallback-worker/wrangler.jsonc", "edge/fallback-worker/deploy.sh"]:
+            with self.subTest(path=path):
+                self.assertEqual(self.select(path), {"edge", "code", "infra"})
+        self.assertEqual(self.select("edge/fallback-worker/README.md"), {"markdown"})
+
+    def test_other_changes_do_not_run_the_fallback_worker_job(self):
+        for path in ["crates/usnm-api/src/main.rs", "web/src/main.tsx", "scripts/onprem/serving/install.sh",
+                     "scripts/ci/changes.sh", "docs/design/09-operations-security-cost.md"]:
+            with self.subTest(path=path):
+                self.assertNotIn("edge", self.select(path))
+
+    def test_an_edit_inside_the_edge_job_runs_that_job_only(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))  # this checkout's ci.yml as the base, committed or not
+        marker = "      - run: node --test edge/fallback-worker/*.test.mjs\n"
+        self.assertIn(marker, ci)
+        self.assertEqual(self.select((path, ci.replace(marker, marker + "      # touched\n"))), {"edge"})
+
     def test_a_broken_cargo_runs_everything_that_builds_a_crate(self):
         on = self.select("crates/usnm-ocr-dash/src/html.rs", env=self.stub_tool("cargo"))
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
@@ -774,6 +806,23 @@ class Wiring(unittest.TestCase):
                 re.findall(r"(?m)^  ([a-z-]+):$", text)}
             self.assertFalse(declared & set(required), name)
 
+    def test_the_edge_job_follows_its_output_and_runs_every_test_file(self):
+        ci = self.workflow("ci.yml")
+        self.assertIn("edge: ${{ steps.f.outputs.edge }}", job_text(ci, "changes"))
+        job = job_text(ci, "edge")
+        self.assertIn("    needs: changes\n", job)
+        self.assertIn("    if: needs.changes.outputs.edge == 'true'\n", job)
+        self.assertIn("shellcheck -x -S warning edge/fallback-worker/deploy.sh", job)
+        # `node --test edge/fallback-worker/` is an error on Node 24, so the job names the test
+        # files with a glob, and only that directory's files match it.
+        self.assertIn("node-version: 24", job)
+        self.assertIn("      - run: node --test edge/fallback-worker/*.test.mjs\n", job)
+        found = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "edge").rglob("*")
+                       if p.is_file() and re.search(r"\.test\.(mjs|js|cjs)$", p.name))
+        self.assertTrue(found)
+        for file in found:
+            self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
+
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
         job = job_text(self.workflow("ci.yml"), "infra")
         always = ("actions/checkout", "No shared-key authentication", "Scripts and CLIs take named arguments")
@@ -789,9 +838,11 @@ class Wiring(unittest.TestCase):
     def test_the_dashboard_sources_are_read_by_nothing_the_infra_stack_runs(self):
         # changes.sh skips the stack's steps for a change in the dashboard crate's src/ and
         # tests/. The two scans in the infra job read every crate; no other script, schema or
-        # step may name this one.
+        # step may name this one. test_head_of_main.py only names a path of it, in a commit of a
+        # scratch clone, to see which flags changes.sh sets for it; it reads none of its sources.
         scans = {"scripts/ci/changes.sh", "scripts/ci/test_changes.py", "scripts/ci/no-shared-keys.sh",
-                 "scripts/ci/no-positional-args.py", "scripts/ci/test_no_positional_args.py"}
+                 "scripts/ci/no-positional-args.py", "scripts/ci/test_no_positional_args.py",
+                 "scripts/ci/test_head_of_main.py"}
         tokens = ("usnm-ocr-dash", "usnm_ocr_dash")
         for base in ("scripts", "infra"):
             for path in (ROOT / base).rglob("*"):
