@@ -43,12 +43,15 @@ execution in the execution list.
 guard would hold the lease with nobody to end it. So the launcher and the helper bound their calls
 on the job and the lease (`scripts/lib/bounded-az.sh`, written in shell because macOS has no
 `timeout`). A call that runs out of time is killed together with the child processes Azure CLI
-starts. The sign-in check and the stack-output lookups at the start of a run are not bounded.
+starts. The checks at the start of a run are not bounded: the sign-in check, the stack-output
+lookups and, for `--target bridge`, the resource group check (`boinc_az_check` in
+`scripts/lib/boinc.sh`, which the provision, build, app release and test client scripts share).
+They run before the lease is taken, so a hang there holds no lease.
 
 - A read is killed after `BOINC_AZ_READ_TIMEOUT` seconds (60) and tried again, up to
   `BOINC_AZ_READ_ATTEMPTS` attempts (3) with `BOINC_AZ_READ_BACKOFF` seconds (5) between them. A read
   that fails is retried the same way. This covers the execution list, the status polls and
-  read-backs, the template read, the resource group check, the exchange-account lookup and the blob existence check. Inside
+  read-backs, the template read, the resource group check of `--target handoff`, the exchange-account lookup and the blob existence check. Inside
   a window (the 120 seconds that confirm and reconcile allow, set by `BOINC_START_CONFIRM_SECS` and
   `BOINC_START_RECONCILE_SECS`, or the `--wait-mins` of a wait), an attempt is cut to what is left
   of the window and no retry starts after it ends. The first attempt of a call always gets at least 10

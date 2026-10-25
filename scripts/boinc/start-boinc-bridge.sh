@@ -42,7 +42,9 @@
 # job update and start, and the lease acquire and release) are killed after
 # BOINC_AZ_WRITE_TIMEOUT seconds (300) and not retried, since a request that timed out may have
 # taken effect: the run fails as it does for any failed update or start, and
-# docs/boinc-start-guard.md says how the lease is kept or released.
+# docs/boinc-start-guard.md says how the lease is kept or released. The checks at the start of a
+# run have no limit: the sign-in check, the stack-output lookups and, for --target bridge, the
+# resource group check.
 # Needs az signed in to the settings' subscription, jq, and python3.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
