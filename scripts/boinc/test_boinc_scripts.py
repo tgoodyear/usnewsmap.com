@@ -1462,6 +1462,46 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(len(export), 1)
         self.assertNotIn("--claims", export[0])
 
+    def test_handoff_export_batches_goes_on_past_a_failed_batch(self):
+        # #1055: one execution exports a tick's pages from all their batches, one batch at a time.
+        self.stub(self.COPY_STUB + "\n" + 'case "$*" in "export "*"--batch dlc_bbb"*) exit 4 ;; esac')
+        pages = ["sn1/1890-05-03/ed-1/seq-1", "sn2/1890-05-03/ed-1/seq-1", "sn1/1890-05-03/ed-1/seq-2"]
+        r = self.handoff(
+            "export",
+            HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+            HANDOFF_PAGES=",".join(pages),
+            HANDOFF_BATCHES="dlc_aaa,dlc_bbb,dlc_aaa",
+            HANDOFF_SCANS="keep/dlc_aaa/sn1/1890-05-03/1/1.jp2,keep/dlc_bbb/sn2/1890-05-03/1/1.jp2,"
+                          "keep/dlc_aaa/sn1/1890-05-03/1/2.jp2",
+            HANDOFF_PLAN="queue-feed",
+            ENGINE_IMAGE="sha256:" + "a" * 64,
+            HANDOFF_CLAIMS="1",
+        )
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("export failed for 1 of 2 batches", r.stderr)
+        calls = self.calls()
+        exports = [c for c in calls if c.startswith("export ")]
+        self.assertEqual(len(exports), 2, calls)
+        self.assertIn("--batch dlc_aaa", exports[0])
+        self.assertIn("--batch dlc_bbb", exports[1])
+        scans = [c for c in calls if "--path scans/" in c and c.endswith(".jp2") or "--path scans/keep" in c]
+        self.assertTrue(any("scans/keep/dlc_aaa/sn1/1890-05-03/1/2.jp2" in c for c in scans), calls)
+        claims = [c for c in calls if "--path claims/" in c]
+        self.assertEqual(len(claims), 3)
+
+    def test_handoff_export_batches_must_match_the_pages(self):
+        self.stub(self.COPY_STUB)
+        for extra in (dict(HANDOFF_BATCHES="dlc_aaa", HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2"),
+                      dict(HANDOFF_BATCHES="dlc_aaa,dlc_bbb", HANDOFF_BATCH="dlc_aaa",
+                           HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2"),
+                      dict(HANDOFF_BATCHES="dlc_aaa,../x", HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2")):
+            with self.subTest(extra=extra):
+                r = self.handoff("export", HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+                                 HANDOFF_PAGES="sn1/1890-05-03/ed-1/seq-1,sn2/1890-05-03/ed-1/seq-1",
+                                 HANDOFF_PLAN="queue-feed", ENGINE_IMAGE="sha256:" + "a" * 64, **extra)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("export ")])
+
     def test_handoff_collect_batch_goes_on_past_a_failed_job(self):
         # #932: JOB_IDS collects a tick's results in one execution; each runs the single-job path.
         j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64

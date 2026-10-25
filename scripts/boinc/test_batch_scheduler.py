@@ -1254,6 +1254,44 @@ class BatchedStepsTests(unittest.TestCase):
         self.assertEqual((seen["batch_submit"], seen["batch_spool_out"], seen["batch_collect"]),
                          (True, False, True))
 
+    def test_batch_export_sends_every_batch_in_one_execution(self):
+        pages = [{"page": "sn1/1890-05-03/ed-1/seq-1", "batch": "dlc_bbb", "scan": "/tank/ocr/scans/keep/dlc_bbb/sn1/1890-05-03/1/1.jp2"},
+                 {"page": "sn2/1890-05-03/ed-1/seq-1", "batch": "dlc_aaa", "scan": "/tank/ocr/scans/keep/dlc_aaa/sn2/1890-05-03/1/1.jp2"},
+                 {"page": "sn1/1890-05-03/ed-1/seq-2", "batch": "dlc_bbb", "scan": "/tank/ocr/scans/keep/dlc_bbb/sn1/1890-05-03/1/2.jp2"}]
+        for flag, calls in ((False, 2), (True, 1)):
+            with self.subTest(batch_export=flag):
+                cfg = queue_config()
+                cfg["scans_root"] = "/tank/ocr/scans"
+                t = batch.Transport(cfg, Path("."), batch_export=flag)
+                with patch.object(t, "step") as step:
+                    t.export(pages, ["a" * 64])
+                self.assertEqual(step.call_count, calls)
+                if flag:
+                    sent = step.call_args.kwargs
+                    self.assertNotIn("HANDOFF_BATCH", sent)
+                    self.assertEqual(sent["HANDOFF_BATCHES"], "dlc_aaa,dlc_bbb,dlc_bbb")
+                    self.assertEqual(sent["HANDOFF_PAGES"].split(",")[0], "sn2/1890-05-03/ed-1/seq-1")
+                    self.assertEqual(sent["HANDOFF_SCANS"].split(",")[0], "keep/dlc_aaa/sn2/1890-05-03/1/1.jp2")
+                    self.assertEqual(sent["HANDOFF_CLAIMS"], "1")
+                else:
+                    self.assertEqual([c.kwargs["HANDOFF_BATCH"] for c in step.call_args_list], ["dlc_aaa", "dlc_bbb"])
+        # More batches than one execution takes go in several.
+        many = [{"page": f"sn1/1890-05-03/ed-1/seq-{i}", "batch": f"dlc_b{i:03d}",
+                 "scan": f"/tank/ocr/scans/keep/dlc_b{i:03d}/sn1/1890-05-03/1/{i}.jp2"}
+                for i in range(1, batch.EXPORT_BATCHES * 2 + 2)]
+        cfg = queue_config()
+        cfg["scans_root"] = "/tank/ocr/scans"
+        t = batch.Transport(cfg, Path("."), batch_export=True)
+        with patch.object(t, "step") as step:
+            t.export(many, [])
+        self.assertEqual(step.call_count, 3)
+        self.assertEqual(sum(len(c.kwargs["HANDOFF_BATCHES"].split(",")) for c in step.call_args_list), len(many))
+        # One batch needs no HANDOFF_BATCHES, so an older hand-off image still takes it.
+        t = batch.Transport(queue_config(), Path("."), batch_export=True)
+        with patch.object(t, "step") as step:
+            t.export(pages[:1], [])
+        self.assertEqual(step.call_args.kwargs["HANDOFF_BATCH"], "dlc_bbb")
+
 
 class Ticker:
     """A clock and a CPU counter for Timings that move only when told to."""
