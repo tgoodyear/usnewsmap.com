@@ -528,12 +528,17 @@ row exactly as it does for the node's pages.
 
 ### A page that fails for good
 
+Each job gives the volunteer's Tesseract a page deadline (`engine.timeout_secs`, export's
+`--timeout-secs`, 1800 s by default and at most 3600). Before 25 Oct it was 600 s, and two dense
+1860s pages ran past it on every host they were sent to (#1159). The deadline is part of the job's
+identity, so the same page exported with another deadline is a new job and workunit.
+
 When a queue-fed page's workunit fails for good (BOINC's error mask is set: too many error
 results, or no output), `collect` marks its journal `failed`. It can't simply go back to its
 queue: the copy would be the same job, with the same workunit name, which BOINC already has.
 By default the tick stops and names the page and its job. With `--dead-letter-failed` (#1154)
-the controller runs the hand-off `dead-letter` step instead. That step puts a v2 `permanent`
-dead letter on `ocr-deadletter`, keeping the message, deletes the message with the claim's pop
+the controller runs the hand-off `dead-letter` step instead (`JOB_IDS`). That step puts a v2 `permanent`
+dead letter on `ocr-deadletter`, keeping the message and taking its `error` from the job's journal (the workunit's error mask and the page deadline, #1159), deletes the message with the claim's pop
 receipt, and marks the claim `ended: dead_lettered`. The controller records the job in its
 state and passes over its journal after that; the journal stays in `dispatch/`. `ocr-sync`
 drains the dead letter into the ledger. The flag needs the on-prem host's Message Sender role

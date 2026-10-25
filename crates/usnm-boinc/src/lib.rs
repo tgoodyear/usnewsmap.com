@@ -806,6 +806,59 @@ async fn put_same(
     Ok(())
 }
 
+/// Why a workunit failed for good, from the assimilator's `_error` marker (its error mask, as
+/// `0x<hex>`; none means `_no_output_files`), with the page deadline the job gave, so a dead
+/// letter says what happened (#1159).
+pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
+    let mask = marker
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(str::trim)
+        .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+    let Some(mask) = mask else {
+        return format!("BOINC workunit returned no output files (page deadline {timeout_secs} s)");
+    };
+    let names: Vec<&str> = [
+        (0x1, "couldn't send a result"),
+        (0x2, "too many error results"),
+        (0x4, "too many success results"),
+        (0x8, "too many total results"),
+        (0x10, "cancelled"),
+        (0x20, "no canonical result"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| mask & bit != 0)
+    .map(|(_, name)| name)
+    .collect();
+    format!(
+        "BOINC workunit failed for good: error mask {mask:#x} ({}); page deadline {timeout_secs} s",
+        if names.is_empty() {
+            "unknown".to_owned()
+        } else {
+            names.join(", ")
+        }
+    )
+}
+
+#[cfg(test)]
+mod terminal_reason_tests {
+    #[test]
+    fn names_the_mask_and_the_deadline() {
+        assert_eq!(
+            super::terminal_reason(Some(b"0x2\n"), 1800),
+            "BOINC workunit failed for good: error mask 0x2 (too many error results); page deadline 1800 s"
+        );
+        assert_eq!(
+            super::terminal_reason(Some(b"0x22"), 600),
+            "BOINC workunit failed for good: error mask 0x22 (too many error results, no canonical result); page deadline 600 s"
+        );
+        assert_eq!(
+            super::terminal_reason(None, 600),
+            "BOINC workunit returned no output files (page deadline 600 s)"
+        );
+        assert!(super::terminal_reason(Some(b"0x2"), 1800).len() <= 200);
+    }
+}
+
 /// Match stock batch_collect_assimilator's canonical output names.
 pub async fn collect(
     root: &Path,
@@ -814,18 +867,18 @@ pub async fn collect(
     curated: &dyn ObjectStore,
     out: &dyn ObjectStore,
 ) -> anyhow::Result<()> {
-    let workunit = load(root, id)?.job.workunit();
-    if spool.join(format!("{workunit}_error")).exists()
-        || spool.join(format!("{workunit}_no_output_files")).exists()
-    {
+    let job = load(root, id)?.job;
+    let workunit = job.workunit();
+    let error_marker = spool.join(format!("{workunit}_error"));
+    if error_marker.exists() || spool.join(format!("{workunit}_no_output_files")).exists() {
         let _lock = Lock::take(root)?;
         let mut record = load(root, id)?;
         ensure!(record.stage != Stage::Published, "already published");
         record.stage = Stage::Failed;
-        record.error = Some(
-            "BOINC terminal execution failure; inspect server logs and allocate a retry explicitly"
-                .into(),
-        );
+        record.error = Some(terminal_reason(
+            std::fs::read(&error_marker).ok().as_deref(),
+            job.engine.timeout_secs,
+        ));
         save(root, &record)?;
         bail!("BOINC terminal failure");
     }

@@ -30,7 +30,9 @@ pub struct ExportArgs {
     plan: String,
     #[arg(long)]
     image: String,
-    #[arg(long, default_value_t = 600)]
+    /// The page deadline the volunteer's Tesseract gets (the job's `engine.timeout_secs`, at
+    /// most 3600). 1800: a dense 1860s page ran past 600 s on every host (#1159).
+    #[arg(long, default_value_t = 1800)]
     timeout_secs: u32,
     /// A directory of `claim pull` files (`<doc_id>.json`) for these pages: they came off
     /// the work queues, so each job keeps its queue message and ledger row.

@@ -815,9 +815,10 @@ class Transport:
         self.step("handoff", "release", HANDOFF_DOCS=",".join(doc_ids))
 
     @timed("dead-letter")
-    def dead_letter(self, doc_ids):
-        """Pages whose workunit failed for good go to ocr-deadletter (#1154)."""
-        self.step("handoff", "dead-letter", HANDOFF_DOCS=",".join(doc_ids))
+    def dead_letter(self, job_ids):
+        """Pages whose workunit failed for good go to ocr-deadletter (#1154), each dead letter
+        saying why from its job's journal (#1159)."""
+        self.step("handoff", "dead-letter", JOB_IDS=",".join(job_ids))
 
     @timed("submit")
     def submit(self, job_id):
@@ -1404,9 +1405,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(dead_letter_failed and feed is not None,
                 f"terminal BOINC failure: {names}; dead-letter it with --dead-letter-failed "
                 "(#1154) or reconcile it by hand")
-        docs = sorted(page.replace("/", "_") for page in failed)
-        for i in range(0, len(docs), 100):  # the step takes 100 doc ids at most
-            transport.dead_letter(docs[i:i + 100])
+        jobs = sorted(record["job"]["id"] for record in failed.values())
+        for i in range(0, len(jobs), 100):  # the step takes 100 job ids at most
+            transport.dead_letter(jobs[i:i + 100])
         for record in failed.values():
             letters[record["job"]["id"]] = int(now)
         persist()

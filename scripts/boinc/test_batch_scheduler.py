@@ -877,8 +877,9 @@ class QueueModeTests(unittest.TestCase):
         self.assertTrue([a for a in after if a[0] == "claim"], after)
         self.assertTrue([a for a in after if a[0] == "export"], after)
         letters = [a for a in self.fake.actions if a[0] == "dead-letter"]
-        self.assertEqual(letters, [("dead-letter", ["sn12345678_1900-01-01_ed-1_seq-1",
-                                                    "sn12345678_1900-01-01_ed-1_seq-2"])])
+        failed_jobs = sorted(row["job"]["id"] for row in self.fake.rows if row["stage"] == "failed")
+        self.assertEqual(len(failed_jobs), 2)
+        self.assertEqual(letters, [("dead-letter", failed_jobs)])
         self.assertEqual(len(self.state["dead_lettered"]), 2)
         # The dead-lettered pages are not pending.
         self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1",
