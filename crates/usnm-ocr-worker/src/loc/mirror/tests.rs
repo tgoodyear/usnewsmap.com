@@ -699,8 +699,9 @@ async fn the_cdx_lookup_waits_past_a_partners_page_json_timeout() {
     let s = StandIn::start().await;
     let one = format!("{LOC}data/sn1/0001A/1890050301/0010.jp2");
     s.put("/cdx/search/cdx", cdx(&[("20250101000000", one.as_str())]));
-    s.script("/cdx/search/cdx", Scripted::Slow(200, Duration::from_millis(300)));
     s.put(&format!("/web/20250101000000id_/{one}"), b"jp2 ten".to_vec());
+    // Every answer takes 300 ms.
+    s.delay(Duration::from_millis(300));
     let m = wayback_with(&s, |c| c.cdx_timeout = Duration::from_secs(5));
     assert!(m
         .jp2("xx_test", &key(1), &page("0010", b"jp2 ten"))
