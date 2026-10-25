@@ -1,5 +1,5 @@
 //! `congress-globe` and `congress-serialset`: the Congress fetches (`usnm_ingest::congress`, the
-//! `usnm-congress` crate).
+//! `usnm-congress` crate); and `congress-damage` (#922), the damage metric over what they wrote.
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -92,6 +92,51 @@ pub(crate) struct CongressSerialsetArgs {
     /// part.
     #[arg(long, conflicts_with_all = ["years", "serials"])]
     done_file: Option<PathBuf>,
+}
+
+/// Score every page of the curated Congress pages with the OCR damage
+/// metric (#922, 04 §4.10): per volume, a table of the page's damage
+/// rate (the forced English score of pages of at least 200 characters),
+/// function-word share, language, decision and garbage share, and a
+/// summary written last that marks the volume done, under
+/// `audit/damage/v<VERSION>/congress/<series>/` in `--out` (default: the
+/// curated store). Reads each unit's newest finished attempt, less those
+/// a later empty attempt supersedes, with every part checked against its
+/// `counts.json`. Volumes with a summary are skipped, so a stopped run is
+/// continued by the next; everything is written create-only. A run over
+/// every volume that finishes them all also writes the roll-up
+/// `corpus/<key>.json`, keyed by the attempts it covers. Run it once,
+/// after the fetch has finished. Prints what it did as JSON; logs counts
+/// and doc_ids, never text.
+#[derive(Args)]
+pub(crate) struct CongressDamageArgs {
+    /// The series to score.
+    #[arg(
+        long,
+        default_value = usnm_ingest::congress::serialset::SERIES,
+        value_parser = clap::builder::PossibleValuesParser::new(usnm_ingest::congress::SERIES.iter().copied())
+    )]
+    series: String,
+    /// Only these volumes (`00033_00_00`), comma separated; with `--serials`,
+    /// the volumes either names. The roll-up is written only by a run over
+    /// every volume.
+    #[arg(long, value_delimiter = ',')]
+    volumes: Vec<String>,
+    /// Only the volumes with these serial numbers (`33`), comma separated
+    /// (Serial Set only).
+    #[arg(long, value_delimiter = ',')]
+    serials: Vec<u32>,
+    /// Where the tables go: a directory or a Blob container URL. Default:
+    /// the curated store.
+    #[arg(long)]
+    out: Option<String>,
+    /// Seconds after the start to stop starting volumes; the next run
+    /// continues.
+    #[arg(long)]
+    max_runtime_secs: Option<u64>,
+    /// Volumes scored at once (default: the CPUs).
+    #[arg(long)]
+    parallel: Option<usize>,
 }
 
 /// SIGTERM, as a stream (`systemctl stop`).
@@ -299,6 +344,38 @@ pub(crate) async fn congress_serialset_command(
     Ok(None)
 }
 
+pub(crate) async fn congress_damage_command(
+    cli: &Cli,
+    start: tokio::time::Instant,
+    args: &CongressDamageArgs,
+) -> anyhow::Result<Option<Published>> {
+    let CongressDamageArgs {
+        series,
+        volumes,
+        serials,
+        out,
+        max_runtime_secs,
+        parallel,
+    } = args;
+    let opts = usnm_ingest::congress_damage::Options {
+        series: series.clone(),
+        volumes: volumes.iter().map(|v| v.trim().to_owned()).collect(),
+        serials: serials.clone(),
+        deadline: deadline(start, *max_runtime_secs),
+        parallel: parallel.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        }),
+    };
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let out = match out {
+        Some(url) => usnm_store::open(url)?,
+        None => Arc::clone(&curated),
+    };
+    let report = usnm_ingest::congress_damage::run(curated, out, &opts).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +464,67 @@ mod tests {
         assert_eq!(done_file, Some(PathBuf::from("/var/lib/usnm-sset/done")));
         assert!(parse(&["--done-file", "d", "--years", "1820"]).is_err());
         assert!(parse(&["--done-file", "d", "--serials", "33"]).is_err());
+    }
+
+    #[test]
+    fn congress_damage_takes_named_arguments() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "congress-damage",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        let Command::CongressDamage(CongressDamageArgs {
+            series,
+            volumes,
+            serials,
+            out,
+            ..
+        }) = parse(&[]).unwrap().command
+        else {
+            panic!("not congress-damage");
+        };
+        assert_eq!(series, "serialset");
+        assert!(volumes.is_empty() && serials.is_empty() && out.is_none());
+        let Command::CongressDamage(CongressDamageArgs {
+            series,
+            volumes,
+            serials,
+            out,
+            max_runtime_secs,
+            parallel,
+        }) = parse(&[
+            "--series",
+            "globe",
+            "--volumes",
+            "metadc29274,metadc29275",
+            "--serials",
+            "33,34",
+            "--out",
+            "/tmp/damage",
+            "--max-runtime-secs",
+            "60",
+            "--parallel",
+            "2",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not congress-damage");
+        };
+        assert_eq!(series, "globe");
+        assert_eq!(volumes, ["metadc29274", "metadc29275"]);
+        assert_eq!(serials, [33, 34]);
+        assert_eq!(out.as_deref(), Some("/tmp/damage"));
+        assert_eq!((max_runtime_secs, parallel), (Some(60), Some(2)));
+        assert!(parse(&["33"]).is_err(), "named arguments only");
+        assert!(parse(&["--series", "newspapers"]).is_err());
+        assert!(parse(&["--serials", "x"]).is_err());
     }
 }

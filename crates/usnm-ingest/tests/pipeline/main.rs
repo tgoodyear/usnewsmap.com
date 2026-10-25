@@ -8,6 +8,7 @@ mod american_stories;
 mod cluster;
 mod common;
 mod congress;
+mod congress_damage;
 mod curate;
 mod dedup;
 mod finish;
