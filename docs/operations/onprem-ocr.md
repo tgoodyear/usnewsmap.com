@@ -227,9 +227,9 @@ For the on-prem pickup, `USNM_OCR_SYNC_ALERTS` (on in prod, with `USNM_OCR_SYNC_
 
 - `usnm-ocrs-failed-alert-<env>` (severity 2): a run recorded `ingest.command_failures` (command `ocr-sync`) in the last 30 minutes. Every `usnm-ingest` that ends in error records it before it exits. The error itself is in the journal.
 - `usnm-ocrs-stale-alert-<env>` (severity 2): no `ocr.out.oldest_age_s` for more than 2 hours (2 h 20 min). Only a run that gets through the pickup records it, so this rule catches a stopped timer, a container that is down, a run killed before it could record a failure, and telemetry that no longer arrives.
-- `usnm-ocrs-backlog-alert-<env>` (severity 3): the last run's `ocr.out.oldest_age_s` is over 72 hours, with `ocr.out.parts_left` in the email.
+- `usnm-ocrs-backlog-alert-<env>` (severity 3): the last run's `ocr.out.oldest_age_s` is over 72 hours. `ocr.out.parts_left` has how many parts wait.
 
-Each costs $0.50 a month (checked every 15 minutes, the backlog rule hourly). The failure count needs a `usnm-ingest` from #1139 or later in CT 215 (`batch-ct-ingest.sh --install`); the other two work with any release.
+Each email names, in `Detail`, the last failure's time, the last good run's time or the oldest part's day. Each costs $0.50 a month (checked every 15 minutes, the backlog rule hourly). The failure count needs a `usnm-ingest` from #1139 or later in CT 215 (`batch-ct-ingest.sh --install`); the other two work with any release.
 
 ## Our OCR in releases (#296)
 

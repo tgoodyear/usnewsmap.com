@@ -24,9 +24,13 @@
 //   killed before it records anything (out of memory, the unit's timeout), the
 //   timer stopped, the container down, or the telemetry not getting through;
 // - backlog (severity 3): the last run left a part in ocr-out older than 72
-//   hours. ocr-out deletes blobs 30 days after their last change.
-// No dimensions: each rule's columns change while its condition lasts (counts,
-// ages), and a split by them would email again at every change.
+//   hours (ocr.out.parts_left says how many, in the query results). ocr-out deletes blobs 30 days after their last change.
+// Each rule splits by one column, Detail, so the email carries it (the common
+// schema lists a log alert's dimensions, not its other columns). Detail stays
+// the same while a condition lasts: the last failure's time (a new failure is a
+// new alert), the last good run's time, the oldest waiting part's day. Counts
+// and ages, which change at every check, stay out of it; the alert's query
+// results link has them.
 //
 // Every query reads only the environment component's rows (_ResourceId) under
 // the cloud role usnm-ingest, as api-alerts.bicep does. Anyone with Monitoring
@@ -48,9 +52,9 @@ AppMetrics
 | where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-ingest"
 | where Name == "ingest.command_failures" and tostring(Properties["command"]) == "ocr-sync"
 | where TimeGenerated > ago(30m) and Sum > 0
-| summarize Failures = tolong(sum(Sum)), Last = max(TimeGenerated)
-| where Failures > 0
-| project Detail = strcat(Failures, " failed run(s), the last at ", format_datetime(Last, "yyyy-MM-dd HH:mm"), " UTC")
+| summarize Last = max(TimeGenerated)
+| where isnotnull(Last)
+| project Detail = strcat("the last failed run ended ", format_datetime(Last, "yyyy-MM-dd HH:mm"), " UTC")
 '''
 
 var stale = '''
@@ -67,25 +71,24 @@ print Last = lastRun
 var backlog = '''
 AppMetrics
 | where _ResourceId =~ "__COMPONENT_ID__" and AppRoleName == "usnm-ingest"
-| where Name in ("ocr.out.oldest_age_s", "ocr.out.parts_left")
-| summarize arg_max(TimeGenerated, Max) by Name
-| summarize OldestS = maxif(Max, Name == "ocr.out.oldest_age_s"), Parts = maxif(Max, Name == "ocr.out.parts_left"),
-    HasParts = countif(Name == "ocr.out.parts_left")
-| extend OldestHours = toint(OldestS / 3600)
-| where OldestHours > 72
-| project Detail = strcat(iff(HasParts > 0, strcat(tolong(Parts), " parts left, "), ""), "the oldest ", OldestHours, " hours old")
+| where Name == "ocr.out.oldest_age_s"
+| summarize arg_max(TimeGenerated, OldestS = Max)
+| where OldestS > 72 * 3600
+// The oldest part's day, which stays the same while that part waits.
+| project Detail = strcat("parts waiting since ", format_datetime(bin(TimeGenerated - OldestS * 1s, 1d), "yyyy-MM-dd"), " UTC")
 '''
 
 var rules = [
   {
     name: alertNames.failed
     displayName: 'OCR pickup failed'
-    description: 'A run of the on-prem OCR pickup (usnm-ingest ocr-sync, usnm-ocr-sync.service in pve-laptop CT 215) ended in error in the last 30 minutes; Detail says how many and when. Nothing it checked is lost: the next hourly run picks up where this one stopped. Next: in CT 215, journalctl -u usnm-ocr-sync --since -2h for the "command failed" line (the whole error chain), and reference/status/ocr-local.json for the last run that got through.'
+    description: 'A run of the on-prem OCR pickup (usnm-ingest ocr-sync, usnm-ocr-sync.service in pve-laptop CT 215) ended in error in the last 30 minutes; Detail says when the last one ended. Nothing it checked is lost: the next hourly run picks up where this one stopped. Next: in CT 215, journalctl -u usnm-ocr-sync --since -2h for the "command failed" line (the whole error chain), and reference/status/ocr-local.json for the last run that got through.'
     severity: 2
     frequency: 'PT15M'
     // The query reports the last 30 minutes (two checks), so a row that arrives a few minutes late is still seen.
     window: 'PT30M'
     query: failed
+    dimensions: ['Detail']
   }
   {
     name: alertNames.stale
@@ -95,15 +98,17 @@ var rules = [
     frequency: 'PT15M'
     window: 'PT6H'
     query: stale
+    dimensions: ['Detail']
   }
   {
     name: alertNames.backlog
     displayName: 'OCR output waiting over 72 hours'
-    description: 'The on-prem OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says how much. ocr-out deletes blobs 30 days after their last change. Next: reference/status/ocr-local.json (parts_left, oldest_age_s) and, in CT 215, journalctl -u usnm-ocr-sync; raise --max-parts, or start extra runs with usnm-ingest-run ocr-sync.'
+    description: 'The on-prem OCR pickup\'s last run left node output in ocr-out that is more than 72 hours old; Detail says since when; the query results link has how many parts and how old. ocr-out deletes blobs 30 days after their last change. Next: reference/status/ocr-local.json (parts_left, oldest_age_s) and, in CT 215, journalctl -u usnm-ocr-sync; raise --max-parts, or start extra runs with usnm-ingest-run ocr-sync.'
     severity: 3
     frequency: 'PT1H'
     window: 'PT3H'
     query: backlog
+    dimensions: ['Detail']
   }
 ]
 
@@ -131,6 +136,7 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0
+            dimensions: [for d in r.dimensions: { name: d, operator: 'Include', values: ['*'] }]
             failingPeriods: {
               numberOfEvaluationPeriods: 1
               minFailingPeriodsToAlert: 1
