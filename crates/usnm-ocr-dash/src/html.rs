@@ -1211,12 +1211,17 @@ pub fn render(v: &View) -> String {
                 s.finished,
                 s.pages,
                 &format!(
-                    "{} of {} pages ({} already there, {} fetched, {} failed)",
+                    "{} of {} pages ({} already there, {} fetched, {} failed{})",
                     int(s.finished),
                     int(s.pages),
                     int(s.already_there),
                     int(s.fetched),
-                    int(s.failed_permanent + s.failed_transient)
+                    int(s.failed_permanent + s.failed_transient),
+                    if s.no_loc || s.deferred_needs_loc > 0 {
+                        format!(", {} left for LoC", int(s.deferred_needs_loc))
+                    } else {
+                        String::new()
+                    }
                 )
             ),
             format_args!(

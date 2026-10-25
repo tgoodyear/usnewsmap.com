@@ -79,6 +79,10 @@ pub struct FetchStatus {
     /// from LoC's bucket (#1114).
     pub fetched_mirror: u64,
     pub fetched_bucket: u64,
+    /// Pages left for a run that may ask LoC: neither LoC's bucket nor a
+    /// mirror had them, and the manifest takes JP2s from nowhere else.
+    pub deferred_needs_loc: u64,
+    pub no_loc: bool,
     pub mirrors: BTreeMap<String, RouteCounts>,
     pub bucket: Option<RouteCounts>,
 }
@@ -97,6 +101,8 @@ pub struct RouteCounts {
     pub md5_mismatches: u64,
     pub skipped_held: u64,
     pub holds: u64,
+    /// A mirror's timeouts and connection errors that didn't hold it.
+    pub errors: u64,
     pub held_secs: Option<u64>,
 }
 
