@@ -106,6 +106,11 @@ fn kept(cache: &tempfile::TempDir) -> PathBuf {
 }
 
 /// The checked URL and the guess kept on disk.
+/// A JP2 URL under the guessed (wrong) batch directory `xx`.
+fn p1_guessed_url(s: &StandIn) -> String {
+    format!("{}data/sn1/0001A/1890050301/0101.jp2", batch_url(s, "xx"))
+}
+
 fn urls_kept(cache: &tempfile::TempDir) -> (Option<String>, Option<String>) {
     let read = |n: &str| std::fs::read_to_string(kept(cache).join(n)).ok();
     (read("url"), read("url.guessed"))
@@ -754,8 +759,20 @@ async fn a_batch_elsewhere_on_loc_is_moved_where_chronicling_america_says() {
         ),
         (1, 1, 1, 0)
     );
-    // Kept as checked, in place of the guess.
+    // Kept as checked, in place of the guess, and the wrong guess kept as
+    // the record of which sidecars name it.
     assert_eq!(urls_kept(&cache), (Some(at.clone()), None));
+    assert_eq!(
+        std::fs::read_to_string(kept(&cache).join("url.wrong")).ok(),
+        Some(batch_url(&s, "xx"))
+    );
+    // A JP2 under the wrong guess seeds no known-good item: the one LoC's
+    // own answers set stays.
+    let before = loc.storage_health.lock().unwrap().known_good.clone();
+    loc.seed_storage_known_good(&p1_guessed_url(&s));
+    let after = loc.storage_health.lock().unwrap().known_good.clone();
+    assert_eq!(after, before);
+    assert!(!after.unwrap_or_default().contains("/xx/batch_"));
     // The JP2 still comes from the bucket, with the URLs where the batch is.
     let (scan, hit) = loc.bucket_jp2(&p2).await.unwrap();
     assert_eq!(

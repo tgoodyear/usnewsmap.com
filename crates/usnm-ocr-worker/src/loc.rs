@@ -123,6 +123,9 @@ const URL_FILE: &str = "url";
 /// Beside a manifest from LoC's bucket instead: only the guess the batch's
 /// name gives ([`Bag::guessed`]).
 const GUESSED_URL_FILE: &str = "url.guessed";
+/// A guess LoC's checked URL later replaced: the batch's earlier sidecars,
+/// fetched under the guess, name it.
+const WRONG_URL_FILE: &str = "url.wrong";
 
 type Pages = Arc<BTreeMap<u16, String>>;
 
@@ -239,12 +242,24 @@ async fn write_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
 }
 
 /// Keep `url` as the checked URL of the batch kept in `dir`, in place of
-/// any guess.
+/// any guess. A guess that was right goes; a wrong one is kept as
+/// `url.wrong`, the record of which sidecars name it.
 async fn write_checked_url(dir: &Path, url: &str) -> std::io::Result<()> {
     write_file(&dir.join(URL_FILE), url.as_bytes()).await?;
-    match tokio::fs::remove_file(dir.join(GUESSED_URL_FILE)).await {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
+    let guessed = dir.join(GUESSED_URL_FILE);
+    match tokio::fs::read_to_string(&guessed).await {
+        Ok(g) if g.trim() != url => {
+            tracing::warn!(
+                dir = %dir.display(),
+                guess = g.trim(),
+                url,
+                "a batch's guessed URL was wrong: the sidecars fetched under it name the guess"
+            );
+            tokio::fs::rename(&guessed, dir.join(WRONG_URL_FILE)).await
+        }
+        Ok(_) => tokio::fs::remove_file(&guessed).await,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -958,11 +973,15 @@ impl LocClient {
         ) else {
             return;
         };
-        // Not from a batch whose URL is only a guess (its manifest came
-        // from LoC's bucket): LoC may not have the METS there.
+        // Only from the batch's checked URL: a JP2 fetched under a guess
+        // (its manifest came from LoC's bucket), right or wrong, may name a
+        // METS LoC doesn't have there.
         let kept = cache.join(bdir);
-        if !kept.join(URL_FILE).is_file() && kept.join(GUESSED_URL_FILE).is_file() {
-            return;
+        match std::fs::read_to_string(kept.join(URL_FILE)) {
+            Ok(u) if !jp2_url.starts_with(u.trim()) => return,
+            Ok(_) => {}
+            Err(_) if kept.join(GUESSED_URL_FILE).is_file() => return,
+            Err(_) => {}
         }
         for name in [format!("{issue}.xml"), format!("{issue}_1.xml")] {
             if cache
