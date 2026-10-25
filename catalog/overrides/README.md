@@ -89,9 +89,9 @@ coordinates came from (`coordinates_from`).
 ## Title places
 
 `title-places.json` places a title whose LoC record lists several places
-(a paper that moved) in one city and state, whatever its record says: the
-place where most of its pages were published. Entries are sorted by `lccn`,
-with keys in alphabetical order:
+(a paper that moved) in one city and state, where most of its pages were
+published, whatever its record says. Entries are sorted by `lccn`, with keys in
+alphabetical order:
 
 ```json
 [
@@ -101,8 +101,8 @@ with keys in alphabetical order:
 
 A paper whose record dates its moves can also give its places by date, with
 `places` (#1066). Each page then takes the place for its date, and the entry's
-own `city` and `state` stay the title's place: the one it is listed in, where
-most of its pages were published. `places` lists at least two places, oldest
+own `city` and `state` stay the title's place, where most of its pages were
+published. `places` lists at least two places, oldest
 first. The first has no `from` and the last no `to`, and each starts
 (`from`) the day after the one before ends (`to`), so every date has a place.
 Dates are `YYYY-MM-DD`, and both days are in the place. The entry's `city`
