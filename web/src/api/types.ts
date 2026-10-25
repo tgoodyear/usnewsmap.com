@@ -19,8 +19,9 @@ export interface Meta {
   /** Every page in the published version. Absent from APIs older than this field. */
   pages?: number;
   /**
-   * The language filter's choices (07 §7.9): catalog languages the `lang`
-   * parameter accepts, most pages first. Absent from older APIs.
+   * The language filter's choices (07 §7.9): the language codes the `lang`
+   * parameter accepts, most pages first, with pages counted the way
+   * `language_filter` says. Absent from older APIs.
    */
   languages?: MetaLanguage[];
   /**

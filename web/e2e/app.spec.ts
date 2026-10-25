@@ -342,7 +342,7 @@ test("the dataset details show the published version without the pipeline state"
     "Versions",
     "Technical details",
   ]);
-  await expect(page.getByText(/^The site searches 1,872 newspaper pages from 6 newspapers/)).toBeVisible();
+  await expect(page.getByText(/^The site covers 1,872 newspaper pages from 6 newspapers/)).toBeVisible();
   await expect(page.getByRole("img", { name: "Pages by decade: all 1,872 are from the 1890s." })).toBeVisible();
   // The fixtures search the Library of Congress text alone.
   await expect(page.getByText("Not yet: the search index the site uses now doesn't have its text.")).toBeVisible();
@@ -359,7 +359,7 @@ test("the dataset details show the published version without the pipeline state"
   // work and the pipeline sections say so.
   await expect(page.getByRole("heading", { level: 3, name: "Right now" })).toBeVisible();
   await expect(page.getByText("What the pipeline is doing right now isn't available on this server.")).toBeVisible();
-  await expect(page.getByRole("heading", { level: 3, name: "Searchable now: 1,872 pages" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "In the published version: 1,872 pages" })).toBeVisible();
   await expect(
     page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem"),
   ).toHaveCount(4);
@@ -396,6 +396,8 @@ test("the dataset details say what the pipeline is doing right now", async ({ pa
   const iso = (min: number) => new Date(now + min * 60_000).toISOString();
   const doc = {
     ...base,
+    // The version's batches; with the 2,115 it leaves out, 2,997 processed.
+    published: { ...base.published, batches: 882 },
     pipeline: { available: true, read_at: iso(0) },
     activity: {
       available: true,
@@ -489,7 +491,10 @@ test("the dataset details say what the pipeline is doing right now", async ({ pa
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { level: 3, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" }),
+    page.getByRole("heading", {
+      level: 3,
+      name: "In the published version: 1,872 pages, from 882 of 2,997 downloaded batches (29%)",
+    }),
   ).toBeVisible();
 
   // Four steps; the current one is marked, and its state is in words.
