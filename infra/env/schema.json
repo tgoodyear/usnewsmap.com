@@ -451,6 +451,15 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_SEARCH_LOG_COPY": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SEARCH_LOG_COPY_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The search log copy host's Arc machine identity's object id (#1097).",
+      "not": {}
+    },
     "USNM_SEARCH_LOG_READERS": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. Entra principals that may read the search log.",

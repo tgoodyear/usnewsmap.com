@@ -45,7 +45,7 @@ func publicAccountIds(
 
 // The data lake opens to the node IPs only for an on-prem host that uses it
 // (the Serial Set's and the Japanese OCR's runners, the release, the serving
-// container), and only when there are IPs to allow.
+// container, the search log copy), and only when there are IPs to allow.
 @export()
 func lakeOpen(onPremLakeRunner bool, ocrNodeIps string) bool =>
   onPremLakeRunner && !empty(nodeIpList(ocrNodeIps))
