@@ -2628,7 +2628,10 @@ mod tests {
         // A relative path is read from the current directory.
         let here = std::env::current_dir().unwrap();
         let here = here.file_name().unwrap().to_str().unwrap().to_owned();
-        assert!(no_loc_for(&p("manifest.parquet"), std::slice::from_ref(&here)));
+        assert!(no_loc_for(
+            &p("manifest.parquet"),
+            std::slice::from_ref(&here)
+        ));
         assert!(no_loc_for(&p("./manifest.parquet"), &[here]));
         // Off by default; a blank prefix matches nothing.
         assert!(!no_loc_for(&p("/m/queue-quality-1/manifest.parquet"), &[]));
