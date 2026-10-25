@@ -1,5 +1,5 @@
 {
-  "description": "The zone's one Free rate-limit rule, in the http_ratelimit phase (ADR-0027 settled decision 9). Created disabled; the flood runbook (09 section 9.3.1) turns it on and off.",
+  "description": "The zone's one Free rate-limit rule, in the http_ratelimit phase (ADR-0027 settled decision 9). Disabled until a flood; the flood runbook (09 section 9.3.1) turns it on and off.",
   "rules": [
     {
       "action": "block",
