@@ -28,7 +28,8 @@
 // Each rule splits by one column, Detail, so the email carries it (the common
 // schema lists a log alert's dimensions, not its other columns). Detail stays
 // the same while a condition lasts: the last failure's time (a new failure is a
-// new alert), the last good run's time, the oldest waiting part's day. Counts
+// new alert), the last good run's time (for two days, the stale rule's window), the oldest
+// waiting part's day. Counts
 // and ages, which change at every check, stay out of it; the alert's query
 // results link has them.
 //
@@ -64,7 +65,7 @@ let lastRun = toscalar(AppMetrics
     | summarize max(TimeGenerated));
 print Last = lastRun
 | where isnull(Last) or Last < ago(140m)
-| project Detail = iff(isnull(Last), "no run got through the pickup in the last 6 hours",
+| project Detail = iff(isnull(Last), "no run got through the pickup in the last 2 days",
     strcat("the last run that got through the pickup ended ", format_datetime(Last, "yyyy-MM-dd HH:mm"), " UTC"))
 '''
 
@@ -96,7 +97,9 @@ var rules = [
     description: 'No run of the on-prem OCR pickup (usnm-ingest ocr-sync, hourly at minute 17 in pve-laptop CT 215) has got through for more than 2 hours; Detail says when the last one did. Node output waits in ocr-out meanwhile. Next: in CT 215, systemctl status usnm-ocr-sync.timer usnm-ocr-sync.service and journalctl -u usnm-ocr-sync --since -3h; on pve-laptop, home-infra scripts/lab/batch-ct-ingest.sh --check. If the runs succeed but this stays on, their telemetry isn\'t reaching Application Insights (APPLICATIONINSIGHTS_CONNECTION_STRING in /etc/usnm/ingest.env, the Arc agent).'
     severity: 2
     frequency: 'PT15M'
-    window: 'PT6H'
+    // Two days, the longest a log alert reads, so the last good run stays in view (and
+    // Detail stays the same) through an outage; one that lasts longer emails again once.
+    window: 'P2D'
     query: stale
     dimensions: ['Detail']
   }
