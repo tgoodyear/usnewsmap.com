@@ -10,21 +10,26 @@ import { test } from "node:test";
 import worker from "./worker.mjs";
 
 // JSON with // and /* */ comments, as wrangler reads it. Comment markers inside strings
-// (the https:// of a URL) stay.
+// (the https:// of a URL) stay. One forward pass: every branch moves the cursor ahead and
+// the input is consumed once. A string or block comment that never closes throws a
+// SyntaxError, so a malformed file fails the run and does not hang it.
 function parseJsonc(source) {
   let out = "";
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     if (c === '"') {
       let j = i + 1;
-      while (source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
+      while (j < source.length && source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
+      if (j >= source.length) throw new SyntaxError(`unterminated string starting at offset ${i}`);
       out += source.slice(i, j + 1);
       i = j;
     } else if (c === "/" && source[i + 1] === "/") {
       while (i < source.length && source[i] !== "\n") i++;
       out += "\n";
     } else if (c === "/" && source[i + 1] === "*") {
-      i = source.indexOf("*/", i + 2) + 1;
+      const end = source.indexOf("*/", i + 2);
+      if (end === -1) throw new SyntaxError(`unterminated block comment starting at offset ${i}`);
+      i = end + 1;
     } else {
       out += c;
     }
@@ -39,6 +44,18 @@ test("the comment stripper keeps URLs and drops comments", () => {
     a: "https://x.example/*",
     b: 1,
   });
+});
+
+test("the comment stripper throws on an unterminated string instead of scanning on", () => {
+  for (const source of ['{ "a": "never closed', '{ "a": "ends on an escape \\"', '{ "a": "x\\']) {
+    assert.throws(() => parseJsonc(source), { name: "SyntaxError", message: /unterminated string/ });
+  }
+});
+
+test("the comment stripper throws on an unterminated block comment instead of looping", () => {
+  for (const source of ['{ "a": 1 } /* never closed', '{ "a": 1 } /*', '{ "a": 1 } /*/']) {
+    assert.throws(() => parseJsonc(source), { name: "SyntaxError", message: /unterminated block comment/ });
+  }
 });
 
 test("Workers Logs, Logpush and tail consumers are off or absent", () => {
