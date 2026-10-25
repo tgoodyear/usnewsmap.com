@@ -458,46 +458,73 @@ fn msg(e: &str, at: Option<DateTime<Utc>>) -> String {
     )
 }
 
-fn next_table(o: &mut String, label: &str, rows: &[NextRow], with_fetched: bool) {
+fn next_table(o: &mut String, label: &str, rows: &[NextRow]) {
     if rows.is_empty() {
         o.push_str("<p class=\"muted\">None.</p>");
         return;
     }
     o.push_str(&scroll(label));
-    o.push_str("<table><tr><th>#</th><th>doc_id</th><th>Lang</th><th>Group</th>");
-    if with_fetched {
-        o.push_str("<th>Scan</th>");
-    }
-    o.push_str("<th></th></tr>");
+    o.push_str("<table><tr><th>#</th><th>doc_id</th><th>Lang</th><th>Manifest</th></tr>");
     for (i, r) in rows.iter().enumerate() {
         let _ = write!(
             o,
-            "<tr><td class=\"r\">{}</td><td><code>{}</code></td><td>{}</td><td>{}</td>",
+            "<tr><td class=\"r\">{}</td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td></tr>",
             i + 1,
             esc(&r.doc_id),
             esc(&r.lang),
-            esc(r.group)
-        );
-        if with_fetched {
-            let _ = write!(
-                o,
-                "<td>{}</td>",
-                if r.fetched { "on pve-big" } else { "not yet" }
-            );
-        }
-        let _ = write!(
-            o,
-            "<td>{}</td></tr>",
-            if r.in_flight { "in flight" } else { "" }
+            esc(&r.manifest)
         );
     }
     o.push_str("</table></div>");
+}
+
+/// A manifest's version: the directory it is in (`queue-ocr-…`).
+fn manifest_name(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    p.parent()
+        .and_then(|d| d.file_name())
+        .or_else(|| p.file_name())
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
+fn state_badge(state: &str) -> String {
+    match state {
+        "running" | "done" | "finished" => badge("good", state),
+        "waiting" | "budget" | "stopped" | "cooling" => badge("warning", state),
+        other => badge("critical", other),
+    }
+}
+
+/// Until the bulk download is done, at its rate.
+fn bulk_eta(b: &crate::fetch::BulkStatus) -> Option<u64> {
+    (b.state == "running" && b.bytes_per_sec > 0.0)
+        .then(|| (b.bytes_total.saturating_sub(b.bytes_done) as f64 / b.bytes_per_sec) as u64)
+}
+
+/// The fetcher's activity, as a badge.
+fn fetch_badge(f: &crate::view::FetchView) -> String {
+    match f.activity {
+        "running" => badge(
+            "good",
+            f.status.as_ref().map_or("running", |s| s.state.as_str()),
+        ),
+        "idle" => badge("good", "idle, queue empty"),
+        "queued" => badge(
+            "warning",
+            &format!(
+                "{} queued, no current status",
+                int((f.queue_summary.queued + f.queue_summary.fetching) as u64)
+            ),
+        ),
+        _ => badge("warning", "unknown"),
+    }
 }
 
 fn sset_badge(x: &crate::view::SsetView) -> String {
     let b = match x.state.as_str() {
         "finished" => badge("good", "finished"),
         "running" => badge("good", "running"),
+        "unknown" => badge("warning", "unknown or stopped"),
         other => badge("warning", other),
     };
     if x.stale {
@@ -510,6 +537,9 @@ fn sset_badge(x: &crate::view::SsetView) -> String {
 fn sset_eta(x: &crate::view::SsetView) -> String {
     if x.state == "finished" {
         return "done".to_owned();
+    }
+    if x.stale {
+        return "-".to_owned();
     }
     x.status
         .eta_hours
@@ -645,93 +675,99 @@ fn ecosystem_panel(v: &View) -> String {
          are different populations, not one progress bar.</p><div class=\"ecosystem-cards\">",
     );
     let f = &v.fetch;
-    if crate::view::fetch_status_fresh(v) {
-        let state = f.status.as_ref().map_or("unknown", |s| s.state.as_str());
-        let keep = f.sets.iter().find(|s| s.name == "keep");
-        let population = keep.map_or_else(
-            || "Current cache population unavailable.".into(),
-            |s| {
-                format!(
-                    "{} of {} planned keep-set originals cached ({}).",
-                    int(s.fetched),
-                    int(s.total),
-                    bytes(s.bytes)
-                )
-            },
-        );
-        summary_card(&mut o, "Fetching originals",
+    let all_runs = format!(
+        "{} pages fetched across all runs ({}).",
+        int(f.total.pages),
+        bytes(f.total.bytes)
+    );
+    let qs = &f.queue_summary;
+    let queue_line = if f.queue_configured && f.queue_error.is_none() {
+        format!(
+            " Fetch queue: {} manifests waiting, {} cooling off, {} fetched; {} queued pages left.",
+            int((qs.queued + qs.fetching) as u64),
+            int(qs.cooling as u64),
+            int(qs.fetched as u64),
+            int(qs.pages_left)
+        )
+    } else {
+        String::new()
+    };
+    match f.activity {
+        "running" => summary_card(
+            &mut o,
+            "Fetching originals",
             &format!("{} pages in the last hour", int(f.last_hour.pages)),
-            &format!("{} {} {}",
-                badge(if matches!(state, "running" | "done") { "good" } else { "warning" }, state),
-                population,
+            &format!(
+                "{} {all_runs}{queue_line} {}",
+                fetch_badge(f),
                 if f.status.as_ref().is_some_and(|s| s.error.is_some()) {
                     "Fetcher reports an error; see operational details."
-                } else { "" }),
-            &format!("{} source holds and {} failed attempts in the last hour. \
+                } else {
+                    ""
+                }
+            ),
+            &format!(
+                "{} source holds and {} failed attempts in the last hour. \
                 Failures are attempts, not unique lost pages. Scan caching is not public-mirror verification.",
-                int(f.holds_last_hour as u64), int(f.failures_last_hour as u64)));
-    } else {
-        summary_card(
+                int(f.holds_last_hour as u64),
+                int(f.failures_last_hour as u64)
+            ),
+        ),
+        "idle" | "queued" => summary_card(
+            &mut o,
+            "Fetching originals",
+            if f.activity == "idle" {
+                "Idle: nothing queued"
+            } else {
+                "Manifests waiting"
+            },
+            &format!("{} {all_runs}{queue_line}", fetch_badge(f)),
+            &format!(
+                "{} pages fetched in the last day. The queue looks for new manifests every ten minutes \
+                 without rewriting the fetcher's status.",
+                int(f.last_day.pages)
+            ),
+        ),
+        _ => summary_card(
             &mut o,
             "Fetching originals",
             "Current activity unknown",
-            "Fetcher status or its plan is missing, old or invalid.",
+            &format!("Fetcher status is missing, old or invalid. {all_runs}"),
             "Historical download details remain available below; no current rate is inferred.",
-        );
+        ),
     }
     let fresh_nodes: Vec<_> = v
         .nodes
         .iter()
         .filter(|n| crate::view::node_status_fresh(n, now))
         .collect();
-    if fresh_nodes.is_empty() {
-        summary_card(
-            &mut o,
-            "Local OCR",
-            "Current activity unknown",
-            "No configured worker has fresh telemetry.",
-            "Missing telemetry does not establish that the machines are idle.",
-        );
-    } else {
+    let ocr = summary_stage(v, "boinc_usnm_ocr_in_progress").and_then(|s| s.count);
+    let mut workers = String::new();
+    if !fresh_nodes.is_empty() {
         let done: u64 = fresh_nodes.iter().map(|n| n.pages_per_hour).sum();
-        let in_flight: usize = fresh_nodes.iter().map(|n| n.in_flight.len()).sum();
-        let failed: u64 = fresh_nodes.iter().map(|n| n.last_hour.failed).sum();
-        let abandoned: u64 = fresh_nodes.iter().map(|n| n.last_hour.abandoned).sum();
-        let queue = v
-            .azure
-            .queues
-            .as_ref()
-            .filter(|q| !v.azure.queues_stale && q.error.is_none());
-        let backlog = queue.and_then(|q| {
-            Some(
-                q.counts
-                    .get("ocr-bulk")?
-                    .saturating_add(*q.counts.get("ocr-priority")?),
-            )
-        });
-        summary_card(
-            &mut o,
-            "Local OCR",
-            &format!("{} pages completed in the last hour", int(done)),
-            &format!(
-                "{} pages in flight. Reporting workers: {}; without current status: {}. \
-                Local queue: {}.",
-                int(in_flight as u64),
-                int(fresh_nodes.len() as u64),
-                int((v.nodes.len() - fresh_nodes.len()) as u64),
-                backlog.map_or_else(
-                    || "unknown".into(),
-                    |n| format!("about {} messages, including leased work", int(n))
-                )
-            ),
-            &format!(
-                "{} failed and {} abandoned attempts in the last hour may retry. \
-                Completion means worker output, not accepted or searchable text.",
-                int(failed),
-                int(abandoned)
-            ),
+        let _ = write!(
+            workers,
+            " Configured direct workers still reporting: {} ({} pages in the last hour).",
+            int(fresh_nodes.len() as u64),
+            int(done)
         );
     }
+    summary_card(
+        &mut o,
+        "OCR",
+        &ocr.map_or_else(
+            || "Current activity unknown".into(),
+            |n| format!("{} usnm_ocr replicas assigned", int(n)),
+        ),
+        &format!(
+            "OCR runs as the BOINC <code>usnm_ocr</code> app: pages are claimed from the on-prem OCR \
+             queue, bundled into workunits, run by volunteers and collected on-prem. Unsent \
+             usnm_ocr replicas: {}. Direct queue workers are retired (#1053).{workers}",
+            summary_count(v, "boinc_usnm_ocr_unsent")
+        ),
+        "Assigned replicas are not unique pages or active devices. \
+         Completion means collected output, not accepted or searchable text.",
+    );
     let boinc_current = summary_stage(v, "boinc_unsent").is_some()
         && summary_stage(v, "boinc_in_progress").is_some();
     summary_card(&mut o, "Volunteer compute",
@@ -911,36 +947,76 @@ pub fn render(v: &View) -> String {
     o.push_str("<section class=\"wide\"><h2>At a glance</h2><table><tr><th>What</th><th>State</th><th>Progress</th><th class=\"r\">Per hour</th><th class=\"r\">Done in</th></tr>");
     {
         let f = &v.fetch;
-        let (state, per_hour) = match &f.status {
-            Some(s) => (
-                match s.state.as_str() {
-                    "running" | "done" => badge("good", &s.state),
-                    "waiting" | "budget" | "stopped" => badge("warning", &s.state),
-                    other => badge("critical", other),
-                },
-                if f.last_hour.pages > 0 {
-                    f.last_hour.pages_per_hour
-                } else {
-                    f.last_day.pages_per_hour
-                },
-            ),
-            None => (badge("critical", "no status"), 0.0),
+        let per_hour = if f.last_hour.pages > 0 {
+            f.last_hour.pages_per_hour
+        } else {
+            f.last_day.pages_per_hour
         };
-        let keep = f.sets.iter().find(|s| s.name == "keep");
+        let run = f.status.as_ref().map_or_else(
+            || "-".to_owned(),
+            |s| {
+                format!(
+                    "this run: {} of {} pages of <code>{}</code>",
+                    int(s.finished),
+                    int(s.pages),
+                    esc(&manifest_name(&s.manifest))
+                )
+            },
+        );
         let _ = write!(
             o,
-            "<tr><td>Scan fetch, keep set</td><td>{state}</td><td>{}</td><td class=\"r\">{per_hour:.0} pages</td><td class=\"r\">{}</td></tr>",
-            keep.map_or_else(
-                || "-".to_owned(),
-                |k| meter(k.fetched, k.total, &format!("{} of {} pages", int(k.fetched), int(k.total)))
-            ),
-            f.keep_eta_secs.map_or_else(|| "-".to_owned(), span)
+            "<tr><td>Scan fetch</td><td>{}</td><td>{run}; {} pages fetched across all runs</td><td class=\"r\">{per_hour:.0} pages</td><td class=\"r\">-</td></tr>",
+            fetch_badge(f),
+            int(f.total.pages)
         );
+        if f.queue_configured {
+            let qs = &f.queue_summary;
+            let _ = write!(
+                o,
+                "<tr><td>Fetch queue</td><td>{}</td><td>{}</td><td class=\"r\">-</td><td class=\"r\">-</td></tr>",
+                if qs.queued + qs.fetching > 0 {
+                    badge("good", &format!("{} waiting", int((qs.queued + qs.fetching) as u64)))
+                } else {
+                    badge("good", "empty")
+                },
+                meter(
+                    qs.pages_fetched,
+                    qs.pages,
+                    &format!(
+                        "{} of {} pages in {} manifests; {} left",
+                        int(qs.pages_fetched),
+                        int(qs.pages),
+                        int(qs.manifests as u64),
+                        int(qs.pages_left)
+                    )
+                )
+            );
+        }
+        if let Some(k) = f.sets.iter().find(|s| s.name == "keep") {
+            let _ = write!(
+                o,
+                "<tr><td>Keep set, {}</td><td>{}</td><td>{}</td><td class=\"r\">-</td><td class=\"r\">{}</td></tr>",
+                esc(&f.plan.as_deref().map(manifest_name).unwrap_or_default()),
+                if k.fetched >= k.total { badge("good", "done") } else { badge("good", "planned") },
+                meter(k.fetched, k.total, &format!("{} of {} pages", int(k.fetched), int(k.total))),
+                f.keep_eta_secs.map_or_else(|| "-".to_owned(), span)
+            );
+        }
+        if let Some(b) = &f.bulk.value {
+            let _ = write!(
+                o,
+                "<tr><td>Bulk OCR archives</td><td>{}</td><td>{}</td><td class=\"r\">{}/s</td><td class=\"r\">{}</td></tr>",
+                state_badge(&b.state),
+                meter(b.done, b.archives, &format!("{} of {} archives", int(b.done), int(b.archives))),
+                bytes(b.bytes_per_sec.max(0.0) as u64),
+                bulk_eta(b).map_or_else(|| "-".to_owned(), span)
+            );
+        }
     }
     for n in &v.nodes {
         let state = match n.state {
             "working" => badge("good", "working"),
-            "idle" => badge("warning", "idle"),
+            "idle" | "retired" => badge("warning", n.state),
             other => badge("critical", other),
         };
         let _ = write!(
@@ -1091,14 +1167,20 @@ pub fn render(v: &View) -> String {
         let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));
     }
     if let Some(e) = &f.plan_error {
-        let _ = write!(o, "<p class=\"err\">Manifest: {}</p>", esc(e));
+        let _ = write!(o, "<p class=\"err\">Plan: {}</p>", esc(e));
     }
+    if let Some(e) = &f.index_error {
+        let _ = write!(o, "<p class=\"err\">Index: {}</p>", esc(e));
+    }
+    let _ = write!(
+        o,
+        "<p>{} {} pages fetched across all runs ({}), from the fetch index.</p>",
+        fetch_badge(f),
+        int(f.total.pages),
+        bytes(f.total.bytes)
+    );
     if let Some(s) = &f.status {
-        let state = match s.state.as_str() {
-            "running" | "done" => badge("good", &s.state),
-            "waiting" | "budget" | "stopped" => badge("warning", &s.state),
-            other => badge("critical", other),
-        };
+        let state = state_badge(&s.state);
         let hold = match s.loc_hold_secs {
             Some(h) => format!(
                 " {}",
@@ -1108,11 +1190,14 @@ pub fn render(v: &View) -> String {
         };
         let _ = write!(
             o,
-            "<table class=\"kv\"><tr><td>Fetcher</td><td>{state}{hold} since {}, version {}</td></tr>\
+            "<table class=\"kv\"><tr><td>Last run</td><td>{state}{hold} since {}, version {}</td></tr>\
+             <tr><td>Manifest</td><td><code>{}</code></td></tr>\
              <tr><td>This run</td><td>{}</td></tr>\
+             <tr><td>Routes</td><td>{}</td></tr>\
              <tr><td>Last page</td><td><code>{}</code>, status written {}</td></tr>",
             time_str(&s.started_at),
             esc(&s.version),
+            esc(&manifest_name(&s.manifest)),
             meter(
                 s.finished,
                 s.pages,
@@ -1124,6 +1209,13 @@ pub fn render(v: &View) -> String {
                     int(s.fetched),
                     int(s.failed_permanent + s.failed_transient)
                 )
+            ),
+            format!(
+                "{} JP2 ({} from mirrors, {} from LoC's bucket), {} through the item API",
+                int(s.fetched_jp2),
+                int(s.fetched_mirror),
+                int(s.fetched_bucket),
+                int(s.fetched_item_api)
             ),
             esc(&s.last_doc_id),
             time_str(&s.updated_at)
@@ -1144,6 +1236,50 @@ pub fn render(v: &View) -> String {
                 &format!("{} of {} cap", bytes(s.buffer_bytes), bytes(s.buffer_cap))
             )
         );
+        let routes: Vec<(&str, &crate::fetch::RouteCounts)> = s
+            .bucket
+            .iter()
+            .map(|b| ("LoC bucket", b))
+            .chain(s.mirrors.iter().map(|(n, m)| (n.as_str(), m)))
+            .collect();
+        if !routes.is_empty() {
+            o.push_str("<h3>Routes this run</h3><table><tr><th>Route</th><th class=\"r\">Requests</th><th class=\"r\">JP2s</th><th class=\"r\">Misses</th><th class=\"r\">md5 mismatches</th><th class=\"r\">Holds</th><th>Held</th></tr>");
+            for (name, r) in routes {
+                let _ = write!(
+                    o,
+                    "<tr><td>{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r\">{}</td><td>{}</td></tr>",
+                    esc(name),
+                    int(r.requests),
+                    int(r.taken()),
+                    int(r.misses),
+                    int(r.md5_mismatches),
+                    int(r.holds),
+                    r.held_secs.map_or_else(|| "-".to_owned(), |h| format!("{} left", span(h)))
+                );
+            }
+            o.push_str("</table>");
+        }
+    }
+    if let Some(p) = &f.pacer.value {
+        let until =
+            DateTime::<Utc>::from_timestamp_millis(p.hold_until_ms as i64).filter(|t| *t > now);
+        let _ = write!(
+            o,
+            "<h3>LoC budget</h3><table class=\"kv\"><tr><td>Pacer</td><td>{}{}</td></tr>\
+             <tr><td>Sent</td><td>{} requests since the pacer started</td></tr>\
+             <tr><td>State</td><td>written {}</td></tr></table>\
+             <p class=\"note\">Every LoC request from the scan fetcher and the bulk download goes through this pacer.</p>",
+            if p.slowed.as_ref().is_some_and(|v| !v.is_null()) {
+                badge("warning", "slowed: LoC pushed back")
+            } else {
+                badge("good", "normal")
+            },
+            until.map_or_else(String::new, |t| format!(" {}", badge("warning", &format!("hold until {}", time(t))))),
+            int(p.sent),
+            f.pacer.modified.map_or_else(|| "-".to_owned(), |t| ago(now, t))
+        );
+    } else if let Some(e) = &f.pacer.error {
+        let _ = write!(o, "<p class=\"err\">LoC pacer: {}</p>", esc(e));
     }
     let _ = write!(
         o,
@@ -1157,8 +1293,11 @@ pub fn render(v: &View) -> String {
         o.push_str("<p class=\"note\">LoC holds are counted from the status file as it is read, so holds shorter than its 30-second rewrite can be missed.</p>");
     }
     if !f.sets.is_empty() {
-        o.push_str(
-            "<h3>By set</h3><table><tr><th>Set</th><th>Fetched</th><th class=\"r\">Data</th></tr>",
+        let _ = write!(
+            o,
+            "<h3>By set, plan <code>{}</code>{}</h3><table><tr><th>Set</th><th>Fetched</th><th class=\"r\">Data</th></tr>",
+            esc(&f.plan.as_deref().map(manifest_name).unwrap_or_default()),
+            if f.plan_pinned { " (pinned)" } else { "" }
         );
         for s in &f.sets {
             let _ = write!(
@@ -1198,14 +1337,17 @@ pub fn render(v: &View) -> String {
     }
     let _ = write!(
         o,
-        "<h3>Failures{}</h3><p>{} pages LoC can't serve (permanent failures). {} pages skipped for now because loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the fetcher asks again after a cool-off.</p>",
+        "<h3>Failures{}</h3><p>{} pages LoC can't serve (permanent failures). {} pages of queued manifests skipped for now because \
+         loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the queue runs their manifest again after a day's cool-off. \
+         {} other pages skipped this way are in no queued manifest, so they are asked for again only if they are queued again.</p>",
         if f.recent_failures.is_empty() {
             String::new()
         } else {
             format!(" ({} latest)", f.recent_failures.len())
         },
         int(f.dead_pages as u64),
-        int(f.cooling_pages as u64)
+        int(f.cooling_pages as u64),
+        int(f.cooling_unqueued as u64)
     );
     if !f.recent_failures.is_empty() {
         o.push_str(&scroll("Latest failures"));
@@ -1221,6 +1363,95 @@ pub fn render(v: &View) -> String {
             );
         }
         o.push_str("</table></div>");
+    }
+    o.push_str("</section>");
+
+    // 2a. The fetch queue and the bulk download.
+    o.push_str("<section><h2>Fetch queue</h2>");
+    if let Some(e) = &f.queue_error {
+        let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));
+    }
+    if !f.queue_configured {
+        o.push_str("<p class=\"muted\">No manifests directory configured.</p>");
+    } else if f.queue.is_empty() {
+        o.push_str("<p class=\"muted\">No queued manifests.</p>");
+    } else {
+        o.push_str(&scroll("Fetch queue"));
+        o.push_str("<table><tr><th>Manifest</th><th>Kind</th><th>State</th><th>Fetched</th></tr>");
+        for m in &f.queue {
+            let state = match m.state {
+                "fetched" => badge("good", "fetched"),
+                "fetching" => badge("good", "fetching"),
+                "cooling" => badge("warning", "cooling off"),
+                other => badge("warning", other),
+            };
+            let _ = write!(
+                o,
+                "<tr><td><code>{}</code></td><td>{}</td><td>{state}{}</td><td>{}</td></tr>",
+                esc(&m.name),
+                m.kind,
+                m.marked_at
+                    .map_or_else(String::new, |t| format!(" {}", ago(now, t))),
+                match &m.error {
+                    Some(e) => format!("<span class=\"err\">{}</span>", esc(e)),
+                    None => meter(
+                        m.fetched,
+                        m.pages,
+                        &format!("{} of {} pages", int(m.fetched), int(m.pages))
+                    ),
+                }
+            );
+        }
+        o.push_str("</table></div>");
+    }
+    o.push_str(
+        "<p class=\"note\">The queue runs OCR's manifests first, then the quality pass's, each in name order. \
+         Fetched counts every page of a manifest in the fetch index, by any run.</p>",
+    );
+    o.push_str("<h3>Bulk OCR archives</h3>");
+    match (&f.bulk.value, &f.bulk.error) {
+        (Some(b), _) => {
+            let _ = write!(
+                o,
+                "<table class=\"kv\"><tr><td>Download</td><td>{} {}</td></tr>\
+                 <tr><td>Archives</td><td>{}</td></tr>\
+                 <tr><td>Data</td><td>{}</td></tr>\
+                 <tr><td>This run</td><td>{} archives, {}; {}/s</td></tr>\
+                 <tr><td>Failed</td><td>{}</td></tr>\
+                 <tr><td>Status</td><td>written {}; done in {}</td></tr></table>",
+                state_badge(&b.state),
+                if f.bulk
+                    .modified
+                    .is_some_and(|t| now - t > chrono::Duration::minutes(30))
+                {
+                    badge("warning", "stale")
+                } else {
+                    String::new()
+                },
+                meter(
+                    b.done,
+                    b.archives,
+                    &format!("{} of {}", int(b.done), int(b.archives))
+                ),
+                meter(
+                    b.bytes_done,
+                    b.bytes_total,
+                    &format!("{} of {}", bytes(b.bytes_done), bytes(b.bytes_total))
+                ),
+                int(b.fetched_this_run),
+                bytes(b.bytes_this_run),
+                bytes(b.bytes_per_sec.max(0.0) as u64),
+                int(b.failed.len() as u64),
+                time_str(&b.updated_at),
+                bulk_eta(b).map_or_else(|| "-".to_owned(), span)
+            );
+        }
+        (None, Some(e)) => {
+            let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));
+        }
+        (None, None) => o.push_str(
+            "<p class=\"muted\">The bulk download's status file isn't configured here.</p>",
+        ),
     }
     o.push_str("</section>");
 
@@ -1268,10 +1499,10 @@ pub fn render(v: &View) -> String {
         o.push_str("<p class=\"muted\">No nodes configured.</p>");
     }
     for n in &v.nodes {
-        let state = if n.ok {
-            badge("good", "reporting")
-        } else {
-            badge("critical", "no status")
+        let state = match n.state {
+            "working" | "idle" => badge("good", "reporting"),
+            "retired" => badge("warning", "retired"),
+            _ => badge("critical", "no status"),
         };
         let _ = write!(o, "<h3>{} {state}</h3>", esc(&n.name));
         if let Some(e) = &n.error {
@@ -1285,7 +1516,16 @@ pub fn render(v: &View) -> String {
                     .unwrap_or_default()
             );
         }
-        if n.last_ok.is_none() {
+        if !crate::view::node_status_fresh(n, now) {
+            let _ = write!(
+                o,
+                "<p class=\"muted\">{}</p>",
+                if n.state == "retired" {
+                    "Retired: no answer for over a day. OCR runs through BOINC (#1053); its counters aren't shown."
+                } else {
+                    "No current status; its counters aren't shown."
+                }
+            );
             continue;
         }
         let routes = if n.routes.is_empty() {
@@ -1381,15 +1621,14 @@ pub fn render(v: &View) -> String {
     o.push_str("<section><h2>What's next</h2>");
     let _ = write!(
         o,
-        "<h3>To OCR ({} of {} left): keep set in fetch order, not yet OCRed</h3>",
-        x.to_ocr.len(),
-        int(x.keep_left_to_ocr)
+        "<h3>To fetch (next {}): queued manifests, in the queue's order</h3>",
+        x.to_fetch.len()
     );
-    next_table(&mut o, "To OCR", &x.to_ocr, true);
-    o.push_str("<p class=\"note\">The queues decide what a node takes; this list is the keep set in the fetcher's order. \
-                A page counts as OCRed once a node's journal says so.</p>");
-    let _ = write!(o, "<h3>To fetch (next {})</h3>", x.to_fetch.len());
-    next_table(&mut o, "To fetch", &x.to_fetch, false);
+    next_table(&mut o, "To fetch", &x.to_fetch);
+    o.push_str(
+        "<p class=\"note\">What is OCRed next is decided by the on-prem OCR queue and BOINC, \
+         which this dashboard doesn't read yet.</p>",
+    );
     o.push_str("<h3>Seed plan</h3>");
     match &x.seed_plan {
         Some(p) => {
@@ -1408,8 +1647,12 @@ pub fn render(v: &View) -> String {
     o.push_str("<section><h2>What's been OCRed</h2>");
     let _ = write!(
         o,
-        "<p>{} pages OCRed by the nodes, as their journals report.</p>",
-        int(d.pages)
+        "<p>{} pages OCRed by the direct queue workers, from the journals copied here ({}){}. \
+         Those workers are retired (#1053): OCR now runs through BOINC, whose output isn't counted here. \
+         The pages whose searchable text is our OCR are in the corpus data flow's search-inclusion stage.</p>",
+        int(d.pages),
+        if d.journals.is_empty() { "none".to_owned() } else { esc(&d.journals.join(", ")) },
+        d.last_at.map_or_else(String::new, |t| format!(", newest page {}", time(t)))
     );
     let pairs = |o: &mut String, title: &str, rows: &[(String, u64)]| {
         if rows.is_empty() {
@@ -1476,7 +1719,7 @@ pub fn render(v: &View) -> String {
     o.push_str("</p></section>");
 
     // 6. Queues.
-    o.push_str("<section><h2>Azure queues and dead letters</h2>");
+    o.push_str("<section><h2>Queues and dead letters</h2>");
     match (&v.azure.queues, &v.azure.queues_from) {
         (Some(q), Some(from)) => {
             let _ = write!(
@@ -1533,7 +1776,9 @@ pub fn render(v: &View) -> String {
                 o.push_str("</table></div>");
             }
         }
-        _ => o.push_str("<p class=\"muted\">No node has reported the queues yet.</p>"),
+        _ => {
+            o.push_str("<p class=\"muted\">No queue counts: no configured worker reports them.</p>")
+        }
     }
     let _ = write!(
         o,
@@ -1642,6 +1887,7 @@ mod tests {
         });
         v.fetch.status_error = None;
         v.fetch.plan_error = None;
+        v.fetch.activity = "running";
         v.fetch.last_hour.pages = 1574;
         let summary = ecosystem_panel(&v);
         assert!(summary.contains("1,574 pages in the last hour"));
@@ -1716,36 +1962,73 @@ mod tests {
             node(10000, v.generated_at - chrono::Duration::minutes(4), true),
             node(10000, v.generated_at, false),
         ];
-        v.azure.queues_stale = false;
-        v.azure.queues = Some(usnm_ocr_contract::status::QueueStats {
-            counts: [
-                ("ocr-bulk".into(), 607),
-                ("ocr-priority".into(), 3),
-                ("ocr-deadletter".into(), 999),
-            ]
-            .into(),
-            ..Default::default()
-        });
         let summary = ecosystem_panel(&v);
-        assert!(summary.contains("30 pages completed in the last hour"));
-        assert!(summary.contains("Reporting workers: 2; without current status: 2"));
-        assert!(summary.contains("4 failed and 0 abandoned attempts"));
-        assert!(summary.contains("about 610 messages, including leased work"));
+        assert!(summary
+            .contains("Configured direct workers still reporting: 2 (30 pages in the last hour)"));
+        assert!(summary.contains("Direct queue workers are retired"));
         assert!(!summary.contains("worker-sentinel"));
-        v.azure.queues_stale = true;
-        assert!(ecosystem_panel(&v).contains("Local queue: unknown"));
         v.fetch.status = Some(crate::fetch::FetchStatus {
             state: "running".into(),
             updated_at: (v.generated_at - chrono::Duration::minutes(16)).to_rfc3339(),
             ..Default::default()
         });
         v.fetch.status_error = None;
-        v.fetch.plan_error = None;
         v.fetch.last_hour.pages = 123456;
+        v.fetch.activity = "unknown";
         assert!(!ecosystem_panel(&v).contains("123,456 pages in the last hour"));
-        v.fetch.status.as_mut().unwrap().updated_at = v.generated_at.to_rfc3339();
-        v.fetch.plan_error = Some("bad plan".into());
+        v.fetch.activity = "running";
+        assert!(ecosystem_panel(&v).contains("123,456 pages in the last hour"));
+        v.fetch.activity = "idle";
+        assert!(ecosystem_panel(&v).contains("Idle: nothing queued"));
         assert!(!ecosystem_panel(&v).contains("123,456 pages in the last hour"));
+    }
+
+    #[test]
+    fn a_stale_node_and_serial_set_show_no_old_counters() {
+        let now = Utc::now();
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = crate::nodes::Nodes::open(
+            dir.path().join("state"),
+            &[("usnm-ocr-node3".into(), "http://127.0.0.1:1".into())],
+        )
+        .unwrap();
+        nodes.nodes[0].status = Some(usnm_ocr_contract::status::WorkerStatus {
+            concurrency: 8,
+            last_day: usnm_ocr_contract::status::Outcomes {
+                done: 1329,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        nodes.nodes[0].last_ok = Some(now - chrono::Duration::days(6));
+        let mut ssets = crate::sset::Ssets::default();
+        ssets.put(
+            "usnm-sset",
+            crate::sset::SsetStatus {
+                active: "active".into(),
+                to_fetch: 9789,
+                curated: 648,
+                eta_hours: Some(333.0),
+                ..Default::default()
+            },
+            now - chrono::Duration::days(4),
+        );
+        let v = crate::view::build(
+            &mut crate::fetch::Fetch::new(dir.path().to_owned(), None),
+            &nodes,
+            &crate::hosts::Hosts::new(Vec::new()),
+            &ssets,
+            None,
+            &crate::view::Settings::default(),
+            now,
+        );
+        assert_eq!(v.nodes[0].state, "retired");
+        assert_eq!(v.nodes[0].last_day.done, 0);
+        assert_eq!(v.serial_set[0].state, "unknown");
+        let html = render(&v);
+        assert!(!html.contains("1,329"));
+        assert!(html.contains("unknown or stopped"));
+        assert!(!html.contains("13d"));
     }
 
     #[test]
