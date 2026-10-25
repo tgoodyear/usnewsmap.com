@@ -18,6 +18,7 @@
   "USNM_INDEX_STORAGE": true,
   "USNM_INDEX_STORAGE_SERVE": true,
   "USNM_INGEST_JOBS": true,
+  "USNM_INGEST_ONPREM": true,
   "USNM_JA_LATIN": true,
   "USNM_JA_OCR_JOB": false,
   "USNM_JA_OCR_ONPREM": true,

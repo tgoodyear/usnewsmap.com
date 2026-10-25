@@ -69,6 +69,14 @@ Known residual What-If noise includes provider normalization: Static Web Apps pr
 
 `scripts/azure/bootstrap.sh --env <env> --ingest` deploys both jobs (or `scripts/azure/settings.sh --env <env> --key USNM_INGEST_JOBS --value true` and `scripts/azure/provision.sh --env <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on the replica's own disk, which holds a weekly delta; a full rebuild adds an NFS share for it, `USNM_INGEST_SCRATCH_GIB` in size (default 0, none; 128 for a rebuild, 08 §8.4), only while the rebuild runs ([Full rebuild](rebuild-and-index-storage.md#full-rebuild)). The weekly schedule comes after the first release ([Weekly updates](catalog-and-releases.md#weekly-updates)).
 
+**Backfill in prod** runs in pve-laptop CT 215 (#917), as its own Arc identity, instead of `caj-usnm-backfill`. Set `USNM_BACKFILL_ONPREM` to `true` and provision: the container may then create under `curated/pages/` and write Cosmos `batches` and `issues`. Then, as root on pve-laptop, start a worker or two (each takes batches from the Cosmos queue until none are left or its time is up; a dead worker's batch goes back once its lease expires):
+
+```sh
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command curate -- --enqueue --max-runtime-secs 79200
+```
+
+Set it back to `false` when the queue is empty. The commands that read `USNM_RAW_URL` keep no archives in prod (no raw store there).
+
 ## Archival storage
 
 Production keeps no batch archives (ADR-0006): LoC is the source of record. The archival account keeps everything we download from outside Azure, so re-curation, benchmarks and other environments never download it again: LoC's batch archives and batch lists now, other sources later. Benchmarks are one use.

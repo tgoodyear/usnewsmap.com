@@ -22,6 +22,12 @@
 // - Application Insights: Monitoring Metrics Publisher (traces and metrics);
 // - the registry: AcrPull, to install the released usnm-ingest from its image by
 //   digest (home-infra scripts/lab/batch-ct-ingest.sh).
+// With `promote` (ingestOnPrem), `import-staged-run --current`, which records a staged
+// run and moves ops/current under the writer lock: Data Contributor on `index_runs` too.
+// With `backfill` (backfillOnPrem), curation (`curate --enqueue`, `enqueue`): the curated
+// grant also creates under pages/ (curation writes each attempt create-only), and Data
+// Contributor on `batches` and `issues` (the work queue and the issues it curates).
+// Nothing for a raw store: prod keeps none (USNM_RETAIN_RAW, USNM_ARCHIVE_ACCOUNT unset).
 param storageName string
 param exchangeName string
 param cosmosName string
@@ -29,6 +35,10 @@ param appInsightsName string
 param registryName string
 @description('Object id of the batch container\'s Arc machine identity.')
 param principalId string
+@description('Also import-staged-run --current: Cosmos index_runs.')
+param promote bool = false
+@description('Also backfill curation: create under curated/pages/, Cosmos batches and issues.')
+param backfill bool = false
 @description('The lake role\'s name, a GUID (ocr-sync-runner-role.bicep).')
 param lakeRoleName string
 @description('The exchange role\'s name, a GUID (ocr-sync-runner-role.bicep).')
@@ -112,7 +122,12 @@ resource curatedGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', lakeRoleName)
     description: 'The on-prem OCR pickup (#917): read curated, write and create under ocr-local/ only; no delete.'
     conditionVersion: '2.0'
-    condition: writesOnly(blobs, '@Resource[${blobs}:path] StringStartsWith \'ocr-local/\'')
+    condition: writesOnly(
+      blobs,
+      backfill
+        ? '@Resource[${blobs}:path] StringStartsWith \'ocr-local/\' OR @Resource[${blobs}:path] StringStartsWith \'pages/\''
+        : '@Resource[${blobs}:path] StringStartsWith \'ocr-local/\''
+    )
   }
 }
 
@@ -191,15 +206,20 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
   name: cosmosName
 }
 
-resource lease 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
-  parent: cosmos
-  name: guid(cosmos.id, principalId, cosmosDataContributor, 'ops')
-  properties: {
-    principalId: principalId
-    roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataContributor}'
-    scope: '${cosmos.id}/dbs/usnm/colls/ops'
+// ops always; index_runs to promote; batches and issues to curate.
+var stateContainers = concat(['ops'], promote ? ['index_runs'] : [], backfill ? ['batches', 'issues'] : [])
+
+resource state 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = [
+  for c in stateContainers: {
+    parent: cosmos
+    name: guid(cosmos.id, principalId, cosmosDataContributor, c)
+    properties: {
+      principalId: principalId
+      roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataContributor}'
+      scope: '${cosmos.id}/dbs/usnm/colls/${c}'
+    }
   }
-}
+]
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
   name: appInsightsName

@@ -297,6 +297,12 @@ param ocrSyncOnPrem bool = false
 @description('Object id of the batch container\'s own Arc machine identity (usnm-batch-arcs-<env>, pve-laptop CT 215), for ocrSyncOnPrem. Settings only, never in the repository.')
 param batchHost string = ''
 
+@description('Let batchHost run `usnm-ingest import-staged-run --version V --current` (#917), in place of an execution of the ingest job: Cosmos Data Contributor on `index_runs` beside ocrSyncOnPrem\'s `ops` (the writer lock and ops/current). Needs ocrSyncOnPrem. Off removes the grant.')
+param ingestOnPrem bool = false
+
+@description('Let batchHost run backfill curation (`usnm-ingest curate --enqueue`, `enqueue`; #917), in place of caj-usnm-backfill: its curated grant also creates under pages/ (create-only), and Cosmos Data Contributor on `batches` and `issues`. Needs ocrSyncOnPrem. Off (the default) until a backfill is needed.')
+param backfillOnPrem bool = false
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -590,6 +596,8 @@ module ocrSyncRunnerGrant 'modules/ocr-sync-runner.bicep' = if (ocrNodes && ocrS
     appInsightsName: monitoring.outputs.appInsightsName
     registryName: registry.outputs.name
     principalId: trim(batchHost)
+    promote: ingestOnPrem
+    backfill: backfillOnPrem
     lakeRoleName: ocrSyncRunnerRole!.outputs.lakeName
     exchangeRoleName: ocrSyncRunnerRole!.outputs.exchangeName
   }
