@@ -732,7 +732,9 @@ mod tests {
         // Any dotted quad at all.
         let b = body.as_bytes();
         for i in 0..b.len() {
-            if i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b'.') {
+            if !body.is_char_boundary(i)
+                || (i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b'.'))
+            {
                 continue;
             }
             let rest = &body[i..];
