@@ -35,12 +35,16 @@ MOVED = "sha256:" + "b" * 64
 # apt-get -s -q upgrade, as apt 2.6 prints it on bookworm, now oldstable (Inst lines copied from a
 # run against the archive on 24 October 2026). Only the Inst lines matter.
 SIM_HEAD = "Reading package lists...\nBuilding dependency tree...\nReading state information...\nCalculating upgrade...\n"
-SIM_NONE = SIM_HEAD + "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
+SUMMARY_NONE = "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
+SIM_NONE = SIM_HEAD + SUMMARY_NONE
 SECURITY_INST = "Inst apache2 [2.4.67-1~deb12u2] (2.4.67-1~deb12u3 Debian-Security:12/oldstable-security [amd64])\n"
 # The trailing [] is what apt prints after an Inst line it has no configure list for.
 SECURITY_INST_BRACKETS = "Inst php8.2-xml [8.2.34-1~deb12u1] (8.2.35-1~deb12u1 Debian-Security:12/oldstable-security [amd64]) []\n"
 UPDATE_INST = "Inst tzdata [2025b-0+deb12u1] (2026a-0+deb12u1 Debian:12.13/oldstable-updates [all])\n"
 BOTH_INST = "Inst libssl3 [3.0.22-1~deb12u1] (3.0.23-1~deb12u1 Debian:12.13/oldstable, Debian-Security:12/oldstable-security [amd64])\n"
+# An upgrade that needs a new package or a removal is kept back: apt prints the names, and no Inst line.
+# apt wraps the list to the terminal width, so it can span lines.
+KEPT_BACK = "The following packages have been kept back:\n  libcurl3-gnutls libcurl4\n  curl\n"
 SIM_SUMMARY = "Conf apache2 (2.4.67-1~deb12u3 Debian-Security:12/oldstable-security [amd64])\n1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
 
 POLICY = "Package files:\n 500 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages\n     release v=12,o=Debian,a=oldstable-security,n=bookworm-security,l=Debian-Security,c=main,b=amd64\n"
@@ -87,7 +91,9 @@ case "$1" in
     [ "$2" = -c ] || exit 125
     exec sh -c "$3" ;;
   pull) [ ! -e "$STUB_DIR/pull-fails" ] || exit 125 ;;
-  image) [ "$2" = inspect ] && cat "$STUB_DIR/mysql-digest" ;;
+  image) [ "$2" = inspect ] || exit 125
+         [ ! -e "$STUB_DIR/inspect-fails" ] || { echo "Error: no such image" >&2; exit 125; }
+         cat "$STUB_DIR/mysql-digest" ;;
   *) exit 125 ;;
 esac
 """,
@@ -160,6 +166,7 @@ class ImageSecurityCheck(unittest.TestCase):
         self.assertIn(f"MySQL {MYSQL_TAG} is still {PINNED}", done.stdout)
         self.assertIn("OK:", done.stdout)
         self.assertNotIn("FAILED", done.stdout)
+        self.assertNotIn("KEPT-BACK", done.stdout)
 
     def test_it_runs_the_local_image_without_pulling_it_and_only_reads(self):
         self.assertEqual(self.run_check().returncode, 0)
@@ -213,12 +220,51 @@ class ImageSecurityCheck(unittest.TestCase):
 
     def test_a_line_apt_prints_differently_is_still_a_finding(self):
         self.state(simulation=SIM_HEAD + "Inst somepkg (1.0 Debian-Security:12/oldstable-security)\n"
-                   + "Inst otherpkg (1.0 Debian:12.13/oldstable)\n")
+                   + "Inst otherpkg (1.0 Debian:12.13/oldstable)\n" + SUMMARY_NONE)
         done = self.run_check()
         self.assertEqual(done.returncode, 1)
         self.assertIn("SECURITY (apt line not understood) somepkg", done.stdout)
         self.assertIn("UPDATE (apt line not understood) otherpkg", done.stdout)
         self.assertIn("FAILED: 2 finding(s)", done.stdout)
+
+    def test_a_package_apt_keeps_back_is_a_finding(self):
+        # apt-get upgrade holds back a package whose upgrade needs a new package and prints no Inst
+        # line for it, so only the kept-back list and the "not upgraded" count show it.
+        self.state(simulation=SIM_HEAD + KEPT_BACK + "0 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.\n")
+        done = self.run_check()
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("KEPT-BACK 3 package(s)", done.stdout)
+        self.assertIn("libcurl3-gnutls libcurl4 curl", done.stdout)
+        self.assertIn("FAILED: 1 finding(s)", done.stdout)
+        self.assertNotIn("OK:", done.stdout)
+
+    def test_a_package_apt_does_not_upgrade_without_a_list_is_still_a_finding(self):
+        # A held or pinned package is counted in the summary without being listed.
+        self.state(simulation=SIM_HEAD + "0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.\n")
+        done = self.run_check()
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("KEPT-BACK 1 package(s)", done.stdout)
+        self.assertNotIn("OK:", done.stdout)
+
+    def test_kept_back_packages_and_pending_upgrades_are_counted_together(self):
+        # As apt prints it: the kept-back list, then the list of what it will upgrade, then the summary.
+        self.state(simulation=SIM_HEAD + KEPT_BACK + "The following packages will be upgraded:\n  apache2\n"
+                   + "1 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.\n" + SECURITY_INST)
+        done = self.run_check()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("SECURITY apache2 2.4.67-1~deb12u2 -> 2.4.67-1~deb12u3", done.stdout)
+        self.assertIn("KEPT-BACK 3 package(s) apt-get upgrade will not upgrade, as that needs a new package or a removal: "
+                      "libcurl3-gnutls libcurl4 curl\n", done.stdout)
+        self.assertIn("FAILED: 2 finding(s)", done.stdout)
+
+    def test_an_apt_simulation_without_a_summary_is_not_a_clean_run(self):
+        # Without the "not upgraded" count the check cannot tell nothing was kept back.
+        self.state(simulation=SIM_HEAD)
+        done = self.run_check()
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertIn("no 'not upgraded' count", done.stderr)
+        self.assertIn("COULD-NOT-CHECK podman run", done.stdout)
+        self.assertNotIn("OK:", done.stdout)
 
     # The floors.
     def test_php_below_its_floor_fails(self):
@@ -308,6 +354,24 @@ class ImageSecurityCheck(unittest.TestCase):
         done = self.run_check()
         self.assertEqual(done.returncode, 3)
         self.assertIn(f"podman pull {MYSQL_TAG} failed", done.stdout)
+
+    def test_a_failed_mysql_inspect_is_not_a_clean_run(self):
+        # The pull worked, so the image check's own result is still reported, and the run ends in
+        # exit 3 with the summary, not in podman's exit status.
+        (self.stub_dir / "inspect-fails").write_text("")
+        done = self.run_check()
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertIn(f"COULD-NOT-CHECK podman image inspect {MYSQL_TAG} failed", done.stdout)
+        self.assertIn("FAILED: 1 check(s) could not run", done.stdout)
+        self.assertNotIn("OK:", done.stdout)
+
+    def test_a_failed_mysql_inspect_does_not_hide_a_package_finding(self):
+        (self.stub_dir / "inspect-fails").write_text("")
+        self.state(simulation=SIM_HEAD + SECURITY_INST + SIM_SUMMARY)
+        done = self.run_check()
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("SECURITY apache2", done.stdout)
+        self.assertIn("COULD-NOT-CHECK podman image inspect", done.stdout)
 
     def test_a_pin_to_another_image_is_not_taken_for_mysql(self):
         self.mysql_unit.write_text(f"ExecStart=/usr/bin/podman run docker.io/library/mariadb@{PINNED}\n")

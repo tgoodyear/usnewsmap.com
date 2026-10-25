@@ -15,7 +15,9 @@
 #
 # A finding is any of: an upgrade the image's own apt sources offer (SECURITY when the source is
 # the security archive, UPDATE otherwise, since a security fix can also arrive in a point
-# release); php8.2-common or apache2 older than its floor; or the MySQL digest baked into
+# release); a package apt-get upgrade keeps back because upgrading it needs a new package or a
+# removal (KEPT-BACK; apt prints no Inst line for it, so it is read from the "not upgraded"
+# count); php8.2-common or apache2 older than its floor; or the MySQL digest baked into
 # --mysql-unit differing from what --mysql-image resolves to now (podman pull, as
 # mysql-setup.sh does). The MySQL drift is only reported: rolling it restarts the database
 # (docs/boinc-onprem.md, "Security updates").
@@ -59,7 +61,8 @@ finding() { findings=$((findings + 1)); log "$*"; }
 cannot() { errors=$((errors + 1)); log "COULD-NOT-CHECK $*"; }
 
 # The packages. The script runs in a container from the image, as root, and prints
-# PENDING lines (apt's own Inst lines) and FLOOR lines (package, installed, floor, ok|below).
+# PENDING lines (apt's own Inst lines), one HELD line (the "not upgraded" count, then the names
+# apt lists as kept back) and FLOOR lines (package, installed, floor, ok|below).
 # Anything that goes wrong stops it with a message on stderr, so a failed apt-get update can't
 # read as nothing pending.
 read -r -d '' INNER <<'SH' || true
@@ -69,6 +72,12 @@ apt-get update -qq -o APT::Update::Error-Mode=any >&2
 apt-cache policy | grep -q -- '-security' || { echo "no security archive in this image's apt sources" >&2; exit 4; }
 simulated=$(apt-get -s -q upgrade)
 printf '%s\n' "$simulated" | sed -n 's/^Inst /PENDING /p'
+# A package whose upgrade needs a new package or a removal is kept back, with no Inst line. Only
+# the summary's count, and the list above it, show it. Without the count, nothing says none were.
+held=$(printf '%s\n' "$simulated" | sed -n 's/^.* \([0-9][0-9]*\) not upgraded\.$/\1/p')
+[ -n "$held" ] || { echo "apt-get upgrade printed no 'not upgraded' count" >&2; exit 4; }
+names=$(printf '%s\n' "$simulated" | sed -n '/^The following packages have been kept back:$/,/^[^ ]/{/^ /p;}' | tr -s ' \n' '  ')
+echo "HELD $held $names"
 floor() {
   installed=$(dpkg-query -W -f='${Version}' "$1")
   if dpkg --compare-versions "$installed" ge "$2"; then state=ok; else state=below; fi
@@ -105,6 +114,11 @@ else
             [[ $line == *[Ss]ecurity* ]] && kind=SECURITY
             finding "$kind (apt line not understood) ${line#PENDING }"
           fi ;;
+        "HELD "*)
+          read -r _ held names <<< "$line"
+          if [ "$held" -gt 0 ]; then
+            finding "KEPT-BACK $held package(s) apt-get upgrade will not upgrade, as that needs a new package or a removal${names:+: $names}"
+          fi ;;
         "FLOOR "*)
           read -r _ package installed floor state <<< "$line"
           floors_seen=$((floors_seen + 1))
@@ -133,15 +147,14 @@ if [ "$SKIP_MYSQL" = false ]; then
     cannot "$MYSQL_UNIT has no single ${MYSQL_IMAGE%%:*}@sha256 digest"
   elif ! podman pull -q "$MYSQL_IMAGE" > /dev/null; then
     cannot "podman pull $MYSQL_IMAGE failed"
+  elif ! current=$(podman image inspect "$MYSQL_IMAGE" --format '{{.Digest}}'); then
+    cannot "podman image inspect $MYSQL_IMAGE failed"
+  elif ! [[ $current =~ $digest_re ]]; then
+    cannot "podman image inspect $MYSQL_IMAGE gave no digest"
+  elif [ "$current" = "$pinned" ]; then
+    log "MySQL $MYSQL_IMAGE is still $pinned"
   else
-    current=$(podman image inspect "$MYSQL_IMAGE" --format '{{.Digest}}')
-    if ! [[ $current =~ $digest_re ]]; then
-      cannot "podman image inspect $MYSQL_IMAGE gave no digest"
-    elif [ "$current" = "$pinned" ]; then
-      log "MySQL $MYSQL_IMAGE is still $pinned"
-    else
-      finding "MYSQL-DRIFT $MYSQL_IMAGE is $current now; the unit runs $pinned (a roll restarts the database)"
-    fi
+    finding "MYSQL-DRIFT $MYSQL_IMAGE is $current now; the unit runs $pinned (a roll restarts the database)"
   fi
 fi
 

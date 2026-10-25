@@ -65,11 +65,12 @@ compares `php8.2-common` and `apache2` with the two floors, which the unit passe
 and `--apache-floor`. Nothing in the image changes and nothing restarts. It fails the unit (exit 1) for:
 
 - An upgrade the image's own apt sources offer. The journal line says `SECURITY` when it comes from the security archive and `UPDATE` otherwise: a security fix can also arrive in a point release, so both fail. Building `security-overlay.Containerfile` on the image clears them.
+- `KEPT-BACK`: a package that `apt-get upgrade` leaves alone because upgrading it needs a new package or a removal. apt prints no upgrade line for it, so the check reads the "not upgraded" count. The overlay and the Containerfiles run the same `apt-get upgrade`, so building the overlay does not clear it; install the package by name in their upgrade step, through a pull request.
 - `BELOW-FLOOR`: `php8.2-common` or `apache2` older than its floor.
 - `MYSQL-DRIFT`, below.
 
 It exits 3, which also fails the unit, when it can't answer. Examples are a failed `apt-get update`, no security archive in the image's apt
-sources, and no digest in the MySQL unit. A check that couldn't run never
+sources, no digest in the MySQL unit, and a failed `podman pull` or `podman image inspect` of the MySQL image. A check that couldn't run never
 reads as clean. The alert is the failed unit, in `systemctl --failed` and in
 `journalctl -u usnm-image-security-check.service`; nothing routes it anywhere else yet. The check
 sees what bookworm publishes: a CVE the Debian security tracker still lists as open for bookworm has
