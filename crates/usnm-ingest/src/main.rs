@@ -7,7 +7,7 @@ mod cli;
 
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
-use cli::{batches, congress, curate, ocr, onprem, prune, release, run, titles};
+use cli::{batches, congress, curate, ocr, onprem, prune, release, run, searchlog_copy, titles};
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::owner_id;
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
@@ -64,6 +64,7 @@ enum Command {
     CongressGlobe(congress::CongressGlobeArgs),
     CongressSerialset(congress::CongressSerialsetArgs),
     CongressDamage(congress::CongressDamageArgs),
+    SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
 }
@@ -135,6 +136,7 @@ impl Command {
             Command::CongressGlobe { .. } => "congress-globe",
             Command::CongressSerialset { .. } => "congress-serialset",
             Command::CongressDamage { .. } => "congress-damage",
+            Command::SearchlogCopy { .. } => "searchlog-copy",
             Command::Run { .. } => "run",
         }
     }
@@ -169,7 +171,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrRequeue { .. }
         | Command::CongressGlobe { .. }
         | Command::CongressSerialset { .. }
-        | Command::CongressDamage { .. } => None,
+        | Command::CongressDamage { .. }
+        | Command::SearchlogCopy { .. } => None,
     }
 }
 
@@ -253,6 +256,7 @@ async fn command(
             congress::congress_serialset_command(cli, state, start, args).await
         }
         Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
+        Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,

@@ -11,4 +11,5 @@ pub(crate) mod onprem;
 pub(crate) mod prune;
 pub(crate) mod release;
 pub(crate) mod run;
+pub(crate) mod searchlog_copy;
 pub(crate) mod titles;

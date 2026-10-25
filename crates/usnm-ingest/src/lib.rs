@@ -28,6 +28,7 @@ pub mod progress;
 pub mod prune;
 pub mod raw;
 pub mod release;
+pub mod searchlog_copy;
 pub mod sink;
 pub mod source;
 pub mod telemetry;
