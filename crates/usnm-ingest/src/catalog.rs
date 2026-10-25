@@ -4,7 +4,7 @@
 //! `catalog/titles.json` and `catalog/places.json` in the reference store. Each published reference snapshot carries its own copy,
 //! so a published version never changes when the catalog does.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::{bail, Context};
 use chrono::NaiveDate;
@@ -267,14 +267,30 @@ impl Catalog {
     /// reindex (04 §4.6). New places come from the current catalog.
     pub fn carried_forward(published: &Catalog, current: &Catalog) -> anyhow::Result<Self> {
         // For each current place, the published places of its published
-        // titles, with how many.
+        // titles, with how many titles: the title's own place, and the
+        // place of each period the title has in both catalogs for the same
+        // dates (pages of those dates are published there). A place only
+        // some titles' early pages are in is found this way too.
         let mut published_as: HashMap<&str, BTreeMap<&str, usize>> = HashMap::new();
         for t in &published.titles {
-            if let Some(now) = current.title(&t.lccn) {
+            let Some(now) = current.title(&t.lccn) else {
+                continue;
+            };
+            let mut pairs = BTreeSet::from([(now.place_id.as_str(), t.place_id.as_str())]);
+            for was in &t.place_periods {
+                if let Some(is) = now
+                    .place_periods
+                    .iter()
+                    .find(|is| (is.from, is.to) == (was.from, was.to))
+                {
+                    pairs.insert((is.place_id.as_str(), was.place_id.as_str()));
+                }
+            }
+            for (now_id, was_id) in pairs {
                 *published_as
-                    .entry(now.place_id.as_str())
+                    .entry(now_id)
                     .or_default()
-                    .entry(t.place_id.as_str())
+                    .entry(was_id)
                     .or_default() += 1;
             }
         }
@@ -778,6 +794,62 @@ mod tests {
             .map(|p| p.place_id.as_str())
             .collect();
         assert_eq!(ids, ["P1", "P4"], "the merged town keeps its published id");
+    }
+
+    /// The published sn1 was in P1 up to 1833-11-13 and in P2 after; now its
+    /// early place is P3, and P2 is still where most of its pages are. A new
+    /// title with a P3 period goes where sn1's early pages are published,
+    /// whichever place of its own it has, so the town keeps one id.
+    #[test]
+    fn a_new_titles_periods_follow_a_merge_of_a_published_titles_early_place() {
+        let places = |n| {
+            (1..=n)
+                .map(|i| place(&format!("P{i}"), i))
+                .collect::<Vec<_>>()
+        };
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| PlacePeriod {
+            place_id: id.into(),
+            from: from.map(day),
+            to: to.map(day),
+        };
+        let published = Catalog::new(vec![moved()], places(2)).unwrap();
+        let mut sn1 = moved();
+        sn1.place_periods[0].place_id = "P3".into();
+        let mut sn2 = title("sn2", 2, "P4");
+        sn2.place_periods = vec![
+            period("P3", None, Some("1900-12-31")),
+            period("P4", Some("1901-01-01"), None),
+        ];
+        let current = Catalog::new(vec![sn1, sn2], places(4)).unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        let ids = |lccn: &str| -> Vec<String> {
+            let t = c.title(lccn).unwrap();
+            t.place_periods.iter().map(|p| p.place_id.clone()).collect()
+        };
+        assert_eq!(ids("sn1"), ["P1", "P2"], "the published pages stay in P1");
+        assert_eq!(ids("sn2"), ["P1", "P4"], "and so do the new title's");
+        assert_eq!(c.title("sn2").unwrap().place_id, "P4");
+
+        // Periods that cover other dates now don't say it is the same town.
+        let mut sn1 = moved();
+        sn1.place_periods[0].place_id = "P3".into();
+        sn1.place_periods[0].to = Some(day("1840-12-31"));
+        sn1.place_periods[1].from = Some(day("1841-01-01"));
+        let mut sn2 = title("sn2", 2, "P4");
+        sn2.place_periods = vec![
+            period("P3", None, Some("1900-12-31")),
+            period("P4", Some("1901-01-01"), None),
+        ];
+        let current = Catalog::new(vec![sn1, sn2], places(4)).unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        let ids: Vec<&str> = c
+            .title("sn2")
+            .unwrap()
+            .place_periods
+            .iter()
+            .map(|p| p.place_id.as_str())
+            .collect();
+        assert_eq!(ids, ["P3", "P4"]);
     }
 
     #[test]

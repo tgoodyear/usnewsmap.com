@@ -364,6 +364,36 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
             .unwrap_err()
             .to_string();
         assert!(err.contains("catalog changed"), "{err}");
+        // A title given a place by date since the run: its documents, all in
+        // the one place, hold dates the catalog now has in another. The
+        // same periods before the first of its dates change nothing.
+        let own = catalog.titles[0].place_id.clone();
+        let first = held[&catalog.titles[0].lccn].days[&own].0;
+        let by_date = |to: u32| {
+            let to = usnm_core::time::date_from_day(to);
+            let mut titles = catalog.titles.clone();
+            titles[0].place_periods = vec![
+                usnm_ingest::catalog::PlacePeriod {
+                    place_id: catalog.titles[1].place_id.clone(),
+                    from: None,
+                    to: Some(to),
+                },
+                usnm_ingest::catalog::PlacePeriod {
+                    place_id: own.clone(),
+                    from: to.succ_opt(),
+                    to: None,
+                },
+            ];
+            usnm_ingest::catalog::Catalog::new(titles, catalog.places.clone()).unwrap()
+        };
+        let err = usnm_ingest::finish::check_titles(&by_date(first), &want.indexes[0], &held)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("catalog changed") && err.contains("dated"),
+            "{err}"
+        );
+        usnm_ingest::finish::check_titles(&by_date(first - 1), &want.indexes[0], &held).unwrap();
         let later = e.root.join("later-reference");
         for (path, bytes) in files(&e.root.join("reference")) {
             let dest = later.join(path);

@@ -126,7 +126,15 @@ fn add_title_fields(by: &mut TitleFieldsByLccn, doc: &Value) -> anyhow::Result<(
             ordinals: (ordinal, ordinal),
             ..Default::default()
         });
-    f.places.insert(text("place_id")?);
+    let place_id = text("place_id")?;
+    let day = u32::try_from(
+        doc["day"]
+            .as_u64()
+            .with_context(|| format!("a document without `day`: {}", doc["doc_id"]))?,
+    )?;
+    let days = f.days.entry(place_id.clone()).or_insert((day, day));
+    *days = (days.0.min(day), days.1.max(day));
+    f.places.insert(place_id);
     f.states.insert(text("state")?);
     f.shards.insert(
         doc["place_shard"]

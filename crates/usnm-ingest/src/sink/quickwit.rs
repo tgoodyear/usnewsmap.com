@@ -56,12 +56,27 @@ fn title_fields_of(v: &Value) -> anyhow::Result<TitleFieldsByLccn> {
                 .map(|n| (n as u64) >> 32)
                 .with_context(|| format!("{lccn} has no {name} sort_key"))
         };
+        // The first and last day of the documents in each place.
+        let mut days = std::collections::BTreeMap::new();
+        for p in b["places"]["buckets"].as_array().into_iter().flatten() {
+            let Some(place) = p["key"].as_str().filter(|k| !k.is_empty()) else {
+                continue;
+            };
+            let day = |name: &str| {
+                p[name]["value"]
+                    .as_f64()
+                    .map(|n| n as u32)
+                    .with_context(|| format!("{lccn} has no {name} day in {place}"))
+            };
+            days.insert(place.to_owned(), (day("first")?, day("last")?));
+        }
         out.insert(
             lccn.to_owned(),
             crate::finish::TitleFields {
                 places: keys(b, "places"),
                 shards,
                 states: keys(b, "states"),
+                days,
                 languages: keys(b, "languages"),
                 ordinals: (ordinal("first")?, ordinal("last")?),
             },
@@ -876,16 +891,22 @@ impl IndexSink for QuickwitSink {
     }
 
     /// One search of the published splits: each title's terms and its
-    /// documents' lowest and highest `sort_key`.
+    /// documents' lowest and highest `sort_key`, and the lowest and highest
+    /// `day` of its documents in each place.
     async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
         let terms = |field: &str| serde_json::json!({"terms": {"field": field, "size": 64}});
+        let mut places = terms("place_id");
+        places["aggs"] = serde_json::json!({
+            "first": {"min": {"field": "day"}},
+            "last": {"max": {"field": "day"}},
+        });
         let body = serde_json::json!({
             "query": "*",
             "max_hits": 0,
             "aggs": {"titles": {
                 "terms": {"field": "lccn", "size": TITLE_BUCKETS},
                 "aggs": {
-                    "places": terms("place_id"),
+                    "places": places,
                     "shards": terms("place_shard"),
                     "states": terms("state"),
                     "languages": terms("language"),
@@ -1103,9 +1124,14 @@ mod tests {
     #[test]
     fn reads_what_each_titles_documents_carry() {
         // As Quickwit 0.9.1 answers `title_fields`' search.
+        let day = |d: &str| usnm_core::time::day_number(d.parse().unwrap());
         let v = serde_json::json!({"num_hits": 3, "aggregations": {"titles": {"buckets": [{
             "key": "sn1", "doc_count": 3,
-            "places": {"buckets": [{"key": "P1", "doc_count": 3}]},
+            "places": {"buckets": [{
+                "key": "P1", "doc_count": 3,
+                "first": {"value": day("1828-05-14") as f64},
+                "last": {"value": day("1833-11-13") as f64},
+            }]},
             "shards": {"buckets": [{"key": 3.0, "doc_count": 3}]},
             "states": {"buckets": [{"key": "IL", "doc_count": 3}]},
             "languages": {"buckets": [{"key": "eng", "doc_count": 3}, {"key": "", "doc_count": 1}]},
@@ -1119,18 +1145,23 @@ mod tests {
                 places: BTreeSet::from(["P1".to_owned()]),
                 shards: BTreeSet::from([3]),
                 states: BTreeSet::from(["IL".to_owned()]),
+                days: std::collections::BTreeMap::from([(
+                    "P1".to_owned(),
+                    (day("1828-05-14"), day("1833-11-13"))
+                )]),
                 languages: BTreeSet::from(["eng".to_owned()]),
                 ordinals: (7, 7),
             }
         );
         // A document's own fields fold the same way.
         let mut by = TitleFieldsByLccn::new();
-        for seq in [1u64, 12] {
+        for (seq, date) in [(1u64, "1833-11-13"), (12, "1828-05-14"), (5, "1830-01-01")] {
             add_title_fields(
                 &mut by,
                 &serde_json::json!({
                     "doc_id": "d", "lccn": "sn1", "place_id": "P1", "place_shard": 3,
                     "state": "IL", "language": ["eng", ""], "sort_key": (7u64 << 32) | (1 << 16) | seq,
+                    "day": day(date),
                 }),
             )
             .unwrap();

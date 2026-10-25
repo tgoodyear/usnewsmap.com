@@ -626,6 +626,15 @@ pub fn build(
         .iter()
         .map(|t| (t.lccn.as_str(), t.place_id.as_str()))
         .collect();
+    // The places of titles with places by date, by the dates they are for.
+    let stored_period_of: HashMap<(&str, Option<NaiveDate>, Option<NaiveDate>), &str> = titles
+        .iter()
+        .flat_map(|t| {
+            t.place_periods
+                .iter()
+                .map(|p| ((t.lccn.as_str(), p.from, p.to), p.place_id.as_str()))
+        })
+        .collect();
     let index: HashMap<&str, usize> = places
         .iter()
         .enumerate()
@@ -643,15 +652,20 @@ pub fn build(
     for (gi, g) in groups.iter().enumerate() {
         let mut c: HashMap<usize, (usize, bool)> = HashMap::new();
         for &m in &g.members {
-            // A title with places by date counts for its own place only; the
-            // others are found by their names.
-            if derived[m].dated.as_ref().is_some_and(|d| !d.main) {
-                continue;
-            }
+            // A title's place is the one it is stored in. Its places by date
+            // are the ones stored for the same dates: the title's own
+            // place isn't theirs, and a place renamed by an override isn't
+            // found by its name.
+            let d = &derived[m];
+            let stored = match &d.dated {
+                Some(dated) if !dated.main => {
+                    stored_period_of.get(&(d.raw.lccn.as_str(), dated.from, dated.to))
+                }
+                _ => stored_place_of.get(d.raw.lccn.as_str()),
+            };
             // Only a place in the group's state: a title that moved state
             // starts a place there.
-            if let Some(&pi) = stored_place_of
-                .get(derived[m].raw.lccn.as_str())
+            if let Some(&pi) = stored
                 .and_then(|id| index.get(id))
                 .filter(|&&pi| places[pi].state == g.code)
             {
@@ -1995,6 +2009,42 @@ mod tests {
             (rep.new_titles, rep.new_places, rep.retired.len()),
             (0, 0, 0)
         );
+    }
+
+    /// An override that names a place differently than its city is found by
+    /// the titles stored in it, not by its name, which keys differently.
+    #[test]
+    fn a_renamed_place_by_date_keeps_its_id_in_every_build() {
+        let geo = dated_geo(true);
+        let r = morning_star_records();
+        let renamed = PlaceOverride {
+            name: Some("Historic Limerick".into()),
+            ..limerick_override()
+        };
+        let (first, rep) = build(&r, vec![], vec![], std::slice::from_ref(&renamed), &geo).unwrap();
+        assert_eq!((rep.titles, rep.places, rep.new_places), (2, 2, 2));
+        let t = first.title("sn84024361").unwrap();
+        let maine = first.place(&t.place_periods[0].place_id).unwrap();
+        assert_eq!(maine.name, "Historic Limerick");
+        // No title has it as its own place, so only its period names it.
+        assert_ne!(maine.id, t.place_id);
+        let mut now = first;
+        for _ in 0..2 {
+            let (next, rep) = build(
+                &r,
+                now.titles.clone(),
+                now.places.clone(),
+                std::slice::from_ref(&renamed),
+                &geo,
+            )
+            .unwrap();
+            assert_eq!(
+                (rep.new_titles, rep.new_places, rep.retired.len()),
+                (0, 0, 0)
+            );
+            assert_eq!((&next.titles, &next.places), (&now.titles, &now.places));
+            now = next;
+        }
     }
 
     #[test]
