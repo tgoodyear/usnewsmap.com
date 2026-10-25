@@ -69,7 +69,7 @@ The scripts that deploy and operate the Azure server:
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `provision-boinc.sh`         | Deploys the BOINC server from its committed settings ([ADR-0019](../docs/design/adr/0019-boinc-server-hosting.md)).  |
 | `build-boinc-images.sh`      | Builds the server and bridge images in ACR and writes their digests to `contrib-compute/infra/boinc/env/<env>.json`. |
-| `start-boinc-bridge.sh`      | Starts one run of the bridge or hand-off job with its step's settings; each az call has a timeout.                   |
+| `start-boinc-bridge.sh`      | Starts one run of the bridge or hand-off job with its step's settings; az calls on the job and lease have timeouts.  |
 | `boinc-app-release.sh`       | Builds, stages, signs and publishes one app version on the live server.                                              |
 | `boinc-quality-campaign.py`  | Prepares, launches, checks and restores large `usnm_quality` campaigns.                                              |
 | `boinc-test-client.sh`       | Creates or deletes the ephemeral BOINC test client VM (#484).                                                        |

@@ -35,7 +35,7 @@
 # are not this run's (another caller updated the job in between). A cross-host blob lease
 # serializes the check/update/start transaction for both targets; see docs/boinc-start-guard.md.
 #
-# The calls on the job and the start lease can't hang this script (scripts/lib/bounded-az.sh).
+# The az calls on the job and the start lease have time limits (scripts/lib/bounded-az.sh).
 # A read, such as the status poll, is killed with its child processes after BOINC_AZ_READ_TIMEOUT
 # seconds (60) and retried up to BOINC_AZ_READ_ATTEMPTS attempts (3), BOINC_AZ_READ_BACKOFF
 # seconds (5) apart, but not past the --wait-mins window. The calls that change something (the

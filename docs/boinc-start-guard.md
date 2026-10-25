@@ -48,10 +48,10 @@ starts. The sign-in check and the stack-output lookups at the start of a run are
 - A read is killed after `BOINC_AZ_READ_TIMEOUT` seconds (60) and tried again, up to
   `BOINC_AZ_READ_ATTEMPTS` attempts (3) with `BOINC_AZ_READ_BACKOFF` seconds (5) between them. A read
   that fails is retried the same way. This covers the execution list, the status polls and
-  read-backs, the template read, the exchange-account lookup and the blob existence check. Inside
+  read-backs, the template read, the resource group check, the exchange-account lookup and the blob existence check. Inside
   a window (the 120 seconds that confirm and reconcile allow, set by `BOINC_START_CONFIRM_SECS` and
   `BOINC_START_RECONCILE_SECS`, or the `--wait-mins` of a wait), an attempt is cut to what is left
-  of the window and none starts after it ends. The first attempt of a call always gets at least 10
+  of the window and no retry starts after it ends. The first attempt of a call always gets at least 10
   seconds, so a window that is already over still reads once. A read that fails every attempt
   fails the way it did before: confirm and reconcile return failure, which keeps the lease, and a
   poll stops the run.
@@ -64,15 +64,14 @@ starts. The sign-in check and the stack-output lookups at the start of a run are
     touches the template, and the error names the blob and the proposed lease ID. If the blob is
     held under that ID, it was this launcher's, and releasing it with that ID is the clean way to
     free it; a release with any other ID fails, so trying it is safe.
-  - A timed-out lease release reports that the release failed, with the blob and the lease ID, and
-    the lease stays held.
+  - A timed-out lease release reports that the release failed, with the blob and the lease ID. The release may have taken effect, so the lease may still be held.
 
 These limits apply to `scripts/boinc/start-boinc-bridge.sh` and to the helper's use in
-`scripts/boinc/provision-boinc.sh`. In production the controller still reaches the launcher for the
-hand-off job's `export` and `texts-export` steps (its `claim`, `release` and `collect` run on the
-on-prem host, [boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)), and for the bridge job of
-a `"server": "azure"` environment. The other `baz` callers (the stack deployments, the ACR builds)
-have no such timeout on purpose, since their calls run long.
+`scripts/boinc/provision-boinc.sh`. In production the launcher still starts the hand-off job for its `export` and `texts-export`
+steps (its `claim`, `release` and `collect` can run on the on-prem host instead,
+[boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)), and the bridge job of a
+`"server": "azure"` environment. The stack deployments and the ACR builds still call plain `baz`,
+because their calls run long.
 
 ## Coordination boundaries
 
