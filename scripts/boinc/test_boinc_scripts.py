@@ -1494,7 +1494,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         for extra in (dict(HANDOFF_BATCHES="dlc_aaa", HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2"),
                       dict(HANDOFF_BATCHES="dlc_aaa,dlc_bbb", HANDOFF_BATCH="dlc_aaa",
                            HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2"),
-                      dict(HANDOFF_BATCHES="dlc_aaa,../x", HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2")):
+                      dict(HANDOFF_BATCHES="dlc_aaa,../x", HANDOFF_SCANS="keep/a/1.jp2,keep/b/1.jp2"),
+                      dict(HANDOFF_BATCHES="dlc_aaa,dlc_bbb", HANDOFF_SCANS=",keep/b/1.jp2")):
             with self.subTest(extra=extra):
                 r = self.handoff("export", HANDOFF_MANIFEST="pages-v1/manifest.parquet",
                                  HANDOFF_PAGES="sn1/1890-05-03/ed-1/seq-1,sn2/1890-05-03/ed-1/seq-1",

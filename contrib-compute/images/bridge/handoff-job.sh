@@ -93,6 +93,11 @@ if [ "${HANDOFF_STEP:-}" = export ] && [ -n "${HANDOFF_BATCHES:-}" ]; then
   [ "${#all_pages[@]}" -le 100 ] || fail "HANDOFF_PAGES is at most 100 pages"
   [ "${#all_batches[@]}" -eq "${#all_pages[@]}" ] && [ "${#all_scans[@]}" -eq "${#all_pages[@]}" ] ||
     fail "HANDOFF_BATCHES and HANDOFF_SCANS name one batch and one scan for each of HANDOFF_PAGES"
+  for scan in "${all_scans[@]}"; do
+    # Each batch's run must take only its own scans, never the whole container.
+    [[ "$scan" =~ ^keep/[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$scan" != *..* ]] ||
+      fail "HANDOFF_SCANS must name a cached scan under keep/ for each page"
+  done
   order=()
   for b in "${all_batches[@]}"; do
     [[ $b =~ ^[a-z]{2,10}_[A-Za-z0-9_]+$ ]] || fail "HANDOFF_BATCHES names base batches"
