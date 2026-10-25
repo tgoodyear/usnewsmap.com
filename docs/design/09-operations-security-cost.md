@@ -84,7 +84,7 @@ Then check `curl -fsS 127.0.0.1:7280/health/readyz` and `curl -fsS 127.0.0.1:808
 
 **Flood.** Cloudflare's one Free rate-limit rule is written and off (ADR-0027 settled decision 9). Turn it on when single addresses send searches far past the API's own limit (120 a minute, burst 40), because the API's 429s still cross the tunnel and load the host. The signs are a jump in the search routes' `Client4xx` count (which includes the 429s) in `scripts/azure/logs.sh --env prod --query-name api-requests`, or one address sending many searches in Security Analytics.
 
-1. Enable the rule in the zone's rate-limiting rules. It matches `/v1/aggregate`, `/v1/hits`, `/api/v1/aggregate` and `/api/v1/hits`, counts each IP's requests over 10 seconds, and blocks an IP above about 50 for 10 seconds.
+1. Enable the rule in the zone's rate-limiting rules. It matches `/v1/aggregate`, `/v1/hits`, `/api/v1/aggregate` and `/api/v1/hits`, counts each IP's requests over 10 seconds, and blocks an IP above about 50 for 10 seconds. The rule's recorded definition is `scripts/onprem/serving/flood-rule.json`; until the zone-settings script exists, the dashboard rule must match it (ADR-0027 settled decision 12).
 2. Keep its action at Block. A challenge would set the `cf_clearance` cookie, and `/privacy` says the site sets none. Don't use Under Attack Mode either: it breaks API scripts.
 3. While the rule is on, every search it blocks is kept in Security Events (§9.4.2). Turn it off once the flood stops.
 
