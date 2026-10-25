@@ -1149,9 +1149,13 @@ pub fn render(v: &View) -> String {
                 };
                 let _ = write!(
                     o,
-                    "<tr><td>{} {}</td><td>{}</td><td>{st}</td><td class=\"r\">{:.1}% of {}</td><td>{}</td><td class=\"r\">{}</td></tr>",
-                    if g.kind == "lxc" { "CT" } else { "VM" },
-                    g.vmid,
+                    "<tr><td>{}</td><td>{}</td><td>{st}</td><td class=\"r\">{:.1}% of {}</td><td>{}</td><td class=\"r\">{}</td></tr>",
+                    match (v.public, g.kind == "lxc") {
+                        (true, true) => "container".to_owned(),
+                        (true, false) => "VM".to_owned(),
+                        (false, true) => format!("CT {}", g.vmid),
+                        (false, false) => format!("VM {}", g.vmid),
+                    },
                     esc(&g.name),
                     g.cpu_pct,
                     g.cpus,
