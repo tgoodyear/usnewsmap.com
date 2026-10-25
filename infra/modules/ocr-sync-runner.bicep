@@ -25,7 +25,8 @@
 // With `promote` (ingestOnPrem), `import-staged-run --current`, which records a staged
 // run and moves ops/current under the writer lock: Data Contributor on `index_runs` too.
 // With `backfill` (backfillOnPrem), curation (`curate --enqueue`, `enqueue`): the curated
-// grant also creates under pages/ (curation writes each attempt create-only), and Data
+// grant also creates under pages/ (add/action only: curation writes each attempt
+// create-only, and nothing there can be overwritten), and Data
 // Contributor on `batches` and `issues` (the work queue and the issues it curates).
 // Nothing for a raw store: prod keeps none (USNM_RETAIN_RAW, USNM_ARCHIVE_ACCOUNT unset).
 param storageName string
@@ -68,6 +69,27 @@ func writesOnly(blobs string, writable string) string =>
     ],
     '\n'
   )
+
+// With backfill: writes and creates under ocr-local/, and under pages/ creates only
+// (add/action, not write), so curation can add a new attempt but never overwrite one.
+var curatedWithPages = join(
+  [
+    '('
+    ' ('
+    '  !(ActionMatches{\'${blobs}/write\'})'
+    '  AND !(ActionMatches{\'${blobs}/add/action\'})'
+    ' )'
+    ' OR'
+    ' (@Resource[${blobs}:path] StringStartsWith \'ocr-local/\')'
+    ' OR'
+    ' ('
+    '  !(ActionMatches{\'${blobs}/write\'})'
+    '  AND @Resource[${blobs}:path] StringStartsWith \'pages/\''
+    ' )'
+    ')'
+  ],
+  '\n'
+)
 
 resource lake 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageName
@@ -122,12 +144,7 @@ resource curatedGrant 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', lakeRoleName)
     description: 'The on-prem OCR pickup (#917): read curated, write and create under ocr-local/ only; no delete.'
     conditionVersion: '2.0'
-    condition: writesOnly(
-      blobs,
-      backfill
-        ? '@Resource[${blobs}:path] StringStartsWith \'ocr-local/\' OR @Resource[${blobs}:path] StringStartsWith \'pages/\''
-        : '@Resource[${blobs}:path] StringStartsWith \'ocr-local/\''
-    )
+    condition: backfill ? curatedWithPages : writesOnly(blobs, '@Resource[${blobs}:path] StringStartsWith \'ocr-local/\'')
   }
 }
 

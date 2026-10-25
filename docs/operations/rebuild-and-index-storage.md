@@ -425,9 +425,13 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
    ```
 
+   Then, as root on pve-laptop (not in CT 211):
+
    ```sh
    pct exec 215 -- /usr/local/bin/usnm-ingest-run --command import-staged-run --wait -- --version pages-v<date>-<n> --current
    ```
+
+   And back in CT 211:
 
    ```sh
    systemctl start usnm-boinc-priority-controller.timer
