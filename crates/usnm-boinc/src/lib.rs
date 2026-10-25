@@ -829,7 +829,8 @@ async fn put_same(
 pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
     let mask = marker
         .and_then(|b| std::str::from_utf8(b).ok())
-        .map(str::trim)
+        // The stock assimilator appends: the last mask written is the workunit's.
+        .and_then(|s| s.lines().map(str::trim).rfind(|l| !l.is_empty()))
         .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
     let Some(mask) = mask else {
         return format!("BOINC workunit returned no output files (page deadline {timeout_secs} s)");
@@ -873,6 +874,8 @@ mod terminal_reason_tests {
             "BOINC workunit returned no output files (page deadline 600 s)"
         );
         assert!(super::terminal_reason(Some(b"0x2"), 1800).len() <= 200);
+        // Assimilated twice: the marker holds the mask twice.
+        assert!(super::terminal_reason(Some(b"0x2\n0x2\n"), 600).contains("error mask 0x2 "));
     }
 }
 
