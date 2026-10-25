@@ -1601,6 +1601,45 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(any("quality collect --campaign pilot-1" in c for c in self.calls()))
 
+        # #1070: the optional Surya arguments are empty arrays here (no SURYA_CAMPAIGN above),
+        # and set when a campaign is given; both must work under `set -u` on bash 3.2.
+        before = len(self.calls())
+        r = subprocess.run(
+            [bridge_copy], cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "quality-collect", "QUALITY_SPOOL": "/spool/q",
+                 "QWEN_SPOOL": "/spool/v", "SURYA_CAMPAIGN": "pilot-1", "SURYA_SPOOL": "/spool/s"},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        collect = [c for c in self.calls()[before:] if c.startswith("quality collect")]
+        self.assertEqual(len(collect), 1, collect)
+        self.assertIn("--surya-root " + share + "/surya/pilot-1 --surya-spool /spool/s", collect[0])
+
+        # surya-submit reads the database, so it fetches secrets first: stub that out.
+        with open(bridge_copy) as src:
+            text = src.read()
+        lib_line = f". {lib_path}\n"
+        self.assertIn(lib_line, text)
+        submit_copy = os.path.join(self.tmp, "bridge-job-submit.sh")
+        with open(submit_copy, "w") as dst:
+            dst.write(text.replace(
+                lib_line, lib_line + "fetch_secrets() { :; }\nrender_config() { :; }\nsecrets_present() { return 1; }\n", 1))
+        os.chmod(submit_copy, 0o755)
+        for extra, expected in [({}, None), ({"SURYA_TARGET_HOST": "7"}, "--target-host 7")]:
+            before = len(self.calls())
+            r = subprocess.run(
+                [submit_copy], cwd=ROOT,
+                env={**base, "BRIDGE_STEP": "surya-submit", "SURYA_CAMPAIGN": "pilot-1", **extra},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            submit = [c for c in self.calls()[before:] if c.startswith("surya submit")]
+            self.assertEqual(len(submit), 1, submit)
+            if expected is None:
+                self.assertNotIn("--target-host", submit[0])
+            else:
+                self.assertIn(expected, submit[0])
+
 
 PVE_BOINC_CT_SCRIPT = os.path.join(HERE, "pve-boinc-ct.sh")
 
