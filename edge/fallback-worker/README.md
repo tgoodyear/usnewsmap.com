@@ -16,11 +16,11 @@ The Worker has no dependencies and no `package.json`. Its code is `worker.mjs`, 
 | The fetch throws (the connection failed)                                                    | Asks Azure once.                         |
 | The fetch throws an `AbortError` or `TimeoutError`, or the visitor has gone                 | Throws it on. Azure is not asked.        |
 
-It never retries a timeout (504, 524, a `TimeoutError`), because the origin may have done the work, and a search it did twice would be in the search log twice. The API's own 503s are answers, not outages: a searcher restart or a failed readiness check reaches the visitor as the API says it. The Phase 2 outage drills confirm what a Worker receives in each failure; `RETRY_STATUSES` in `worker.mjs` is the one set to change with their results.
+It never retries a timeout (504, 524, a `TimeoutError`), because the origin may have done the work, and a search it did twice would be in the search log twice. The API's own 503s are answers, not outages: a searcher restart or a failed readiness check reaches the visitor as the API says it. The Phase 2 outage drills record what a Worker receives in each failure; `RETRY_STATUSES` in `worker.mjs` is the one set to change with their results.
 
 What Azure gets:
 
-- The same method, path, query and body, at the name in `AZURE_FALLBACK_ORIGIN`. The Worker sends a request there only if the name is `https://<something>.azurecontainerapps.io`, with no port, path or credentials. Anything else, including an empty variable, turns the fallback off, so a typing error cannot send visitors' requests to another host.
+- The same method, path, query and body, at the name in `AZURE_FALLBACK_ORIGIN`. The Worker sends a request there only if the name is `https://<something>.azurecontainerapps.io`, with no port, path or credentials. Anything else, including an empty variable, turns the fallback off, so a typing error cannot send visitors' requests to a host outside `azurecontainerapps.io`.
 - Every header as it arrived, `Origin` and `Sec-Fetch-Site` among them. The search log records a search only when one of the two says it came from the site itself (`admit()` in `crates/usnm-api/src/searchlog.rs`), so a search Azure answers reaches the log only if they arrive unchanged. The `Host` header is the one change: the runtime sets it to Azure's name.
 - The client IP headers (`CF-Connecting-IP`, `X-Forwarded-For`) as received, and no header of the Worker's own. Azure's ingress sees a Cloudflare address as the peer, so during a fallback all visitors share one rate-limit bucket and their page views geolocate wrongly (ADR-0027, Consequences). A header the Worker set for the API to trust would be spoofable through the default name, which stays publicly reachable. The Phase 2 drill measures what reaches Azure.
 - Redirects are not followed. A redirect from Azure goes to the visitor's browser.
@@ -54,7 +54,7 @@ Every request on a Worker route counts toward Workers Free's 100,000 requests a 
 | Median day     | 3,193 | 3.2%             |
 | Busiest day    | 5,628 | 5.6%             |
 
-The busiest day could grow about 18 times before it reached the limit. Most of the requests were 404s that look like scanners; the site had about 23 page views a day. Workers Free also allows 10 ms of CPU a request, and this Worker only passes requests through. #1101 measures 30 days of traffic on the new path before the cutover, and settled decision 10 says to decide again if the figure does not fit.
+The busiest day could grow about 18 times before it reached the limit. Most of the requests were 404s that look like scanners; the site had about 23 page views a day. Workers Free also allows 10 ms of CPU a request, and this Worker only passes requests through. #1101 measures 30 days of traffic against Workers Free's limit, and settled decision 10 says to decide again if the figure does not fit.
 
 ## Deploying by hand
 
