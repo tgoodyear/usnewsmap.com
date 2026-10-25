@@ -212,6 +212,11 @@ pub struct LocConfig {
     /// the host shares ([`super::global::GlobalPacer`]). None: this process's
     /// own pacers only.
     pub global_pacer: Option<PathBuf>,
+    /// LoC's own S3 bucket of NDNP batches ([`super::bucket`]), asked
+    /// before the storage service for the bag manifest, the METS and
+    /// ([`super::LocClient::bucket_jp2`]) the JP2 of a batch it holds,
+    /// paced and held on its own, outside the host's LoC budget. None: off.
+    pub bucket: Option<super::bucket::BucketConfig>,
 }
 
 impl Default for LocConfig {
@@ -231,6 +236,7 @@ impl Default for LocConfig {
             item_probes: true,
             html_is_block: false,
             global_pacer: None,
+            bucket: None,
         }
     }
 }

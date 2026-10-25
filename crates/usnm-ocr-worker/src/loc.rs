@@ -10,6 +10,14 @@
 //! the issue, its METS or the page isn't there, and only then does the
 //! caller go to the item API.
 //!
+//! **LoC's bucket** ([`bucket`], off unless [`LocConfig::bucket`] names
+//! it): LoC's own S3 copy of the batches. When it is on, the bag manifest
+//! and each issue METS are asked of it first, for the batches it holds, and
+//! [`LocClient::bucket_jp2`] gives a page's JP2 from it. Each is checked as
+//! LoC's would be and recorded as LoC's; the bucket is paced and held on its
+//! own, never in LoC's pacers or budget, and anything it can't serve (a
+//! private batch, a missing file, a mismatch, a hold) goes to LoC as before.
+//!
 //! **The item API route** (the worker's, and the fetcher's fallback): for
 //! each issue, one request to loc.gov's item JSON
 //! (`https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json`) gives every
@@ -62,6 +70,7 @@ use usnm_core::ids::PageKey;
 use crate::batch::{self, BagIndex, Md5Sum};
 use crate::telemetry::Metrics;
 
+pub mod bucket;
 pub mod global;
 pub mod mirror;
 mod pacer;
@@ -167,6 +176,8 @@ pub struct LocClient {
     /// By `<batch dir>/<lccn>/<issue dir>`; `None` for an issue whose METS
     /// isn't there.
     mets: moka::future::Cache<String, Option<Pages>>,
+    /// LoC's bucket, when configured.
+    bucket: Option<bucket::Bucket>,
     health: Mutex<ApiHealth>,
     storage_health: Mutex<ApiHealth>,
     metrics: Metrics,
@@ -265,6 +276,7 @@ impl LocClient {
                 .build(),
             health: Mutex::new(ApiHealth::default()),
             storage_health: Mutex::new(ApiHealth::default()),
+            bucket: cfg.bucket.clone().map(bucket::Bucket::new).transpose()?,
             cfg,
             http,
             http_here,
@@ -949,16 +961,27 @@ impl LocClient {
             }
         }
         let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
-        let mut found = self
-            .fetch(
-                &format!("{guess}manifest-md5.txt"),
-                Server::Storage,
-                MAX_BAG_BYTES,
-                None,
-                true,
-            )
-            .await?
-            .map(|g| (guess.clone(), g));
+        // LoC's bucket first, for a batch it holds: the same file, kept as
+        // LoC's under the storage path the batch's name gives.
+        let mut found = match &self.bucket {
+            Some(b) => b
+                .manifest(dir)
+                .await
+                .map(|body| (guess.clone(), body, bucket::NAME)),
+            None => None,
+        };
+        if found.is_none() {
+            found = self
+                .fetch(
+                    &format!("{guess}manifest-md5.txt"),
+                    Server::Storage,
+                    MAX_BAG_BYTES,
+                    None,
+                    true,
+                )
+                .await?
+                .map(|g| (guess.clone(), g.body, Server::Storage.name()));
+        }
         if found.is_none() {
             // Chronicling America knows where the batch is: follow it, but
             // only onto the storage service.
@@ -972,7 +995,7 @@ impl LocClient {
                         found = self
                             .fetch(&to, Server::Storage, MAX_BAG_BYTES, None, true)
                             .await?
-                            .map(|g| (u.to_owned(), g));
+                            .map(|g| (u.to_owned(), g.body, Server::Storage.name()));
                     }
                     None => {
                         tracing::warn!(
@@ -984,18 +1007,19 @@ impl LocClient {
                 }
             }
         }
-        let Some((url, got)) = found else {
+        let Some((url, body, from)) = found else {
             tracing::warn!(
                 batch = dir,
                 "LoC has no manifest for this batch; its pages go through the item API"
             );
             return Ok(None);
         };
-        let text = String::from_utf8_lossy(&got.body).into_owned();
+        let text = String::from_utf8_lossy(&body).into_owned();
         let index = BagIndex::parse(&text);
         tracing::info!(
             batch = dir,
             url,
+            from,
             issues = index.issues(),
             jp2s = index.jp2s,
             conflicts = index.conflicts,
@@ -1037,6 +1061,8 @@ impl LocClient {
             .cache_dir(&bag.dir)
             .map(|c| c.join("mets").join(lccn).join(&name));
         let url = batch::file_url(&bag.url, lccn, &files.reel, dir, &name);
+        // Its path in the bag, for LoC's bucket.
+        let rel = batch::file_url("", lccn, &files.reel, dir, &name);
         self.mets
             .try_get_with(key, async {
                 let mut body = None;
@@ -1050,26 +1076,38 @@ impl LocClient {
                 let body = match body {
                     Some(b) => b,
                     None => {
-                        let Some(got) = self
-                            .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
-                            .await?
-                        else {
-                            tracing::warn!(url, "the issue's METS isn't there");
-                            return Ok(None);
+                        // LoC's bucket first, checked against the bag's md5
+                        // the same way.
+                        let from_bucket = match &self.bucket {
+                            Some(b) => b.mets(&bag.dir, &rel, &md5).await,
+                            None => None,
                         };
-                        if batch::md5(&got.body) != md5 {
-                            return Err(FetchError::Transient(format!(
-                                "{url}: md5 {} isn't the bag's {}",
-                                batch::md5_hex(&got.body),
-                                batch::hex(&md5)
-                            )));
-                        }
+                        let body = match from_bucket {
+                            Some(b) => b,
+                            None => {
+                                let Some(got) = self
+                                    .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
+                                    .await?
+                                else {
+                                    tracing::warn!(url, "the issue's METS isn't there");
+                                    return Ok(None);
+                                };
+                                if batch::md5(&got.body) != md5 {
+                                    return Err(FetchError::Transient(format!(
+                                        "{url}: md5 {} isn't the bag's {}",
+                                        batch::md5_hex(&got.body),
+                                        batch::hex(&md5)
+                                    )));
+                                }
+                                got.body
+                            }
+                        };
                         if let Some(p) = &disk {
-                            if let Err(e) = write_file(p, &got.body).await {
+                            if let Err(e) = write_file(p, &body).await {
                                 tracing::warn!(url, error = %e, "can't keep the METS on disk");
                             }
                         }
-                        got.body
+                        body
                     }
                 };
                 match batch::mets_pages(&body) {
@@ -1132,9 +1170,30 @@ impl LocClient {
         }))
     }
 
-    /// The page `resolve` found: the JP2, checked against the bag's md5, at
-    /// full size; the IIIF JPEG of its base when scaled. `None` if the JP2
-    /// answers 404 though the bag lists it.
+    /// The page's JP2 from LoC's bucket, when it is configured and holds
+    /// the page's batch, matching the bag's md5, with LoC's URL and IIIF
+    /// base, and where the bytes came from. `None` sends the caller on, to
+    /// a mirror or [`Self::scan_resolved`]. Only a full-size scan is a JP2.
+    pub async fn bucket_jp2(&self, page: &BatchPage) -> Option<(Scan, mirror::Hit)> {
+        self.bucket
+            .as_ref()?
+            .jp2(page, &self.cfg.storage_root)
+            .await
+    }
+
+    /// Whether LoC's bucket is configured.
+    pub fn has_bucket(&self) -> bool {
+        self.bucket.is_some()
+    }
+
+    /// LoC's bucket's counts and hold, when it is configured.
+    pub fn bucket_status(&self) -> Option<bucket::BucketStatus> {
+        self.bucket.as_ref().map(bucket::Bucket::status)
+    }
+
+    /// The page `resolve` found: the JP2 from LoC's storage service, checked
+    /// against the bag's md5, at full size; the IIIF JPEG of its base when
+    /// scaled. `None` if the JP2 answers 404 though the bag lists it.
     pub async fn scan_resolved(
         &self,
         key: &PageKey,

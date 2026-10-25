@@ -453,6 +453,18 @@ enum Command {
         /// Between requests to the Wayback Machine.
         #[arg(long, env = "USNM_PREFETCH_WAYBACK_GAP_MS", default_value_t = 5000)]
         wayback_gap_ms: u64,
+        /// LoC's own S3 bucket of NDNP batches
+        /// (`https://ndnp-batches.s3.amazonaws.com/`), asked before
+        /// tile.loc.gov for the bag manifest, the issue METS and the JP2 of
+        /// each batch it holds (1,074 of 3,010 batches, 38.1% of pages, on 24
+        /// October 2026), each checked as LoC's are and recorded as LoC's.
+        /// One request at a time, outside the host's LoC budget; anything it
+        /// can't serve goes to LoC. Empty: off (the default).
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
+        loc_bucket: Option<String>,
+        /// From the end of one request to LoC's bucket to the start of the next.
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 6000)]
+        loc_bucket_gap_ms: u64,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
         #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
@@ -1016,6 +1028,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             mirrors,
             partner_gap_ms,
             wayback_gap_ms,
+            loc_bucket,
+            loc_bucket_gap_ms,
             awardees,
         } => {
             let mirrors = {
@@ -1030,8 +1044,16 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     Some(Arc::new(usnm_ocr_worker::loc::mirror::Mirrors::new(cfg)?))
                 }
             };
+            let bucket = usnm_ocr_worker::loc::bucket::BucketConfig::at(
+                loc_bucket.as_deref().unwrap_or_default(),
+            )?
+            .map(|b| usnm_ocr_worker::loc::bucket::BucketConfig {
+                gap: Duration::from_millis(loc_bucket_gap_ms),
+                ..b
+            });
             let loc = Arc::new(LocClient::new(LocConfig {
                 global_pacer: loc_global_pacer,
+                bucket,
                 api_gap: Duration::from_millis(api_gap_ms),
                 tile_gap: Duration::from_millis(tile_gap_ms),
                 storage_gap: Duration::from_millis(storage_gap_ms),

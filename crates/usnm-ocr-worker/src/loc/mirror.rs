@@ -227,9 +227,10 @@ struct Counts {
 }
 
 /// One request at a time to a mirror host, each at least `gap` after the
-/// last one ended, and the host's hold.
+/// last one ended, and the host's hold. LoC's bucket ([`super::bucket`])
+/// has one too.
 #[derive(Debug)]
-struct Gate {
+pub(super) struct Gate {
     gap: Duration,
     one: Semaphore,
     /// No request before this: the gap after the last one, or a hold.
@@ -238,7 +239,7 @@ struct Gate {
 }
 
 impl Gate {
-    fn new(gap: Duration) -> Self {
+    pub(super) fn new(gap: Duration) -> Self {
         Self {
             gap,
             one: Semaphore::new(1),
@@ -247,12 +248,12 @@ impl Gate {
         }
     }
 
-    fn held_until(&self) -> Option<Instant> {
+    pub(super) fn held_until(&self) -> Option<Instant> {
         let held = *self.held.lock().expect("gate lock");
         held.filter(|h| *h > Instant::now())
     }
 
-    fn hold(&self, d: Duration) {
+    pub(super) fn hold(&self, d: Duration) {
         let until = Instant::now() + d;
         let mut held = self.held.lock().expect("gate lock");
         *held = Some(held.map_or(until, |h| h.max(until)));
@@ -264,7 +265,7 @@ impl Gate {
     /// held: the host is then the caller's alone until the permit drops,
     /// and [`Gate::done`] must be called when its request ends. Nothing is
     /// reserved for a caller who doesn't get its turn.
-    async fn turn(&self, deadline: Instant) -> Option<SemaphorePermit<'_>> {
+    pub(super) async fn turn(&self, deadline: Instant) -> Option<SemaphorePermit<'_>> {
         if self.held_until().is_some() {
             return None;
         }
@@ -286,7 +287,7 @@ impl Gate {
     }
 
     /// A request ended: the next waits the gap.
-    fn done(&self) {
+    pub(super) fn done(&self) {
         let mut next = self.next.lock().expect("gate lock");
         *next = (*next).max(Instant::now() + self.gap);
     }
