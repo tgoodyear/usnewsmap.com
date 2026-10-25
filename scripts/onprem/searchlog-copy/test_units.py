@@ -93,6 +93,21 @@ class ServiceTest(unittest.TestCase):
         self.assertNotIn("--allow-unmounted", self.words)
         self.assertIn("require_mount: !allow_unmounted", read(CLI))
 
+    def test_a_missing_or_unexecutable_binary_fails_the_unit(self):
+        # A failed Condition*= (ConditionFileIsExecutable=, say) skips every timer activation
+        # quietly: `systemctl start` returns 0 with Result=success and ConditionResult=no, the
+        # status file stays as it was and nothing says the copy has stopped. A failed Assert*=
+        # only fails the start job. Left to ExecStart=, a binary that is missing or has lost its
+        # executable bit fails with status=203/EXEC and the unit is in `systemctl --failed`
+        # (checked on systemd 257). So no unit here may skip or assert its way out of a run, and
+        # ExecStart= may not carry a prefix that ignores its failure.
+        for section in (self.unit["Unit"], self.service):
+            for key in section:
+                self.assertFalse(key.startswith(("Condition", "Assert")), key)
+                self.assertNotEqual(key, "ExecCondition")
+        self.assertNotIn("ExecStartPre", self.service)
+        self.assertTrue(self.service["ExecStart"][0].startswith("/"), self.service["ExecStart"])
+
     def test_search_text_cannot_rest_in_a_temporary_directory(self):
         self.assertEqual(self.service["PrivateTmp"], ["yes"])
         self.assertNotIn("USNM_WORK_DIR", "".join(self.service["Environment"]))

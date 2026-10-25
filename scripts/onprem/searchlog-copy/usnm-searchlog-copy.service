@@ -16,14 +16,16 @@
 Description=usnewsmap search log copy to tank
 Wants=network-online.target himdsd.service
 After=network-online.target himdsd.service
-ConditionFileIsExecutable=/usr/local/bin/usnm-ingest
 RequiresMountsFor=/tank/azure/search-log
-# No AssertPathIsMountPoint= or ConditionPathIsMountPoint= here: a failed
-# assertion only fails the start job (the unit stays "inactive", never shows
-# in `systemctl --failed`) and a failed condition skips the unit quietly. The
-# command checks the mount itself and exits 1 before it writes anything, which
-# fails the unit and leaves the journal line, so a dataset that is not mounted
-# does not put search text on the host's own disk and is not silent.
+# No Condition*= or Assert*= here, for the binary or the mount. A failed
+# condition skips the unit quietly on every timer activation, and a failed
+# assertion only fails the start job (the unit stays "inactive", never shows in
+# `systemctl --failed`). Both leave the status file as it was and nothing says
+# the copy has stopped. So a binary that is missing or not executable is left
+# to ExecStart, which fails to start (status=203/EXEC) and fails the unit, and
+# the mount is checked by the command itself, which exits 1 before it writes
+# anything: a dataset that is not mounted does not put search text on the
+# host's own disk, and neither failure is silent.
 
 [Service]
 Type=oneshot

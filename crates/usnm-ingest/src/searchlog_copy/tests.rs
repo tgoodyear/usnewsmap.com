@@ -342,19 +342,186 @@ async fn a_symlink_or_directory_is_not_a_copy() {
     let days = dest.path().join("days");
     std::fs::create_dir_all(&days).unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
-    std::fs::write(elsewhere.path().join("x"), body("2026-10-20", 2)).unwrap();
-    std::os::unix::fs::symlink(elsewhere.path().join("x"), days.join("2026-10-20.jsonl")).unwrap();
+    let target = elsewhere.path().join("x");
+    std::fs::write(&target, body("2026-10-20", 2)).unwrap();
+    std::os::unix::fs::symlink(&target, days.join("2026-10-20.jsonl")).unwrap();
     std::fs::create_dir(days.join("2026-10-21.jsonl")).unwrap();
 
-    let report = copy_days(&lake.store(), &options(dest.path(), "2026-10-23T06:00:00Z"))
-        .await
-        .unwrap();
+    // The link leads to the very bytes the lake has, so only the link itself tells it from a
+    // copy, by size alone and with the full comparison.
+    for verify in [false, true] {
+        let mut o = options(dest.path(), "2026-10-23T06:00:00Z");
+        o.verify = verify;
+        let report = copy_days(&lake.store(), &o).await.unwrap();
 
-    assert_eq!(
-        report.mismatched_days,
-        [day("2026-10-20"), day("2026-10-21")]
+        assert_eq!(
+            report.mismatched_days,
+            [day("2026-10-20"), day("2026-10-21")]
+        );
+        assert_eq!(report.copied_this_run, 0);
+        assert_eq!(report.copied_days, 0);
+        assert!(!report.ok);
+        assert!(std::fs::symlink_metadata(days.join("2026-10-20.jsonl"))
+            .unwrap()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            body("2026-10-20", 2).as_bytes()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_days_directory_that_is_a_symlink_is_refused() {
+    let lake = Lake::new();
+    lake.put_day("2026-10-20", 2);
+    // The service's state directory, which its sandbox leaves writable: a `days` that led here
+    // would put the search text outside the dataset.
+    let state = tempfile::tempdir().unwrap();
+    std::fs::write(state.path().join("status.json"), "{}").unwrap();
+    let missing = state.path().join("not-there");
+
+    for target in [state.path(), missing.as_path()] {
+        let dest = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(target, dest.path().join("days")).unwrap();
+        let status = dest.path().join("status.json");
+        let mut o = options(dest.path(), "2026-10-23T06:00:00Z");
+        o.status = Some(&status);
+
+        let err = copy_days(&lake.store(), &o).await.unwrap_err();
+
+        assert!(format!("{err:#}").contains("symbolic link"), "{err:#}");
+        assert_eq!(
+            std::fs::read_dir(state.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect::<Vec<_>>(),
+            ["status.json"],
+            "nothing was written through the link"
+        );
+        assert_eq!(
+            std::fs::read(state.path().join("status.json")).unwrap(),
+            b"{}"
+        );
+        assert!(!status.exists(), "a refused run writes no status");
+        assert!(std::fs::symlink_metadata(dest.path().join("days"))
+            .unwrap()
+            .is_symlink());
+    }
+
+    // A file where the directory should be is refused as well.
+    let dest = tempfile::tempdir().unwrap();
+    std::fs::write(dest.path().join("days"), "x").unwrap();
+    let err = copy_days(&lake.store(), &options(dest.path(), "2026-10-23T06:00:00Z"))
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("not a directory"), "{err:#}");
+}
+
+#[test]
+fn a_days_directory_is_held_by_what_it_was_when_opened() {
+    let state = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let days = DaysDir::open(dest.path()).unwrap();
+
+    // Swapped for a link after the check: nothing is written through it.
+    std::fs::rename(dest.path().join("days"), dest.path().join("moved")).unwrap();
+    std::os::unix::fs::symlink(state.path(), dest.path().join("days")).unwrap();
+    drop(days.create("2026-10-20.jsonl.partial").unwrap());
+
+    assert!(dest.path().join("moved/2026-10-20.jsonl.partial").exists());
+    assert!(std::fs::read_dir(state.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn no_file_in_days_is_reached_through_a_link() {
+    let elsewhere = tempfile::tempdir().unwrap();
+    let victim = elsewhere.path().join("victim");
+    std::fs::write(&victim, "keep").unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let days = DaysDir::open(dest.path()).unwrap();
+    let dir = dest.path().join("days");
+    std::os::unix::fs::symlink(&victim, dir.join("to-file")).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path().join("new"), dir.join("dangling")).unwrap();
+
+    // Looked at, not followed.
+    assert_eq!(days.regular_size("to-file").unwrap(), None);
+    assert!(days.open_read("to-file").is_err());
+    // Created only where the name is free: a link, dangling or not, is not.
+    for name in ["to-file", "dangling"] {
+        let err = days.create(name).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists, "{name}");
+    }
+    assert!(!elsewhere.path().join("new").exists());
+    // Linked into place only where the name is free, whatever is there.
+    std::fs::write(dir.join("from"), "x").unwrap();
+    for name in ["to-file", "dangling"] {
+        let err = days.link("from", name).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists, "{name}");
+    }
+    assert!(!elsewhere.path().join("new").exists());
+    // Removing a link removes the link.
+    days.remove("to-file").unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    assert!(std::fs::symlink_metadata(dir.join("to-file")).is_err());
+}
+
+#[tokio::test]
+async fn a_partial_that_is_a_link_or_directory_is_refused_and_left() {
+    let lake = Lake::new();
+    for d in ["2026-10-20", "2026-10-21", "2026-10-22"] {
+        lake.put_day(d, 2);
+    }
+    let dest = tempfile::tempdir().unwrap();
+    let days = dest.path().join("days");
+    std::fs::create_dir_all(&days).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let victim = elsewhere.path().join("victim");
+    std::fs::write(&victim, "keep").unwrap();
+    let fresh = elsewhere.path().join("fresh");
+    // A link to an existing file, a link to a file that is not there, and a directory.
+    std::os::unix::fs::symlink(&victim, days.join("2026-10-20.jsonl.partial")).unwrap();
+    std::os::unix::fs::symlink(&fresh, days.join("2026-10-21.jsonl.partial")).unwrap();
+    std::fs::create_dir(days.join("2026-10-22.jsonl.partial")).unwrap();
+    let o = options(dest.path(), "2026-10-25T06:00:00Z");
+
+    let report = copy_days(&lake.store(), &o).await.unwrap();
+
+    // Nothing was written through a link, and the names the tool did not make were not removed.
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    assert!(!fresh.exists());
+    assert!(
+        std::fs::symlink_metadata(days.join("2026-10-20.jsonl.partial"))
+            .unwrap()
+            .is_symlink()
     );
+    assert!(
+        std::fs::symlink_metadata(days.join("2026-10-21.jsonl.partial"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert!(days.join("2026-10-22.jsonl.partial").is_dir());
+    // The days are not copied, and are reported: the unit fails on them.
+    assert_eq!(report.stale_partials_removed, 0);
+    assert_eq!(report.foreign_files, 3);
     assert_eq!(report.copied_this_run, 0);
+    let all = [day("2026-10-20"), day("2026-10-21"), day("2026-10-22")];
+    assert_eq!(report.missing_days, all);
+    assert_eq!(report.overdue_days, all);
+    assert!(!report.ok);
+    assert_no_text(&report);
+
+    // Once the operator removes them, the next run copies the days.
+    std::fs::remove_file(days.join("2026-10-20.jsonl.partial")).unwrap();
+    std::fs::remove_file(days.join("2026-10-21.jsonl.partial")).unwrap();
+    std::fs::remove_dir(days.join("2026-10-22.jsonl.partial")).unwrap();
+    let report = copy_days(&lake.store(), &o).await.unwrap();
+    assert_eq!(report.copied_this_run, 3);
+    assert!(report.ok);
+    assert_eq!(
+        names(dest.path()),
+        ["2026-10-20.jsonl", "2026-10-21.jsonl", "2026-10-22.jsonl"]
+    );
 }
 
 #[tokio::test]

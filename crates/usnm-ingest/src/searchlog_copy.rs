@@ -17,7 +17,9 @@
 //!   again;
 //! - the tool deletes nothing from the lake or from the copy. The one exception is its own
 //!   `{day}.jsonl.partial`, left by a run that died: a partial is never resumed (Blob Storage
-//!   is read whole), so the next run removes it and copies the day again;
+//!   is read whole), so the next run removes it and copies the day again. Only a regular file
+//!   is taken for its own: a link or a directory by that name is left, and its day is reported
+//!   missing until an operator removes it;
 //! - a day that is in the copy but no longer in the lake is reported (`local_only_days`) and
 //!   kept.
 //!
@@ -37,6 +39,13 @@
 //! hold day names, sizes and counts. The destination must be the root of the restricted dataset
 //! (checked: a directory that is not a mount point is refused), and every byte is written into
 //! it, never to a temporary directory.
+//!
+//! No symbolic link is followed under the destination. The service's own state directory is
+//! writable, so a `days` that was a link to it would put the search text outside the dataset:
+//! [`DaysDir`] refuses a `days` that is a link, opens it once without following one, and every
+//! file after that is reached through that open directory by its bare name, opened without
+//! following a link either. A link put in the place of `days` later is not used, as no path to
+//! it is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
@@ -47,10 +56,11 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Context};
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use futures::StreamExt;
+use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use usnm_store::{ObjectInfo, ObjectStore};
+use usnm_store::{ByteStream, ObjectInfo, ObjectStore};
 
 use crate::source::hex;
 
@@ -61,8 +71,8 @@ const DAYS: &str = "days";
 /// Used as the day file's written time when the store does not give one.
 pub const WRITTEN_AFTER_DAY_END: Duration = Duration::from_secs(3600);
 
-/// A copy is read-only: the tool never opens one for writing again.
-const FILE_MODE: u32 = 0o440;
+/// A copy is read-only: the tool never opens one for writing again (`0440`).
+const FILE_MODE: Mode = Mode::RUSR.union(Mode::RGRP);
 /// The `days` directory the tool creates in a destination that has none.
 const DIR_MODE: u32 = 0o750;
 /// The status file is readable by whatever watches the host; it holds day names and counts.
@@ -117,7 +127,9 @@ pub struct Report {
     pub local_only_days: Vec<NaiveDate>,
     /// Objects under `days/` that are not `{day}.jsonl` (counted, never named).
     pub ignored_objects: u64,
-    /// Files in the copy's `days/` that are neither a day file nor its partial (left alone).
+    /// Files in the copy's `days/` that are neither a day file nor a partial the tool made (a
+    /// regular file named like one): a link or directory with a partial's name counts here
+    /// (left alone).
     pub foreign_files: u64,
     /// Partials of an interrupted run removed at the start.
     pub stale_partials_removed: u64,
@@ -178,7 +190,7 @@ fn is_overdue(now: DateTime<Utc>, since: DateTime<Utc>, after: Duration) -> bool
 /// (`missing_days`) and the run goes on to the others; the caller fails the command on
 /// `overdue_days`.
 pub async fn copy_days(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Result<Report> {
-    let (days_dir, _lock) = prepare(o)?;
+    let days = prepare(o)?;
     let listed = source
         .list_info(DAYS)
         .await
@@ -196,7 +208,7 @@ pub async fn copy_days(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Res
             None => report.ignored_objects += 1,
         }
     }
-    let local = survey(&days_dir)?;
+    let local = survey(&days)?;
     report.stale_partials_removed = local.stale_partials;
     report.foreign_files = local.foreign;
     report.source_days = in_lake.len() as u64;
@@ -209,9 +221,8 @@ pub async fn copy_days(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Res
         .collect();
 
     for (day, info) in &in_lake {
-        let here = days_dir.join(name_of(*day));
         let held = if local.days.contains(day) {
-            compare(source, info, &here, o.verify).await
+            compare(source, info, &days, &name_of(*day), o.verify).await
         } else {
             Ok(Held::Absent)
         };
@@ -222,7 +233,7 @@ pub async fn copy_days(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Res
                 report.mismatched_days.push(*day);
                 false
             }
-            Ok(Held::Absent) => match fetch(source, info, &days_dir, *day).await {
+            Ok(Held::Absent) => match fetch(source, info, &days, *day).await {
                 Ok(bytes) => {
                     report.copied_this_run += 1;
                     report.bytes_copied += bytes;
@@ -265,8 +276,8 @@ pub async fn copy_days(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Res
 }
 
 /// Check the destination, make `days/` and take its lock. The lock is held (by the returned
-/// file) until the run ends: a second run, a manual one beside the timer's, is refused.
-fn prepare(o: &Options<'_>) -> anyhow::Result<(PathBuf, std::fs::File)> {
+/// directory) until the run ends: a second run, a manual one beside the timer's, is refused.
+fn prepare(o: &Options<'_>) -> anyhow::Result<DaysDir> {
     let meta = std::fs::metadata(o.dest)
         .with_context(|| format!("the destination {} is not there", o.dest.display()))?;
     ensure!(
@@ -282,28 +293,135 @@ fn prepare(o: &Options<'_>) -> anyhow::Result<(PathBuf, std::fs::File)> {
             o.dest.display()
         );
     }
-    let days = o.dest.join(DAYS);
-    match std::fs::DirBuilder::new().mode(DIR_MODE).create(&days) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e).with_context(|| format!("creating {}", days.display())),
-    }
-    let lock = std::fs::File::open(&days).with_context(|| format!("opening {}", days.display()))?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(
-        |_| {
-            anyhow::anyhow!(
-                "another search log copy is running on {}: one at a time",
-                days.display()
-            )
-        },
-    )?;
-    Ok((days, lock))
+    let days = DaysDir::open(o.dest)?;
+    rustix::fs::flock(&days.dir, FlockOperation::NonBlockingLockExclusive).map_err(|_| {
+        anyhow::anyhow!(
+            "another search log copy is running on {}: one at a time",
+            days.path.display()
+        )
+    })?;
+    Ok(days)
 }
 
 /// Whether `dir` is the root of a mounted file system: on another device than its parent. A
 /// bind mount of a directory on the parent's own file system is not told apart.
 fn is_mount_point(dir: &Path) -> std::io::Result<bool> {
     Ok(std::fs::metadata(dir)?.dev() != std::fs::metadata(dir.join(".."))?.dev())
+}
+
+/// The copy's `days/` directory, opened once and held open (and locked) for the run. Every file
+/// the run touches is reached through this handle by its bare name (`openat` and the like), and
+/// none is reached through a symbolic link, so nothing written can land outside the directory
+/// that was checked, whatever is put beside or in place of it afterwards.
+struct DaysDir {
+    dir: std::fs::File,
+    /// For messages only; never opened again.
+    path: PathBuf,
+}
+
+impl DaysDir {
+    /// Make `{dest}/days` if the destination has none, and open it. A `days` that is a symbolic
+    /// link is refused: the service's state directory is writable, so a link to it would take
+    /// the search text out of the dataset. (`mkdir` answers "exists" for a link, and an open
+    /// would follow it, hence the check; the `NOFOLLOW` open is the one that holds if the link
+    /// is put there after the check.)
+    fn open(dest: &Path) -> anyhow::Result<Self> {
+        let path = dest.join(DAYS);
+        match std::fs::DirBuilder::new().mode(DIR_MODE).create(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        }
+        let kind = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("looking at {}", path.display()))?
+            .file_type();
+        ensure!(
+            !kind.is_symlink(),
+            "{} is a symbolic link: refusing to write search text through one, as it can lead out \
+             of the restricted dataset",
+            path.display()
+        );
+        ensure!(kind.is_dir(), "{} is not a directory", path.display());
+        let dir = rustix::fs::open(
+            &path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("opening {} without following a link", path.display()))?;
+        Ok(Self {
+            dir: dir.into(),
+            path,
+        })
+    }
+
+    /// `name` in `days/`, for a message.
+    fn show(&self, name: &str) -> String {
+        self.path.join(name).display().to_string()
+    }
+
+    /// The size of `name` if it is a regular file: not a link to one, not a directory. `None`
+    /// for anything else that is there; an error if nothing is.
+    fn regular_size(&self, name: &str) -> std::io::Result<Option<u64>> {
+        let stat = rustix::fs::statat(&self.dir, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        Ok(
+            (FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile)
+                .then(|| u64::try_from(stat.st_size).unwrap_or_default()),
+        )
+    }
+
+    /// Open the regular file `name` for reading. A link is not followed, so a name that became
+    /// one since it was looked at is an error.
+    fn open_read(&self, name: &str) -> anyhow::Result<std::fs::File> {
+        let file = rustix::fs::openat(
+            &self.dir,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(std::fs::File::from)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("reading {}", self.show(name)))?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "{} is not a regular file",
+            self.show(name)
+        );
+        Ok(file)
+    }
+
+    /// Create the file `name` for writing, read-only to everyone after: it fails if the name is
+    /// taken, by anything (a dangling link included, which is never written through).
+    fn create(&self, name: &str) -> std::io::Result<std::fs::File> {
+        Ok(rustix::fs::openat(
+            &self.dir,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            FILE_MODE,
+        )
+        .map(std::fs::File::from)?)
+    }
+
+    /// Hard-link the file `from` as `to`, which fails if `to` exists.
+    fn link(&self, from: &str, to: &str) -> std::io::Result<()> {
+        Ok(rustix::fs::linkat(
+            &self.dir,
+            from,
+            &self.dir,
+            to,
+            AtFlags::empty(),
+        )?)
+    }
+
+    /// Remove `name`, which is not followed if it is a link.
+    fn remove(&self, name: &str) -> std::io::Result<()> {
+        Ok(rustix::fs::unlinkat(&self.dir, name, AtFlags::empty())?)
+    }
+
+    /// Make the directory's entries survive a crash.
+    fn sync(&self) -> std::io::Result<()> {
+        self.dir.sync_all()
+    }
 }
 
 /// What is in the copy's `days/`.
@@ -313,29 +431,42 @@ struct Local {
     foreign: u64,
 }
 
-/// List the copy's `days/`. Holding the lock, no partial is another run's: each is removed.
-/// Anything else that is not a day file is counted and left.
-fn survey(days_dir: &Path) -> anyhow::Result<Local> {
+/// List the copy's `days/`. Holding the lock, no partial is another run's: each regular one is
+/// removed. Anything else that is not a day file, a link or a directory named like a partial
+/// included, is counted and left.
+fn survey(days: &DaysDir) -> anyhow::Result<Local> {
     let mut local = Local {
         days: BTreeSet::new(),
         stale_partials: 0,
         foreign: 0,
     };
-    for entry in std::fs::read_dir(days_dir).with_context(|| days_dir.display().to_string())? {
-        let entry = entry.with_context(|| days_dir.display().to_string())?;
-        let name = entry.file_name();
-        let name = name.to_str();
+    let entries = rustix::fs::Dir::read_from(&days.dir)
+        .map_err(std::io::Error::from)
+        .with_context(|| days.path.display().to_string())?;
+    for entry in entries {
+        let entry = entry
+            .map_err(std::io::Error::from)
+            .with_context(|| days.path.display().to_string())?;
+        let name = entry.file_name().to_str().ok();
         if let Some(day) = name.and_then(day_of_name) {
             local.days.insert(day);
-        } else if name
-            .and_then(|n| n.strip_suffix(PARTIAL))
-            .and_then(day_of_name)
-            .is_some()
+        } else if let Some(partial) =
+            name.filter(|n| n.strip_suffix(PARTIAL).and_then(day_of_name).is_some())
         {
-            std::fs::remove_file(entry.path())
-                .with_context(|| format!("removing a stale {PARTIAL} file"))?;
-            local.stale_partials += 1;
-        } else {
+            if days.regular_size(partial)?.is_some() {
+                days.remove(partial)
+                    .with_context(|| format!("removing a stale {PARTIAL} file"))?;
+                local.stale_partials += 1;
+            } else {
+                // Not the tool's: it only ever makes a regular file. Left as it is, and the day
+                // it names is not copied (the partial's name is taken) until it is removed.
+                tracing::warn!(
+                    partial,
+                    "a {PARTIAL} name is not a regular file: left as it is"
+                );
+                local.foreign += 1;
+            }
+        } else if !matches!(name, Some("." | "..")) {
             local.foreign += 1;
         }
     }
@@ -355,22 +486,22 @@ enum Held {
     Differs,
 }
 
-/// Compare the copy `here` of a day file with its listing: a regular file of the listed size,
+/// Compare the copy `name` of a day file with its listing: a regular file of the listed size,
 /// and with `verify` the lake's bytes hashed again against the file's.
 async fn compare(
     source: &dyn ObjectStore,
     info: &ObjectInfo,
-    here: &Path,
+    days: &DaysDir,
+    name: &str,
     verify: bool,
 ) -> anyhow::Result<Held> {
-    let meta = std::fs::symlink_metadata(here)?;
-    if !meta.is_file() || meta.len() != info.size {
+    if days.regular_size(name)? != Some(info.size) {
         return Ok(Held::Differs);
     }
     if !verify {
         return Ok(Held::Matches);
     }
-    let (size, local) = sha256_file(here).await?;
+    let (size, local) = sha256_file(days.open_read(name)?).await?;
     let (remote_size, remote) = sha256_object(source, info).await?;
     Ok(if size == remote_size && local == remote {
         Held::Matches
@@ -381,40 +512,39 @@ async fn compare(
 
 /// Stream a day file from the lake into `{day}.jsonl.partial`, check it, and link it into place
 /// as `{day}.jsonl` unless that name has appeared. Returns its size. A failure removes the
-/// partial.
+/// partial, but only one this made: a name that was already taken is not touched.
 async fn fetch(
     source: &dyn ObjectStore,
     info: &ObjectInfo,
-    days_dir: &Path,
+    days: &DaysDir,
     day: NaiveDate,
 ) -> anyhow::Result<u64> {
-    let partial = days_dir.join(format!("{}{PARTIAL}", name_of(day)));
-    let result = fetch_into(source, info, days_dir, day, &partial).await;
+    let stream = source
+        .get_stream(&info.path)
+        .await?
+        .context("it was listed but is gone")?;
+    let partial = format!("{}{PARTIAL}", name_of(day));
+    // `create` fails if the name exists: the lock makes any file here ours, but a name taken
+    // (a link included) is never written into, nor removed.
+    let file = days
+        .create(&partial)
+        .with_context(|| format!("creating {}", days.show(&partial)))?;
+    let result = fetch_into(stream, info, days, day, &partial, file).await;
     if result.is_err() {
-        let _ = std::fs::remove_file(&partial);
+        let _ = days.remove(&partial);
     }
     result
 }
 
 async fn fetch_into(
-    source: &dyn ObjectStore,
+    mut stream: ByteStream,
     info: &ObjectInfo,
-    days_dir: &Path,
+    days: &DaysDir,
     day: NaiveDate,
-    partial: &Path,
+    partial: &str,
+    file: std::fs::File,
 ) -> anyhow::Result<u64> {
-    let mut stream = source
-        .get_stream(&info.path)
-        .await?
-        .context("it was listed but is gone")?;
-    // `create_new`: the lock makes any file here ours, but a name taken is never written into.
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(FILE_MODE)
-        .open(partial)
-        .await
-        .with_context(|| format!("creating {}", partial.display()))?;
+    let mut file = tokio::fs::File::from_std(file);
     let (mut hash, mut n) = (Sha256::new(), 0u64);
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -432,34 +562,29 @@ async fn fetch_into(
     file.sync_all().await?;
     drop(file);
     let received = hex(&hash.finalize());
-    let (on_disk_size, on_disk) = sha256_file(partial).await?;
+    let (on_disk_size, on_disk) = sha256_file(days.open_read(partial)?).await?;
     ensure!(
         on_disk_size == n && on_disk == received,
         "the file written ({on_disk_size} bytes, sha256 {on_disk}) is not the bytes received \
          ({n} bytes, sha256 {received})"
     );
-    let here = days_dir.join(name_of(day));
-    match std::fs::hard_link(partial, &here) {
+    let name = name_of(day);
+    match days.link(partial, &name) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-            bail!(
-                "a file named {} appeared meanwhile; left as it is",
-                name_of(day)
-            )
+            bail!("a file named {name} appeared meanwhile; left as it is")
         }
-        Err(e) => return Err(e).with_context(|| format!("linking {}", here.display())),
+        Err(e) => return Err(e).with_context(|| format!("linking {}", days.show(&name))),
     }
-    std::fs::remove_file(partial)?;
+    days.remove(partial)?;
     // The link and the removal are in the directory, which is synced so they survive a crash.
-    std::fs::File::open(days_dir)?.sync_all()?;
+    days.sync()?;
     Ok(n)
 }
 
-/// The size and sha256 of a file, read in chunks.
-async fn sha256_file(path: &Path) -> anyhow::Result<(u64, String)> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .with_context(|| format!("reading {}", path.display()))?;
+/// The size and sha256 of an open file, read in chunks.
+async fn sha256_file(file: std::fs::File) -> anyhow::Result<(u64, String)> {
+    let mut file = tokio::fs::File::from_std(file);
     let (mut hash, mut n) = (Sha256::new(), 0u64);
     let mut buf = vec![0u8; CHUNK];
     loop {
