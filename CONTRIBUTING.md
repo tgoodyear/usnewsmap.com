@@ -35,7 +35,7 @@ python3 -m unittest scripts/ocr-survey/test_gold.py
 python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py
 python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
 python3 -m unittest scripts/ocr-node/test_quality_jpeg_cache.py scripts/ocr-node/test_quality_jpeg_list.py
-shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh
+shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh scripts/boinc/onprem/image-security-check.sh
 scripts/lib/env_settings.py --check
 scripts/ci/check-names.py --base origin/main
 scripts/ci/check-workbooks.py
