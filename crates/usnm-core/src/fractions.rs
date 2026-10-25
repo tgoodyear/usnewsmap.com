@@ -97,8 +97,9 @@ fn phrase_spellings(terms: &[String]) -> Vec<Vec<String>> {
             })
             .collect();
     }
-    phrases.remove(0);
-    phrases
+    // The first is the phrase as it is, which the engine is sent already.
+    debug_assert_eq!(phrases[0], terms);
+    phrases.into_iter().skip(1).collect()
 }
 
 #[cfg(test)]
