@@ -1210,7 +1210,7 @@ pub fn render(v: &View) -> String {
                     int(s.failed_permanent + s.failed_transient)
                 )
             ),
-            format!(
+            format_args!(
                 "{} JP2 ({} from mirrors, {} from LoC's bucket), {} through the item API",
                 int(s.fetched_jp2),
                 int(s.fetched_mirror),
