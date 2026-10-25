@@ -1,6 +1,6 @@
 # ADR-0024: Cloudflare Tunnel and R2 credentials for the on-prem BOINC server
 
-- **Status:** Accepted (2026-10-21, maintainer). In use since the #942 cutover.
+- **Status:** Accepted (2026-10-21, maintainer). In use since the #942 cutover. Amended 2026-10-25 (maintainer): the `usnm-ocrdash` tunnel (item 4).
 - **Date:** 2026-10
 - **Relates to:** ADR-0009, ADR-0023; #942, #955; `docs/boinc-onprem.md`
 
@@ -28,12 +28,19 @@ An exception to ADR-0009 covers exactly these Cloudflare credentials:
    It lives only in process environments and `/dev/shm` while a job runs.
 3. **The Cloudflare API token** used to manage the zone, the tunnel and the bucket. It is limited
    to one client IP and is never given to a workload.
+4. **The tunnel token** for the `usnm-ocrdash` tunnel (added 25 October 2026). `cloudflared` in the
+   LAN OCR dashboard's container (CT 212) runs the remotely managed tunnel with it. Its ingress is
+   `ocr.usnewsmap.com` → the dashboard's public read-only listener on loopback, which serves only
+   the page and its JSON, with lab host names, container numbers, paths and Azure IDs left out.
+   Key Vault home-kv, secret `cloudflare-tunnel-usnm-ocrdash-token`; on the host,
+   `/etc/cloudflared/usnm-ocrdash.env` (mode 0600). The LAN view and the hosts' pushes stay on the
+   LAN listener.
 
 Rules for all three:
 
 - Kept in Azure Key Vault, read through Entra RBAC; never in the repository or on a command line,
-  and never printed. The one copy outside Key Vault is the tunnel token on the BOINC host, in a
-  root-only environment file (`/etc/cloudflared/usnm-boinc.env`, mode 0600) that `cloudflared`
+  and never printed. The one copy outside Key Vault of each tunnel token is on its host, in a
+  root-only environment file (`/etc/cloudflared/<tunnel>.env`, mode 0600) that `cloudflared`
   reads at start.
 - Scoped as narrowly as Cloudflare allows (one tunnel; one bucket; one client IP), with an expiry
   where Cloudflare supports one.
