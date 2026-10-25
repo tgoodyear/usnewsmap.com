@@ -477,9 +477,13 @@ pub async fn dead_letter(
         bail!("no claim for {doc_id}");
     };
     match claim.ended.as_deref() {
+        Some("dead_lettered") => return Ok(DeadLettered::Already),
         // The dead letter went but its message had come back: still the operator's to settle.
         Some("dead_letter_lease_lost") => return Ok(DeadLettered::LeaseLost),
-        Some(_) => return Ok(DeadLettered::Already),
+        // Released or lost: the message isn't held, so it can't be taken off its queue here.
+        Some(other) => {
+            bail!("the claim for {doc_id} ended {other}; its message isn't held to dead-letter")
+        }
         None => {}
     }
     let msg = claim.message()?;

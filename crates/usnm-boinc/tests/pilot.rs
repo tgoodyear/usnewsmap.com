@@ -2513,6 +2513,24 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_released_claim_is_not_dead_lettered() {
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(3600)).await;
+        publish_claim(&f, &claims).await;
+        let q = f.fx.stores.queue.as_ref();
+        assert!(claim::release(f.handoff.as_ref(), q, DOC).await.unwrap());
+        assert!(claim::dead_letter(f.handoff.as_ref(), q, DOC, "x")
+            .await
+            .is_err());
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn a_dead_letter_whose_lease_ran_out_stays_unsettled() {
         let f = fed(true).await;
         let claims = f.fx.tmp.path().join("claims");

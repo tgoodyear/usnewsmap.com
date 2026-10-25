@@ -1404,7 +1404,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(dead_letter_failed and feed is not None,
                 f"terminal BOINC failure: {names}; dead-letter it with --dead-letter-failed "
                 "(#1154) or reconcile it by hand")
-        transport.dead_letter(sorted(page.replace("/", "_") for page in failed))
+        docs = sorted(page.replace("/", "_") for page in failed)
+        for i in range(0, len(docs), 100):  # the step takes 100 doc ids at most
+            transport.dead_letter(docs[i:i + 100])
         for record in failed.values():
             letters[record["job"]["id"]] = int(now)
         persist()
