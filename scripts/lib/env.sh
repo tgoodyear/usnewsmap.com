@@ -759,24 +759,91 @@ ocr_nodes_off_check() {
   echo "offboard those nodes first (scripts/ocr-node/offboard.sh), or turn USNM_OCR_NODES back on" >&2
   return 1
 }
-# The image the environment's API app runs, printed; nothing when there is
-# no app to read (its name and group are stack outputs, saved by the first
-# provision) or Azure says it's gone. A read that fails otherwise fails.
-api_live_image() {
-  local app rg out err errf
-  app=$(aget API_APP) || return 1
-  rg=$(aget AZURE_RESOURCE_GROUP) || return 1
-  [ -n "$app" ] && [ -n "$rg" ] || return 0
+# The API app's name and resource group from the stack's outputs (API_APP and
+# AZURE_RESOURCE_GROUP, whose case the stack may change), one per line. Nothing
+# when Azure says there's no app to read: the stack isn't there (the first
+# provision), or it deploys no API app (API_APP is ''). A stack that names no
+# app or no group, or a read that fails, fails.
+stack_api_app() {
+  local out err errf
   errf=$(mktemp)
-  if ! out=$(az containerapp show -n "$app" -g "$rg" \
-    --query "properties.template.containers[?name=='api'] | [0].image" -o tsv 2> "$errf"); then
+  if ! out=$(az stack sub show -n "$STACK" --query outputs -o json 2> "$errf"); then
     err=$(cat "$errf")
     rm -f "$errf"
-    grep -qiE 'ResourceNotFound|ResourceGroupNotFound|could not be found' <<< "$err" && return 0
+    # Azure also says ResourceNotFound for a dependency, so that code only
+    # counts when it names the stack (as guard_stack_renames).
+    if grep -q 'DeploymentStackNotFound' <<< "$err" ||
+      { grep -q '^Code: ResourceNotFound$' <<< "$err" && grep -Fq "The resource '$STACK' was not found." <<< "$err"; }; then
+      return 0
+    fi
+    echo "error: can't read the stack $STACK's outputs: $err" >&2
+    return 1
+  fi
+  rm -f "$errf"
+  python3 -c 'import json, sys
+outs = {k.upper(): (v or {}).get("value") or "" for k, v in (json.loads(sys.argv[1] or "{}") or {}).items()}
+app, group = outs.get("API_APP"), outs.get("AZURE_RESOURCE_GROUP")
+if app == "":
+    sys.exit(0)
+if not app or not group:
+    print("error: the stack " + sys.argv[2] + " names no API_APP or no AZURE_RESOURCE_GROUP in its outputs", file=sys.stderr)
+    sys.exit(1)
+print(app)
+print(group)' "$out" "$STACK"
+}
+# One read of the API app (az containerapp ARGS), printed. Fails with 1, and
+# says why, on an error; with 2, and no message, when Azure says the app or its
+# group isn't there. APP only names the app in the message.
+api_read() {
+  local app=$1 err errf out
+  shift
+  errf=$(mktemp)
+  if ! out=$(az containerapp "$@" 2> "$errf"); then
+    err=$(cat "$errf")
+    rm -f "$errf"
+    if grep -qiE 'ResourceNotFound|ResourceGroupNotFound|could not be found' <<< "$err"; then
+      return 2
+    fi
     echo "error: can't read the image of the API app $app: $err" >&2
     return 1
   fi
   rm -f "$errf"
+  printf '%s\n' "$out"
+}
+# The image the environment's API app serves, printed: the one in its latest
+# ready revision, which in single-revision mode takes the traffic. Its
+# template is the latest requested revision, which a rollout that's pending or
+# failed moves ahead of what serves. The app's name and group are stack outputs
+# a provision saved here; without them (a machine that hasn't provisioned) the
+# stack names them. Nothing when Azure says there's no app to read. A
+# stack that doesn't name the app, an app with no ready revision, or any other
+# failed read fails: that's no reason to think there's nothing to roll back.
+api_live_image() {
+  local app rg ready out rc=0
+  app=$(aget API_APP) || return 1
+  rg=$(aget AZURE_RESOURCE_GROUP) || return 1
+  if [ -z "$app" ] || [ -z "$rg" ]; then
+    out=$(stack_api_app) || {
+      echo "  --api-tag=TAG deploys that tag without reading the API app" >&2
+      return 1
+    }
+    [ -n "$out" ] || return 0
+    { read -r app; read -r rg; } <<< "$out"
+  fi
+  ready=$(api_read "$app" show -n "$app" -g "$rg" --query properties.latestReadyRevisionName -o tsv) || rc=$?
+  [ "$rc" -ne 2 ] || return 0
+  [ "$rc" -eq 0 ] || return 1
+  if [ -z "$ready" ] || [ "$ready" = None ]; then
+    echo "error: the API app $app has no ready revision, so there's no serving image to compare or keep; --api-tag=TAG deploys that tag instead" >&2
+    return 1
+  fi
+  rc=0
+  out=$(api_read "$app" revision show -n "$app" -g "$rg" --revision "$ready" \
+    --query "properties.template.containers[?name=='api'] | [0].image" -o tsv) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ "$rc" -ne 2 ] || echo "error: can't read the image of the API app $app: its ready revision $ready is gone" >&2
+    return 1
+  fi
   # tsv prints a missing value as None.
   [ "$out" = None ] || printf '%s\n' "$out"
 }
@@ -784,12 +851,13 @@ api_live_image() {
 # USNM_API_IMAGE_TAG pinned, the stack deploys the API at the pin, and CI's
 # rollouts don't update it, so a provision for any other change would put
 # the API back on the old image. Refuses when the pin differs from the tag
-# the API runs, unless the caller asked for one: --api-tag=live keeps the
-# running tag, --api-tag=TAG deploys TAG, which needs no comparison. Both
+# the API serves, unless the caller asked for one: --api-tag=live keeps the
+# serving tag, --api-tag=TAG deploys TAG, which needs no comparison. Both
 # set API_TAG_OVERRIDE for export_stack_settings. Nothing is compared, and
 # nothing refused, without a pin (the API then follows USNM_IMAGE_TAG, which
-# dev's stand-up sets on purpose), when the API app isn't there yet, or when
-# it doesn't run an ACR usnewsmap-api:<tag> image (USNM_USE_ACR off runs
+# dev's stand-up sets on purpose), when Azure says the API app isn't there
+# (api_live_image refuses an app it can't find or read), or when it doesn't
+# serve an ACR usnewsmap-api:<tag> image (USNM_USE_ACR off runs
 # USNM_API_IMAGE, a public one, which no tag selects): the tag can't be
 # read, so a note says so. NO_API_PIN_CHECK=true skips it all (teardown.sh's
 # partial provision only takes the environment apart). Reads only; call it in

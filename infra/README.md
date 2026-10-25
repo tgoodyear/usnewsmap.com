@@ -464,18 +464,25 @@ pins, so a provision checks the API's pin (next paragraph).
 
 A CI rollout moves the API but not its pin, so the next provision would put the
 API back on the pinned tag (#1071). `scripts/azure/provision.sh` and its
-`--what-if` therefore read the image the API app runs (`az containerapp show`, read
-only) first, and when `USNM_API_IMAGE_TAG` is pinned to a different tag they
-refuse before changing anything and print the commands that get past it. `--api-tag=live` deploys the
-tag the API runs now; `--api-tag=TAG` deploys that tag over the pin. After a release PR
-moves the pin on purpose, pass the new pin. Neither edits
+`--what-if` therefore read the image the API app serves first (its latest ready
+revision, with `az containerapp show` and `az containerapp revision show`, read
+only; the app's template can already name a rollout that isn't ready), and when
+`USNM_API_IMAGE_TAG` is pinned to a different tag they refuse before changing
+anything and print the commands that get past it. `--api-tag=live` deploys the
+tag the API serves now; `--api-tag=TAG` deploys that tag over the pin. After a
+release PR moves the pin on purpose, pass the new pin. Neither edits
 `infra/env/<env>.json`, so a later provision refuses again until a pull request
-sets the pin to the tag that runs. Nothing is compared without a pin, before the
-API app exists, or when the app runs something other than an ACR
-`usnewsmap-api:<tag>` image, as it does with `USNM_USE_ACR` off (a note says so).
-`bootstrap.sh` and `stand-up.sh` have no flag for this and meet the same refusal
-when a pin is stale, and a pull request that sets the pin to the tag that runs clears it. `teardown.sh`'s partial
-provision skips the check, since it only takes the environment apart.
+sets the pin to the tag that runs. The app and its group come from the outputs a
+provision saved, or from the stack when this machine has none. Nothing is
+compared without a pin, when Azure says the API app isn't there (no stack yet, a
+stack that deploys no API app, or no such app), or when the app serves something
+other than an ACR `usnewsmap-api:<tag>` image, as it does with `USNM_USE_ACR`
+off (a note says so). When it can't tell, it refuses: a stack that names no API
+app, an app with no ready revision, or a read that fails; `--api-tag=TAG` gets
+past those, and `bootstrap.sh` and `stand-up.sh`, which have no flag for this,
+meet the same refusal when a pin is stale (a pull request that sets the pin to
+the tag that runs clears it). `teardown.sh`'s partial provision skips the check,
+since it only takes the environment apart.
 
 The Quickwit image (the searcher sidecar, and the base of the ingest image) is pinned by digest per environment in `infra/quickwit-image.json`: our build of v0.9.1, which `scripts/azure/build-quickwit.sh` builds in the environment's registry, or for an environment the file doesn't list, upstream v0.9.1, which CI copies in ([operations](../docs/operations/search-serving.md#the-quickwit-image), ADR-0013).
 

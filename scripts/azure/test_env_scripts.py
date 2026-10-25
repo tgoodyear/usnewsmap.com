@@ -30,9 +30,14 @@ STUB_ASSIGNMENT_GROUP (the one group that holds it; unset: none),
 STUB_ASSIGNED_IDS (its publicAccountIds, JSON), STUB_ASSIGNMENT_ERROR
 (reading it fails with that message) and STUB_EXEMPTIONS_WHATIF (the
 policy step's what-if, JSON). For the API app's image (#1071): STUB_API_IMAGE
-(what `containerapp show` prints as the image of its `api` container; unset:
-the app isn't found), STUB_API_ERROR (reading it fails with that message),
-STUB_ACTION_ON_UNMANAGE (when set, `stack sub create --help` lists the flag
+(the image of the `api` container in its ready revision, which serves; unset:
+the app isn't found), STUB_API_READY (that revision's name, default
+ca-usnm-api-dev--r1; None: the app has no ready revision),
+STUB_API_REQUESTED_IMAGE (the image in the app's template, the latest requested
+revision, which a rollout that isn't ready yet moves ahead of the serving one;
+default STUB_API_IMAGE), STUB_API_ERROR (reading the app fails with that
+message), STUB_API_REVISION_GONE (the ready revision can't be read, as if it
+had been deactivated since), STUB_ACTION_ON_UNMANAGE (when set, `stack sub create --help` lists the flag
 need_stack_az looks for) and STUB_CAPTURE_API_TAG (when set, each stack or
 deployment call logs its arguments and the USNM_API_IMAGE_TAG it was started
 with to STUB_LOG.apitag, tab separated).
@@ -182,9 +187,21 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
   "containerapp show")
     if [ -n "${STUB_API_ERROR:-}" ]; then echo "$STUB_API_ERROR" >&2; exit 1; fi
-    case "$*" in *"containers[?name=='api'] | [0].image"*) ;; *) echo "stub az: unexpected: $*" >&2; exit 9 ;; esac
-    if [ -n "${STUB_API_IMAGE+x}" ]; then printf '%s\n' "$STUB_API_IMAGE"
-    else echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.App/containerApps/$4' under resource group '$6' was not found." >&2; exit 3; fi ;;
+    if [ -z "${STUB_API_IMAGE+x}" ]; then
+      echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.App/containerApps/$4' under resource group '$6' was not found." >&2; exit 3; fi
+    case "$*" in
+      *"--query properties.latestReadyRevisionName "*) printf '%s\n' "${STUB_API_READY-ca-usnm-api-dev--r1}" ;;
+      *"--query properties.template.containers[?name=='api'] | [0].image "*) printf '%s\n' "${STUB_API_REQUESTED_IMAGE-$STUB_API_IMAGE}" ;;
+      *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
+    esac ;;
+  "containerapp revision")
+    if [ -n "${STUB_API_ERROR:-}" ]; then echo "$STUB_API_ERROR" >&2; exit 1; fi
+    rev=$(sed -n 's/.*--revision \([^ ]*\).*/\1/p' <<< "$*")
+    case "$*" in "containerapp revision show -n "*" --query properties.template.containers[?name=='api'] | [0].image "*) ;;
+      *) echo "stub az: unexpected: $*" >&2; exit 9 ;; esac
+    if [ -z "${STUB_API_IMAGE+x}" ] || [ -n "${STUB_API_REVISION_GONE:-}" ] || [ "$rev" != "${STUB_API_READY-ca-usnm-api-dev--r1}" ]; then
+      echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.App/containerApps/revisions/$rev' was not found." >&2; exit 3; fi
+    printf '%s\n' "$STUB_API_IMAGE" ;;
   "containerapp job")
     case "$*" in
       *"execution show"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
@@ -2230,6 +2247,20 @@ class ApiPinGuard(Stubbed):
             return []
         return [c for c in self.calls() if c.startswith("containerapp show")]
 
+    def revisions(self):
+        if not os.path.exists(self.log):
+            return []
+        return [c for c in self.calls() if c.startswith("containerapp revision show")]
+
+    def stack_outputs(self, app=APP, group="rg-usnm-dev"):
+        """A stack's outputs; Azure returns their names with the case changed."""
+        outs = {}
+        if app is not None:
+            outs["apI_APP"] = {"type": "String", "value": app}
+        if group is not None:
+            outs["AZURE_RESOURCE_GROUP"] = {"type": "String", "value": group}
+        return json.dumps(outs)
+
     def test_a_pin_that_differs_from_the_running_tag_refuses(self):
         r = self.lib("api_pin_check", STUB_API_IMAGE=self.LIVE)
         self.assertEqual(r.returncode, 1)
@@ -2240,10 +2271,14 @@ class ApiPinGuard(Stubbed):
         self.assertIn("scripts/azure/provision.sh --env dev --api-tag=live", r.stderr)
         self.assertIn("scripts/azure/provision.sh --env dev --api-tag=pin1", r.stderr)
         self.assertIn("set the pin to live1", r.stderr)
-        # One read, of the api container's image in the app the outputs name.
+        # Two reads in the app the outputs name: its ready revision, then the
+        # api container's image in that revision (the one that serves).
         self.assertEqual(len(self.shows()), 1)
         self.assertIn(f"-n {self.APP} -g rg-usnm-dev", self.shows()[0])
-        self.assertIn("containers[?name=='api'] | [0].image", self.shows()[0])
+        self.assertIn("properties.latestReadyRevisionName", self.shows()[0])
+        self.assertEqual(len(self.revisions()), 1)
+        self.assertIn(f"-n {self.APP} -g rg-usnm-dev --revision ca-usnm-api-dev--r1", self.revisions()[0])
+        self.assertIn("containers[?name=='api'] | [0].image", self.revisions()[0])
 
     def test_the_running_tag_passes(self):
         r = self.lib('api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"', STUB_API_IMAGE=self.PIN_RUNNING)
@@ -2329,6 +2364,141 @@ class ApiPinGuard(Stubbed):
                 self.assertTrue(r.stdout.endswith("[]"), r.stdout)
                 self.assertEqual(len(self.shows()), 1)
                 os.remove(self.log)
+
+    def test_outputs_missing_here_come_from_the_stack(self):
+        # Another machine, or one that hasn't provisioned since (#1071): no
+        # saved API_APP or AZURE_RESOURCE_GROUP doesn't mean there's no app.
+        locals_ = ("", f'API_APP="{self.APP}"\n', 'AZURE_RESOURCE_GROUP="rg-usnm-dev"\n')
+        for i, local in enumerate(locals_):
+            with self.subTest(local=local):
+                self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n' + local)
+                r = self.lib("api_pin_check", STUB_OUTPUTS=self.stack_outputs(), STUB_API_IMAGE=self.LIVE)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn("runs usnewsmap-api:live1", r.stderr)
+                self.assertIn(f"-n {self.APP} -g rg-usnm-dev", self.shows()[0])
+                self.assertTrue(any(c.startswith("stack sub show") for c in self.calls()))
+                os.remove(self.log)
+                r = self.lib('API_TAG_REQUEST=live; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                             STUB_OUTPUTS=self.stack_outputs(), STUB_API_IMAGE=self.LIVE)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(r.stdout.endswith("[live1]"), r.stdout)
+                os.remove(self.log)
+                r = self.lib("api_pin_check", STUB_OUTPUTS=self.stack_outputs(), STUB_API_IMAGE=self.PIN_RUNNING)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                os.remove(self.log)
+        # The saved outputs are used as they are, without asking the stack.
+        self.settings_file(f'AZURE_SUBSCRIPTION_ID="sub-1"\nAPI_APP="{self.APP}"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n')
+        r = self.lib("api_pin_check", STUB_API_IMAGE=self.PIN_RUNNING)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(any(c.startswith("stack sub show") for c in self.calls()))
+
+    def test_no_stack_yet_is_the_first_provision(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n')
+        for request in ("", "live"):
+            with self.subTest(request=request):
+                r = self.lib(f'API_TAG_REQUEST={request}; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                             STUB_API_IMAGE=self.LIVE)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(r.stdout.endswith("[]"), r.stdout)
+                self.assertTrue(any(c.startswith("stack sub show") for c in self.calls()))
+                self.assertEqual(self.shows(), [])
+                os.remove(self.log)
+        # Azure's other wording for a stack that isn't there.
+        r = self.lib("api_pin_check", STUB_OUTPUTS_ERROR="ERROR: Code: ResourceNotFound\n"
+                     "Code: ResourceNotFound\nMessage: The resource 'usnm-dev' was not found.", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.shows(), [])
+
+    def test_a_stack_that_deploys_no_api_app_has_nothing_to_compare(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n')
+        for request in ("", "live"):
+            with self.subTest(request=request):
+                r = self.lib(f'API_TAG_REQUEST={request}; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                             STUB_OUTPUTS=self.stack_outputs(app=""), STUB_API_IMAGE=self.LIVE)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(r.stdout.endswith("[]"), r.stdout)
+                self.assertEqual(self.shows(), [])
+                os.remove(self.log)
+
+    def test_a_stack_that_names_no_app_refuses(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n')
+        steps = "".join(f'{name}() {{ echo "ran {name}"; }}\n' for name in (
+            "vaults_recover", "settings_store_ensure", "deploy_stack"))
+        for outputs in ("{}", "null", self.stack_outputs(group=None), self.stack_outputs(app=None)):
+            for request in ("", "live"):
+                with self.subTest(outputs=outputs, request=request):
+                    r = self.lib(f"API_TAG_REQUEST={request}; api_pin_check", STUB_OUTPUTS=outputs, STUB_API_IMAGE=self.LIVE)
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertIn("names no API_APP or no AZURE_RESOURCE_GROUP in its outputs", r.stderr)
+                    self.assertIn("--api-tag=TAG deploys that tag", r.stderr)
+                    self.assertEqual(self.shows(), [])
+        r = self.lib(steps + "provision", STUB_OUTPUTS="{}", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not provisioning dev", r.stderr)
+        self.assertNotIn("ran ", r.stdout)
+        # Naming the tag is the way on: nothing is read.
+        os.remove(self.log)
+        r = self.lib('API_TAG_REQUEST=tag2; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"', STUB_OUTPUTS="{}")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.endswith("[tag2]"), r.stdout)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_a_stack_that_cant_be_read_refuses(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n')
+        for error in ("ERROR: (AuthorizationFailed) The client does not have authorization",
+                      # A dependency that isn't there isn't the stack missing.
+                      "ERROR: Code: ResourceNotFound\nCode: ResourceNotFound\n"
+                      "Message: The resource 'usnm-config-rg' was not found."):
+            for request in ("", "live"):
+                with self.subTest(error=error, request=request):
+                    r = self.lib(f"API_TAG_REQUEST={request}; api_pin_check", STUB_OUTPUTS_ERROR=error,
+                                 STUB_API_IMAGE=self.LIVE)
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertIn("can't read the stack usnm-dev's outputs: ERROR:", r.stderr)
+                    self.assertIn("--api-tag=TAG deploys that tag", r.stderr)
+                    self.assertEqual(self.shows(), [])
+
+    def test_the_serving_revision_decides_not_a_pending_one(self):
+        # properties.template is the latest requested revision. A rollout that
+        # isn't ready yet (or failed) is ahead of the revision that serves.
+        requested = "crusnmdev.azurecr.io/usnewsmap-api:next2"
+        r = self.lib("api_pin_check", STUB_API_IMAGE=self.LIVE, STUB_API_REQUESTED_IMAGE=requested)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("runs usnewsmap-api:live1", r.stderr)
+        self.assertNotIn("next2", r.stderr)
+        r = self.lib('API_TAG_REQUEST=live; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.LIVE, STUB_API_REQUESTED_IMAGE=requested)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keeping the API on usnewsmap-api:live1", r.stdout)
+        self.assertTrue(r.stdout.endswith("[live1]"), r.stdout)
+        # The pin is what serves: a pending rollout of something else is no rollback.
+        r = self.lib("api_pin_check", STUB_API_IMAGE=self.PIN_RUNNING, STUB_API_REQUESTED_IMAGE=requested)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_app_with_no_ready_revision_refuses(self):
+        for ready in ("None", ""):
+            for request in ("", "live"):
+                with self.subTest(ready=ready, request=request):
+                    r = self.lib(f"API_TAG_REQUEST={request}; api_pin_check",
+                                 STUB_API_IMAGE=self.LIVE, STUB_API_READY=ready)
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertIn(f"the API app {self.APP} has no ready revision", r.stderr)
+                    self.assertIn("--api-tag=TAG deploys that tag", r.stderr)
+                    self.assertEqual(self.revisions(), [])
+        r = self.lib('API_TAG_REQUEST=tag2; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.LIVE, STUB_API_READY="None")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.endswith("[tag2]"), r.stdout)
+
+    def test_a_ready_revision_that_is_gone_refuses(self):
+        # Deactivated between the two reads: not the app being gone.
+        for request in ("", "live"):
+            with self.subTest(request=request):
+                r = self.lib(f"API_TAG_REQUEST={request}; api_pin_check",
+                             STUB_API_IMAGE=self.LIVE, STUB_API_REVISION_GONE="1")
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn(f"can't read the image of the API app {self.APP}: its ready revision ca-usnm-api-dev--r1 is gone",
+                              r.stderr)
 
     def test_a_read_that_fails_refuses(self):
         for request in ("", "live"):
