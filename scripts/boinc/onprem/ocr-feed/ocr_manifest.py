@@ -348,9 +348,10 @@ def cmd_build(a):
 
 QUALITY_SQL = """
 COPY (
-  SELECT doc_id, batch, batch_version, coalesce(decision, 'detected'), coalesce(damage_rate, 0)
+  SELECT doc_id, batch, batch_version, coalesce(decision, 'detected'), coalesce(damage_rate, 0),
+         lccn, decade, stratum_rank
   FROM (
-    SELECT s.doc_id, s.batch, s.batch_version, s.decision, s.damage_rate,
+    SELECT s.doc_id, s.batch, s.batch_version, s.decision, s.damage_rate, s.lccn, s.decade,
            row_number() OVER (PARTITION BY s.lccn, s.decade
                               ORDER BY (s.damage_rate + coalesce(1 - s.loc_wc_mean, s.damage_rate)) / 2
                                        DESC NULLS LAST, s.doc_id) AS stratum_rank,
@@ -359,7 +360,7 @@ COPY (
     WHERE NOT s.has_image_features
       AND NOT EXISTS (SELECT FROM quality.staging g WHERE g.doc_id = s.doc_id)
   ) r
-  WHERE stratum_rank <= {strata}
+  WHERE stratum_rank <= {strata} + {slack}
   ORDER BY stratum_rank, badness DESC NULLS LAST, doc_id
 ) TO STDOUT WITH (FORMAT csv)
 """
@@ -395,15 +396,21 @@ def cmd_build_quality(a):
         if os.path.exists(path):
             with open(path) as f:
                 queued |= {line.strip() for line in f if line.strip()}
+    # Each stratum is read --slack ranks deep, so a page left out below (already queued, or
+    # already in the index) gives way to the stratum's next one instead of blocking it.
     p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
-                        QUALITY_SQL.format(strata=int(a.strata))],
+                        QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack))],
                        capture_output=True, text=True, timeout=3600)
     if p.returncode:
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
-    rows = []
-    for doc, batch, bv, decision, rate in csv.reader(io.StringIO(p.stdout)):
+    rows, taken = [], {}
+    for doc, batch, bv, decision, rate, lccn, decade, _rank in csv.reader(io.StringIO(p.stdout)):
         if doc in queued or (batch, doc) in index or not DOC_RE.match(doc):
             continue
+        key = (lccn, decade)
+        if taken.get(key, 0) >= a.strata:
+            continue
+        taken[key] = taken.get(key, 0) + 1
         rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": "eng"},
                            {doc: {"lang": "eng", "decision": decision, "damage_rate": float(rate)}}))
         if len(rows) >= a.max_pages:
@@ -448,6 +455,7 @@ def main(argv=None):
     q.add_argument("--dsn", required=True, help="usnm_quality, a role that may read page_summary")
     q.add_argument("--strata", type=int, default=1, help="ranks per (title, decade) stratum to take")
     q.add_argument("--max-pages", type=int, default=2000)
+    q.add_argument("--slack", type=int, default=20, help="extra ranks read per stratum to refill it")
     q.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     q.add_argument("--what-if", action="store_true")
     a = ap.parse_args(argv)
