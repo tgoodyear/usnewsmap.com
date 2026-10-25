@@ -27,7 +27,7 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `reader_scores`      | page, campaign and reader      | the same files: `est_cer`, completeness, findability, the pairwise rates                                          |
 | `text_compare`       | page, campaign and reader pair | text-only comparisons, such as LoC against American Stories over the corpus                                       |
 | `ocr_outputs`        | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                                                         |
-| `excluded_estimates` | campaign whose hat is wrong    | campaigns left out of ranking's estimates (v1-wave6: `loc-hist` staged as "bulk")                                 |
+| `excluded_estimates` | campaign whose hat is wrong    | campaigns left out of ranking's estimates until rescored (none now; see #1079)                                    |
 | `staging`            | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from                                        |
 | `loc_alto`           | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
 

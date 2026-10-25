@@ -84,7 +84,8 @@ pub struct OverlayRow {
     pub batch: String,
     pub ocr_source: String,
     pub ocr_engine: String,
-    /// Why the page was OCRed (for the Japanese job, why LoC's text wasn't used).
+    /// Why the page was OCRed (for the Japanese job, why LoC's text wasn't
+    /// used): a label such as `bulk`, never LoC's text (#1079).
     pub loc_text: String,
     /// The page's text, already normalized; kept whatever its status.
     pub text: String,

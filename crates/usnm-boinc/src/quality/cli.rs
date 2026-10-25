@@ -222,6 +222,28 @@ pub enum QualityCommands {
         #[arg(long, default_value_t = 1)]
         threads: usize,
     },
+    /// Compute single-page units' text part again from corrected LoC texts, keeping their scan
+    /// features: the re-staged units and pages.parquet, with no new volunteer work (#1079).
+    Rescore {
+        #[arg(long)]
+        campaign: String,
+        /// The campaign's staging root (holds units/).
+        #[arg(long)]
+        root: PathBuf,
+        /// Where the assimilator keeps the canonical results.
+        #[arg(long)]
+        spool: PathBuf,
+        /// JSON lines {"doc_id", "text"}: LoC's text of each page, for the loc-hist reader.
+        #[arg(long)]
+        loc_texts: PathBuf,
+        /// The campaign's places.txt.
+        #[arg(long)]
+        places: PathBuf,
+        #[arg(long)]
+        out_dir: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        threads: usize,
+    },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
         #[arg(long)]
@@ -443,6 +465,26 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 root,
                 out,
                 min_readers,
+                threads,
+            })?;
+            eprintln!("{s:?}");
+        }
+        QualityCommands::Rescore {
+            campaign,
+            root,
+            spool,
+            loc_texts,
+            places,
+            out_dir,
+            threads,
+        } => {
+            let s = x::rescore::run(&x::rescore::Options {
+                campaign,
+                root,
+                spool,
+                loc_texts,
+                places,
+                out_dir,
                 threads,
             })?;
             eprintln!("{s:?}");
