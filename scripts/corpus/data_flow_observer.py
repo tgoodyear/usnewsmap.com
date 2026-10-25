@@ -17,8 +17,8 @@ MAX_COUNT = 10**12
 # The dashboard rejects a whole snapshot that lists more issues than this (pipeline.rs).
 MAX_ISSUES = 128
 # A catalog snapshot generated, or whose newest evidence was observed, longer ago than this is still
-# joined but flagged `catalog-frozen`. Keep it above the day or two a snapshot routinely trails its
-# newest evidence; --catalog-max-age-days overrides it.
+# joined but flagged `catalog-frozen`. It is above the one to two day gaps the observer tests use;
+# --catalog-max-age-days overrides it.
 CATALOG_MAX_AGE_DAYS = 3
 
 

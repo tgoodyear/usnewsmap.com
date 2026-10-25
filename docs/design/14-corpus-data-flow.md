@@ -310,13 +310,14 @@ so a frozen catalog does not fail its unit.
 
 Regenerating the snapshot with
 `data_catalog.py --db catalog.sqlite snapshot --out catalog.json` moves only
-`generated_at`. The flag stays until new evidence moves `observed_at`, and BOINC
+`generated_at`. The flag stays until new evidence moves `observed_at`. BOINC
 results are not cataloged until an adapter for them exists under
-[#704](https://github.com/tgoodyear/usnewsmap.com/issues/704). Drop
-`--catalog-snapshot` from the observer's unit if the flag is unwanted. A unit that
-regenerates the snapshot needs about half a CPU: at 112,640 inventory rows it took
-about 0.35 seconds unthrottled but exceeded its two-second query deadline under a
-10% quota, the observer unit's current limit.
+[#704](https://github.com/tgoodyear/usnewsmap.com/issues/704). To stop joining the
+catalog, drop `--catalog-snapshot` from the observer's unit. A unit that
+regenerates the snapshot needs more than the observer unit's 10% CPU quota: at
+112,640 inventory rows the snapshot took about 0.35 seconds unthrottled, missed its
+two-second query deadline under a 10% quota, and the scheduled run succeeded under
+a 50% quota.
 
 Snapshot counters remain partial. The observer joins explicit catalog
 acceptance, import and index observations with their original source timestamps
