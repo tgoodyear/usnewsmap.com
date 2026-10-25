@@ -499,6 +499,22 @@ enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
+    /// per archive, skipping archives already read. Reads only.
+    LocAltoStats {
+        /// The archives (`bulk-ocr`'s output).
+        #[arg(long, env = "USNM_LOC_ALTO_ARCHIVES")]
+        archives: PathBuf,
+        /// Where the Parquet files go.
+        #[arg(long, env = "USNM_LOC_ALTO_OUT")]
+        out: PathBuf,
+        /// The `wc_below` share counts words under this confidence.
+        #[arg(long, env = "USNM_LOC_ALTO_THRESHOLD", default_value_t = 0.5)]
+        threshold: f64,
+        /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// The host's global LoC budget: print it, or reset it to the normal rate
     /// after LoC pushed back (an operator's decision).
     LocPacer {
@@ -1206,6 +1222,25 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             )
             .await?;
             println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::LocAltoStats {
+            archives,
+            out,
+            threshold,
+            limit,
+        } => {
+            anyhow::ensure!((0.0..=1.0).contains(&threshold), "--threshold: 0 to 1");
+            let s = tokio::task::spawn_blocking(move || {
+                usnm_ocr_worker::loc_alto::run(&usnm_ocr_worker::loc_alto::Options {
+                    archives,
+                    out,
+                    threshold,
+                    limit,
+                })
+            })
+            .await??;
+            println!("{}", serde_json::to_string(&s)?);
             Ok(())
         }
         Command::LocPacer { file, reset } => {

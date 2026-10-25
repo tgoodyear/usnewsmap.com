@@ -238,6 +238,23 @@ CREATE TABLE IF NOT EXISTS quality.staging (
 );
 CREATE INDEX IF NOT EXISTS staging_doc ON quality.staging (doc_id);
 
+-- LoC's own word confidence per page (#962): ALTO `WC` from Chronicling America's bulk OCR
+-- archives, read by `usnm-ocr-worker loc-alto-stats`. One row per page and source batch.
+CREATE TABLE IF NOT EXISTS quality.loc_alto (
+  doc_id        text NOT NULL,
+  batch         text NOT NULL,
+  batch_version smallint NOT NULL,
+  words         integer NOT NULL,
+  words_with_wc integer NOT NULL,
+  wc_mean       real,
+  wc_median     real,
+  wc_below      real,
+  wc_threshold  real NOT NULL,
+  software      text,
+  archive       text NOT NULL,
+  PRIMARY KEY (doc_id, batch, batch_version)
+);
+
 -- One row a page, joining every signal: the newest unit result, LoC's own estimate there,
 -- the best of our readers, and the newest LoC-against-American-Stories comparison.
 -- page_signals is the join; page_summary is its stored copy (23.8M rows), which the
@@ -248,10 +265,11 @@ BEGIN
   IF EXISTS (SELECT FROM pg_views WHERE schemaname = 'quality' AND viewname = 'page_summary') THEN
     DROP VIEW quality.page_summary;
   END IF;
-  -- A stored copy from before hat version 2 has the old columns: rebuilt (empty) below.
+  -- A stored copy without page_signals' newest column (loc_wc_mean) has the old columns:
+  -- rebuilt (empty) below.
   IF EXISTS (SELECT FROM pg_matviews WHERE schemaname = 'quality' AND matviewname = 'page_summary')
      AND NOT EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('quality.page_summary')
-                     AND attname = 'hat_version' AND NOT attisdropped) THEN
+                     AND attname = 'loc_wc_mean' AND NOT attisdropped) THEN
     DROP MATERIALIZED VIEW quality.page_summary;
     DROP VIEW IF EXISTS quality.page_signals;
   END IF;
@@ -292,6 +310,12 @@ WITH unit AS (
   ORDER BY t.doc_id, c.loaded_at DESC
 ), ocr AS (
   SELECT doc_id, count(*) AS ocr_runs FROM quality.ocr_outputs GROUP BY doc_id
+), lwc AS (
+  -- The copy from the page's own batch version first, else the newest version.
+  SELECT DISTINCT ON (a.doc_id) a.doc_id, a.wc_mean, a.wc_median, a.wc_below
+  FROM quality.loc_alto a LEFT JOIN quality.pages pg USING (doc_id)
+  ORDER BY a.doc_id, (a.batch = pg.batch AND a.batch_version = pg.batch_version) DESC,
+           a.batch_version DESC
 )
 SELECT p.doc_id, p.batch, p.batch_version, p.lccn, p.date, p.decade, p.lang,
        d.damage_rate, d.garbage_share, d.function_share, d.words AS loc_words, d.decision,
@@ -305,7 +329,8 @@ SELECT p.doc_id, p.batch, p.batch_version, p.lccn, p.date, p.decade, p.lang,
        las.cer_sym AS loc_as_cer_sym, las.local_cer_sym AS loc_as_local_cer_sym,
        las.matched_a AS loc_as_matched_loc, las.dice AS loc_as_dice,
        coalesce(ocr.ocr_runs, 0) AS ocr_runs,
-       unit.doc_id IS NOT NULL AS has_image_features
+       unit.doc_id IS NOT NULL AS has_image_features,
+       lwc.wc_mean AS loc_wc_mean, lwc.wc_median AS loc_wc_median, lwc.wc_below AS loc_wc_below
 FROM quality.pages p
 LEFT JOIN quality.damage d USING (doc_id)
 LEFT JOIN unit USING (doc_id)
@@ -313,7 +338,8 @@ LEFT JOIN hat USING (doc_id)
 LEFT JOIN loc USING (doc_id)
 LEFT JOIN ours USING (doc_id)
 LEFT JOIN las USING (doc_id)
-LEFT JOIN ocr USING (doc_id);
+LEFT JOIN ocr USING (doc_id)
+LEFT JOIN lwc USING (doc_id);
 
 -- Kept on a rerun; a change to page_signals' columns needs DROP MATERIALIZED VIEW
 -- quality.page_summary first. Created empty: refresh_summary() fills it.
@@ -358,7 +384,7 @@ REVOKE ALL ON DATABASE usnm_quality FROM PUBLIC;
 -- quality_loader: upserts through a temporary table (COPY, then INSERT ... ON CONFLICT).
 GRANT TEMPORARY ON DATABASE usnm_quality TO quality_loader;
 GRANT INSERT, UPDATE, DELETE ON quality.pages, quality.damage, quality.campaigns, quality.unit_pages,
-  quality.reader_scores, quality.ocr_outputs, quality.staging TO quality_loader;
+  quality.reader_scores, quality.ocr_outputs, quality.staging, quality.loc_alto TO quality_loader;
 GRANT INSERT ON quality.readers TO quality_loader;
 GRANT EXECUTE ON FUNCTION quality.refresh_summary() TO quality_loader;
 

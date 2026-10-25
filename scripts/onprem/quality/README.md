@@ -17,18 +17,19 @@ it's safe to run again.
 psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 ```
 
-| Table                | One row per                    | From                                                                              |
-| -------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| `pages`              | page of the corpus             | `curated/audit/damage/v2/<batch>_verNN.parquet` (`load.py damage`)                |
-| `damage`             | page                           | the same files: `damage_rate`, `garbage_share`, `function_share`, words           |
-| `campaigns`          | source of rows                 | each loader (`v1-wave9`, `damage-v2`, `ocr-local`, a text comparison)             |
-| `readers`            | text we hold of a page         | the reader names quality units use (`loc-hist`, `as`, `ours-*`, `qwen`)           |
-| `unit_pages`         | page in a quality campaign     | `quality collect`'s `pages.parquet`, or the wave runner's `collected/` parts      |
-| `reader_scores`      | page, campaign and reader      | the same files: `est_cer`, completeness, findability, the pairwise rates          |
-| `text_compare`       | page, campaign and reader pair | text-only comparisons, such as LoC against American Stories over the corpus       |
-| `ocr_outputs`        | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                         |
-| `excluded_estimates` | campaign whose hat is wrong    | campaigns left out of ranking's estimates (v1-wave6: `loc-hist` staged as "bulk") |
-| `staging`            | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from        |
+| Table                | One row per                    | From                                                                                                              |
+| -------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `pages`              | page of the corpus             | `curated/audit/damage/v2/<batch>_verNN.parquet` (`load.py damage`)                                                |
+| `damage`             | page                           | the same files: `damage_rate`, `garbage_share`, `function_share`, words                                           |
+| `campaigns`          | source of rows                 | each loader (`v1-wave9`, `damage-v2`, `ocr-local`, a text comparison)                                             |
+| `readers`            | text we hold of a page         | the reader names quality units use (`loc-hist`, `as`, `ours-*`, `qwen`)                                           |
+| `unit_pages`         | page in a quality campaign     | `quality collect`'s `pages.parquet`, or the wave runner's `collected/` parts                                      |
+| `reader_scores`      | page, campaign and reader      | the same files: `est_cer`, completeness, findability, the pairwise rates                                          |
+| `text_compare`       | page, campaign and reader pair | text-only comparisons, such as LoC against American Stories over the corpus                                       |
+| `ocr_outputs`        | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                                                         |
+| `excluded_estimates` | campaign whose hat is wrong    | campaigns left out of ranking's estimates (v1-wave6: `loc-hist` staged as "bulk")                                 |
+| `staging`            | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from                                        |
+| `loc_alto`           | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
 
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the
 passage-matched disagreement, and `est_cer_v1` and the other `_v1` columns keep the unit's
@@ -87,6 +88,10 @@ Where each source comes in:
   `text_compare` as `loc-hist` against `as`, campaign `text-agreement-v1`.
   `usnm-quality-agree-load.timer` runs it hourly in CT215, which mounts that tree read-only
   at `/srv/text-agreement`.
+- **LoC's word confidence:** `usnm-ocr-worker loc-alto-stats` in CT211 reads each bulk OCR
+  archive in `/tank/locbulk/ocr` into one Parquet file in `tank/locstats`, which CT215 mounts
+  read-only at `/srv/locstats`; `load.py locwc` (hourly, `usnm-quality-locwc-load.timer`) loads
+  them into `loc_alto`. Ranking averages the damage score with `1 - wc_mean`.
 - **OCR readers:** `load.py ocr` records each published `ocr-local` run; their scores against
   the other readers arrive with the next quality unit of the page.
 
