@@ -1659,9 +1659,13 @@ class QueueTransportTests(unittest.TestCase):
                  {"page": "sn1/1890-05-03/ed-1/seq-2", "batch": "dlc_aaa", "pushed_to": "onprem",
                   "scan_base": "keep/dlc_aaa/sn1/1890-05-03/1/2",
                   "scan": "/tank/ocr/scans/keep/dlc_aaa/sn1/1890-05-03/1/2.jp2"}]
-        with patch.object(t, "push_pages", return_value=({}, [])) as push, patch.object(t, "step"):
+        found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg"}
+        with patch.object(t, "push_pages", return_value=(found, [])) as push, patch.object(t, "step") as step:
             t.export(pages, [])
         push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
+        # The export asks for the format the push found now.
+        self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"],
+                         "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg,keep/dlc_aaa/sn1/1890-05-03/1/2.jp2")
         with patch.object(t, "push_pages", return_value=({}, ["keep/dlc_aaa/sn1/1890-05-03/1/1"])), \
                 patch.object(t, "step") as step:
             with self.assertRaisesRegex(ValueError, "gone from the scan server"):

@@ -212,6 +212,21 @@ class OnpremStep(unittest.TestCase):
                     done = self.receive(members, stage)
                     self.assertNotEqual(done.returncode, 0)
             self.assertFalse(Path(stage, "keep/nbu_gage/sn1/1890-05-03/1/8.jp2").exists())
+            import io
+            import tarfile
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                for i in range(5001):
+                    info = tarfile.TarInfo(f"keep/d{i}")
+                    info.type = tarfile.DIRTYPE
+                    tar.addfile(info)
+            env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": self.conf.name,
+                   "USNM_BOINC_SCAN_STAGE": stage, "USNM_BOINC_STEP_RUN": stage + "-run",
+                   "SSH_ORIGINAL_COMMAND": "usnm-boinc-step --env prod --target scans --step receive --wait-mins 5"}
+            done = subprocess.run(["bash", str(SCRIPT), "--from-ssh"], env=env, input=buf.getvalue(),
+                                  capture_output=True, timeout=60)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(b"more tar entries", done.stderr)
             done = self.receive([("keep/nbu_gage/sn1/1890-05-03/1/2.jpg", b"s")], stage)
             self.assertIn(b"pruned 1", done.stdout)
             self.assertFalse(old.exists())

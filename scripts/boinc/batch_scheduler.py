@@ -715,8 +715,12 @@ class Transport:
             stale = sorted({page["scan_base"] for page in pages
                             if page.get("scan_base") and page.get("pushed_to", "container") != dest})
             if stale:
-                _, missing = self.push_pages(stale)
+                found, missing = self.push_pages(stale)
                 require(not missing, "a claimed page's scan is gone from the scan server; release it")
+                # The push finds each scan's format again: export asks for the file it sent.
+                root = self.config["scans_root"].rstrip("/")
+                pages = [dict(page, scan=f"{root}/{found[page['scan_base']]}")
+                         if page.get("scan_base") in found else page for page in pages]
         if not queue:
             argv = self.push_args()
             for page in pages:

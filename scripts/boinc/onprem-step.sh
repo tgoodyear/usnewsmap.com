@@ -147,9 +147,14 @@ signal.alarm(wait * 60)
 lock = open(lock_path, "w")
 fcntl.flock(lock, fcntl.LOCK_EX)
 name_re = re.compile(r"keep/[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{1,4}/[0-9]{1,5}\.(jp2|jpg)(\.json)?")
-count = total = 0
+count = total = members = 0
 with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
     for m in tar:
+        # Every header counts, directories too (tarfile keeps each one): a push of 100 pages
+        # has about 200 files and a few hundred directories.
+        members += 1
+        if members > 5000:
+            sys.exit("error: more tar entries than a push sends")
         if m.isdir():
             continue
         if not m.isreg() or not name_re.fullmatch(m.name):
