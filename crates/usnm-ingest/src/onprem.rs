@@ -22,6 +22,14 @@
 //!
 //! Promotion stays the operator step of docs/operations/rebuild-and-index-storage.md, "Index storage
 //! cutover".
+//!
+//! A restore (`Staged::restore`, #1061) is the same copy for a version the
+//! lake already serves, which is the state after serving moves on-prem
+//! (ADR-0027, Phase 4): `current.json` names the release's own version, not
+//! its rollback, so the plain publish refuses it. The restore refuses unless
+//! the lake serves exactly this release's version and indexes, copies what
+//! the account and the lake lack, and writes neither the pending pointer nor
+//! `current.json`.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -178,6 +186,11 @@ pub struct Staged<'a> {
     pub index_root_uri: String,
     /// Check and list only; copy nothing.
     pub dry_run: bool,
+    /// Copy the version the lake already serves, instead of a release the
+    /// lake hasn't promoted: the lake's `current.json` must name this
+    /// release's own version and indexes, and the pending pointer isn't
+    /// written. For serving from Azure again after it was retired.
+    pub restore: bool,
 }
 
 /// What [`publish_staged`] did.
@@ -445,7 +458,9 @@ pub async fn mirror(
 /// Copy a staged release from the host to Azure (module docs). Refuses
 /// unless the lake still serves the version the release took as its
 /// rollback, every index's splits are all published, and nothing in Azure
-/// with the same name differs.
+/// with the same name differs. A restore (`s.restore`) instead needs the
+/// lake to serve the release's own version and indexes, and leaves the
+/// lake's pointers as they are.
 pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
     let started = Instant::now();
     let pointer_bytes = s
@@ -469,13 +484,18 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
             .context("the lake has no current.json")?,
     )
     .context("current.json")?;
-    ensure!(
-        serving["index_version"] == pointer["previous_version"],
-        "the lake serves {}, but the release's rollback is {}: mirror reference again and rebuild",
-        serving["index_version"],
-        pointer["previous_version"]
-    );
-    tracing::info!(%version, indexes = ?ids, dry_run = s.dry_run, "publishing a staged release");
+    if s.restore {
+        ensure_restorable(&serving, &pointer, &version, &ids)?;
+        tracing::info!(%version, indexes = ?ids, dry_run = s.dry_run, "restoring the version the lake serves");
+    } else {
+        ensure!(
+            serving["index_version"] == pointer["previous_version"],
+            "the lake serves {}, but the release's rollback is {}: mirror reference again and rebuild",
+            serving["index_version"],
+            pointer["previous_version"]
+        );
+        tracing::info!(%version, indexes = ?ids, dry_run = s.dry_run, "publishing a staged release");
+    }
 
     let local_index = usnm_store::LocalStore::new(&s.local_index_root);
     let mut out = Published {
@@ -555,7 +575,9 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
         s.dry_run || again("head", &manifest, |_| s.reference.exists(&manifest)).await?,
         "the lake's reference has no {manifest} after the copy"
     );
-    if !s.dry_run {
+    // A restore leaves the lake's pointers alone: `current.json` already
+    // names the version, and the pending pointer is not what serves.
+    if !s.dry_run && !s.restore {
         // Replacing the pointer with the same bytes again is harmless.
         again("put", PENDING_POINTER, |_| {
             s.reference
@@ -565,8 +587,43 @@ pub async fn publish_staged(s: &Staged<'_>) -> anyhow::Result<Published> {
         out.pointer_written = true;
     }
     out.secs = started.elapsed().as_secs_f64();
-    tracing::info!(published = ?out, "staged release copied");
+    if s.restore {
+        tracing::info!(published = ?out, "serving version restored");
+    } else {
+        tracing::info!(published = ?out, "staged release copied");
+    }
     Ok(out)
+}
+
+/// A restore's counterpart of the rollback check: the lake's `current.json`
+/// must name this release's own `version` and the indexes the release holds
+/// (`ids`), so the copy brings back exactly what the lake says serves.
+fn ensure_restorable(
+    serving: &Value,
+    pointer: &Value,
+    version: &str,
+    ids: &[String],
+) -> anyhow::Result<()> {
+    let name = serving["index_version"].as_str().unwrap_or("no version");
+    if name != version {
+        if serving["index_version"] == pointer["previous_version"] {
+            bail!(
+                "the lake serves {name}, this release's rollback, not {version}: a restore copies the version the lake serves; publish the release without --restore to move the lake to {version}"
+            );
+        }
+        bail!(
+            "the lake serves {name}, not {version}: a restore copies only the version the lake serves, from that version's own run directory"
+        );
+    }
+    let mut served = pointer_indexes(serving).context("current.json")?;
+    let mut held = ids.to_vec();
+    served.sort();
+    held.sort();
+    ensure!(
+        served == held,
+        "the lake's current.json names {served:?} for {version}, but this release holds {held:?}: another run directory holds the indexes it serves"
+    );
+    Ok(())
 }
 
 /// An index's local metastore, checked, and its published splits.
@@ -1121,7 +1178,37 @@ mod tests {
             index: &f.index,
             index_root_uri: "azure://qw-index".into(),
             dry_run,
+            restore: false,
         }
+    }
+
+    fn restoring(f: &Fixture, dry_run: bool) -> Staged<'_> {
+        Staged {
+            restore: true,
+            ..staged(f, dry_run)
+        }
+    }
+
+    /// What the lake's `current.json` says once v2 serves: the pointer the
+    /// release staged, promoted as it is.
+    fn v2_serves() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "index_version": "v2", "previous_version": "v1",
+            "indexes": ["base2"], "ja": {"indexes": ["ja2"]},
+        }))
+        .unwrap()
+    }
+
+    async fn lake_serves(f: &Fixture, current: Vec<u8>) {
+        f.reference
+            .put("current.json", current, "application/json")
+            .await
+            .unwrap();
+    }
+
+    /// An index account as a re-provisioned one is: empty.
+    fn empty_account(f: &Fixture) {
+        std::fs::remove_file(f.index.root().join(METASTORE_MANIFEST)).unwrap();
     }
 
     #[tokio::test]
@@ -1624,5 +1711,248 @@ mod tests {
         assert!(format!("{e:#}").contains("v2/manifest.json"), "{e:#}");
         assert!(f.index.get("base2/sA.split").await.unwrap().is_none());
         assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
+    }
+
+    /// After Phase 4 the lake's `current.json` names the release's own
+    /// version. The plain publish refuses that (as it always has); a restore
+    /// copies the version into an empty account and the lake's missing
+    /// snapshot, and writes neither pointer.
+    #[tokio::test]
+    async fn a_restore_copies_the_version_the_lake_serves() {
+        let f = fixture().await;
+        empty_account(&f);
+        lake_serves(&f, v2_serves()).await;
+
+        let e = publish_staged(&staged(&f, false)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("mirror reference again"), "{e:#}");
+        assert!(f.index.get("base2/sA.split").await.unwrap().is_none());
+
+        let dry = publish_staged(&restoring(&f, true)).await.unwrap();
+        assert!(!dry.pointer_written);
+        assert_eq!(dry.indexes[0].bytes, 20_000_000);
+        assert_eq!(dry.reference_files, 2);
+        assert!(f.index.get("base2/sA.split").await.unwrap().is_none());
+        assert!(f.index.get(METASTORE_MANIFEST).await.unwrap().is_none());
+        assert!(f.reference.get("v2/manifest.json").await.unwrap().is_none());
+
+        let p = publish_staged(&restoring(&f, false)).await.unwrap();
+        assert!(!p.pointer_written, "a restore never writes a pointer");
+        assert_eq!(p.version, "v2");
+        assert_eq!(p.indexes.len(), 2);
+        assert_eq!(
+            f.index.get("base2/sA.split").await.unwrap().unwrap().len(),
+            20_000_000
+        );
+        assert_eq!(
+            f.index.get("ja2/sB.split").await.unwrap().unwrap().len(),
+            20_000_000
+        );
+        let m: Value =
+            serde_json::from_slice(&f.index.get("base2/metastore.json").await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(
+            m["index"]["index_config"]["index_uri"],
+            "azure://qw-index/base2"
+        );
+        let list: Value =
+            serde_json::from_slice(&f.index.get(METASTORE_MANIFEST).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(list["indexes"], json!({"base2": "active", "ja2": "active"}));
+        // The snapshot and the run record the API loads, and nothing else.
+        assert!(f.reference.get("v2/manifest.json").await.unwrap().is_some());
+        assert!(f
+            .reference
+            .get("v2/index_run.json")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(p.reference_files, 2);
+        assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
+        assert_eq!(
+            f.reference.get("current.json").await.unwrap().unwrap(),
+            v2_serves()
+        );
+
+        // A rerun copies nothing again.
+        let again = publish_staged(&restoring(&f, false)).await.unwrap();
+        assert_eq!(again.indexes[0].skipped, 1);
+        assert_eq!((again.indexes[0].bytes, again.reference_files), (0, 0));
+        assert_eq!(again.reference_skipped, 2);
+    }
+
+    /// Every file under `dir`, by relative path, with its size and a hash of
+    /// its bytes.
+    fn tree(dir: &Path) -> std::collections::BTreeMap<String, (u64, u64)> {
+        use std::hash::{Hash, Hasher};
+        fn walk(dir: &Path, at: &str, out: &mut std::collections::BTreeMap<String, (u64, u64)>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let e = e.unwrap();
+                let name = format!("{at}{}", e.file_name().to_string_lossy());
+                if e.file_type().unwrap().is_dir() {
+                    walk(&e.path(), &format!("{name}/"), out);
+                } else {
+                    let bytes = std::fs::read(e.path()).unwrap();
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    bytes.hash(&mut h);
+                    out.insert(name, (bytes.len() as u64, h.finish()));
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir, "", &mut out);
+        out
+    }
+
+    /// Before Phase 4 the apps and the index account still hold the version
+    /// that serves, so restoring it changes nothing in Azure: the rehearsal
+    /// that proves the checks, not a copy.
+    #[tokio::test]
+    async fn restoring_what_azure_already_holds_changes_nothing() {
+        let f = fixture().await;
+        publish_staged(&staged(&f, false)).await.unwrap();
+        // The cutover promotes the pending pointer as it is.
+        lake_serves(&f, v2_serves()).await;
+        let (account_before, lake_before) = (tree(f.index.root()), tree(f.reference.root()));
+        let index = Flaky::new(f.index.root(), vec![]);
+        let reference = Flaky::new(f.reference.root(), vec![]);
+        let p = publish_staged(&Staged {
+            index: &index,
+            reference: &reference,
+            ..restoring(&f, false)
+        })
+        .await
+        .unwrap();
+        assert!(!p.pointer_written);
+        assert_eq!((p.reference_files, p.reference_skipped), (0, 2));
+        assert!(p.indexes.iter().all(|i| i.skipped == 1 && i.bytes == 0));
+        assert_eq!(tree(f.index.root()), account_before);
+        assert_eq!(tree(f.reference.root()), lake_before);
+        // The lake isn't written to at all. The account is asked to create
+        // each index's metastore, which is there already, and nothing else.
+        for op in ["put", "put_new", "put_stream"] {
+            assert_eq!(reference.calls(op), 0, "lake {op}");
+        }
+        assert_eq!(index.calls("put"), 0);
+        assert_eq!(index.calls("put_stream"), 0);
+        assert_eq!(index.calls("put_new"), 2);
+    }
+
+    /// A dry-run restore, like a dry-run publish, writes nothing to Azure.
+    #[tokio::test]
+    async fn a_dry_run_restore_writes_nothing() {
+        let f = fixture().await;
+        empty_account(&f);
+        lake_serves(&f, v2_serves()).await;
+        let index = Flaky::new(f.index.root(), vec![]);
+        let reference = Flaky::new(f.reference.root(), vec![]);
+        let p = publish_staged(&Staged {
+            index: &index,
+            reference: &reference,
+            ..restoring(&f, true)
+        })
+        .await
+        .unwrap();
+        assert_eq!(p.indexes.len(), 2);
+        assert!(!p.pointer_written);
+        for op in ["put", "put_new", "put_stream"] {
+            assert_eq!(index.calls(op), 0, "index account {op}");
+            assert_eq!(reference.calls(op), 0, "lake {op}");
+        }
+    }
+
+    /// A restore copies only the version, and the indexes, the lake serves;
+    /// anything else stops it before it copies. The rollback is the plain
+    /// publish's version, not a restore's.
+    #[tokio::test]
+    async fn a_restore_of_something_the_lake_does_not_serve_is_refused() {
+        let wrong_indexes = serde_json::to_vec(&json!({
+            "index_version": "v2", "previous_version": "v1",
+            "indexes": ["base2", "delta3"], "ja": {"indexes": ["ja2"]},
+        }))
+        .unwrap();
+        let no_indexes =
+            serde_json::to_vec(&json!({"index_version": "v2", "previous_version": "v1"})).unwrap();
+        let cases: [(&[u8], &[&str]); 5] = [
+            // The release's rollback: the plain publish does that.
+            (
+                br#"{"index_version":"v1"}"#,
+                &["rollback", "without --restore"],
+            ),
+            // Another version altogether.
+            (br#"{"index_version":"v9"}"#, &["serves v9, not v2"]),
+            (b"{}", &["serves no version, not v2"]),
+            (&wrong_indexes, &["delta3", "holds"]),
+            (&no_indexes, &["current.json", "names no index"]),
+        ];
+        for (current, wanted) in cases {
+            let f = fixture().await;
+            lake_serves(&f, current.to_vec()).await;
+            let e = format!(
+                "{:#}",
+                publish_staged(&restoring(&f, false)).await.unwrap_err()
+            );
+            for w in wanted {
+                assert!(e.contains(w), "{w} not in: {e}");
+            }
+            // Checked before anything was copied or the lake touched.
+            assert!(f.index.get("base2/sA.split").await.unwrap().is_none());
+            assert!(f.reference.get("v2/manifest.json").await.unwrap().is_none());
+            assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
+            assert_eq!(
+                f.reference.get("current.json").await.unwrap().unwrap(),
+                current
+            );
+        }
+        // No current.json at all is no restore either.
+        let f = fixture().await;
+        std::fs::remove_file(f.reference.root().join("current.json")).unwrap();
+        let e = publish_staged(&restoring(&f, false)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("no current.json"), "{e:#}");
+    }
+
+    /// The rest of the safety checks apply to a restore as they do to a
+    /// publish: a different object of the same name in Azure stops it.
+    #[tokio::test]
+    async fn a_restore_does_not_replace_a_different_object() {
+        let f = fixture().await;
+        lake_serves(&f, v2_serves()).await;
+        f.index
+            .put("base2/sA.split", vec![1u8; 10], "application/octet-stream")
+            .await
+            .unwrap();
+        let e = publish_staged(&restoring(&f, false)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("not 20000000"), "{e:#}");
+
+        let f = fixture().await;
+        lake_serves(&f, v2_serves()).await;
+        f.reference
+            .put("v2/manifest.json", b"other".to_vec(), "application/json")
+            .await
+            .unwrap();
+        let e = publish_staged(&restoring(&f, false)).await.unwrap_err();
+        assert!(
+            format!("{e:#}").contains("different v2/manifest.json"),
+            "{e:#}"
+        );
+        assert!(f.reference.get(PENDING_POINTER).await.unwrap().is_none());
+    }
+
+    /// The result's serialized form is what it was before restores existed.
+    #[test]
+    fn the_published_result_has_the_same_fields() {
+        let v = serde_json::to_value(Published::default()).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "indexes",
+                "pointer_written",
+                "reference_files",
+                "reference_skipped",
+                "secs",
+                "version"
+            ]
+        );
     }
 }
