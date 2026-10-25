@@ -351,9 +351,13 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
     {
         use usnm_ingest::sink::IndexSink;
         let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
-        let held = sink.title_fields(&want.indexes[0]).await.unwrap().unwrap();
         let catalog = usnm_ingest::catalog::Catalog::load(e.reference.as_ref())
             .await
+            .unwrap();
+        let held = sink
+            .title_fields(&want.indexes[0], &catalog.period_cuts())
+            .await
+            .unwrap()
             .unwrap();
         usnm_ingest::finish::check_titles(&catalog, &want.indexes[0], &held).unwrap();
         let mut titles = catalog.titles.clone();
@@ -368,7 +372,18 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
         // the one place, hold dates the catalog now has in another. The
         // same periods before the first of its dates change nothing.
         let own = catalog.titles[0].place_id.clone();
-        let first = held[&catalog.titles[0].lccn].days[&own].0;
+        let first = std::fs::read_to_string(
+            e.root
+                .join("reference/indexes")
+                .join(format!("{}.jsonl", want.indexes[0])),
+        )
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|d| d["lccn"] == catalog.titles[0].lccn.as_str())
+        .map(|d| u32::try_from(d["day"].as_u64().unwrap()).unwrap())
+        .min()
+        .unwrap();
         let by_date = |to: u32| {
             let to = usnm_core::time::date_from_day(to);
             let mut titles = catalog.titles.clone();
@@ -386,14 +401,24 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
             ];
             usnm_ingest::catalog::Catalog::new(titles, catalog.places.clone()).unwrap()
         };
-        let err = usnm_ingest::finish::check_titles(&by_date(first), &want.indexes[0], &held)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("catalog changed") && err.contains("dated"),
-            "{err}"
-        );
-        usnm_ingest::finish::check_titles(&by_date(first - 1), &want.indexes[0], &held).unwrap();
+        for (to, finishes) in [(first, false), (first - 1, true)] {
+            let dated = by_date(to);
+            let held = sink
+                .title_fields(&want.indexes[0], &dated.period_cuts())
+                .await
+                .unwrap()
+                .unwrap();
+            let checked = usnm_ingest::finish::check_titles(&dated, &want.indexes[0], &held);
+            if finishes {
+                checked.unwrap();
+            } else {
+                let err = checked.unwrap_err().to_string();
+                assert!(
+                    err.contains("catalog changed") && err.contains("dated"),
+                    "{err}"
+                );
+            }
+        }
         let later = e.root.join("later-reference");
         for (path, bytes) in files(&e.root.join("reference")) {
             let dest = later.join(path);

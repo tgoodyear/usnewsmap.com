@@ -133,7 +133,23 @@ impl Title {
             &place.state
         }
     }
+
+    /// The `day` each place period after the first starts on, oldest first.
+    /// They cut the title's days into one range per period: a document
+    /// belongs to the period whose number is how many of these are at or
+    /// before its `day`. Empty for a title in one place.
+    pub fn period_cuts(&self) -> Vec<u32> {
+        self.place_periods
+            .iter()
+            .skip(1)
+            .filter_map(|p| p.from)
+            .map(usnm_core::time::day_number)
+            .collect()
+    }
 }
+
+/// [`Title::period_cuts`] of the titles that have place periods, by LCCN.
+pub type PeriodCuts = BTreeMap<String, Vec<u32>>;
 
 /// A title's `place_periods` as `catalog/overrides/README.md` has them: none,
 /// or at least two, oldest first, the first without `from`, the last without
@@ -247,6 +263,16 @@ impl Catalog {
 
     pub fn place(&self, id: &str) -> Option<&Place> {
         self.place_index.get(id).map(|&i| &self.places[i])
+    }
+
+    /// The cuts of every title that has place periods: what a sink needs to
+    /// count a title's documents by period (`IndexSink::title_fields`).
+    pub fn period_cuts(&self) -> PeriodCuts {
+        self.titles
+            .iter()
+            .filter(|t| !t.place_periods.is_empty())
+            .map(|t| (t.lccn.clone(), t.period_cuts()))
+            .collect()
     }
 
     /// The place a page of `title` dated `date` is in ([`Title::place_id_on`]).
@@ -572,6 +598,31 @@ mod tests {
         );
         assert_eq!(c.place_on(&t, day("1830-01-01")).unwrap().id, "P1");
         assert_eq!(c.place_on(&t, day("1840-01-01")).unwrap().id, "P2");
+    }
+
+    #[test]
+    fn the_days_a_title_changes_place_cut_its_documents_into_periods() {
+        let t = moved();
+        let cut = usnm_core::time::day_number(day("1833-11-14"));
+        assert_eq!(t.period_cuts(), [cut]);
+        // A document is in the period whose number is the cuts at or before
+        // its day: the first day of a period is in it.
+        let period = |d: &str| {
+            t.period_cuts()
+                .partition_point(|&c| c <= usnm_core::time::day_number(day(d)))
+        };
+        assert_eq!(period("1833-11-13"), 0);
+        assert_eq!(period("1833-11-14"), 1);
+        assert!(title("sn2", 2, "P1").period_cuts().is_empty());
+        let c = Catalog::new(
+            vec![t, title("sn2", 2, "P1")],
+            vec![place("P1", 1), place("P2", 2)],
+        )
+        .unwrap();
+        assert_eq!(
+            c.period_cuts(),
+            PeriodCuts::from([("sn1".into(), vec![cut])])
+        );
     }
 
     #[test]

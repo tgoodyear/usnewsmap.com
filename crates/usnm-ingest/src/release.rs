@@ -1082,7 +1082,10 @@ impl Release {
             }
             // The catalog the finish plans with must be the one the index's
             // documents were written from.
-            match sink.title_fields(&r.run.new_index).await? {
+            match sink
+                .title_fields(&r.run.new_index, &catalog.period_cuts())
+                .await?
+            {
                 Some(held) => finish::check_titles(&catalog, &r.run.new_index, &held)?,
                 None => tracing::warn!(
                     "this sink can't say what the index's documents carry from the catalog; not \

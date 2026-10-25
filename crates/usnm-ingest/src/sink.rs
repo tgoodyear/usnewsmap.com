@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use opentelemetry::KeyValue;
 use serde_json::Value;
 
+use crate::catalog::PeriodCuts;
 use crate::merges::IndexLayout;
 use crate::telemetry;
 
@@ -99,8 +100,14 @@ pub trait IndexSink: Send {
         Ok(None)
     }
     /// What `index_id`'s documents of each title carry from the catalog
-    /// (`crate::finish::TitleFields`, by LCCN), when the sink can tell.
-    async fn title_fields(&mut self, _index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+    /// (`crate::finish::TitleFields`, by LCCN), when the sink can tell. For
+    /// the titles in `cuts` (`crate::catalog::Catalog::period_cuts`) it
+    /// counts the documents in each place by period too, every one of them.
+    async fn title_fields(
+        &mut self,
+        _index_id: &str,
+        _cuts: &PeriodCuts,
+    ) -> anyhow::Result<Option<TitleFieldsByLccn>> {
         Ok(None)
     }
 }
@@ -109,7 +116,11 @@ pub trait IndexSink: Send {
 pub type TitleFieldsByLccn = std::collections::BTreeMap<String, crate::finish::TitleFields>;
 
 /// Fold one document's catalog fields into `by` ([`IndexSink::title_fields`]).
-fn add_title_fields(by: &mut TitleFieldsByLccn, doc: &Value) -> anyhow::Result<()> {
+pub(crate) fn add_title_fields(
+    by: &mut TitleFieldsByLccn,
+    doc: &Value,
+    cuts: &PeriodCuts,
+) -> anyhow::Result<()> {
     let text = |k: &str| {
         doc[k]
             .as_str()
@@ -127,13 +138,17 @@ fn add_title_fields(by: &mut TitleFieldsByLccn, doc: &Value) -> anyhow::Result<(
             ..Default::default()
         });
     let place_id = text("place_id")?;
-    let day = u32::try_from(
-        doc["day"]
-            .as_u64()
-            .with_context(|| format!("a document without `day`: {}", doc["doc_id"]))?,
-    )?;
-    let days = f.days.entry(place_id.clone()).or_insert((day, day));
-    *days = (days.0.min(day), days.1.max(day));
+    // A title with places by date: in the period its `day` falls in.
+    if let Some(cuts) = cuts.get(&text("lccn")?) {
+        let day = u32::try_from(
+            doc["day"]
+                .as_u64()
+                .with_context(|| format!("a document without `day`: {}", doc["doc_id"]))?,
+        )?;
+        f.by_period
+            .entry(place_id.clone())
+            .or_insert_with(|| vec![0; cuts.len() + 1])[cuts.partition_point(|&c| c <= day)] += 1;
+    }
     f.places.insert(place_id);
     f.states.insert(text("state")?);
     f.shards.insert(
@@ -329,13 +344,17 @@ impl IndexSink for JsonlSink {
         Ok(Some(by))
     }
 
-    async fn title_fields(&mut self, index_id: &str) -> anyhow::Result<Option<TitleFieldsByLccn>> {
+    async fn title_fields(
+        &mut self,
+        index_id: &str,
+        cuts: &PeriodCuts,
+    ) -> anyhow::Result<Option<TitleFieldsByLccn>> {
         use std::io::BufRead;
         let path = self.dir.join(format!("{index_id}.jsonl"));
         let file = std::fs::File::open(&path).with_context(|| path.display().to_string())?;
         let mut by = TitleFieldsByLccn::new();
         for line in std::io::BufReader::new(file).lines() {
-            add_title_fields(&mut by, &serde_json::from_str(&line?)?)?;
+            add_title_fields(&mut by, &serde_json::from_str(&line?)?, cuts)?;
         }
         Ok(Some(by))
     }
