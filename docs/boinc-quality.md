@@ -470,6 +470,21 @@ first, at most 1,000 a manifest, PUT through the scan server as
 `/manifests/queue-ocr-<stamp>/manifest.parquet`. It makes the next one only once the last
 is mostly fetched (90% on the scan server) or a day old.
 
+### The full image pass and the piggyback (#962)
+
+`ocr_manifest.py build-quality` (`usnm-quality-build.timer`, every 2 hours in CT215) takes
+the next pages from `usnm_quality`'s stored summary: no image features yet, not staged, ranked
+round-robin over (title, decade) with the worst first by the mean of the damage score and
+LoC's own doubt (`1 - wc_mean`), the first `--strata` ranks. It queues them through the scan
+server as `queue-quality-<stamp>`, which the fetcher runs behind OCR's manifests in one-hour
+slices, inside the host's 45-a-minute LoC budget. Rows are marked `eng`, so the scans go to the
+fetcher's buffer set.
+
+`quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
+that no campaign has staged (OCR's and the pass's) a unit, in fetch order, and deletes the
+pass's buffer scans once their chunk has shipped; OCR's scans and the keep set are never
+deleted. `quality-feed-install.sh --follow` turns both on with the shipper.
+
 ## Calibration
 
 `usnm-boinc quality calibrate` runs the three-cornered hat per gold crop over `--crops <crops.jsonl>` (gold crops with human transcriptions), two or more `--hyp ENGINE=FILE.jsonl` OCR hypothesis files, and optional `--readings <readings.jsonl>` vision-language readings, and writes `calibration.csv`, `calibration.md` and `by-crop.csv` to `--out`: per reader, true CER, estimated CER, bias, MAE, Pearson and Spearman, both without (`three-ocr`) and with (`three-ocr+vlm`) the vision-language reader. UNVERIFIED on the full multi-engine gold crop campaign.

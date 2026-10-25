@@ -113,6 +113,45 @@ class FeedTest(unittest.TestCase):
             self.assertFalse(inc.exists())
 
 
+class FollowTest(unittest.TestCase):
+    def test_page_of_names_the_set(self):
+        row = {"doc_id": "sn1_1900-01-02_ed-1_seq-3", "batch": "b", "batch_version": 1, "bytes": 5,
+               "sha256": "x", "format": "jp2", "fetched_at": "t"}
+        p = feed.page_of(row, "buffer", {"sn1_1900-01-02_ed-1_seq-3": {"lang": "ger", "damage_rate": 0.4}})
+        self.assertEqual(p["scan"], "buffer/b/sn1/1900-01-02/1/3.jp2")
+        self.assertEqual((p["lang"], p["damage_rate"]), ("deu", 0.4))
+
+    def test_only_shipped_quality_buffer_scans_are_deleted(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp = Path(d, "camp")
+            (camp / "c00002").mkdir(parents=True)  # still in the outbox
+            done = Path(d, "done.txt")
+            done.write_text("q1\tc00001\tbuffer/b/q1.jp2\n"   # shipped, quality, buffer: deleted
+                            "o1\tc00001\tbuffer/b/o1.jp2\n"   # shipped, OCR's page: kept
+                            "q2\tc00001\tkeep/b/q2.jp2\n"     # keep set: kept
+                            "q3\tc00002\tbuffer/b/q3.jp2\n")  # not shipped yet: kept
+            calls = []
+
+            class Resp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            def fake(req, timeout=0):
+                calls.append((req.get_method(), req.full_url))
+                return Resp()
+
+            a = type("A", (), {"scan_server": "http://s"})()
+            with mock.patch.object(feed.urllib.request, "urlopen", fake):
+                n = feed.delete_shipped(a, str(camp), str(done), {"q1", "q2", "q3"}, str(Path(d, "deleted.txt")))
+            self.assertEqual(n, 1)
+            self.assertEqual(calls, [("DELETE", "http://s/scans/buffer/b/q1.jp2")])
+            with mock.patch.object(feed.urllib.request, "urlopen", fake):
+                self.assertEqual(feed.delete_shipped(a, str(camp), str(done), {"q1"}, str(Path(d, "deleted.txt"))), 0)
+
+
 class LoadTest(unittest.TestCase):
     def test_numbers_from_strings_and_nan(self):
         self.assertEqual(loader.num("0.25"), 0.25)
