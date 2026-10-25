@@ -1548,6 +1548,19 @@ fn challenge(resp: &reqwest::Response) -> Option<String> {
         .then(|| "an HTML page from Cloudflare".into())
 }
 
+/// An error and its causes, for a log line: reqwest's own message
+/// ("error sending request") says nothing of why.
+pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
+}
+
 pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
     if resp.content_length().is_some_and(|n| n > max as u64) {
         return Err(format!("response over {max} bytes"));

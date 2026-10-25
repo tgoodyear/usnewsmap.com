@@ -358,6 +358,10 @@ impl Mirrors {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
+            // No idle connections kept: requests are seconds apart, and a
+            // connection the server closed meanwhile fails the next request
+            // ("error sending request"), which would hold the host.
+            .pool_max_idle_per_host(0)
             // Followed by hand, within the host, each paced and counted.
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
@@ -635,7 +639,9 @@ impl Mirrors {
             let sent = Instant::now();
             let resp = match self.http.get(&url).timeout(timeout).send().await {
                 Ok(r) => r,
-                Err(e) => return hold(self.cfg.backoff, &url, e.without_url().to_string()),
+                Err(e) => {
+                    return hold(self.cfg.backoff, &url, super::error_chain(&e.without_url()))
+                }
             };
             let status = resp.status();
             if status.is_success() {
