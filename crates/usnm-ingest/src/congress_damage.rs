@@ -32,7 +32,7 @@
 //! by the set of attempts it covers: a later run over the same set finds it and
 //! writes nothing, and one over a changed set writes another beside it.
 //!
-//! Logs counts and doc_ids, never text.
+//! Logs counts and volume ids, never text.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -60,8 +60,7 @@ use usnm_store::ObjectStore;
 const PROGRESS_EVERY: Duration = Duration::from_secs(60);
 
 /// A page needs at least this many characters of text to be scored: the floor
-/// the 20 October sample on #922 used, under which a page is a heading, a
-/// table fragment or a blank leaf.
+/// the 20 October sample on #922 used.
 pub const MIN_CHARS: usize = 200;
 /// The language every page is scored against, as ISO 639-3 for the headline
 /// ([`damage::score_forced`]) and as a catalog code for [`damage::score`].

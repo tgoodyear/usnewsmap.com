@@ -107,7 +107,7 @@ pub(crate) struct CongressSerialsetArgs {
 /// every volume that finishes them all also writes the roll-up
 /// `corpus/<key>.json`, keyed by the attempts it covers. Run it once,
 /// after the fetch has finished. Prints what it did as JSON; logs counts
-/// and doc_ids, never text.
+/// and volume ids, never text.
 #[derive(Args)]
 pub(crate) struct CongressDamageArgs {
     /// The series to score.
