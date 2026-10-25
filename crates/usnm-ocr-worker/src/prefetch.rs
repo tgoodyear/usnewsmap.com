@@ -1068,10 +1068,6 @@ impl Run {
     /// the batch route can't place it. An issue cooling off on the route
     /// the page would take is skipped without asking LoC.
     async fn fetch(&self, row: &ManifestRow, key: &PageKey, size: ImageSize) -> Fetched {
-        // Only a full-size JP2 is asked of LoC's bucket or a mirror.
-        if self.no_loc && size != ImageSize::Full {
-            return Fetched::NeedsLoc("only a full-size JP2 comes from LoC's bucket or a mirror");
-        }
         let issue = issue_id(key);
         let storage_issue = format!("storage:{issue}");
         if let c @ (Check::Cooling(_) | Check::Permanent) = self.cooling.check(&storage_issue) {
@@ -1154,6 +1150,17 @@ impl Run {
         }
         let t = tag(size);
         let key = row.key()?;
+        // A scaled page under no-LoC is deferred before it waits for room
+        // in the buffer: nothing but LoC serves it.
+        if self.no_loc && size != ImageSize::Full {
+            c.deferred_needs_loc.fetch_add(1, Ordering::SeqCst);
+            tracing::info!(
+                doc_id = row.doc_id,
+                why = "only a full-size JP2 comes from LoC's bucket or a mirror",
+                "deferred: needs LoC"
+            );
+            return Ok(Outcome::Done);
+        }
         // Only a page that needs fetching waits for room in the buffer.
         if set == Set::Buffer && !self.wait_for_buffer().await {
             return Ok(Outcome::Left);
@@ -2728,6 +2735,8 @@ mod tests {
             size: ImageSize::Pct(50),
             buffer_size: ImageSize::Pct(50),
             concurrency: 1,
+            // A full buffer: a page that waited for room would never end.
+            buffer_cap: 0,
             no_loc_prefixes: vec!["queue-quality-".into()],
             ..Options::default()
         };
