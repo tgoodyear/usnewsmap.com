@@ -11,8 +11,12 @@
 #   push-boinc-scan.sh --account <exchange account> --keep-page <batch>/<lccn>/<date>/<edition>/<seq> ...
 #
 # --keep-page names a page by where the fetcher files it (keep/<that path>.jp2 or .jpg), for
-# pages that came off the work queues, whose scan format nobody has said. It pushes each one
-# it finds, prints `pushed <path under scans/>` for it on stdout, prints `missing <page>` for
+# pages that came off the work queues, whose scan format nobody has said. The fetcher's buffer
+# set (buffer/<that path>, the same layout) is tried after keep: a page it fetched for a queued
+# OCR request is there (#1055). Either way the scan goes up as scans/keep/<that path>.<ext>,
+# the name the hand-off export takes, and the upload is a copy, so evicting the buffer scan later
+# can't take it from the hand-off. It pushes each one it finds, prints `pushed keep/<that
+# path>.<ext>` for it on stdout, prints `missing <page>` for
 # one with no cached scan, and then exits 3 if any was missing, so the caller can hand that
 # message back to the queue. It may be given with --scan.
 #
@@ -46,16 +50,23 @@ CONTAINER=boinc-handoff
 # (usnm_store::validate_path), so the hand-off job can copy them.
 segments='^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$'
 uploads=() missing=()
-# A page the fetcher filed under keep/ is a scan like any other once its format is found.
+# A page the fetcher filed under keep/ (or, failing that, buffer/) is pushed under its keep/ name.
 for p in ${KEEP_PAGES[@]+"${KEEP_PAGES[@]}"}; do
   [[ $p =~ ^[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]+/[0-9]+$ ]] ||
     die "--keep-page $p is <batch>/<lccn>/<date>/<edition>/<seq>"
-  found=""
-  for ext in jp2 jpg; do
-    f="$SCANS_ROOT/keep/$p.$ext"
-    if [ -f "$f" ] && [ ! -L "$f" ] && [ -f "$f.json" ]; then found=$f; break; fi
+  found="" name=""
+  for set in keep buffer; do
+    for ext in jp2 jpg; do
+      f="$SCANS_ROOT/$set/$p.$ext"
+      if [ -f "$f" ] && [ ! -L "$f" ] && [ -f "$f.json" ]; then found=$f name=keep/$p.$ext; break 2; fi
+    done
   done
-  if [ -n "$found" ]; then SCANS+=("$found"); else missing+=("$p"); fi
+  if [ -n "$found" ]; then
+    uploads+=("$found" "scans/$name" "$found.json" "scans/$name.json")
+    echo "pushed $name"
+  else
+    missing+=("$p")
+  fi
 done
 for s in ${SCANS[@]+"${SCANS[@]}"}; do
   case $s in "$SCANS_ROOT"/*) ;; *) die "--scan $s is not under $SCANS_ROOT" ;; esac

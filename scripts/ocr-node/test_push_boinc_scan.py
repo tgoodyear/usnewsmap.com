@@ -21,10 +21,10 @@ class PushKeepPage(unittest.TestCase):
         self.root = self.tmp / "scans"
         self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "STUB_LOG": str(self.log)}
 
-    def scan(self, page, ext):
-        path = self.root / "keep" / f"{page}.{ext}"
+    def scan(self, page, ext, cache_set="keep", data=b"scan"):
+        path = self.root / cache_set / f"{page}.{ext}"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"scan")
+        path.write_bytes(data)
         Path(f"{path}.json").write_text("{}")
 
     def run_push(self, *pages, extra=()):
@@ -61,6 +61,25 @@ class PushKeepPage(unittest.TestCase):
         r = self.run_push("nbu_gage/sn1/1890-05-03/1/7")
         self.assertEqual(r.returncode, 3)
         self.assertEqual(r.stdout.splitlines(), ["missing nbu_gage/sn1/1890-05-03/1/7"])
+
+    def test_a_buffer_scan_goes_up_under_its_keep_name(self):
+        # #1055: the fetcher files a queued OCR request's scan in its buffer set.
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", cache_set="buffer")
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2"])
+        uploads = [line for line in self.log.read_text().splitlines() if " upload " in line]
+        self.assertEqual(len(uploads), 2)
+        self.assertIn(f"--name scans/keep/nbu_gage/sn1/1890-05-03/1/7.jp2 --file {self.root}/buffer/", uploads[0])
+        self.assertIn("--name scans/keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json ", uploads[1])
+
+    def test_keep_wins_over_buffer(self):
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jpg", cache_set="buffer")
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2")
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7")
+        self.assertEqual(r.stdout.splitlines(), ["pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2"])
+        self.assertIn(f"--file {self.root}/keep/", self.log.read_text())
+        self.assertNotIn("/buffer/", self.log.read_text())
 
     def test_refuses_a_path_that_is_not_a_page(self):
         for bad in ("../x/y/1890-05-03/1/7", "nbu_gage/sn1/1890-05-03/1", "NBU/sn1/1890-05-03/1/7"):
