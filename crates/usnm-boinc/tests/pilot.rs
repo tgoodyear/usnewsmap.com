@@ -2513,6 +2513,35 @@ mod queue_feed {
     }
 
     #[tokio::test]
+    async fn a_dead_letter_whose_lease_ran_out_stays_unsettled() {
+        let f = fed(true).await;
+        let claims = f.fx.tmp.path().join("claims");
+        pull(&f, &claims, Duration::from_secs(1)).await;
+        publish_claim(&f, &claims).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let q = f.fx.stores.queue.as_ref();
+        // The lease ran out: the message is back on its queue.
+        assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
+        for _ in 0..2 {
+            assert_eq!(
+                claim::dead_letter(f.handoff.as_ref(), q, DOC, "failed for good")
+                    .await
+                    .unwrap(),
+                claim::DeadLettered::LeaseLost
+            );
+        }
+        // One dead letter only, and the copy is still there for the operator.
+        assert_eq!(
+            q.peek(usnm_store::queue::DEADLETTER, 32)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(q.peek(BULK, 32).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn an_answered_page_is_deleted_and_a_released_claim_goes_back() {
         let f = fed(true).await;
         let claims = f.fx.tmp.path().join("claims");

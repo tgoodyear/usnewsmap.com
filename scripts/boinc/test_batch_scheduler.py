@@ -870,7 +870,12 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter"])
         # With it, both failed pages go to ocr-deadletter once, and the feed goes on.
         self.fake.terminal = False
+        before = len(self.fake.actions)
         event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
+        # Not held: the feed claims and exports pages in their place.
+        after = self.fake.actions[before:]
+        self.assertTrue([a for a in after if a[0] == "claim"], after)
+        self.assertTrue([a for a in after if a[0] == "export"], after)
         letters = [a for a in self.fake.actions if a[0] == "dead-letter"]
         self.assertEqual(letters, [("dead-letter", ["sn12345678_1900-01-01_ed-1_seq-1",
                                                     "sn12345678_1900-01-01_ed-1_seq-2"])])

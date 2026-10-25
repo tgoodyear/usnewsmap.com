@@ -1507,7 +1507,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
-    held = sum(record["stage"] != "published" and
+    held = sum(record["stage"] not in ("published", "failed") and
                bool(server.get(record["job"]["id"], {}).get("spool")) for record in owned.values())
 
     if high_target == 0:
@@ -1645,7 +1645,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 alerts.append({"code": "gold_onboarding_failed", "scope": run["scope"], "step": step,
                                "error": outcome})
     held_count, oldest_held = held_results(state, {
-        record["job"]["id"] for record in owned.values() if record["stage"] != "published"
+        record["job"]["id"] for record in owned.values() if record["stage"] not in ("published", "failed")
         and server.get(record["job"]["id"], {}).get("spool")}, now)
 
     published = sum(record["stage"] == "published" for record in owned.values())

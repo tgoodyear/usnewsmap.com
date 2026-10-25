@@ -72,7 +72,8 @@ pub struct Claim {
     pub claimed_at: String,
     pub lease_until: String,
     pub ledger: LedgerRow,
-    /// `finished`, `released`, `lease_lost` or `dead_lettered` once the message is gone.
+    /// `finished`, `released`, `lease_lost` or `dead_lettered` once the message is gone;
+    /// `dead_letter_lease_lost` while a dead-lettered page's message is back on its queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
 }
@@ -475,8 +476,11 @@ pub async fn dead_letter(
     let Some(mut claim) = load(handoff, doc_id).await? else {
         bail!("no claim for {doc_id}");
     };
-    if claim.ended.is_some() {
-        return Ok(DeadLettered::Already);
+    match claim.ended.as_deref() {
+        // The dead letter went but its message had come back: still the operator's to settle.
+        Some("dead_letter_lease_lost") => return Ok(DeadLettered::LeaseLost),
+        Some(_) => return Ok(DeadLettered::Already),
+        None => {}
     }
     let msg = claim.message()?;
     let letter = DeadLetter::new(
@@ -499,7 +503,13 @@ pub async fn dead_letter(
         Err(e) if e.downcast_ref::<LeaseLost>().is_some() => DeadLettered::LeaseLost,
         Err(e) => return Err(e),
     };
-    claim.ended = Some("dead_lettered".into());
+    claim.ended = Some(
+        match done {
+            DeadLettered::LeaseLost => "dead_letter_lease_lost",
+            _ => "dead_lettered",
+        }
+        .into(),
+    );
     save(handoff, doc_id, &claim).await?;
     Ok(done)
 }
