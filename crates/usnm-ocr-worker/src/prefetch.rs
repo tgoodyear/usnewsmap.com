@@ -172,6 +172,8 @@ pub struct Options {
 /// Whether `manifest` lives in a directory whose name starts with one of
 /// `prefixes` (empty ones ignored).
 pub fn no_loc_for(manifest: &Path, prefixes: &[String]) -> bool {
+    // A relative path (`manifest.parquet`) is taken from where it is run.
+    let manifest = std::path::absolute(manifest).unwrap_or_else(|_| manifest.to_path_buf());
     let Some(dir) = manifest
         .parent()
         .and_then(Path::file_name)
@@ -2623,7 +2625,11 @@ mod tests {
         ));
         // The directory's name, not the file's or a parent's further up.
         assert!(!no_loc_for(&p("/queue-quality-x/m/manifest.parquet"), &pre));
-        assert!(!no_loc_for(&p("manifest.parquet"), &pre));
+        // A relative path is read from the current directory.
+        let here = std::env::current_dir().unwrap();
+        let here = here.file_name().unwrap().to_str().unwrap().to_owned();
+        assert!(no_loc_for(&p("manifest.parquet"), &[here.clone()]));
+        assert!(no_loc_for(&p("./manifest.parquet"), &[here]));
         // Off by default; a blank prefix matches nothing.
         assert!(!no_loc_for(&p("/m/queue-quality-1/manifest.parquet"), &[]));
         assert!(!no_loc_for(&p("/m/x/manifest.parquet"), &[" ".into()]));
