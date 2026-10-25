@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] && [ -n "$EXECUTION" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
-cd "$(dirname "$0")/../../../.."
+cd "$(dirname "$0")/../../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed"
 # Both name forms (ADR-0017): caj-usnm-jaocr-<env>-<id> until Phase 3,

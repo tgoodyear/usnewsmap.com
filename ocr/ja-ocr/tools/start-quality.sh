@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$ENV_NAME" ] || usage
-cd "$(dirname "$0")/../../../.."
+cd "$(dirname "$0")/../../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed to build the request"
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
