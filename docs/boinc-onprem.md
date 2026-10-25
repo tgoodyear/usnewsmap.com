@@ -181,7 +181,7 @@ The values are the job's environment: `az containerapp job show --name usnm-boin
 controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
 ([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
 `export` too with `--onprem-handoff export`: the controller then pushes the scans straight to this host (`--target scans --step receive`, into `/srv/usnm-boinc/project/handoff-scans`), export mounts them read-only, and `submit-remote` takes each page from them, so no scan goes through Azure (#1116).
-`texts-export` still runs as the Azure job. Once claim and collect have run cleanly here
+`texts-export` runs on the host with the local copy of curated (`scripts/boinc/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)). Once claim and collect have run cleanly here
 for a day, a separate Bicep change retires the job's claim and collect use.
 
 ## Azure after the cutover

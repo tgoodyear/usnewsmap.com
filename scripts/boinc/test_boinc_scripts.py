@@ -1283,6 +1283,36 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn("handoff put", calls[2])
         self.assertIn("--prefix texts", calls[2])
 
+    def test_texts_export_onprem_reads_american_stories_locally(self):
+        # #1116: the on-prem runner gives the step the host's copy of curated.
+        root = os.path.join(self.tmp, "curated-copy")
+        os.makedirs(os.path.join(root, "american-stories", "pages"))
+        settings = os.path.join(self.tmp, "texts.env")
+        with open(settings, "w") as f:
+            f.write("HANDOFF_URL=https://usnmst.blob.core.windows.net/boinc-handoff\n"
+                    "CURATED_URL=https://usnmst.blob.core.windows.net/curated\n"
+                    "COSMOS_ENDPOINT=https://c.documents.azure.com:443/\n"
+                    "REFERENCE_URL=https://usnmst.blob.core.windows.net/reference\n"
+                    "OUT_URL=https://usnmst.blob.core.windows.net/ocr-out\n")
+        runner = os.path.join(ROOT, "scripts", "boinc", "texts-export-onprem.sh")
+        stub = os.path.join(self.tmp, "bin", "usnm-boinc")
+        env = {**self.env}
+        r = subprocess.run([runner, "--settings", settings, "--usnm-boinc", stub, "--american-stories-root", root,
+                            "--doc-id", "sn83045462_1890-05-03_ed-1_seq-1"],
+                           cwd=ROOT, env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (export,) = [c for c in self.calls() if c.startswith("quality texts-export")]
+        self.assertIn(f"--american-stories-url {root}", export)
+        self.assertIn("--curated-url https://usnmst.blob.core.windows.net/curated", export)
+        # A settings file may set only the step's settings.
+        with open(settings, "a") as f:
+            f.write("PATH=/tmp/evil\n")
+        r = subprocess.run([runner, "--settings", settings, "--usnm-boinc", stub, "--american-stories-root", root,
+                            "--doc-id", "sn83045462_1890-05-03_ed-1_seq-1"],
+                           cwd=ROOT, env=env, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("takes only", r.stderr)
+
     def handoff(self, step, **extra):
         env = {
             **self.env,

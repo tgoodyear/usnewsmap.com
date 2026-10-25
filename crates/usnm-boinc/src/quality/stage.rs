@@ -909,6 +909,10 @@ pub fn write_function_words(langs: &[String], n: usize, out_dir: &Path) -> anyho
 #[derive(Debug, Clone)]
 pub struct TextsExportOptions {
     pub curated_url: String,
+    /// Where the American Stories page shards are read, when not from `curated_url`: a local
+    /// copy of `curated` (its `american-stories/pages/...` tree), which never changes, so only
+    /// the `ocr-local` overlays come from the curated store.
+    pub american_stories_url: Option<String>,
     pub out_dir: PathBuf,
     pub sample: Option<PathBuf>,
     pub doc_ids: Vec<String>,
@@ -921,6 +925,53 @@ pub struct TextsExportSummary {
     pub american_stories: usize,
     pub ocr_local: usize,
     pub altos: usize,
+    /// Bytes read from the curated store (`curated_url`): with a local American Stories copy,
+    /// only the `ocr-local` overlays and their ALTO.
+    pub curated_bytes: u64,
+}
+
+/// A store that counts the bytes its reads return.
+#[derive(Debug)]
+struct Counted {
+    inner: std::sync::Arc<dyn usnm_store::ObjectStore>,
+    bytes: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl usnm_store::ObjectStore for Counted {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        let got = self.inner.get(path).await?;
+        if let Some(b) = &got {
+            self.bytes
+                .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(got)
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.inner.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.inner.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list(prefix).await
+    }
+    async fn list_info(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<usnm_store::ObjectInfo>, usnm_store::StoreError> {
+        self.inner.list_info(prefix).await
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1021,6 +1072,7 @@ fn ours_reader_name(engine: &str, source: &str) -> String {
 /// Export each requested page's non-LoC texts (American Stories and `ocr-local`)
 /// and our ALTO from the curated store into `opts.out_dir`.
 pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExportSummary> {
+    use usnm_store::ObjectStore as _;
     let mut wanted: BTreeSet<String> = BTreeSet::new();
     for doc_id in &opts.doc_ids {
         crate::assess::check_doc_id(doc_id)?;
@@ -1042,13 +1094,24 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             .insert(key.date.year());
     }
 
-    let curated = usnm_store::open(&opts.curated_url)?;
+    let curated = Counted {
+        inner: usnm_store::open(&opts.curated_url)?,
+        bytes: Default::default(),
+    };
+    let american_stories: std::sync::Arc<dyn usnm_store::ObjectStore> =
+        match &opts.american_stories_url {
+            Some(url) => usnm_store::open(url)?,
+            None => std::sync::Arc::new(Counted {
+                inner: curated.inner.clone(),
+                bytes: Default::default(),
+            }),
+        };
     std::fs::create_dir_all(&opts.out_dir)?;
 
     let mut as_by_doc: BTreeMap<String, (Option<PageSize>, TextReader)> = BTreeMap::new();
     for (lccn, years) in &by_lccn_year {
         let prefix = format!("{}/{lccn}", usnm_ingest::american_stories::PAGES);
-        let mut paths = curated.list(&prefix).await?;
+        let mut paths = american_stories.list(&prefix).await?;
         paths.sort();
         let dir_prefix = format!("{prefix}/");
         for path in paths {
@@ -1067,9 +1130,14 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             if !years.contains(&year) {
                 continue;
             }
-            let Some(bytes) = curated.get(&path).await? else {
+            let Some(bytes) = american_stories.get(&path).await? else {
                 continue;
             };
+            if opts.american_stories_url.is_none() {
+                curated
+                    .bytes
+                    .fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
             let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes))
                 .with_context(|| format!("reading {path}"))?
                 .build()
@@ -1119,14 +1187,10 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
         }
     }
 
-    let revoked = usnm_ingest::ocr_local::replace::revocations(curated.as_ref()).await?;
-    let listing = usnm_ingest::ocr_local::replace::Listing::list(curated.as_ref()).await?;
+    let revoked = usnm_ingest::ocr_local::replace::revocations(&curated).await?;
+    let listing = usnm_ingest::ocr_local::replace::Listing::list(&curated).await?;
     let loaded = listing
-        .load(
-            curated.as_ref(),
-            by_lccn_year.keys().map(String::as_str),
-            &revoked,
-        )
+        .load(&curated, by_lccn_year.keys().map(String::as_str), &revoked)
         .await?;
     let mut ocr_candidates: BTreeMap<String, usnm_ingest::ocr_local::replace::Candidate> =
         BTreeMap::new();
@@ -1231,12 +1295,26 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             summary.written += 1;
         }
     }
+    summary.curated_bytes = curated.bytes.load(std::sync::atomic::Ordering::Relaxed);
     Ok(summary)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let dest = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &dest);
+            } else {
+                std::fs::copy(entry.path(), dest).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn alto_url_follows_the_iiif_base() {
@@ -1787,12 +1865,15 @@ pub(crate) mod tests {
         let out_dir = tmp.path().join("texts");
         let sum = texts_export(&TextsExportOptions {
             curated_url: curated_dir.to_str().unwrap().into(),
+            american_stories_url: None,
             out_dir: out_dir.clone(),
             sample: None,
             doc_ids: vec![doc_id.into()],
         })
         .await
         .unwrap();
+        let all_bytes = sum.curated_bytes;
+        assert!(all_bytes > 0);
         assert_eq!(
             sum,
             TextsExportSummary {
@@ -1801,7 +1882,38 @@ pub(crate) mod tests {
                 american_stories: 1,
                 ocr_local: 1,
                 altos: 1,
+                curated_bytes: all_bytes,
             }
+        );
+        // With a local copy of the American Stories shards, the same texts, and the curated
+        // store gives only the overlays.
+        let local = tmp.path().join("local-copy");
+        let shards = curated_dir.join(usnm_ingest::american_stories::PAGES);
+        let to = local.join(usnm_ingest::american_stories::PAGES);
+        copy_tree(&shards, &to);
+        std::fs::remove_dir_all(&shards).unwrap();
+        let out2 = tmp.path().join("texts-local");
+        let local_sum = texts_export(&TextsExportOptions {
+            curated_url: curated_dir.to_str().unwrap().into(),
+            american_stories_url: Some(local.to_str().unwrap().into()),
+            out_dir: out2.clone(),
+            sample: None,
+            doc_ids: vec![doc_id.into()],
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                local_sum.written,
+                local_sum.american_stories,
+                local_sum.altos
+            ),
+            (1, 1, 1)
+        );
+        assert!(local_sum.curated_bytes < all_bytes);
+        assert_eq!(
+            std::fs::read(out2.join(format!("{doc_id}.json"))).unwrap(),
+            std::fs::read(out_dir.join(format!("{doc_id}.json"))).unwrap()
         );
 
         let exported: Texts =

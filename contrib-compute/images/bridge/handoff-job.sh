@@ -346,6 +346,13 @@ case "${HANDOFF_STEP:-}" in
       doc_args+=(--sample "$work/samples/$HANDOFF_SAMPLE")
     fi
     mkdir -p "$work/texts"
+    # On-prem (scripts/boinc/texts-export-onprem.sh) the American Stories shards come from the
+    # host's local copy of curated: only the ocr-local overlays are read from Azure.
+    if [ -n "${AMERICAN_STORIES_ROOT:-}" ]; then
+      [ -d "$AMERICAN_STORIES_ROOT/american-stories/pages" ] ||
+        fail "AMERICAN_STORIES_ROOT has no american-stories/pages"
+      doc_args+=(--american-stories-url "$AMERICAN_STORIES_ROOT")
+    fi
     usnm-boinc quality texts-export --curated-url "$CURATED_URL" --out-dir "$work/texts" "${doc_args[@]}"
     usnm-boinc handoff put --from "$work/texts" --to-url "$HANDOFF_URL" --prefix texts ;;
   *) fail "HANDOFF_STEP must be export, claim, release, collect or texts-export" ;;
