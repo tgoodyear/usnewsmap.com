@@ -7,7 +7,7 @@
 #   scripts/onprem/release.sh --run-dir DIR --step seed [--sample 1pct]
 #   scripts/onprem/release.sh --run-dir DIR --step release [--split-docs N]
 #   scripts/onprem/release.sh --run-dir DIR --step finish --index-version V [--split-docs N]
-#   scripts/onprem/release.sh --run-dir DIR --step publish [--dry-run]
+#   scripts/onprem/release.sh --run-dir DIR --step publish (--dry-run | --cosmos-endpoint URL)
 #   scripts/onprem/release.sh --run-dir DIR --step restore [--dry-run]
 #   scripts/onprem/release.sh --run-dir DIR --step ready --app-url URL --index-version V
 #
@@ -31,7 +31,13 @@
 #          release's Kafka settings (USNM_WRITER_KAFKA and its partitions)
 #          and --split-docs, and log it to another file than release.log.
 # publish  copies the staged version into the index account and the lake
-#          (usnm-ingest publish-staged). Promotion is a separate operator step.
+#          (usnm-ingest publish-staged), then records its run in Cosmos
+#          index_runs (usnm-ingest import-staged-run, #1096), so /v1/versions
+#          and /datasets list it. --cosmos-endpoint, or USNM_COSMOS_ENDPOINT,
+#          is https://<account>.documents.azure.com/; it is checked before
+#          anything is copied. --dry-run copies and records nothing and needs
+#          no endpoint. A rerun continues a copy and keeps a run already
+#          recorded. Promotion is a separate operator step.
 # restore  copies the version the lake already serves back to Azure, to serve
 #          from there again after Azure serving was retired (usnm-ingest
 #          publish-staged --restore; the disaster recovery runbook, 09 §9.6).
@@ -39,6 +45,7 @@
 #          state.json, reference/index-storage-pending.json and qw/. It
 #          refuses unless the lake's current.json names that version and its
 #          indexes, and it writes neither current.json nor the pending pointer.
+#          It writes nothing to Cosmos and needs no endpoint.
 # ready    waits until the app at --app-url answers /readyz and /v1/meta
 #          names --index-version, in USNM_READY_TRIES tries (default 60)
 #          USNM_READY_WAIT_SECS apart (default 10), and exits 1 if it never
@@ -51,8 +58,8 @@
 # identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,51s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL=""
+usage() { sed -n '2,53s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) RUN=${2:-}; shift 2 ;;
@@ -61,6 +68,7 @@ while [ $# -gt 0 ]; do
     --split-docs) SPLIT_DOCS=${2:-}; shift 2 ;;
     --index-version) VERSION=${2:-}; shift 2 ;;
     --app-url) APP_URL=${2:-}; shift 2 ;;
+    --cosmos-endpoint) COSMOS_ENDPOINT=${2:-}; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
@@ -91,8 +99,20 @@ LAKE_URL=https://$LAKE.blob.core.windows.net
 export IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 export IMDS_ENDPOINT=http://localhost:40342
 export RUST_LOG=${RUST_LOG:-info}
+# usnm-ingest takes its state from Cosmos (--cosmos) or from a file (--state-file), never both,
+# and reads both from these variables too. The steps pass --state-file and the record passes
+# --cosmos, so neither call gets the other's setting from the environment.
+unset USNM_COSMOS_ENDPOINT USNM_STATE_FILE
 mkdir -p "$RUN"
 serving() { jq -r .index_version "$RUN/reference/current.json"; }
+# The version the release staged, from the pointer publish-staged copies.
+staged_version() {
+  local pointer=$RUN/reference/index-storage-pending.json v
+  [ -s "$pointer" ] || die "no $pointer: this run directory has no finished release to publish"
+  v=$(jq -r '.index_version // empty' "$pointer") || die "$pointer isn't JSON"
+  [[ $v =~ ^pages-v[0-9]{8}-[0-9]+$ ]] || die "$pointer: index_version isn't pages-vYYYYMMDD-N"
+  echo "$v"
+}
 # What release and finish share: the writer's environment (the E4
 # profile's tuning, infra/modules/ingestjobs.bicep, so a run here compares
 # with the Azure ones), the #283 settings and the writer's data. A finish
@@ -147,11 +167,34 @@ case "$STEP" in
     fi
     dry=()
     ! $DRY_RUN || dry=(--dry-run)
+    # Only a publish records the run: a restore writes nothing to Cosmos. What the record needs is
+    # checked first, so a missing endpoint doesn't leave a long copy done and its run unrecorded.
+    record=false
+    if [ "$STEP" = publish ] && ! $DRY_RUN; then
+      record=true
+      [ -n "$COSMOS_ENDPOINT" ] ||
+        die "--step publish records the run in Cosmos: give --cosmos-endpoint (https://<account>.documents.azure.com/) or set USNM_COSMOS_ENDPOINT"
+      # The Arc identity's token goes to this host, so only a Cosmos account's will do.
+      cosmos_re='^https://[a-z0-9-]+\.documents\.azure\.com(:443)?/?$'
+      [[ $COSMOS_ENDPOINT =~ $cosmos_re ]] ||
+        die "the Cosmos endpoint (--cosmos-endpoint or USNM_COSMOS_ENDPOINT) isn't https://<account>.documents.azure.com/"
+      V=$(staged_version)
+    fi
     "$INGEST" --state-file "$RUN/state.json" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
       publish-staged --local-index-root "$RUN/qw" \
       --to-reference "$LAKE_URL/reference" \
       --to-index "https://$INDEX_ACCOUNT.blob.core.windows.net/qw-index" \
       ${dry[@]+"${dry[@]}"} ${mode[@]+"${mode[@]}"}
+    if $record; then
+      # The run's record is the snapshot's index_run.json, which publish-staged wrote into the
+      # local reference from the state file. import-staged-run creates the run, keeps an identical
+      # published one (a rerun), replaces a failed placeholder and refuses a different published
+      # run of the name. No state file, and no --current: the host's role covers index_runs
+      # only, so ops/current stays the ingest job's step after the switch.
+      "$INGEST" --cosmos "$COSMOS_ENDPOINT" --curated "$LAKE_URL/curated" --reference "$RUN/reference" \
+        import-staged-run --version "$V" ||
+        die "$V is copied to Azure, but its run isn't recorded in Cosmos: fix the cause and run --step publish again (it skips what is copied and keeps a run recorded already)"
+    fi
     ;;
   ready)
     [ -n "$APP_URL" ] || die "--step ready needs --app-url (the app's base URL)"
