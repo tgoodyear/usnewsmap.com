@@ -880,6 +880,10 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(letters, [("dead-letter", ["sn12345678_1900-01-01_ed-1_seq-1",
                                                     "sn12345678_1900-01-01_ed-1_seq-2"])])
         self.assertEqual(len(self.state["dead_lettered"]), 2)
+        # The dead-lettered pages are not pending.
+        self.assertNotIn("sn12345678/1900-01-01/ed-1/seq-1",
+                         [page for page, record in batch.owned_records(self.config, self.fake.records()).items()
+                          if record["stage"] not in ("published", "failed")])
         self.assertIn("selected", event)
         batch.tick(self.config, self.state, self.fake, lambda: None, NOW, dead_letter_failed=True)
         self.assertEqual(len([a for a in self.fake.actions if a[0] == "dead-letter"]), 1)

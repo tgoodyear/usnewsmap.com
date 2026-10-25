@@ -1667,7 +1667,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),
         "oldest_pending_seconds": int(max((now - at for page, at in selected.items()
-                                          if page not in owned or owned[page]["stage"] != "published"),
+                                          if page not in owned
+                                          or owned[page]["stage"] not in ("published", "failed")),
                                          default=0)),
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
