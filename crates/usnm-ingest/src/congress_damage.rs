@@ -32,6 +32,16 @@
 //! by the set of attempts it covers: a later run over the same set finds it and
 //! writes nothing, and one over a changed set writes another beside it.
 //!
+//! **The median.** `damage_median` is the median damage rate of the rated
+//! pages, for the whole series and for each decade. A summary keeps the rates
+//! in bins of 0.001 ([`RateHist`]), not the rates themselves, so that summaries
+//! sum, and the median is read from the summed bins to a thousandth. A page
+//! counts as the upper edge of its bin. For an odd number of rated pages the
+//! median is the middle page's; for an even number it is the mean of the two
+//! middle pages', as the median of `ocr-damage` is for newspapers: pages at
+//! 0.0 and 1.0 give 0.5005, and two pages in the bin from 0.008 to 0.009 give
+//! 0.009.
+//!
 //! Logs counts and volume ids, never text.
 
 use std::collections::BTreeMap;
@@ -361,6 +371,11 @@ pub fn encode_table(rows: &[PageRow]) -> anyhow::Result<Vec<u8>> {
 
 /// Damage rates in bins of 0.001 over `[0, 1]` (1.0 is in the last), kept
 /// sparse, so a median is known to a thousandth after the summaries are summed.
+///
+/// A rate is read back as the upper edge of its bin, so a page's rate and the
+/// median are each within 0.001 above the true value. [`RateHist::median`] is
+/// the usual median: the middle rate, or for an even count the mean of the two
+/// middle rates, each read as its bin's upper edge.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateHist {
     /// Pages by bin: bin `i` holds the rates from `i / 1000` up to `(i + 1) / 1000`.
@@ -388,21 +403,47 @@ impl RateHist {
         self.bins.values().sum()
     }
 
-    /// The upper edge of the bin holding the `q` quantile; none when empty.
+    /// The bin holding the `rank`th smallest rate (from 1, the smallest); none
+    /// when the histogram holds fewer than `rank`.
+    fn bin_of_rank(&self, rank: u64) -> Option<u16> {
+        let mut seen = 0;
+        for (bin, c) in &self.bins {
+            seen += c;
+            if seen >= rank {
+                return Some(*bin);
+            }
+        }
+        None
+    }
+
+    /// The upper edge of the bin holding the `q` quantile (the page at rank
+    /// `ceil(q * n)`, so for an even count the lower of the two middle pages at
+    /// `q` = 0.5; [`RateHist::median`] is the median); none when empty.
     pub fn quantile(&self, q: f64) -> Option<f64> {
         let n = self.total();
         if n == 0 {
             return None;
         }
-        let target = (q * n as f64).ceil().max(1.0) as u64;
-        let mut seen = 0;
-        for (bin, c) in &self.bins {
-            seen += c;
-            if seen >= target {
-                return Some(f64::from(*bin + 1) / f64::from(Self::BINS));
-            }
+        let rank = (q * n as f64).ceil().max(1.0) as u64;
+        let bin = self.bin_of_rank(rank)?;
+        Some(f64::from(bin + 1) / f64::from(Self::BINS))
+    }
+
+    /// The median, to a thousandth: the upper edge of the bin of the middle
+    /// page, or for an even count the mean of the upper edges of the bins of the
+    /// two middle pages (so two pages at 0.0 and 1.0 give 0.5005, not 0.001);
+    /// none when empty.
+    pub fn median(&self) -> Option<f64> {
+        let n = self.total();
+        if n == 0 {
+            return None;
         }
-        None
+        // The same page twice for an odd count.
+        let below = self.bin_of_rank(n.div_ceil(2))?;
+        let above = self.bin_of_rank(n / 2 + 1)?;
+        // One division, so the mean of two edges is the nearest f64 to it
+        // (0.0095, not 0.009500000000000001).
+        Some(f64::from(below + above + 2) / f64::from(2 * Self::BINS))
     }
 }
 
@@ -520,8 +561,9 @@ pub struct Rollup {
     pub damaged_share: Option<f64>,
     /// `badly_damaged / rated`.
     pub badly_damaged_share: Option<f64>,
-    /// The median damage rate of the rated pages, to a thousandth (the upper
-    /// edge of its [`RateHist`] bin).
+    /// The median damage rate of the rated pages, to a thousandth
+    /// ([`RateHist::median`]: for an even count, the mean of the upper edges of
+    /// the bins of the two middle pages).
     pub damage_median: Option<f64>,
 }
 
@@ -538,7 +580,7 @@ impl Rollup {
             badly_damaged: t.badly_damaged,
             damaged_share: share(t.damaged),
             badly_damaged_share: share(t.badly_damaged),
-            damage_median: t.rates.quantile(0.5),
+            damage_median: t.rates.median(),
         }
     }
 }
@@ -1072,13 +1114,72 @@ mod tests {
         assert_eq!(h.quantile(0.5), Some(0.01));
         assert_eq!(h.quantile(1.0), Some(1.0));
         assert_eq!(RateHist::default().quantile(0.5), None);
+        assert_eq!(RateHist::default().median(), None);
         // A median known to a thousandth: the issue's sample read 0.009.
         let mut m = RateHist::default();
         [0.002, 0.0085, 0.2].iter().for_each(|x| m.add(*x));
         assert_eq!(m.quantile(0.5), Some(0.009));
+        assert_eq!(m.median(), Some(0.009));
         let mut both = h.clone();
         both.merge(&m);
         assert_eq!(both.total(), 11);
+    }
+
+    fn hist(rates: &[f64]) -> RateHist {
+        let mut h = RateHist::default();
+        rates.iter().for_each(|x| h.add(*x));
+        h
+    }
+
+    #[test]
+    fn the_median_of_an_even_count_is_the_mean_of_the_middle_pages() {
+        // The two middle pages are 0.0 and 1.0, not the lower one.
+        assert_eq!(hist(&[0.0, 1.0]).median(), Some(0.5005));
+        assert_eq!(hist(&[1.0, 0.0]).median(), Some(0.5005));
+        // Middle pages in bins far apart, with pages outside them.
+        assert_eq!(hist(&[0.002, 0.0085, 0.2, 0.3]).median(), Some(0.105));
+        assert_eq!(hist(&[0.0, 0.0, 0.5, 1.0]).median(), Some(0.251));
+        // Middle pages in neighbouring bins; and in the same bin.
+        assert_eq!(hist(&[0.0085, 0.0095]).median(), Some(0.0095));
+        assert_eq!(hist(&[0.0081, 0.0089]).median(), Some(0.009));
+        assert_eq!(hist(&[0.0, 0.0]).median(), Some(0.001));
+        assert_eq!(hist(&[0.0, 0.0, 0.0, 1.0]).median(), Some(0.001));
+        assert_eq!(hist(&[0.0, 1.0, 1.0, 1.0]).median(), Some(1.0));
+        // The odd counts are the middle page's bin, as before.
+        assert_eq!(hist(&[0.5]).median(), Some(0.501));
+        assert_eq!(hist(&[0.0, 0.5, 1.0]).median(), Some(0.501));
+        assert_eq!(hist(&[0.0, 0.0, 0.0, 1.0, 1.0]).median(), Some(0.001));
+        // The lower quantile is still what `quantile` says.
+        assert_eq!(hist(&[0.0, 1.0]).quantile(0.5), Some(0.001));
+    }
+
+    #[test]
+    fn the_median_is_of_the_summed_pages() {
+        // Each histogram's median is its one page's; the sum's is between.
+        let (mut low, high) = (hist(&[0.0]), hist(&[1.0]));
+        assert_eq!((low.median(), high.median()), (Some(0.001), Some(1.0)));
+        low.merge(&high);
+        assert_eq!(low.median(), Some(0.5005));
+    }
+
+    #[test]
+    fn the_roll_up_median_of_an_even_count_is_between_the_middle_pages() {
+        // Two volumes of one page each, one clean and one damaged, in the
+        // 1820s: the corpus and the decade have two rated pages.
+        let one = |name: &str, text: &str| {
+            let rows = [score_page(&page(name, 1, 1821, Some(text)))];
+            summarize(&unit(name, 1), &rows)
+        };
+        let (clean, damaged) = (one("00001_00_00", CLEAN), one("00002_00_00", DAMAGED));
+        let median = |s: &Summary| Rollup::of(&s.total).damage_median.unwrap();
+        let (low, high) = (median(&clean), median(&damaged));
+        assert!(low < high, "{low} {high}");
+        let c = roll_up("serialset", &[damaged, clean]);
+        for r in [&c.total, &c.by_decade[&1820]] {
+            assert_eq!(r.rated, 2);
+            let m = r.damage_median.unwrap();
+            assert!((m - (low + high) / 2.0).abs() < 1e-9, "{m} {low} {high}");
+        }
     }
 
     #[test]
