@@ -14,7 +14,9 @@ eligible. Published version IDs must be safe single path segments before any
 snapshot objects are read.
 
 Export stages all selected jobs locally before reserving the cohort under one
-renewable `ocr-sync` lock. It reads the published metadata and native ledger
+renewable `ocr-sync` lock. If another owner holds the lock (the hourly
+`ocr-sync` pickup holds it for under a minute), export and claim try again every
+10 seconds for up to 2 minutes before they fail. It reads the published metadata and native ledger
 once, validates the whole cohort, and writes one create-only queued part for
 fresh reservations. If any row conflicts, no new reservations are written. It
 verifies that the published version has not changed since staging, checks batch,
