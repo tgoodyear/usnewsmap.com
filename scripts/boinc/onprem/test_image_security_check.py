@@ -133,11 +133,11 @@ class ImageSecurityCheck(unittest.TestCase):
         (self.stub_dir / "installed-php8.2-common").write_text(php + "\n")
         (self.stub_dir / "installed-apache2").write_text(apache + "\n")
 
-    def set_mysql_unit(self, digest):
+    def set_mysql_unit(self, digest, repo="docker.io/library/mysql"):
         # The line mysql-setup.sh writes into the unit.
         self.mysql_unit.write_text(
             "[Service]\nExecStart=/usr/bin/podman run --rm --name usnm-boinc-mysql --network host \\\n"
-            f"  --stop-timeout 110 docker.io/library/mysql@{digest}\nExecStop=/usr/bin/podman stop -t 110 usnm-boinc-mysql\n")
+            f"  --stop-timeout 110 {repo}@{digest}\nExecStop=/usr/bin/podman stop -t 110 usnm-boinc-mysql\n")
 
     def run_check(self, *extra, defaults=True, php_floor=PHP_FLOOR, apache_floor=APACHE_FLOOR):
         """The script with the host's usual flags (defaults), pointed at this test's files, then extra."""
@@ -372,6 +372,47 @@ class ImageSecurityCheck(unittest.TestCase):
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertIn("SECURITY apache2", done.stdout)
         self.assertIn("COULD-NOT-CHECK podman image inspect", done.stdout)
+
+    def test_every_form_of_a_mysql_image_reference_finds_its_pin(self):
+        # The name a unit pins is the reference without its tag and digest. A colon before the last
+        # slash is a registry port, not a tag; an untagged name and a digest form have no tag to strip.
+        cases = [
+            ("registry.example:5000/library/mysql:8.4", "registry.example:5000/library/mysql"),
+            ("registry.example:5000/library/mysql", "registry.example:5000/library/mysql"),
+            ("registry.example:5000/mysql:8.4@" + PINNED, "registry.example:5000/mysql"),
+            ("registry.example:5000/mysql@" + PINNED, "registry.example:5000/mysql"),
+            ("docker.io/library/mysql", "docker.io/library/mysql"),
+            ("docker.io/library/mysql:8.4@" + PINNED, "docker.io/library/mysql"),
+            ("docker.io/library/mysql@" + PINNED, "docker.io/library/mysql"),
+            ("localhost/mysql:8.4", "localhost/mysql"),
+            ("mysql:8.4", "mysql"),
+            ("mysql", "mysql"),
+        ]
+        for image, name in cases:
+            with self.subTest(image=image):
+                self.set_mysql_unit(PINNED, repo=name)
+                self.state(mysql_digest=PINNED)
+                (self.stub_dir / "calls.log").unlink(missing_ok=True)
+                done = self.run_check("--mysql-image", image)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn(f"MySQL {image} is still {PINNED}", done.stdout)
+                self.assertIn(f"podman pull -q {image}", self.calls())
+
+                self.state(mysql_digest=MOVED)
+                done = self.run_check("--mysql-image", image)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn(f"MYSQL-DRIFT {image} is {MOVED} now; the unit runs {PINNED}", done.stdout)
+
+    def test_a_registry_port_is_part_of_the_name_the_unit_must_pin(self):
+        image = "registry.example:5000/library/mysql:8.4"
+        # Not the registry without its port, not another port, not the same name on docker.io.
+        for repo in ("registry.example/library/mysql", "registry.example:5001/library/mysql", "docker.io/library/mysql"):
+            with self.subTest(repo=repo):
+                self.set_mysql_unit(PINNED, repo=repo)
+                done = self.run_check("--mysql-image", image)
+                self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+                self.assertIn("has no single registry.example:5000/library/mysql@sha256 digest", done.stdout)
+                self.assertNotIn("OK:", done.stdout)
 
     def test_a_pin_to_another_image_is_not_taken_for_mysql(self):
         self.mysql_unit.write_text(f"ExecStart=/usr/bin/podman run docker.io/library/mariadb@{PINNED}\n")

@@ -60,6 +60,18 @@ findings=0 errors=0
 finding() { findings=$((findings + 1)); log "$*"; }
 cannot() { errors=$((errors + 1)); log "COULD-NOT-CHECK $*"; }
 
+# The name a unit pins with @sha256:..., from an image reference: no @digest, no :tag. A colon is
+# a tag only in the last path component; earlier, it is a registry port, so
+# registry.example:5000/library/mysql:8.4 gives registry.example:5000/library/mysql. An untagged
+# name, with or without a port, and name:tag@sha256:... come out right too.
+image_name() {
+  local ref=${1%%@*}
+  case ${ref##*/} in
+    *:*) ref=${ref%:*} ;;
+  esac
+  printf '%s\n' "$ref"
+}
+
 # The packages. The script runs in a container from the image, as root, and prints
 # PENDING lines (apt's own Inst lines), one HELD line (the "not upgraded" count, then the names
 # apt lists as kept back) and FLOOR lines (package, installed, floor, ok|below).
@@ -139,12 +151,13 @@ fi
 # new image if the tag moved, which is the image the manual roll uses next.
 if [ "$SKIP_MYSQL" = false ]; then
   digest_re='^sha256:[0-9a-f]{64}$'
+  mysql_name=$(image_name "$MYSQL_IMAGE")
   pinned=""
   if [ -r "$MYSQL_UNIT" ]; then
-    pinned=$(grep -o "${MYSQL_IMAGE%%:*}@sha256:[0-9a-f]\{64\}" "$MYSQL_UNIT" | sed 's/.*@//' | sort -u || true)
+    pinned=$(grep -o "$mysql_name@sha256:[0-9a-f]\{64\}" "$MYSQL_UNIT" | sed 's/.*@//' | sort -u || true)
   fi
   if ! [[ $pinned =~ $digest_re ]]; then
-    cannot "$MYSQL_UNIT has no single ${MYSQL_IMAGE%%:*}@sha256 digest"
+    cannot "$MYSQL_UNIT has no single $mysql_name@sha256 digest"
   elif ! podman pull -q "$MYSQL_IMAGE" > /dev/null; then
     cannot "podman pull $MYSQL_IMAGE failed"
   elif ! current=$(podman image inspect "$MYSQL_IMAGE" --format '{{.Digest}}'); then
