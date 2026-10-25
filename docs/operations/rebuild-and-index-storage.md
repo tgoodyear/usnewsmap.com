@@ -361,7 +361,9 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
      batch version already scored, so it pays only for new ones. Run it
      again until its `ocr damage finished` line shows `left` 0. On 24
      October 2026 the list existed for pages-v20261010-2 and not for
-     pages-v20261022-1.
+     pages-v20261022-1; it was then written on-prem (#1090). Run the pass
+     on-prem first, as the damage writer's own identity (docs/operations/japanese-ocr.md,
+     "On-prem"); the ingest job is the fallback:
 
      ```sh
      scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v<date>-<n> --max-runtime-secs 165600
@@ -437,7 +439,10 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    provision. The retained lake searcher serves the old indexes again. Until
    then the new API keeps its loaded new version if its reload fails. Once
    the old version serves, record it in `ops/current` again as in step 5,
-   between controller ticks and with the same image:
+   between controller ticks and with the same image. First check step 5's
+   OCR prerequisites for it: a version that served while seeding ran has
+   its version list and manifest, but the seeder also needs a fetched list
+   for the manifest version it reads.
 
    ```sh
    scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <sha> --wait-mins 20 \
@@ -445,10 +450,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    ```
 
    Its run is already in the state, so the import finds it and only
-   `ops/current` changes. Check step 5's OCR prerequisites for it too: a
-   version that served while seeding ran has its version list and
-   manifest, but the seeder also needs a fetched list for the manifest
-   version it reads. Nothing else repairs `ops/current` here: with SERVE
+   `ops/current` changes. Nothing else repairs `ops/current` here: with SERVE
    false every release stages, and a staged release leaves it alone. Left
    naming the new version, `/v1/status` keeps announcing that version and
    the OCR pipeline keeps working on a version the site doesn't serve. Keep
