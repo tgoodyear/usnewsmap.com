@@ -1,25 +1,8 @@
 #!/usr/bin/env bash
-# Bound a read-only CLI request, including shell-function subscription adapters.
-# Job control gives each request/timer its own process group so the watchdog and
-# cleanup kill their children too, without leaving Azure CLI or sleep processes.
-acr_before_deadline() (
-  local deadline=$1 remaining request timer result=0
-  shift
-  remaining=$((deadline - SECONDS))
-  [ "$remaining" -gt 0 ] || return 124
-  set -m
-  "$@" &
-  request=$!
-  (sleep "$remaining"; kill -KILL -- "-$request" 2>/dev/null) >/dev/null 2>&1 &
-  timer=$!
-  trap 'kill -KILL -- "-$request" "-$timer" 2>/dev/null || true' EXIT
-  wait "$request" 2>/dev/null || result=$?
-  kill -KILL -- "-$timer" 2>/dev/null || true
-  wait "$timer" 2>/dev/null || true
-  trap - EXIT
-  [ "$SECONDS" -lt "$deadline" ] || return 124
-  return "$result"
-)
+# run_before_deadline bounds the read-only requests below, shell-function subscription adapters
+# included.
+# shellcheck source=scripts/lib/bounded-az.sh
+. "$(dirname "${BASH_SOURCE[0]}")/bounded-az.sh"
 
 # acr_build_verified AZ_COMMAND REGISTRY REPOSITORY:TAG BUILD_TIMEOUT [build arguments...]
 # AZ_COMMAND may be a function (e.g. baz) that supplies the caller's subscription.
@@ -51,7 +34,7 @@ acr_build_verified() (
   echo "ACR $registry run $run_id: queued $image (CLI exit $submit_status)" >&2
   deadline=$((SECONDS + wait_seconds))
   while :; do
-    if run=$(acr_before_deadline "$deadline" "$cli" acr task show-run --registry "$registry" --run-id "$run_id" -o json) &&
+    if run=$(run_before_deadline "$deadline" "$cli" acr task show-run --registry "$registry" --run-id "$run_id" -o json) &&
       status=$(jq -er '.status | select(type == "string")' <<< "$run"); then
       case "$status" in
         Succeeded) break ;;
@@ -81,7 +64,7 @@ acr_build_verified() (
     echo "error: ACR $registry run $run_id reported an invalid digest for $image" >&2
     return 1
   }
-  actual=$(acr_before_deadline "$deadline" "$cli" acr repository show --name "$registry" --image "$image" --query digest -o tsv) || {
+  actual=$(run_before_deadline "$deadline" "$cli" acr repository show --name "$registry" --image "$image" --query digest -o tsv) || {
     echo "error: cannot verify $registry/$image after ACR run $run_id" >&2
     return 1
   }
