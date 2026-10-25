@@ -639,7 +639,8 @@ mod cli_tests {
     static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        ENV.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]
