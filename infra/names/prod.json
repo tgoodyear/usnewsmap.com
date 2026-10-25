@@ -58,6 +58,8 @@
   "ocrNodeWriterRole": "usnm-ocr-nodewriter-role-prod",
   "ocrNodesWorkbookTitle": "usnm OCR nodes (prod)",
   "ocrSyncBacklogAlert": "usnm-ocrs-backlog-alert-prod",
+  "ocrSyncFailedAlert": "usnm-ocrs-failed-alert-prod",
+  "ocrSyncStaleAlert": "usnm-ocrs-stale-alert-prod",
   "ocrSyncJob": "usnm-ocrs-caj-prod",
   "ocrVault": "usnmocrkvprodffapzy",
   "ocrWorkspace": "usnm-ocr-log-prod",

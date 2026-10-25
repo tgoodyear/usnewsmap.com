@@ -84,6 +84,7 @@ param ocrSyncOnPrem = bool(readEnvironmentVariable('USNM_OCR_SYNC_ONPREM', 'fals
 param batchHost = readEnvironmentVariable('USNM_BATCH_HOST', '')
 param ingestOnPrem = bool(readEnvironmentVariable('USNM_INGEST_ONPREM', 'false'))
 param backfillOnPrem = bool(readEnvironmentVariable('USNM_BACKFILL_ONPREM', 'false'))
+param ocrSyncAlerts = bool(readEnvironmentVariable('USNM_OCR_SYNC_ALERTS', 'false'))
 param scanArchiveUploaderId = readEnvironmentVariable('USNM_SCAN_ARCHIVE_UPLOADER_ID', '')
 param ocrKeyVaultAdmins = readEnvironmentVariable('USNM_OCR_KEYVAULT_ADMINS', '')
 param ocrSyncCron = readEnvironmentVariable('USNM_OCR_SYNC_CRON', '17 * * * *')

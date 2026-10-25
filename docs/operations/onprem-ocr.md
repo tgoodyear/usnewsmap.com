@@ -159,7 +159,7 @@ The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists fo
 - Message Processor on `ocr-deadletter`, Message Sender and Queue Data Reader on all three (`--from-quarantine` puts dead letters back on `ocr-deadletter`);
 - Cosmos Data Contributor on `ops` only, Monitoring Metrics Publisher, and AcrPull to install the binary.
 
-The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); traces and metrics go to the environment's Application Insights as before. The two alerts below read the Azure job's console logs, so they stay quiet while the pickup runs on-prem.
+The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); metrics go to the environment's Application Insights as before, and the alerts below read them.
 
 Each run:
 
@@ -221,7 +221,15 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --report
 ```
 
-**Alerts** (with alert emails): a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+**Alerts** (with alert emails). For the Azure job, a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+
+For the on-prem pickup, `USNM_OCR_SYNC_ALERTS` (on in prod, with `USNM_OCR_SYNC_ONPREM`; #1139) deploys three log alerts on the environment's workspace (`infra/modules/ocr-sync-alerts.bicep`). They read the metrics the run sends to Application Insights, so CT 215 needs no agent:
+
+- `usnm-ocrs-failed-alert-<env>` (severity 2): a run recorded `ingest.command_failures` (command `ocr-sync`) in the last 30 minutes. Every `usnm-ingest` that ends in error records it before it exits. The error itself is in the journal.
+- `usnm-ocrs-stale-alert-<env>` (severity 2): no `ocr.out.oldest_age_s` for more than 2 hours (2 h 20 min). Only a run that gets through the pickup records it, so this rule catches a stopped timer, a container that is down, a run killed before it could record a failure, and telemetry that no longer arrives.
+- `usnm-ocrs-backlog-alert-<env>` (severity 3): the last run's `ocr.out.oldest_age_s` is over 72 hours. `ocr.out.parts_left` has how many parts wait.
+
+Each email names, in `Detail`, the last failure's time, the last good run's time or the oldest part's day. Each costs $0.50 a month (checked every 15 minutes, the backlog rule hourly). The failure count needs a `usnm-ingest` from #1139 or later in CT 215 (`batch-ct-ingest.sh --install`); the other two work with any release.
 
 ## Our OCR in releases (#296)
 

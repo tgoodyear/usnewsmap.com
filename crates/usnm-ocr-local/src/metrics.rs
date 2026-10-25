@@ -1,7 +1,7 @@
 //! The pickup's instruments (08 §8.1.2). They sit on the `usnm-ingest`
 //! meter, as the rest of the job's metrics do, so the exported series
 //! (`ocr_sync.parts`, `ocr.out.oldest_age_s`) are the ones `ocr-sync` has
-//! always written. With no meter provider installed (telemetry off) they
+//! always written, with `ocr.out.parts_left` beside them (#1139). With no meter provider installed (telemetry off) they
 //! record nothing.
 
 use std::sync::OnceLock;
@@ -14,6 +14,8 @@ pub(crate) struct Metrics {
     pub ocr_sync_parts: Counter<u64>,
     /// The age of the oldest part `ocr-sync` left in `ocr-out`.
     pub ocr_out_oldest_age: Gauge<u64>,
+    /// The parts `ocr-sync` left in `ocr-out`.
+    pub ocr_out_parts_left: Gauge<u64>,
 }
 
 /// The instruments, created on first use from the global meter provider
@@ -31,6 +33,10 @@ pub(crate) fn metrics() -> &'static Metrics {
                 .u64_gauge("ocr.out.oldest_age_s")
                 .with_unit("s")
                 .with_description("Age of the oldest part left in ocr-out after a pickup")
+                .build(),
+            ocr_out_parts_left: m
+                .u64_gauge("ocr.out.parts_left")
+                .with_description("Parts left in ocr-out after a pickup")
                 .build(),
         }
     })
