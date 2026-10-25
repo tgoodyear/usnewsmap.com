@@ -357,6 +357,26 @@ pub async fn import_staged_run(
     state.run(version).await
 }
 
+/// Record `run`'s version, once promoted, as the pipeline state's current
+/// one (`ops/current`): `import-staged-run --current`, after the operator
+/// copied the pending pointer to `current.json`
+/// (docs/operations/rebuild-and-index-storage.md, "Index storage cutover").
+/// A staged release leaves `ops/current` as it was, and `/v1/status` and
+/// the BOINC export read it. Refuses unless `current.json` names the
+/// version and its run is published, as a release's repair does
+/// ([`crate::release::record_current_version`]); an interrupted publish is
+/// left to the release, which marks it published from the pointer.
+pub async fn record_current(
+    state: &State,
+    reference: &dyn ObjectStore,
+    run: &IndexRun,
+) -> anyhow::Result<crate::release::CurrentVersion> {
+    let (live, _) = crate::release::live_pointer(reference)
+        .await?
+        .context("there is no current.json: promote the version first")?;
+    crate::release::record_current_version(state, &live, run).await
+}
+
 /// Record a failed placeholder run for every version name the lake's
 /// `reference` already has for today and the next days, so a release on
 /// this state (`Release::next_names`, which reads only the state) picks a
@@ -1462,6 +1482,74 @@ mod tests {
         assert!(
             format!("{e:#}").contains("two versions under one name"),
             "{e:#}"
+        );
+    }
+
+    async fn promote(f: &Fixture, version: &str) {
+        f.reference
+            .put(
+                "current.json",
+                serde_json::to_vec(&json!({"index_version": version})).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Once `current.json` names the staged version, `ops/current` follows;
+    /// again, nothing changes.
+    #[tokio::test]
+    async fn a_promoted_version_becomes_the_current_one() {
+        let f = fixture().await;
+        f.state.set_current_version("v1").await.unwrap();
+        promote(&f, "v2").await;
+        let (run, _) = f.state.run("v2").await.unwrap().unwrap();
+        let recorded = record_current(&f.state, &f.reference, &run).await.unwrap();
+        assert_eq!(
+            (recorded.version.as_str(), recorded.previous.as_deref()),
+            ("v2", Some("v1"))
+        );
+        assert!(recorded.changed());
+        assert_eq!(
+            f.state.current_version().await.unwrap().as_deref(),
+            Some("v2")
+        );
+        let again = record_current(&f.state, &f.reference, &run).await.unwrap();
+        assert!(!again.changed());
+        assert_eq!(again.previous.as_deref(), Some("v2"));
+    }
+
+    /// Never ahead of the live pointer: before the promotion, without a
+    /// pointer, or for a run that isn't published, `ops/current` is kept.
+    #[tokio::test]
+    async fn the_current_version_follows_only_a_published_live_pointer() {
+        let f = fixture().await;
+        f.state.set_current_version("v1").await.unwrap();
+        let (run, etag) = f.state.run("v2").await.unwrap().unwrap();
+        let e = record_current(&f.state, &f.reference, &run)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{e:#}").contains("current.json names `v1`, not `v2`"),
+            "{e:#}"
+        );
+        std::fs::remove_file(f.reference.root().join("current.json")).unwrap();
+        let e = record_current(&f.state, &f.reference, &run)
+            .await
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("no current.json"), "{e:#}");
+        promote(&f, "v2").await;
+        let mut building = run.clone();
+        building.status = RunStatus::Building;
+        building.published_at = None;
+        f.state.update_run(&building, &etag).await.unwrap();
+        let e = record_current(&f.state, &f.reference, &building)
+            .await
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("not published"), "{e:#}");
+        assert_eq!(
+            f.state.current_version().await.unwrap().as_deref(),
+            Some("v1")
         );
     }
 

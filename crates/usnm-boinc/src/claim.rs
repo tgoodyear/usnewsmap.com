@@ -27,7 +27,7 @@ use anyhow::{bail, ensure, Context};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::Path,
     time::Duration,
 };
@@ -35,6 +35,7 @@ use usnm_ingest::ocr_local::{boinc::Snapshot, ledger::Ledger};
 use usnm_ocr_contract::{
     fetched,
     message::{self, OcrMessage},
+    prefetch,
 };
 use usnm_ocr_worker::engine;
 use usnm_store::{
@@ -108,6 +109,11 @@ pub struct Sources<'a> {
     /// volunteers never fetch from LoC, so a page without a cached scan stays
     /// with the nodes.
     pub fetched: &'a fetched::List,
+    /// The pages of the cohort's prefetch manifest that are on `fetched`, by (batch, doc
+    /// id), with the batch version the manifest has: `export` builds a job only from a
+    /// manifest row, so a page outside it is left for the nodes rather than failing the
+    /// export ([`manifest_pages`]). `None` skips the check.
+    pub manifest: Option<&'a ManifestPages>,
     /// The Tesseract models the worker image holds.
     pub installed: &'a BTreeSet<String>,
     /// The source languages BOINC results can be trusted for (the gold calibration's
@@ -161,6 +167,25 @@ enum Verdict {
     Skip(&'static str),
 }
 
+/// A prefetch manifest's pages, by (batch, doc id), with their batch versions.
+pub type ManifestPages = HashMap<(String, String), u16>;
+
+/// The pages of a prefetch manifest (`manifest.parquet`) that are on `fetched`. Only
+/// those are kept, so a manifest of millions of pages costs as much as the fetched list.
+pub fn manifest_pages(
+    bytes: bytes::Bytes,
+    fetched: &fetched::List,
+) -> anyhow::Result<ManifestPages> {
+    let mut pages = HashMap::new();
+    prefetch::decode_where(bytes, |row| {
+        if fetched.contains(&row.batch, &row.doc_id) {
+            pages.insert((row.batch.clone(), row.doc_id.clone()), row.batch_version);
+        }
+        false
+    })?;
+    Ok(pages)
+}
+
 fn judge(text: &str, src: &Sources<'_>) -> Verdict {
     let Ok((msg, key)) = message::decode(text) else {
         return Verdict::Skip("invalid");
@@ -191,6 +216,15 @@ fn judge(text: &str, src: &Sources<'_>) -> Verdict {
     }
     if !src.fetched.contains(&msg.batch, &doc_id) {
         return Verdict::Skip("no_cached_scan");
+    }
+    if let Some(manifest) = src.manifest {
+        match manifest.get(&(msg.batch.clone(), doc_id.clone())) {
+            None => return Verdict::Skip("not_in_manifest"),
+            Some(version) if *version != row.batch_version => {
+                return Verdict::Skip("manifest_batch_version")
+            }
+            Some(_) => {}
+        }
     }
     Verdict::Use(LedgerRow::from_queued(row))
 }
