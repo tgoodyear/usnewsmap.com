@@ -10,8 +10,7 @@
 //! awardee and the `batch_` prefix: LoC's
 //! `…/storage-services/service/ndnp/<aw>/batch_<b>_verNN/<path>` is
 //! `<root><b>_verNN/<path>`. On 24 October 1,074 of the 3,010 batches were
-//! public (38.1% of the pages); every object of the others answers 403
-//! AccessDenied.
+//! public (38.1% of the pages); the others' manifests answer 403.
 //!
 //! **What is taken.** A bag manifest is taken only if its body matches the
 //! object's `x-amz-meta-md5` (the uploader's md5) or, without that header,

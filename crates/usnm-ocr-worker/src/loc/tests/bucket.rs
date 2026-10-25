@@ -945,3 +945,55 @@ async fn a_guess_on_disk_is_used_only_while_the_bucket_is() {
         Some(p1.url.replace("0101.jp2", "1890050301.xml").as_str())
     );
 }
+
+#[tokio::test]
+async fn a_mets_loc_serves_under_a_guess_confirms_it() {
+    let (s, b) = (StandIn::start().await, StandIn::start().await);
+    both(&s, &b);
+    // The bucket has the bag but not this METS: LoC serves it under the
+    // guess, with the bag's md5.
+    b.script(METS, Scripted::Status(404));
+    let cache = tempfile::tempdir().unwrap();
+    let loc = client(&s, &b, Some(cache.path().into()));
+    let p1 = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+    assert_eq!(s.hits(".xml"), 1);
+    assert_eq!(urls_kept(&cache), (Some(batch_url(&s, "xx")), None));
+    assert!(!kept(&cache).join("url.wrong").exists());
+    // Checked: the batch's JP2s seed the known-good item now.
+    loc.seed_storage_known_good(&p1.url);
+    assert!(loc.storage_health.lock().unwrap().known_good.is_some());
+}
+
+#[tokio::test]
+async fn a_jp2_loc_serves_under_a_guess_confirms_it_and_one_that_isnt_the_bags_doesnt() {
+    for good in [true, false] {
+        let (s, b) = (StandIn::start().await, StandIn::start().await);
+        both(&s, &b);
+        if !good {
+            s.put(&file(BATCH, "0099.jp2"), b"cut short".to_vec());
+        }
+        let cache = tempfile::tempdir().unwrap();
+        let loc = client(&s, &b, Some(cache.path().into()));
+        // Bag and METS from the bucket; the JP2 from LoC (the bucket held,
+        // say).
+        let p2 = loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
+        assert_eq!(urls_kept(&cache), (None, Some(batch_url(&s, "xx"))));
+        let scan = loc.scan_resolved(&key(2), &p2, ImageSize::Full).await;
+        assert_eq!(scan.is_ok(), good, "{scan:?}");
+        let kept = urls_kept(&cache);
+        if good {
+            assert_eq!(kept, (Some(batch_url(&s, "xx")), None));
+            // The bag in memory is checked too: another page from LoC asks
+            // nothing more of the disk.
+            let p1 = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+            loc.scan_resolved(&key(1), &p1, ImageSize::Full)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(urls_kept(&cache), kept);
+        } else {
+            assert_eq!(kept, (None, Some(batch_url(&s, "xx"))));
+        }
+        assert_eq!(s.hits(REDIRECT), 0);
+    }
+}

@@ -21,10 +21,12 @@
 //! storage URL the batch's name gives as a guess ([`Bag::guessed`], the
 //! `url.guessed` file beside the manifest, not `url`), used only while the
 //! bucket is on: without it, the batch is looked up on LoC as if nothing
-//! were on disk. When LoC answers 404 for a file under a guessed URL,
-//! Chronicling America's redirect is asked where the batch is (as for a
-//! manifest LoC doesn't have at the guessed path), and the batch's URL is
-//! moved there and kept as checked before anything goes to the item API.
+//! were on disk. A METS or JP2 LoC serves under a guessed URL, matching
+//! the bag's md5, confirms it: the guess is kept as checked. When LoC
+//! answers 404 for a file under a guessed URL, Chronicling America's
+//! redirect is asked where the batch is (as for a manifest LoC doesn't
+//! have at the guessed path), and the batch's URL is moved there and kept
+//! as checked before anything goes to the item API.
 //!
 //! **The item API route** (the worker's, and the fetcher's fallback): for
 //! each issue, one request to loc.gov's item JSON
@@ -204,6 +206,9 @@ pub struct LocClient {
     /// batch whose URL was a guess ([`LocClient::relocate`]); `None` where
     /// it named nowhere on the storage service.
     located: moka::future::Cache<String, Option<String>>,
+    /// Batches whose guessed URL is being kept as checked right now
+    /// ([`LocClient::confirm`]).
+    confirming: Mutex<std::collections::HashSet<String>>,
     health: Mutex<ApiHealth>,
     storage_health: Mutex<ApiHealth>,
     metrics: Metrics,
@@ -326,6 +331,7 @@ impl LocClient {
                 .max_capacity(4096)
                 .time_to_live(Duration::from_secs(3600))
                 .build(),
+            confirming: Mutex::new(std::collections::HashSet::new()),
             health: Mutex::new(ApiHealth::default()),
             storage_health: Mutex::new(ApiHealth::default()),
             bucket: cfg.bucket.clone().map(bucket::Bucket::new).transpose()?,
@@ -1194,6 +1200,45 @@ impl LocClient {
         Ok(moved.then_some(checked))
     }
 
+    /// Keep batch `dir`'s guessed URL `url` as checked: LoC served one of
+    /// its files there, matching the bag's md5 (a METS in
+    /// [`Self::issue_frames`], a JP2 in [`Self::scan_resolved`]), as it
+    /// would the manifest. Only while the bag in memory is still that
+    /// guess, and once for the batch's pages in flight at once.
+    async fn confirm(&self, dir: &str, url: &str) {
+        let Some(Some(bag)) = self.bags.get(dir).await else {
+            return;
+        };
+        if !bag.guessed || bag.url != url {
+            return;
+        }
+        if !self.confirming.lock().unwrap().insert(dir.to_owned()) {
+            return;
+        }
+        tracing::info!(
+            batch = dir,
+            url,
+            "LoC serves a batch's files under its guessed URL; keeping it as checked"
+        );
+        if let Some(c) = self.cache_dir(dir) {
+            if let Err(e) = write_checked_url(&c, url).await {
+                tracing::warn!(batch = dir, error = %e, "can't keep the batch's URL on disk");
+            }
+        }
+        self.bags
+            .insert(
+                dir.to_owned(),
+                Some(Arc::new(Bag {
+                    dir: dir.to_owned(),
+                    url: url.to_owned(),
+                    guessed: false,
+                    index: bag.index.clone(),
+                })),
+            )
+            .await;
+        self.confirming.lock().unwrap().remove(dir);
+    }
+
     /// `page` where its batch is, when it was placed under its batch's
     /// guessed URL, LoC answered 404 for it there, and the batch is
     /// elsewhere ([`Self::relocate`]). Only with LoC's bucket, the one
@@ -1284,6 +1329,7 @@ impl LocClient {
                                 let mut got = self
                                     .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
                                     .await?;
+                                let under_bag_url = got.is_some();
                                 // Not under a guessed URL: the batch may
                                 // be elsewhere.
                                 if got.is_none() {
@@ -1316,6 +1362,9 @@ impl LocClient {
                                         batch::md5_hex(&got.body),
                                         batch::hex(&md5)
                                     )));
+                                }
+                                if under_bag_url && bag.guessed {
+                                    self.confirm(&bag.dir, &bag.url).await;
                                 }
                                 got.body
                             }
@@ -1456,8 +1505,8 @@ impl LocClient {
             )
             .await
         };
-        let (page, got) = match jp2(page.url.clone()).await? {
-            Some(got) => (page.clone(), got),
+        let (page, got, first) = match jp2(page.url.clone()).await? {
+            Some(got) => (page.clone(), got, true),
             None => {
                 let moved = self.moved(page).await?;
                 let got = match &moved {
@@ -1468,7 +1517,7 @@ impl LocClient {
                     tracing::warn!(url = page.url, "a JP2 the bag lists isn't there");
                     return Ok(None);
                 };
-                (p, got)
+                (p, got, false)
             }
         };
         let md5 = batch::md5(&got.body);
@@ -1479,6 +1528,15 @@ impl LocClient {
                 batch::hex(&md5),
                 batch::hex(&page.md5)
             )));
+        }
+        // Served where the bag put it: if that is a guess, it was right.
+        if first && self.bucket.is_some() {
+            if let Some((dir, _)) = bucket::key(&self.cfg.storage_root, &page.url) {
+                let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
+                if page.url.starts_with(&guess) {
+                    self.confirm(dir, &guess).await;
+                }
+            }
         }
         Ok(Some(Scan {
             iiif_base: page.iiif_base.clone(),
@@ -1569,7 +1627,7 @@ pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Res
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| e.without_url().to_string())?
+        .map_err(|e| error_chain(&e.without_url()))?
     {
         if body.len() + chunk.len() > max {
             return Err(format!("response over {max} bytes"));
