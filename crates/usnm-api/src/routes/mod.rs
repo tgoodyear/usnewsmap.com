@@ -89,10 +89,14 @@ impl Ctx {
 /// aggregate counts the pages only American Stories' text finds (#218).
 /// 7: without `lang`, an English query's baselines count English pages, and
 /// the aggregate says which pages its baselines count (`baseline`, #237).
+/// 8: a number joined to a fraction (`61½`) also finds its slash spellings,
+/// `61 1/2` and `611/2`, so the same request now returns other pages (#1067).
 /// Also bump it when `usnm_core::query_language`'s rule or word lists change:
 /// they decide a search's baselines from its canonical request, so a body
-/// cached under the old rule would be wrong under the new one.
-pub(crate) const RESPONSE_FORMAT: u32 = 7;
+/// cached under the old rule would be wrong under the new one. The same goes
+/// for a change to which pages a canonical request finds: the cache key holds
+/// the index version, not the API's.
+pub(crate) const RESPONSE_FORMAT: u32 = 8;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);
