@@ -450,19 +450,28 @@ function runEnded(r: IndexRun): string | null {
  * report of its last run, or, when the job has none, the newest index run
  * (`crates/usnm-api/src/status/activity.rs`). A release run elsewhere, such
  * as an on-prem full rebuild (#283), isn't in the job's report, while
- * `indexing.runs` lists every run.
+ * `indexing.runs` lists every run. A failed or stopped run may have no end
+ * time (`/v1/status` derives `duration_secs` from `published_at` only): it
+ * counts by its start, with `ended` false, so a later failure isn't hidden
+ * behind an older successful build.
  */
-export function laterIndexRun(s: Status): { run: IndexRun; ended_at: string } | null {
+export function laterIndexRun(s: Status): { run: IndexRun; at: string; ended: boolean } | null {
   const i = s.indexing;
   const last = s.activity?.available ? s.activity.last : null;
   if (!i.available || !last) return null;
-  let newest: { run: IndexRun; ended_at: string } | null = null;
+  let newest: { run: IndexRun; at: string; ended: boolean } | null = null;
   for (const run of i.runs) {
     const ended_at = runEnded(run);
-    if (ended_at && (!newest || Date.parse(ended_at) > Date.parse(newest.ended_at))) newest = { run, ended_at };
+    const terminal = run.status === "failed" || run.status === "stopped";
+    const seen = ended_at
+      ? { run, at: ended_at, ended: true }
+      : terminal
+        ? { run, at: run.started_at, ended: false }
+        : null;
+    if (seen && (!newest || Date.parse(seen.at) > Date.parse(newest.at))) newest = seen;
   }
   if (!newest || newest.run.index_version === last.index_version) return null;
-  return Date.parse(newest.ended_at) > Date.parse(last.ended_at) ? newest : null;
+  return Date.parse(newest.at) > Date.parse(last.ended_at) ? newest : null;
 }
 
 export interface OcrLine {

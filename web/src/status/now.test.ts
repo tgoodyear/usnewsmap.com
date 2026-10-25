@@ -707,7 +707,34 @@ describe("laterIndexRun", () => {
     if (!s.indexing.available) throw new Error("the fixture has the indexing section");
     const rebuild = run("pages-v20261022-1", "2026-10-22T15:00:00Z", "2026-10-24T05:19:12Z");
     s.indexing.runs = [rebuild, { ...run("pages-v20261017-1", "2026-10-17T10:00:00Z", ""), published_at: null }];
-    expect(laterIndexRun(s)).toEqual({ run: rebuild, ended_at: "2026-10-24T05:19:12Z" });
+    expect(laterIndexRun(s)).toEqual({ run: rebuild, at: "2026-10-24T05:19:12Z", ended: true });
+  });
+
+  it("counts a later failed or stopped run with no end time by its start", () => {
+    const s = status({ last: failed });
+    if (!s.indexing.available) throw new Error("the fixture has the indexing section");
+    const built = run("pages-v20261022-1", "2026-10-22T15:00:00Z", "2026-10-24T05:19:12Z");
+    for (const status_ of ["failed", "stopped"] as const) {
+      const later = {
+        ...run("pages-v20261025-1", "2026-10-25T01:00:00Z", ""),
+        status: status_,
+        published_at: null,
+        duration_secs: null,
+      };
+      s.indexing.runs = [later, built];
+      expect(laterIndexRun(s)).toEqual({ run: later, at: "2026-10-25T01:00:00Z", ended: false });
+    }
+    // A run still building isn't a later ended one.
+    s.indexing.runs = [
+      {
+        ...run("pages-v20261025-1", "2026-10-25T01:00:00Z", ""),
+        status: "building",
+        published_at: null,
+        duration_secs: null,
+      },
+      built,
+    ];
+    expect(laterIndexRun(s)).toEqual({ run: built, at: "2026-10-24T05:19:12Z", ended: true });
   });
 
   it("is null when the job's last run is the newest", () => {

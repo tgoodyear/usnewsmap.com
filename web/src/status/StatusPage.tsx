@@ -320,7 +320,16 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
           )}
           {later && (
             <p>
-              <strong>A later index run:</strong> {RUN_ENDED[later.run.status]} <Time iso={later.ended_at} now={now} />{" "}
+              <strong>A later index run:</strong>{" "}
+              {later.ended ? (
+                <>
+                  {RUN_ENDED[later.run.status]} <Time iso={later.at} now={now} />
+                </>
+              ) : (
+                <>
+                  {later.run.status}, started <Time iso={later.at} now={now} /> (its end time isn&apos;t reported)
+                </>
+              )}{" "}
               (<code>{later.run.index_version}</code>), which the ingest job didn&apos;t report. Recent index runs are
               under Index builds.
             </p>
