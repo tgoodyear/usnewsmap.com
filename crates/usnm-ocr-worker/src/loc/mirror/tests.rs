@@ -675,7 +675,10 @@ fn the_cdx_lookup_gets_a_minute_and_a_wayback_503_a_short_hold() {
 #[tokio::test]
 async fn a_wayback_cdx_timeout_is_a_miss_not_a_hold() {
     let s = StandIn::start().await;
-    s.script("/cdx/search/cdx", Scripted::Slow(200, Duration::from_millis(500)));
+    s.script(
+        "/cdx/search/cdx",
+        Scripted::Slow(200, Duration::from_millis(500)),
+    );
     let m = wayback_with(&s, |c| c.cdx_timeout = Duration::from_millis(100));
     assert!(m
         .jp2("xx_test", &key(1), &page("0010", b"x"))
@@ -699,7 +702,10 @@ async fn the_cdx_lookup_waits_past_a_partners_page_json_timeout() {
     let s = StandIn::start().await;
     let one = format!("{LOC}data/sn1/0001A/1890050301/0010.jp2");
     s.put("/cdx/search/cdx", cdx(&[("20250101000000", one.as_str())]));
-    s.put(&format!("/web/20250101000000id_/{one}"), b"jp2 ten".to_vec());
+    s.put(
+        &format!("/web/20250101000000id_/{one}"),
+        b"jp2 ten".to_vec(),
+    );
     // Every answer takes 300 ms.
     s.delay(Duration::from_millis(300));
     let m = wayback_with(&s, |c| c.cdx_timeout = Duration::from_secs(5));
@@ -754,22 +760,37 @@ async fn a_wayback_503_holds_it_briefly_and_a_429_for_the_backoff() {
         .is_none());
     let st = &m.status()[WAYBACK];
     assert_eq!(st.holds, 1);
-    assert!(st.held_secs.is_some_and(|h| (10..=15).contains(&h)), "{st:?}");
+    assert!(
+        st.held_secs.is_some_and(|h| (10..=15).contains(&h)),
+        "{st:?}"
+    );
 
     let s = StandIn::start().await;
     s.script("/cdx/search/cdx", Scripted::RetryAfter(503, 120));
     let m = wayback(&s);
-    assert!(m.jp2("xx_test", &key(1), &page("0010", b"x")).await.is_none());
+    assert!(m
+        .jp2("xx_test", &key(1), &page("0010", b"x"))
+        .await
+        .is_none());
     let st = &m.status()[WAYBACK];
-    assert!(st.held_secs.is_some_and(|h| (100..=120).contains(&h)), "{st:?}");
+    assert!(
+        st.held_secs.is_some_and(|h| (100..=120).contains(&h)),
+        "{st:?}"
+    );
 
     let s = StandIn::start().await;
     s.script("/cdx/search/cdx", Scripted::Status(429));
     let m = wayback(&s);
-    assert!(m.jp2("xx_test", &key(1), &page("0010", b"x")).await.is_none());
+    assert!(m
+        .jp2("xx_test", &key(1), &page("0010", b"x"))
+        .await
+        .is_none());
     let st = &m.status()[WAYBACK];
     // cfg()'s backoff is 30 s.
-    assert!(st.held_secs.is_some_and(|h| (25..=30).contains(&h)), "{st:?}");
+    assert!(
+        st.held_secs.is_some_and(|h| (25..=30).contains(&h)),
+        "{st:?}"
+    );
 }
 
 #[tokio::test]
@@ -777,9 +798,15 @@ async fn a_partner_503_keeps_the_backoff() {
     let s = StandIn::start().await;
     s.script(&format!("{SEQ2}.json"), Scripted::Status(503));
     let m = with_partner(&s, true);
-    assert!(m.jp2("xx_test", &key(2), &page("0010", b"x")).await.is_none());
+    assert!(m
+        .jp2("xx_test", &key(2), &page("0010", b"x"))
+        .await
+        .is_none());
     let st = &m.status()["partner"];
-    assert!(st.held_secs.is_some_and(|h| (25..=30).contains(&h)), "{st:?}");
+    assert!(
+        st.held_secs.is_some_and(|h| (25..=30).contains(&h)),
+        "{st:?}"
+    );
 }
 
 #[tokio::test]
@@ -788,7 +815,10 @@ async fn a_wayback_challenge_or_403_still_holds_for_the_block_hold() {
         let s = StandIn::start().await;
         s.script("/cdx/search/cdx", scripted);
         let m = wayback(&s);
-        assert!(m.jp2("xx_test", &key(1), &page("0010", b"x")).await.is_none());
+        assert!(m
+            .jp2("xx_test", &key(1), &page("0010", b"x"))
+            .await
+            .is_none());
         let st = &m.status()[WAYBACK];
         assert!(st.held_secs.is_some_and(|h| h > 500), "{st:?}");
     }

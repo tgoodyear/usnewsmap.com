@@ -691,7 +691,12 @@ impl Mirrors {
                 return hold(self.cfg.backoff, url, why);
             }
             c.errors.fetch_add(1, Ordering::SeqCst);
-            tracing::info!(mirror = host.name, url, why, "a mirror request failed; not held");
+            tracing::info!(
+                mirror = host.name,
+                url,
+                why,
+                "a mirror request failed; not held"
+            );
             Tried::Failed
         };
         let mut url = first.to_owned();

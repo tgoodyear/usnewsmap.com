@@ -2606,8 +2606,14 @@ mod tests {
     fn no_loc_goes_by_the_manifests_directory_name() {
         let p = |s: &str| Path::new(s).to_path_buf();
         let pre = vec!["queue-quality-".to_owned(), " ".to_owned()];
-        assert!(no_loc_for(&p("/m/queue-quality-20261025/manifest.parquet"), &pre));
-        assert!(!no_loc_for(&p("/m/queue-ocr-20261025/manifest.parquet"), &pre));
+        assert!(no_loc_for(
+            &p("/m/queue-quality-20261025/manifest.parquet"),
+            &pre
+        ));
+        assert!(!no_loc_for(
+            &p("/m/queue-ocr-20261025/manifest.parquet"),
+            &pre
+        ));
         // The directory's name, not the file's or a parent's further up.
         assert!(!no_loc_for(&p("/queue-quality-x/m/manifest.parquet"), &pre));
         assert!(!no_loc_for(&p("manifest.parquet"), &pre));
@@ -2703,7 +2709,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!((st.fetched, st.deferred_needs_loc, st.no_loc), (2, 0, false));
+        assert_eq!(
+            (st.fetched, st.deferred_needs_loc, st.no_loc),
+            (2, 0, false)
+        );
     }
 
     #[tokio::test]
