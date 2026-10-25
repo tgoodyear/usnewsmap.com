@@ -28,6 +28,7 @@
   "USNM_OCR_LOCAL": true,
   "USNM_OCR_NODES": true,
   "USNM_OCR_SEED_LANGUAGES": "ger",
+  "USNM_OCR_SEED_MANIFEST": "pages-v20261010-2",
   "USNM_OCR_SEED_MAX_PAGES": "50000",
   "USNM_OCR_SEED_PLAN": "pilot-german-frak2021",
   "USNM_OCR_SEED_SOURCE": "fetched",
