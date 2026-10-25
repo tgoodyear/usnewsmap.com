@@ -2,6 +2,7 @@
 //! on a timer and swaps in the panels that changed.
 //! Every value from outside goes through [`esc`].
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
@@ -1149,9 +1150,13 @@ pub fn render(v: &View) -> String {
                 };
                 let _ = write!(
                     o,
-                    "<tr><td>{} {}</td><td>{}</td><td>{st}</td><td class=\"r\">{:.1}% of {}</td><td>{}</td><td class=\"r\">{}</td></tr>",
-                    if g.kind == "lxc" { "CT" } else { "VM" },
-                    g.vmid,
+                    "<tr><td>{}</td><td>{}</td><td>{st}</td><td class=\"r\">{:.1}% of {}</td><td>{}</td><td class=\"r\">{}</td></tr>",
+                    match (v.public, g.kind == "lxc") {
+                        (true, true) => Cow::Borrowed("container"),
+                        (true, false) => Cow::Borrowed("VM"),
+                        (false, true) => Cow::Owned(format!("CT {}", g.vmid)),
+                        (false, false) => Cow::Owned(format!("VM {}", g.vmid)),
+                    },
                     esc(&g.name),
                     g.cpu_pct,
                     g.cpus,

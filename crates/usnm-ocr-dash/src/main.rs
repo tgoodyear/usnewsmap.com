@@ -15,7 +15,7 @@ use usnm_ocr_dash::net::{Allow, Source};
 use usnm_ocr_dash::nodes::{check_name, Nodes};
 use usnm_ocr_dash::sset::Ssets;
 use usnm_ocr_dash::view::Settings;
-use usnm_ocr_dash::{redirect_router, router, App};
+use usnm_ocr_dash::{public_router, redirect_router, router, App};
 
 static VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -47,6 +47,13 @@ struct Cli {
     /// The certificate's private key (PEM).
     #[arg(long, env = "USNM_OCRDASH_TLS_KEY", requires = "tls_cert")]
     tls_key: Option<PathBuf>,
+    /// A second, public listener, plain HTTP, for a tunnel (cloudflared) to
+    /// put on the internet: only GET and HEAD of the page, `/healthz` and
+    /// `/api/{view,pipeline,fetch}.json`, redacted, with no `--allow` check
+    /// and no push routes. Off unless set; bind it to loopback or an
+    /// address only the tunnel reaches.
+    #[arg(long, env = "USNM_OCRDASH_PUBLIC_LISTEN")]
+    public_listen: Option<SocketAddr>,
     /// Where to serve HTTPS.
     #[arg(long, env = "USNM_OCRDASH_TLS_LISTEN", default_value = "0.0.0.0:443")]
     tls_listen: SocketAddr,
@@ -240,6 +247,22 @@ async fn main() -> anyhow::Result<()> {
                     tracing::error!(error = %e, "reading the files panicked");
                 }
                 app.poll_nodes(&client).await;
+            }
+        });
+    }
+    if let Some(addr) = cli.public_listen {
+        let public = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("listening on {addr} (--public-listen)"))?;
+        tracing::info!(public_listen = %addr, "serving the public, read-only view");
+        let app = app.clone();
+        tokio::spawn(async move {
+            let r = axum::serve(public, public_router(app).into_make_service())
+                .with_graceful_shutdown(stop_requested())
+                .await;
+            if let Err(e) = r {
+                tracing::error!(error = %e, "the public listener stopped");
+                std::process::exit(1);
             }
         });
     }
