@@ -163,6 +163,8 @@
 # written into the job's own template by scripts/boinc/start-boinc-bridge.sh, which then starts it
 # with no execution override (design.md section 9, question 4). UNVERIFIED against a live job.
 set -euo pipefail
+# An array that may be empty is expanded as ${arr[@]+"${arr[@]}"}: bash before 4.4 (macOS ships
+# 3.2) treats "${arr[@]}" as unbound under set -u.
 # shellcheck source=lib.sh disable=SC1091
 . /usr/local/lib/usnm-boinc/lib.sh
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
@@ -427,7 +429,7 @@ case "$step" in
       surya_args=(--surya-texts "$SHARE_DIR/surya/$SURYA_CAMPAIGN/texts")
     fi
     exec usnm-boinc quality stage "${page_args[@]}" --root "$QUALITY" \
-      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" "${surya_args[@]}" \
+      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" ${surya_args[@]+"${surya_args[@]}"} \
       --places "${QUALITY_PLACES:-$QUALITY/places.txt}" \
       --function-words-dir "$QUALITY/function-words" \
       --readers "${QUALITY_READERS:-loc,as,ours-tesseract}" \
@@ -452,7 +454,7 @@ case "$step" in
     [ -n "${QUALITY_CURATED_URL:-}" ] && out_args=(--curated-url "$QUALITY_CURATED_URL")
     exec usnm-boinc quality collect --campaign "$QUALITY_CAMPAIGN" --root "$QUALITY" \
       --spool "${QUALITY_SPOOL:?set QUALITY_SPOOL}" --qwen-root "$qwen_root" --qwen-spool "$qwen_spool" \
-      "${surya_args[@]}" "${out_args[@]}" ;;
+      ${surya_args[@]+"${surya_args[@]}"} "${out_args[@]}" ;;
   quality-summary)
     usnm-boinc quality summary --root "$QUALITY" --seen "$PROJ/quality/seen" --pairs "$PROJ/quality/pairs.jsonl" \
       | tee "$QUALITY/summary.md"
@@ -654,7 +656,7 @@ case "$step" in
     elif [ "${SURYA_GPU_PROBE:-0}" != 0 ]; then
       fail "SURYA_GPU_PROBE requires SURYA_TARGET_HOST"
     fi
-    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" "${target_args[@]}" || rc=$?
+    usnm-boinc surya submit --root "$SURYA" --project "$PROJ" --max-units "${SURYA_MAX:-20}" ${target_args[@]+"${target_args[@]}"} || rc=$?
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates"
     # The status page caches its counts for a minute; the controller's next tick reads the
     # queue these units joined (as quality-submit and qwen-submit do).
