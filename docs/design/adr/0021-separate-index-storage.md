@@ -3,7 +3,7 @@
 - **Status:** Accepted, opt-in for the #283 rebuild
 - **Date:** 2026-10-15
 - **Amends:** ADR-0002 (index storage), 08 §8.1
-- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the separate index account, its endpoint and `publish-staged` retire after on-prem serving's Phase 4)
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the separate index account, its endpoint and the Azure serving apps are deleted at on-prem serving's Phase 4 and provisioned again in a disaster recovery, where `publish-staged --restore` copies the index back)
 
 ## Context
 
