@@ -97,8 +97,9 @@ systemctl daemon-reload
 Run by hand with `usnm-image-security-check --php-floor <version> --apache-floor <version>`; add
 `--image <image>` to check another image (for example the overlay before step 3), `--mysql-image <name:tag>`
 to check another tag of the MySQL image (default `docker.io/library/mysql:8.4`), and `--skip-mysql`
-to leave the MySQL part out. `--mysql-image` must be a name with a tag; a registry port is fine. A name with no tag or
-with an `@digest` exits 2, because the check asks what the tag resolves to now and neither can show a moved tag.
+to leave the MySQL part out. `--mysql-image` must be a name with a tag; a registry port is fine.
+The check exits 2 for a name with no tag or with an `@digest`,
+because it asks what the tag resolves to now and neither can show a moved tag.
 
 ### The MySQL image
 
