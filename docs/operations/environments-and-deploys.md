@@ -52,14 +52,14 @@ scripts/azure/provision.sh --env prod            # creates the settings store if
 scripts/azure/settings.sh --env prod --migrate   # moves the private settings into it
 ```
 
-**The API's pinned image tag.** Prod pins `USNM_API_IMAGE_TAG` in `infra/env/prod.json`, and a CI rollout of the API does not update the pin, so a provision for any other change would put the API back on the pinned image (#1071). `scripts/azure/provision.sh`, and its `--what-if`, first read the image the API app runs and refuse when the pin differs from its tag, before they change anything. The refusal names the ways on:
+**The API's pinned image tag.** Prod pins `USNM_API_IMAGE_TAG` in `infra/env/prod.json`, and a CI rollout of the API does not update the pin, so a provision for any other change would put the API back on the pinned image (#1071). `scripts/azure/provision.sh`, and its `--what-if`, first read the image the API app runs and refuse when the pin differs from that image's tag, before they change anything. The refusal lists the commands that get past it:
 
 ```sh
 scripts/azure/provision.sh --env prod --api-tag=live    # keep the image that runs now
 scripts/azure/provision.sh --env prod --api-tag=<tag>   # deploy <tag> over the pin
 ```
 
-To roll the API on purpose, move the pin through a pull request as usual, then provision with `--api-tag=<the new pin>`. Neither flag edits `infra/env/prod.json`, so the next plain provision refuses again until a pull request sets the pin to the tag that runs. Nothing is compared when the environment has no pin (dev, whose stand-up sets `USNM_IMAGE_TAG`), when the API app does not exist yet, or when it runs something other than an ACR `usnewsmap-api:<tag>` image; the last prints a note. `bootstrap.sh` and `stand-up.sh` have no flag for this and meet the same refusal when a pin is stale, which a pull request that sets the pin settles. `teardown.sh`'s partial provision skips the check.
+To roll the API on purpose, move the pin through a pull request as usual, then provision with `--api-tag=<the new pin>`. Neither flag edits `infra/env/prod.json`, so the next plain provision refuses again until a pull request sets the pin to the tag that runs. Nothing is compared when the environment has no pin (dev, whose stand-up sets `USNM_IMAGE_TAG`), when the API app does not exist yet, or when it runs something other than an ACR `usnewsmap-api:<tag>` image; the last prints a note. `bootstrap.sh` and `stand-up.sh` have no flag for this and meet the same refusal when a pin is stale; a pull request that sets the pin to the tag that runs clears it. `teardown.sh`'s partial provision skips the check.
 
 `scripts/azure/provision.sh --env <env> --what-if` deploys nothing: it reads the settings as a provision would, runs Azure's preflight validation of the stack (a policy denial fails it) and calls GA `az stack-whatif sub create` to preview the stack, including unmanaged-resource and deny-setting changes. In a subscription without the guard-rail stack yet, it prints that stack's changes instead: the environment's preflight needs its policy definitions. What-If results can be retained from `PT1H` to `PT3H`; the scripts request `PT3H`.
 
