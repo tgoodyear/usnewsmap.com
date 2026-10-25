@@ -99,7 +99,7 @@ also put several pages of one queue into one workunit with `pages_per_unit` and
 `bundle_app_version` (#1059, [boinc-ocr-bundles.md](boinc-ocr-bundles.md)). Unlike the flags,
 those are configuration, so turning them on makes a new plan.
 
-### On-prem claim and collect (#967)
+### On-prem claim, collect and export (#967)
 
 By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff claim`,
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through

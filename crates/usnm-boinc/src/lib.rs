@@ -396,15 +396,16 @@ fn cached(scans: &Path, row: &ManifestRow) -> anyhow::Result<(Vec<u8>, prefetch:
     }
     bail!("selected page has no full-resolution cached scan")
 }
-/// The rows `export` builds queue-fed jobs from: one per selected page, from its claim file.
-/// The scan is then found and checked against its sidecar (doc id, batch, batch version,
-/// checksum) as a manifest page's is.
+/// The rows `export` builds queue-fed jobs from: one per selected page, from its claim file,
+/// with the claims by doc id. The scan is then found and checked against its sidecar (doc id,
+/// batch, batch version, checksum) as a manifest page's is.
 fn claimed_rows(
     dir: &Path,
     batch: &str,
     selected: &BTreeSet<String>,
-) -> anyhow::Result<Vec<ManifestRow>> {
-    selected
+) -> anyhow::Result<(Vec<ManifestRow>, BTreeMap<String, claim::Claim>)> {
+    let mut claims = BTreeMap::new();
+    let rows = selected
         .iter()
         .map(|page| {
             let key: PageKey = page.parse()?;
@@ -417,16 +418,19 @@ fn claimed_rows(
                 "the claim for {} is not this page and batch's queue message and ledger row",
                 key.doc_id()
             );
-            Ok(ManifestRow::new(
+            let row = ManifestRow::new(
                 &key,
                 &message.batch,
                 claim.ledger.batch_version,
                 Some(message.language.clone()),
                 "claim",
                 message.score.unwrap_or(0.0),
-            ))
+            );
+            claims.insert(key.doc_id(), claim);
+            Ok(row)
         })
-        .collect()
+        .collect::<anyhow::Result<_>>()?;
+    Ok((rows, claims))
 }
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
@@ -495,13 +499,15 @@ pub async fn export(
     // A queue-fed page comes from its claim: a user-requested page is in no prefetch
     // manifest (#1055), and its claim already holds the batch version the ledger row and
     // the published snapshot agreed on. A cohort page comes from the manifest.
-    let rows = if let Some(dir) = &opts.claims {
-        claimed_rows(dir, &opts.batch, &selected)?
+    let (rows, mut claims) = if let Some(dir) = &opts.claims {
+        let (rows, claims) = claimed_rows(dir, &opts.batch, &selected)?;
+        (rows, Some(claims))
     } else {
-        usnm_ocr_contract::prefetch::decode_where(
+        let rows = usnm_ocr_contract::prefetch::decode_where(
             bytes::Bytes::from(read(&opts.manifest, 128 << 20)?),
             |row| row.batch == opts.batch && selected_docs.contains(&row.doc_id),
-        )?
+        )?;
+        (rows, None)
     };
     let mut chosen = BTreeMap::new();
     for row in rows {
@@ -514,7 +520,12 @@ pub async fn export(
     }
     ensure!(
         chosen.len() == selected.len(),
-        "selected pages missing from manifest/batch"
+        "{}",
+        if claims.is_some() {
+            "selected pages missing from their claims/batch"
+        } else {
+            "selected pages missing from manifest/batch"
+        }
     );
     let installed = installed_models();
     let snapshot = ocr_local::boinc::Snapshot::load(state, reference).await?;
@@ -528,8 +539,10 @@ pub async fn export(
         let now = Utc::now();
         // A queued page keeps its queue message and ledger row; a cohort page
         // gets a bulk message of its own now.
-        let (message, ledger_row) = if let Some(dir) = &opts.claims {
-            let claim = claim::read_local(dir, &row.doc_id)?;
+        let (message, ledger_row) = if let Some(claims) = claims.as_mut() {
+            let claim = claims
+                .remove(&row.doc_id)
+                .context("no claim for a selected page")?;
             let message = claim.message()?;
             ensure!(
                 message.page == page

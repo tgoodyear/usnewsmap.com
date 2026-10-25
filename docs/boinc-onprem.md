@@ -112,7 +112,7 @@ IMDS_ENDPOINT=http://localhost:40342
 The values are the job's environment: `az containerapp job show --name usnm-boinc-handoff-caj-<env>
 --resource-group rg-usnm-<env> --query "properties.template.containers[0].env"`. The
 controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
-([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-and-collect-967)), and
+([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
 `export` too with `--onprem-handoff export` (it downloads each scan from Azure, which is egress).
 `texts-export` still runs as the Azure job. Once claim and collect have run cleanly here
 for a day, a separate Bicep change retires the job's claim and collect use.
