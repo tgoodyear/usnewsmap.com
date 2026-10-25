@@ -178,7 +178,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/dev/quickwit-fixtures\.sh)'
+rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ocr/ja-ocr/damage_v2\.py$|ocr/ja-ocr/wordlists/|scripts/dev/quickwit-fixtures\.sh)'
 rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
@@ -193,7 +193,7 @@ web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtu
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
-image="$rust_files|^(web/|ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
@@ -220,7 +220,7 @@ ocr_dashboard=$ocr_dash
 boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/boinc/Containerfile$|scripts/boinc/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_qwen='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
-boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;
 # usnm-ocr-contract's tests read the v1 contract files.

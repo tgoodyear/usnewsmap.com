@@ -14,9 +14,9 @@ on:
       - ocr/boinc/ndlocr-lite/**
       - scripts/boinc/smoke-ndlocr-worker.py
       - scripts/boinc/smoke-ndlocr.py
-      - ja-ocr/testdata/**
-      - ja-ocr/alto.py
-      - ja-ocr/jaocr.py
+      - ocr/ja-ocr/testdata/**
+      - ocr/ja-ocr/alto.py
+      - ocr/ja-ocr/jaocr.py
       - crates/**
       - Cargo.toml
       - Cargo.lock

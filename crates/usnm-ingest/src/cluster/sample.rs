@@ -5,7 +5,7 @@
 //!
 //! **Which pages.** A page is in the sample when the first 8 bytes of
 //! SHA-256 of its `doc_id`, read as a big-endian integer, modulo 10,000, are
-//! below `pct × 100`: the OCR audit's rule (ja-ocr/quality.py `sampled`)
+//! below `pct × 100`: the OCR audit's rule (ocr/ja-ocr/quality.py `sampled`)
 //! with SHA-256 for its BLAKE2b, which the Rust side has no crate for. The
 //! same pages come out every run, and a 1% sample is a 1% sample of every
 //! title, year and batch.

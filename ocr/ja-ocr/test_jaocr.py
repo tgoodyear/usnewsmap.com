@@ -1,4 +1,4 @@
-"""Tests for jaocr.py: python3 -m unittest discover ja-ocr (pyarrow for the Parquet ones)."""
+"""Tests for jaocr.py: python3 -m unittest discover ocr/ja-ocr (pyarrow for the Parquet ones)."""
 
 import io
 import json

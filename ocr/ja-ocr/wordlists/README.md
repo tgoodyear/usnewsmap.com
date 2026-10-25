@@ -3,7 +3,7 @@
 `quality.py` (metric v2) scores a page against its language's most frequent words. wordfreq supplies
 them for most languages; these files cover languages it has no list for (`LOCAL_WORDLISTS`). Each is
 the 5,000 most frequent words, most frequent first, one per line, folded as `quality.py` folds a page's
-words. Rebuild them with `ja-ocr/tools/build-wordlists.py <code>`.
+words. Rebuild them with `ocr/ja-ocr/tools/build-wordlists.py <code>`.
 
 | File      | Language | Source                                                                                                                                                                             | License                                                                                                 | Built          |
 | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------- |
@@ -22,4 +22,4 @@ Limits:
 
 Not covered: Choctaw, Dakota, Lakota, Navajo and Cherokee. No open frequency list of useful size exists for them; their pages stay undetermined or are read as English.
 
-German needs no list of its own. `ja-ocr/tools/build-wordlists.py ger-check` checks whether 19th-century spellings would count as damage, using the [Deutsches Textarchiv](https://www.deutschestextarchiv.de/)'s 1800–1899 texts. They don't. "daß", "Theil", "giebt" and "seyn" are not one edit from German's 20 most common words. The near-misses those texts use most are "fich", "fie" and "ift" (the long s read as f), and those are OCR damage.
+German needs no list of its own. `ocr/ja-ocr/tools/build-wordlists.py ger-check` checks whether 19th-century spellings would count as damage, using the [Deutsches Textarchiv](https://www.deutschestextarchiv.de/)'s 1800–1899 texts. They don't. "daß", "Theil", "giebt" and "seyn" are not one edit from German's 20 most common words. The near-misses those texts use most are "fich", "fie" and "ift" (the long s read as f), and those are OCR damage.

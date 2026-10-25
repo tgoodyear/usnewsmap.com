@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pick a sample of Japanese pages from loc.gov and download their scans (#128).
 
-    ja-ocr/tools/sample.py --out-dir OUT_DIR [--pages 100] [--seed 128]
+    ocr/ja-ocr/tools/sample.py --out-dir OUT_DIR [--pages 100] [--seed 128]
 
 Walks the titles loc.gov lists as Japanese, spreads issues across each
 title's years, and reads LoC's own OCR (ALTO) for every page of a chosen

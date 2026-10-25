@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the OCR engines on the sampled pages (#128).
 
-    ja-ocr/tools/run.py --sample-dir SAMPLE_DIR --engine ndlocr-lite --ndlocr ~/code/ndlocr-lite
-    ja-ocr/tools/run.py --sample-dir SAMPLE_DIR --engine tesseract --tessdata SAMPLE_DIR/tessdata
-    ja-ocr/tools/run.py --sample-dir SAMPLE_DIR --engine azure --endpoint "$OCR_ENDPOINT"
+    ocr/ja-ocr/tools/run.py --sample-dir SAMPLE_DIR --engine ndlocr-lite --ndlocr ~/code/ndlocr-lite
+    ocr/ja-ocr/tools/run.py --sample-dir SAMPLE_DIR --engine tesseract --tessdata SAMPLE_DIR/tessdata
+    ocr/ja-ocr/tools/run.py --sample-dir SAMPLE_DIR --engine azure --endpoint "$OCR_ENDPOINT"
 
 The azure engine calls Document Intelligence's prebuilt-read model with an
 Entra token from az (the account has no keys; the caller needs Cognitive
