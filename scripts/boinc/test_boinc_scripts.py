@@ -2,13 +2,16 @@
 
 The stub answers the calls the script makes and logs each one to STUB_LOG. STUB_TEMPLATE is
 the job's template (JSON), STUB_EXEC_STATUS an execution's status, and STUB_NO_JOB=1 gives a
-stack with no bridge job. The settings are the committed contrib-compute/infra/boinc/env/prod.json,
-read only."""
+stack with no bridge job. STUB_HANG_MATCH (a substring of the call), STUB_HANG_SKIP and
+STUB_HANG_COUNT make chosen calls hang, and STUB_HANG_PIDS lists the processes a hung call
+started, so a test can show they were killed. The settings are the committed
+contrib-compute/infra/boinc/env/prod.json, read only."""
 
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -25,8 +28,24 @@ ROOT = os.path.dirname(SCRIPTS)
 SCRIPT = os.path.join(HERE, "start-boinc-bridge.sh")
 SUB = json.load(open(os.path.join(ROOT, "contrib-compute/infra/boinc/env/prod.json")))["subscriptionId"]
 
-STUB_AZ = r"""#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$STUB_LOG"
+# A hung az, as the tests of the az timeouts need one: the calls whose arguments contain
+# STUB_HANG_MATCH are counted in STUB_HANG_STATE; after the first STUB_HANG_SKIP of them, the
+# next STUB_HANG_COUNT (default: all) never answer. Like the real az (a Python process with
+# children of its own), a hung call leaves a small process tree, and STUB_HANG_PIDS lists it:
+# killing only its top process would leave the children holding the caller's pipe open.
+STUB_HANG = r"""
+if [ -n "${STUB_HANG_MATCH:-}" ] && [[ "$*" == *"$STUB_HANG_MATCH"* ]]; then
+  hang_n=$(( $(cat "$STUB_HANG_STATE" 2>/dev/null || echo 0) + 1 )); echo "$hang_n" > "$STUB_HANG_STATE"
+  if [ "$hang_n" -gt "${STUB_HANG_SKIP:-0}" ] && [ "$hang_n" -le $(( ${STUB_HANG_SKIP:-0} + ${STUB_HANG_COUNT:-1000000} )) ]; then
+    printf '%s\n' "$*" >> "$STUB_LOG"
+    echo $$ >> "$STUB_HANG_PIDS"
+    bash -c 'echo $$ >> "$0"; sleep 600 & echo $! >> "$0"; wait' "$STUB_HANG_PIDS" &
+    wait
+  fi
+fi
+"""
+
+STUB_AZ_BODY = r"""printf '%s\n' "$*" >> "$STUB_LOG"
 case "$*" in
   "account show"*) echo "$STUB_SUB" ;;
   "group show"*) ;;
@@ -54,6 +73,7 @@ case "$*" in
   *) echo "stub az: unexpected call: $*" >&2; exit 9 ;;
 esac
 """
+STUB_AZ = "#!/usr/bin/env bash\n" + STUB_HANG + STUB_AZ_BODY
 
 BASE = {
     "AZURE_CLIENT_ID": "client-1",
@@ -64,6 +84,16 @@ BASE = {
     "PROJECT_DIR": "/project",
     "HANDOFF_DIR": "/project/handoff",
 }
+
+
+def process_command(pid):
+    return subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+
+
+def pid_alive(pid):
+    """Whether the process still runs; a zombie waiting for its parent to reap it does not."""
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(state) and not state.startswith("Z")
 
 
 def template(extra=None, drop=None):
@@ -616,14 +646,30 @@ class StartBridge(unittest.TestCase):
                     "STUB_LOG": self.log, "STUB_SUB": SUB, "STUB_TEMPLATE": template(),
                     "USNM_BOINC_LOCK_DIR": self.lock_dir,
                     # The guard's settling window after a failed start: none in tests.
-                    "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0"}
+                    "BOINC_START_RECONCILE_SECS": "0", "BOINC_START_RECONCILE_POLL": "0",
+                    # A failed read is retried at once, not after the real pause.
+                    "BOINC_AZ_READ_BACKOFF": "0",
+                    "STUB_HANG_STATE": os.path.join(self.tmp, "hang-state"),
+                    "STUB_HANG_PIDS": os.path.join(self.tmp, "hang-pids")}
 
     def tearDown(self):
+        # A test that failed with a hung az still running must not leave it for ten minutes.
+        for pid in self.hang_pids():
+            command = process_command(pid)
+            if pid_alive(pid) and (self.tmp in command or "sleep 600" in command):
+                os.kill(pid, signal.SIGKILL)
         shutil.rmtree(self.tmp)
 
-    def run_script(self, *args, env_name="prod", **extra):
+    def hang_pids(self):
+        try:
+            with open(self.env["STUB_HANG_PIDS"]) as f:
+                return [int(line) for line in f.read().split()]
+        except FileNotFoundError:
+            return []
+
+    def run_script(self, *args, env_name="prod", timeout=None, **extra):
         return subprocess.run([SCRIPT, "--env", env_name, *args], cwd=ROOT, env={**self.env, **extra},
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, timeout=timeout)
 
     def calls(self):
         if not os.path.exists(self.log):
@@ -736,6 +782,74 @@ class StartBridge(unittest.TestCase):
         r = self.run_script("--step", "register-apps", "--wait-mins", "5")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "usnm-boinc-bridge-caj-prod-abc12\n")
+
+    # Calls that hang: az has no timeout of its own (#932). The timeouts here are a few seconds
+    # so a test takes seconds (a read is retried, so one slow stub call is not a failure), and
+    # every test that hangs a call also shows that the whole process tree the call started is gone.
+    HANG_STATUS = {"STUB_HANG_MATCH": "--query properties.status", "BOINC_AZ_READ_TIMEOUT": "2"}
+
+    def assert_hung_az_gone(self, trees):
+        pids = self.hang_pids()
+        # Each hung call: the stub az, the shell it started and that shell's sleep.
+        self.assertEqual(len(pids), 3 * trees, pids)
+        self.assertEqual([p for p in pids if pid_alive(p)], [])
+
+    def status_calls(self):
+        return [c for c in self.calls() if "--query properties.status" in c]
+
+    def test_a_hung_status_poll_is_killed_and_retried(self):
+        # The first status read is the start guard's, which answers. The poll's first attempt
+        # hangs, and the retry finds the execution done.
+        start = time.monotonic()
+        r = self.run_script("--step", "register-apps", "--wait-mins", "5", timeout=60,
+                            STUB_HANG_SKIP="1", STUB_HANG_COUNT="1", **self.HANG_STATUS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "usnm-boinc-bridge-caj-prod-abc12\n")
+        self.assertIn("timed out after 2s and was killed (attempt 1 of 3); retrying", r.stderr)
+        self.assertEqual(len(self.status_calls()), 3)
+        self.assertLess(time.monotonic() - start, 30)
+        self.assert_hung_az_gone(1)
+
+    def test_a_poll_that_hangs_on_every_attempt_fails_clearly(self):
+        r = self.run_script("--step", "register-apps", "--wait-mins", "5", timeout=60,
+                            STUB_HANG_SKIP="1", BOINC_AZ_READ_ATTEMPTS="2", **self.HANG_STATUS)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("gave up after 2 of 2 attempts", r.stderr)
+        self.assertIn("can't read usnm-boinc-bridge-caj-prod-abc12's status", r.stderr)
+        self.assertEqual(len(self.status_calls()), 3)
+        self.assert_hung_az_gone(2)
+
+    def test_a_poll_is_not_retried_past_the_wait_window(self):
+        # With no minutes to wait, the one attempt the window allows is the only one.
+        start = time.monotonic()
+        r = self.run_script("--step", "register-apps", "--wait-mins", "0", timeout=60,
+                            STUB_HANG_SKIP="1", **self.HANG_STATUS)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gave up after 1 of 3 attempts", r.stderr)
+        self.assertEqual(len(self.status_calls()), 2)
+        self.assertLess(time.monotonic() - start, 30)
+        self.assert_hung_az_gone(1)
+
+    def test_a_hung_job_update_is_killed_and_not_retried(self):
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_WRITE_TIMEOUT="3",
+                            STUB_HANG_MATCH="containerapp job update")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("az containerapp job update timed out after 3s and was killed; it is not retried", r.stderr)
+        self.assertIn("can't set the run's settings", r.stderr)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("containerapp job update")]), 1)
+        self.assertFalse([c for c in self.calls() if c.startswith("containerapp job start")])
+        self.assert_hung_az_gone(1)
+
+    def test_a_hung_job_start_is_killed_and_not_retried(self):
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_WRITE_TIMEOUT="3",
+                            STUB_HANG_MATCH="containerapp job start")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("az containerapp job start timed out after 3s and was killed; it is not retried", r.stderr)
+        self.assertIn("can't start", r.stderr)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("containerapp job start")]), 1)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("containerapp job update")]), 1)
+        self.assert_hung_az_gone(1)
 
     def test_handoff_target_sets_handoff_step_in_the_main_group(self):
         base = {"AZURE_CLIENT_ID": "client-2", "HANDOFF_URL": "https://x.blob.core.windows.net/boinc-handoff",
@@ -1778,8 +1892,7 @@ class CrossHostStartGuard(StartBridge):
         self.remote.mkdir()
         self.env["STUB_REMOTE_STATE"] = str(self.remote)
         az = Path(self.tmp, "bin", "az")
-        az.write_text(r"""#!/usr/bin/env bash
-case "$*" in
+        az.write_text("#!/usr/bin/env bash\n" + STUB_HANG + r"""case "$*" in
   "storage blob exists"*)
     if [ -d "$STUB_REMOTE_STATE/blob" ]; then echo true; else echo false; fi
     exit ;;
@@ -1823,7 +1936,7 @@ case "$*" in
   "containerapp job execution show"*"--query properties.status"*)
     [ -z "${STUB_STATUS_FAILURE:-}" ] || exit 9 ;;
 esac
-""" + STUB_AZ.partition("\n")[2])
+""" + STUB_AZ_BODY)
 
     def test_cross_host_lease_denies_second_starter_before_template_write(self):
         first = subprocess.Popen(
@@ -2016,6 +2129,88 @@ esac
         self.assertTrue((self.remote / "held").exists())
         self.assertFalse(Path(self.lock_dir).exists())
 
+    def lease_calls(self, kind):
+        return [c for c in self.calls() if c.startswith(f"storage blob lease {kind}")]
+
+    def test_a_hung_lease_acquire_names_the_blob_and_the_lease_id(self):
+        # A timed-out acquire may have taken the lease server-side, so the error says which
+        # blob and ID to reconcile. The cleanup does not release a lease it can't know is its own.
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_WRITE_TIMEOUT="3",
+                            STUB_HANG_MATCH="lease acquire")
+        self.assertEqual(r.returncode, 1)
+        [acquire] = self.lease_calls("acquire")
+        lease_id = acquire.split("--proposed-lease-id ")[1].split(" ")[0]
+        self.assertIn("timed out acquiring the cross-host start guard", r.stderr)
+        self.assertIn("scheduler/starts/usnm-boinc-rg-prod/usnm-boinc-bridge-caj-prod.lock", r.stderr)
+        self.assertIn(lease_id, r.stderr)
+        self.assertFalse([c for c in self.calls() if "job update" in c or "job start" in c])
+        self.assertEqual(self.lease_calls("release"), [])
+        self.assertFalse(Path(self.lock_dir).exists())
+        self.assert_hung_az_gone(1)
+
+    def test_a_hung_lease_release_is_reported_and_not_retried(self):
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_WRITE_TIMEOUT="3",
+                            STUB_HANG_MATCH="lease release")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("lease release failed", r.stderr)
+        self.assertIn("reconcile it before another launch", r.stderr)
+        self.assertEqual(len(self.lease_calls("release")), 1)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertFalse(Path(self.lock_dir).exists())
+        self.assert_hung_az_gone(1)
+
+    def test_a_hung_job_update_still_in_flight_retains_the_lease(self):
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_WRITE_TIMEOUT="3",
+                            STUB_HANG_MATCH="containerapp job update", STUB_PROVISIONING="InProgress")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("lease retained", r.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertEqual(len([c for c in self.calls() if c.startswith("containerapp job update")]), 1)
+        self.assert_hung_az_gone(1)
+
+    def test_a_hung_job_start_whose_listing_fails_retains_the_lease(self):
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_WRITE_TIMEOUT="3",
+                            STUB_HANG_MATCH="containerapp job start", STUB_LIST_FAIL_FROM="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("lease retained", r.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertEqual(len([c for c in self.calls() if c.startswith("containerapp job start")]), 1)
+        self.assert_hung_az_gone(1)
+
+    def test_a_confirm_that_hangs_retains_the_lease(self):
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_AZ_READ_ATTEMPTS="2", **self.HANG_STATUS)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gave up after 2 of 2 attempts", r.stderr)
+        self.assertIn("start visibility is uncertain", r.stderr)
+        self.assertIn("lease retained", r.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertEqual(len(self.status_calls()), 2)
+        self.assert_hung_az_gone(2)
+
+    def test_the_confirm_window_bounds_its_retries(self):
+        # Three 2-second attempts fit in 6 seconds; the 3-second window leaves room for the
+        # first, and for a second one cut short to what is left of the window. Which of the two
+        # depends on where in a second the run began, so either is right, and a third is not.
+        r = self.run_script("--step", "register-apps", timeout=60, BOINC_START_CONFIRM_SECS="3", **self.HANG_STATUS)
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(r.stderr, r"gave up after [12] of 3 attempts")
+        calls = len(self.status_calls())
+        self.assertIn(calls, (1, 2))
+        self.assertTrue((self.remote / "held").exists())
+        self.assert_hung_az_gone(calls)
+
+    def test_a_hung_reconcile_read_retains_the_lease_inside_its_window(self):
+        # With no settling window, the reconcile's listing gets its one attempt: it hangs,
+        # is killed, and the outcome stays unknown.
+        r = self.run_script("--step", "register-apps", timeout=60, STUB_START_FAILURE="1",
+                            STUB_HANG_MATCH="[].name", BOINC_AZ_READ_TIMEOUT="2")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gave up after 1 of 3 attempts", r.stderr)
+        self.assertIn("lease retained", r.stderr)
+        self.assertTrue((self.remote / "held").exists())
+        self.assertEqual(len([c for c in self.calls() if "[].name" in c]), 1)
+        self.assert_hung_az_gone(1)
+
     def test_controller_lease_is_never_recursively_acquired(self):
         result = self.run_script("--step", "register-apps")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -2025,6 +2220,118 @@ esac
         self.assertFalse(any("scheduler/controller.lock" in c for c in lease_calls))
         self.assertIn("--lease-duration -1", lease_calls[0])
         self.assertFalse(list(Path(ROOT).glob(".boinc-start-*")))
+
+
+class BoundedAz(unittest.TestCase):
+    """scripts/lib/bounded-az.sh on its own, with a shell function standing in for baz."""
+
+    # A hung call, as in STUB_HANG: a shell with a sleep under it, their pids written to $PIDS.
+    HANG = 'hang() { bash -c \'echo $$ >> "$0"; sleep 600 & echo $! >> "$0"; wait\' "$PIDS" & wait; }\n'
+    # Calls counted in $COUNT, one line each.
+    COUNTED = 'baz() { echo "$*" >> "$COUNT"; '
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.pids = os.path.join(self.tmp, "pids")
+        self.count = os.path.join(self.tmp, "count")
+
+    def tearDown(self):
+        for pid in self.hung_pids():
+            if pid_alive(pid) and "sleep 600" in process_command(pid):
+                os.kill(pid, signal.SIGKILL)
+        shutil.rmtree(self.tmp)
+
+    def hung_pids(self):
+        return [int(p) for p in Path(self.pids).read_text().split()] if os.path.exists(self.pids) else []
+
+    def calls(self):
+        return Path(self.count).read_text().splitlines() if os.path.exists(self.count) else []
+
+    def run_bash(self, body, **env):
+        script = "set -euo pipefail\n. scripts/lib/bounded-az.sh\n" + body
+        return subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "PIDS": self.pids, "COUNT": self.count,
+                                   "BOINC_AZ_READ_BACKOFF": "0", **env})
+
+    def test_the_deadline_kills_the_whole_process_group(self):
+        start = time.monotonic()
+        r = self.run_bash(self.HANG + 'rc=0; run_before_deadline $((SECONDS + 2)) hang || rc=$?; echo "rc=$rc"')
+        self.assertEqual(r.stdout, "rc=124\n", r.stderr)
+        self.assertLess(time.monotonic() - start, 20)
+        pids = self.hung_pids()
+        self.assertEqual(len(pids), 2)
+        self.assertEqual([p for p in pids if pid_alive(p)], [])
+
+    def test_a_deadline_already_past_runs_nothing(self):
+        r = self.run_bash(self.COUNTED + 'true; }\nrc=0; run_before_deadline $SECONDS baz x || rc=$?; echo "rc=$rc"')
+        self.assertEqual(r.stdout, "rc=124\n", r.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_only_the_attempt_that_succeeds_prints(self):
+        r = self.run_bash(self.COUNTED + 'if [ $(($(wc -l < "$COUNT"))) -lt 3 ]; then echo "partial"; return 7; fi; echo complete; }\n'
+                          'out=$(baz_ro group show --name x); echo "out=[$out]"')
+        self.assertEqual(r.stdout, "out=[complete]\n", r.stderr)
+        self.assertEqual(len(self.calls()), 3)
+        self.assertEqual(r.stderr.count("az group show failed (exit 7) (attempt"), 2)
+
+    def test_a_read_gives_up_with_the_last_status(self):
+        r = self.run_bash(self.COUNTED + 'return 7; }\nrc=0; baz_ro group show || rc=$?; echo "rc=$rc"')
+        self.assertEqual(r.stdout, "rc=7\n", r.stderr)
+        self.assertEqual(len(self.calls()), 3)
+        self.assertIn("gave up after 3 of 3 attempts", r.stderr)
+
+    def test_a_hung_read_is_killed_with_its_children_and_retried(self):
+        r = self.run_bash(self.HANG + self.COUNTED + 'if [ $(($(wc -l < "$COUNT"))) -lt 2 ]; then hang; fi; echo up; }\n'
+                          'baz_ro group show', BOINC_AZ_READ_TIMEOUT="2")
+        self.assertEqual(r.stdout, "up\n", r.stderr)
+        self.assertIn("az group show timed out after 2s and was killed (attempt 1 of 3); retrying", r.stderr)
+        self.assertEqual(len(self.calls()), 2)
+        self.assertEqual([p for p in self.hung_pids() if pid_alive(p)], [])
+        self.assertEqual(len(self.hung_pids()), 2)
+
+    def test_a_window_ends_the_retries(self):
+        r = self.run_bash(self.COUNTED + 'return 7; }\n'
+                          'rc=0; BAZ_RO_UNTIL=$SECONDS baz_ro group show || rc=$?; echo "rc=$rc"')
+        self.assertEqual(r.stdout, "rc=7\n", r.stderr)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn("gave up after 1 of 3 attempts", r.stderr)
+        Path(self.count).unlink()
+        r = self.run_bash(self.COUNTED + 'return 7; }\n'
+                          'rc=0; BAZ_RO_UNTIL=$((SECONDS + 60)) baz_ro group show || rc=$?; echo "rc=$rc"')
+        self.assertEqual(len(self.calls()), 3)
+
+    def test_the_first_attempt_gets_a_chance_even_in_an_exhausted_window(self):
+        # A window that has run out (the reconcile with no settling time) still reads once: the
+        # first attempt gets at least ten seconds, here for a call that takes two.
+        r = self.run_bash(self.COUNTED + 'sleep 2; echo up; }\nBAZ_RO_UNTIL=$SECONDS baz_ro group show')
+        self.assertEqual(r.stdout, "up\n", r.stderr)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_a_change_runs_once_and_a_timeout_says_so(self):
+        r = self.run_bash(self.COUNTED + 'return 3; }\nrc=0; baz_mut group delete || rc=$?; echo "rc=$rc"')
+        self.assertEqual(r.stdout, "rc=3\n", r.stderr)
+        self.assertEqual(len(self.calls()), 1)
+        Path(self.count).unlink()
+        r = self.run_bash(self.HANG + self.COUNTED + 'hang; }\nrc=0; baz_mut group delete --name x || rc=$?; echo "rc=$rc"',
+                          BOINC_AZ_WRITE_TIMEOUT="3")
+        self.assertEqual(r.stdout, "rc=124\n", r.stderr)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn("az group delete timed out after 3s and was killed; it is not retried", r.stderr)
+        self.assertNotIn("--name", r.stderr)
+        self.assertEqual([p for p in self.hung_pids() if pid_alive(p)], [])
+
+    def test_a_bad_setting_is_refused_before_anything_runs(self):
+        for name, value in (("BOINC_AZ_READ_TIMEOUT", "soon"), ("BOINC_AZ_READ_TIMEOUT", "0"),
+                            ("BOINC_AZ_READ_ATTEMPTS", "0"), ("BOINC_AZ_READ_BACKOFF", "-1")):
+            with self.subTest(name=name, value=value):
+                r = self.run_bash(self.COUNTED + 'true; }\nrc=0; baz_ro group show || rc=$?; echo "rc=$rc"', **{name: value})
+                self.assertEqual(r.stdout, "rc=1\n", r.stderr)
+                self.assertIn(f"{name} must be a whole number of seconds", r.stderr)
+        r = self.run_bash(self.COUNTED + 'true; }\nrc=0; baz_mut group delete || rc=$?; echo "rc=$rc"',
+                          BOINC_AZ_WRITE_TIMEOUT="soon")
+        self.assertEqual(r.stdout, "rc=1\n", r.stderr)
+        self.assertEqual(self.calls(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

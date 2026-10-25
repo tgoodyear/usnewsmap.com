@@ -35,6 +35,47 @@ so nonconflicting deployments on another host can inspect the active execution,
 while the next launcher or conflicting template update still sees the running
 execution in the execution list.
 
+## Azure call limits
+
+`az` has no timeout of its own. On 20 October 2026 a status poll in the launcher waited more than
+12 minutes for an execution that had already succeeded
+([#932](https://github.com/tgoodyear/usnewsmap.com/issues/932)), and a call that hangs inside the
+guard would hold the lease with nobody to end it. So the launcher and the helper bound their calls
+on the job and the lease (`scripts/lib/bounded-az.sh`, written in shell because macOS has no
+`timeout`). A call that runs out of time is killed together with the child processes Azure CLI
+starts. The checks at the start of a run are not bounded: the sign-in check, the stack-output
+lookups and, for `--target bridge`, the resource group check (`boinc_az_check` in
+`scripts/lib/boinc.sh`, which the provision, build, app release and test client scripts share).
+They run before the lease is taken, so a hang there holds no lease.
+
+- A read is killed after `BOINC_AZ_READ_TIMEOUT` seconds (60) and tried again, up to
+  `BOINC_AZ_READ_ATTEMPTS` attempts (3) with `BOINC_AZ_READ_BACKOFF` seconds (5) between them. A read
+  that fails is retried the same way. This covers the execution list, the status polls and
+  read-backs, the template read, the resource group check of `--target handoff`, the exchange-account lookup and the blob existence check. Inside
+  a window (the 120 seconds that confirm and reconcile allow, set by `BOINC_START_CONFIRM_SECS` and
+  `BOINC_START_RECONCILE_SECS`, or the `--wait-mins` of a wait), an attempt is cut to what is left
+  of the window and no retry starts after it ends. The first attempt of a call always gets at least 10
+  seconds, so a window that is already over still reads once. A read that fails every attempt
+  fails the way it did before: confirm and reconcile return failure, which keeps the lease, and a
+  poll stops the run.
+- A call that changes something is killed after `BOINC_AZ_WRITE_TIMEOUT` seconds (300) and not
+  retried, because a request that timed out may have taken effect. These are the job update and
+  start, the marker upload, and the lease acquire and release.
+  - A timed-out job update or start is an uncertain outcome like any failed one: the run fails, and
+    the reconcile described under Failure recovery decides whether the lease is released.
+  - A timed-out lease acquire may have taken the lease on the server. The launcher stops before it
+    touches the template, and the error names the blob and the proposed lease ID. If the blob is
+    held under that ID, it was this launcher's, and releasing it with that ID is the clean way to
+    free it; a release with any other ID fails, so trying it is safe.
+  - A timed-out lease release reports that the release failed, with the blob and the lease ID. The release may have taken effect, so the lease may still be held.
+
+These limits apply to `scripts/boinc/start-boinc-bridge.sh` and to the helper's use in
+`scripts/boinc/provision-boinc.sh`. In production the launcher still starts the hand-off job for its `export` and `texts-export`
+steps (its `claim`, `release` and `collect` can run on the on-prem host instead,
+[boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)), and the bridge job of a
+`"server": "azure"` environment. The stack deployments and the ACR builds still call plain `baz`,
+because their calls run long.
+
 ## Coordination boundaries
 
 This transaction lease is deliberately **not**

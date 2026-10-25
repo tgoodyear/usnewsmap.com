@@ -34,6 +34,17 @@
 # running, and after the start it reads the new execution's settings back and fails if they
 # are not this run's (another caller updated the job in between). A cross-host blob lease
 # serializes the check/update/start transaction for both targets; see docs/boinc-start-guard.md.
+#
+# The az calls on the job and the start lease have time limits (scripts/lib/bounded-az.sh).
+# A read, such as the status poll, is killed with its child processes after BOINC_AZ_READ_TIMEOUT
+# seconds (60) and retried up to BOINC_AZ_READ_ATTEMPTS attempts (3), BOINC_AZ_READ_BACKOFF
+# seconds (5) apart, but not past the --wait-mins window. The calls that change something (the
+# job update and start, and the lease acquire and release) are killed after
+# BOINC_AZ_WRITE_TIMEOUT seconds (300) and not retried, since a request that timed out may have
+# taken effect: the run fails as it does for any failed update or start, and
+# docs/boinc-start-guard.md says how the lease is kept or released. The checks at the start of a
+# run have no limit: the sign-in check, the stack-output lookups and, for --target bridge, the
+# resource group check.
 # Needs az signed in to the settings' subscription, jq, and python3.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
@@ -86,6 +97,8 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
   seen="$seen$name "
 done
 cd "$(dirname "$0")/../.."
+# shellcheck source=scripts/lib/bounded-az.sh
+. scripts/lib/bounded-az.sh
 ALLOW_DIRTY=false
 if [ "$TARGET" = handoff ]; then
   # shellcheck source=scripts/lib/env.sh
@@ -101,7 +114,7 @@ if [ "$TARGET" = handoff ]; then
   [ -n "$job" ] || die "the stack $STACK has no BOINC_HANDOFF_JOB output; run scripts/azure/provision.sh --env $ENV_NAME"
   JOB_RG=$(aget AZURE_RESOURCE_GROUP)
   [ -n "$JOB_RG" ] || die "the stack $STACK has no AZURE_RESOURCE_GROUP output; run scripts/azure/provision.sh --env $ENV_NAME"
-  baz group show --name "$JOB_RG" --query name -o none ||
+  baz_ro group show --name "$JOB_RG" --query name -o none ||
     die "no resource group $JOB_RG: it comes from the main stack (scripts/azure/provision.sh --env $ENV_NAME)"
   PROVISION="scripts/azure/provision.sh --env $ENV_NAME"
   LOGS="the main environment's Log Analytics workspace (ContainerAppConsoleLogs)"
@@ -116,7 +129,7 @@ else
   PROVISION="scripts/boinc/provision-boinc.sh --env $ENV_NAME"
   LOGS="the BOINC stack's Log Analytics workspace (ContainerAppConsoleLogs_CL)"
 fi
-template=$(baz containerapp job show --name "$job" --resource-group "$JOB_RG" --query properties.template -o json) ||
+template=$(baz_ro containerapp job show --name "$job" --resource-group "$JOB_RG" --query properties.template -o json) ||
   die "can't read $job"
 container=$(jq -er '.containers[0].name' <<< "$template") || die "$job has no container"
 # The job's own settings, as deployed; each must be there.
@@ -146,22 +159,22 @@ trap 'boinc_start_guard_cleanup $?' EXIT
 boinc_start_guard_acquire
 # running_executions: the job's executions that haven't ended.
 running_executions() {
-  baz containerapp job execution list --name "$job" --resource-group "$JOB_RG" \
+  baz_ro containerapp job execution list --name "$job" --resource-group "$JOB_RG" \
     --query "[?properties.status!='Succeeded' && properties.status!='Failed' && properties.status!='Stopped' && properties.status!='Degraded'].name" -o tsv
 }
 running=$(running_executions) || die "can't list the executions of $job"
 [ -z "$running" ] || die "$job is still running $(echo "$running" | tr '\n' ' ')- wait for it to end first"
 BOINC_START_SAFE_TO_RELEASE=false
 BOINC_START_UNCERTAIN=update
-baz containerapp job update --name "$job" --resource-group "$JOB_RG" --container-name "$container" \
+baz_mut containerapp job update --name "$job" --resource-group "$JOB_RG" --container-name "$container" \
   --replace-env-vars "${base[@]}" "${run[@]}" -o none || die "can't set the run's settings on $job"
 BOINC_START_UNCERTAIN=start
-execution=$(baz containerapp job start --name "$job" --resource-group "$JOB_RG" --query name -o tsv) ||
+execution=$(baz_mut containerapp job start --name "$job" --resource-group "$JOB_RG" --query name -o tsv) ||
   die "can't start $job"
 [ -n "$execution" ] || die "$job started no execution"
 # The execution records the template it started with: it must hold exactly this run's settings.
 want=$(printf '%s\n' "${base[@]}" "${run[@]}" | sort)
-got=$(baz containerapp job execution show --name "$job" --resource-group "$JOB_RG" --job-execution-name "$execution" \
+got=$(baz_ro containerapp job execution show --name "$job" --resource-group "$JOB_RG" --job-execution-name "$execution" \
   --query properties.template.containers[0].env -o json | jq -r '.[] | "\(.name)=\(.value // "")"' | sort) ||
   die "can't read $execution's settings; stop it if it isn't this run's: az containerapp job stop --name $job --resource-group $JOB_RG --job-execution-name $execution"
 [ "$got" = "$want" ] ||
@@ -176,8 +189,10 @@ if [ -z "$WAIT_MINS" ]; then
 fi
 echo "waiting up to $WAIT_MINS minutes for $job execution $execution" >&2
 deadline=$(($(date +%s) + WAIT_MINS * 60))
+# A poll is not retried past the wait window (a slow last read may run a few seconds over).
+BAZ_RO_UNTIL=$((SECONDS + WAIT_MINS * 60))
 while :; do
-  status=$(baz containerapp job execution show --name "$job" --resource-group "$JOB_RG" \
+  status=$(baz_ro containerapp job execution show --name "$job" --resource-group "$JOB_RG" \
     --job-execution-name "$execution" --query properties.status -o tsv) || die "can't read $execution's status"
   case $status in
     Succeeded) break ;;
