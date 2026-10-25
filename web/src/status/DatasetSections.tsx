@@ -168,7 +168,7 @@ export function TheDatasets({ s, meta, now }: { s: Status; meta: Meta | undefine
         {as?.searched ? "American Stories' text" : "American Stories where enabled"}, and selected replacement OCR
         described below.
       </p>
-      <ChroniclingAmerica s={s} />
+      <ChroniclingAmerica s={s} layout={meta?.text_layout} />
       <AmericanStories as={as} known={sources !== undefined} layout={meta?.text_layout} />
       <JapanesePages s={s} now={now} />
       <section aria-labelledby="ds-later" className="status-subsection">
@@ -183,7 +183,12 @@ export function TheDatasets({ s, meta, now }: { s: Status; meta: Meta | undefine
   );
 }
 
-function ChroniclingAmerica({ s }: { s: Status }) {
+/**
+ * `layout` is the served version's `text_layout` (`/v1/meta`): with layout 3
+ * the text of a page we read again is searched beside the Library of
+ * Congress's, not in its place.
+ */
+function ChroniclingAmerica({ s, layout }: { s: Status; layout: Meta["text_layout"] }) {
   const p = s.published;
   const main = mainIndexPages(s);
   return (
@@ -224,9 +229,10 @@ function ChroniclingAmerica({ s }: { s: Status }) {
           [
             "How it's searched",
             <>
-              Every search reads the Library of Congress&apos;s text, except on the pages we read again ourselves
-              (below), where our text is searched in its place. Each result links to the page image at the Library of
-              Congress.
+              {layout === 3
+                ? "Every search reads the Library of Congress's text, and on the pages we read again ourselves (below) our text too."
+                : "Every search reads the Library of Congress's text, except on the pages we read again ourselves (below), where our text is searched in its place."}{" "}
+              Each result links to the page image at the Library of Congress.
             </>,
           ],
         ]}
@@ -237,9 +243,9 @@ function ChroniclingAmerica({ s }: { s: Status }) {
 
 /**
  * American Stories' facts. `layout` is the served version's `text_layout`
- * (`/v1/meta`): with one field for both texts (2) its text is always
- * searched, and the search's count has no American Stories-only pages;
- * undefined when the API doesn't say.
+ * (`/v1/meta`): with one field for the texts (2, or 3 with our OCR's
+ * replaced LoC text too) its text is always searched, and the search's count
+ * has no American Stories-only pages; undefined when the API doesn't say.
  */
 function AmericanStories({
   as,
@@ -286,13 +292,14 @@ function AmericanStories({
 }
 
 function americanStoriesSearch(as: Sources["american_stories"], layout: Meta["text_layout"]): ReactNode {
-  if (as && !as.searched && layout !== 2) {
+  const oneField = layout === 2 || layout === 3;
+  if (as && !as.searched && !oneField) {
     return "This server has its text switched off, so searches read the Library of Congress text alone.";
   }
   const match = "a page when its Library of Congress and American Stories texts together have the words";
   const badge = `When a page matched only in American Stories' text, the result says so with an "${AMERICAN_STORIES_BADGE}" badge`;
-  // One field for both texts: always searched, and no count of the pages only American Stories matched.
-  if (as && layout === 2) return `Every search reads both texts: it finds ${match}. ${badge}.`;
+  // One field for the texts: always searched, and no count of the pages only American Stories matched.
+  if (as && oneField) return `Every search reads both texts: it finds ${match}. ${badge}.`;
   const finds = as ? "A search finds" : "Once its text is in the index, a search will find";
   return `${finds} ${match}. ${badge}${layout === 1 ? ", and the search's page count says how many pages that is" : ""}.`;
 }
