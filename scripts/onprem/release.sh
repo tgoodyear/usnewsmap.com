@@ -58,7 +58,7 @@
 # identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,53s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,58s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
 while [ $# -gt 0 ]; do
   case "$1" in

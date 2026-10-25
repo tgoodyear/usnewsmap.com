@@ -4,9 +4,9 @@ python3 -m unittest -v scripts/onprem/test_release_record.py. Needs jq.
 usnm-ingest is a stub that logs each call's arguments and the two settings it reads from the
 environment, so nothing here reaches Azure. The run directory holds only the staged pointer.
 
-release.sh expands empty arrays under `set -u` (seed's `every`, publish's `dry`), which bash
-before 4.4 refuses, so the tests that get as far as that call skip on the macOS system bash
-(CI and the release container run Linux)."""
+release.sh's seed step expands an empty array under `set -u` (`every`), which bash before 4.4
+refuses, so the test that runs seed skips on the macOS system bash (CI and the release
+container run Linux). The publish and restore steps expand theirs safely."""
 
 import json
 import os
@@ -40,7 +40,7 @@ def empty_arrays_work():
     return done.returncode == 0
 
 
-NEEDS_NEW_BASH = unittest.skipUnless(empty_arrays_work(), "release.sh needs bash 4.4+ (empty arrays under set -u)")
+NEEDS_NEW_BASH = unittest.skipUnless(empty_arrays_work(), "the seed step needs bash 4.4+ (empty arrays under set -u)")
 
 
 class ReleaseRecordTest(unittest.TestCase):
@@ -78,7 +78,6 @@ class ReleaseRecordTest(unittest.TestCase):
     def lake_curated(self):
         return "https://%s.blob.core.windows.net/curated" % LAKE
 
-    @NEEDS_NEW_BASH
     def test_publish_records_the_run_after_the_copy(self):
         done = self.run_script("--step", "publish", "--cosmos-endpoint", ENDPOINT)
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -99,7 +98,6 @@ class ReleaseRecordTest(unittest.TestCase):
              "import-staged-run", "--version", VERSION],
         )
 
-    @NEEDS_NEW_BASH
     def test_the_endpoint_may_come_from_the_environment_and_the_flag_wins(self):
         done = self.run_script("--step", "publish", env={"USNM_COSMOS_ENDPOINT": ENDPOINT})
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -110,7 +108,6 @@ class ReleaseRecordTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.calls()[1]["argv"][:2], ["--cosmos", other])
 
-    @NEEDS_NEW_BASH
     def test_the_endpoint_forms_of_a_cosmos_account_are_accepted(self):
         for endpoint in (
             "https://acct.documents.azure.com/",
@@ -125,15 +122,18 @@ class ReleaseRecordTest(unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertEqual(self.calls()[1]["argv"][:2], ["--cosmos", endpoint])
 
-    @NEEDS_NEW_BASH
     def test_neither_call_gets_the_others_setting_from_the_environment(self):
         # usnm-ingest refuses --cosmos with a state file, and reads both from these variables.
         env = {"USNM_COSMOS_ENDPOINT": ENDPOINT, "USNM_STATE_FILE": "/elsewhere/state.json"}
         done = self.run_script("--step", "publish", env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.calls()), 2)
         for call in self.calls():
             self.assertEqual(call["env"], {}, call["argv"])
-        os.remove(self.log)
+
+    @NEEDS_NEW_BASH
+    def test_the_steps_that_keep_a_state_file_get_neither_setting_from_the_environment(self):
+        env = {"USNM_COSMOS_ENDPOINT": ENDPOINT, "USNM_STATE_FILE": "/elsewhere/state.json"}
         done = self.run_script("--step", "seed", env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
         calls = self.calls()
@@ -153,6 +153,22 @@ class ReleaseRecordTest(unittest.TestCase):
                 self.assertIn("publish-staged", calls[0]["argv"])
                 self.assertEqual(calls[0]["argv"][-1], "--dry-run")
                 self.assertNotIn("import-staged-run", calls[0]["argv"])
+
+    def test_a_restore_records_nothing_and_needs_no_endpoint(self):
+        # A restore copies the version the lake already serves back to Azure (#1061) and writes
+        # nothing to Cosmos, with or without an endpoint, and for a dry run too.
+        for extra in ([], ["--cosmos-endpoint", ENDPOINT], ["--dry-run"]):
+            with self.subTest(extra=extra):
+                if os.path.exists(self.log):
+                    os.remove(self.log)
+                done = self.run_script("--step", "restore", *extra)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                calls = self.calls()
+                self.assertEqual(len(calls), 1)
+                self.assertIn("publish-staged", calls[0]["argv"])
+                self.assertIn("--restore", calls[0]["argv"])
+                self.assertNotIn("import-staged-run", calls[0]["argv"])
+                self.assertNotIn("--cosmos", calls[0]["argv"])
 
     def test_a_missing_endpoint_stops_before_the_copy(self):
         done = self.run_script("--step", "publish")
@@ -205,7 +221,6 @@ class ReleaseRecordTest(unittest.TestCase):
                 self.assertIn(text, done.stderr)
                 self.assertEqual(self.calls(), [])
 
-    @NEEDS_NEW_BASH
     def test_a_failed_copy_records_nothing(self):
         done = self.run_script("--step", "publish", "--cosmos-endpoint", ENDPOINT, env={"STUB_FAIL": "publish-staged"})
         self.assertNotEqual(done.returncode, 0)
@@ -213,7 +228,6 @@ class ReleaseRecordTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("publish-staged", calls[0]["argv"])
 
-    @NEEDS_NEW_BASH
     def test_a_failed_record_says_the_copy_is_done_and_how_to_retry(self):
         done = self.run_script("--step", "publish", "--cosmos-endpoint", ENDPOINT, env={"STUB_FAIL": "import-staged-run"})
         self.assertNotEqual(done.returncode, 0)
