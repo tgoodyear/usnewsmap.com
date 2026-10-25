@@ -7,8 +7,8 @@
 //!   several batches is read once for each. For each page it takes the row
 //!   with the lowest stored damage rate (ties: the newest) from the stored
 //!   scores alone, then reads the text of the chosen rows only and
-//!   normalizes it again for the row's engine, so a rule added since the
-//!   part was written (#1065) applies to pages already read.
+//!   normalizes it again for the row's engine and language, so a rule added
+//!   since the part was written (#1065) applies to pages already read.
 //! - **Revocations.** `ocr-local/revoked/<stamp>.json` files, create-only,
 //!   each naming a node, an engine, a time window or an import run, with a
 //!   reason and a reference ([`Revocation`]). Rows they match are left out
@@ -34,7 +34,7 @@ use super::report::{engine_key, Tally as Count};
 use super::rule::{self, Keep};
 use super::ROOT;
 use usnm_core::digest::hex;
-use usnm_core::text::{normalize_ocr_for, Hyphenation};
+use usnm_core::text::normalize_ocr_for;
 
 /// Where revocations are.
 pub fn revoked_prefix() -> String {
@@ -153,13 +153,15 @@ impl Listing {
                 // Stored text was normalized when the page was read, by the
                 // rules of that day: rejoin the line-end marks the rules
                 // since take, as a worker would now: `⸗`, `¬` and `‐` in any
-                // text, and `—` in text read with a Fraktur model, before a
-                // lowercase letter. A row stores no language, so the engine
-                // alone decides; a worker also takes a German page's `—`.
-                // Normalizing is idempotent, so text that has nothing new
-                // to join stays as it is. The stored scores chose the row;
-                // the release scores this text again.
-                let text = normalize_ocr_for(&text, Hyphenation::for_engine(&row.ocr_engine));
+                // text, and `—` before a lowercase letter in text read with
+                // a Fraktur model or in German. A row has no language of its
+                // own; the one its stored scores found in our text is the
+                // page's (`StoredRow::hyphenation`). Where that is unknown
+                // (`und`, no words, another metric version's scores), the
+                // engine alone decides. Normalizing is idempotent, so text
+                // that has nothing new to join stays as it is. The stored
+                // scores chose the row; the release scores this text again.
+                let text = normalize_ocr_for(&text, row.hyphenation());
                 out.pages.insert(id, Candidate { row, text });
             }
             out.revoked.extend(withdrawn);
@@ -441,6 +443,7 @@ impl Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use usnm_core::text::Hyphenation;
 
     fn row(rate: Option<f64>, at: i64) -> StoredRow {
         StoredRow {
@@ -581,6 +584,11 @@ mod tests {
 
     /// An `Imported` page of title `sn1` with `text`, read by `ocr_engine`.
     fn imported(seq: u16, ocr_engine: &str, text: &str) -> pages::Imported {
+        imported_scored(seq, ocr_engine, text, Scores::of(text, &["deu"]))
+    }
+
+    /// The same, with the scores `ocr-sync` stored for our text.
+    fn imported_scored(seq: u16, ocr_engine: &str, text: &str, ours: Scores) -> pages::Imported {
         let loc = Scores::of("", &["deu"]);
         pages::Imported {
             row: usnm_overlay::OverlayRow {
@@ -603,7 +611,7 @@ mod tests {
             source_part: "pages/x.parquet".into(),
             node: "node1".into(),
             reason: "bulk".into(),
-            ours: Scores::of(text, &["deu"]),
+            ours,
             loc,
         }
     }
@@ -658,6 +666,172 @@ mod tests {
         // The stored scores are the ones that chose the row.
         let row = &loaded.pages["sn1_1900-01-01_ed-1_seq-1"].row;
         assert_eq!(row.ours, Scores::of(stored, &["deu"]));
+    }
+
+    /// An engine tag for `profile`, as a worker writes it.
+    fn tag(profile: &str) -> String {
+        format!(
+            "tesseract/5.5.1 profile={profile} image=sha256:3f9a0c1d2e4b \
+            models=sha256:8c2d71aa09fe route=minimal@r1 contract=0"
+        )
+    }
+
+    /// A row as `ocr-sync` read it, with our text's detected language.
+    fn row_in(engine: &str, lang: Option<&str>) -> StoredRow {
+        StoredRow {
+            ocr_engine: engine.into(),
+            ours: Scores {
+                lang: lang.map(str::to_owned),
+                ..Scores::default()
+            },
+            ..row(None, 0)
+        }
+    }
+
+    #[test]
+    fn a_stored_row_gives_its_page_the_language_it_was_scored_in() {
+        let lang = |l: Option<&str>| row_in(&tag("eng"), l).language();
+        assert_eq!(lang(Some("ger")), Some("deu"));
+        assert_eq!(lang(Some("eng")), Some("eng"));
+        assert_eq!(lang(Some("cze")), Some("ces"));
+        // No language: not detected, no words, another metric version's
+        // scores (read as none), or not a catalog code.
+        assert_eq!(lang(Some("und")), None);
+        assert_eq!(lang(None), None);
+        assert_eq!(lang(Some("deu")), None);
+        assert_eq!(lang(Some("")), None);
+        assert_eq!(row(None, 0).language(), None);
+
+        let rule = |engine: &str, l: Option<&str>| row_in(&tag(engine), l).hyphenation();
+        // A German page takes the Fraktur rule with any model.
+        assert_eq!(rule("deu", Some("ger")), Hyphenation::Fraktur);
+        assert_eq!(rule("eng", Some("ger")), Hyphenation::Fraktur);
+        // A Fraktur model does with any language, or none.
+        for l in [Some("ger"), Some("eng"), Some("und"), None] {
+            assert_eq!(rule("frak2021", l), Hyphenation::Fraktur, "{l:?}");
+            assert_eq!(rule("deu_latf+deu", l), Hyphenation::Fraktur, "{l:?}");
+        }
+        // Otherwise the engine alone decides, as before a row had a language.
+        for l in [Some("eng"), Some("fre"), Some("und"), None] {
+            assert_eq!(rule("deu", l), Hyphenation::Hyphens, "{l:?}");
+            assert_eq!(rule("eng", l), Hyphenation::Hyphens, "{l:?}");
+        }
+        assert_eq!(
+            row_in("tesseract-5.5.1/deu", Some("ger")).hyphenation(),
+            Hyphenation::Fraktur
+        );
+        assert_eq!(
+            row_in("tesseract-5.5.1/deu", None).hyphenation(),
+            Hyphenation::Hyphens
+        );
+    }
+
+    /// A German page read with a model that isn't a Fraktur one gets the
+    /// em-dash rule at load when the row's scores say the page is German,
+    /// as a worker or an import gives it now; with no language, as before.
+    #[tokio::test]
+    async fn loads_a_german_page_with_the_language_it_was_scored_in() {
+        const PAGE: &str = "Der Stadtrath hat am Dienstag beschlossen, dass die neue Schule auf dem \
+            Grund{dash}\nstück gebaut werden soll, welches die Behörde im vorigen Jahre gekauft hat. \
+            Es ist noch nicht bekannt, wann die Arbeiten beginnen werden, aber man hofft, dass es bald \
+            sein wird und dass die Kinder im nächsten Jahre in das neue Schul{dash}\nhaus ziehen können. \
+            Der Rath der Stadt{dash}\nCunow sprach dann über die Steuern. ";
+        const ENGLISH: &str =
+            "The city council met on Tuesday and voted for the new school on the \
+            hill and the mayor said the railroad{dash}\nwould bring more trade to the town and its \
+            farms, and the people of the county were glad of it. ";
+        let dash = |s: &str| {
+            s.replace("{dash}", "\u{2014}")
+                .repeat(3)
+                .trim_end()
+                .to_owned()
+        };
+        let (stored, english) = (dash(PAGE), dash(ENGLISH));
+        // What a worker stores now: the dash after a letter, before a
+        // lowercase letter, joined; `Cunow` starts a new word.
+        let joined = stored
+            .replace("Grund\u{2014}\nstück", "Grundstück")
+            .replace("Schul\u{2014}\nhaus", "Schulhaus");
+        assert_ne!(joined, stored);
+        assert!(joined.contains("Stadt\u{2014}\nCunow"));
+        let (deu, frak, en) = (tag("deu"), tag("frak2021"), tag("eng"));
+        assert_eq!(
+            joined,
+            normalize_ocr_for(&stored, Hyphenation::for_page(&deu, "deu")),
+            "what a worker stores for a German page"
+        );
+
+        let german = Scores::of(&stored, &["ger"]);
+        assert_eq!(german.lang.as_deref(), Some("ger"));
+        let eng = Scores::of(&english, &["eng"]);
+        assert_eq!(eng.lang.as_deref(), Some("eng"));
+        let undecided = Scores {
+            lang: Some("und".into()),
+            ..german.clone()
+        };
+        let rows = [
+            // German, read with a model that is not a Fraktur one.
+            imported_scored(1, &deu, &stored, german.clone()),
+            imported_scored(2, &en, &stored, german.clone()),
+            imported_scored(3, "tesseract-5.5.1/deu", &stored, german.clone()),
+            // The same text and engine with no language known: unchanged.
+            imported_scored(4, &deu, &stored, Scores::default()),
+            imported_scored(5, &deu, &stored, undecided.clone()),
+            // A page scored as English keeps its dash.
+            imported_scored(6, &deu, &english, eng.clone()),
+            imported_scored(7, &en, &english, eng),
+            // A Fraktur model, whatever the language.
+            imported_scored(8, &frak, &stored, german.clone()),
+            imported_scored(9, &frak, &stored, Scores::default()),
+            imported_scored(10, &frak, &stored, undecided),
+            // Text a worker stored with the language: nothing left to join.
+            imported_scored(11, &deu, &joined, Scores::of(&joined, &["ger"])),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        curated
+            .put_new(
+                &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
+                pages::encode(&rows).unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        let listing = Listing::list(curated.as_ref()).await.unwrap();
+        let loaded = listing
+            .load(curated.as_ref(), ["sn1"].into_iter(), &[])
+            .await
+            .unwrap();
+        let text = |seq: u16| {
+            loaded.pages[&format!("sn1_1900-01-01_ed-1_seq-{seq}")]
+                .text
+                .as_str()
+        };
+        for seq in [1, 2, 3, 8, 9, 10] {
+            assert_eq!(text(seq), joined, "seq {seq}");
+        }
+        for seq in [4, 5] {
+            assert_eq!(text(seq), stored, "seq {seq}");
+        }
+        for seq in [6, 7] {
+            assert_eq!(text(seq), english, "seq {seq}");
+        }
+        assert_eq!(text(11), joined);
+        // Normalizing again, as a worker would have, changes nothing.
+        for seq in 1..=11 {
+            let row = &loaded.pages[&format!("sn1_1900-01-01_ed-1_seq-{seq}")].row;
+            let once = text(seq);
+            assert_eq!(
+                normalize_ocr_for(once, row.hyphenation()),
+                once,
+                "seq {seq}"
+            );
+            assert_eq!(
+                normalize_ocr_for(once, Hyphenation::Hyphens),
+                once,
+                "seq {seq}"
+            );
+        }
     }
 
     #[test]

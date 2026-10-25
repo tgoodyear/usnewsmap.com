@@ -19,6 +19,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
+use usnm_core::text::Hyphenation;
 use usnm_overlay::OverlayRow;
 
 /// One text's scores (`usnm_core::damage::score` against the title's
@@ -181,6 +182,27 @@ pub struct StoredRow {
     pub ocred_at: i64,
     pub ours: Scores,
     pub loc: Scores,
+}
+
+impl StoredRow {
+    /// The page's language in ISO 639-3 (`deu`): the one `ocr-sync` detected
+    /// in our text, which `ours.lang` holds as a catalog code (`ger`). None
+    /// when no language was detected (`und`, or too few words) or the row's
+    /// scores are another metric version's and were read as none.
+    pub fn language(&self) -> Option<&'static str> {
+        self.ours
+            .lang
+            .as_deref()
+            .and_then(usnm_core::lang::marc_to_iso3)
+    }
+
+    /// The line-end rule for this row's text, as a worker would pick it now
+    /// (`Hyphenation::for_page`): [`Hyphenation::Fraktur`] for a Fraktur
+    /// model or a German page. A page with no [`language`](Self::language)
+    /// has the engine alone decide.
+    pub fn hyphenation(&self) -> Hyphenation {
+        Hyphenation::for_page(&self.ocr_engine, self.language().unwrap_or_default())
+    }
 }
 
 /// Read a merged part's rows, without the text column.
