@@ -127,15 +127,14 @@ Both are described in the [development guide](../docs/development.md).
 
 ## Corpus data flow
 
-`corpus/`. Tools for the catalog of corpus data, runs and processing flow ([design 14](../docs/design/14-corpus-data-flow.md)). The catalog and the observer use only the Python standard library. The catalog, the observer and the evidence sync run as systemd units from `ocr-node/`, which name the installed copies under `/usr/local/lib/usnm-data-flow/`.
+`corpus/`. Tools for the catalog of corpus data, runs and processing flow ([design 14](../docs/design/14-corpus-data-flow.md)). The catalog and the observer use only the Python standard library. They run as systemd units from `ocr-node/` (the observer from a service and a five-minute timer), which name the installed copies under `/usr/local/lib/usnm-data-flow/`.
 
-| Script                                                                                                               | What it does                                                                                                                                    |
-| -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `data_catalog.py`                                                                                                    | A local, rebuildable SQLite catalog of evidence about pages, artifacts and runs. Ingests evidence files and serves bounded queries on loopback. |
-| `data_flow_observer.py`                                                                                              | Joins the catalog snapshot to local OCR and public BOINC counters and writes the dashboard's snapshot.                                          |
-| `scan_cache_inventory.py`                                                                                            | A bounded, resumable inventory of the local scan cache. File stats are not checksum verification.                                               |
-| `worker_evidence_sync.py`                                                                                            | Moves workers' run-metadata captures to the catalog over a restricted SSH command and ingests them.                                             |
-| `test_data_catalog.py`, `test_data_flow_observer.py`, `test_scan_cache_inventory.py`, `test_worker_evidence_sync.py` | Their tests. `fixtures/data_catalog/` holds sample worker run captures and an `ocr-sync` import that `test_data_catalog.py` reads.              |
+| Script                                                                               | What it does                                                                                                                                    |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data_catalog.py`                                                                    | A local, rebuildable SQLite catalog of evidence about pages, artifacts and runs. Ingests evidence files and serves bounded queries on loopback. |
+| `data_flow_observer.py`                                                              | Joins the catalog snapshot to local OCR and public BOINC counters and writes the dashboard's snapshot.                                          |
+| `scan_cache_inventory.py`                                                            | A bounded, resumable inventory of the local scan cache. File stats are not checksum verification.                                               |
+| `test_data_catalog.py`, `test_data_flow_observer.py`, `test_scan_cache_inventory.py` | Their tests. `fixtures/data_catalog/` holds sample worker run captures and an `ocr-sync` import that `test_data_catalog.py` reads.              |
 
 ## Running the tests
 

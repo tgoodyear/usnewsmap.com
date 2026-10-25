@@ -84,7 +84,7 @@ Then check `curl -fsS 127.0.0.1:7280/health/readyz` and `curl -fsS 127.0.0.1:808
 
 **Flood.** Cloudflare's one Free rate-limit rule is written and off (ADR-0027 settled decision 9). Turn it on when single addresses send searches far past the API's own limit (120 a minute, burst 40), because the API's 429s still cross the tunnel and load the host. The signs are a jump in the search routes' `Client4xx` count (which includes the 429s) in `scripts/azure/logs.sh --env prod --query-name api-requests`, or one address sending many searches in Security Analytics.
 
-1. Enable the rule in the zone's rate-limiting rules. It matches `/v1/aggregate`, `/v1/hits`, `/api/v1/aggregate` and `/api/v1/hits`, counts each IP's requests over 10 seconds, and blocks an IP above about 50 for 10 seconds.
+1. Enable the rule in the zone's rate-limiting rules. It matches `/v1/aggregate`, `/v1/hits`, `/api/v1/aggregate` and `/api/v1/hits`, counts each IP's requests over 10 seconds, and blocks an IP above about 50 for 10 seconds. The rule's recorded definition is `scripts/onprem/serving/flood-rule.json`; until the zone-settings script exists, the dashboard rule must match it (ADR-0027 decision 12).
 2. Keep its action at Block. A challenge would set the `cf_clearance` cookie, and `/privacy` says the site sets none. Don't use Under Attack Mode either: it breaks API scripts.
 3. While the rule is on, every search it blocks is kept in Security Events (§9.4.2). Turn it off once the flood stops.
 
@@ -241,7 +241,8 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 
 **DR runbook: serving from Azure again after Phase 4.** This is Phase 4's rollback ([ADR-0027](adr/0027-onprem-serving-behind-cloudflare.md), Phases), for an on-prem outage too long to wait out. It takes hours.
 
-1. Provision the API and searcher apps again.
-2. Publish the index to Azure with `release.sh --step publish`: about 1.2 TB, about 2.7 hours at 1 Gbps. It sends the copy on `tank`, so it needs pve-big's storage and uplink. Without them, the index is rebuilt first (Search index, above). As built, this step can't restore the version that serves, because `publish-staged` copies a release only while `current.json` still names the release's `previous_version` (`crates/usnm-ingest/src/onprem.rs`). A path that restores it doesn't exist yet (#1061).
-3. Point the Worker at the new app's default `azurecontainerapps.io` name, which needs no certificates.
-4. Bind the custom domains later, as a separate step. Their `asuid` TXT records stay in Cloudflare for it (08 §8.8).
+1. Provision the API and searcher apps again, and the index account and its endpoint, which Phase 4 deleted with them ([ADR-0021](adr/0021-separate-index-storage.md)).
+2. Restore the index to Azure with `release.sh --run-dir DIR --step restore`, in the run directory that built the version `current.json` names: its `state.json`, `reference/index-storage-pending.json` and `qw/`, which must be kept on `tank`. It copies about 1.2 TB, which takes about 2.7 hours at 1 Gbps, and sends the copy on `tank`, so it needs pve-big's storage and uplink. Without them, the index is rebuilt first (Search index, above). `release.sh --step publish` can't do this, because `publish-staged` copies a release only while `current.json` names the release's `previous_version`. The restore (`publish-staged --restore`) is for the version `current.json` already names: it refuses unless `current.json` names that version and the indexes the run directory holds, copies what the index account and the lake lack, and writes neither `current.json` nor the pending pointer. Its commands and limits are in [Restoring serving to Azure](../operations/rebuild-and-index-storage.md#restoring-serving-to-azure).
+3. Check the app on the version, once the copy has finished: `release.sh --run-dir DIR --step ready --app-url URL --index-version VERSION`, with the app's default `azurecontainerapps.io` URL. It waits for `/readyz` to pass and `/v1/meta` to name the version, and exits 1 if they don't.
+4. Point the Worker at the new app's default `azurecontainerapps.io` name, which needs no certificates.
+5. Bind the custom domains later, as a separate step. Their `asuid` TXT records stay in Cloudflare for it (08 §8.8).

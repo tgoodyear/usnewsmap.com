@@ -225,7 +225,7 @@ fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Stri
     manifest.matches(job, &text, &alto)?;
     usnm_ingest::ocr_local::checks::check_alto(&alto)
         .map_err(|r| anyhow::anyhow!("{}", r.code()))?;
-    Ok(usnm_core::text::normalize_ocr(std::str::from_utf8(&text)?))
+    crate::normalized_text(job, &text)
 }
 
 /// A conservative two-host quorum: both canonical hosts must still be trusted and produce
@@ -376,5 +376,94 @@ mod tests {
         assert!(plan_job(&id, &deu_job, 1, &coexisting).is_err());
         let deu_spot = plan_job(&id, &deu_job, 2, &coexisting).unwrap();
         assert_eq!(deu_spot.target_host, 5);
+    }
+
+    /// A job as the bridge makes it for a page in `language` read with `profile`.
+    fn job(language: &str, profile: &str) -> boinc::Job {
+        let mut job = boinc::Job {
+            v: 1,
+            id: String::new(),
+            message: usnm_ocr_contract::message::OcrMessage {
+                v: 1,
+                page: "sn83030214/1900-01-01/ed-1/seq-1".into(),
+                batch: "nbu_gage".into(),
+                language: language.into(),
+                reason: usnm_ocr_contract::message::Reason::Bulk,
+                score: Some(0.5),
+                queued_at: "2026-10-18T00:00:00Z".into(),
+            },
+            batch_version: 1,
+            scan: boinc::Scan {
+                url: "https://tile.loc.gov/image-services/iiif/service:ndnp:test/full/full/0/default.jpg".into(),
+                iiif_base: "https://tile.loc.gov/image-services/iiif/service:ndnp:test".into(),
+                bytes: 100,
+                sha256: "d".repeat(64),
+                md5: None,
+            },
+            engine: boinc::Engine {
+                kind: usnm_ocr_contract::routing::EngineKind::Tesseract,
+                image: format!("sha256:{}", "a".repeat(64)),
+                version: "5.5.0".into(),
+                profile: profile.into(),
+                models: "sha256:001122334455".into(),
+                psm: 3,
+                dpi: 300,
+                timeout_secs: 600,
+            },
+        };
+        job.id = job.identity().unwrap();
+        job
+    }
+
+    /// Writes a spot-check member's returned files for `job` into `spool`.
+    fn returned(job: &boinc::Job, spool: &Path, workunit: &str, text: &str) {
+        const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>page</fileName></sourceImageInformation></Description><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine><String CONTENT="HELLO"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+        let manifest = ResultManifest {
+            v: 1,
+            job_id: job.id.clone(),
+            scan_sha256: job.scan.sha256.clone(),
+            engine: job.engine.clone(),
+            text_sha256: boinc::sha256(text.as_bytes()),
+            alto_sha256: boinc::sha256(ALTO.as_bytes()),
+            elapsed_ms: 100,
+            completed_at: "2026-10-18T00:00:00Z".into(),
+        };
+        let file = |name: &str| spool.join(format!("{workunit}__file_{name}"));
+        std::fs::write(file("result.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(file("text.txt"), text).unwrap();
+        std::fs::write(file("layout.xml"), ALTO).unwrap();
+    }
+
+    /// The two-host quorum compares `result`s for equality, and `import`
+    /// stores the same text (`crate::normalized_text`), so for a German job
+    /// two hosts that end a line differently still agree (#1065).
+    #[test]
+    fn a_spot_result_is_normalized_as_import_stores_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spool = tmp.path();
+        let read = |job: &boinc::Job, text: &str| {
+            returned(job, spool, "wu", text);
+            let got = result(job, spool, "wu").unwrap();
+            assert_eq!(got, crate::normalized_text(job, text.as_bytes()).unwrap());
+            got
+        };
+        // One host's engine printed an em dash at the line end, another's a
+        // `⸗`, a third's a hyphen: the same word.
+        let german = job("deu", "frak2021");
+        let dash = read(&german, "durch den engen Haus\u{2014}\ngang schritt");
+        let double = read(&german, "durch den engen Haus\u{2E17}\ngang schritt");
+        let hyphen = read(&german, "durch den engen Haus-\ngang schritt");
+        assert_eq!(dash, "durch den engen Hausgang schritt");
+        assert_eq!((&double, &hyphen), (&dash, &dash));
+        // An English job keeps a dash at a line end, so those hosts disagree.
+        let english = job("eng", "eng");
+        let dash = read(&english, "durch den engen Haus\u{2014}\ngang schritt");
+        let hyphen = read(&english, "durch den engen Haus-\ngang schritt");
+        assert_eq!(dash, "durch den engen Haus\u{2014}\ngang schritt");
+        assert_ne!(dash, hyphen);
+        assert_eq!(
+            read(&english, "durch den engen Haus\u{2E17}\ngang schritt"),
+            hyphen
+        );
     }
 }

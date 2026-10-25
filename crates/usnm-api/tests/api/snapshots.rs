@@ -112,6 +112,40 @@ async fn queries_fold_as_the_served_version_was_built() {
     }
 }
 
+/// A fraction joined to a number is also searched as OCR prints it with a
+/// slash (#1067), only when a search is run: the query as written, its
+/// canonical form and so its cache key stay `61¼`, whatever the engine is
+/// sent. With version 1 the word is `611⁄4`, left as it was.
+#[tokio::test]
+async fn a_fraction_in_a_number_keeps_its_canonical_form() {
+    use usnm_core::params::RawParams;
+    let canonical = |rd: &RefData, q: &str| {
+        let raw = RawParams::parse(&format!("q={q}")).unwrap();
+        let request = rd.search_request(&raw).unwrap();
+        (request.query.to_string(), request.query)
+    };
+    let mut rd = refdata().await;
+    rd.current.common_grams = Some(1);
+    assert_eq!(canonical(&rd, "61%C2%BC").0, "611\u{2044}4");
+    rd.current.common_grams = Some(2);
+    for q in [
+        "61%C2%BC",
+        "wheat%2061%C2%BD",
+        "%22higher%20at%2061%C2%BC%22",
+    ] {
+        let (text, node) = canonical(&rd, q);
+        assert!(!text.contains(" OR "), "{q}: {text}");
+        assert_eq!(usnm_core::query::parse(&text).unwrap(), node, "{q}");
+    }
+    assert_eq!(canonical(&rd, "61%C2%BC").0, "61¼");
+    // The fixtures print `61¼` as the glyph: the four pages of March 1896.
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let (status, _, body) = get(&s, "/v1/aggregate?q=61%C2%BC").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"]["hits"], 4, "{body}");
+    assert_eq!(body["query"]["ast"], "61¼", "{body}");
+}
+
 #[tokio::test]
 async fn version_pinning_and_redirects() {
     let s = state_with(None).await;

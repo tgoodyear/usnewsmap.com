@@ -663,6 +663,8 @@ pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<Strin
     let mut phrases: Vec<Vec<String>> = Vec::new();
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
+        // A fraction read with a slash is marked as the phrase it is (#1067).
+        phrases.extend(usnm_core::fractions::slash_phrases(node));
         match node {
             // Prefix, wildcard and `~ocr` (a Latin word in a Japanese query)
             // and fuzzy (memory backend only) terms: mark each printed word

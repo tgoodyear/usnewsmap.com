@@ -343,7 +343,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `apiImage`                    | `USNM_API_IMAGE`                           | empty. A public image to run while `useAcr` is off; empty skips the API until then                                                                                                                                                                                                                                                                                                                              |
 | `useAcr`                      | `USNM_USE_ACR`                             | `false`. Turn on once CI has pushed to the registry                                                                                                                                                                                                                                                                                                                                                             |
 | `imageTag`                    | `USNM_IMAGE_TAG`                           | `main` (or a commit sha)                                                                                                                                                                                                                                                                                                                                                                                        |
-| `apiImageTag`                 | `USNM_API_IMAGE_TAG`                       | `imageTag`. API-only override; production records its independently deployed release.                                                                                                                                                                                                                                                                                                                           |
+| `apiImageTag`                 | `USNM_API_IMAGE_TAG`                       | `imageTag`. API-only override; production records its independently deployed release. A provision refuses while the pin differs from the tag the API runs, unless `--api-tag=live` or `--api-tag=TAG` is given ([Container registry](#container-registry)).                                                                                                                                                     |
 | `scheduledIngestImageTag`     | `USNM_SCHEDULED_INGEST_IMAGE_TAG`          | `imageTag`. Primary ingest job only; backfill and sync jobs retain the shared tag.                                                                                                                                                                                                                                                                                                                              |
 | `searchBackend`               | `USNM_SEARCH_BACKEND`                      | `fixtures`, or `quickwit` once indexes are published                                                                                                                                                                                                                                                                                                                                                            |
 | `cosmosFreeTier`              | `USNM_COSMOS_FREE_TIER`                    | `true` (one free-tier account per subscription)                                                                                                                                                                                                                                                                                                                                                                 |
@@ -462,7 +462,29 @@ Production records its existing independent API and primary-ingest tags so a
 provision for an unrelated workbook or output change does not silently replace
 either with `:main`. Update the relevant pin through a release PR when
 intentionally rolling that workload; a CI app rollout does not update these stack
-pins.
+pins, so a provision checks the API's pin (next paragraph).
+
+A CI rollout moves the API but not its pin, so the next provision would put the
+API back on the pinned tag (#1071). `scripts/azure/provision.sh` and its
+`--what-if` therefore read the image the API app serves first (its latest ready
+revision, with `az containerapp show` and `az containerapp revision show`, read
+only; the app's template can already name a rollout that isn't ready), and when
+`USNM_API_IMAGE_TAG` is pinned to a different tag they refuse before changing
+anything and print the commands that get past it. `--api-tag=live` deploys the
+tag the API serves now; `--api-tag=TAG` deploys that tag over the pin. After a
+release PR moves the pin on purpose, pass the new pin. Neither edits
+`infra/env/<env>.json`, so a later provision refuses again until a pull request
+sets the pin to the tag that runs. The app and its group come from the outputs a
+provision saved, or from the stack when this machine has none. Nothing is
+compared without a pin, when Azure says the API app isn't there (no stack yet, a
+stack that deploys no API app, or no such app), or when the app serves something
+other than an ACR `usnewsmap-api:<tag>` image, as it does with `USNM_USE_ACR`
+off (a note says so). When it can't tell, it refuses: a stack that names no API
+app, an app with no ready revision, or a read that fails; `--api-tag=TAG` gets
+past those, and `bootstrap.sh` and `stand-up.sh`, which have no flag for this,
+meet the same refusal when a pin is stale (a pull request that sets the pin to
+the tag that runs clears it). `teardown.sh`'s partial provision skips the check,
+since it only takes the environment apart.
 
 The Quickwit image (the searcher sidecar, and the base of the ingest image) is pinned by digest per environment in `infra/quickwit-image.json`: our build of v0.9.1, which `scripts/azure/build-quickwit.sh` builds in the environment's registry, or for an environment the file doesn't list, upstream v0.9.1, which CI copies in ([operations](../docs/operations/search-serving.md#the-quickwit-image), ADR-0013).
 

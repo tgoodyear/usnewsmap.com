@@ -231,11 +231,16 @@ pub fn by_state(rd: &RefData) -> Vec<StatePages> {
         r.pages += rd.place_pages.get(&p.id).copied().unwrap_or(0);
     }
     for t in rd.titles.values() {
-        if let Some(r) = rd
-            .place(&t.place_id)
-            .and_then(|p| states.get_mut(p.state.as_str()))
-        {
-            r.titles += 1;
+        // A title that moved counts once in each state it was in.
+        let in_states: BTreeSet<&str> = t
+            .place_ids()
+            .filter_map(|id| rd.place(id))
+            .map(|p| p.state.as_str())
+            .collect();
+        for state in in_states {
+            if let Some(r) = states.get_mut(state) {
+                r.titles += 1;
+            }
         }
     }
     let mut rows: Vec<StatePages> = states.into_values().collect();
@@ -1215,6 +1220,7 @@ mod tests {
             languages: languages.iter().map(|l| l.to_string()).collect(),
             first_year: None,
             last_year: None,
+            place_periods: vec![],
         }
     }
 
@@ -1416,6 +1422,38 @@ mod tests {
             ]
         );
         assert_eq!(rows.iter().map(|r| r.pages).sum::<u64>(), rd.pages);
+    }
+
+    #[tokio::test]
+    async fn a_title_that_moved_counts_in_each_state_it_was_in() {
+        let mut moved = title("a", "P2", &["eng"]);
+        moved.place_periods = serde_json::from_value(serde_json::json!([
+            {"place_id": "P1", "to": "1833-11-13"},
+            {"place_id": "P2", "from": "1833-11-14"},
+        ]))
+        .unwrap();
+        // Two of its places are in Maine, one a town apart.
+        let mut three = title("b", "P3", &["eng"]);
+        three.place_periods = serde_json::from_value(serde_json::json!([
+            {"place_id": "P1", "to": "1850-12-31"},
+            {"place_id": "P3", "from": "1851-01-01", "to": "1860-12-31"},
+            {"place_id": "P1", "from": "1861-01-01"},
+        ]))
+        .unwrap();
+        let rd = with(
+            vec![place("P1", "ME"), place("P2", "NH"), place("P3", "ME")],
+            vec![(moved, 10), (three, 5), (title("c", "P2", &["eng"]), 1)],
+        )
+        .await;
+        let got: Vec<_> = by_state(&rd)
+            .iter()
+            .map(|r| (r.state.clone(), r.places, r.titles))
+            .collect();
+        assert_eq!(
+            got,
+            [("NH".to_owned(), 1, 2), ("ME".to_owned(), 2, 2)],
+            "a title counts once in a state however many of its places are there"
+        );
     }
 
     #[tokio::test]

@@ -22,22 +22,31 @@
 # Repeat for each intentional deletion; this never bypasses a failed or
 # incomplete what-if (ADR-0017).
 #
+# An environment that pins USNM_API_IMAGE_TAG (prod does) deploys the API at
+# the pin, and CI's rollouts leave the pin behind. So a provision, or its
+# what-if, refuses while the pin differs from the tag the API app runs, and
+# says how to go on (#1071). --api-tag=live keeps the running tag;
+# --api-tag=TAG deploys TAG over the pin, for this provision only (it does
+# not edit infra/env/<env>.json: move the pin through a pull request).
+#
 # Needs az 2.61+, signed in to the environment's subscription with Owner.
 set -euo pipefail
-usage() { echo "usage: scripts/azure/provision.sh --env <env> [--allow-dirty] [--what-if] [--allow-rename=<exact-old-name>]..." >&2; exit 2; }
+usage() { echo "usage: scripts/azure/provision.sh --env <env> [--allow-dirty] [--what-if] [--api-tag <live|TAG>] [--allow-rename=<exact-old-name>]..." >&2; exit 2; }
 # The positional form (`provision.sh prod`) works for one release, with a
 # warning (#277).
 if [ $# -eq 1 ] && [[ $1 != -* ]]; then
   echo "warning: \`scripts/azure/provision.sh ENV\` is deprecated; use --env (#277)" >&2
   set -- --env "$1"
 fi
-ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false
+ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false API_TAG="" API_TAG_GIVEN=false
 ALLOW_RENAMES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
+    --api-tag) [ $# -ge 2 ] || usage; API_TAG=$2; API_TAG_GIVEN=true; shift 2 ;;
+    --api-tag=*) API_TAG=${1#*=}; API_TAG_GIVEN=true; shift ;;
     --allow-rename=*)
       name=${1#*=}
       [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.\ -]*$ ]] || usage
@@ -51,6 +60,14 @@ done
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/../.."
 . scripts/lib/env.sh
+# live, or a tag the stack accepts (the schema's pattern), before any Azure call.
+if $API_TAG_GIVEN; then
+  [ "$API_TAG" = live ] || [[ $API_TAG =~ $IMAGE_TAG_RE ]] || {
+    echo "error: --api-tag takes live or an image tag (letters, digits, _ . -; at most 128 characters), not \"$API_TAG\"" >&2
+    usage
+  }
+  API_TAG_REQUEST=$API_TAG
+fi
 if ! $ALLOW_DIRTY; then
   rc=0
   committed_clean || rc=$?

@@ -212,7 +212,7 @@ pub fn ja_doc(page: &JaPage, title: &Title, place: &Place, analyzer: Analyzer) -
         "place_id": place.id,
         "place_shard": place.ordinal % 8,
         "lccn": k.lccn,
-        "state": title.state,
+        "state": title.state_in(place),
         "language": title.languages,
         "front_page": k.seq == 1,
         "edition": k.edition,

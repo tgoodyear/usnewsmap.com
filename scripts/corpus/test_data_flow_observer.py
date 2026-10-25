@@ -1,9 +1,12 @@
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.client import IncompleteRead
 from unittest.mock import patch
 
@@ -11,6 +14,11 @@ spec = importlib.util.spec_from_file_location("observer", Path(__file__).with_na
 observer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(observer)
 NOW = datetime(2026, 10, 16, 20, tzinfo=timezone.utc)
+
+def ago(**delta):
+    return observer.utc(NOW - timedelta(**delta))
+
+
 XML = b"""<server_status><database_file_states>
 <results_ready_to_send>12</results_ready_to_send><results_in_progress>3</results_in_progress>
 <tasks_by_app><app><name>usnm_ocr</name><unsent>2</unsent><in_progress>1</in_progress></app>
@@ -242,6 +250,165 @@ class Observer(unittest.TestCase):
         self.assertIn("omitted", value["coverage"][-1])
         self.assertEqual(len(value["issues"]), 128)
         self.assertEqual(value["issues"][-1]["code"], "catalog-issues-truncated")
+
+    def joined(self, max_age_days=None, **change):
+        """Join a catalog snapshot with the given fields changed, as the observer does."""
+        catalog = observer.snapshot([], [], NOW)
+        catalog.update(change)
+        options = {} if max_age_days is None else {"max_age_days": max_age_days}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            return observer.add_catalog(observer.snapshot([], [], NOW), path, NOW, **options)
+
+    @staticmethod
+    def frozen(value):
+        return [issue for issue in value["issues"] if issue["code"] == "catalog-frozen"]
+
+    def test_catalog_within_the_age_limit_is_not_flagged_frozen(self):
+        # The existing tests keep a snapshot one to two days behind its newest evidence.
+        for generated, newest in [(ago(), ago(days=2)), (ago(days=1), ago(days=2)), (ago(days=3), ago(days=3))]:
+            with self.subTest(generated=generated, newest=newest):
+                value = self.joined(generated_at=generated, observed_at=newest)
+                self.assertEqual(self.frozen(value), [])
+
+    def test_catalog_exactly_at_the_limit_is_not_frozen_but_a_second_past_it_is(self):
+        self.assertEqual(self.frozen(self.joined(generated_at=ago(days=3))), [])
+        self.assertEqual(self.frozen(self.joined(observed_at=ago(days=3))), [])
+        self.assertEqual(len(self.frozen(self.joined(generated_at=ago(days=3, seconds=1)))), 1)
+        self.assertEqual(len(self.frozen(self.joined(observed_at=ago(days=3, seconds=1)))), 1)
+
+    def test_old_catalog_is_flagged_frozen_with_its_ages_and_still_joined(self):
+        # The shape of the audited snapshot: generated about five days ago, evidence about eight.
+        value = self.joined(
+            generated_at=ago(days=5), observed_at=ago(days=8),
+            runs={"total": 4, "pages": 2},
+            artifacts={"locations": 10, "verified": 1, "missing": 2},
+            stages=[observer.stage("runs", "Runs", 2, ago(days=8), ""),
+                    observer.stage("artifacts", "Artifacts", 3, ago(days=8), "")])
+        (issue,) = self.frozen(value)
+        self.assertIn(f"generated {ago(days=5)} (5 days old)", issue["detail"])
+        self.assertIn(f"newest evidence observed {ago(days=8)} (8 days old)", issue["detail"])
+        self.assertIn("limit is 3 days", issue["detail"])
+        self.assertLessEqual(len(issue["detail"]), 512)
+        self.assertEqual(observer.bounded_text(issue["detail"], 512), issue["detail"])
+        self.assertLessEqual(len(issue["code"]), 64)
+        self.assertEqual(value["runs"], {"total": 4, "pages": 2})
+        self.assertEqual(next(s for s in value["stages"] if s["id"] == "run_history")["count"], 4)
+        self.assertEqual(value["observed_at"], ago(days=8))
+        self.assertIn("partial-catalog", [item["code"] for item in value["issues"]])
+
+    def test_either_timestamp_alone_freezes_the_catalog(self):
+        stale_snapshot = self.joined(generated_at=ago(days=5))
+        (issue,) = self.frozen(stale_snapshot)
+        self.assertIn("(5 days old)", issue["detail"])
+        self.assertNotIn("newest evidence", issue["detail"])
+        stale_evidence = self.joined(observed_at=ago(days=8))
+        (issue,) = self.frozen(stale_evidence)
+        self.assertIn("generated 2026-10-16T20:00:00Z (0 days old)", issue["detail"])
+        self.assertIn("newest evidence observed 2026-10-08T20:00:00Z (8 days old)", issue["detail"])
+
+    def test_age_limit_is_configurable(self):
+        eight_days = {"generated_at": ago(days=5), "observed_at": ago(days=8)}
+        self.assertEqual(self.frozen(self.joined(max_age_days=10, **eight_days)), [])
+        self.assertEqual(len(self.frozen(self.joined(max_age_days=7, **eight_days))), 1)
+        (issue,) = self.frozen(self.joined(max_age_days=1, generated_at=ago(), observed_at=ago(days=2)))
+        self.assertIn("limit is 1 day,", issue["detail"])
+        self.assertIn("(2 days old)", issue["detail"])
+
+    def test_frozen_flag_survives_a_full_catalog_issue_list(self):
+        # The dashboard rejects a snapshot with more than 128 issues. The join already holds
+        # partial-catalog and catalog-frozen, so 126 catalog issues fit and more are cut.
+        for count, truncated in [(126, False), (127, True), (128, True)]:
+            with self.subTest(catalog_issues=count):
+                value = self.joined(
+                    generated_at=ago(days=5),
+                    issues=[{"code": "sample", "detail": f"Issue {index}"} for index in range(count)])
+                codes = [issue["code"] for issue in value["issues"]]
+                self.assertEqual(len(value["issues"]), 128)
+                self.assertEqual(codes.count("catalog-frozen"), 1)
+                self.assertEqual(codes.count("partial-catalog"), 1)
+                self.assertEqual("catalog-issues-truncated" in codes, truncated)
+                self.assertEqual(codes[-1] == "catalog-issues-truncated", truncated)
+
+    def test_future_catalog_timestamps_are_rejected_not_flagged_frozen(self):
+        for field in ("generated_at", "observed_at"):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Future"):
+                self.joined(**{field: observer.utc(NOW + timedelta(hours=2))})
+        # A clock skew inside the existing 60 second tolerance is accepted, and is not frozen.
+        value = self.joined(generated_at=observer.utc(NOW + timedelta(seconds=30)))
+        self.assertEqual(self.frozen(value), [])
+
+    def run_main(self, *args, catalog=None):
+        """Run main() against a catalog snapshot, with the two network sources stubbed out."""
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "pipeline.json"
+            argv = ["observer", "--ocr-url", "http://local/", "--snapshot", str(target), *args]
+            if catalog is not None:
+                source = Path(directory) / "catalog.json"
+                source.write_text(json.dumps(catalog))
+                argv += ["--catalog-snapshot", str(source)]
+            output = io.StringIO()
+            with patch.object(observer, "collect", return_value=([], [])), \
+                    patch("sys.argv", argv), contextlib.redirect_stdout(output):
+                status = observer.main()
+            return status, json.loads(target.read_text()), json.loads(output.getvalue())
+
+    def test_main_reports_a_frozen_catalog_without_failing_the_run(self):
+        # Fixed old dates, so the real clock main() reads makes them older whenever this runs.
+        catalog = {**observer.snapshot([], [], NOW), "generated_at": "2020-01-02T00:00:00Z",
+                   "observed_at": "2020-01-01T00:00:00Z"}
+        status, value, event = self.run_main(catalog=catalog)
+        self.assertEqual((status, event["failed_sources"]), (0, 0))
+        codes = [issue["code"] for issue in value["issues"]]
+        self.assertIn("catalog-frozen", codes)
+        self.assertNotIn("catalog-unavailable", codes)
+        # The flag reaches the check: a six-year-old snapshot is still frozen at the 365 day maximum.
+        _, value, _ = self.run_main("--catalog-max-age-days", "365", catalog=catalog)
+        (issue,) = self.frozen(value)
+        self.assertIn("limit is 365 days,", issue["detail"])
+
+    def test_main_future_catalog_is_unavailable_not_frozen(self):
+        catalog = {**observer.snapshot([], [], NOW), "generated_at": "2999-01-01T00:00:00Z"}
+        status, value, event = self.run_main(catalog=catalog)
+        self.assertEqual((status, event["failed_sources"]), (1, 1))
+        codes = [issue["code"] for issue in value["issues"]]
+        self.assertIn("catalog-unavailable", codes)
+        self.assertNotIn("catalog-frozen", codes)
+
+    def test_main_rejects_an_unusable_age_limit(self):
+        for limit in ["0", "-1", "366", "three", "1.5"]:
+            with self.subTest(limit=limit), contextlib.redirect_stderr(io.StringIO()), \
+                    patch("sys.argv", ["observer", "--ocr-url", "http://local/", "--snapshot", "x",
+                                       "--catalog-max-age-days", limit]):
+                with self.assertRaises(SystemExit) as raised:
+                    observer.main()
+            self.assertEqual(raised.exception.code, 2)
+
+
+class RetirementProcedure(unittest.TestCase):
+    """The retired receiver's shutdown steps in design 14 are commands an operator pastes as root."""
+
+    def section(self):
+        text = Path(__file__).resolve().parents[2].joinpath("docs/design/14-corpus-data-flow.md").read_text()
+        return text.split("## Retired worker evidence transport\n")[1].split("\n## ")[0]
+
+    def test_service_is_stopped_after_its_timer_and_before_its_failed_state_is_reset(self):
+        # Disabling the timer does not stop a tick it already started. Left running, that tick can
+        # fail after reset-failed (degraded again) or find its files removed.
+        section = self.section()
+        (block,) = re.findall(r"```bash\n(.*?)```", section, re.S)
+        timer, service = "usnm-worker-evidence-sync.timer", "usnm-worker-evidence-sync.service"
+        self.assertEqual(block.splitlines(), [
+            f"systemctl disable --now {timer}",
+            f"systemctl stop {service}",
+            f"systemctl reset-failed {service}",
+        ])
+        # The files are removed only after those commands, and systemd is then told they are gone.
+        after = section.split(block + "```\n")[1]
+        self.assertIn("remove the two unit files", after)
+        self.assertIn("systemctl daemon-reload", after)
+        self.assertLess(after.index("remove the two unit files"), after.index("systemctl daemon-reload"))
 
 
 if __name__ == "__main__":

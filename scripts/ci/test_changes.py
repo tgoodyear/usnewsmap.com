@@ -86,7 +86,14 @@ class Dispatch(unittest.TestCase):
         release = workflow.split("\n  ocr-worker-release:\n", 1)[1].split("\n  private-addresses:", 1)[0]
         self.assertIn("needs: [changes, rust, ocr-worker-el9, ocr-worker-check]", release)
         self.assertIn("github.ref == 'refs/heads/main'", release)
-        self.assertIn("scripts/ci/head-of-main.sh", release)
+        # An older commit publishes when main's newer commits change neither build (#1074), which
+        # needs the history from it to main's head.
+        self.assertIn("scripts/ci/head-of-main.sh --unless-changed ocr_worker,ocr_dash", release)
+        self.assertIn("fetch-depth: 0", release)
+        # The flags it waits on are the ones that start the job.
+        started_by = set(re.findall(r"needs\.changes\.outputs\.([a-z0-9_]+)", release.split("steps:", 1)[0]))
+        self.assertEqual(started_by, {"ocr_worker", "ocr_dash"})
+        self.assertEqual(set(re.search(r"--unless-changed (\S+)", release).group(1).split(",")), started_by)
         self.assertIn("actions/attest-build-provenance@", release)
         self.assertIn("if: steps.head.outputs.current == 'true'", release)
         rollout = workflow.split("name: publish and roll out", 1)[1]
@@ -789,9 +796,11 @@ class Wiring(unittest.TestCase):
     def test_the_dashboard_sources_are_read_by_nothing_the_infra_stack_runs(self):
         # changes.sh skips the stack's steps for a change in the dashboard crate's src/ and
         # tests/. The two scans in the infra job read every crate; no other script, schema or
-        # step may name this one.
+        # step may name this one. test_head_of_main.py only names a path of it, in a commit of a
+        # scratch clone, to see which flags changes.sh sets for it; it reads none of its sources.
         scans = {"scripts/ci/changes.sh", "scripts/ci/test_changes.py", "scripts/ci/no-shared-keys.sh",
-                 "scripts/ci/no-positional-args.py", "scripts/ci/test_no_positional_args.py"}
+                 "scripts/ci/no-positional-args.py", "scripts/ci/test_no_positional_args.py",
+                 "scripts/ci/test_head_of_main.py"}
         tokens = ("usnm-ocr-dash", "usnm_ocr_dash")
         for base in ("scripts", "infra"):
             for path in (ROOT / base).rglob("*"):

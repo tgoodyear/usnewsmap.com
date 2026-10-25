@@ -1,6 +1,7 @@
 //! Enqueue and curate: leases and retries, a real LoC archive, retained
 //! archives, and the titles the catalog has, lacks or moves.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -380,6 +381,173 @@ async fn a_title_moved_to_another_place_waits_for_a_full_release() {
         .collect();
     assert!(!of_title.is_empty());
     assert!(of_title.iter().all(|d| d["place_id"] == to));
+}
+
+/// A title the catalog places by date (#1066): a page is in the place of
+/// its date in the documents, the baselines and the snapshot's titles and
+/// places, once a full release applies the periods. A delta before that
+/// keeps the title where it was published, so a version never counts a page
+/// in one place and indexes it in another.
+#[tokio::test]
+async fn a_title_that_moved_has_each_page_in_the_place_of_its_date() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let archives: Vec<(String, PathBuf)> = [("early", &early[..]), ("late", &late[..])]
+        .iter()
+        .map(|(name, pages)| {
+            let name = format!("batch_fx_{name}_ver01");
+            let path = e.root.join(format!("{name}.tar.gz"));
+            write_archive(&path, pages, true, true);
+            (name, path)
+        })
+        .collect();
+    let add = |i: usize| {
+        let (name, path) = archives[i].clone();
+        let e = &e;
+        async move {
+            source::enqueue(&e.state, &[listed(&name, &path, None)])
+                .await
+                .unwrap();
+            e.worker("w").run(None).await.unwrap();
+        }
+    };
+
+    // sn99000002 (P00002, New York) was in P00001 (Illinois) up to 1896-06-30.
+    let moved = "sn99000002";
+    let last_day = NaiveDate::from_ymd_opt(1896, 6, 30).unwrap();
+    let place_on = |lccn: &str, date: NaiveDate, periods: bool| {
+        let own = lccn.trim_start_matches("sn99").parse::<u32>().unwrap();
+        match (periods && lccn == moved && date <= last_day, own) {
+            (true, _) => "P00001".to_owned(),
+            (false, n) => format!("P{n:05}"),
+        }
+    };
+    let baselines_of = |periods: bool| {
+        let mut by: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
+        for p in &pages {
+            *by.entry(place_on(&p.lccn, p.date, periods))
+                .or_default()
+                .entry(usnm_core::time::day_number(p.date))
+                .or_default() += 1;
+        }
+        by.into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect::<Vec<(u32, u32)>>()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let snapshot_baselines =
+        |v: Value| -> BTreeMap<String, Vec<(u32, u32)>> { serde_json::from_value(v).unwrap() };
+
+    add(0).await;
+    let p1 = e.release(1, false).await.unwrap();
+    assert!(p1.full);
+
+    // The catalog now gives the title its places by date. A delta keeps it
+    // where it was published, in its pages and its counts.
+    let mut titles = e.reference_json("catalog/titles.json").await;
+    let at = titles
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|t| t["lccn"] == moved)
+        .unwrap();
+    titles[at]["place_periods"] = serde_json::json!([
+        {"place_id": "P00001", "to": "1896-06-30"},
+        {"place_id": "P00002", "from": "1896-07-01"},
+    ]);
+    e.reference
+        .put(
+            "catalog/titles.json",
+            serde_json::to_vec(&titles).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    add(1).await;
+    let p2 = e.release(2, false).await.unwrap();
+    assert!(!p2.full);
+    let v2 = &p2.index_version;
+    let published = e.reference_json(&format!("{v2}/titles.json")).await;
+    let record = published
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["lccn"] == moved)
+        .unwrap();
+    assert!(record.get("place_periods").is_none(), "{record}");
+    assert_eq!(
+        snapshot_baselines(e.reference_json(&format!("{v2}/baselines.json")).await),
+        baselines_of(false)
+    );
+    for id in &p2.indexes {
+        for d in e.index(id).values().filter(|d| d["lccn"] == moved) {
+            assert_eq!(
+                (&d["place_id"], &d["state"]),
+                (&"P00002".into(), &"NY".into())
+            );
+        }
+    }
+
+    // A full release applies them: the pages up to 1896-06-30 are in
+    // Illinois's place, the rest in New York's.
+    let p3 = e.release(3, true).await.unwrap();
+    assert!(p3.full);
+    let v3 = &p3.index_version;
+    let docs = e.index(&p3.indexes[0]);
+    let (mut early_docs, mut late_docs) = (0, 0);
+    for d in docs.values() {
+        let lccn = d["lccn"].as_str().unwrap();
+        let date: NaiveDate = d["date"].as_str().unwrap().parse().unwrap();
+        let id = place_on(lccn, date, true);
+        let ordinal: u64 = id.trim_start_matches('P').parse().unwrap();
+        assert_eq!(d["place_id"], id.as_str(), "{}", d["doc_id"]);
+        assert_eq!(d["place_shard"], ordinal % 8, "{}", d["doc_id"]);
+        if lccn == moved {
+            let state = if id == "P00001" { "IL" } else { "NY" };
+            assert_eq!(d["state"], state, "{}", d["doc_id"]);
+            if id == "P00001" {
+                early_docs += 1;
+            } else {
+                late_docs += 1;
+            }
+        }
+    }
+    assert!(early_docs > 0 && late_docs > 0, "{early_docs} {late_docs}");
+    // The counts are the same pages by the same places, empty ones too.
+    assert_eq!(
+        snapshot_baselines(e.reference_json(&format!("{v3}/baselines.json")).await),
+        baselines_of(true)
+    );
+    let published = e.reference_json(&format!("{v3}/titles.json")).await;
+    let record = published
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["lccn"] == moved)
+        .unwrap();
+    assert_eq!(record["place_id"], "P00002");
+    assert_eq!(record["place_periods"], titles[at]["place_periods"]);
+    // Every page is still counted once, by title as by place.
+    let want_pages: Value = serde_json::from_slice(
+        &std::fs::read(crate::common::fixtures().join("fixture-v1/title_pages.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        e.reference_json(&format!("{v3}/title_pages.json")).await,
+        want_pages
+    );
+    let places = e.reference_json(&format!("{v3}/places.json")).await;
+    let ids: Vec<&str> = places
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&"P00001") && ids.contains(&"P00002"),
+        "{ids:?}"
+    );
 }
 
 /// With a raw store (`USNM_RETAIN_RAW`), curation keeps each archive byte for

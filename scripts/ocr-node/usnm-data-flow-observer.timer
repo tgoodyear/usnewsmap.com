@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh read-only corpus flow evidence every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+RandomizedDelaySec=15
+Unit=usnm-data-flow-observer.service
+
+[Install]
+WantedBy=timers.target

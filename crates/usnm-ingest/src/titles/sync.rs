@@ -455,6 +455,7 @@ mod tests {
             place_id: "P00003".into(),
             state: "IL".into(),
             languages: vec![],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         };
         let place = Place {
