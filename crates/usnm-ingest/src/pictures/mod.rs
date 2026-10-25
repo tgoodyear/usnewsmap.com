@@ -438,10 +438,11 @@ struct Encoded {
     rows: u64,
 }
 
-/// Read one file (blocking), sending its rows on as parts of at most
-/// `part_rows`. A part never spans two files. Returns the rows and the counts
-/// of what did not fit.
+/// Read one open file (blocking; `path` is for messages), sending its rows on
+/// as parts of at most `part_rows`. A part never spans two files. Returns the
+/// rows and the counts of what did not fit.
 fn convert_file(
+    file: std::fs::File,
     path: &std::path::Path,
     kind: &str,
     part_rows: usize,
@@ -456,7 +457,7 @@ fn convert_file(
             .map_err(|_| anyhow::anyhow!("the part writer stopped"))
     };
     let mut held: Vec<Picture> = Vec::new();
-    let quality = read::read_file(path, kind, |rows| {
+    let quality = read::read_file(file, path, kind, |rows| {
         held.extend(rows);
         while held.len() >= part_rows {
             let rest = held.split_off(part_rows);
@@ -507,9 +508,15 @@ pub async fn run(
         for file in files {
             let local = opts.source.get(revision, &file).await?;
             let (tx, mut rx) = tokio::sync::mpsc::channel::<Encoded>(2);
+            // The handle the file was hashed through, not its path again.
+            let handle = local
+                .file
+                .try_clone()
+                .with_context(|| format!("reading `{}`", file.name))?;
             let (path, part_rows) = (local.path.clone(), opts.part_rows);
-            let reader =
-                tokio::task::spawn_blocking(move || convert_file(&path, kind, part_rows, tx));
+            let reader = tokio::task::spawn_blocking(move || {
+                convert_file(handle, &path, kind, part_rows, tx)
+            });
             while let Some(part) = rx.recv().await {
                 let path = format!("{dir}/{kind}-{:04}.parquet", summary.parts.len());
                 let part_ref = PartRef {

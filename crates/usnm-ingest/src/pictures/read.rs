@@ -46,8 +46,9 @@ const COLUMNS: [&str; 8] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Quality {
     pub rows: u64,
-    /// Rows with no scan identity or no `crop_url`, whatever the reason: what
-    /// the run's check that the rules here fit the data counts.
+    /// Rows with no complete scan identity (a `page_url` that is no scan, or an
+    /// empty `batch`) or no `crop_url`, whatever the reason: what the run's
+    /// check that the rules here fit the data counts.
     pub unplaced_rows: u64,
     /// `batch` empty: the row has no batch in its identity.
     pub batch_missing: u64,
@@ -95,14 +96,15 @@ impl Quality {
     }
 }
 
-/// Read one Parquet file of `kind`, handing the rows to `emit` a record batch
-/// at a time. Returns the counts of what did not fit.
+/// Read one open Parquet file of `kind`, handing the rows to `emit` a record
+/// batch at a time. `path` is for messages. Returns the counts of what did not
+/// fit.
 pub fn read_file(
+    file: File,
     path: &Path,
     kind: &str,
     mut emit: impl FnMut(Vec<Picture>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Quality> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| format!("reading {} as Parquet", path.display()))?
         .with_batch_size(BATCH_ROWS);
@@ -167,7 +169,9 @@ fn pictures(batch: &RecordBatch, kind: &str, q: &mut Quality) -> anyhow::Result<
             },
         };
 
-        if scan.is_none() || crop_url.is_none() {
+        // The batch is part of the scan's identity, as the `page_url` is: a
+        // crop of the right scan does not make up for a row without one.
+        if scan.is_none() || batch_name.is_none() || crop_url.is_none() {
             q.unplaced_rows += 1;
         }
 

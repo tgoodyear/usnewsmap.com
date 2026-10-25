@@ -1165,3 +1165,198 @@ async fn a_download_that_differs_from_the_hubs_object_id_is_refused() {
         "the refused file is deleted"
     );
 }
+
+/// Two downloads of one file into one scratch directory, as two runs sharing
+/// the default work directory make, are two files: neither run writes, reads
+/// or deletes the other's, and each name carries the revision.
+#[tokio::test]
+async fn downloads_into_a_shared_scratch_directory_keep_their_own_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    dataset(&source);
+    let base = hub(source.clone(), vec![]).await;
+    let scratch = dir.path().join("work/pictures");
+    let hub_source = Source::Hub {
+        base,
+        scratch: scratch.clone(),
+    };
+    let files = hub_source.list(REVISION, "cartoons").await.unwrap();
+    assert_eq!(files.len(), 1);
+    let want = std::fs::read(source.join(&files[0].name)).unwrap();
+
+    let first = hub_source.get(REVISION, &files[0]).await.unwrap();
+    let second = hub_source.get(REVISION, &files[0]).await.unwrap();
+    assert_ne!(first.path, second.path);
+    for local in [&first, &second] {
+        assert_eq!(local.path.parent(), Some(scratch.as_path()));
+        let name = local.path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with(REVISION), "{name}");
+        assert_eq!(std::fs::read(&local.path).unwrap(), want);
+    }
+
+    // One run finishing deletes its own download and leaves the other's.
+    drop(first);
+    assert_eq!(std::fs::read(&second.path).unwrap(), want);
+    drop(second);
+    assert!(
+        std::fs::read_dir(&scratch).unwrap().next().is_none(),
+        "downloads are deleted"
+    );
+}
+
+/// The size and sha256 a source reports are of the open file it hands over:
+/// when the path is swapped for another file afterwards, what is read through
+/// the handle is still what was checked.
+#[tokio::test]
+async fn the_hash_is_of_the_file_that_is_read() {
+    use std::io::Read;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    dataset(&source);
+    let base = hub(source.clone(), vec![]).await;
+    let sources = [
+        Source::Dir(source.clone()),
+        Source::Hub {
+            base,
+            scratch: dir.path().join("work/pictures"),
+        },
+    ];
+    for src in sources {
+        let file = src.list(REVISION, "cartoons").await.unwrap().remove(0);
+        let local = src.get(REVISION, &file).await.unwrap();
+        let original = std::fs::read(source.join(&file.name)).unwrap();
+
+        // Swapped after the checks, before a reader would open the path.
+        let swap = dir.path().join("swap.parquet");
+        std::fs::write(&swap, b"not the file that was checked").unwrap();
+        std::fs::rename(&swap, &local.path).unwrap();
+
+        let mut read = Vec::new();
+        local
+            .file
+            .try_clone()
+            .unwrap()
+            .read_to_end(&mut read)
+            .unwrap();
+        assert_eq!(read, original, "{src}");
+        assert_eq!(local.bytes, read.len() as u64);
+        assert_eq!(
+            local.sha256,
+            usnm_ingest::source::hex(&Sha256::digest(&read))
+        );
+
+        // A directory source's file was the one replaced: put it back.
+        drop(local);
+        std::fs::write(source.join(&file.name), &original).unwrap();
+    }
+}
+
+/// A row with a page URL and a crop URL that fit but no `batch` is written
+/// with a null batch and counted as unplaced, so that the limit sees it: the
+/// batch is part of the scan's identity.
+#[tokio::test]
+async fn a_row_without_a_batch_is_unplaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    dataset(&source);
+    let no_batch = Src {
+        batch: String::new(),
+        ..scan(
+            "ohi_ingstad_ver01",
+            "sn85026051",
+            "00296027029",
+            "1850072701",
+            "0037",
+        )
+    };
+    put_file(
+        &source,
+        "cartoons",
+        "train-00000-of-00001.parquet",
+        &[no_batch],
+        SNAPPY_DECIMAL,
+    );
+    let store = LocalStore::new(dir.path().join("curated"));
+
+    // The only cartoon is unplaced: over the default limit.
+    let strict = Options {
+        max_unplaced_pct: pictures::MAX_UNPLACED_PCT,
+        ..options(Source::Dir(source))
+    };
+    let err = format!(
+        "{:#}",
+        pictures::run(&store, &strict, at()).await.unwrap_err()
+    );
+    assert!(err.contains("1 of 1 `cartoons` rows"), "{err}");
+    assert!(finished(&store, REVISION).await.unwrap().is_none());
+
+    // Written anyway, the counts say so, and the row has what it has.
+    let lenient = Options {
+        max_unplaced_pct: 100.0,
+        ..strict
+    };
+    pictures::run(&store, &lenient, at()).await.unwrap();
+    let p = finished(&store, REVISION).await.unwrap().unwrap();
+    let q = &p.kinds["cartoon"].quality;
+    assert_eq!(
+        (
+            q.rows,
+            q.unplaced_rows,
+            q.batch_missing,
+            q.page_url_unplaced,
+            q.crop_url_missing,
+            q.crop_url_unplaced,
+            q.crop_url_mismatch
+        ),
+        (1, 1, 1, 0, 0, 0, 0)
+    );
+    let got = part(&store, &p.kinds["cartoon"].parts[0].path).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].batch, None);
+    assert_eq!(got[0].lccn.as_deref(), Some("sn85026051"));
+    assert_eq!(got[0].frame.as_deref(), Some("0037"));
+    assert!(got[0].crop_url.is_some());
+}
+
+/// A directory of links to the files, as a Hugging Face cache snapshot is,
+/// gives the table the files give.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_directory_of_links_is_read_like_the_files_it_links_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    dataset(&source);
+    let from_files = LocalStore::new(dir.path().join("from-files"));
+    pictures::run(&from_files, &options(Source::Dir(source.clone())), at())
+        .await
+        .unwrap();
+
+    // Every shard of every config a link to a blob, as in a snapshot.
+    let blobs = dir.path().join("blobs");
+    let snapshot = dir.path().join("snapshot");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let mut n = 0;
+    for (config, _) in pictures::CONFIGS {
+        std::fs::create_dir_all(snapshot.join(config)).unwrap();
+        for entry in std::fs::read_dir(source.join(config)).unwrap() {
+            let entry = entry.unwrap();
+            n += 1;
+            let blob = blobs.join(format!("{n:064x}"));
+            std::fs::rename(entry.path(), &blob).unwrap();
+            std::os::unix::fs::symlink(&blob, snapshot.join(config).join(entry.file_name()))
+                .unwrap();
+        }
+    }
+    assert!(n > pictures::CONFIGS.len(), "{n}");
+
+    let from_links = LocalStore::new(dir.path().join("from-links"));
+    let report = pictures::run(&from_links, &options(Source::Dir(snapshot)), at())
+        .await
+        .unwrap();
+    assert_eq!(report.rows, 16);
+    let (a, b) = (
+        finished(&from_links, REVISION).await.unwrap().unwrap(),
+        finished(&from_files, REVISION).await.unwrap().unwrap(),
+    );
+    assert_eq!(a, b, "the same files give the same table");
+}

@@ -1,6 +1,8 @@
 //! Where the dataset's Parquet files are read from: a directory, or the
 //! Hugging Face Hub at a pinned revision (#1102).
 
+use std::fs::File;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
@@ -20,7 +22,8 @@ pub enum Source {
     Dir(PathBuf),
     /// The Hub at `base` (`https://huggingface.co`): the files under each
     /// config are listed at the revision and downloaded one at a time into
-    /// `scratch`, each deleted once it has been read.
+    /// `scratch`, each under a name of its own (so runs can share the
+    /// directory) and deleted once it has been read.
     Hub { base: String, scratch: PathBuf },
 }
 
@@ -38,18 +41,16 @@ pub struct DatasetFile {
 /// A file ready to read. A downloaded file is deleted when this is dropped.
 #[derive(Debug)]
 pub struct Local {
+    /// Where the file is, for messages. Read `file`, not this: the path can
+    /// name another file by the time it is opened again.
     pub path: PathBuf,
+    /// The file as it was opened to be hashed, at its start: `bytes` and
+    /// `sha256` describe what is read through this handle and nothing else.
+    pub file: File,
     pub bytes: u64,
     pub sha256: String,
-    delete: bool,
-}
-
-impl Drop for Local {
-    fn drop(&mut self) {
-        if self.delete {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
+    /// A download's own file in the scratch directory, deleted on drop.
+    _download: Option<tempfile::TempPath>,
 }
 
 /// One entry of the Hub's `/api/datasets/{repo}/tree/{revision}/{path}`.
@@ -94,23 +95,21 @@ impl Source {
         Ok(files)
     }
 
-    /// A file on local disk, with its size and sha256: the file itself for a
-    /// directory, a download checked against the Hub's own for the Hub.
+    /// A file on local disk, opened, with its size and sha256: the file itself
+    /// for a directory, a download checked against the Hub's own for the Hub.
+    /// The hash is taken from the handle that is returned, so what is read is
+    /// what was checked.
     pub async fn get(&self, revision: &str, file: &DatasetFile) -> anyhow::Result<Local> {
         match self {
             Source::Dir(dir) => {
                 let path = dir.join(&file.name);
-                let (bytes, sha256) = tokio::task::spawn_blocking({
-                    let path = path.clone();
-                    move || digest_file(&path)
-                })
-                .await
-                .context("hashing a dataset file stopped")??;
+                let (handle, bytes, sha256) = open_and_digest(path.clone()).await?;
                 Ok(Local {
                     path,
+                    file: handle,
                     bytes,
                     sha256,
-                    delete: false,
+                    _download: None,
                 })
             }
             Source::Hub { base, scratch } => {
@@ -122,41 +121,52 @@ impl Source {
                     base.trim_end_matches('/'),
                     file.name
                 );
-                let path = scratch.join(file.name.replace('/', "__"));
-                let sha256 = match fetch(&url, &path).await {
-                    Ok(sha256) => sha256,
-                    Err(e) => {
-                        let _ = tokio::fs::remove_file(&path).await;
-                        return Err(e);
-                    }
-                };
-                // Deleted from here on, whatever happens next.
-                let bytes = std::fs::metadata(&path)?.len();
-                let local = Local {
-                    path,
-                    bytes,
-                    sha256,
-                    delete: true,
-                };
+                // A file of this download's own, made exclusively: named for
+                // the revision and the dataset file, with a random part, so
+                // that runs sharing the directory (the default work
+                // directory) never write, read or delete each other's. It is
+                // deleted when `download` is dropped, whatever happens next.
+                let download = tempfile::Builder::new()
+                    .prefix(&format!("{revision}-{}-", file.name.replace('/', "__")))
+                    .suffix(".parquet")
+                    .tempfile_in(scratch)
+                    .with_context(|| format!("creating a file in {}", scratch.display()))?
+                    .into_temp_path();
+                let streamed = fetch(&url, &download).await?;
+                let (handle, bytes, sha256) = open_and_digest(download.to_path_buf()).await?;
+                // The stream's hash is of what the Hub sent, the handle's of
+                // what is on disk to be read: both must be the same file.
+                if streamed != sha256 {
+                    bail!(
+                        "`{}` was downloaded with sha256 {streamed} but reads back as {sha256}: \
+                         the file in {} changed",
+                        file.name,
+                        scratch.display()
+                    );
+                }
                 if let Some(want) = file.sha256.as_deref() {
-                    if want != local.sha256 {
+                    if want != sha256 {
                         bail!(
-                            "`{}` downloaded with sha256 {}, but the Hub lists {want}",
-                            file.name,
-                            local.sha256
+                            "`{}` downloaded with sha256 {sha256}, but the Hub lists {want}",
+                            file.name
                         );
                     }
                 }
                 if let Some(want) = file.size {
-                    if want != local.bytes {
+                    if want != bytes {
                         bail!(
-                            "`{}` downloaded as {} bytes, but the Hub lists {want}",
-                            file.name,
-                            local.bytes
+                            "`{}` downloaded as {bytes} bytes, but the Hub lists {want}",
+                            file.name
                         );
                     }
                 }
-                Ok(local)
+                Ok(Local {
+                    path: download.to_path_buf(),
+                    file: handle,
+                    bytes,
+                    sha256,
+                    _download: Some(download),
+                })
             }
         }
     }
@@ -171,7 +181,10 @@ impl std::fmt::Display for Source {
     }
 }
 
-/// `{dir}/*.parquet`, named `{config}/{file}`.
+/// `{dir}/*.parquet`, named `{config}/{file}`. A link to a file counts as the
+/// file (a Hugging Face cache snapshot is made of them); a directory or a
+/// special file does not, and a link to nothing is an error, not a shard that
+/// is quietly left out.
 fn list_dir(dir: &Path, config: &str) -> anyhow::Result<Vec<DatasetFile>> {
     let entries = std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))?;
     let mut files = Vec::new();
@@ -179,7 +192,13 @@ fn list_dir(dir: &Path, config: &str) -> anyhow::Result<Vec<DatasetFile>> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.ends_with(".parquet") && entry.file_type()?.is_file() {
+        if !name.ends_with(".parquet") {
+            continue;
+        }
+        let path = entry.path();
+        let meta = std::fs::metadata(&path)
+            .with_context(|| format!("{} (a link to a file that is not there?)", path.display()))?;
+        if meta.is_file() {
             files.push(DatasetFile {
                 name: format!("{config}/{name}"),
                 sha256: None,
@@ -213,15 +232,28 @@ fn parse_tree(body: &[u8], config: &str) -> anyhow::Result<Vec<DatasetFile>> {
         .collect())
 }
 
-/// The size and sha256 of a file on disk.
-fn digest_file(path: &Path) -> anyhow::Result<(u64, String)> {
-    let mut file =
-        std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+/// Open a file, hash what is read through the handle, and hand the handle
+/// back at its start: the hash is of the file that is then read, whatever
+/// happens to its path.
+async fn open_and_digest(path: PathBuf) -> anyhow::Result<(File, u64, String)> {
+    tokio::task::spawn_blocking(move || {
+        let mut file = File::open(&path).with_context(|| format!("opening {}", path.display()))?;
+        let (bytes, sha256) =
+            digest(&mut file).with_context(|| format!("hashing {}", path.display()))?;
+        file.rewind()?;
+        Ok((file, bytes, sha256))
+    })
+    .await
+    .context("hashing a dataset file stopped")?
+}
+
+/// The size and sha256 of what `reader` holds from where it is.
+fn digest(reader: &mut impl Read) -> anyhow::Result<(u64, String)> {
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     let mut bytes = 0u64;
     loop {
-        let n = std::io::Read::read(&mut file, &mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -263,5 +295,66 @@ mod tests {
             ]
         );
         assert!(parse_tree(b"{}", "cartoons").is_err());
+    }
+
+    /// A Hugging Face cache snapshot is a directory of links to blobs: the
+    /// links are the shards. Directories and special files still are not, and
+    /// a link to nothing is an error rather than a shard left out.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_file_is_a_shard() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs");
+        let config = dir.path().join("snapshots/rev/cartoons");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        for (blob, name) in [
+            ("b1", "train-00000-of-00002.parquet"),
+            ("b2", "train-00001-of-00002.parquet"),
+        ] {
+            std::fs::write(blobs.join(blob), b"x").unwrap();
+            symlink(blobs.join(blob), config.join(name)).unwrap();
+        }
+        // A regular file beside the links, a link that is not Parquet, a link
+        // to a directory and a directory, both named like shards.
+        std::fs::write(config.join("train-00002-of-00002.parquet"), b"x").unwrap();
+        symlink(blobs.join("b1"), config.join("README.md")).unwrap();
+        symlink(&blobs, config.join("dir-link.parquet")).unwrap();
+        std::fs::create_dir(config.join("dir.parquet")).unwrap();
+
+        let mut names: Vec<String> = list_dir(&config, "cartoons")
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "cartoons/train-00000-of-00002.parquet",
+                "cartoons/train-00001-of-00002.parquet",
+                "cartoons/train-00002-of-00002.parquet",
+            ]
+        );
+
+        // A config of nothing but links is a config, not an empty one.
+        let only_links = dir.path().join("snapshots/rev/maps");
+        std::fs::create_dir_all(&only_links).unwrap();
+        symlink(
+            blobs.join("b2"),
+            only_links.join("train-00000-of-00001.parquet"),
+        )
+        .unwrap();
+        assert_eq!(list_dir(&only_links, "maps").unwrap().len(), 1);
+
+        // A link to a blob that is not there.
+        symlink(
+            blobs.join("gone"),
+            config.join("train-00003-of-00002.parquet"),
+        )
+        .unwrap();
+        let err = format!("{:#}", list_dir(&config, "cartoons").unwrap_err());
+        assert!(err.contains("train-00003-of-00002.parquet"), "{err}");
     }
 }
