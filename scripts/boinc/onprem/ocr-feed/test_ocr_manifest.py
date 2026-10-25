@@ -102,6 +102,7 @@ class PickIssuesTest(unittest.TestCase):
             f.write("# probe\nak_goat_ver01\t200\t2026-10-25T20:51:39Z\nak_albatross_ver01\t403\tt\n"
                     "curiv_joshuaTree_ver01\n")
         self.assertEqual(m.read_batches(f.name), {"ak_goat_ver01", "curiv_joshuaTree_ver01"})
+        self.assertEqual(m.batch_pair("ak_arcticfox_ver02"), ("ak_arcticfox", 2))
         with open(f.name, "w") as g:
             g.write("x'; drop table y; --\n")
         with self.assertRaises(SystemExit):

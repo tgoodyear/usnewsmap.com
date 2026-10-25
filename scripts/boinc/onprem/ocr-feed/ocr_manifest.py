@@ -395,6 +395,12 @@ def read_batches(path):
     return out
 
 
+def batch_pair(name):
+    """A batch's full name as usnm_quality keeps it: ak_goat_ver01 is ("ak_goat", 1)."""
+    base, ver = name.rsplit("_ver", 1)
+    return base, int(ver)
+
+
 def issue_of(doc):
     m = DOC_RE.match(doc)
     return (m["lccn"], m["date"], m["ed"]) if m else None
@@ -452,8 +458,10 @@ def cmd_build_quality(a):
     os.makedirs(a.state, exist_ok=True)
     batch_filter = ""
     if a.batches:
-        names = sorted(read_batches(a.batches))
-        batch_filter = "\n      AND s.batch IN (" + ", ".join(f"'{n}'" for n in names) + ")"
+        # usnm_quality keeps a batch's name without its version (ak_goat, 1 for ak_goat_ver01).
+        pairs = sorted(batch_pair(n) for n in read_batches(a.batches))
+        batch_filter = ("\n      AND (s.batch, s.batch_version) IN ("
+                        + ", ".join(f"('{b}', {v})" for b, v in pairs) + ")")
     last_path = os.path.join(a.state, "last-quality.json")
     docs_path = os.path.join(a.state, "quality-docs.txt")
     index = staged_pairs(a.scan_server)
