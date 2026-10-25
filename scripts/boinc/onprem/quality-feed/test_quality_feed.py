@@ -167,6 +167,15 @@ class LoadTest(unittest.TestCase):
         self.assertEqual((u["hat_version"], u["hat_determined_v1"]), (1, True))
         self.assertEqual((r["est_cer"], r["est_cer_v1"], r["matched"]), (0.3, 0.3, None))
 
+    def test_loc_word_confidence_rows(self):
+        x = {"doc_id": "sn1_1900-01-01_ed-1_seq-1", "batch": "b", "batch_version": 2, "words": 10,
+             "words_with_wc": 9, "wc_mean": 0.81, "wc_median": 0.9, "wc_below": 0.1, "wc_threshold": 0.5,
+             "software": "ABBYY", "archive": "b_ver02.tar.bz2"}
+        rows = loader.locwc_rows([x, dict(x, wc_mean=0.7), {"doc_id": "nope", "batch": "b"}])
+        self.assertEqual(len(rows), 1)
+        r = dict(zip(loader.LOCWC_COLS, rows[0]))
+        self.assertEqual((r["batch_version"], r["wc_mean"], r["words"]), (2, 0.7, 10))
+
     def test_damage_keeps_one_row_a_page(self):
         import datetime
 
