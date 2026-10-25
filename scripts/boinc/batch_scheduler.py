@@ -686,11 +686,18 @@ class Transport:
         return records
 
     def push_args(self):
-        return self.config["push_command"] + [
+        argv = self.config["push_command"] + [
             "--account", self.config["account"], "--scans-root", self.config["scans_root"],
             "--manifests-root", self.config["manifests_root"],
             "--manifest", self.config["manifests_root"].rstrip("/") + "/" + self.config["manifest"],
         ]
+        if "export" in self.onprem_steps and self.config.get("source") == "queue":
+            # Export runs on the BOINC host, so the scans go there over the step command
+            # (onprem-step.sh --target scans), not to the hand-off container (#1116).
+            argv += ["--to-onprem", "--onprem-env", self.config["env"]]
+            for word in self.config["step_command"]:
+                argv += ["--onprem-step-arg", word]
+        return argv
 
     @timed("export")
     def export(self, pages, job_ids=()):

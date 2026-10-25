@@ -1635,6 +1635,18 @@ class QueueTransportTests(unittest.TestCase):
                     self.assertEqual(argv[len(expected):len(expected) + 6],
                                      ["--env", "dev", "--target", "handoff", "--step", step])
 
+    def test_onprem_export_pushes_scans_to_the_boinc_host(self):
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "-i", "/root/.ssh/k", "root@boinc.example", "--"]
+        plain = batch.Transport(cfg, Path("."), onprem_handoff=("claim", "collect")).push_args()
+        self.assertNotIn("--to-onprem", plain)
+        argv = batch.Transport(cfg, Path("."), onprem_handoff=("claim", "collect", "export")).push_args()
+        self.assertEqual(argv[:len(plain)], plain)
+        rest = argv[len(plain):]
+        self.assertEqual(rest[:3], ["--to-onprem", "--onprem-env", cfg["env"]])
+        self.assertEqual(rest[3::2], ["--onprem-step-arg"] * len(cfg["step_command"]))
+        self.assertEqual(rest[4::2], cfg["step_command"])
+
     def test_onprem_handoff_needs_step_command_and_known_steps(self):
         with self.assertRaisesRegex(ValueError, "step_command"):
             batch.Transport(copy.deepcopy(self.config), Path("."), onprem_handoff=("claim",))

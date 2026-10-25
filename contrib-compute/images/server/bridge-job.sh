@@ -184,6 +184,12 @@ runtime_password() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   kv_get mysql-runtime-password "$SECRETS/db-runtime"
 }
+# The scans the controller pushed to this host (#1116, onprem-step.sh --target scans): a job's
+# page comes from there when it is the exported page, so it doesn't travel through Azure.
+scan_args=()
+if [ -d /project/handoff-scans/keep ]; then
+  scan_args=(--scans /project/handoff-scans)
+fi
 if [ "$step" = submit-remote ] && { [ -n "${JOB_IDS:-}" ] || [ -n "${JOB_UNITS:-}" ]; }; then
   fetch_secrets
   render_config
@@ -222,7 +228,7 @@ if [ "$step" = submit-remote ] && [ -n "${JOB_UNITS:-}" ]; then
     IFS=+ read -r -a members <<< "$unit"
     job_args=()
     for id in "${members[@]}"; do
-      state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$id") ||
+      state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$id" ${scan_args[@]+"${scan_args[@]}"}) ||
         fail "pull stopped at $id; the units after it were not submitted"
       if [ "$state" = reserved ]; then job_args+=(--job "$id"); else log "job $id is already $state on the server"; fi
     done
@@ -746,7 +752,7 @@ case "$step" in
   submit-remote)
     # The page comes from the hand-off container, which the scan fetcher filled; never from
     # LoC. Submission then runs as for submit, which checks the page again.
-    state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$JOB_ID")
+    state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$JOB_ID" ${scan_args[@]+"${scan_args[@]}"})
     if [ "$state" != reserved ]; then
       log "job $JOB_ID is already $state on the server; nothing submitted"
       exit 0

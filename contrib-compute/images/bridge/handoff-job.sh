@@ -141,12 +141,26 @@ case "${HANDOFF_STEP:-}" in
       [[ $HANDOFF_MANIFEST != *..* ]] || fail "HANDOFF_MANIFEST is a path under manifests/"
     [[ ${HANDOFF_PAGES:-} =~ ^[A-Za-z0-9/_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of page keys"
     : "${HANDOFF_BATCH:?set HANDOFF_BATCH}" "${HANDOFF_PLAN:?set HANDOFF_PLAN}" "${ENGINE_IMAGE:?set ENGINE_IMAGE}"
+    # On the BOINC host (#1116) the scans the controller pushed are mounted at /scans: export
+    # reads them there, and the jobs' pages (the scans themselves) don't go back up.
+    scans_dir="$work/scans"
+    local_scans=${USNM_HANDOFF_SCANS_MOUNT:-/scans}
+    if [ "${HANDOFF_LOCAL_SCANS:-}" = 1 ]; then
+      [ -d "$local_scans/keep" ] || fail "HANDOFF_LOCAL_SCANS is set but $local_scans/keep isn't mounted"
+      scans_dir=$local_scans
+    fi
     if [ -n "${HANDOFF_SCANS:-}" ]; then
       IFS=, read -r -a scans <<< "$HANDOFF_SCANS"
       [ "${#scans[@]}" -le 100 ] || fail "HANDOFF_SCANS is at most 100 cached scans"
       for scan in "${scans[@]}"; do
         [[ "$scan" =~ ^keep/[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$scan" != *..* ]] ||
           fail "HANDOFF_SCANS must name cached scans under keep/"
+        if [ "$scans_dir" = "$local_scans" ]; then
+          for suffix in "" .json; do
+            [ -f "$local_scans/$scan$suffix" ] || fail "no $scan$suffix among the scans pushed to this host"
+          done
+          continue
+        fi
         for suffix in "" .json; do
           usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "scans/$scan$suffix" \
             --to "$work/scans/$scan$suffix"
@@ -161,14 +175,19 @@ case "${HANDOFF_STEP:-}" in
             --to "$root/jobs/$id/record.json"
         done
       fi
-      usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "manifests/$HANDOFF_MANIFEST" \
-        --to "$work/manifests/$HANDOFF_MANIFEST"
+      # A queue-fed export builds its jobs from the claims, not the manifest (#1115).
+      if [ "${HANDOFF_CLAIMS:-}" != 1 ]; then
+        usnm-boinc handoff get-file --from-url "$HANDOFF_URL" --path "manifests/$HANDOFF_MANIFEST" \
+          --to "$work/manifests/$HANDOFF_MANIFEST"
+      fi
     else
+      [ "$scans_dir" != "$local_scans" ] || fail "HANDOFF_LOCAL_SCANS needs HANDOFF_SCANS"
       usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix dispatch --to "$root"
       usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix scans --to "$work/scans"
       usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix manifests --to "$work/manifests"
     fi
-    [ -f "$work/manifests/$HANDOFF_MANIFEST" ] || fail "no manifests/$HANDOFF_MANIFEST in the hand-off container"
+    [ "${HANDOFF_CLAIMS:-}" = 1 ] || [ -f "$work/manifests/$HANDOFF_MANIFEST" ] ||
+      fail "no manifests/$HANDOFF_MANIFEST in the hand-off container"
     tr ',' '\n' <<< "$HANDOFF_PAGES" > "$work/pages.txt"
     claim_args=()
     if [ "${HANDOFF_CLAIMS:-}" = 1 ]; then
@@ -186,7 +205,7 @@ case "${HANDOFF_STEP:-}" in
     sleep 1
     rc=0
     usnm-boinc export --manifest "$work/manifests/$HANDOFF_MANIFEST" --pages "$work/pages.txt" \
-      --batch "$HANDOFF_BATCH" --scans "$work/scans" --root "$root" --plan "$HANDOFF_PLAN" \
+      --batch "$HANDOFF_BATCH" --scans "$scans_dir" --root "$root" --plan "$HANDOFF_PLAN" \
       --image "$ENGINE_IMAGE" --curated-url "$CURATED_URL" --reference-url "$REFERENCE_URL" \
       --cosmos "$COSMOS_ENDPOINT" ${claim_args[@]+"${claim_args[@]}"} || rc=$?
     # Whatever export got to (it journals each entry before it reserves) goes back.
@@ -194,6 +213,10 @@ case "${HANDOFF_STEP:-}" in
     if [ -d "$root/jobs" ]; then
       while IFS= read -r f; do touched+=("jobs/$(basename "$(dirname "$f")")"); done \
         < <(find "$root/jobs" -mindepth 2 -maxdepth 2 -name record.json -newer "$stamp")
+    fi
+    if [ "$scans_dir" = "$local_scans" ]; then
+      # The page is the pushed scan, which the bridge's submit reads on this host.
+      for d in ${touched[@]+"${touched[@]}"}; do rm -f "$root/$d/page"; done
     fi
     put_back ${touched[@]+"${touched[@]}"}
     exit "$rc" ;;

@@ -136,11 +136,51 @@ pub enum Pulled {
 /// hand-off root `root`. A job the server already has must be the same job; one past
 /// reservation is left as it is, so a repeated run submits nothing.
 pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Result<Pulled> {
+    pull_with(store, root, id, None).await
+}
+
+/// The staged copy of a job's scan in `scans` (`keep/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`,
+/// as the controller's push puts it on the BOINC host, #1116), if one is there and is the page
+/// the job was exported with (size and sha256).
+fn staged_page(scans: &Path, job: &boinc::Job) -> anyhow::Result<Option<Vec<u8>>> {
+    let key = job.message.key()?;
+    for ext in ["jp2", "jpg"] {
+        let path = scans.join(format!(
+            "keep/{}/{}/{}/{}/{}.{ext}",
+            job.message.batch, key.lccn, key.date, key.edition, key.seq
+        ));
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() != job.scan.bytes {
+            continue;
+        }
+        let bytes = read(&path, boinc::MAX_SCAN)?;
+        if boinc::sha256(&bytes) == job.scan.sha256 {
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
+}
+
+/// [`pull`], taking the page from `scans` (the scans the controller pushed to the BOINC host)
+/// when it holds the job's page, and only otherwise from the container: an export on the
+/// BOINC host leaves the page out of the container, so it never travels through Azure.
+pub async fn pull_with(
+    store: &dyn ObjectStore,
+    root: &Path,
+    id: &str,
+    scans: Option<&Path>,
+) -> anyhow::Result<Pulled> {
     let target = dir(root, id)?;
     let _lock = Lock::take(root)?;
     let src = join(DISPATCH, &format!("jobs/{id}"));
     let mut got = Vec::new();
     for (name, max) in JOB_FILES {
+        if name == "page" {
+            got.push((name, Vec::new()));
+            continue;
+        }
         let bytes = store
             .get(&format!("{src}/{name}"))
             .await?
@@ -148,13 +188,31 @@ pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Res
         ensure!(bytes.len() <= max, "{src}/{name} is over its size limit");
         got.push((name, bytes));
     }
+    let request: boinc::Job = serde_json::from_slice(&got[1].1)?;
+    let staged = match scans {
+        Some(dir) => staged_page(dir, &request)?,
+        None => None,
+    };
+    got[0].1 = match staged {
+        Some(bytes) => bytes,
+        None => {
+            let bytes = store
+                .get(&format!("{src}/page"))
+                .await?
+                .with_context(|| format!("{src}/page is not in the hand-off container"))?;
+            ensure!(
+                bytes.len() <= boinc::MAX_SCAN,
+                "{src}/page is over its size limit"
+            );
+            bytes
+        }
+    };
     let incoming: crate::Record = serde_json::from_slice(&got[2].1)?;
     incoming.job.validate()?;
     ensure!(
         incoming.job.id == id && incoming.job.identity()? == id,
         "the container's record is not job {id}"
     );
-    let request: boinc::Job = serde_json::from_slice(&got[1].1)?;
     ensure!(
         request == incoming.job,
         "the container's request and record differ"
