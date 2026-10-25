@@ -50,6 +50,14 @@ pub const SAMPLE_FILE: &str = "sample.json";
 /// The LoC reader's name and source in `texts.json`.
 pub const LOC_READER: &str = "loc";
 pub const LOC_SOURCE: &str = "loc-alto";
+/// The words `ocr-local`'s `loc_text` column holds: why we OCRed the page
+/// (the queue, `bulk` or `priority`, or the Japanese job's reading of
+/// LoC's text). The column is a label, never LoC's text, but its name
+/// invites the mistake: v1-wave6 was staged with `loc-hist` as `bulk` on
+/// all 10,000 pages (#1079).
+pub const LOC_TEXT_LABELS: [&str; 7] = [
+    "bulk", "priority", "missing", "empty", "short", "garbled", "mixed",
+];
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -426,6 +434,7 @@ async fn page(
             readers: vec![],
         }
     };
+    check_loc_texts(&exported).with_context(|| format!("{}", export_path.display()))?;
     if let Some(reader) = surya_reader(opts.surya_texts.as_deref(), &p.doc_id)? {
         exported.readers.retain(|r| r.name != reader.name);
         exported.readers.push(reader);
@@ -490,6 +499,26 @@ pub fn surya_reader(dir: Option<&Path>, doc_id: &str) -> anyhow::Result<Option<T
         crate::surya::collect::READER
     );
     Ok(Some(reader))
+}
+
+/// Refuses an exported LoC reader (`loc` or `loc-hist`) whose text is one
+/// of [`LOC_TEXT_LABELS`]: that is `ocr-local`'s `loc_text` label put where
+/// LoC's text belongs (#1079), and staging it would compare every reader
+/// against a single word. Stage stops at the page and writes `HOLD`.
+pub fn check_loc_texts(exported: &Texts) -> anyhow::Result<()> {
+    for r in &exported.readers {
+        if r.name != LOC_READER && r.name != "loc-hist" {
+            continue;
+        }
+        let t = r.text.trim();
+        if let Some(label) = LOC_TEXT_LABELS.iter().find(|l| t.eq_ignore_ascii_case(l)) {
+            anyhow::bail!(
+                "the {} text is {label:?}, an ocr-local loc_text label (why the page was OCRed), not LoC's text",
+                r.name
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The unit's `texts.json`: LoC's text first, then the exported readers,
@@ -1251,6 +1280,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn loc_text_labels_are_refused_as_loc_text() {
+        let texts = |name: &str, text: &str| Texts {
+            page: None,
+            readers: vec![TextReader {
+                alto: false,
+                name: name.into(),
+                regions: vec![],
+                source: name.into(),
+                text: text.into(),
+            }],
+        };
+        for (name, text) in [
+            ("loc-hist", "bulk"),
+            ("loc", " Priority\n"),
+            ("loc-hist", "missing"),
+        ] {
+            let e = check_loc_texts(&texts(name, text)).unwrap_err().to_string();
+            assert!(e.contains(name) && e.contains("loc_text label"), "{e}");
+        }
+        // A text that only starts with a label, another reader's, and the
+        // empty or `none` text join_texts fills from the ALTO all pass.
+        for (name, text) in [
+            ("loc-hist", "bulk carrier sails"),
+            ("as", "bulk"),
+            ("loc-hist", ""),
+            ("loc", "none"),
+        ] {
+            check_loc_texts(&texts(name, text)).unwrap();
+        }
+    }
+
+    #[test]
     fn joined_texts_put_loc_first_and_follow_the_order() {
         let exported = Texts {
             page: Some(PageSize {
@@ -1454,6 +1515,50 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(texts.readers.len(), 3);
+        // v1-wave6 (#1079): the export's loc-hist reader carried ocr-local's
+        // loc_text label, "bulk", as its text. Stage stops at the page with a
+        // HOLD instead of comparing every reader against one word.
+        let wave6_texts = tmp.path().join("texts-wave6");
+        std::fs::create_dir_all(&wave6_texts).unwrap();
+        let mut bulk = export.clone();
+        bulk.readers.insert(
+            0,
+            TextReader {
+                alto: false,
+                name: "loc-hist".into(),
+                regions: vec![],
+                source: "loc-hist".into(),
+                text: "bulk".into(),
+            },
+        );
+        std::fs::write(
+            wave6_texts.join(format!("{doc_id}.json")),
+            serde_json::to_vec(&bulk).unwrap(),
+        )
+        .unwrap();
+        let wave6 = Options {
+            root: tmp.path().join("root-wave6"),
+            texts_dir: wave6_texts.clone(),
+            readers: vec!["loc-hist".into(), "as".into(), "ours-tesseract".into()],
+            ..opts.clone()
+        };
+        let err = run(&wave6).await.unwrap_err();
+        assert!(format!("{err:#}").contains("\"bulk\""), "{err:#}");
+        let hold = std::fs::read_to_string(crate::assess::hold_path(&wave6.root)).unwrap();
+        assert!(hold.starts_with(doc_id) && hold.contains("loc_text label"));
+        assert!(!units(&wave6.root).join(doc_id).join(JOB_FILE).exists());
+        // LoC's real text in the export stages as before.
+        bulk.readers[0].text = "The mayor spoke to the council".into();
+        std::fs::write(
+            wave6_texts.join(format!("{doc_id}.json")),
+            serde_json::to_vec(&bulk).unwrap(),
+        )
+        .unwrap();
+        let fixed = Options {
+            root: tmp.path().join("root-wave6-fixed"),
+            ..wave6.clone()
+        };
+        assert_eq!(run(&fixed).await.unwrap().staged, 1);
         // A page the scans lack would go to LoC; a language without a list stops first.
         let bad = Options {
             pages: vec!["probe:xxx:sn83045462_1890-05-04_ed-1_seq-1:dlc_abc_ver01"

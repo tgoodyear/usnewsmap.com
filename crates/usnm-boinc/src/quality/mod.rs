@@ -18,6 +18,8 @@
 //!   transcription and reports the estimator's error.
 //! - [`rehat`] recomputes the page hat, version 1 and version 2, from a
 //!   staging root's texts, for comparing the two (#962).
+//! - [`rescore`] computes a campaign's text part again on the server from
+//!   corrected LoC texts, keeping the units' scan features (#1079).
 //! - [`summary`] reads the validator's copies back into one table.
 use std::path::{Path, PathBuf};
 pub use usnm_ocr_quality::slot::{
@@ -30,6 +32,7 @@ pub mod cli;
 pub mod collect;
 pub mod estimate;
 pub mod rehat;
+pub mod rescore;
 pub mod sample;
 pub mod stage;
 pub mod submit;

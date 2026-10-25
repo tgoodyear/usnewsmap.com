@@ -1277,6 +1277,33 @@ pub fn reader_inputs(
         .collect()
 }
 
+/// The text part of a page's record, as the unit computes it: the readers'
+/// texts by [`reader_inputs`] compared with no image and no ALTO. It holds
+/// the readers' records, the hat and the legibility; the scan's features
+/// are not in it. `quality rescore` calls this too, so a page rescored on
+/// the server from corrected texts gets the numbers a unit would give.
+/// None when a LoC reader needs the ALTO text and `alto_text` has none.
+pub fn text_analysis(
+    readers_spec: &[ReaderSpec],
+    function_words_list: &[String],
+    texts: &Texts,
+    places: &Places,
+    alto_text: impl FnOnce() -> Option<String>,
+) -> Option<report::Analysis> {
+    let readers = reader_inputs(readers_spec, texts, alto_text)?;
+    let function_words: BTreeSet<String> = function_words_list
+        .iter()
+        .map(|w| crate::consensus::fold(w))
+        .collect();
+    Some(report::analyse(&PageInputs {
+        image: None,
+        alto: None,
+        readers,
+        function_words,
+        places,
+    }))
+}
+
 fn compute_page_record(
     doc_id: &str,
     readers_spec: &[ReaderSpec],
@@ -1303,19 +1330,10 @@ fn compute_page_record(
     };
     let features_ms = ms(t);
     let t = Instant::now();
-    let readers = reader_inputs(readers_spec, texts, || Some(usnm_alto::text(&alto)))
-        .context("the ALTO text is always available here")?;
-    let function_words: BTreeSet<String> = function_words_list
-        .iter()
-        .map(|w| crate::consensus::fold(w))
-        .collect();
-    let analysis = report::analyse(&PageInputs {
-        image: None,
-        alto: None,
-        readers,
-        function_words,
-        places,
-    });
+    let analysis = text_analysis(readers_spec, function_words_list, texts, places, || {
+        Some(usnm_alto::text(&alto))
+    })
+    .context("the ALTO text is always available here")?;
     let text_ms = ms(t);
     let r = analysis.report;
     Ok((

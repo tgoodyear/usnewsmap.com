@@ -837,14 +837,14 @@ pub fn summary_md(campaign: &str, s: &Summary, pages: &[PageRow], crops: &[CropR
     out
 }
 
-fn spool_files(spool: &Path, workunit: &str, names: &[&str]) -> Vec<PathBuf> {
+pub(crate) fn spool_files(spool: &Path, workunit: &str, names: &[&str]) -> Vec<PathBuf> {
     names
         .iter()
         .map(|n| spool.join(format!("{workunit}__file_{n}")))
         .collect()
 }
 
-fn gave_up(spool: &Path, workunit: &str) -> bool {
+pub(crate) fn gave_up(spool: &Path, workunit: &str) -> bool {
     spool.join(format!("{workunit}_error")).exists()
         || spool.join(format!("{workunit}_no_output_files")).exists()
 }
