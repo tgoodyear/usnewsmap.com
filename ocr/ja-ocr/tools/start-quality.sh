@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Start the OCR quality audit (ja-ocr/quality.py) as an execution of the
+# Start the OCR quality audit (ocr/ja-ocr/quality.py) as an execution of the
 # environment's ja-ocr job (or its one-replica audit job, below), with the job's own image, settings and replicas
 # but the audit's command line, and print the execution's name.
 #
-#   ja-ocr/tools/start-quality.sh --env prod --sample-pct 10
-#   ja-ocr/tools/start-quality.sh --env prod --sample-pct 2 --min-pages 50
-#   ja-ocr/tools/start-quality.sh --env prod --command mixed     # jaocr.py mixed instead (mixed.py)
-#   ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 [--diff]
-#   ja-ocr/tools/start-quality.sh --env prod --command american-stories-write [--year 1865 ...]
-#   ja-ocr/tools/start-quality.sh --env prod --command targets [--mixed-below 0.65]   (the OCR's page list)
-#   ja-ocr/tools/start-quality.sh --env prod --command run [--mixed-below 0.65]       (the OCR itself)
-#   ja-ocr/tools/start-quality.sh --env prod --command damage-parity [--pages 400] [--audit-version V]
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --sample-pct 10
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --sample-pct 2 --min-pages 50
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --command mixed     # jaocr.py mixed instead (mixed.py)
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 [--diff]
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories-write [--year 1865 ...]
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --command targets [--mixed-below 0.65]   (the OCR's page list)
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --command run [--mixed-below 0.65]       (the OCR itself)
+#   ocr/ja-ocr/tools/start-quality.sh --env prod --command damage-parity [--pages 400] [--audit-version V]
 #
 # --command defaults to quality; the options after it are the command's. The
 # quality audit runs on the ja-ocr job, whose replicas share its work
@@ -20,7 +20,7 @@
 # `az containerapp job start --args` sends a container without the image or
 # settings, so this copies the job's template and swaps only the arguments.
 # Needs az signed in to the environment's subscription and jq. Results:
-# ja-ocr/tools/quality-rows.sh.
+# ocr/ja-ocr/tools/quality-rows.sh.
 set -euo pipefail
 usage() { sed -n '2,23s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$ENV_NAME" ] || usage
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed to build the request"
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"

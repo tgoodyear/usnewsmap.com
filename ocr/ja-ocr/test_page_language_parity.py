@@ -1,5 +1,5 @@
 """The page-language detector's Rust port (usnm_core::page_language, #289) against this directory's Python:
-python3 -m unittest discover ja-ocr (wordfreq, and pyarrow for zstd before Python 3.14).
+python3 -m unittest discover ocr/ja-ocr (wordfreq, and pyarrow for zstd before Python 3.14).
 
 - The function words the port embeds (crates/usnm-core/data/page-language-words.txt) are the ones
   damage_v2.Models builds: scripts/data/build-page-language-words.py renders the file again and it must match.
@@ -24,7 +24,7 @@ try:
 except ImportError:  # the image has it
     wordfreq = None
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BUILDER = os.path.join(ROOT, "scripts", "data", "build-page-language-words.py")
 WORDS = os.path.join(ROOT, "crates", "usnm-core", "data", "page-language-words.txt")
 FIXTURES = [os.path.join(ROOT, "crates", "usnm-core", "tests", "data", f"{name}.jsonl.zst")

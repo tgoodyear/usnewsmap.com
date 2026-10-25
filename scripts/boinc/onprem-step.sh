@@ -25,6 +25,14 @@
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
 # directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
 #
+# --target scans --step receive (#1116) reads a tar of scans from stdin, as the controller's push
+# sends them over ssh: copies of the scan fetcher's files, named keep/<batch>/<lccn>/<date>/<ed>/
+# <seq>.<jp2|jpg> with their .json sidecars. Only that layout is taken (regular files, size
+# capped); each is written to $USNM_BOINC_SCAN_STAGE (default /srv/usnm-boinc/project/
+# handoff-scans) through a temporary name, and staged files older than 10 days are pruned. The
+# hand-off export reads them (mounted read-only as /scans), and the bridge's submit takes a job's
+# page from them, so no scan goes through Azure. The BOINC host never reads /tank/ocr itself.
+#
 # --target publish --step publish --image <appver image or sha256:<id>> publishes an app version (#961), as the
 # Azure publish job did: the image's own publish-appver.sh runs with the host's settings and
 # mounts and APPVER_REUSE_PROJECT=1 (the only --var it takes, 0 or 1). It is refused over ssh.
@@ -94,6 +102,9 @@ fi
 [[ $ENV_NAME =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "--env is an environment name"
 case $TARGET in
   bridge) [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish" ;;
+  scans)
+    [ "$STEP" = receive ] || die "--target scans takes --step receive"
+    [ -z "$APPVER_IMAGE" ] && [ ${#VARS[@]} -eq 0 ] || die "--target scans takes no --image or --var" ;;
   publish)
     [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] || die "--target publish isn't allowed over ssh"
     [ "$STEP" = publish ] || die "--target publish takes --step publish"
@@ -106,6 +117,84 @@ case $TARGET in
   *) die "--target $TARGET does not run on-prem; only bridge, publish and handoff steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
+
+STAGE=${USNM_BOINC_SCAN_STAGE:-/srv/usnm-boinc/project/handoff-scans}
+if [ "$TARGET" = scans ]; then
+  if $WHAT_IF; then
+    echo "would receive scans from stdin into $STAGE"
+    exit 0
+  fi
+  [ -n "$WAIT_MINS" ] || die "--wait-mins is required on-prem"
+  mkdir -p "$STAGE"
+  # The tar comes on stdin; python3's tarfile reads it as a stream, member by member. One
+  # receive at a time (a lock in the run directory), stopped after --wait-mins.
+  python3 -c '
+import fcntl, os, re, signal, sys, tarfile, time
+stage, lock_path, wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+
+class Member(tarfile.TarInfo):
+    # tarfile reads a PAX or GNU long-name record into memory before it yields the member:
+    # refuse any but a short one, so a stream cannot make it allocate more.
+    def _proc_member(self, tarfile_):
+        if self.type in tarfile.GNU_TYPES + (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE) \
+                and self.size > 4096:
+            raise tarfile.HeaderError(f"a {self.size}-byte tar extension record")
+        return super()._proc_member(tarfile_)
+
+
+signal.alarm(wait * 60)
+lock = open(lock_path, "w")
+fcntl.flock(lock, fcntl.LOCK_EX)
+name_re = re.compile(r"keep/[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{1,4}/[0-9]{1,5}\.(jp2|jpg)(\.json)?")
+count = total = members = 0
+with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
+    for m in tar:
+        # Every header counts, directories too (tarfile keeps each one): a push of 100 pages
+        # has about 200 files and a few hundred directories.
+        members += 1
+        if members > 5000:
+            sys.exit("error: more tar entries than a push sends")
+        if m.isdir():
+            continue
+        if not m.isreg() or not name_re.fullmatch(m.name):
+            sys.exit(f"error: {m.name!r} is not a staged scan or sidecar")
+        cap = 64 * 1024 if m.name.endswith(".json") else 64 * 1024 * 1024
+        count += 1
+        total += m.size
+        if m.size > cap or count > 1000 or total > 32 * 1024 ** 3:
+            sys.exit(f"error: {m.name} is over its size limit")
+        dest = os.path.join(stage, m.name)
+        os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
+        tmp = f"{dest}.tmp-{os.getpid()}"
+        try:
+            src = tar.extractfile(m)
+            with open(tmp, "wb") as out:
+                while chunk := src.read(1 << 20):
+                    out.write(chunk)
+            if os.path.getsize(tmp) != m.size:
+                sys.exit(f"error: {m.name} came short")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, dest)
+        finally:
+            # A short or broken stream leaves no partial file behind.
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+# Prune what no job needs any more: a lease is at most seven days.
+cutoff = time.time() - 10 * 86400
+pruned = 0
+for root, dirs, files in os.walk(os.path.join(stage, "keep"), topdown=False):
+    for f in files:
+        p = os.path.join(root, f)
+        if os.lstat(p).st_mtime < cutoff:
+            os.unlink(p)
+            pruned += 1
+    if root != os.path.join(stage, "keep") and not os.listdir(root):
+        os.rmdir(root)
+print(f"received {count} files ({total} bytes), pruned {pruned}")
+' "$STAGE" "$RUN_DIR/usnm-boinc-scans.lock" "$WAIT_MINS" || die "the scans were not all received"
+  exit 0
+fi
 
 # The host's own settings, which no --var may replace.
 [ -r "$CONF/server.env" ] && [ -r "$CONF/bridge.env" ] || die "no $CONF/server.env or $CONF/bridge.env"
@@ -134,7 +223,7 @@ if [ "$TARGET" = handoff ]; then
     [[ " ${BASE[*]} " == *" $v "* ]] || die "$SETTINGS doesn't set $v"
   done
 fi
-seen=" ${BASE[*]} BRIDGE_STEP HANDOFF_STEP "
+seen=" ${BASE[*]} BRIDGE_STEP HANDOFF_STEP HANDOFF_LOCAL_SCANS "
 REUSE=1
 case $STEP in
   surya-stage-crops) SSH_ALLOWED=$SSH_SURYA_CROPS_VARS ;;
@@ -209,6 +298,13 @@ run=(podman run --rm --name "$name" --network host
 echo "running $STEP as $name for up to $WAIT_MINS minutes" >&2
 rc=0
 if [ "$TARGET" = handoff ]; then
+  # export takes the scans the controller pushed here (#1116), read-only, instead of the
+  # container's copies.
+  # Queue-fed exports only: a cohort export's scans still go to the container.
+  if [ "$STEP" = export ] && [ -d "$STAGE" ] && [[ " ${VARS[*]-} " == *" HANDOFF_CLAIMS=1 "* ]]; then
+    echo "HANDOFF_LOCAL_SCANS=1" >> "$envfile"
+    run+=(-v "$STAGE:/scans:ro")
+  fi
   "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/handoff-job.sh "$IMAGE" || rc=$?
 elif [ "$TARGET" = publish ]; then
   "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/publish-appver.sh "$APPVER_IMAGE" || rc=$?

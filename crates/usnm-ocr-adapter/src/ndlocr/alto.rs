@@ -1,4 +1,4 @@
-//! The `ja-ocr/alto.py` profile: line geometry, NDLOCR reading order and
+//! The `ocr/ja-ocr/alto.py` profile: line geometry, NDLOCR reading order and
 //! ALTO 3.1 in inch1200 (one String per line, not fabricated character boxes).
 use std::collections::BTreeMap;
 use std::fmt::Write;

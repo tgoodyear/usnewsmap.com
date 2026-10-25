@@ -2,7 +2,7 @@
 //! the curated Congress pages of one series, the Serial Set by default, for the
 //! quality gate. The text there is GPO's text layer, read with `pdftotext`, so
 //! the metric is the one the OCR audit uses for newspapers (`usnm_core::damage`,
-//! the Rust port of `ja-ocr/damage_v2.py`), measured on every page instead of a
+//! the Rust port of `ocr/ja-ocr/damage_v2.py`), measured on every page instead of a
 //! sample.
 //!
 //! **Which volumes.** Each unit's newest finished attempt

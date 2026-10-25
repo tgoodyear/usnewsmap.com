@@ -38,12 +38,12 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 # move to the named ones (#277): findings per file. Remove each entry with
 # its fallback (`grep -rn '#277'` finds them).
 ALLOWED = {
-    "ja-ocr/tools/build-wordlists.py": 1,
-    "ja-ocr/tools/crops.py": 1,
-    "ja-ocr/tools/quality-rows.sh": 2,
-    "ja-ocr/tools/run.py": 1,
-    "ja-ocr/tools/sample.py": 1,
-    "ja-ocr/tools/score.py": 1,
+    "ocr/ja-ocr/tools/build-wordlists.py": 1,
+    "ocr/ja-ocr/tools/crops.py": 1,
+    "ocr/ja-ocr/tools/quality-rows.sh": 2,
+    "ocr/ja-ocr/tools/run.py": 1,
+    "ocr/ja-ocr/tools/sample.py": 1,
+    "ocr/ja-ocr/tools/score.py": 1,
     "scripts/azure/bootstrap.sh": 1,
     "scripts/azure/logs.sh": 2,
     "scripts/azure/provision.sh": 2,

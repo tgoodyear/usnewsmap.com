@@ -1,4 +1,4 @@
-// The on-prem Japanese OCR's access to the data lake (#917, #128): ja-ocr/jaocr.py `run`
+// The on-prem Japanese OCR's access to the data lake (#917, #128): ocr/ja-ocr/jaocr.py `run`
 // on an on-prem host (scripts/ocr-node/ja-ocr-onprem.sh) as that host's Arc machine
 // identity, in place of the Azure job caj-usnm-jaocr. The principal is the on-prem hosts'
 // group (usnm-onprem-grp-<env>), so any of them can run it.

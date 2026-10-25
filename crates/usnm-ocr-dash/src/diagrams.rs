@@ -63,13 +63,14 @@ pub const DIAGRAMS: [Diagram; 5] = [
             ),
             (
                 "Needs OCR",
-                "Yes. Queue ocr-bulk (ocr-priority is for pages users find, not built). Active OCR workers \
-                 read them with Tesseract in a container per page, trying the scan server before LoC.",
+                "Yes. The on-prem OCR queue (ocr_priority for pages users find, ocr_bulk for the rest) feeds \
+                 the BOINC usnm_ocr app: pages are claimed from the queue, bundled into workunits, read by \
+                 volunteers and collected on-prem. The direct queue workers are retired (#1053).",
             ),
             (
                 "Stored",
-                "Home: manifests/ and keep/ on the scan store (scans are kept for good); the nodes keep \
-                 scratch space for the page in hand. Azure: ocr-out (deleted after 30 days), then \
+                "Home: manifests/ (the plan and the hourly queue-ocr-* manifests) and keep/ on the scan \
+                 store (scans are kept for good). Azure: ocr-out (deleted after 30 days), then \
                  curated/ocr-local/.",
             ),
             (
@@ -92,14 +93,13 @@ pub const DIAGRAMS: [Diagram; 5] = [
             ),
             (
                 "Needs OCR",
-                "Yes, but only the pages the seed plan queues (see What's next). Same queue, nodes and \
-                 engine as the keep set.",
+                "Yes, but only the pages the seed plan queues. Same queue, BOINC app and engine as the \
+                 keep set.",
             ),
             (
                 "Stored",
                 "Home: buffer/ on the scan store, a rolling buffer. The fetcher waits while it is at its \
-                 cap, and the worker deletes a scan once that page's output is uploaded. Azure as for the \
-                 keep set.",
+                 cap. Azure as for the keep set.",
             ),
             (
                 "Searchable when",
@@ -115,8 +115,8 @@ pub const DIAGRAMS: [Diagram; 5] = [
         answers: [
             (
                 "Comes from",
-                "GovInfo's sitemaps, MODS and PDFs, public and without a key. usnm-sset runs on OCR node 3, \
-                 one request at a time, paced. Run again to pick up new or changed volumes.",
+                "GovInfo's sitemaps, MODS and PDFs, public and without a key. usnm-sset fetches one \
+                 request at a time, paced. Run again to pick up new or changed volumes.",
             ),
             (
                 "Needs OCR",
@@ -124,8 +124,8 @@ pub const DIAGRAMS: [Diagram; 5] = [
             ),
             (
                 "Stored",
-                "Node 3: a raw store of MODS and page texts (the PDFs are deleted after reading). Azure: \
-                 curated/congress/serialset/.",
+                "Home: a raw store of MODS and page texts on the host that runs it (the PDFs are deleted \
+                 after reading). Azure: curated/congress/serialset/.",
             ),
             (
                 "Searchable when",
@@ -209,12 +209,13 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
     // Nothing in Azure is read here, so the ingest, the release, the
     // published index, the rebuild and the index with our text are left
     // out and draw as "not tracked here".
-    // Step 12: the API queuing pages users find.
-    m.insert("users", StepState::new("not-built"));
+    // Pages users find go first in each hourly queue-ocr manifest (#1082),
+    // which the fetch queue shows; nothing here says how many there are.
 
-    // The manifest is on the scan store, so the damage pass that fed it
-    // and the copy that put it there are done.
-    let plan = v.fetch.plan_error.is_none() && !v.fetch.sets.is_empty();
+    // The plan or a queued manifest is on the scan store, so the damage
+    // pass that fed it and the copy that put it there are done.
+    let plan = (v.fetch.plan_error.is_none() && !v.fetch.sets.is_empty())
+        || v.fetch.queue.iter().any(|m| m.error.is_none());
     let manifest = StepState::new(if plan { "done" } else { "waiting" });
     m.insert("manifest", manifest.clone());
     m.insert("pull", manifest);
@@ -284,22 +285,18 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         }
     }
 
-    // Worker completions do not independently measure current upload activity.
-    let fresh: Vec<_> = v
-        .nodes
-        .iter()
-        .filter(|n| crate::view::node_status_fresh(n, v.generated_at))
-        .collect();
-    let working = fresh.iter().any(|n| n.state == "working");
-    let up = !fresh.is_empty();
-    if up {
-        m.insert(
-            "nodes",
-            StepState::with(
-                if working { "running" } else { "waiting" },
-                format!("{} pages OCRed so far", int(v.ocred.pages)),
-            ),
+    // OCR: the BOINC usnm_ocr app's assigned replicas.
+    if let Some(count) =
+        crate::html::summary_stage(v, "boinc_usnm_ocr_in_progress").and_then(|s| s.count)
+    {
+        let mut step = StepState::with(
+            if count > 0 { "running" } else { "waiting" },
+            format!("{} usnm_ocr replicas assigned", int(count)),
         );
+        step.rate_scope =
+            "Scheduler stock, not throughput: assigned replicas are not unique pages \
+            or active devices. Completion and collect rates are not connected.";
+        m.insert("nodes", step);
     }
     for key in ["fetch-keep", "fetch-buffer", "store-keep", "store-buffer"] {
         if let Some(step) = m.get_mut(key).filter(|s| s.class == "running") {
@@ -308,14 +305,6 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
                 "Last-hour scan-fetch completions across keep + buffer, not a per-set rate. \
                 The fetch and store boxes share this counter; do not add them.";
         }
-    }
-    if let Some(step) = m.get_mut("nodes") {
-        let count = fresh
-            .iter()
-            .fold(0u64, |n, worker| n.saturating_add(worker.last_hour.done));
-        step.rate = Some(format!("{} pages/h*", int(count)));
-        step.rate_scope = "Last-hour successful completions from fresh configured workers only. \
-            Shared across keep + buffer, not a per-dataset rate or accepted-text rate.";
     }
 
     // The Serial Set, from the status its node pushes.
@@ -620,7 +609,8 @@ mod tests {
         // With nothing read, the steps the dashboard can't see say so.
         let out = fill(DIAGRAMS[1].svg, &st);
         assert!(out.contains("not tracked here"));
-        assert!(out.contains("data-state=\"not-built\""));
+        // Pages users find are queued now (#1082).
+        assert!(!out.contains("class=\"box azure\" data-state=\"not-built\""));
     }
 
     #[test]
@@ -682,8 +672,9 @@ mod tests {
         assert!(flow.contains("&lt;worker&gt;&amp;"));
         assert!(flow.contains("running; rate unknown"));
         assert!(flow.find("1  Damage pass") < flow.find("2  Manifest copy"));
-        assert!(flow.find("6  Queues") < flow.find("7  Configured OCR workers"));
-        assert!(flow.contains("container per page"));
+        assert!(flow.find("6  Queues") < flow.find("7  BOINC usnm_ocr"));
+        assert!(flow.contains("collected on-prem"));
+        assert!(!flow.contains("node 3"));
         assert_eq!(
             flow.matches("<li>").count(),
             DIAGRAMS[1].svg.matches("class=\"box ").count()
@@ -909,38 +900,32 @@ mod tests {
     }
 
     #[test]
-    fn fresh_workers_supply_shared_rate_without_inventing_upload_throughput() {
+    fn ocr_step_is_the_boinc_app_not_the_retired_workers() {
         let mut v = empty_view();
-        let dir = tempfile::tempdir().unwrap();
-        let nodes = Nodes::open(
-            dir.path().join("state"),
-            &[("worker".into(), "http://127.0.0.1:1".into())],
-        )
-        .unwrap();
-        let mut nv = build(
-            &mut Fetch::new(dir.path().to_owned(), None),
-            &nodes,
-            &Hosts::new(Vec::new()),
-            &Ssets::default(),
-            None,
-            &Settings::default(),
-            v.generated_at,
+        let mut source = crate::pipeline::tests::fixture(v.generated_at);
+        source["stages"] = serde_json::json!([
+            {"id":"boinc_usnm_ocr_in_progress","label":"Assigned","count":79,"state":"observed","detail":""}
+        ]);
+        v.pipeline.snapshot = Some(
+            crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), v.generated_at).unwrap(),
         );
-        let mut n = nv.nodes.remove(0);
-        n.ok = true;
-        n.last_ok = Some(v.generated_at);
-        n.state = "working";
-        n.last_hour.done = 91;
-        v.nodes.push(n);
+        v.pipeline.stage_freshness = vec![crate::pipeline::StageFreshness {
+            id: "boinc_usnm_ocr_in_progress".into(),
+            age_secs: Some(5),
+            stale: false,
+        }];
         let st = steps(&v);
-        assert_eq!(st["nodes"].rate.as_deref(), Some("91 pages/h*"));
-        assert!(!st.contains_key("out"));
-        v.nodes[0].last_ok = Some(v.generated_at - chrono::Duration::minutes(4));
+        assert_eq!(st["nodes"].class, "running");
+        assert_eq!(st["nodes"].text, "79 usnm_ocr replicas assigned");
+        assert!(st["nodes"].rate.is_none());
+        v.pipeline.stage_freshness[0].stale = true;
         assert!(!steps(&v).contains_key("nodes"));
         for svg in [DIAGRAMS[1].svg, DIAGRAMS[2].svg] {
-            assert!(!svg.contains("OCR nodes 3 and 4"));
-            assert!(svg.contains("Configured OCR workers"));
+            assert!(!svg.contains("node 3"));
+            assert!(!svg.contains("Configured OCR workers"));
+            assert!(svg.contains("BOINC usnm_ocr"));
         }
+        assert!(!DIAGRAMS[3].svg.contains("node 3"));
     }
 
     #[test]

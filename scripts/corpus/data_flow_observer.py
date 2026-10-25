@@ -100,27 +100,38 @@ def stage(identifier, label, amount, at, detail):
 
 
 def local_stages(payload, now):
-    """Consume only existing aggregate counters; never infer artifact presence."""
-    fetch = object_value(object_value(payload)["fetch"])
-    if fetch.get("status_error") or fetch.get("plan_error"):
+    """Consume only existing aggregate counters; never infer artifact presence.
+
+    The fetcher's status describes one run of one manifest, and the fetch queue rewrites it for every
+    queued manifest, so the scan stages come from the dashboard's cumulative counts instead: every
+    page in the fetch index, and the pages of the queue's manifests (queue-ocr-*, queue-quality-*).
+    """
+    payload = object_value(payload)
+    fetch = object_value(payload["fetch"])
+    if fetch.get("index_error") or fetch.get("queue_error"):
         raise ValueError("Local fetch evidence reports an error")
-    at = observed(object_value(fetch["status"])["updated_at"], now)
-    sets = fetch["sets"]
-    if not isinstance(sets, list) or len(sets) > 100:
-        raise ValueError("Invalid scan-set inventory")
-    keep = [object_value(item) for item in sets if object_value(item)["name"] == "keep"]
-    if len(keep) != 1:
-        raise ValueError("Expected one keep-set aggregate")
-    fetched, total = count(keep[0]["fetched"]), count(keep[0]["total"])
-    if fetched > total:
-        raise ValueError("Fetched count exceeds planned population")
+    if fetch.get("queue_configured") is not True:
+        raise ValueError("The dashboard reads no fetch queue")
+    # The counts are read from the files at each dashboard poll, so they are as old as the view.
+    at = observed(payload["generated_at"], now)
+    total = object_value(fetch["total"])
+    queue = object_value(fetch["queue_summary"])
+    fetched_all = count(total["pages"])
+    pages, fetched, left = (count(queue[key]) for key in ("pages", "pages_fetched", "pages_left"))
+    if fetched > pages or left > pages:
+        raise ValueError("Queued counts exceed the queued population")
     result = [
-        stage("scan_cached", "Keep-set scans cached", fetched, at,
-              "Scan-cache aggregate; not per-file checksum or Azure mirror verification."),
-        stage("scan_planned", "Keep-set scans planned", total, at,
-              "Current prefetch population, not the entire corpus."),
-        stage("scan_remaining", "Keep-set scans not yet reported cached", total - fetched, at,
-              "Planning difference; not a fetch command or allocation."),
+        stage("scan_cached", "Queued pages fetched", fetched, at,
+              "Pages of the fetch queue's manifests in the fetch index, by any run; not per-file "
+              "checksum or Azure mirror verification."),
+        stage("scan_planned", "Pages in fetch-queue manifests", pages, at,
+              "Every queue-ocr-* and queue-quality-* manifest on the scan store, fetched or not; "
+              "not the entire corpus."),
+        stage("scan_remaining", "Queued pages not yet fetched", left, at,
+              "In manifests the queue will still run (queued, fetching or cooling off); "
+              "not a fetch command or allocation."),
+        stage("scan_total", "Scans fetched, all runs", fetched_all, at,
+              "Unique pages in the fetch index, from every plan and queued manifest."),
     ]
     nodes = payload["nodes"]
     if not isinstance(nodes, list) or len(nodes) > 100:
@@ -190,6 +201,27 @@ def boinc_stages(body, now):
     return result
 
 
+def published_stages(body, now):
+    """The serving index's pages whose searchable text is our OCR, from the public API's status."""
+    if len(body) > MAX_BYTES:
+        raise ValueError("Oversized API status")
+    status = object_value(json.loads(body))
+    # `stale` and `error` describe the API's pipeline store; `published` comes from the serving
+    # snapshot either way, so it is validated on its own.
+    at = observed(status["generated_at"], now)
+    published = object_value(status["published"])
+    version = bounded_text(published["index_version"], 64)
+    published_at = observed(published["published_at"], now)
+    # null: the serving index has no pages with our OCR.
+    local = object_value(published["sources"])["ocr_local"]
+    pages = 0 if local is None else count(object_value(local)["pages"])
+    if pages > count(published["pages"]):
+        raise ValueError("Inconsistent published page counts")
+    return [stage("indexed", "Pages searchable with our OCR", pages, at,
+                  f"Serving index {version}, published {published_at}: pages whose searchable text is "
+                  "our OCR (sources.ocr_local). Not a count of OCR runs or accepted readings.")]
+
+
 def fetch(url):
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
@@ -205,12 +237,14 @@ def fetch(url):
     return body
 
 
-def collect(ocr_url, boinc_url, now=None):
+def collect(ocr_url, boinc_url, now=None, api_status_url=None):
     now = now or datetime.now(timezone.utc)
     sources = [
         ("local-ocr", ocr_url, lambda body: local_stages(json.loads(body), now)),
         ("boinc-public-status", boinc_url, lambda body: boinc_stages(body, now)),
     ]
+    if api_status_url:
+        sources.append(("published-index", api_status_url, lambda body: published_stages(body, now)))
     events, failures = [], []
     for source, url, parse in sources:
         try:
@@ -246,12 +280,11 @@ def snapshot(events, failures, now=None):
     stages = [item["stage"] for item in events]
     at = min((timestamp(item["observed_at"]) for item in stages), default=None)
     for failure in failures:
-        missing = (
-            [("boinc_unsent", "BOINC unsent result replicas"),
-             ("boinc_in_progress", "BOINC assigned result replicas")]
-            if failure["code"] == "boinc-public-status-unavailable"
-            else [("scan_cached", "Keep-set scans cached")]
-        )
+        missing = {
+            "boinc-public-status-unavailable": [("boinc_unsent", "BOINC unsent result replicas"),
+                                                ("boinc_in_progress", "BOINC assigned result replicas")],
+            "published-index-unavailable": [],
+        }.get(failure["code"], [("scan_cached", "Queued pages fetched")])
         for identifier, label in missing:
             stages.append({"id": identifier, "label": label, "count": None,
                            "state": "unknown", "observed_at": None,
@@ -263,6 +296,8 @@ def snapshot(events, failures, now=None):
         ("imported", "Curated imports"),
         ("indexed", "Released search inclusion"),
     ]:
+        if any(item["id"] == identifier for item in stages):
+            continue
         stages.append({"id": identifier, "label": label, "count": None,
                        "state": "unknown", "observed_at": None,
                        "detail": "Source adapter not connected; aggregate status cannot establish this stage."})
@@ -288,7 +323,7 @@ def snapshot(events, failures, now=None):
         "generated_at": utc(now), "producer": "corpus-catalog",
         "coverage": [
             "Aggregate observer only; no page-level inventory or run catalog loaded.",
-            "Local prefetch/worker counters and public BOINC result replicas.",
+            "Local fetch-index and fetch-queue counts, public BOINC result replicas and the serving index's OCR pages.",
             "BOINC source cache age and application/device eligibility are unknown.",
         ],
         "stages": stages, "runs": {"total": 0, "pages": 0},
@@ -393,6 +428,9 @@ def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
         if identifier in evidence:
             replacements[identifier] = (identifier, label, evidence[identifier]["count"])
     for item in value["stages"]:
+        # The serving index's own count is current; the catalog's search-inclusion evidence is not.
+        if item["id"] == "indexed" and item["state"] == "observed":
+            continue
         if item["id"] in replacements:
             identifier, label, amount = replacements[item["id"]]
             source = evidence[identifier]
@@ -410,6 +448,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ocr-url", required=True)
     parser.add_argument("--boinc-url", default="https://boinc.usnewsmap.com/server_status.php?xml=1")
+    parser.add_argument("--api-status-url", default="https://api.usnewsmap.com/v1/status",
+                        help="The public API's status, for the serving index's pages with our OCR; "
+                             "empty to skip")
     parser.add_argument("--snapshot", required=True, type=Path)
     parser.add_argument("--catalog-snapshot", type=Path,
                         help="Optional bounded snapshot of the separate page-evidence catalog")
@@ -417,7 +458,7 @@ def main():
                         help="Flag the catalog snapshot as frozen when it was generated, or its newest "
                              f"evidence observed, more than this many days ago (default {CATALOG_MAX_AGE_DAYS})")
     args = parser.parse_args()
-    events, failures = collect(args.ocr_url, args.boinc_url)
+    events, failures = collect(args.ocr_url, args.boinc_url, api_status_url=args.api_status_url or None)
     value = snapshot(events, failures)
     if args.catalog_snapshot:
         try:

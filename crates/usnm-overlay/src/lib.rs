@@ -1,7 +1,7 @@
 //! OCR overlay parts: our own OCR of pages, one Parquet row per page, keyed
 //! by `doc_id` (04 §4.8, #139, #296).
 //!
-//! The Japanese OCR job (`ja-ocr/jaocr.py write_part`) and the on-prem OCR
+//! The Japanese OCR job (`ocr/ja-ocr/jaocr.py write_part`) and the on-prem OCR
 //! worker (`usnm-ocr-worker`) write parts with this schema; a release reads
 //! them (`usnm-ingest`'s `ocr_ja`). The columns are identity (`doc_id`,
 //! `page_key`, `lccn`, `date`, `edition`, `seq`, `batch`), provenance

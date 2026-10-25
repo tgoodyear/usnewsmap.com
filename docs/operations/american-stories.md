@@ -6,7 +6,7 @@ Part of the [operations guide](README.md).
 
 The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #218) only with `USNM_AMERICAN_STORIES` (the job's `--american-stories`), off by default. The first release with it builds a full base, so turn it on for a full rebuild, after step 4 of #218 has measured the index size and rebuild time, and with an explicit go-ahead:
 
-1. Run the writer to the end: `ja-ocr/tools/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
+1. Run the writer to the end: `ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories-write` on the one-replica job. It marks each finished year with `curated/american-stories/years/{year}.json`; start it again until all 180 years have one (its log's `american stories write finished` line counts them). A release reads only the years with a marker, and a year finished after the base reaches the base's pages only at the next full rebuild.
 2. Do the [full rebuild](rebuild-and-index-storage.md#full-rebuild), with the setting added to its first provision:
 
    ```sh
@@ -33,14 +33,14 @@ On a version with one searched text field (`text_layout: 2` or `3`, [Full rebuil
 
 ## American Stories against LoC's text
 
-`jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages using the shared placement policy below (names read in a first pass), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
+`jaocr.py american-stories --year Y [--year …] [--sample-pct 10]` (`ocr/ja-ocr/american_stories.py`, #205) compares [American Stories](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (Dell et al. 2023, CC BY 4.0), a re-OCR of Chronicling America, with LoC's text on our pages. It streams each year's tarball from Hugging Face (0.4 to 7.6 GB; nothing is written to disk), joins scans to our pages using the shared placement policy below (names read in a first pass), keeps the audit's fixed sample (`quality.sampled`), and reads LoC's text for the sampled pages of those years from the batches whose dates overlap them. For pages of titles whose first language is English it reports the join, words per page, the audit's English damage rate and function-word share for each text, pages matching a fixed term list in either text, and LoC's damage rate by the share of regions American Stories marked Illegible.
 
 ```sh
-ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
-ja-ocr/tools/quality-rows.sh --env prod --execution <execution>    # its "american stories" rows
+ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925
+ocr/ja-ocr/tools/quality-rows.sh --env prod --execution <execution>    # its "american stories" rows
 ```
 
-It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises _Japanese OCR or audit job failed_ (severity 3), not the ingest alert.
+It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ocr/ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises _Japanese OCR or audit job failed_ (severity 3), not the ingest alert.
 
 ### Indexing only where American Stories differs (`--diff`, #251)
 
@@ -51,18 +51,18 @@ It writes `audit/american-stories-<version>-<execution>.json`. It runs on the on
 - `diff_edge_examples`: up to 10 pages a year with a phrase whose words are all in LoC's text but together only in American Stories', with loc.gov links.
 
 ```sh
-ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 --diff
+ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories --year 1865 --year 1925 --diff
 ```
 
 The diff runs after the comparison and takes about 40 s per 1,000 pages of 8,000 tokens (measured on synthetic pages; the run logs its own figure in `american stories diff year`).
 
 ## American Stories' text for our pages
 
-`jaocr.py american-stories-write [--year Y …]` (`ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face twice on a fresh run (names/placement, then text), places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per resolved page with `doc_id`, `scan_key` (JSON physical identity tuple), `source_name` (archive member), `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year retries (reusing a frozen placement if already written; up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 archives total about 340 GB compressed (about 680 GB transferred for two fresh passes).
+`jaocr.py american-stories-write [--year Y …]` (`ocr/ja-ocr/american_stories_write.py`, #218) writes American Stories' text (Dell et al. 2023, CC BY 4.0) for our pages to the curated container, for the release to index beside LoC's. It streams each year's tarball from Hugging Face twice on a fresh run (names/placement, then text), places every scan on our page as `american-stories` does, and writes `american-stories/pages/<lccn>/<year>-<nnn>.parquet`: one row per resolved page with `doc_id`, `scan_key` (JSON physical identity tuple), `source_name` (archive member), `lccn`, `date`, `text` (each article's headline, byline and text in American Stories' order, separated by blank lines), `articles` (JSON: each article's headline, byline, `start`/`end` in `text`, bounding boxes in scan pixels and the legibility of its regions), `legibility` (the page's text regions by legibility) and the scan's `width` and `height`. A page's second copy is skipped. Each year ends with a marker `american-stories/years/<year>.json` holding its counts; a rerun skips marked years, so an interrupted run resumes. A download that goes 5 minutes without data, or breaks off, fails and the year retries (reusing a frozen placement if already written; up to 3 tries, a minute apart, each logged as `american stories year failed; retrying`); a retry writes the same parts under the same names. A year counts as read only when the gzip stream reached its end marker and, when Hugging Face sends one, the byte count matches `Content-Length`, so a download that stops at a file boundary inside the tarball is retried rather than marked. All 180 archives total about 340 GB compressed (about 680 GB transferred for two fresh passes).
 
 ```sh
-ja-ocr/tools/start-quality.sh --env prod --command american-stories-write          # every year
-ja-ocr/tools/start-quality.sh --env prod --command american-stories-write --year 1865
+ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories-write          # every year
+ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories-write --year 1865
 ```
 
 It runs on the one-replica job and logs `american stories year written` per year. `jaocr.py american-stories` also lists, per term and year, up to 8 pages that match only in American Stories' text with the words around the match (`only_american_stories`), for checking those matches by hand.

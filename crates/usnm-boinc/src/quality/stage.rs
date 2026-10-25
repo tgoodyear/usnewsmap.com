@@ -847,7 +847,7 @@ pub fn places_txt(places: &[usnm_ingest::catalog::Place]) -> String {
 
 /// `<lang>.txt` for the campaign's languages: the first `n` words of the
 /// language's embedded word list (wordfreq's `top_n_list`, the one
-/// `usnm-ingest ocr-damage` scores with), as `ja-ocr/quality.py` takes
+/// `usnm-ingest ocr-damage` scores with), as `ocr/ja-ocr/quality.py` takes
 /// the 100 most frequent words for its function-word share. Languages
 /// with no list (`usnm_core::lang::wordlist`) are an error.
 pub fn write_function_words(langs: &[String], n: usize, out_dir: &Path) -> anyhow::Result<()> {

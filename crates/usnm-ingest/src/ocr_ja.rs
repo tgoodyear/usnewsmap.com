@@ -1,6 +1,6 @@
 //! Our own OCR of the Japanese pages LoC has no text for (04 §4.8, #139).
 //!
-//! The OCR job (`ja-ocr/jaocr.py`) writes `ocr-ja/pages/<issue>[.<n>].parquet`
+//! The OCR job (`ocr/ja-ocr/jaocr.py`) writes `ocr-ja/pages/<issue>[.<n>].parquet`
 //! to the curated store, one row per page, keyed by `doc_id`. A release reads
 //! every part, keeps the newest row for each page (by `ocred_at`, then part
 //! path), and keeps the pages of batches in the version whose titles are in
@@ -294,7 +294,7 @@ pub fn latin_text(printed: &str) -> String {
     usnm_core::text::normalize_ocr(&out)
 }
 
-/// Tokens that look like words, by `ja-ocr/jaocr.py`'s rule (`WORDLIKE`,
+/// Tokens that look like words, by `ocr/ja-ocr/jaocr.py`'s rule (`WORDLIKE`,
 /// the test that picks pages for our OCR): after trimming `.,;:!?'"()`, a
 /// lower-case word of 2 letters or more, optionally capitalized, or 3 to 15
 /// capitals. OCR noise mixes case and letters with digits and symbols.

@@ -1,5 +1,5 @@
 //! The OCR damage metric, version 2 (12 §12.5 Step 5, #296): a port of
-//! `ja-ocr/damage_v2.py`'s `score_v2` and of the forced-language score the
+//! `ocr/ja-ocr/damage_v2.py`'s `score_v2` and of the forced-language score the
 //! OCR engine survey uses.
 //!
 //! A page's language is found among its title's catalog languages plus

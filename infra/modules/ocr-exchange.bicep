@@ -31,6 +31,8 @@ param handoffQueueIds array = []
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
+@description('Whether id-usnm-ingest exists (main.bicep ingestIdentityOn); false leaves out its grants here.')
+param ingest bool = true
 @description('The node writer role\'s name, before its scope (infra/naming.bicep).')
 param nodeWriterRoleLabel string
 
@@ -394,7 +396,7 @@ resource handoffOnPremWriter 'Microsoft.Authorization/roleAssignments@2022-04-01
 // role's actions. Blob Data Contributor on ocr-out, not
 // Reader: ocr-sync deletes each part once it is in curated or quarantine.
 // And on ocr-quarantine, which only ocr-sync writes.
-resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (ingest) {
   scope: account
   name: guid(account.id, ingestPrincipalId, queueDataContributor)
   properties: {
@@ -404,7 +406,7 @@ resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (ingest) {
   scope: output
   name: guid(output.id, ingestPrincipalId, blobContributor)
   properties: {
@@ -414,7 +416,7 @@ resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource ingestQuarantine 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource ingestQuarantine 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (ingest) {
   scope: quarantine
   name: guid(quarantine.id, ingestPrincipalId, blobContributor)
   properties: {

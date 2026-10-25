@@ -479,7 +479,7 @@ class BuildInputs(unittest.TestCase):
             ("scripts/boinc/qwen_disk.py", "boinc_qwen"),
             ("ocr/boinc/surya/run.py", "boinc_surya"),
             ("ocr/engines/ndlocr-lite/Containerfile", "boinc_ndlocr"),
-            ("ja-ocr/jaocr.py", "boinc_ndlocr"),
+            ("ocr/ja-ocr/jaocr.py", "boinc_ndlocr"),
         ]:
             with self.subTest(path=path):
                 on = self.select(path)

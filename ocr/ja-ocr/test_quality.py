@@ -1,4 +1,4 @@
-"""Tests for quality.py: python3 -m unittest discover ja-ocr (pyarrow for the Parquet ones)."""
+"""Tests for quality.py: python3 -m unittest discover ocr/ja-ocr (pyarrow for the Parquet ones)."""
 
 import csv
 import datetime as dt

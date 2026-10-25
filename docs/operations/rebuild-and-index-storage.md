@@ -230,10 +230,10 @@ scripts/onprem/release.sh --run-dir "$R" --step publish \
 
 `publish` ends by recording the staged run in Cosmos `index_runs` (ADR-0027 settled decision 5), from the snapshot's `index_run.json` that `publish-staged` wrote from the state file, with `usnm-ingest import-staged-run`. The version is then listed before promotion ([Index storage cutover](#index-storage-cutover) step 4). The record needs the Cosmos endpoint, `--cosmos-endpoint` or `USNM_COSMOS_ENDPOINT` (the `COSMOS_ENDPOINT` setting, `https://<account>.documents.azure.com/`); `publish` checks it, and the staged pointer, before it copies anything, and a dry run records nothing and needs no endpoint. The command uses Cosmos alone, with no state file, and without `--current`: the host's role covers `index_runs` and not `ops`, so `ops/current` stays the ingest job's step after the switch (below).
 
-If the copy finished but the record failed (the Cosmos firewall still closed, the role not provisioned), run `--step publish` again once that is fixed: the copy skips what is there and the import keeps a run it holds already. That works until promotion, because `publish` refuses once the lake serves a version other than the release's rollback. After promotion, record the run in the ingest job instead:
+If the copy finished but the record failed (the Cosmos firewall still closed, the role not provisioned), run `--step publish` again once that is fixed: the copy skips what is there and the import keeps a run it holds already. That works until promotion, because `publish` refuses once the lake serves a version other than the release's rollback. After promotion, record the run from the batch container pve-laptop CT 215 instead (`USNM_INGEST_ONPREM` grants it `index_runs` and `ops`), as root on pve-laptop:
 
 ```sh
-scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 20 -- import-staged-run --version pages-v<date>-<n>
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command import-staged-run --wait -- --version pages-v<date>-<n>
 ```
 
 Prune then keeps the version as a newer published run, so a rollback after promotion can still roll forward. The import creates the run when the state has none, keeps an identical published one, replaces a failed earlier attempt of the same name that wrote no snapshot, and stops on another published version of it, so a repeat never adds a second run. A Cosmos-backed release or prune also imports the run when `current.json` names a version that has none. After the switch, once the OCR side is ready for the version, the same command with `--current`, in the ingest job, makes `ops/current` name the version ([Index storage cutover](#index-storage-cutover) step 5).
@@ -395,11 +395,11 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
      again until its `ocr damage finished` line shows `left` 0. On 24
      October 2026 the list existed for pages-v20261010-2 and not for
      pages-v20261022-1; it was then written on-prem (#1090). Run the pass
-     on-prem first, as the damage writer's own identity (docs/operations/japanese-ocr.md,
-     "On-prem"); the ingest job is the fallback:
+     on-prem, as the damage writer's own identity (docs/operations/japanese-ocr.md,
+     "On-prem"), as root on pve-laptop:
 
      ```sh
-     scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v<date>-<n> --max-runtime-secs 165600
+     pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-damage -- --version pages-v<date>-<n> --max-runtime-secs 165600
      ```
 
    - **The prefetch manifest**, with `USNM_OCR_SEED_SOURCE=fetched` (as in
@@ -412,7 +412,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
      `usnm-ocr-worker publish-fetched --manifest pages-v<date>-<n>` once):
 
      ```sh
-     scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-prefetch-manifest --version pages-v<date>-<n>
+     pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-prefetch-manifest -- --version pages-v<date>-<n>
      ```
 
      or pin `USNM_OCR_SEED_MANIFEST` to the version whose manifest and
@@ -430,23 +430,26 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
    ```
 
+   Then, as root on pve-laptop (not in CT 211):
+
    ```sh
-   scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <sha> --wait-mins 20 \
-     -- import-staged-run --version pages-v<date>-<n> --current
+   pct exec 215 -- /usr/local/bin/usnm-ingest-run --command import-staged-run --wait -- --version pages-v<date>-<n> --current
    ```
+
+   And back in CT 211:
 
    ```sh
    systemctl start usnm-boinc-priority-controller.timer
    ```
 
-   `--image-tag` takes a commit sha, not an image name: the execution's
-   first container runs `usnewsmap-ingest:<sha>` from the job's registry.
-   Use it for as long as the job's pinned image
-   (`USNM_SCHEDULED_INGEST_IMAGE_TAG`) predates `--current`, with a main
-   commit that has `--current` and an image. CI's publish job runs only for
-   commits that change the images, and publishes only for the head of main,
-   or an older commit when no newer one changes them, so not every commit
-   has an image. Check first; it prints the sha when the tag is there:
+   It runs the batch container's installed release
+   (`/usr/local/lib/usnm-ingest/current`), which must have `--current`.
+   To run another, install that commit's release first (home-infra
+   `scripts/lab/batch-ct-ingest.sh --install --tag <sha>`) and pass
+   `--tag <sha>` to `usnm-ingest-run`. CI publishes an image only for
+   commits that change the images, and only for the head of main, or an
+   older commit when no newer one changes them, so not every commit has a
+   release. Check first; it prints the sha when the tag is there:
 
    ```sh
    ACR=$(scripts/azure/settings.sh --env prod --key ACR_NAME)
@@ -461,7 +464,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    early. This step records it at once; the next ordinary release would
    also repair `ops/current` from the live pointer before it runs. Check
    `indexing.current_version` in `/v1/status`, and that the next pickup
-   run succeeds, in the `job-executions` query of `scripts/azure/logs.sh`.
+   run succeeds (`journalctl -u usnm-ocr-sync` in CT 215).
    Restore the weekly schedule and clear the one-off rebuild, scratch and E4
    settings as above, but **keep both index settings true**. Do not prune
    the lake's rollback yet.
@@ -478,8 +481,7 @@ sidecar and its lake roles stay intact. The dev experiment (`qw-cluster`,
    for the manifest version it reads.
 
    ```sh
-   scripts/azure/start-job.sh --env prod --job INGEST_JOB --image-tag <sha> --wait-mins 20 \
-     -- import-staged-run --version <rollback version> --current
+   pct exec 215 -- /usr/local/bin/usnm-ingest-run --command import-staged-run --wait -- --version <rollback version> --current
    ```
 
    Its run is already in the state, so the import finds it and only
@@ -543,6 +545,8 @@ Releases never delete an index, so `qw-index` keeps every version ever built and
 A kept version's indexes are all that its records name: `current.json`, its run in the pipeline state, the `indexes` of `reference/<version>/manifest.json`, and its Japanese and Congress index ids (`pages-ja-{date}-{n}`, `congress-{date}-{n}`). Every other `pages-…` or `congress-…` index is deleted: older versions, and rebuilds that were stopped or failed. Indexes of other names (such as Quickwit's own `otel-…`) are left alone. It deletes through Quickwit (`DELETE /api/v1/indexes/{id}`), which removes the split files and the index's metastore entry together, never with blob deletes.
 
 Without `--delete`, it's a dry run: it lists each index it would delete with its splits, documents and size (its published splits' files), and the total, and changes nothing. It takes the writer lock like a release, so it fails with ``lock `quickwit-writer` is held by …`` while a release runs, and a release can't take the lock while prune holds it. It refuses to run when `current.json` can't be read or names no indexes, when the serving version has no index run, or when neither the rollback's run nor its manifest names its indexes (and when a manifest's `indexes` isn't a list of `index_id`s). With `--delete`, it reads `current.json` and the runs again before each delete and stops if what it keeps has changed. If the writer lock can't be renewed, it gives up the delete under way at once and stops its Quickwit node. So `--delete` needs `--quickwit-bin`, a node prune starts itself; `--quickwit-url` (a node already running, which Quickwit lets finish a delete its caller left) is for dry runs only.
+
+Prune is the one ingest command that hasn't moved on-prem (#917): it deletes indexes in Azure's `qw-index`, and no on-prem identity may delete there. It needs the ingest job, so once that job is removed, the Azure index copies go with #955's cleanup instead.
 
 Don't roll `current.json` back by hand while prune runs: a rollback doesn't take the writer lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it in the ingest job, as an execution with other arguments (`scripts/azure/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
 

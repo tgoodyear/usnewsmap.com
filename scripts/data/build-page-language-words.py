@@ -5,7 +5,7 @@
     scripts/data/build-page-language-words.py [--out path] [--check]
 
 Needs wordfreq 3.1.1 (`pip install wordfreq==3.1.1`, the version the OCR
-audit pins in ja-ocr/requirements.txt).
+audit pins in ocr/ja-ocr/requirements.txt).
 
 The lists come from the audit's own code, so they can't drift from it:
 `damage_v2.Models` (what `quality.py --metric v2` uses) builds each word
@@ -19,7 +19,7 @@ the code, the script of its words, then the words, separated by spaces.
 `usnm_core::page_language` embeds the file. Nothing in the pipeline runs
 this script. `--check` compares with the committed file instead of writing
 it (exit 1 when it differs or is missing); the Japanese OCR image's tests
-run it (ja-ocr/test_page_language_parity.py).
+run it (ocr/ja-ocr/test_page_language_parity.py).
 """
 
 import argparse
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "crates" / "usnm-core" / "data" / "page-language-words.txt"
-JA_OCR = ROOT / "ja-ocr"
+JA_OCR = ROOT / "ocr" / "ja-ocr"
 WORDFREQ_VERSION = "3.1.1"
 
 HEADER = """\
@@ -37,7 +37,7 @@ HEADER = """\
 # letters or more, most frequent first, then for Danish and Norwegian their
 # "aa" spellings. One line per list: the list's code, the script of its
 # words, then the words. Built by scripts/data/build-page-language-words.py from
-# ja-ocr/damage_v2.py's models; don't edit by hand.
+# ocr/ja-ocr/damage_v2.py's models; don't edit by hand.
 #
 # Licence: this file is data, not code, and is shared under the Creative
 # Commons Attribution-ShareAlike 4.0 licence
@@ -47,9 +47,9 @@ HEADER = """\
 #   as the Google Books Ngram Viewer asks), the Leeds Internet Corpus,
 #   Wikipedia, ParaCrawl, OPUS OpenSubtitles 2018, the SUBTLEX lists and
 #   other web and news text (crates/usnm-core/data/README.md lists them);
-# - the Yiddish list (yi) of ja-ocr/wordlists/, derived from Yiddish
+# - the Yiddish list (yi) of ocr/ja-ocr/wordlists/, derived from Yiddish
 #   Wikipedia and Wikisource (CC BY-SA 4.0, Wikimedia contributors);
-# - the Hawaiian list (haw) of ja-ocr/wordlists/, from the Hawaiian Corpus
+# - the Hawaiian list (haw) of ocr/ja-ocr/wordlists/, from the Hawaiian Corpus
 #   Project's frequency list (CC0).
 """
 

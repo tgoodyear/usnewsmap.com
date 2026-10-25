@@ -1,4 +1,4 @@
-//! A page's tokens and word tokens, as `ja-ocr/damage_v2.py` reads them
+//! A page's tokens and word tokens, as `ocr/ja-ocr/damage_v2.py` reads them
 //! (`text_words`, `token_info`, `garbage`), with Python's string semantics.
 //!
 //! Python and Rust disagree on several character classes, so this module

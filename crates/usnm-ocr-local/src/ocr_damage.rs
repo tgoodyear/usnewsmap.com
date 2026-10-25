@@ -1,7 +1,7 @@
 //! `usnm-ingest ocr-damage` (12 §12.5 Step 6, #296): the damage metric
 //! (`usnm_core::damage`) over every curated page of an index version, the
 //! parity gate against the Python audit, and the parity check against
-//! `ja-ocr/damage_v2.py`'s pages.
+//! `ocr/ja-ocr/damage_v2.py`'s pages.
 //!
 //! **Full pass** (no `--sample-pct`, `--compare-csv` or `--parity`): each
 //! of the version's batches (its `batches.json`) is read from its curated

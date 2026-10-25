@@ -17,7 +17,7 @@
 //   each execution until the queue is empty (or on `backfillCron`, while a
 //   backfill lasts). Archives are streamed, so no scratch disk is needed.
 // - `caj-usnm-jaocr-{env}` (when `jaOcrImage` is set): manual; `jaOcrReplicas`
-//   replicas of ja-ocr/jaocr.py, which OCRs the Japanese pages LoC has no text
+//   replicas of ocr/ja-ocr/jaocr.py, which OCRs the Japanese pages LoC has no text
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
@@ -50,7 +50,7 @@
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
-//   added a way for the execution to fail. ja-ocr/tools/start-quality.sh
+//   added a way for the execution to fail. ocr/ja-ocr/tools/start-quality.sh
 //   starts those here and `quality` (which shares its chunks) on the jaocr job.
 //
 // The ingest job's Quickwit writer keeps its data on an NFS share
@@ -418,7 +418,7 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
       triggerType: 'Manual'
       manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
       replicaTimeout: replicaTimeoutSecs
-      // A retried replica takes its run's lock back (ja-ocr/solo.py).
+      // A retried replica takes its run's lock back (ocr/ja-ocr/solo.py).
       replicaRetryLimit: 1
     }
     template: {

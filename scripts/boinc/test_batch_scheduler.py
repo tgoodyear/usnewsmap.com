@@ -1635,6 +1635,43 @@ class QueueTransportTests(unittest.TestCase):
                     self.assertEqual(argv[len(expected):len(expected) + 6],
                                      ["--env", "dev", "--target", "handoff", "--step", step])
 
+    def test_onprem_export_pushes_scans_to_the_boinc_host(self):
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "-i", "/root/.ssh/k", "root@boinc.example", "--"]
+        plain = batch.Transport(cfg, Path("."), onprem_handoff=("claim", "collect")).push_args()
+        self.assertNotIn("--to-onprem", plain)
+        argv = batch.Transport(cfg, Path("."), onprem_handoff=("claim", "collect", "export")).push_args()
+        self.assertEqual(argv[:len(plain)], plain)
+        rest = argv[len(plain):]
+        self.assertEqual(rest[:3], ["--to-onprem", "--onprem-env", cfg["env"]])
+        self.assertEqual(rest[3::2], ["--onprem-step-arg"] * len(cfg["step_command"]))
+        self.assertEqual(rest[4::2], cfg["step_command"])
+
+    def test_export_restages_scans_pushed_to_another_destination(self):
+        # A page pushed to the container before export moved on-prem is pushed again first.
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "root@boinc.example", "--"]
+        cfg["scans_root"] = "/tank/ocr/scans"
+        t = batch.Transport(cfg, Path("."), onprem_handoff=("export",))
+        pages = [{"page": "sn1/1890-05-03/ed-1/seq-1", "batch": "dlc_aaa", "pushed_to": "container",
+                  "scan_base": "keep/dlc_aaa/sn1/1890-05-03/1/1",
+                  "scan": "/tank/ocr/scans/keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"},
+                 {"page": "sn1/1890-05-03/ed-1/seq-2", "batch": "dlc_aaa", "pushed_to": "onprem",
+                  "scan_base": "keep/dlc_aaa/sn1/1890-05-03/1/2",
+                  "scan": "/tank/ocr/scans/keep/dlc_aaa/sn1/1890-05-03/1/2.jp2"}]
+        found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg"}
+        with patch.object(t, "push_pages", return_value=(found, [])) as push, patch.object(t, "step") as step:
+            t.export(pages, [])
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
+        # The export asks for the format the push found now.
+        self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"],
+                         "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg,keep/dlc_aaa/sn1/1890-05-03/1/2.jp2")
+        with patch.object(t, "push_pages", return_value=({}, ["keep/dlc_aaa/sn1/1890-05-03/1/1"])), \
+                patch.object(t, "step") as step:
+            with self.assertRaisesRegex(ValueError, "gone from the scan server"):
+                t.export(pages, [])
+            step.assert_not_called()
+
     def test_onprem_handoff_needs_step_command_and_known_steps(self):
         with self.assertRaisesRegex(ValueError, "step_command"):
             batch.Transport(copy.deepcopy(self.config), Path("."), onprem_handoff=("claim",))

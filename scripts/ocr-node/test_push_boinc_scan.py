@@ -81,6 +81,42 @@ class PushKeepPage(unittest.TestCase):
         self.assertIn(f"--file {self.root}/keep/", self.log.read_text())
         self.assertNotIn("/buffer/", self.log.read_text())
 
+    def test_to_onprem_sends_a_tar_to_the_step_command_and_nothing_to_azure(self):
+        # #1116: the scans go to the BOINC host over the controller's step command.
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2", cache_set="buffer", data=b"buffer scan")
+        self.scan("nbu_gage/sn1/1890-05-03/1/8", "jpg", data=b"keep scan")
+        step = self.tmp / "step"
+        got = self.tmp / "got.tar"
+        args = self.tmp / "args"
+        step.write_text(f'#!/usr/bin/env bash\necho "$*" > {args}\ncat > {got}\necho received >&2\n')
+        step.chmod(0o755)
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7", "nbu_gage/sn1/1890-05-03/1/8", "nbu_gage/sn1/1890-05-03/1/9",
+                          extra=["--to-onprem", "--onprem-env", "prod", "--onprem-step-arg", str(step),
+                                 "--onprem-step-arg", "--", "--manifest", str(self.tmp / "m.parquet")])
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), [
+            "pushed keep/nbu_gage/sn1/1890-05-03/1/7.jp2", "pushed keep/nbu_gage/sn1/1890-05-03/1/8.jpg",
+            "missing nbu_gage/sn1/1890-05-03/1/9"])
+        self.assertEqual(args.read_text().split(),
+                         ["--", "--env", "prod", "--target", "scans", "--step", "receive", "--wait-mins", "30"])
+        import tarfile
+        with tarfile.open(got) as tar:
+            files = {m.name: tar.extractfile(m).read() for m in tar if m.isreg()}
+        self.assertEqual(set(files), {
+            "keep/nbu_gage/sn1/1890-05-03/1/7.jp2", "keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json",
+            "keep/nbu_gage/sn1/1890-05-03/1/8.jpg", "keep/nbu_gage/sn1/1890-05-03/1/8.jpg.json"})
+        self.assertEqual(files["keep/nbu_gage/sn1/1890-05-03/1/7.jp2"], b"buffer scan")
+        self.assertFalse(self.log.exists() and self.log.read_text().strip(), "nothing went to Azure")
+
+    def test_to_onprem_fails_when_the_host_refuses(self):
+        self.scan("nbu_gage/sn1/1890-05-03/1/7", "jp2")
+        step = self.tmp / "step"
+        step.write_text("#!/usr/bin/env bash\ncat > /dev/null\nexit 1\n")
+        step.chmod(0o755)
+        r = self.run_push("nbu_gage/sn1/1890-05-03/1/7", extra=["--to-onprem", "--onprem-step-arg", str(step)])
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("pushed", r.stdout)
+
     def test_refuses_a_path_that_is_not_a_page(self):
         for bad in ("../x/y/1890-05-03/1/7", "nbu_gage/sn1/1890-05-03/1", "NBU/sn1/1890-05-03/1/7"):
             self.assertEqual(self.run_push(bad).returncode, 1, bad)

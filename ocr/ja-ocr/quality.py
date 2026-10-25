@@ -969,7 +969,7 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             a = agree.get(scope) or {}
             for k in ("differs_share", "und_share", "mixed_share"):
                 summary[f"{k}_{scope}"] = a.get(k)
-        wordlists = {"source": "wordfreq top_n_list; for local_codes, ja-ocr/wordlists/<code>.txt (README.md there)",
+        wordlists = {"source": "wordfreq top_n_list; for local_codes, ocr/ja-ocr/wordlists/<code>.txt (README.md there)",
                      "local_codes": LOCAL_WORDLISTS, "function_words": TOP_FUNCTION, "damage_words": TOP_HEAD,
                      "real_words": TOP_REAL, "codes": WORDFREQ, "version": _wordfreq_version()}
         method = {"min_words": MIN_WORDS, "min_share": MIN_SHARE, "page_types": PAGE_TYPES,

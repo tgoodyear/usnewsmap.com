@@ -20,6 +20,13 @@
 # one with no cached scan, and then exits 3 if any was missing, so the caller can hand that
 # message back to the queue. It may be given with --scan.
 #
+# --to-onprem (#1116) sends the --keep-page scans to the BOINC host instead of the container: a
+# tar of copies, named keep/<that path>.<ext> with their sidecars, piped to the controller's step
+# command (each word given with --onprem-step-arg, in order: the ssh command up to its `--`) as
+# `--env <--onprem-env> --target scans --step receive`. Nothing goes to Azure then, and
+# --manifest is not uploaded (a queue-fed export doesn't read it). It prints the same `pushed` and
+# `missing` lines once the host has every file.
+#
 # Each --scan goes up with its sidecar (<scan>.json) as scans/<path under --scans-root>, and
 # --manifest as manifests/<path under --manifests-root> (the hand-off job's HANDOFF_MANIFEST),
 # so each manifest snapshot keeps its own name. A blob already there with the same size is
@@ -28,7 +35,7 @@
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 ACCOUNT="" MANIFEST="" SCANS_ROOT=/tank/ocr/scans MANIFESTS_ROOT=/tank/ocr/manifests WHAT_IF=false
-SCANS=() KEEP_PAGES=()
+SCANS=() KEEP_PAGES=() TO_ONPREM=false ONPREM_ENV=prod STEP_CMD=()
 while [ $# -gt 0 ]; do
   case $1 in
     --account) [ $# -ge 2 ] || usage; ACCOUNT=$2; shift 2 ;;
@@ -38,6 +45,9 @@ while [ $# -gt 0 ]; do
     --scans-root) [ $# -ge 2 ] || usage; SCANS_ROOT=${2%/}; shift 2 ;;
     --manifests-root) [ $# -ge 2 ] || usage; MANIFESTS_ROOT=${2%/}; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
+    --to-onprem) TO_ONPREM=true; shift ;;
+    --onprem-step-arg) [ $# -ge 2 ] || usage; STEP_CMD+=("$2"); shift 2 ;;
+    --onprem-env) [ $# -ge 2 ] || usage; ONPREM_ENV=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -49,7 +59,12 @@ CONTAINER=boinc-handoff
 # Blob names are /-separated segments of [A-Za-z0-9._-], starting with a letter or digit
 # (usnm_store::validate_path), so the hand-off job can copy them.
 segments='^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$'
-uploads=() missing=()
+uploads=() missing=() staged=()
+if $TO_ONPREM; then
+  [ ${#STEP_CMD[@]} -gt 0 ] || die "--to-onprem needs the step command (--onprem-step-arg ...)"
+  [ ${#SCANS[@]} -eq 0 ] || die "--to-onprem takes --keep-page pages only"
+  [[ $ONPREM_ENV =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "--onprem-env is an environment name"
+fi
 # A page the fetcher filed under keep/ (or, failing that, buffer/) is pushed under its keep/ name.
 for p in ${KEEP_PAGES[@]+"${KEEP_PAGES[@]}"}; do
   [[ $p =~ ^[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]+/[0-9]+$ ]] ||
@@ -61,13 +76,39 @@ for p in ${KEEP_PAGES[@]+"${KEEP_PAGES[@]}"}; do
       if [ -f "$f" ] && [ ! -L "$f" ] && [ -f "$f.json" ]; then found=$f name=keep/$p.$ext; break 2; fi
     done
   done
-  if [ -n "$found" ]; then
+  if [ -n "$found" ] && $TO_ONPREM; then
+    staged+=("$found" "$name")
+  elif [ -n "$found" ]; then
     uploads+=("$found" "scans/$name" "$found.json" "scans/$name.json")
     echo "pushed $name"
   else
     missing+=("$p")
   fi
 done
+if $TO_ONPREM; then
+  if [ ${#staged[@]} -gt 0 ]; then
+    # Links named as the host files them; tar -h archives the files they point to.
+    tree=$(mktemp -d)
+    trap 'rm -rf "$tree"' EXIT
+    for ((i = 0; i < ${#staged[@]}; i += 2)); do
+      file=${staged[i]} name=${staged[i + 1]}
+      mkdir -p "$tree/$(dirname "$name")"
+      ln -s "$file" "$tree/$name"
+      ln -s "$file.json" "$tree/$name.json"
+    done
+    if $WHAT_IF; then
+      echo "would send $((${#staged[@]} / 2)) scans to: ${STEP_CMD[*]} --env $ONPREM_ENV --target scans --step receive"
+    else
+      COPYFILE_DISABLE=1 tar -C "$tree" -chf - keep |
+        "${STEP_CMD[@]}" --env "$ONPREM_ENV" --target scans --step receive --wait-mins 30 >&2 ||
+        die "the BOINC host did not take the scans"
+    fi
+    for ((i = 1; i < ${#staged[@]}; i += 2)); do echo "pushed ${staged[i]}"; done
+  fi
+  for p in ${missing[@]+"${missing[@]}"}; do echo "missing $p"; done
+  [ ${#missing[@]} -eq 0 ] || exit 3
+  exit 0
+fi
 for s in ${SCANS[@]+"${SCANS[@]}"}; do
   case $s in "$SCANS_ROOT"/*) ;; *) die "--scan $s is not under $SCANS_ROOT" ;; esac
   [ -f "$s" ] && [ ! -L "$s" ] || die "--scan $s is not a regular file"

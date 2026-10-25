@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build the OCR quality audit's own word lists (ja-ocr/wordlists/<code>.txt, the 5,000 most frequent
-words, most frequent first) for languages wordfreq has none for. See ja-ocr/wordlists/README.md.
+"""Build the OCR quality audit's own word lists (ocr/ja-ocr/wordlists/<code>.txt, the 5,000 most frequent
+words, most frequent first) for languages wordfreq has none for. See ocr/ja-ocr/wordlists/README.md.
 
-    ja-ocr/tools/build-wordlists.py haw   # Hawaiian Corpus Project frequency list (CC0)
-    ja-ocr/tools/build-wordlists.py yi    # Yiddish Wikipedia and Wikisource articles (CC BY-SA 4.0)
-    ja-ocr/tools/build-wordlists.py ger-check --dta DTA.zip   # German: which 19th-century words the
+    ocr/ja-ocr/tools/build-wordlists.py haw   # Hawaiian Corpus Project frequency list (CC0)
+    ocr/ja-ocr/tools/build-wordlists.py yi    # Yiddish Wikipedia and Wikisource articles (CC BY-SA 4.0)
+    ocr/ja-ocr/tools/build-wordlists.py ger-check --dta DTA.zip   # German: which 19th-century words the
                                                                 # audit would count as damage
                                                                 # (Deutsches Textarchiv)
 
@@ -24,8 +24,8 @@ import unicodedata
 import urllib.request
 import xml.etree.ElementTree as ET
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUT = os.path.join(ROOT, "ja-ocr", "wordlists")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+OUT = os.path.join(ROOT, "ocr", "ja-ocr", "wordlists")
 TOP = 5000
 HAW_URL = "https://raw.githubusercontent.com/dohliam/hawaiian-corpus/master/data/freqlist_haw.txt"
 YI_URLS = ["https://dumps.wikimedia.org/yiwiki/latest/yiwiki-latest-pages-articles.xml.bz2",
@@ -100,7 +100,7 @@ def german_check(zip_path: str) -> None:
     up here (none do; the top ones are OCR's own errors, older spellings and other languages)."""
     import zipfile
 
-    sys.path.insert(0, os.path.join(ROOT, "ja-ocr"))
+    sys.path.insert(0, os.path.join(ROOT, "ocr", "ja-ocr"))
     import quality
 
     m = quality.Models().get("ger")

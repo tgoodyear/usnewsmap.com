@@ -5,9 +5,9 @@
 # without timestamps. The audit's own outputs (audit/*.json, CSVs) are in the
 # curated store, which the network rules keep private; the logs are not.
 #
-#   ja-ocr/tools/quality-rows.sh --env prod --execution caj-usnm-jaocr-prod-a6wvy42 > rows.jsonl
-#   ja-ocr/tools/quality-rows.sh --env prod --execution caj-usnm-jaocr-prod-a6wvy42 --span 3d
-#   ja-ocr/tools/quality-rows.sh --env prod --execution caj-usnm-jaone-prod-x1y2z3a   # a mixed or american-stories run
+#   ocr/ja-ocr/tools/quality-rows.sh --env prod --execution caj-usnm-jaocr-prod-a6wvy42 > rows.jsonl
+#   ocr/ja-ocr/tools/quality-rows.sh --env prod --execution caj-usnm-jaocr-prod-a6wvy42 --span 3d
+#   ocr/ja-ocr/tools/quality-rows.sh --env prod --execution caj-usnm-jaone-prod-x1y2z3a   # a mixed or american-stories run
 #
 # Needs az signed in with an account that can read the workspace and jq.
 set -euo pipefail
@@ -15,7 +15,7 @@ usage() { sed -n '2,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 # The positional form (`quality-rows.sh prod EXECUTION [SPAN]`) works for
 # one release, with a warning (#277).
 if [ $# -ge 2 ] && [ $# -le 3 ] && [[ $1 != -* ]]; then
-  echo "warning: \`ja-ocr/tools/quality-rows.sh ENV EXECUTION [SPAN]\` is deprecated; use --env, --execution and --span (#277)" >&2
+  echo "warning: \`ocr/ja-ocr/tools/quality-rows.sh ENV EXECUTION [SPAN]\` is deprecated; use --env, --execution and --span (#277)" >&2
   set -- --env "$1" --execution "$2" --span "${3:-2d}"
 fi
 ENV_NAME="" EXECUTION="" SPAN=2d
@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] && [ -n "$EXECUTION" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed"
 # Both name forms (ADR-0017): caj-usnm-jaocr-<env>-<id> until Phase 3,
