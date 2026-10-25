@@ -72,6 +72,20 @@ pub enum ClaimCommands {
         #[arg(long)]
         queue_url: String,
     },
+    /// Hand-off job: a page whose BOINC workunit failed for good goes to `ocr-deadletter`
+    /// and its message is deleted, so it isn't taken again (#1154).
+    DeadLetter {
+        #[arg(long)]
+        handoff_url: String,
+        #[arg(long)]
+        queue_url: String,
+        /// A doc id; repeat for more.
+        #[arg(long = "doc-id", required = true)]
+        doc_ids: Vec<String>,
+        /// Why, kept in the dead letter (at most 200 characters).
+        #[arg(long)]
+        error: String,
+    },
     /// Hand-off job: give claimed pages back to the queue, for the nodes.
     Release {
         #[arg(long)]
@@ -219,6 +233,39 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             let queue = usnm_store::queue::open(&queue_url)?;
             let ended = x::finish(handoff.as_ref(), queue.as_ref(), &record).await?;
             println!("{ended:?}");
+        }
+        ClaimCommands::DeadLetter {
+            handoff_url,
+            queue_url,
+            doc_ids,
+            error,
+        } => {
+            let handoff = usnm_store::open(&handoff_url)?;
+            let queue = usnm_store::queue::open(&queue_url)?;
+            let mut lost = 0;
+            for doc_id in doc_ids {
+                anyhow::ensure!(
+                    usnm_core::ids::PageKey::from_doc_id(&doc_id).is_ok(),
+                    "invalid doc id"
+                );
+                let done =
+                    x::dead_letter(handoff.as_ref(), queue.as_ref(), &doc_id, &error).await?;
+                if done == x::DeadLettered::LeaseLost {
+                    lost += 1;
+                }
+                println!(
+                    "{doc_id} {}",
+                    match done {
+                        x::DeadLettered::Done => "dead_lettered",
+                        x::DeadLettered::Already => "already ended",
+                        x::DeadLettered::LeaseLost => "lease_lost",
+                    }
+                );
+            }
+            anyhow::ensure!(
+                lost == 0,
+                "{lost} dead-lettered messages had come back to their queue; delete the copies by hand"
+            );
         }
         ClaimCommands::Release {
             handoff_url,

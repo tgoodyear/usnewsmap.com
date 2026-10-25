@@ -58,6 +58,7 @@ SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMA
 # release, collect and export), over ssh or not.
 HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
 HANDOFF_RELEASE_VARS=" HANDOFF_DOCS "
+HANDOFF_DEAD_LETTER_VARS=" HANDOFF_DOCS "
 HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID "
 HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
@@ -113,7 +114,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | collect | export) ;; *) die "--target handoff runs claim, release, collect or export on-prem; $STEP stays in Azure" ;; esac ;;
+    case $STEP in claim | release | dead-letter | collect | export) ;; *) die "--target handoff runs claim, release, dead-letter, collect or export on-prem; $STEP stays in Azure" ;; esac ;;
   *) die "--target $TARGET does not run on-prem; only bridge, publish and handoff steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
@@ -235,6 +236,7 @@ if [ "$TARGET" = handoff ]; then
   case $STEP in
     claim) SSH_ALLOWED=$HANDOFF_CLAIM_VARS ;;
     release) SSH_ALLOWED=$HANDOFF_RELEASE_VARS ;;
+    dead-letter) SSH_ALLOWED=$HANDOFF_DEAD_LETTER_VARS ;;
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
     export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
   esac
