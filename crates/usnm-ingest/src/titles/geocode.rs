@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::Context;
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use usnm_core::names::{language_code, state_by_name, State, STATES};
@@ -8,7 +9,7 @@ use usnm_store::ObjectStore;
 
 use super::{load_catalog, load_raw, RawTitle, PLACE_OVERRIDES};
 use crate::audit::{self, Audit, Earlier};
-use crate::catalog::{Catalog, Place, Title, Variant, PLACES, TITLES};
+use crate::catalog::{Catalog, Place, PlacePeriod, Title, Variant, PLACES, TITLES};
 use crate::places::{self, CityName, Found, Geo};
 
 /// One entry of [`PLACE_OVERRIDES`].
@@ -187,7 +188,9 @@ pub async fn geocode(reference: &dyn ObjectStore) -> anyhow::Result<GeocodeRepor
     Ok(report)
 }
 
-/// One title's catalog facts, derived from its record.
+/// One title's catalog facts, derived from its record. A title with places
+/// by date (`catalog/overrides/title-places.json`) has one for each, which
+/// are the catalog's places for that title's pages in those dates.
 struct Derived<'a> {
     raw: &'a RawTitle,
     name: String,
@@ -195,6 +198,18 @@ struct Derived<'a> {
     /// Display name of the city, if the record has one.
     city: Option<String>,
     state: &'static State,
+    /// The dates this is the title's place for, when the title has places
+    /// by date.
+    dated: Option<Dated>,
+}
+
+/// The dates (both days included) a title is in one of its places by date.
+struct Dated {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    /// Whether it is the title's place (`Title::place_id`): where most of
+    /// its pages were published.
+    main: bool,
 }
 
 /// Where a place's coordinates came from.
@@ -486,9 +501,9 @@ pub fn build(
     let mut report = GeocodeReport::default();
     let derived: Vec<Derived> = raw
         .values()
-        .filter_map(|r| {
-            let d = derive(r, geo);
-            if d.is_none() {
+        .flat_map(|r| {
+            let d = derive_all(r, geo);
+            if d.is_empty() {
                 report.unresolved.push(r.lccn.clone());
             }
             d
@@ -628,6 +643,11 @@ pub fn build(
     for (gi, g) in groups.iter().enumerate() {
         let mut c: HashMap<usize, (usize, bool)> = HashMap::new();
         for &m in &g.members {
+            // A title with places by date counts for its own place only; the
+            // others are found by their names.
+            if derived[m].dated.as_ref().is_some_and(|d| !d.main) {
+                continue;
+            }
             // Only a place in the group's state: a title that moved state
             // starts a place there.
             if let Some(&pi) = stored_place_of
@@ -856,12 +876,33 @@ pub fn build(
         .map(|(_, line)| line)
         .collect();
 
-    // Titles.
+    // Titles. A title with places by date has an entry of `derived` for
+    // each: its own place is the title's, the others its periods.
+    let mut periods: HashMap<&str, Vec<PlacePeriod>> = HashMap::new();
+    for (i, d) in derived.iter().enumerate() {
+        if let Some(dated) = &d.dated {
+            periods
+                .entry(d.raw.lccn.as_str())
+                .or_default()
+                .push(PlacePeriod {
+                    place_id: place_of[&i].clone(),
+                    from: dated.from,
+                    to: dated.to,
+                });
+        }
+    }
     let mut by_lccn: BTreeMap<String, Title> =
         titles.into_iter().map(|t| (t.lccn.clone(), t)).collect();
     let mut next_title = by_lccn.values().map(|t| t.ordinal).max().unwrap_or(0);
     for (i, d) in derived.iter().enumerate() {
+        if d.dated.as_ref().is_some_and(|dated| !dated.main) {
+            continue;
+        }
         let place_id = place_of[&i].clone();
+        let place_periods = periods
+            .get(d.raw.lccn.as_str())
+            .cloned()
+            .unwrap_or_default();
         let mut extra = BTreeMap::new();
         extra.insert("loc_title".into(), Value::from(d.raw.title.clone()));
         if let Some(r) = &d.raw.record {
@@ -891,6 +932,7 @@ pub fn build(
             Some(t) => {
                 t.name = d.name.clone();
                 t.place_id = place_id;
+                t.place_periods = place_periods;
                 t.state = d.state.code.into();
                 t.languages = languages;
                 // Replace what geocode derives (a refreshed record may lack
@@ -910,6 +952,7 @@ pub fn build(
                         place_id,
                         state: d.state.code.into(),
                         languages,
+                        place_periods,
                         extra,
                     },
                 );
@@ -957,6 +1000,7 @@ fn derive<'a>(r: &'a RawTitle, geo: &Geo) -> Option<Derived<'a>> {
             place_label,
             city: Some(city.to_owned()),
             state,
+            dated: None,
         });
     }
     // The city the title names, else LoC's first listed city. A label that
@@ -999,7 +1043,33 @@ fn derive<'a>(r: &'a RawTitle, geo: &Geo) -> Option<Derived<'a>> {
         place_label,
         city,
         state,
+        dated: None,
     })
+}
+
+/// [`derive`] for each place of a title with places by date, else for the
+/// title: none if its state can't be determined.
+fn derive_all<'a>(r: &'a RawTitle, geo: &Geo) -> Vec<Derived<'a>> {
+    let periods = geo.title_periods(&r.lccn);
+    if periods.is_empty() {
+        return derive(r, geo).into_iter().collect();
+    }
+    let (name, place_label) = split_title(&r.title);
+    periods
+        .iter()
+        .map(|p| Derived {
+            raw: r,
+            name: name.clone(),
+            place_label: place_label.clone(),
+            city: Some(p.city.clone()),
+            state: p.state,
+            dated: Some(Dated {
+                from: p.from,
+                to: p.to,
+                main: p.main,
+            }),
+        })
+        .collect()
 }
 
 /// "Name (City, St.) 1890-1894" → ("Name", Some("City, St.")).
@@ -1461,6 +1531,7 @@ mod tests {
             place_id: "P00001".into(),
             state: "IL".into(),
             languages: vec!["eng".into()],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         };
         let (c, _) = build(
@@ -1764,6 +1835,7 @@ mod tests {
                 lccn: "sn84024055".into(),
                 added: "2026-10-06".into(),
                 history: vec![],
+                places: vec![],
                 reason: "test".into(),
                 reference: 1,
                 source: "test".into(),
@@ -1793,6 +1865,155 @@ mod tests {
             }]
         );
         assert_eq!(rep.from_loc_multi_city, 1);
+    }
+
+    /// The Morning Star's entry as `title-places.json` has it, less the
+    /// audit trail's later changes: Limerick, Maine, to Nov. 13, 1833, then
+    /// Dover, N.H., its own place.
+    fn dated_geo(with_entry: bool) -> Geo {
+        let entry: Vec<places::TitlePlace> = serde_json::from_str(
+            r#"[{"added": "2026-10-10", "city": "Dover", "lccn": "sn84024361",
+                "places": [{"city": "Limerick", "state": "ME", "to": "1833-11-13"},
+                           {"city": "Dover", "from": "1833-11-14", "state": "NH"}],
+                "reason": "test", "ref": 1066, "source": "test", "state": "NH"}]"#,
+        )
+        .unwrap();
+        let gaz = Gazetteer::parse("state,name,lat,lon\nNH,Dover,43.19,-70.87\n").unwrap();
+        let geo = Geo::new(gaz, &[]).unwrap();
+        if with_entry {
+            geo.with_title_places(&entry).unwrap()
+        } else {
+            geo
+        }
+    }
+
+    fn limerick_override() -> PlaceOverride {
+        PlaceOverride {
+            city: "Limerick".into(),
+            state: "ME".into(),
+            lat: 43.69,
+            lon: -70.79,
+            name: None,
+            added: "2026-10-24".into(),
+            history: vec![],
+            reason: "test".into(),
+            reference: 1066,
+            source: "test".into(),
+            updated: None,
+            precision: "city".into(),
+        }
+    }
+
+    fn morning_star_records() -> BTreeMap<String, RawTitle> {
+        // The record lists Dover only, at Dover's point, whatever the label.
+        [
+            raw(
+                "sn84024361",
+                "Morning Star (Limerick, Me.) 1826-1857",
+                &["dover"],
+                &["new hampshire"],
+                Some([43.19, -70.87]),
+            ),
+            raw(
+                "sn2",
+                "Dover Enquirer (Dover, N.H.) 1840-1850",
+                &["dover"],
+                &["new hampshire"],
+                Some([43.19, -70.87]),
+            ),
+        ]
+        .into_iter()
+        .map(|t| (t.lccn.clone(), t))
+        .collect()
+    }
+
+    #[test]
+    fn a_title_with_places_by_date_has_a_place_for_each() {
+        let geo = dated_geo(true);
+        let r = morning_star_records();
+        let (c, rep) = build(&r, vec![], vec![], &[limerick_override()], &geo).unwrap();
+        assert_eq!((rep.titles, rep.places, rep.new_places), (2, 2, 2));
+        let day = |s: &str| Some(s.parse::<NaiveDate>().unwrap());
+
+        // The title's place is the one its entry names, shared with the
+        // other titles of the town.
+        let t = c.title("sn84024361").unwrap();
+        let own = c.place(&t.place_id).unwrap();
+        assert_eq!((own.name.as_str(), own.state.as_str()), ("Dover", "NH"));
+        assert_eq!(t.state, "NH");
+        assert_eq!(c.title("sn2").unwrap().place_id, t.place_id);
+        assert!(c.title("sn2").unwrap().place_periods.is_empty());
+
+        // And each page's place is the one of its date.
+        assert_eq!(t.place_periods.len(), 2);
+        let (early, late) = (&t.place_periods[0], &t.place_periods[1]);
+        assert_eq!((early.from, early.to), (None, day("1833-11-13")));
+        assert_eq!((late.from, late.to), (day("1833-11-14"), None));
+        assert_eq!(late.place_id, t.place_id);
+        let maine = c.place(&early.place_id).unwrap();
+        assert_eq!(
+            (maine.name.as_str(), maine.state.as_str()),
+            ("Limerick", "ME")
+        );
+        assert_ne!(maine.id, own.id);
+        assert_eq!(maine.coordinates_from.as_deref(), Some("override"));
+        assert!(
+            near(maine, [43.69, -70.79]),
+            "Limerick isn't pinned at the record's point in Dover"
+        );
+        assert_eq!(rep.from_override, 1);
+        assert_eq!(
+            c.place_on(t, "1828-05-14".parse().unwrap()).unwrap().id,
+            maine.id
+        );
+        assert_eq!(
+            c.place_on(t, "1840-01-01".parse().unwrap()).unwrap().id,
+            own.id
+        );
+
+        // Dover's variants name the label the title was given.
+        assert_eq!(
+            own.variants,
+            [Variant {
+                name: "Limerick".into(),
+                rule: "title_place".into()
+            }]
+        );
+        assert!(maine.variants.is_empty());
+
+        // Run again on its own catalog: nothing changes, no id is new.
+        let (again, rep) = build(
+            &r,
+            c.titles.clone(),
+            c.places.clone(),
+            &[limerick_override()],
+            &geo,
+        )
+        .unwrap();
+        assert_eq!((again.titles, again.places), (c.titles, c.places));
+        assert_eq!(
+            (rep.new_titles, rep.new_places, rep.retired.len()),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn a_title_loses_its_periods_with_its_entry() {
+        let r = morning_star_records();
+        let (c, _) = build(&r, vec![], vec![], &[limerick_override()], &dated_geo(true)).unwrap();
+        assert_eq!(c.title("sn84024361").unwrap().place_periods.len(), 2);
+        // Placed as its record says again: one place, and the periods gone.
+        let (c2, _) = build(
+            &r,
+            c.titles.clone(),
+            c.places.clone(),
+            &[limerick_override()],
+            &dated_geo(false),
+        )
+        .unwrap();
+        let t = c2.title("sn84024361").unwrap();
+        assert!(t.place_periods.is_empty());
+        assert_eq!(t.ordinal, c.title("sn84024361").unwrap().ordinal);
     }
 
     #[test]
@@ -2032,6 +2253,7 @@ mod tests {
             place_id: place_id.into(),
             state: "MN".into(),
             languages: vec![],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         };
         let stored_places = vec![
@@ -2379,6 +2601,7 @@ mod tests {
             place_id: "P00001".into(),
             state: "AL".into(),
             languages: vec![],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         };
         let r: BTreeMap<String, RawTitle> = titles[..2]

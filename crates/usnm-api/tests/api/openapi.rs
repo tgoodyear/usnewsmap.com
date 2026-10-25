@@ -239,10 +239,26 @@ async fn exchanges() -> Vec<(Arc<AppState>, Vec<String>)> {
             owned(&browse),
         ),
         (
+            moved_state().await,
+            owned(&["/v1/titles", "/v1/titles/sn99000002"]),
+        ),
+        (
             pipeline_state().await,
             owned(&["/v1/status", "/v1/versions"]),
         ),
     ]
+}
+
+/// The fixture state with a title in two places by date (#1066), whose
+/// periods the titles' responses list.
+async fn moved_state() -> Arc<AppState> {
+    let mut rd = refdata().await;
+    rd.titles.get_mut("sn99000002").unwrap().place_periods = serde_json::from_value(json!([
+        {"place_id": "P00001", "to": "1896-06-30"},
+        {"place_id": "P00002", "from": "1896-07-01"},
+    ]))
+    .unwrap();
+    Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd))
 }
 
 /// The fixture state reading a pipeline state with batches and index runs.

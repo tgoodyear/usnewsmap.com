@@ -93,6 +93,85 @@ async fn titles_list_every_newspaper_versioned_like_places() {
     assert_eq!(body["type"], "/errors/bad-parameter");
 }
 
+/// A paper that moved (#1066): the list keeps its place, place name and
+/// state as the place where most of its pages were published, and gives its
+/// places by date beside them; a paper in one place has no such list.
+#[tokio::test]
+async fn a_paper_that_moved_lists_its_places_by_date() {
+    let mut rd = refdata().await;
+    rd.titles.get_mut("sn99000002").unwrap().place_periods = serde_json::from_value(json!([
+        {"place_id": "P00001", "to": "1896-06-30"},
+        {"place_id": "P00002", "from": "1896-07-01"},
+    ]))
+    .unwrap();
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let (status, _, list) = get(&s, "/v1/titles").await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let titles = list["titles"].as_array().unwrap();
+    let moved = &titles[1];
+    assert_eq!(moved["lccn"], "sn99000002");
+    // The majority place, as before.
+    assert_eq!(
+        (
+            moved["place_id"].clone(),
+            moved["place"].clone(),
+            moved["state"].clone()
+        ),
+        (
+            json!("P00002"),
+            json!("Fixture City B (New York area)"),
+            json!("NY")
+        )
+    );
+    assert_eq!(
+        moved["place_periods"],
+        json!([
+            {
+                "place_id": "P00001", "place": "Fixture City A (Chicago area)",
+                "state": "IL", "from": null, "to": "1896-06-30",
+            },
+            {
+                "place_id": "P00002", "place": "Fixture City B (New York area)",
+                "state": "NY", "from": "1896-07-01", "to": null,
+            },
+        ])
+    );
+    for (i, t) in titles.iter().enumerate() {
+        assert_eq!(t.get("place_periods").is_some(), i == 1, "{t}");
+    }
+    // The same on its own.
+    let (_, _, one) = get(&s, "/v1/titles/sn99000002").await;
+    assert_eq!(one["place_periods"], moved["place_periods"]);
+    let (_, _, one) = get(&s, "/v1/titles/sn99000001").await;
+    assert!(one.get("place_periods").is_none());
+    // A place counts the titles with pages in it, the paper in both.
+    let (_, _, places) = get(&s, "/v1/places").await;
+    let titles_in = |id: &str| {
+        places["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == id)
+            .unwrap()["properties"]["titles"]
+            .clone()
+    };
+    let (_, _, plain) = get(&state_with(None).await, "/v1/places").await;
+    let plain_in = |id: &str| {
+        plain["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == id)
+            .unwrap()["properties"]["titles"]
+            .clone()
+    };
+    assert_eq!(
+        titles_in("P00001").as_u64(),
+        plain_in("P00001").as_u64().map(|n| n + 1)
+    );
+    assert_eq!(titles_in("P00002"), plain_in("P00002"));
+}
+
 /// One newspaper: the list's entry with its page at the Library of
 /// Congress; 404 for a title the version doesn't have, after a stale
 /// version is redirected.

@@ -47,10 +47,18 @@ pub(crate) fn title_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Sch
 struct TitleOut {
     lccn: String,
     title: String,
+    /// The title's place: where most of its pages were published. For a
+    /// paper that moved, `place_periods` has the places of its pages by
+    /// date.
     place_id: String,
     /// The place's name, as `/v1/places` has it.
     place: Option<String>,
     state: String,
+    /// A paper that moved: its places by the dates of its pages, oldest
+    /// first. Each page is in the place of the period its date falls in.
+    /// Left out for a paper in one place.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    place_periods: Vec<PlacePeriodOut>,
     /// Years of publication in LoC's record: the paper's whole run.
     first_year: Option<u16>,
     last_year: Option<u16>,
@@ -61,6 +69,21 @@ struct TitleOut {
     first_page_date: Option<NaiveDate>,
     last_page_date: Option<NaiveDate>,
     languages: Vec<String>,
+}
+
+/// A place a paper was in for part of its run.
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "TitlePlacePeriod")]
+struct PlacePeriodOut {
+    place_id: String,
+    /// The place's name, as `/v1/places` has it.
+    place: Option<String>,
+    /// The place's state.
+    state: Option<String>,
+    /// The first and last days of the pages in the place, both included;
+    /// `null` for no start (the first place) or no end (the last).
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -79,6 +102,20 @@ fn title_out(rd: &RefData, t: &Title) -> TitleOut {
         place_id: t.place_id.clone(),
         place: rd.place(&t.place_id).map(|p| p.name.clone()),
         state: t.state.clone(),
+        place_periods: t
+            .place_periods
+            .iter()
+            .map(|p| {
+                let place = rd.place(&p.place_id);
+                PlacePeriodOut {
+                    place_id: p.place_id.clone(),
+                    place: place.map(|p| p.name.clone()),
+                    state: place.map(|p| p.state.clone()),
+                    from: p.from,
+                    to: p.to,
+                }
+            })
+            .collect(),
         first_year: t.first_year,
         last_year: t.last_year,
         pages: rd

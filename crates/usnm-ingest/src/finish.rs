@@ -647,14 +647,21 @@ pub fn check_titles(
         let title = catalog.title(lccn).with_context(|| {
             format!("`{index}` has documents of {lccn}, which the catalog lacks")
         })?;
-        let place = catalog
-            .place(&title.place_id)
-            .with_context(|| format!("the catalog has no place `{}`", title.place_id))?;
+        // A title in one place has all its documents there. One that moved
+        // has them in its places by the dates of its pages: in each of its
+        // places, or in only some when the version has pages of some dates.
+        let own = title.place_ids();
+        let ids: BTreeSet<&str> = if title.place_periods.is_empty() {
+            BTreeSet::from([title.place_id.as_str()])
+        } else {
+            got.places
+                .iter()
+                .map(String::as_str)
+                .filter(|id| own.contains(id))
+                .collect()
+        };
         let ordinal = u64::from(title.ordinal);
-        let want = TitleFields {
-            places: BTreeSet::from([title.place_id.clone()]),
-            shards: BTreeSet::from([u64::from(place.ordinal % 8)]),
-            states: BTreeSet::from([title.state.clone()]),
+        let mut want = TitleFields {
             languages: title
                 .languages
                 .iter()
@@ -662,7 +669,16 @@ pub fn check_titles(
                 .cloned()
                 .collect(),
             ordinals: (ordinal, ordinal),
+            ..TitleFields::default()
         };
+        for id in ids {
+            let place = catalog
+                .place(id)
+                .with_context(|| format!("the catalog has no place `{id}`"))?;
+            want.places.insert(id.to_owned());
+            want.shards.insert(u64::from(place.ordinal % 8));
+            want.states.insert(title.state_in(place).to_owned());
+        }
         ensure!(
             *got == want,
             "`{index}`'s documents of {lccn} have {got:?}; the catalog gives {want:?}. The catalog \
@@ -800,6 +816,7 @@ mod tests {
                 place_id: place.id.clone(),
                 state: "IL".into(),
                 languages: vec!["eng".into(), String::new()],
+                place_periods: vec![],
                 extra: BTreeMap::new(),
             }],
             vec![place],
@@ -833,6 +850,79 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("sn9, which the catalog lacks"), "{err}");
+    }
+
+    /// sn1 (ordinal 7) was in P1 (Maine, shard 3) up to 1833-11-13 and is in
+    /// P2 (New Hampshire, shard 4) after.
+    fn moved_catalog(p2_ordinal: u32) -> Catalog {
+        let place = |id: &str, ordinal, state: &str| crate::catalog::Place {
+            id: id.into(),
+            ordinal,
+            name: id.into(),
+            state: state.into(),
+            lat: 43.0,
+            lon: -71.0,
+            precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
+        };
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| crate::catalog::PlacePeriod {
+            place_id: id.into(),
+            from: from.map(|d| d.parse().unwrap()),
+            to: to.map(|d| d.parse().unwrap()),
+        };
+        Catalog::new(
+            vec![crate::catalog::Title {
+                lccn: "sn1".into(),
+                name: "sn1".into(),
+                ordinal: 7,
+                place_id: "P2".into(),
+                state: "NH".into(),
+                languages: vec!["eng".into()],
+                place_periods: vec![
+                    period("P1", None, Some("1833-11-13")),
+                    period("P2", Some("1833-11-14"), None),
+                ],
+                extra: BTreeMap::new(),
+            }],
+            vec![place("P1", 11, "ME"), place("P2", p2_ordinal, "NH")],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_title_that_moved_has_documents_in_each_place_it_has_pages_in() {
+        let held = |places: &[&str], shards: &[u64], states: &[&str]| {
+            BTreeMap::from([(
+                "sn1".to_owned(),
+                TitleFields {
+                    places: places.iter().map(|s| (*s).to_owned()).collect(),
+                    shards: shards.iter().copied().collect(),
+                    states: states.iter().map(|s| (*s).to_owned()).collect(),
+                    languages: BTreeSet::from(["eng".to_owned()]),
+                    ordinals: (7, 7),
+                },
+            )])
+        };
+        let both = held(&["P1", "P2"], &[3, 4], &["ME", "NH"]);
+        check_titles(&moved_catalog(12), "i", &both).unwrap();
+        // A version with pages of only some dates has documents in only
+        // some of the places.
+        check_titles(&moved_catalog(12), "i", &held(&["P1"], &[3], &["ME"])).unwrap();
+        check_titles(&moved_catalog(12), "i", &held(&["P2"], &[4], &["NH"])).unwrap();
+        // The title's documents are in a place the catalog gives it no
+        // longer, or carry another place's shard or state.
+        let err = check_titles(&moved_catalog(12), "i", &held(&["P3"], &[3], &["ME"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("catalog changed"), "{err}");
+        assert!(check_titles(&moved_catalog(13), "i", &both).is_err());
+        assert!(check_titles(&moved_catalog(12), "i", &held(&["P1"], &[3], &["NH"])).is_err());
+        assert!(check_titles(&moved_catalog(12), "i", &held(&["P1"], &[4], &["ME"])).is_err());
+        // A title in one place still has them all there.
+        let one = catalog("P1", 11);
+        let both_places = held(&["P1", "P2"], &[3, 4], &["IL"]);
+        assert!(check_titles(&one, "i", &both_places).is_err());
     }
 
     fn resume(progress: Option<u64>, decades: Option<u64>) -> Resume {
