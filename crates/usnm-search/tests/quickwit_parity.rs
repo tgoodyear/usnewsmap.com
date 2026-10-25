@@ -22,6 +22,10 @@ use usnm_search::{
     SearchBackend, SearchError, Summary,
 };
 
+/// Some pages with LoC's original text beside our OCR's (#925).
+#[path = "../../../fixtures/loc_original.rs"]
+mod loc_original;
+
 const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
 /// The same pages with their common-word pairs at version 1
 /// (`Analyzer::V1`), as the indexes built before #168 have them; the ones
@@ -30,6 +34,11 @@ const INDEXES_V1: [&str; 2] = ["pages-base-fixture-cg1", "pages-delta-fixture-1-
 /// The same pages with one searched field for both texts (05 §5.5.7,
 /// #283): `text_all` and `text_all_cg`, `text` and `text_as` stored only.
 const INDEXES_SINGLE: [&str; 2] = ["pages-base-fixture-single", "pages-delta-fixture-1-single"];
+/// The same pages with one searched field for all the texts, and LoC's
+/// original text of the pages our OCR replaced it on (05 §5.5.7, #925):
+/// `fixtures/loc_original.rs` says which, with `text` ours and `text_loc`
+/// LoC's, as `single_field_fixture --loc-original` writes them.
+const INDEXES_LOC: [&str; 2] = ["pages-base-fixture-loc", "pages-delta-fixture-1-loc"];
 /// The Japanese pages (#139), searched on their own.
 const JA_INDEX: &str = "pages-ja-fixture";
 /// The Congress pages (#229), their own index set too.
@@ -49,17 +58,27 @@ fn memory() -> MemoryBackend {
         .iter()
         .chain(&INDEXES)
         .chain(&INDEXES)
+        .chain(&INDEXES)
         .chain([&JA_INDEX, &CONGRESS_INDEX]);
     let ids = INDEXES
         .iter()
         .chain(&INDEXES_V1)
         .chain(&INDEXES_SINGLE)
+        .chain(&INDEXES_LOC)
         .chain([&JA_INDEX, &CONGRESS_INDEX]);
     for (file, id) in files.zip(ids) {
         let file = std::fs::File::open(dir.join(format!("{file}.jsonl"))).expect("fixture");
+        let keeps_original = INDEXES_LOC.contains(id);
         let docs: Vec<PageDoc> = std::io::BufReader::new(file)
             .lines()
-            .map(|l| serde_json::from_str(&l.expect("line")).expect("doc"))
+            .map(|l| {
+                let mut doc: serde_json::Value =
+                    serde_json::from_str(&l.expect("line")).expect("doc");
+                if keeps_original {
+                    loc_original::add(&mut doc);
+                }
+                serde_json::from_value(doc).expect("doc")
+            })
             .collect();
         m.add_index(id, docs);
     }
@@ -226,14 +245,15 @@ async fn long_ocr_runs_are_searched_as_each_layout_indexes_them() {
     let mem = memory();
     let f = filters("1895-01-01", "1897-12-31");
     let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
-    let [(_, loc), (_, both), (_, one)] = <[_; 3]>::try_from(searched_sets()).ok().unwrap();
+    let [(_, loc), (_, both), (_, one), (_, kept)] =
+        <[_; 4]>::try_from(searched_sets()).ok().unwrap();
     let total = |set: &IndexSet, q: &str| {
         let (mem, f, spec, set, q) = (&mem, &f, &spec, set.clone(), parse(q).unwrap());
         async move { mem.summary(&set, &q, f, spec).await.unwrap().total_hits }
     };
     let pages = total(&loc, "wharfage").await;
     assert!(pages > 0);
-    for set in [&loc, &both, &one] {
+    for set in [&loc, &both, &one, &kept] {
         for q in [r#""garbled wharfage""#, r#""signal semaphore""#, "vyxwz*"] {
             assert_eq!(total(set, q).await, 0, "{q}");
         }
@@ -245,6 +265,8 @@ async fn long_ocr_runs_are_searched_as_each_layout_indexes_them() {
         assert_eq!(total(&loc, q).await, pages, "{q}");
         assert_eq!(total(&both, q).await, pages, "{q}");
         assert_eq!(total(&one, q).await, 0, "{q}");
+        // The same in the one field that also holds LoC's original text.
+        assert_eq!(total(&kept, q).await, 0, "{q}");
     }
 }
 
@@ -352,11 +374,21 @@ fn single() -> IndexSet {
         .with_text_layout(TextLayout::Single)
 }
 
-/// [`sets`] and the same pages with one field for both texts: every check
-/// runs on both layouts.
+/// Every text in one searched field, LoC's original text of the pages our
+/// OCR replaced it on included (05 §5.5.7, #925), as the API searches a
+/// version with `text_layout` 3.
+fn loc() -> IndexSet {
+    IndexSet::new(INDEXES_LOC.iter().map(|s| (*s).to_owned()).collect())
+        .with_american_stories(true)
+        .with_text_layout(TextLayout::SingleWithLoc)
+}
+
+/// [`sets`] and the same pages with one field for both texts, and for all
+/// three: every check runs on every layout.
 fn searched_sets() -> Vec<(&'static str, IndexSet)> {
     let mut out = sets();
     out.push(("one field", single()));
+    out.push(("one field with the original text", loc()));
     out
 }
 
@@ -649,7 +681,7 @@ async fn ocr_spellings_count_what_a_term_set_does() {
     let mut matched = 0;
     for (name, set) in searched_sets() {
         let fields: &[&str] = match (set.text_layout(), set.american_stories()) {
-            (TextLayout::Single, _) => &[usnm_core::text_layout::FIELD],
+            (TextLayout::Single | TextLayout::SingleWithLoc, _) => &[usnm_core::text_layout::FIELD],
             (TextLayout::Separate, true) => &["text", "text_as"],
             (TextLayout::Separate, false) => &["text"],
         };
@@ -823,7 +855,7 @@ async fn hits_pages_match_the_reference_backend() {
                 assert!(
                     got.hits
                         .iter()
-                        .all(|h| h.matched_in.is_some() == set.american_stories()),
+                        .all(|h| h.matched_in.is_some() == set.reports_matched_in()),
                     "matched_in: {ctx}"
                 );
                 if qname == "phrase" && !got.hits.is_empty() {
@@ -1168,11 +1200,13 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
             "only {matched} phrases matched the fixtures ({analyzer:?})"
         );
     }
-    // One field for both texts (05 §5.5.7), through its pairs field.
-    let set = single();
-    let grams = set.clone().with_common_grams(true);
-    let matched = common_word_phrases(&qw, &mem, &set, &grams).await;
-    assert!(matched >= 10, "only {matched} phrases matched (one field)");
+    // One field for both texts (05 §5.5.7), through its pairs field, and
+    // with LoC's original text beside ours (#925).
+    for set in [single(), loc()] {
+        let grams = set.clone().with_common_grams(true);
+        let matched = common_word_phrases(&qw, &mem, &set, &grams).await;
+        assert!(matched >= 10, "only {matched} phrases matched (one field)");
+    }
 }
 
 /// With one field for both texts (05 §5.5.7) a phrase or NEAR search still
@@ -1238,6 +1272,78 @@ async fn one_field_keeps_phrases_within_one_text() {
         }
     }
     assert!(checked > 0, "no page has such words");
+    let f = filters("1895-01-01", "1897-12-31");
+    assert!(matches!(
+        qw.american_stories_only(&set, &parse("gold").unwrap(), &f)
+            .await,
+        Err(SearchError::Unsupported(_))
+    ));
+}
+
+/// LoC's original text beside our OCR's (layout 3, #925) is a third text of
+/// the one field, after its own gap: a phrase or NEAR search can't span ours
+/// and LoC's, in either order, in Quickwit as in the reference (which reads
+/// each text on its own). On a replaced fixture page the two texts have the
+/// same words, so the check is the one the reference makes: a word of the
+/// end of ours and one of the start of LoC's, within the largest slop of
+/// each other but for the gap, find the page in both or in neither.
+#[tokio::test]
+async fn the_original_text_keeps_phrases_within_one_text() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let set = loc();
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/indexes");
+    let tokens =
+        |t: Option<&str>| usnm_core::text::tokenize(t.unwrap_or_default(), Analyzer::LATEST);
+    let mut checked = 0;
+    for file in INDEXES {
+        let text = std::fs::read_to_string(dir.join(format!("{file}.jsonl"))).unwrap();
+        for line in text.lines() {
+            let mut doc: serde_json::Value = serde_json::from_str(line).unwrap();
+            if !loc_original::replaced(&doc) {
+                continue;
+            }
+            loc_original::add(&mut doc);
+            let doc: PageDoc = serde_json::from_value(doc).unwrap();
+            let (ours, original) = (tokens(Some(&doc.text)), tokens(doc.text_loc.as_deref()));
+            let (Some(a), Some(b)) = (ours.last(), original.first()) else {
+                continue;
+            };
+            let mut f = filters("1895-01-01", "1897-12-31");
+            f.from = usnm_core::time::date_from_day(doc.day);
+            f.to = f.from;
+            f.lccns = vec![doc.lccn.clone()];
+            let page = HitsQuery {
+                limit: 50,
+                ..Default::default()
+            };
+            for q in [
+                format!("\"{a} {b}\"~{}", usnm_core::query::MAX_SLOP),
+                format!("\"{b} {a}\"~{}", usnm_core::query::MAX_SLOP),
+                format!("\"{a} {b}\""),
+            ] {
+                let node = parse(&q).unwrap();
+                let want = mem.hits(&set, &node, &f, &page).await.unwrap();
+                let got = qw.hits(&set, &node, &f, &page).await.expect(&q);
+                let ids = |p: &usnm_search::HitsPage| -> Vec<String> {
+                    p.hits.iter().map(|h| h.doc_id.clone()).collect()
+                };
+                assert_eq!(ids(&got), ids(&want), "{q} on {}", doc.doc_id);
+            }
+            // Both words are on the page, and it counts once.
+            let both = parse(&format!("{a} {b}")).unwrap();
+            let got = qw.hits(&set, &both, &f, &page).await.expect("and");
+            assert_eq!(
+                got.hits.iter().filter(|h| h.doc_id == doc.doc_id).count(),
+                1
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no page has LoC's original text");
     let f = filters("1895-01-01", "1897-12-31");
     assert!(matches!(
         qw.american_stories_only(&set, &parse("gold").unwrap(), &f)

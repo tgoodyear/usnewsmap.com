@@ -50,6 +50,10 @@ pub struct StoredHit {
     /// matched only there.
     #[serde(default)]
     pub text_as: Option<String>,
+    /// LoC's original text of a page our OCR replaced it on (#925), for
+    /// snippets when the query matched only there.
+    #[serde(default)]
+    pub text_loc: Option<String>,
     #[serde(default)]
     pub ocr_source: Option<String>,
     #[serde(default)]
@@ -269,6 +273,7 @@ fn hits_page(
     indexes: &IndexSet,
 ) -> Result<HitsPage, SearchError> {
     let american_stories = indexes.american_stories();
+    let reports_matched_in = indexes.reports_matched_in();
     let analyzer = indexes.analyzer();
     let layout = indexes.text_layout();
     let days = distinct(&resp)?;
@@ -299,13 +304,25 @@ fn hits_page(
             Some(query) => {
                 let (snippets, snippet_source) = match &d.printed {
                     Some(printed) => (ja_snippets(printed, query, analyzer), None),
-                    None => {
-                        page_snippets(text, d.text_as.as_deref(), query, american_stories, layout)
-                    }
+                    None => page_snippets(
+                        text,
+                        d.text_as.as_deref(),
+                        d.text_loc.as_deref(),
+                        query,
+                        american_stories,
+                        layout,
+                    ),
                 };
                 // Which texts match, from the same stored texts: no extra query.
-                let matched_in = (american_stories && d.printed.is_none())
-                    .then(|| matched_in(text, d.text_as.as_deref(), query, layout));
+                let matched_in = (reports_matched_in && d.printed.is_none()).then(|| {
+                    matched_in(
+                        text,
+                        d.text_as.as_deref(),
+                        d.text_loc.as_deref(),
+                        query,
+                        layout,
+                    )
+                });
                 (snippets, snippet_source, matched_in)
             }
         };
@@ -343,6 +360,7 @@ mod tests {
     use crate::quickwit::test_support::{d, filters, none, stories};
     use crate::{BrowseKey, HitSort, HitsQuery};
     use serde_json::json;
+    use usnm_core::text_layout::TextLayout;
     use usnm_core::time::BucketUnit;
 
     #[test]
@@ -533,6 +551,45 @@ mod tests {
         );
         let off = parse_hits(resp(), &q, &stories(false)).unwrap();
         assert!(off.hits.iter().all(|h| h.matched_in.is_none()));
+    }
+
+    /// LoC's original text of a page our OCR replaced it on is stored with
+    /// the hit (#925): the layout that keeps it reads it for the snippets and
+    /// `matched_in`, as the memory backend does; the layouts before it
+    /// never do, whatever a document holds.
+    #[test]
+    fn hits_read_the_stored_original_text_on_the_layout_that_keeps_it() {
+        let resp = || -> SearchResponse {
+            serde_json::from_value(json!({
+                "num_hits": 2,
+                "hits": [
+                    {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
+                     "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
+                     "text": "waren auf dem Wege Dubnaue nach Mailand",
+                     "text_loc": "Die Frauen waren auf dem Wege nach Mailand begriffen"},
+                    {"doc_id": "sn99000001_1896-07-10_ed-1_seq-2", "date": "1896-07-10T00:00:00Z",
+                     "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 2,
+                     "text": "waren auf dem Wege nach Mailand"}
+                ]
+            }))
+            .unwrap()
+        };
+        let kept = stories(false).with_text_layout(TextLayout::SingleWithLoc);
+        let q = usnm_core::query::parse(r#""Wege nach Mailand""#).unwrap();
+        let page = parse_hits(resp(), &q, &kept).unwrap();
+        assert_eq!(
+            page.hits[0].snippets,
+            ["Die Frauen waren auf dem <mark>Wege nach Mailand</mark> begriffen"]
+        );
+        assert_eq!(page.hits[0].snippet_source, Some("loc_original"));
+        assert_eq!(page.hits[0].matched_in, Some(vec!["loc_original"]));
+        assert_eq!(page.hits[1].snippet_source, None);
+        assert_eq!(page.hits[1].matched_in, Some(vec!["loc"]));
+        // Layout 2 has no such field; a document that has it is read as before.
+        let single = stories(false).with_text_layout(TextLayout::Single);
+        let page = parse_hits(resp(), &q, &single).unwrap();
+        assert!(page.hits[0].snippets.is_empty());
+        assert!(page.hits.iter().all(|h| h.matched_in.is_none()));
     }
 
     #[test]

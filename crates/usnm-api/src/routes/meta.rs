@@ -62,7 +62,8 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on,
         // or it shares one field with LoC's (05 §5.5.7).
         "american_stories": rd.searches_american_stories(),
-        // A searched field per text (1) or one for both (2), 05 §5.5.7.
+        // A searched field per text (1), one for both texts (2), or one that
+        // also holds LoC's original text beside our OCR's (3), 05 §5.5.7.
         "text_layout": rd.text_layout().version(),
         // The Congress pages (#229), searched with `source=congress`: null
         // unless the version has a Congress set this API can search and
@@ -138,7 +139,7 @@ pub(crate) fn meta_schema(gen: &mut schemars::SchemaGenerator) -> serde_json::Va
             "anyOf": [gen.subschema_for::<crate::refdata::JaIndexes>(), { "type": "null" }],
         },
         "american_stories": { "type": "boolean", "description": "Searches cover American Stories' text as well as the Library of Congress's OCR." },
-        "text_layout": { "type": "integer", "enum": [1, 2], "description": "A searched field per text (1) or one for both (2)." },
+        "text_layout": { "type": "integer", "enum": [1, 2, 3], "description": "A searched field per text (1), one for both texts (2), or one that also holds the Library of Congress's original text of the pages our OCR replaced it on (3)." },
         "congress": {
             "description": "The Congress pages, searched with `source=congress` or `all`; `null` unless the version has them and this API searches them.",
             "anyOf": [

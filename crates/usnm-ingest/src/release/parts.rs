@@ -12,7 +12,7 @@ use serde_json::Value;
 use usnm_core::text::TextStatus;
 use usnm_store::ObjectStore;
 
-use super::{main_doc, page_doc, DocFormat, LocalReplaced, LocalRun};
+use super::{main_doc, page_doc, DocFormat, LocalReplaced, LocalRun, SideTexts};
 use crate::american_stories;
 use crate::catalog::Catalog;
 use crate::curated::{read_part, CuratedRow};
@@ -372,10 +372,36 @@ fn build_row(ctx: &PartContext<'_>, row: &CuratedRow, out: &mut PartDocs) -> any
                     ocr_engine: p.ocr_engine.clone(),
                 },
             ));
-            main_doc(&row.key, &row.batch, text, title, place, text_as, format)
+            main_doc(
+                &row.key,
+                &row.batch,
+                text,
+                title,
+                place,
+                SideTexts {
+                    american_stories: text_as,
+                    loc_original: None,
+                },
+                format,
+            )
         }
         None => match local_text {
-            Some(text) => main_doc(&row.key, &row.batch, text, title, place, text_as, format),
+            // Our OCR in place of LoC's: a layout that keeps LoC's text
+            // searches it too (#925). The Japanese Latin overlay above
+            // doesn't: its text wins by having more words than LoC's
+            // (`ocr_ja::better_than_locs`).
+            Some(text) => main_doc(
+                &row.key,
+                &row.batch,
+                text,
+                title,
+                place,
+                SideTexts {
+                    american_stories: text_as,
+                    loc_original: row.text.as_deref(),
+                },
+                format,
+            ),
             None => page_doc(row, title, place, text_as, format),
         },
     });
@@ -660,6 +686,84 @@ mod tests {
             .map(|d| d["doc_id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, kept, "documents in row order");
+
+        // The layout that keeps LoC's original text (#925): the same pages
+        // and counts, and LoC's text on exactly the pages our OCR replaced
+        // it on, as a third text of `text_all` and in `text_loc`.
+        let kept_ctx = PartContext {
+            format: DocFormat {
+                text: TextLayout::SingleWithLoc,
+                ..ctx.format
+            },
+            ..ctx
+        };
+        let loc = build_part_with(&kept_ctx, &bytes, 1).unwrap();
+        assert_eq!(loc.docs.len(), one.docs.len());
+        assert_eq!(loc.local_replaced, one.local_replaced);
+        assert_eq!(loc.tally, one.tally);
+        assert_eq!(
+            (loc.with_as, loc.only_as, loc.without_locs),
+            (one.with_as, one.only_as, one.without_locs)
+        );
+        let replaced: BTreeSet<&str> = one
+            .local_replaced
+            .iter()
+            .map(|(id, ..)| id.as_str())
+            .collect();
+        let mut with_original = 0;
+        for doc in &loc.docs {
+            let id = doc["doc_id"].as_str().unwrap();
+            let text = doc["text"].as_str().unwrap();
+            let as_text = doc.get("text_as").and_then(Value::as_str);
+            let original = doc
+                .get(usnm_core::text_layout::LOC_FIELD)
+                .and_then(Value::as_str);
+            assert_eq!(original.is_some(), replaced.contains(id), "{id}");
+            if let Some(original) = original {
+                with_original += 1;
+                // Ours is the page's text, and LoC's garbled text the original.
+                assert!(text.starts_with(OURS_CLEAN), "{id}: {text}");
+                assert!(original.starts_with(LOC_GARBLED), "{id}: {original}");
+            }
+            // Searched in the one field: the page's texts, in order.
+            let want = usnm_core::text_layout::index_texts(
+                std::iter::once(text).chain(as_text).chain(original),
+                Analyzer::V2,
+            );
+            assert_eq!(doc[usnm_core::text_layout::FIELD], want.0.as_str(), "{id}");
+            assert_eq!(
+                doc[usnm_core::text_layout::PAIRS_FIELD],
+                want.1.as_str(),
+                "{id}"
+            );
+            assert!(doc.get("text_cg").is_none() && doc.get("text_as_cg").is_none());
+        }
+        assert_eq!(with_original, 70);
+        // The same pages, with the same `text`, as the layouts before it.
+        for (a, b) in one.docs.iter().zip(&loc.docs) {
+            assert_eq!(a["doc_id"], b["doc_id"]);
+            assert_eq!(a["text"], b["text"]);
+        }
+        // Layout 2 writes what it always wrote: no `text_loc`, and the
+        // two texts only.
+        let two_ctx = PartContext {
+            format: DocFormat {
+                text: TextLayout::Single,
+                ..ctx.format
+            },
+            ..ctx
+        };
+        let two = build_part_with(&two_ctx, &bytes, 1).unwrap();
+        for doc in &two.docs {
+            let id = doc["doc_id"].as_str().unwrap();
+            assert!(doc.get(usnm_core::text_layout::LOC_FIELD).is_none(), "{id}");
+            let want = usnm_core::text_layout::index_fields(
+                doc["text"].as_str().unwrap(),
+                doc.get("text_as").and_then(Value::as_str),
+                Analyzer::V2,
+            );
+            assert_eq!(doc[usnm_core::text_layout::FIELD], want.0.as_str(), "{id}");
+        }
 
         for threads in [2, 3, 4, 8] {
             let many = build_part_with(&ctx, &bytes, threads).unwrap();

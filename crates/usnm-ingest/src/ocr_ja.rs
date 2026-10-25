@@ -332,7 +332,15 @@ pub fn latin_doc(
     place: &Place,
     format: crate::release::DocFormat,
 ) -> Value {
-    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None, format)
+    crate::release::main_doc(
+        &page.key,
+        &page.batch,
+        latin,
+        title,
+        place,
+        crate::release::SideTexts::default(),
+        format,
+    )
 }
 
 /// What our OCR found on a page: `japanese` (at least 20 characters, half of

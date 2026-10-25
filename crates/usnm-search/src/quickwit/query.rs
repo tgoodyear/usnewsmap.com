@@ -36,15 +36,19 @@ pub fn query_string(
 
 /// The query string for `indexes`, as their text layout has the texts
 /// (05 §5.5.7): [`query_string`] on a field per text, and on one field for
-/// both, each term or phrase once in `text_all` (and `text_all_cg`). The
-/// release puts a gap between the texts there, so a phrase still can't
-/// span them, and `NOT x` still excludes a page with `x` in either.
+/// all of them (layouts 2 and 3), each term or phrase once in `text_all`
+/// (and `text_all_cg`). The release puts a gap between the texts there, so a
+/// phrase still can't span them, and `NOT x` still excludes a page with `x`
+/// in any. LoC's original text beside our OCR's (layout 3, #925) is one of
+/// those texts, so its query is the same as layout 2's.
 pub fn query_for(node: &Node, indexes: &IndexSet) -> Result<String, SearchError> {
     match indexes.text_layout() {
         TextLayout::Separate => {
             query_string(node, indexes.common_grams(), indexes.american_stories())
         }
-        TextLayout::Single => render(node, indexes.common_grams(), &[&BOTH]),
+        TextLayout::Single | TextLayout::SingleWithLoc => {
+            render(node, indexes.common_grams(), &[&BOTH])
+        }
     }
 }
 
@@ -438,6 +442,9 @@ mod tests {
                 stories(true)
                     .with_common_grams(grams)
                     .with_text_layout(TextLayout::Single),
+                stories(true)
+                    .with_common_grams(grams)
+                    .with_text_layout(TextLayout::SingleWithLoc),
             ];
             for set in &sets {
                 let mut requests = vec![
@@ -446,7 +453,7 @@ mod tests {
                     place_cube_request(&q, &f, set, &spec, &["P1".into()]).unwrap(),
                     hits_request(&q, &f, set, &HitsQuery::default()).unwrap(),
                 ];
-                if set.text_layout() == TextLayout::Separate && set.american_stories() {
+                if set.counts_american_stories_only() {
                     requests.push(american_stories_only_request(&q, &f, set).unwrap());
                 }
                 for r in requests {
@@ -576,6 +583,50 @@ mod tests {
                 .starts_with("(text:gold OR text_as:gold) AND "),
             "{r}"
         );
+    }
+
+    /// LoC's original text beside our OCR's (layout 3, #925) is in the one
+    /// searched field, so every request is layout 2's, the same strings.
+    #[test]
+    fn the_original_text_is_searched_in_the_same_field_as_the_others() {
+        let spec = BucketSpec::new(BucketUnit::Year, d("1896-01-01"), d("1896-12-31"));
+        for grams in [false, true] {
+            let set = |layout| {
+                none()
+                    .with_american_stories(true)
+                    .with_common_grams(grams)
+                    .with_text_layout(layout)
+            };
+            let (two, three) = (set(TextLayout::Single), set(TextLayout::SingleWithLoc));
+            for q in [
+                "gold",
+                r#""Wege nach Mailand""#,
+                r#""cross of gold"~3"#,
+                "bryan -silver (free OR orator)",
+                "gold~ocr",
+                "2 OF (gold~ocr bryan silver)",
+            ] {
+                let q = parse(q).unwrap();
+                assert_eq!(query_for(&q, &two).unwrap(), query_for(&q, &three).unwrap());
+                for (a, b) in [
+                    (
+                        summary_request(&q, &filters(), &two, &spec),
+                        summary_request(&q, &filters(), &three, &spec),
+                    ),
+                    (
+                        hits_request(&q, &filters(), &two, &HitsQuery::default()),
+                        hits_request(&q, &filters(), &three, &HitsQuery::default()),
+                    ),
+                ] {
+                    assert_eq!(a.unwrap(), b.unwrap());
+                }
+            }
+            let q = parse(r#""cross of gold""#).unwrap();
+            assert!(matches!(
+                american_stories_only_request(&q, &filters(), &three),
+                Err(SearchError::Unsupported(_))
+            ));
+        }
     }
 
     /// One field for both texts (05 §5.5.7): each term or phrase once, in

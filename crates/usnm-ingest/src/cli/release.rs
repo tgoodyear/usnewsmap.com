@@ -55,8 +55,10 @@ pub(crate) struct ReleaseArgs {
     #[arg(long)]
     partition_decade: bool,
     /// Search a full base's texts, LoC's and American Stories', in one
-    /// field (#283, 05 §5.5.7), so a search looks each word up once.
-    /// Only a full base takes it; deltas follow the published version.
+    /// field (#283, 05 §5.5.7), so a search looks each word up once. On a
+    /// page our own OCR replaced LoC's text on (`--ocr-local`), LoC's text
+    /// is searched too, as a third text (#925). Only a full base takes it;
+    /// deltas follow the published version.
     #[arg(long)]
     single_text_field: bool,
     /// Give a full base's pages their own languages, found from their

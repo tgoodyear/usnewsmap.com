@@ -12,7 +12,7 @@ use axum::http::{header, StatusCode};
 use serde_json::{json, Value};
 use usnm_api::{app, v1_routes, AppState};
 
-use crate::american_stories::american_stories_state;
+use crate::american_stories::{american_stories_state, original_only_phrase, original_text_state};
 use crate::common::{config, fixture_backend, get, header_str, ja_state, refdata};
 use crate::congress::congress_state;
 
@@ -203,6 +203,23 @@ async fn exchanges() -> Vec<(Arc<AppState>, Vec<String>)> {
         "/v1/hits?q=council&place=P00001&limit=50",
         "/v1/days?q=gold&place=P00001,P00006",
     ];
+    // The layout that keeps LoC's original text beside ours (#925): a phrase
+    // only that text has, and a word in both.
+    let (doc, phrase) = original_only_phrase();
+    let original = vec![
+        "/v1/meta".to_owned(),
+        "/v1/aggregate?q=gold".to_owned(),
+        format!(
+            "/v1/hits?q=%22{}%22&lccn={}&limit=50",
+            phrase.replace(' ', "+"),
+            doc.lccn
+        ),
+        format!(
+            "/v1/hits?q={}&lccn={}&limit=50",
+            phrase.split(' ').next().unwrap(),
+            doc.lccn
+        ),
+    ];
     let japanese = [
         "/v1/meta",
         "/v1/aggregate?q=%E6%88%A6%E4%BA%89",
@@ -228,6 +245,10 @@ async fn exchanges() -> Vec<(Arc<AppState>, Vec<String>)> {
     vec![
         (fixture().await, owned(&plain)),
         (american_stories_state(true).await, owned(&american_stories)),
+        (
+            original_text_state(usnm_core::text_layout::TextLayout::SingleWithLoc).await,
+            original,
+        ),
         (ja_state().await, owned(&japanese)),
         (congress_state().await, owned(&congress)),
         (
@@ -353,6 +374,9 @@ async fn responses_match_the_documented_schemas() {
         r#""congress":{"series":"#,
         r#""matched_in":["#,
         r#""snippet_source":"#,
+        r#""snippet_source":"loc_original""#,
+        r#""matched_in":["loc_original"]"#,
+        r#""text_layout":3"#,
         r#""american_stories_only":"#,
         r#""days":"#,
         r#""build":{"#,

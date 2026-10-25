@@ -3,7 +3,6 @@
 use serde_json::{json, Value};
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
-use usnm_core::text_layout::TextLayout;
 use usnm_core::time::BucketSpec;
 
 use super::query::{american_stories_only_string, full_query, scope, scoped};
@@ -189,13 +188,13 @@ fn page_request(query: String, page: &HitsQuery) -> Value {
 /// How many pages only American Stories' text finds
 /// ([`american_stories_only_string`]): no hits, no aggregations, no sort.
 /// Quickwit still counts every match (`num_hits`). Refused with one field
-/// for both texts (05 §5.5.7): LoC's alone isn't indexed there.
+/// for all the texts (05 §5.5.7): LoC's alone isn't indexed there.
 pub fn american_stories_only_request(
     node: &Node,
     filters: &Filters,
     indexes: &IndexSet,
 ) -> Result<Value, SearchError> {
-    if indexes.text_layout() == TextLayout::Single {
+    if indexes.text_layout().searches_one_field() {
         return Err(SearchError::Unsupported(
             "counting the pages only American Stories' text matches, on these indexes".into(),
         ));

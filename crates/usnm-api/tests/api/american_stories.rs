@@ -10,11 +10,14 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use usnm_api::refdata::RefData;
 use usnm_api::AppState;
+use usnm_core::text_layout::TextLayout;
 use usnm_search::memory::MemoryBackend;
+use usnm_search::PageDoc;
 use usnm_store::LocalStore;
 
 use crate::common::{
-    config, data_dir, fixture_backend, get, ja_state_with, persisted_files, refdata, state_with,
+    config, data_dir, fixture_backend, get, ja_state_with, load_docs, persisted_files, refdata,
+    state_with,
 };
 
 /// American Stories' text (05 §5.5.4) is searched only for a version built
@@ -333,6 +336,143 @@ async fn one_text_field_answers_as_both_texts_without_the_american_stories_only_
     assert_eq!(meta["text_layout"], 1);
 }
 
+/// A state on a version whose main indexes search every text in one field,
+/// `layout` 2 or 3 (05 §5.5.7), over the fixture pages as
+/// `fixtures/loc_original.rs` has them: on some pages our OCR replaced
+/// LoC's text, so `text` is ours (LoC's with its second half first) and
+/// `text_loc` LoC's original, which only layout 3 searches (#925).
+pub(crate) async fn original_text_state(layout: TextLayout) -> Arc<AppState> {
+    let mut backend = MemoryBackend::new();
+    for id in ["pages-base-fixture", "pages-delta-fixture-1"] {
+        let docs: Vec<PageDoc> = load_docs(id)
+            .into_iter()
+            .map(|d| {
+                let mut v = serde_json::to_value(&d).unwrap();
+                crate::loc_original::add(&mut v);
+                serde_json::from_value(v).unwrap()
+            })
+            .collect();
+        backend.add_index(id, docs);
+    }
+    let mut rd = refdata().await;
+    rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    rd.current.text_layout = Some(layout.version());
+    Arc::new(AppState::new(config(), Arc::new(backend), rd))
+}
+
+/// A fixture page our OCR replaced LoC's text on, with no American Stories'
+/// text, and two words that follow each other in LoC's original text and
+/// not in ours, as a query (a phrase LoC's text has intact).
+pub(crate) fn original_only_phrase() -> (PageDoc, String) {
+    let words = |t: &str| -> Vec<String> {
+        t.split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    for id in ["pages-base-fixture", "pages-delta-fixture-1"] {
+        for d in load_docs(id) {
+            let mut v = serde_json::to_value(&d).unwrap();
+            if d.text_as.is_some() || !crate::loc_original::replaced(&v) {
+                continue;
+            }
+            crate::loc_original::add(&mut v);
+            let ours = words(v["text"].as_str().unwrap());
+            let original = words(&d.text);
+            for pair in original.windows(2) {
+                let plain = pair
+                    .iter()
+                    .all(|w| w.len() > 2 && w.chars().all(char::is_alphabetic));
+                if plain && !ours.windows(2).any(|o| o == pair) {
+                    return (d, pair.join(" "));
+                }
+            }
+        }
+    }
+    panic!("no replaced fixture page has a phrase of LoC's text that ours lacks");
+}
+
+/// On the layout that keeps LoC's original text (3, #925), a phrase LoC's
+/// text of a replaced page has and ours lacks finds the page, and the hit
+/// says it matched there, with the snippet from that text; layout 2 and
+/// the page counts of a word in both texts are unchanged, as a page counts
+/// once.
+#[tokio::test]
+async fn the_original_text_of_a_replaced_page_is_searched_and_reported() {
+    let (doc, phrase) = original_only_phrase();
+    let three = original_text_state(TextLayout::SingleWithLoc).await;
+    let two = original_text_state(TextLayout::Single).await;
+    let uri = format!(
+        "/v1/hits?q=%22{}%22&lccn={}&limit=50",
+        phrase.replace(' ', "+"),
+        doc.lccn
+    );
+    let ids = |body: &Value| -> Vec<String> {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["doc_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Layout 2 has only ours, in which the words are the other way round.
+    let (status, _, body) = get(&two, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!ids(&body).contains(&doc.doc_id), "{phrase}: {body}");
+    // Layout 3 finds the page through LoC's text, and says so.
+    let (status, _, body) = get(&three, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ids(&body).contains(&doc.doc_id), "{phrase}: {body}");
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["doc_id"] == doc.doc_id.as_str())
+        .unwrap();
+    assert_eq!(item["matched_in"], json!(["loc_original"]), "{item}");
+    assert_eq!(item["snippet_source"], "loc_original", "{item}");
+    assert!(item["snippets"][0].as_str().unwrap().contains("<mark>"));
+
+    // A word in both texts of the page: found once, and in both.
+    let word = phrase.split(' ').next().unwrap();
+    let uri = format!("/v1/hits?q={word}&lccn={}&limit=50", doc.lccn);
+    let (_, _, body) = get(&three, &uri).await;
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["doc_id"] == doc.doc_id.as_str())
+        .unwrap();
+    assert_eq!(item["matched_in"], json!(["loc", "loc_original"]), "{item}");
+    assert!(item.get("snippet_source").is_none(), "{item}");
+    assert_eq!(
+        ids(&body).iter().filter(|i| **i == doc.doc_id).count(),
+        1,
+        "{body}"
+    );
+    let (_, _, body2) = get(&two, &uri).await;
+    assert_eq!(ids(&body), ids(&body2));
+    // Layout 2 never names LoC's original text.
+    assert!(!body2.to_string().contains("loc_original"), "{body2}");
+
+    // The counts: a word the two texts share counts each page once, the
+    // same as on layout 2; the phrase adds the page.
+    for q in ["gold", word] {
+        let (_, _, a3) = get(&three, &format!("/v1/aggregate?q={q}")).await;
+        let (_, _, a2) = get(&two, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(a3["total"]["hits"], a2["total"]["hits"], "{q}");
+        assert!(a3["total"].get("american_stories_only").is_none());
+    }
+    let q = format!("%22{}%22", phrase.replace(' ', "+"));
+    let (_, _, a3) = get(&three, &format!("/v1/aggregate?q={q}")).await;
+    let (_, _, a2) = get(&two, &format!("/v1/aggregate?q={q}")).await;
+    assert!(a3["total"]["hits"].as_u64() > a2["total"]["hits"].as_u64());
+
+    // The version says which layout it has.
+    let (_, _, meta) = get(&three, "/v1/meta").await;
+    assert_eq!(meta["text_layout"], 3);
+    assert_eq!(meta["american_stories"], true);
+}
+
 /// A version with a text layout newer than the API's isn't loaded: its
 /// fields may not be the ones a search would name.
 #[tokio::test]
@@ -341,7 +481,7 @@ async fn a_text_layout_this_api_does_not_know_is_not_loaded() {
     let mut current = refdata().await.current;
     current.common_grams = Some(usnm_core::common_grams::VERSION);
     current.american_stories = Some(usnm_core::american_stories::VERSION);
-    for known in [None, Some(1), Some(2)] {
+    for known in [None, Some(1), Some(2), Some(3)] {
         current.text_layout = known;
         assert!(
             RefData::load_for(&store, current.clone()).await.is_ok(),
@@ -355,23 +495,25 @@ async fn a_text_layout_this_api_does_not_know_is_not_loaded() {
     // One field for both texts holds words folded by the version's
     // analyzer, and American Stories' text of its version: both must be
     // ones the API knows, or queries would silently miss.
-    for (grams, stories) in [
-        (None, Some(usnm_core::american_stories::VERSION)),
-        (Some(usnm_core::common_grams::VERSION + 1), None),
-        (
-            Some(usnm_core::common_grams::VERSION),
-            Some(usnm_core::american_stories::VERSION + 1),
-        ),
-    ] {
-        let mut c = current.clone();
-        c.text_layout = Some(2);
-        c.common_grams = grams;
-        c.american_stories = stories;
-        let err = RefData::load_for(&store, c.clone()).await.unwrap_err();
-        assert!(err.contains("text_layout 2"), "{err}");
-        // A field per text still loads, as before.
-        c.text_layout = None;
-        assert!(RefData::load_for(&store, c).await.is_ok());
+    for layout in [2, 3] {
+        for (grams, stories) in [
+            (None, Some(usnm_core::american_stories::VERSION)),
+            (Some(usnm_core::common_grams::VERSION + 1), None),
+            (
+                Some(usnm_core::common_grams::VERSION),
+                Some(usnm_core::american_stories::VERSION + 1),
+            ),
+        ] {
+            let mut c = current.clone();
+            c.text_layout = Some(layout);
+            c.common_grams = grams;
+            c.american_stories = stories;
+            let err = RefData::load_for(&store, c.clone()).await.unwrap_err();
+            assert!(err.contains(&format!("text_layout {layout}")), "{err}");
+            // A field per text still loads, as before.
+            c.text_layout = None;
+            assert!(RefData::load_for(&store, c).await.is_ok());
+        }
     }
 }
 
