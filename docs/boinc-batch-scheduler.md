@@ -457,6 +457,12 @@ message only when all of these hold, and otherwise puts it back:
   and the language routes to an installed Tesseract model;
 - the page is on the newest fetched-scans list for the controller's manifest
   version, because volunteers never fetch from LoC;
+- the page is in that manifest (the cohort's prefetch manifest in the curated
+  store), at the batch version its ledger row names, because `export` builds a
+  job only from a manifest row. The fetched list also has pages fetched for other
+  manifests, such as queued OCR requests' (#1055); those go back for the nodes
+  instead of failing the export. `claim` reads the manifest once a run and keeps
+  only the rows on the fetched list;
 - with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
   language is one of them (#866).
 
