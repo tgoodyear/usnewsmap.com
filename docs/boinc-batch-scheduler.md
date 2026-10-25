@@ -78,7 +78,7 @@ the real-page receipt for #866 is recorded below.
 A tick submits, spools out and collects one page per job execution unless told otherwise.
 Each execution costs one to two minutes of Container Apps start and stop, so a 10-page tick
 spends about 40 minutes on them (measured 20 October 2026, when the bridge steps were still Azure jobs; on-prem bridge steps start no Container Apps execution), whatever the volunteers' capacity.
-Three runtime flags put a tick's pages into one execution per step instead. They aren't part
+Four runtime flags put a tick's pages into one execution per step instead. They aren't part
 of the configuration, so turning them on or off changes no hash:
 
 - `--batch-submit`: `submit-remote` with `JOB_IDS=<id>,...`. It stops at the first job that
@@ -86,12 +86,16 @@ of the configuration, so turning them on or off changes no hash:
   submission.
 - `--batch-spool-out`: `spool-out` with `HANDOFF_SPOOLS=<id>=<spool>,...`.
 - `--batch-collect`: the hand-off `collect` with `JOB_IDS=<id>,...`.
+- `--batch-export`: the hand-off `export` for pages from many base batches in one execution
+  (up to 20 batches; more go in several), with `HANDOFF_BATCHES` naming each page's batch in
+  `HANDOFF_PAGES`' order. The job exports each batch on its own. Without it, a queue-fed tick
+  runs one execution per batch, and user-requested pages come from many batches (#1055).
 
-Spool-out and collect go on past a job that fails and fail at the end, so one held page doesn't
+Spool-out, collect and export go on past a job (or batch) that fails and fail at the end, so one held page doesn't
 hold up the others; the tick then stops as before. Each job in a batch runs the step's
 single-job path, with the same checks. A flag needs the image whose step takes the batch
 variable: the bridge image for the first two (usnm-boinc-prod), the hand-off image for the
-third (usnm-prod's `USNM_BOINC_HANDOFF_IMAGE`). Add a flag to the service's `ExecStart` only
+third and fourth (usnm-prod's `USNM_BOINC_HANDOFF_IMAGE`). Add a flag to the service's `ExecStart` only
 once that image is live, with the timer stopped.
 
 These flags batch the server-side steps; each page is still its own BOINC workunit. A plan can

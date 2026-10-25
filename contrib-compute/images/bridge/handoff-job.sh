@@ -14,6 +14,8 @@
 #                         [HANDOFF_SCANS=<relative scan>[,...] HANDOFF_JOBS=<id>[,...]]
 #                         bounds transfers to these scans/sidecars, the exact manifest and
 #                         previously journaled ids (the batch controller always supplies this)
+#                         [HANDOFF_BATCHES=<batch>[,...]] in place of HANDOFF_BATCH: each page's
+#                         batch, in HANDOFF_PAGES' order, for one execution over many batches
 #                         [HANDOFF_CLAIMS=1] the pages came off the work queues (step claim):
 #                         their claims/<doc_id>.json come down too and each job keeps its queue
 #                         message and ledger row (usnm-boinc export --claims)
@@ -76,6 +78,44 @@ if [ "${HANDOFF_STEP:-}" = collect ] && [ -n "${JOB_IDS:-}" ]; then
     JOB_ID=$id JOB_IDS="" bash "${BASH_SOURCE[0]}" || { log "collect failed for $id"; failed=$((failed + 1)); }
   done
   [ "$failed" -eq 0 ] || fail "collect failed for $failed of ${#batch_ids[@]} jobs"
+  exit 0
+fi
+# export for a tick's pages from many base batches in one execution (#1055): HANDOFF_BATCHES
+# names each page's batch, in HANDOFF_PAGES' (and HANDOFF_SCANS') order. Each batch runs this
+# script's single-batch export again; a failed one doesn't stop the rest, and the run fails at
+# the end so the controller sees it.
+if [ "${HANDOFF_STEP:-}" = export ] && [ -n "${HANDOFF_BATCHES:-}" ]; then
+  [ -z "${HANDOFF_BATCH:-}" ] || fail "set HANDOFF_BATCH or HANDOFF_BATCHES, not both"
+  [[ ${HANDOFF_PAGES:-} =~ ^[A-Za-z0-9/_,-]+$ ]] || fail "HANDOFF_PAGES is a comma-separated list of page keys"
+  IFS=, read -r -a all_pages <<< "$HANDOFF_PAGES"
+  IFS=, read -r -a all_batches <<< "$HANDOFF_BATCHES"
+  IFS=, read -r -a all_scans <<< "${HANDOFF_SCANS:-}"
+  [ "${#all_pages[@]}" -le 100 ] || fail "HANDOFF_PAGES is at most 100 pages"
+  [ "${#all_batches[@]}" -eq "${#all_pages[@]}" ] && [ "${#all_scans[@]}" -eq "${#all_pages[@]}" ] ||
+    fail "HANDOFF_BATCHES and HANDOFF_SCANS name one batch and one scan for each of HANDOFF_PAGES"
+  for scan in "${all_scans[@]}"; do
+    # Each batch's run must take only its own scans, never the whole container.
+    [[ "$scan" =~ ^keep/[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] && [[ "$scan" != *..* ]] ||
+      fail "HANDOFF_SCANS must name a cached scan under keep/ for each page"
+  done
+  order=()
+  for b in "${all_batches[@]}"; do
+    [[ $b =~ ^[a-z]{2,10}_[A-Za-z0-9_]+$ ]] || fail "HANDOFF_BATCHES names base batches"
+    [[ " ${order[*]-} " == *" $b "* ]] || order+=("$b")
+  done
+  failed=0
+  for b in "${order[@]}"; do
+    pages=() scans=()
+    for i in "${!all_pages[@]}"; do
+      [ "${all_batches[i]}" = "$b" ] || continue
+      pages+=("${all_pages[i]}") scans+=("${all_scans[i]}")
+    done
+    log "export $b (${#pages[@]} pages)"
+    HANDOFF_BATCHES="" HANDOFF_BATCH=$b HANDOFF_PAGES=$(IFS=,; echo "${pages[*]}") \
+      HANDOFF_SCANS=$(IFS=,; echo "${scans[*]}") bash "${BASH_SOURCE[0]}" ||
+      { log "export failed for $b"; failed=$((failed + 1)); }
+  done
+  [ "$failed" -eq 0 ] || fail "export failed for $failed of ${#order[@]} batches"
   exit 0
 fi
 work=$(mktemp -d)

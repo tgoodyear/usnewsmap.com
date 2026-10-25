@@ -538,12 +538,16 @@ class ClaimFailed(RuntimeError):
 
 # --onprem-handoff choices and the hand-off steps each one moves to the on-prem host. A claim's
 # release goes with it: both take pages off and back onto the work queues.
+# Most base batches one batched export execution takes (--batch-export): each is about half a
+# minute of the hand-off job's 30-minute timeout.
+EXPORT_BATCHES = 20
+
 ONPREM_HANDOFF = {"claim": ("claim", "release"), "collect": ("collect",), "export": ("export",)}
 
 
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
-                 batch_submit=False, batch_spool_out=False, batch_collect=False,
+                 batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None):
         self.config = config
         self.directory = directory
@@ -555,6 +559,9 @@ class Transport:
         self.batch_submit = batch_submit
         self.batch_spool_out = batch_spool_out
         self.batch_collect = batch_collect
+        # One hand-off execution for all of a tick's export batches (HANDOFF_BATCHES), instead of
+        # one per base batch: queued pages come from many batches.
+        self.batch_export = batch_export
         # The hand-off steps that run on the on-prem BOINC host through step_command
         # (usnm-boinc-step --target handoff, #967 phase 3) instead of the Azure hand-off job:
         # "claim" (with its release), "collect" and/or "export". Off by default.
@@ -697,14 +704,28 @@ class Transport:
         batches = {}
         for page in pages:
             batches.setdefault(page.get("batch") or self.config["batch"], []).append(page)
-        for batch, group in sorted(batches.items()):
+        root = len(self.config["scans_root"].rstrip("/")) + 1
+        groups = sorted(batches.items())
+        if self.batch_export and len(groups) > 1:
+            # One execution per EXPORT_BATCHES batches: HANDOFF_BATCHES names each page's batch,
+            # in HANDOFF_PAGES' order, and the job exports each batch on its own, going on past
+            # one that fails (#1055). The cap keeps an execution well inside the job's timeout.
+            groups = [(None, [(batch, page) for batch, group in groups[i:i + EXPORT_BATCHES]
+                              for page in group])
+                      for i in range(0, len(groups), EXPORT_BATCHES)]
+        else:
+            groups = [(batch, [(batch, page) for page in group]) for batch, group in groups]
+        for batch, group in groups:
             variables = dict(
-                HANDOFF_PAGES=",".join(page["page"] for page in group),
-                HANDOFF_BATCH=batch, HANDOFF_PLAN=self.config["plan"],
+                HANDOFF_PAGES=",".join(page["page"] for _, page in group),
+                HANDOFF_PLAN=self.config["plan"],
                 HANDOFF_MANIFEST=self.config["manifest"], ENGINE_IMAGE=self.config["image"],
-                HANDOFF_SCANS=",".join(page["scan"][len(self.config["scans_root"].rstrip("/")) + 1:]
-                                       for page in group),
+                HANDOFF_SCANS=",".join(page["scan"][root:] for _, page in group),
                 HANDOFF_JOBS=",".join(job_ids))
+            if batch is None:
+                variables["HANDOFF_BATCHES"] = ",".join(b for b, _ in group)
+            else:
+                variables["HANDOFF_BATCH"] = batch
             if queue:
                 variables["HANDOFF_CLAIMS"] = "1"
             self.step("handoff", "export", **variables)
@@ -1645,6 +1666,9 @@ def main(argv=None):
                         help="spool out a tick's results in one bridge execution (needs spool-out with HANDOFF_SPOOLS)")
     parser.add_argument("--batch-collect", action="store_true",
                         help="collect a tick's results in one hand-off execution (needs a hand-off image whose collect takes JOB_IDS)")
+    parser.add_argument("--batch-export", action="store_true",
+                        help="export a tick's pages from all their batches in one hand-off execution "
+                             "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -1721,7 +1745,8 @@ def main(argv=None):
                 config, args.state_dir,
                 status_url=args.server_status_url, status_file=args.server_status_file,
                 batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
-                batch_collect=args.batch_collect, onprem_handoff=tuple(args.onprem_handoff),
+                batch_collect=args.batch_collect, batch_export=args.batch_export,
+                onprem_handoff=tuple(args.onprem_handoff),
                 timings=timings,
             )
             tick_kwargs = {"drain": args.drain}
