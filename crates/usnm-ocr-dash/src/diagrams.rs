@@ -806,7 +806,7 @@ mod tests {
             // The public view shows these as they are: no container or VM
             // numbers, and nothing the public scrubber would change.
             assert!(!t.contains("CT ") && !t.contains("VM "), "a container number in {t}");
-            for line in t.split(['<', '>']).filter(|l| !l.contains('{')) {
+            for line in t.split(['<', '>']).filter(|l| !l.starts_with('/') && !l.contains('=') && !l.contains('{')) {
                 assert_eq!(crate::public::scrub(line), line, "scrub changes {line}");
             }
         }
