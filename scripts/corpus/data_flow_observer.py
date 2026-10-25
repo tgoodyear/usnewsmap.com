@@ -206,14 +206,15 @@ def published_stages(body, now):
     if len(body) > MAX_BYTES:
         raise ValueError("Oversized API status")
     status = object_value(json.loads(body))
-    if status.get("stale") is True or status.get("error"):
-        raise ValueError("The API reports stale or failed status")
+    # `stale` and `error` describe the API's pipeline store; `published` comes from the serving
+    # snapshot either way, so it is validated on its own.
     at = observed(status["generated_at"], now)
     published = object_value(status["published"])
     version = bounded_text(published["index_version"], 64)
     published_at = observed(published["published_at"], now)
-    local = object_value(object_value(published["sources"])["ocr_local"])
-    pages = count(local["pages"])
+    # null: the serving index has no pages with our OCR.
+    local = object_value(published["sources"])["ocr_local"]
+    pages = 0 if local is None else count(object_value(local)["pages"])
     if pages > count(published["pages"]):
         raise ValueError("Inconsistent published page counts")
     return [stage("indexed", "Pages searchable with our OCR", pages, at,

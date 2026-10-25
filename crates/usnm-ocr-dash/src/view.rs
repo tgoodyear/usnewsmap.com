@@ -408,7 +408,7 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
             bytes: f.buffer.bytes,
         });
     }
-    let queue = f.queue();
+    let queue = f.queue(now);
     let mut qs = QueueSummary {
         manifests: queue.len(),
         ..QueueSummary::default()

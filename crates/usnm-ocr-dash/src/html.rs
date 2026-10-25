@@ -504,10 +504,7 @@ fn bulk_eta(b: &crate::fetch::BulkStatus) -> Option<u64> {
 /// The fetcher's activity, as a badge.
 fn fetch_badge(f: &crate::view::FetchView) -> String {
     match f.activity {
-        "running" => badge(
-            "good",
-            f.status.as_ref().map_or("running", |s| s.state.as_str()),
-        ),
+        "running" => state_badge(f.status.as_ref().map_or("running", |s| s.state.as_str())),
         "idle" => badge("good", "idle, queue empty"),
         "queued" => badge(
             "warning",

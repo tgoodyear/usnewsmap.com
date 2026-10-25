@@ -794,7 +794,15 @@ impl Fetch {
                 entry.info.error = Some("no manifest.parquet".into());
                 continue;
             }
-            if entry.stamp == stamp && entry.info.error.is_none() {
+            // Rows are cached a window at a time; once every cached row is
+            // fetched and the manifest has more, it is read again for the next.
+            let window_done = state != "fetched"
+                && (entry.rows.len() as u64) < entry.info.pages
+                && entry
+                    .rows
+                    .iter()
+                    .all(|(d, _)| self.all.contains_key(&doc_hash(d)));
+            if entry.stamp == stamp && entry.info.error.is_none() && !window_done {
                 if state == "fetched" {
                     entry.rows = Vec::new();
                 }
@@ -809,7 +817,10 @@ impl Fetch {
                 .and_then(|b| {
                     decode_where(Bytes::from(b), |r| {
                         hashes.push(doc_hash(&r.doc_id));
-                        if keep_rows && rows.len() < QUEUE_ROWS {
+                        if keep_rows
+                            && rows.len() < QUEUE_ROWS
+                            && !self.all.contains_key(&doc_hash(&r.doc_id))
+                        {
                             rows.push((
                                 Box::<str>::from(r.doc_id.as_str()),
                                 Box::<str>::from(iso(r.lang_or_und())),
@@ -834,16 +845,35 @@ impl Fetch {
                 }
             }
         }
+        // The totals leave out a manifest that can't be read: say so.
+        let unread: Vec<&str> = self
+            .queue
+            .values()
+            .filter(|e| e.info.error.is_some())
+            .map(|e| e.info.name.as_str())
+            .collect();
+        if !unread.is_empty() {
+            self.queue_error = Some(format!(
+                "{} queued manifests can't be read, so the queue totals leave them out: {}",
+                unread.len(),
+                unread.join(", ")
+            ));
+        }
     }
 
     /// The queue's manifests in the order the queue takes them (OCR's
     /// before quality's, each by name), with their progress. The one the
     /// fetcher's status names is `fetching` while its run is.
-    pub fn queue(&self) -> Vec<QueuedManifest> {
+    pub fn queue(&self, now: DateTime<Utc>) -> Vec<QueuedManifest> {
+        // Only a current status says which manifest is being fetched.
         let running = self
             .status
             .as_ref()
-            .filter(|s| s.state == "running")
+            .filter(|s| self.status_error.is_none() && s.state == "running")
+            .filter(|s| {
+                DateTime::parse_from_rfc3339(&s.updated_at)
+                    .is_ok_and(|at| (now - at.with_timezone(&Utc)) <= Duration::minutes(15))
+            })
             .map(|s| s.manifest.as_str());
         let mut v: Vec<QueuedManifest> = self
             .queue
@@ -1078,7 +1108,7 @@ mod tests {
         let s = f.status.as_ref().unwrap();
         assert_eq!(s.mirrors["wayback"].taken(), 1);
         assert_eq!(s.fetched_mirror, 1);
-        let q = f.queue();
+        let q = f.queue(now);
         let names: Vec<(&str, &str, u64, u64)> = q
             .iter()
             .map(|m| (m.name.as_str(), m.state, m.pages, m.fetched))
@@ -1103,7 +1133,7 @@ mod tests {
         // A cooling file holds a manifest back for a day.
         std::fs::write(q2.join("cooling"), "x").unwrap();
         f.poll(now);
-        assert_eq!(f.queue()[1].state, "cooling");
+        assert_eq!(f.queue(now)[1].state, "cooling");
 
         // Unpinned, a queued manifest named by the status is not followed.
         let mut f = Fetch::new(scans, None);

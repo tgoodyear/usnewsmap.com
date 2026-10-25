@@ -71,9 +71,17 @@ class Observer(unittest.TestCase):
         value = observer.snapshot([{"source": "published-index", "stage": item}], [], NOW)
         (indexed,) = [s for s in value["stages"] if s["id"] == "indexed"]
         self.assertEqual(indexed["count"], 197)
-        for change in [{"stale": True}, {"generated_at": "2027-01-01T00:00:00Z"}]:
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                observer.published_stages(json.dumps({**self.status(), **change}).encode(), NOW)
+        # A pipeline-store failure doesn't hide the serving index's own count.
+        (item,) = observer.published_stages(
+            json.dumps({**self.status(), "stale": True, "error": "store"}).encode(), NOW)
+        self.assertEqual(item["count"], 197)
+        with self.assertRaises(ValueError):
+            observer.published_stages(
+                json.dumps({**self.status(), "generated_at": "2027-01-01T00:00:00Z"}).encode(), NOW)
+        empty = self.status()
+        empty["published"]["sources"]["ocr_local"] = None
+        (item,) = observer.published_stages(json.dumps(empty).encode(), NOW)
+        self.assertEqual(item["count"], 0)
         bad = self.status()
         bad["published"]["sources"]["ocr_local"]["pages"] = 1001
         with self.assertRaises(ValueError):
