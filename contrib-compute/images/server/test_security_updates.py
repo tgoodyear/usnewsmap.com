@@ -1,4 +1,4 @@
-"""Every image that serves Apache and PHP takes Debian security updates and enforces the PHP floor (#969).
+"""Every image that serves Apache and PHP takes Debian security updates and enforces the PHP and Apache floors (#969).
 
 The images start from pinned digests, so without the upgrade layer their packages stay at
 whatever the pinned image was built with. The overlays start from older live images still.
@@ -22,8 +22,12 @@ SERVING = [
     IMAGES / "server" / "amd-885.Containerfile",
     IMAGES / "server" / "security-overlay.Containerfile",
 ]
-# DSA-6255-1: php8.2 8.2.35-1~deb12u1.
+# DSA-6255-1: php8.2 8.2.35-1~deb12u1. DSA-6323-1: apache2 2.4.67-1~deb12u3.
 MIN_PHP_PATCH = 35
+MIN_APACHE = (67, 3)
+# What the stubbed image has installed when it is at the floors.
+PHP_NOW = "8.2.35-1~deb12u1"
+APACHE_NOW = "2.4.67-1~deb12u3"
 
 
 def final_stage(text):
@@ -56,16 +60,19 @@ class SecurityUpdates(unittest.TestCase):
                 self.assertIn("rm -rf /var/lib/apt/lists/*", run)
                 self.assertIn("dpkg-query -W -f='${Version}' php8.2-common", run)
                 self.assertIn('dpkg --compare-versions "$php_version" ge "$PHP_FLOOR"', run)
+                self.assertIn("dpkg-query -W -f='${Version}' apache2", run)
+                self.assertIn('dpkg --compare-versions "$apache_version" ge "$APACHE_FLOOR"', run)
                 self.assertIn("exit 1", run)
                 stage = final_stage(text)
                 self.assertIn("ARG PHP_FLOOR=" + self.floor(path), stage)
+                self.assertIn("ARG APACHE_FLOOR=" + self.floor(path, "APACHE_FLOOR"), stage)
                 self.assertTrue(any(line.startswith("ARG SECURITY_REFRESH=") for line in stage))
                 # Before anything else in the stage, so later layers are built on patched packages.
                 first = next(line for line in stage if line.startswith(("RUN ", "COPY ", "ADD ")))
                 self.assertEqual(first[len("RUN "):], run)
 
-    def floor(self, path):
-        floors = re.findall(r"^ARG PHP_FLOOR=(\S+)$", path.read_text(), re.M)
+    def floor(self, path, name="PHP_FLOOR"):
+        floors = re.findall(rf"^ARG {name}=(\S+)$", path.read_text(), re.M)
         self.assertEqual(len(floors), 1, path)
         return floors[0]
 
@@ -76,13 +83,26 @@ class SecurityUpdates(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertGreaterEqual(int(match.group(1)), MIN_PHP_PATCH)
 
-    def run_stubbed(self, path, *, apt_status=0, compare_status=0):
-        """Run the upgrade RUN under sh with apt-get, dpkg-query and dpkg stubbed."""
+    def test_apache_floors_agree_and_meet_dsa_6323_1(self):
+        floors = {self.floor(path, "APACHE_FLOOR") for path in SERVING}
+        self.assertEqual(len(floors), 1, floors)
+        match = re.fullmatch(r"2\.4\.(\d+)-1~deb12u(\d+)", floors.pop())
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(tuple(int(part) for part in match.groups()), MIN_APACHE)
+
+    def run_stubbed(self, path, *, apt_status=0, php=PHP_NOW, apache=APACHE_NOW):
+        """Run the upgrade RUN under sh with apt-get, dpkg-query and dpkg stubbed.
+
+        dpkg-query answers for each package with the version given. dpkg --compare-versions A ge B
+        sorts the two with sort -V, which orders these Debian versions as dpkg does.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             stubs = {
                 "apt-get": f"exit {apt_status}",
-                "dpkg-query": "echo 8.2.34-1~deb12u1",
-                "dpkg": f'[ "$1" = --compare-versions ] && exit {compare_status}; exit 2',
+                "dpkg-query": f'case "$3" in php8.2-common) echo {php} ;; apache2) echo {apache} ;; *) exit 1 ;; esac',
+                "dpkg": '[ "$1" = --compare-versions ] && [ "$3" = ge ] || exit 2\n'
+                        '[ "$2" = "$4" ] && exit 0\n'
+                        '[ "$(printf "%s\\n%s\\n" "$2" "$4" | sort -V | tail -n 1)" = "$2" ]',
                 "rm": "exit 0",
             }
             for name, body in stubs.items():
@@ -90,17 +110,36 @@ class SecurityUpdates(unittest.TestCase):
                 stub.write_text("#!/bin/sh\n" + body + "\n")
                 stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
             env = {"PATH": tmp + os.pathsep + "/usr/bin:/bin", "SECURITY_REFRESH": "x",
-                   "PHP_FLOOR": self.floor(path)}
+                   "PHP_FLOOR": self.floor(path), "APACHE_FLOOR": self.floor(path, "APACHE_FLOOR")}
             return subprocess.run(["sh", "-c", upgrade_run(path.read_text())], env=env,
                                   text=True, capture_output=True)
 
-    def test_build_fails_below_the_floor(self):
+    def test_build_passes_at_or_above_the_floors(self):
         for path in SERVING:
             with self.subTest(path=path.relative_to(IMAGES)):
                 self.assertEqual(self.run_stubbed(path).returncode, 0)
-                below = self.run_stubbed(path, compare_status=1)
+                # bookworm's own suite can be ahead of bookworm-security (2.4.68 against 2.4.67).
+                newer = self.run_stubbed(path, php="8.2.36-1~deb12u1", apache="2.4.68-1~deb12u1")
+                self.assertEqual(newer.returncode, 0, newer.stderr)
+
+    def test_build_fails_below_the_php_floor(self):
+        for path in SERVING:
+            with self.subTest(path=path.relative_to(IMAGES)):
+                below = self.run_stubbed(path, php="8.2.34-1~deb12u1")
                 self.assertNotEqual(below.returncode, 0)
-                self.assertIn("is older than", below.stderr)
+                self.assertIn("php8.2-common 8.2.34-1~deb12u1 is older than", below.stderr)
+
+    def test_build_fails_below_the_apache_floor(self):
+        for path in SERVING:
+            with self.subTest(path=path.relative_to(IMAGES)):
+                for old in ("2.4.67-1~deb12u2", "2.4.66-1~deb12u1"):
+                    below = self.run_stubbed(path, apache=old)
+                    self.assertNotEqual(below.returncode, 0, old)
+                    self.assertIn(f"apache2 {old} is older than", below.stderr)
+
+    def test_build_fails_when_the_upgrade_fails(self):
+        for path in SERVING:
+            with self.subTest(path=path.relative_to(IMAGES)):
                 self.assertNotEqual(self.run_stubbed(path, apt_status=100).returncode, 0)
 
 
