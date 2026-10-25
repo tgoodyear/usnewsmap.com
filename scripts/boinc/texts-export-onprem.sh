@@ -45,6 +45,6 @@ if [ ${#DOCS[@]} -gt 0 ]; then pages=$(IFS=,; echo "${DOCS[*]}"); fi
 bindir=$(mktemp -d)
 trap 'rm -rf "$bindir"' EXIT
 ln -s "$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" "$bindir/usnm-boinc"
-exec env PATH="$bindir:$PATH" "${env_args[@]}" \
+env PATH="$bindir:$PATH" "${env_args[@]}" \
   HANDOFF_STEP=texts-export HANDOFF_PAGES="$pages" HANDOFF_SAMPLE="$SAMPLE" AMERICAN_STORIES_ROOT="$AS_ROOT" \
   bash "$(dirname "$0")/../../contrib-compute/images/bridge/handoff-job.sh"
