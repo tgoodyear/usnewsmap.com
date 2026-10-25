@@ -359,7 +359,7 @@ fn build_row(ctx: &PartContext<'_>, row: &CuratedRow, out: &mut PartDocs) -> any
     out.with_as += u64::from(text_as.is_some());
     out.only_as += u64::from(!ok && ours.is_none() && local_text.is_none());
     out.without_locs += u64::from(!ok);
-    let place = catalog.place(&title.place_id).context("place")?;
+    let place = catalog.place_on(title, row.key.date).context("place")?;
     out.docs.push(match ours {
         Some((p, text)) => {
             out.replaced.push((
@@ -532,6 +532,7 @@ mod tests {
                 place_id: "P1".into(),
                 state: "IL".into(),
                 languages: vec!["eng".into(), "ger".into()],
+                place_periods: vec![],
                 extra: BTreeMap::new(),
             }],
             vec![Place {

@@ -267,7 +267,7 @@ async fn sample_batch(s: Arc<Shared>, b: RunBatch) -> anyhow::Result<BatchSample
             .catalog
             .title(&row.key.lccn)
             .with_context(|| format!("title `{}` is missing from the catalog", row.key.lccn))?;
-        let place = s.catalog.place(&title.place_id).context("place")?;
+        let place = s.catalog.place_on(title, row.key.date).context("place")?;
         // No `decade` field: the cluster's indexes take the template as
         // it is (`load::index_config`, `sink::INDEX_TEMPLATE`), as do sets.
         let doc = page_doc(

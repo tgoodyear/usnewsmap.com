@@ -626,6 +626,12 @@ pub struct TitleFields {
     /// `place_shard`: the place's ordinal modulo 8.
     pub shards: BTreeSet<u64>,
     pub states: BTreeSet<String>,
+    /// For a title with places by date: how many of its documents are in
+    /// each of `places`, by period. The periods are the ones
+    /// [`crate::catalog::Title::period_cuts`] cuts the days into, so a
+    /// place's list has one count for each of the title's periods. Empty
+    /// for a title in one place.
+    pub by_period: BTreeMap<String, Vec<u64>>,
     /// The title's languages, without empty codes.
     pub languages: BTreeSet<String>,
     /// The lowest and highest title ordinal of its documents' `sort_key`s
@@ -635,9 +641,14 @@ pub struct TitleFields {
 
 /// Check the documents of every title `index` holds (`held`, by LCCN)
 /// against `catalog`, the one the finish plans with: the same place, place
-/// shard, state, languages and ordinal as the release wrote. A catalog that
-/// changed since the run (titles-sync, geocode) would put titles and
-/// baselines in the snapshot that its documents don't match.
+/// shard, state, languages and ordinal as the release wrote. A title that
+/// moved has documents in each place by the dates of its pages, which the
+/// count of its documents in each place by period checks against the
+/// catalog's periods: every document, not only the ones at the ends of a
+/// place's dates. A catalog that changed since the run (titles-sync,
+/// geocode) would put titles and baselines in the snapshot that its
+/// documents don't match. `held` is counted by period with `catalog`'s own
+/// cuts ([`Catalog::period_cuts`], `IndexSink::title_fields`).
 pub fn check_titles(
     catalog: &Catalog,
     index: &str,
@@ -647,14 +658,20 @@ pub fn check_titles(
         let title = catalog.title(lccn).with_context(|| {
             format!("`{index}` has documents of {lccn}, which the catalog lacks")
         })?;
-        let place = catalog
-            .place(&title.place_id)
-            .with_context(|| format!("the catalog has no place `{}`", title.place_id))?;
+        // A title in one place has all its documents there. One that moved
+        // has them in its places by the dates of its pages: in each of its
+        // places, or in only some when the version has pages of some dates.
+        let ids: BTreeSet<&str> = if title.place_periods.is_empty() {
+            BTreeSet::from([title.place_id.as_str()])
+        } else {
+            got.places
+                .iter()
+                .map(String::as_str)
+                .filter(|id| title.place_ids().any(|own| own == *id))
+                .collect()
+        };
         let ordinal = u64::from(title.ordinal);
-        let want = TitleFields {
-            places: BTreeSet::from([title.place_id.clone()]),
-            shards: BTreeSet::from([u64::from(place.ordinal % 8)]),
-            states: BTreeSet::from([title.state.clone()]),
+        let mut want = TitleFields {
             languages: title
                 .languages
                 .iter()
@@ -662,12 +679,58 @@ pub fn check_titles(
                 .cloned()
                 .collect(),
             ordinals: (ordinal, ordinal),
+            ..TitleFields::default()
+        };
+        for id in ids {
+            let place = catalog
+                .place(id)
+                .with_context(|| format!("the catalog has no place `{id}`"))?;
+            want.places.insert(id.to_owned());
+            want.shards.insert(u64::from(place.ordinal % 8));
+            want.states.insert(title.state_in(place).to_owned());
+        }
+        let fields = TitleFields {
+            by_period: BTreeMap::new(),
+            ..got.clone()
         };
         ensure!(
-            *got == want,
-            "`{index}`'s documents of {lccn} have {got:?}; the catalog gives {want:?}. The catalog \
+            fields == want,
+            "`{index}`'s documents of {lccn} have {fields:?}; the catalog gives {want:?}. The catalog \
              changed since the run built the index: not finishing"
         );
+        // Each document of a title that moved is in the place of its date. A
+        // catalog that gained a period, or moved a boundary past pages
+        // already built, would leave documents in places it no longer gives
+        // their dates. The index counts a title's documents in each place
+        // by period, so a place that has two periods (a title that left and
+        // came back) is checked in each of them: its first and last
+        // documents being in a period of it says nothing of the ones between.
+        if !title.place_periods.is_empty() {
+            ensure!(
+                got.by_period.keys().eq(got.places.iter()),
+                "`{index}` doesn't say how many of its documents of {lccn} are in each place by \
+                 period: {got:?}. Not finishing"
+            );
+            for (place, counts) in &got.by_period {
+                ensure!(
+                    counts.len() == title.place_periods.len(),
+                    "`{index}` counts its documents of {lccn} in {place} in {} periods; the \
+                     catalog has {}. Not finishing",
+                    counts.len(),
+                    title.place_periods.len()
+                );
+                for (n, period) in counts.iter().zip(&title.place_periods) {
+                    ensure!(
+                        *n == 0 || period.place_id == *place,
+                        "`{index}` has {n} documents of {lccn} in {place} dated {}; the catalog \
+                         has the title in {} then. The catalog changed since the run built the \
+                         index: not finishing",
+                        period_dates(period),
+                        period.place_id
+                    );
+                }
+            }
+        }
     }
     tracing::info!(
         index,
@@ -675,6 +738,16 @@ pub fn check_titles(
         "the index's documents match the catalog"
     );
     Ok(())
+}
+
+/// The dates of a place period, for messages.
+fn period_dates(p: &catalog::PlacePeriod) -> String {
+    match (p.from, p.to) {
+        (Some(from), Some(to)) => format!("{from} to {to}"),
+        (Some(from), None) => format!("from {from}"),
+        (None, Some(to)) => format!("up to {to}"),
+        (None, None) => "on any date".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -800,6 +873,7 @@ mod tests {
                 place_id: place.id.clone(),
                 state: "IL".into(),
                 languages: vec!["eng".into(), String::new()],
+                place_periods: vec![],
                 extra: BTreeMap::new(),
             }],
             vec![place],
@@ -817,6 +891,7 @@ mod tests {
                 states: BTreeSet::from(["IL".to_owned()]),
                 languages: BTreeSet::from(["eng".to_owned()]),
                 ordinals: (7, 7),
+                ..TitleFields::default()
             },
         )]);
         check_titles(&catalog("P1", 11), "i", &held).unwrap();
@@ -833,6 +908,262 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("sn9, which the catalog lacks"), "{err}");
+    }
+
+    /// sn1 (ordinal 7) was in P1 (Maine, shard 3) up to `to` and is in P2
+    /// (New Hampshire, shard 4) from the day after.
+    fn moved_catalog_to(p2_ordinal: u32, to: &str) -> Catalog {
+        let place = |id: &str, ordinal, state: &str| crate::catalog::Place {
+            id: id.into(),
+            ordinal,
+            name: id.into(),
+            state: state.into(),
+            lat: 43.0,
+            lon: -71.0,
+            precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
+        };
+        let to: chrono::NaiveDate = to.parse().unwrap();
+        let period = |id: &str, from: Option<chrono::NaiveDate>, to| crate::catalog::PlacePeriod {
+            place_id: id.into(),
+            from,
+            to,
+        };
+        Catalog::new(
+            vec![crate::catalog::Title {
+                lccn: "sn1".into(),
+                name: "sn1".into(),
+                ordinal: 7,
+                place_id: "P2".into(),
+                state: "NH".into(),
+                languages: vec!["eng".into()],
+                place_periods: vec![
+                    period("P1", None, Some(to)),
+                    period("P2", to.succ_opt(), None),
+                ],
+                extra: BTreeMap::new(),
+            }],
+            vec![place("P1", 11, "ME"), place("P2", p2_ordinal, "NH")],
+        )
+        .unwrap()
+    }
+
+    fn moved_catalog(p2_ordinal: u32) -> Catalog {
+        moved_catalog_to(p2_ordinal, "1833-11-13")
+    }
+
+    /// sn1 was in P1 up to the day before `p2_from`, in P2 to 1860-12-31, and
+    /// is back in P1 from 1861-01-01. (A title that went away and came
+    /// back: P1 has two periods.)
+    fn returned_catalog(p2_from: &str) -> Catalog {
+        let place = |id: &str, ordinal, state: &str| crate::catalog::Place {
+            id: id.into(),
+            ordinal,
+            name: id.into(),
+            state: state.into(),
+            lat: 43.0,
+            lon: -71.0,
+            precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
+        };
+        let day = |d: &str| -> chrono::NaiveDate { d.parse().unwrap() };
+        let from = day(p2_from);
+        let period = |id: &str, from, to| crate::catalog::PlacePeriod {
+            place_id: id.into(),
+            from,
+            to,
+        };
+        Catalog::new(
+            vec![crate::catalog::Title {
+                lccn: "sn1".into(),
+                name: "sn1".into(),
+                ordinal: 7,
+                place_id: "P2".into(),
+                state: "NH".into(),
+                languages: vec!["eng".into()],
+                place_periods: vec![
+                    period("P1", None, from.pred_opt()),
+                    period("P2", Some(from), Some(day("1860-12-31"))),
+                    period("P1", Some(day("1861-01-01")), None),
+                ],
+                extra: BTreeMap::new(),
+            }],
+            vec![place("P1", 11, "ME"), place("P2", 12, "NH")],
+        )
+        .unwrap()
+    }
+
+    /// sn1's documents as a run that read `catalog` wrote them: one for each
+    /// of `pages`, a place and a date, in the place's shard and state.
+    fn written(catalog: &Catalog, pages: &[(&str, &str)]) -> Vec<Value> {
+        pages
+            .iter()
+            .enumerate()
+            .map(|(n, (place, date))| {
+                let p = catalog.place(place).unwrap();
+                serde_json::json!({
+                    "doc_id": format!("d{n}"), "lccn": "sn1", "place_id": place,
+                    "place_shard": p.ordinal % 8, "state": p.state, "language": ["eng"],
+                    "sort_key": (7u64 << 32) | n as u64,
+                    "day": usnm_core::time::day_number(date.parse().unwrap()),
+                })
+            })
+            .collect()
+    }
+
+    /// What the sink tells a finish of an index holding `docs`, counted by
+    /// the periods of the catalog the finish plans with.
+    fn held(catalog: &Catalog, docs: &[Value]) -> BTreeMap<String, TitleFields> {
+        let cuts = catalog.period_cuts();
+        let mut held = BTreeMap::new();
+        for d in docs {
+            crate::sink::add_title_fields(&mut held, d, &cuts).unwrap();
+        }
+        held
+    }
+
+    /// A finish with `catalog` checks an index holding `docs`.
+    fn check(catalog: &Catalog, docs: &[Value]) -> anyhow::Result<()> {
+        check_titles(catalog, "i", &held(catalog, docs))
+    }
+
+    /// The Morning Star's pages: Limerick, Maine, to 1833-11-13, then Dover.
+    const MORNING_STAR: [(&str, &str); 4] = [
+        ("P1", "1828-05-14"),
+        ("P1", "1833-11-13"),
+        ("P2", "1833-11-14"),
+        ("P2", "1857-04-01"),
+    ];
+
+    #[test]
+    fn a_title_that_moved_has_documents_in_each_place_it_has_pages_in() {
+        let run = moved_catalog(12);
+        let both = written(&run, &MORNING_STAR);
+        check(&run, &both).unwrap();
+        // A version with pages of only some dates has documents in only
+        // some of the places.
+        check(&run, &written(&run, &MORNING_STAR[..2])).unwrap();
+        check(&run, &written(&run, &MORNING_STAR[2..])).unwrap();
+        // The title's documents are in a place the catalog gives it no
+        // longer, or carry another place's shard or state.
+        let mut elsewhere = written(&run, &MORNING_STAR[..2]);
+        elsewhere[0]["place_id"] = "P3".into();
+        let err = check(&run, &elsewhere).unwrap_err().to_string();
+        assert!(err.contains("catalog changed"), "{err}");
+        assert!(check(&moved_catalog(13), &both).is_err());
+        let mut state = written(&run, &MORNING_STAR[..2]);
+        state[0]["state"] = "NH".into();
+        assert!(check(&run, &state).is_err());
+        let mut shard = written(&run, &MORNING_STAR[..2]);
+        shard[0]["place_shard"] = 4.into();
+        assert!(check(&run, &shard).is_err());
+        // A title in one place still has them all there.
+        assert!(check(&catalog("P1", 11), &both).is_err());
+    }
+
+    /// An index built before the catalog gave the title a place by date has
+    /// all its documents in the title's one place; one built after has them
+    /// in the place of their dates. Documents the finish would publish
+    /// beside baselines split by date have to be the second kind.
+    #[test]
+    fn the_documents_of_a_title_that_moved_are_in_the_places_of_their_dates() {
+        let run = moved_catalog(12);
+        let both = written(&run, &MORNING_STAR);
+        // The catalog the run built with.
+        check(&run, &both).unwrap();
+
+        // The run built with the title in P2 alone, whose documents hold all
+        // its dates; the catalog has since given it P1 before 1833-11-14.
+        let all_p2 = written(&run, &[("P2", "1828-05-14"), ("P2", "1857-04-01")]);
+        let err = check(&run, &all_p2).unwrap_err().to_string();
+        assert!(
+            err.contains("1 documents of sn1 in P2 dated up to 1833-11-13")
+                && err.contains("title in P1 then"),
+            "{err}"
+        );
+
+        // A period's boundary moved since the run, past days that have
+        // documents: later, so the first day in P2 is now in P1, or earlier,
+        // so the last day in P1 is now in P2.
+        for to in ["1833-11-20", "1833-11-10"] {
+            let err = check(&moved_catalog_to(12, to), &both)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("catalog changed"), "{to}: {err}");
+        }
+        // One moved between days with no documents leaves every document in
+        // the place of its date.
+        let gap = written(
+            &run,
+            &[
+                ("P1", "1828-05-14"),
+                ("P1", "1833-11-01"),
+                ("P2", "1834-01-02"),
+                ("P2", "1857-04-01"),
+            ],
+        );
+        check(&moved_catalog_to(12, "1833-11-13"), &gap).unwrap();
+        check(&moved_catalog_to(12, "1833-12-01"), &gap).unwrap();
+
+        // An index that wasn't asked for the title's periods, or that
+        // counted another catalog's, doesn't say.
+        let mut unsaid = held(&moved_catalog(12), &both);
+        unsaid.get_mut("sn1").unwrap().by_period.clear();
+        let err = check_titles(&run, "i", &unsaid).unwrap_err().to_string();
+        assert!(err.contains("doesn't say how many"), "{err}");
+        let err = check_titles(&run, "i", &held(&returned_catalog("1851-01-01"), &both))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("in 3 periods; the catalog has 2"), "{err}");
+    }
+
+    /// A title that left a place and came back has two periods in it. The
+    /// first and last documents of a place are in periods of it whenever
+    /// the periods' boundaries between them move, so they say nothing of
+    /// the documents between.
+    #[test]
+    fn a_title_that_returns_to_a_place_has_every_document_in_the_place_of_its_date() {
+        // P1 to 1850-12-31, P2 for 1851 to 1860, P1 again from 1861.
+        let run = returned_catalog("1851-01-01");
+        let pages = [
+            ("P1", "1840-06-01"),
+            ("P1", "1850-03-01"),
+            ("P2", "1855-06-01"),
+            ("P1", "1870-06-01"),
+        ];
+        let docs = written(&run, &pages);
+        check(&run, &docs).unwrap();
+
+        // P2 now starts on 1850-01-01: the page of 1850-03-01 is P2's, but
+        // the index has it in P1.
+        let moved = returned_catalog("1850-01-01");
+        let title = moved.title("sn1").unwrap();
+        // Each place's first and last documents are still in a period of it:
+        // what the check of the days at the ends of each place saw.
+        for place in ["P1", "P2"] {
+            let dates: Vec<_> = pages.iter().filter(|(p, _)| *p == place).collect();
+            for (_, date) in [dates[0], dates[dates.len() - 1]] {
+                assert_eq!(title.place_id_on(date.parse().unwrap()), place);
+            }
+        }
+        let err = check(&moved, &docs).unwrap_err().to_string();
+        assert!(
+            err.contains("1 documents of sn1 in P1 dated 1850-01-01 to 1860-12-31")
+                && err.contains("title in P2 then")
+                && err.contains("catalog changed"),
+            "{err}"
+        );
+
+        // P2 now starts after its page of 1855, which is then P1's.
+        let err = check(&returned_catalog("1856-01-01"), &docs)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("in P2 dated up to 1855-12-31"), "{err}");
+        // A boundary moved between days with no documents changes nothing.
+        check(&returned_catalog("1850-06-01"), &docs).unwrap();
+        check(&returned_catalog("1855-06-01"), &docs).unwrap();
     }
 
     fn resume(progress: Option<u64>, decades: Option<u64>) -> Resume {

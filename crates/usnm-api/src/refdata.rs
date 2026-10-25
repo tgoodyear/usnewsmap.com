@@ -161,6 +161,43 @@ pub struct Title {
     pub first_year: Option<u16>,
     #[serde(default)]
     pub last_year: Option<u16>,
+    /// The places of a title that moved, by the dates of its pages, oldest
+    /// first (`catalog/overrides/title-places.json`, #1066): a page dated
+    /// in one of them is in that place, and one in none is in `place_id`.
+    /// Empty for a title in one place and for a snapshot written before
+    /// they were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub place_periods: Vec<PlacePeriod>,
+}
+
+/// A place a title is in for part of its run: its pages dated from `from`
+/// to `to`, both days included. No `from` starts with the title, no `to`
+/// runs to its end.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PlacePeriod {
+    pub place_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<NaiveDate>,
+}
+
+impl Title {
+    /// Every place a page of the title can be in, each once: its periods'
+    /// places, oldest first, then its own place if no period is there.
+    /// Allocates nothing, for loops over every title.
+    pub fn place_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let periods = &self.place_periods;
+        periods
+            .iter()
+            .enumerate()
+            .filter(move |&(i, p)| !periods[..i].iter().any(|q| q.place_id == p.place_id))
+            .map(|(_, p)| p.place_id.as_str())
+            .chain(
+                Some(self.place_id.as_str())
+                    .filter(move |own| !periods.iter().any(|q| q.place_id == *own)),
+            )
+    }
 }
 
 /// Everything the API needs in memory for one published version.
