@@ -27,27 +27,76 @@ XML = b"""<server_status><database_file_states>
 
 class Observer(unittest.TestCase):
     def local(self):
-        return {"fetch": {"status": {"updated_at": "2026-10-16T19:55:00Z"},
-                          "sets": [{"name": "keep", "fetched": 10, "total": 30}]},
+        return {"generated_at": "2026-10-16T19:55:00Z",
+                "fetch": {"queue_configured": True, "total": {"pages": 50, "bytes": 1},
+                          "queue_summary": {"pages": 30, "pages_fetched": 10, "pages_left": 20}},
                 "nodes": [{"name": "node-3", "ok": True, "last_ok": "2026-10-16T19:59:00Z",
                            "pages_per_hour": 4},
                           {"name": "node-4", "ok": False, "pages_per_hour": 900}]}
 
     def test_local_counts_do_not_include_retired_or_missing_workers(self):
         stages = observer.local_stages(self.local(), NOW)
-        self.assertEqual([item["count"] for item in stages], [10, 30, 20, 4])
+        self.assertEqual([item["count"] for item in stages], [10, 30, 20, 50, 4])
         self.assertEqual(stages[0]["observed_at"], "2026-10-16T19:55:00Z")
 
     def test_malformed_local_counts_and_time_fail(self):
-        for key, value in [("fetched", 31), ("fetched", True), ("total", -1)]:
+        for key, value in [("pages_fetched", 31), ("pages_fetched", True), ("pages", -1),
+                           ("pages_left", 31)]:
             payload = self.local()
-            payload["fetch"]["sets"][0][key] = value
+            payload["fetch"]["queue_summary"][key] = value
             with self.assertRaises(ValueError):
                 observer.local_stages(payload, NOW)
         payload = self.local()
-        payload["fetch"]["status"]["updated_at"] = "2026-10-17T00:00:00Z"
+        payload["generated_at"] = "2026-10-17T00:00:00Z"
         with self.assertRaises(ValueError):
             observer.local_stages(payload, NOW)
+        for key, value in [("queue_configured", False), ("index_error", "unreadable"),
+                           ("queue_error", "unreadable")]:
+            payload = self.local()
+            payload["fetch"][key] = value
+            with self.assertRaises(ValueError):
+                observer.local_stages(payload, NOW)
+
+    def status(self):
+        return {"generated_at": "2026-10-16T19:58:00Z", "stale": False, "error": None,
+                "published": {"index_version": "pages-v20261022-1",
+                              "published_at": "2026-10-16T05:19:12Z", "pages": 1000,
+                              "sources": {"ocr_local": {"pages": 197}}}}
+
+    def test_published_ocr_pages_are_the_indexed_stage(self):
+        (item,) = observer.published_stages(json.dumps(self.status()).encode(), NOW)
+        self.assertEqual((item["id"], item["count"], item["observed_at"]),
+                         ("indexed", 197, "2026-10-16T19:58:00Z"))
+        self.assertIn("pages-v20261022-1", item["detail"])
+        value = observer.snapshot([{"source": "published-index", "stage": item}], [], NOW)
+        (indexed,) = [s for s in value["stages"] if s["id"] == "indexed"]
+        self.assertEqual(indexed["count"], 197)
+        # A pipeline-store failure doesn't hide the serving index's own count.
+        (item,) = observer.published_stages(
+            json.dumps({**self.status(), "stale": True, "error": "store"}).encode(), NOW)
+        self.assertEqual(item["count"], 197)
+        with self.assertRaises(ValueError):
+            observer.published_stages(
+                json.dumps({**self.status(), "generated_at": "2027-01-01T00:00:00Z"}).encode(), NOW)
+        empty = self.status()
+        empty["published"]["sources"]["ocr_local"] = None
+        (item,) = observer.published_stages(json.dumps(empty).encode(), NOW)
+        self.assertEqual(item["count"], 0)
+        bad = self.status()
+        bad["published"]["sources"]["ocr_local"]["pages"] = 1001
+        with self.assertRaises(ValueError):
+            observer.published_stages(json.dumps(bad).encode(), NOW)
+
+    def test_published_index_failure_leaves_other_sources(self):
+        with patch.object(observer, "fetch",
+                          side_effect=[json.dumps(self.local()).encode(), XML, OSError("x")]):
+            events, failures = observer.collect("http://local/", "https://project/", NOW,
+                                                api_status_url="https://api/")
+        self.assertEqual(len(events), 9)
+        self.assertEqual([f["code"] for f in failures], ["published-index-unavailable"])
+        value = observer.snapshot(events, failures, NOW)
+        (indexed,) = [s for s in value["stages"] if s["id"] == "indexed"]
+        self.assertIsNone(indexed["count"])
 
     def test_boinc_counts_are_replicas_not_eligible_pages(self):
         stages = observer.boinc_stages(XML, NOW)
@@ -65,7 +114,7 @@ class Observer(unittest.TestCase):
 
     def test_timestamp_range_errors_preserve_other_source(self):
         payload = self.local()
-        payload["fetch"]["status"]["updated_at"] = "0001-01-01T00:00:00+01:00"
+        payload["generated_at"] = "0001-01-01T00:00:00+01:00"
         with patch.object(observer, "fetch", side_effect=[json.dumps(payload).encode(), XML]):
             events, failures = observer.collect("http://local/", "https://project/", NOW)
         self.assertEqual(len(events), 4)
@@ -90,7 +139,7 @@ class Observer(unittest.TestCase):
     def test_dashboard_counter_limit_is_inclusive_and_oversize_is_source_isolated(self):
         self.assertEqual(observer.count(10**12), 10**12)
         payload = self.local()
-        payload["fetch"]["sets"][0].update(fetched=10**12 + 1, total=10**12 + 1)
+        payload["fetch"]["queue_summary"].update(pages_fetched=10**12 + 1, pages=10**12 + 1)
         with patch.object(observer, "fetch", side_effect=[json.dumps(payload).encode(), XML]):
             events, failures = observer.collect("http://local/", "https://project/", NOW)
         self.assertEqual(len(events), 4)

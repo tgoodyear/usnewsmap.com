@@ -95,6 +95,6 @@
 <path class="arrow" d="M250 398 L450 390.5" marker-end="url(#ah-serial-set)"/>
 <path class="arrow" d="M650 390.5 L670 390.5" marker-end="url(#ah-serial-set)"/>
 <text class="lane x" x="14" y="22">GovInfo (U.S. Government Publishing Office)</text>
-<text class="lane h" x="14" y="142">Home network (OCR node 3)</text>
+<text class="lane h" x="14" y="142">Home network</text>
 <text class="lane a" x="14" y="328">Azure (data lake, private)</text>
 </svg>

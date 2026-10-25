@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -68,9 +68,25 @@ struct Cli {
     /// `failures-full.jsonl`), read-only.
     #[arg(long, env = "USNM_OCRDASH_SCANS", default_value = "/tank/ocr/scans")]
     scans: PathBuf,
-    /// The manifest, when the fetcher's status doesn't name one.
+    /// The plan to count the keep and buffer sets against, pinned: the
+    /// fetcher's status naming another manifest doesn't replace it. Without
+    /// it, the status's manifest is used unless it is a queued one.
     #[arg(long, env = "USNM_OCRDASH_MANIFEST")]
     manifest: Option<PathBuf>,
+    /// Where the fetch queue's manifests are (`queue-ocr-*/`,
+    /// `queue-quality-*/`), read-only. `none` to not read a queue.
+    #[arg(
+        long,
+        env = "USNM_OCRDASH_MANIFESTS",
+        default_value = "/tank/ocr/manifests"
+    )]
+    manifests: PathBuf,
+    /// The bulk OCR archive download's `bulk-status.json`, read-only.
+    #[arg(long, env = "USNM_OCRDASH_BULK_STATUS")]
+    bulk_status: Option<PathBuf>,
+    /// The global LoC pacer's `pacer.json`, read-only.
+    #[arg(long, env = "USNM_OCRDASH_PACER")]
+    pacer: Option<PathBuf>,
     /// A host stats file to read (`<host>.json`), comma-separated or
     /// repeated.
     #[arg(long, env = "USNM_OCRDASH_HOST_FILE", value_delimiter = ',')]
@@ -169,7 +185,11 @@ async fn main() -> anyhow::Result<()> {
             cli.pipeline_snapshot.clone(),
             cli.pipeline_max_age_secs,
         )),
-        fetch: Mutex::new(Fetch::new(cli.scans.clone(), cli.manifest.clone())),
+        fetch: Mutex::new(
+            Fetch::new(cli.scans.clone(), cli.manifest.clone())
+                .with_manifests((cli.manifests != Path::new("none")).then(|| cli.manifests.clone()))
+                .with_files(cli.bulk_status.clone(), cli.pacer.clone()),
+        ),
         nodes: Mutex::new(Nodes::open(cli.state_dir.clone(), &workers)?),
         hosts: Mutex::new(Hosts::new(cli.host_file.clone())),
         ssets: Mutex::new(Ssets::default()),
