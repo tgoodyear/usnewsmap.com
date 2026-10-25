@@ -7,8 +7,9 @@
 //! `<out>/<archive stem>.parquet`, with one row a page: the word count, the words that
 //! carry a confidence, their mean and median, the share under `--threshold`, and the OCR
 //! software the ALTO names. A file is written to `.part` and renamed, beside a
-//! `<stem>.done` that records the archive's size, so a rerun skips archives already read
-//! and re-reads one whose size changed. It only reads the archives.
+//! `<stem>.done` that records the archive's size and the threshold, so a rerun skips
+//! archives already read and re-reads one whose size or threshold changed. It only reads the
+//! archives, and streams each page's ALTO from the tar entry.
 
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -154,10 +155,9 @@ pub fn archive_stats(path: &Path, threshold: f64) -> anyhow::Result<(Vec<PageSta
         let mut entry = entry?;
         let p = entry.path()?.to_string_lossy().into_owned();
         let Some(doc) = doc_id_of(&p) else { continue };
-        // A page's ALTO is a few MB at most; cap it so a broken entry can't run away.
-        let mut xml = Vec::new();
-        entry.by_ref().take(64 << 20).read_to_end(&mut xml)?;
-        match page_stats(doc, &xml[..], threshold) {
+        // Streamed straight from the tar entry, capped so a broken entry can't run away.
+        let xml = std::io::BufReader::with_capacity(64 << 10, entry.by_ref().take(64 << 20));
+        match page_stats(doc, xml, threshold) {
             Ok(s) => out.push(s),
             Err(e) => {
                 skipped += 1;
@@ -266,9 +266,12 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let size = std::fs::metadata(&path)?.len();
         let stem = name.trim_end_matches(".tar.bz2");
         let done = opts.out.join(format!("{stem}.done"));
+        // The archive's size and the threshold: a new threshold reads every archive again (an
+        // older size-only marker never matches).
+        let signature = format!("{size} {}", opts.threshold);
         if std::fs::read_to_string(&done)
             .ok()
-            .is_some_and(|d| d.trim() == size.to_string())
+            .is_some_and(|d| d.trim() == signature)
         {
             s.already += 1;
             continue;
@@ -278,7 +281,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let part = opts.out.join(format!(".{stem}.parquet.part"));
         std::fs::write(&part, body)?;
         std::fs::rename(&part, opts.out.join(format!("{stem}.parquet")))?;
-        std::fs::write(&done, format!("{size}\n"))?;
+        std::fs::write(&done, format!("{signature}\n"))?;
         s.read += 1;
         s.pages += rows.len() as u64;
         s.pages_left_out += left_out;
@@ -355,5 +358,14 @@ mod tests {
         assert!(opts.out.join("b_x_ver02.parquet").exists());
         let again = run(&opts).unwrap();
         assert_eq!((again.read, again.already), (0, 1));
+        let other = Options {
+            threshold: 0.7,
+            ..opts.clone()
+        };
+        assert_eq!(
+            run(&other).unwrap().read,
+            1,
+            "a new threshold reads it again"
+        );
     }
 }
