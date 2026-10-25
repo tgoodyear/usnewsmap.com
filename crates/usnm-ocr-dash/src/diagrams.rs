@@ -800,13 +800,21 @@ mod tests {
                     assert!(!private, "private address {word}");
                 }
             }
-            for name in ["pve", "unifi", ".tjg.fyi", "/tank", "/srv/", "ocr-node", "node3"] {
+            for name in [
+                "pve", "unifi", ".tjg.fyi", "/tank", "/srv/", "ocr-node", "node3",
+            ] {
                 assert!(!t.to_lowercase().contains(name), "internal name {name}");
             }
             // The public view shows these as they are: no container or VM
             // numbers, and nothing the public scrubber would change.
-            assert!(!t.contains("CT ") && !t.contains("VM "), "a container number in {t}");
-            for line in t.split(['<', '>']).filter(|l| !l.starts_with('/') && !l.contains('=') && !l.contains('{')) {
+            assert!(
+                !t.contains("CT ") && !t.contains("VM "),
+                "a container number in {t}"
+            );
+            for line in t
+                .split(['<', '>'])
+                .filter(|l| !l.starts_with('/') && !l.contains('=') && !l.contains('{'))
+            {
                 assert_eq!(crate::public::scrub(line), line, "scrub changes {line}");
             }
         }
@@ -1014,7 +1022,10 @@ mod tests {
             done: 120,
             ..Default::default()
         });
-        assert!(!steps(&v).contains_key("bulk"), "no modified time, not fresh");
+        assert!(
+            !steps(&v).contains_key("bulk"),
+            "no modified time, not fresh"
+        );
         v.fetch.bulk.modified = Some(v.generated_at - chrono::Duration::minutes(5));
         let st = steps(&v);
         assert_eq!(st["bulk"].class, "running");
@@ -1036,15 +1047,34 @@ mod tests {
         assert!(!DIAGRAMS[4].svg.contains("mirror coverage"));
         assert!(DIAGRAMS[3].svg.contains("stopped"));
         // Queues and ocr-sync are in the home band, above the Azure band.
-        for (svg, id) in [(DIAGRAMS[1].svg, "loc-keep"), (DIAGRAMS[2].svg, "loc-buffer")] {
+        for (svg, id) in [
+            (DIAGRAMS[1].svg, "loc-keep"),
+            (DIAGRAMS[2].svg, "loc-buffer"),
+        ] {
             let azure = svg.find("class=\"band a\"").unwrap();
             let y = |g: &str| {
                 let at = svg.find(&format!("id=\"{id}-{g}\"")).unwrap();
                 let card = &svg[at..];
-                let y: u32 = card.split("y=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+                let y: u32 = card
+                    .split("y=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
                 y
             };
-            let band_y: u32 = svg[azure..].split("y=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+            let band_y: u32 = svg[azure..]
+                .split("y=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
             assert!(y("q") < band_y && y("sync") < band_y && y("out") > band_y);
         }
     }
