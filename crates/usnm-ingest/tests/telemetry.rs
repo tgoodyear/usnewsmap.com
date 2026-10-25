@@ -42,3 +42,37 @@ async fn exports_with_a_bearer_token_and_flushes_on_shutdown() {
     assert!(all.contains("\"release\""), "{all}");
     assert!(all.contains(r#""ai.cloud.role":"usnm-ingest""#), "{all}");
 }
+
+/// The ocr-sync failure alert (infra/modules/ocr-sync-alerts.bicep) reads
+/// `ingest.command_failures` with its `command` and `outcome` as the
+/// metric's properties, the way main records it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_failure_is_exported_with_its_command() {
+    let (endpoint, seen) = fake_ingestion().await;
+    let conn = format!(
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint={endpoint}"
+    );
+    let (tracer, meter) = providers(&conn, Plain::with_token("tok"), SERVICE).unwrap();
+    meter
+        .meter("usnm-ingest")
+        .u64_counter("ingest.command_failures")
+        .build()
+        .add(
+            1,
+            &[
+                opentelemetry::KeyValue::new("command", "ocr-sync"),
+                opentelemetry::KeyValue::new("outcome", "failed"),
+            ],
+        );
+    tokio::task::spawn_blocking(move || {
+        tracer.shutdown().unwrap();
+        meter.shutdown().unwrap();
+    })
+    .await
+    .unwrap();
+
+    let all = seen.all_json();
+    assert!(all.contains("ingest.command_failures"), "{all}");
+    assert!(all.contains(r#""command":"ocr-sync""#), "{all}");
+    assert!(all.contains(r#""outcome":"failed""#), "{all}");
+}

@@ -465,8 +465,8 @@ enum Command {
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
         loc_bucket: Option<String>,
         /// From the end of one request to LoC's bucket to the start of the
-        /// next; at least 6000.
-        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 6000)]
+        /// next; at least 1000.
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 2000)]
         loc_bucket_gap_ms: u64,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
@@ -495,6 +495,22 @@ enum Command {
         /// Keep at least this many GB free on the output's filesystem.
         #[arg(long, env = "USNM_BULK_MIN_FREE_GB", default_value_t = 200)]
         min_free_gb: u64,
+        /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
+    /// per archive, skipping archives already read. Reads only.
+    LocAltoStats {
+        /// The archives (`bulk-ocr`'s output).
+        #[arg(long, env = "USNM_LOC_ALTO_ARCHIVES")]
+        archives: PathBuf,
+        /// Where the Parquet files go.
+        #[arg(long, env = "USNM_LOC_ALTO_OUT")]
+        out: PathBuf,
+        /// The `wc_below` share counts words under this confidence.
+        #[arg(long, env = "USNM_LOC_ALTO_THRESHOLD", default_value_t = 0.5)]
+        threshold: f64,
         /// At most this many archives this run.
         #[arg(long)]
         limit: Option<usize>,
@@ -726,7 +742,7 @@ mod cli_tests {
     }
 
     #[test]
-    fn locs_bucket_is_off_unless_named_and_never_under_six_seconds_apart() {
+    fn locs_bucket_is_off_unless_named_and_never_under_a_second_apart() {
         let _env = env_lock();
         const NAMES: [&str; 2] = [
             "USNM_PREFETCH_LOC_BUCKET",
@@ -769,10 +785,10 @@ mod cli_tests {
         // Off by default, and when empty.
         assert!(bucket(&[]).unwrap().is_none());
         assert!(bucket(&["--loc-bucket", ""]).unwrap().is_none());
-        // The flag, 6 s apart unless told more.
+        // The flag, 2 s apart unless told otherwise.
         let root = usnm_ocr_worker::loc::bucket::ROOT;
         let b = bucket(&["--loc-bucket", root]).unwrap().unwrap();
-        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(6)));
+        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(2)));
         let b = bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "9000"])
             .unwrap()
             .unwrap();
@@ -784,7 +800,7 @@ mod cli_tests {
         std::env::set_var(NAMES[1], "7000");
         let b = bucket(&[]).unwrap().unwrap();
         assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(7)));
-        std::env::set_var(NAMES[1], "5999");
+        std::env::set_var(NAMES[1], "999");
         assert!(bucket(&[]).is_err());
         std::env::set_var(NAMES[0], "");
         assert!(bucket(&[]).unwrap().is_none(), "empty: off");
@@ -1206,6 +1222,25 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             )
             .await?;
             println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::LocAltoStats {
+            archives,
+            out,
+            threshold,
+            limit,
+        } => {
+            anyhow::ensure!((0.0..=1.0).contains(&threshold), "--threshold: 0 to 1");
+            let s = tokio::task::spawn_blocking(move || {
+                usnm_ocr_worker::loc_alto::run(&usnm_ocr_worker::loc_alto::Options {
+                    archives,
+                    out,
+                    threshold,
+                    limit,
+                })
+            })
+            .await??;
+            println!("{}", serde_json::to_string(&s)?);
             Ok(())
         }
         Command::LocPacer { file, reset } => {

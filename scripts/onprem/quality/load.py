@@ -10,6 +10,7 @@ table, then INSERT ... ON CONFLICT), so a rerun replaces what it loaded before.
   load.py ocr --dsn DSN --curated DIR
   load.py staging --dsn DSN --campaign NAME --docs FILE --image-source S --alto-source S
   load.py agreement --dsn DSN --dir DIR [--campaign text-agreement-v1] [--state FILE]
+  load.py locwc --dsn DSN --dir DIR [--state FILE]
   load.py refresh --dsn DSN
 
 damage   every audit/damage/v2/<batch>_verNN.parquet: the page rows (quality.pages) and the
@@ -24,6 +25,8 @@ agreement  the text agreement of LoC against American Stories (usnm-ingest ocr-a
          there) into quality.text_compare as loc-hist against as. Run as
          quality_text_writer. --state lists the files loaded (name, size, mtime), so a
          rerun loads only new or rewritten batches.
+locwc    LoC's own word confidence per page (usnm-ocr-worker loc-alto-stats' Parquet, one file
+         per bulk OCR archive) into quality.loc_alto; --state skips files already loaded.
 refresh  rebuilds quality.page_summary (quality_loader only).
 
 DSN is a libpq connection string with the client certificate, for example
@@ -63,6 +66,10 @@ DAMAGE_COLS = [
 ]
 OCR_COLS = ["doc_id", "reader", "engine", "source", "ocred_at", "text_chars", "damage_rate"]
 STAGING_COLS = ["campaign", "doc_id", "image_source", "alto_source"]
+LOCWC_COLS = [
+    "doc_id", "batch", "batch_version", "words", "words_with_wc", "wc_mean", "wc_median", "wc_below",
+    "wc_threshold", "software", "archive",
+]
 AGREE_COLS = [
     "campaign", "doc_id", "reader_a", "reader_b", "batch", "batch_version", "metric_version",
     "cer_a", "cer_b", "cer_sym", "wer_a", "wer_b", "dice", "chars_a", "chars_b", "words_a", "words_b",
@@ -314,6 +321,62 @@ def agreement_rows(table, campaign):
     return list(rows.values())
 
 
+def locwc_rows(table):
+    """quality.loc_alto rows from one loc-alto-stats file; a page once per source batch."""
+    rows = {}
+    for x in table:
+        d = x.get("doc_id")
+        if not DOC_RE.match(d or "") or not x.get("batch"):
+            continue
+        rows[(d, x["batch"], integer(x.get("batch_version")))] = (
+            d, x["batch"], integer(x.get("batch_version")), integer(x.get("words")) or 0,
+            integer(x.get("words_with_wc")) or 0, num(x.get("wc_mean")), num(x.get("wc_median")),
+            num(x.get("wc_below")), num(x.get("wc_threshold")), x.get("software"), x.get("archive"),
+        )
+    return list(rows.values())
+
+
+def load_state(path):
+    state = {}
+    if path and os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                name, sig = line.rstrip("\n").split("\t", 1)
+                state[name] = sig
+    return state
+
+
+def save_state(path, state):
+    if not path:
+        return
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("".join(f"{k}\t{v}\n" for k, v in sorted(state.items())))
+    os.replace(tmp, path)
+
+
+def cmd_locwc(a):
+    import pyarrow.parquet as pq
+
+    state = load_state(a.state)
+    loaded = rows_n = 0
+    for fp in sorted(glob.glob(os.path.join(a.dir, "*_ver[0-9][0-9].parquet"))):
+        name = os.path.basename(fp)
+        st = os.stat(fp)
+        sig = f"{st.st_size}:{int(st.st_mtime)}"
+        if state.get(name) == sig:
+            continue
+        rows = locwc_rows(pq.read_table(fp).to_pylist())
+        psql(a.dsn, upsert_sql("loc_alto", LOCWC_COLS, ["doc_id", "batch", "batch_version"], rows))
+        loaded += 1
+        rows_n += len(rows)
+        state[name] = sig
+        save_state(a.state, state)
+        if a.limit and loaded >= a.limit:
+            break
+    log("LoC word confidence loaded", files=loaded, rows=rows_n, known=len(state))
+
+
 def cmd_agreement(a):
     import pyarrow.parquet as pq
 
@@ -378,8 +441,12 @@ def main(argv=None):
     g.add_argument("--campaign", default="text-agreement-v1")
     g.add_argument("--state")
     g.add_argument("--limit", type=int, default=0)
+    w = sub.add_parser("locwc")
+    w.add_argument("--dir", required=True)
+    w.add_argument("--state")
+    w.add_argument("--limit", type=int, default=0)
     f = sub.add_parser("refresh")
-    for p in (d, r, o, s, g, f):
+    for p in (d, r, o, s, g, w, f):
         p.add_argument("--dsn", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "refresh":
@@ -387,7 +454,7 @@ def main(argv=None):
         log("page_summary refreshed")
         return
     {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging,
-     "agreement": cmd_agreement}[a.cmd](a)
+     "agreement": cmd_agreement, "locwc": cmd_locwc}[a.cmd](a)
 
 
 if __name__ == "__main__":

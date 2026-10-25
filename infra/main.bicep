@@ -120,7 +120,7 @@ param serialSetOnPrem bool = false
 @description('Object id of the on-prem Serial Set runner\'s identity: the OCR node\'s Arc machine identity (with serialSetOnPrem). Settings only, never in the repository.')
 param serialSetRunner string = ''
 
-@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
+@description('Build full releases on the on-prem release container and copy them into Azure (#283, #917; docs/operations/rebuild-and-index-storage.md, "Full rebuild on-prem"): onPremReleaseHost gets read on curated, writes to reference under pages-v*/ and index-storage-pending.json, writes to the index account\'s qw-index, Cosmos Data Contributor on index_runs only (the publish records the version\'s run, #1096; the Cosmos firewall must be open to ocrNodeIps, with onPremServing or cosmosOnPremAccess) and AcrPull (modules/onprem-release.bicep); the data lake and, with indexStorage, the index account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay). Turn it off after a publish: the index account closes again.')
 param onPremRelease bool = false
 
 @description('Object id of the on-prem release container\'s Arc machine identity (usnm-release-arcs-<env>, with onPremRelease). Settings only, never in the repository.')
@@ -131,6 +131,12 @@ param onPremServing bool = false
 
 @description('Object id of the on-prem serving container\'s Arc machine identity (with onPremServing). Settings only, never in the repository.')
 param onPremServingHost string = ''
+
+@description('Copy the search log\'s day files to a restricted dataset on tank each day (#1097, ADR-0027 settled decision 3): searchLogCopyHost gets Storage Blob Data Reader on the searches container (modules/searchlog-copy.bicep), and the data lake opens to ocrNodeIps only (the firewall denies everything else; the private endpoint stays). Use it or USNM_SEARCH_LOG_READERS for the host, not both.')
+param searchLogCopy bool = false
+
+@description('Object id of the search log copy host\'s Arc machine identity (with searchLogCopy). Settings only, never in the repository.')
+param searchLogCopyHost string = ''
 
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
@@ -302,6 +308,9 @@ param ingestOnPrem bool = false
 
 @description('Let batchHost run backfill curation (`usnm-ingest curate --enqueue`, `enqueue`; #917), in place of caj-usnm-backfill: its curated grant also creates under pages/ (create-only), and Cosmos Data Contributor on `batches` and `issues`. Needs ocrSyncOnPrem. Off (the default) until a backfill is needed.')
 param backfillOnPrem bool = false
+
+@description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
+param ocrSyncAlerts bool = false
 
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
@@ -489,16 +498,20 @@ module identities 'modules/identities.bicep' = {
 var ingestIdentityOn = (ingestJobs && useAcr) || ocr
 
 // The data lake opens to the node IPs only for the on-prem Serial Set
-// runner (serialSetOnPrem), the Japanese OCR, the release or the serving
-// container; the Cosmos account only for the serving container (#955). The
-// public-network policy then exempts each by resource id, like the accounts
-// below. Provision writes the policy's exemptions before the stack
-// (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem, ocrNodeIps)
+// runner (serialSetOnPrem), the Japanese OCR, the release, the serving
+// container, the on-prem OCR pickup (#917) or the search log copy (#1097); the
+// Cosmos account only for the serving container (#955). The public-network
+// policy then exempts each by resource id, like the accounts below. Provision
+// writes the policy's exemptions before the stack (policy-exemptions.bicep, #336).
+var dataLakeOpen = lakeOpen(
+  serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy,
+  ocrNodeIps
+)
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
 // on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
-// which also uses the lake.
+// which also uses the lake. The on-prem release host's index_runs write (#1096) needs one of
+// these three; onPremRelease doesn't open it.
 var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
@@ -544,6 +557,7 @@ module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && 
     storageName: storage.outputs.name
     indexAccountName: indexStore!.outputs.name
     registryName: registry.outputs.name
+    cosmosName: cosmos.outputs.name
     principalId: trim(onPremReleaseHost)
     writerRoleName: releaseWriterRole!.outputs.name
   }
@@ -894,6 +908,16 @@ module onPremServingGrant 'modules/onprem-serving.bicep' = if (onPremServing && 
   }
 }
 
+// The search log copy host's grant (#1097): its own identity only.
+module searchLogCopyGrant 'modules/searchlog-copy.bicep' = if (searchLogCopy && !empty(trim(searchLogCopyHost))) {
+  scope: rg
+  name: 'searchlog-copy'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(searchLogCopyHost)
+  }
+}
+
 module ocrService 'modules/ocr.bicep' = if (ocr) {
   scope: rg
   name: 'ocr'
@@ -1216,9 +1240,29 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
       backfillReplicaSilent: n.backfillReplicaSilentAlert
       ocrSyncBacklog: n.ocrSyncBacklogAlert
     }
-    ocrSync: ocrNodes
+    // The Azure pickup job's backlog; ocr-sync-alerts below watches the on-prem pickup.
+    ocrSync: ocrNodes && !ocrSyncOnPrem
     // While a backfill lasts, it runs on USNM_BACKFILL_CRON.
     backfill: !empty(backfillCron)
+  }
+}
+
+// The on-prem OCR pickup (ocr-sync in pve-laptop CT 215, #1139): failed runs, no
+// run for more than 2 hours, and the ocr-out backlog, from the metrics it exports.
+module ocrSyncAlertRules 'modules/ocr-sync-alerts.bicep' = if (!empty(emails) && ocrSyncAlerts && ocrSyncOnPrem) {
+  scope: rg
+  name: 'ocr-sync-alerts'
+  params: {
+    location: location
+    tags: tags
+    workspaceId: monitoring.outputs.workspaceId
+    appInsightsId: monitoring.outputs.appInsightsId
+    actionGroupId: monitoring.outputs.actionGroupId
+    alertNames: {
+      failed: n.ocrSyncFailedAlert
+      stale: n.ocrSyncStaleAlert
+      backlog: n.ocrSyncBacklogAlert
+    }
   }
 }
 

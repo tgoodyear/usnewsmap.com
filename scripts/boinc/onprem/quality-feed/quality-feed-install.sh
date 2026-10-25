@@ -16,7 +16,8 @@
 # /etc/usnm/quality-feed.env, and usnm-quality-agree-load.{service,timer} (enabled once
 # the text writer's certificate and /srv/text-agreement are there), and
 # usnm-quality-refresh.{service,timer} (the page summary, every 6 hours, as the loader), and
-# usnm-ocr-manifest.{service,timer} (OCR's prefetch manifests, hourly, #1055).
+# usnm-ocr-manifest.{service,timer} (OCR's prefetch manifests, hourly, #1055), and
+# usnm-quality-locwc-load.{service,timer} (LoC's word confidence, once /srv/locstats is there).
 # On the host it
 # installs quality-ship.sh, quality_receive.py,
 # usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env. The campaign's page list
@@ -65,7 +66,8 @@ scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed
   "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
   "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" \
   "$HERE/../ocr-feed/ocr_manifest.py" "$HERE/../ocr-feed/usnm-ocr-manifest.service" \
-  "$HERE/../ocr-feed/usnm-ocr-manifest.timer" "root@$HOST:$stage/"
+  "$HERE/../ocr-feed/usnm-ocr-manifest.timer" "$HERE/usnm-quality-locwc-load.service" \
+  "$HERE/usnm-quality-locwc-load.timer" "root@$HOST:$stage/"
 
 "${SSH[@]}" bash -s -- "$CTID" "$stage" "$CAMPAIGN" "$SCAN_SERVER" "$CHUNK" "$PENDING" "$WORKERS" \
   "$ENGINE" "$MAX_UNSENT" "$MAX_CHUNKS" "$BUNDLE" "$ENABLE" <<'REMOTE'
@@ -81,6 +83,8 @@ pct push "$ct" "$stage/load.py" /opt/usnm-quality-feed/load.py --perms 755
 pct push "$ct" "$stage/ocr_manifest.py" /opt/usnm-quality-feed/ocr_manifest.py --perms 755
 pct push "$ct" "$stage/usnm-ocr-manifest.service" /etc/systemd/system/usnm-ocr-manifest.service
 pct push "$ct" "$stage/usnm-ocr-manifest.timer" /etc/systemd/system/usnm-ocr-manifest.timer
+pct push "$ct" "$stage/usnm-quality-locwc-load.service" /etc/systemd/system/usnm-quality-locwc-load.service
+pct push "$ct" "$stage/usnm-quality-locwc-load.timer" /etc/systemd/system/usnm-quality-locwc-load.timer
 pct push "$ct" "$stage/usnm-quality-feed.service" /etc/systemd/system/usnm-quality-feed.service
 pct push "$ct" "$stage/usnm-quality-agree-load.service" /etc/systemd/system/usnm-quality-agree-load.service
 pct push "$ct" "$stage/usnm-quality-agree-load.timer" /etc/systemd/system/usnm-quality-agree-load.timer
@@ -96,6 +100,11 @@ in_ct systemctl daemon-reload
 # --role quality_text_writer, copied into /etc/usnm/quality-text-db/ with a dsn file).
 if in_ct test -s /etc/usnm/quality-text-db/dsn && in_ct test -d /srv/text-agreement; then
   in_ct systemctl enable --now usnm-quality-agree-load.timer
+fi
+# LoC's word confidence, hourly, once the stats are mounted (home-infra locstats).
+if in_ct test -d /srv/locstats && in_ct test -s /etc/usnm/quality-db/dsn; then
+  in_ct systemctl enable usnm-quality-locwc-load.timer
+  in_ct systemctl start usnm-quality-locwc-load.timer
 fi
 # OCR's prefetch manifests, hourly (#1055).
 in_ct systemctl enable usnm-ocr-manifest.timer

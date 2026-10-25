@@ -67,9 +67,25 @@ enum Commands {
     Status(job::StatusArgs),
 }
 
+/// Export and claim log to stderr (stdout carries their output): warnings,
+/// and the `ocr-sync` lock waits from `usnm_ocr_local` at info (#1133).
+/// `RUST_LOG` overrides it. The other commands keep their own output.
+fn log_to_stderr() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,usnm_ocr_local=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
+    let command = Cli::parse().command;
+    if matches!(command, Commands::Export(_) | Commands::Claim(_)) {
+        log_to_stderr();
+    }
+    match command {
         Commands::HostTrust(command) => host_trust::cli::run(command).await,
         Commands::Export(args) => job::export(args).await,
         Commands::Claim(command) => claim::cli::run(command).await,

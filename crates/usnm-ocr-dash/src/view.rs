@@ -38,6 +38,9 @@ pub struct View {
     pub next: NextView,
     pub ocred: OcredView,
     pub azure: AzureView,
+    /// Redacted for the public listener ([`crate::public::redact`]).
+    #[serde(skip)]
+    pub public: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -697,6 +700,7 @@ pub fn build(
             imports: IMPORTS_NOTE,
             workbook_url: s.workbook_url.clone(),
         },
+        public: false,
     }
 }
 

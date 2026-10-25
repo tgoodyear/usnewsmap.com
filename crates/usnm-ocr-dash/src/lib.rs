@@ -11,6 +11,7 @@ pub mod html;
 pub mod net;
 pub mod nodes;
 pub mod pipeline;
+pub mod public;
 pub mod sset;
 pub mod tail;
 pub mod view;
@@ -144,22 +145,46 @@ async fn view_of(app: Arc<App>) -> Result<View, StatusCode> {
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn page(State(app): State<Arc<App>>) -> Response {
-    match view_of(app).await {
-        Ok(v) => (
-            [(header::CACHE_CONTROL, "no-store")],
-            Html(html::render(&v)),
-        )
-            .into_response(),
+/// The LAN's headers: nothing cached.
+const LAN_CACHE: &str = "no-store";
+/// The public listener's: Cloudflare may keep a page for a minute.
+const PUBLIC_CACHE: &str = "public, max-age=60";
+
+async fn view_for(app: Arc<App>, public: bool) -> Result<View, StatusCode> {
+    let mut v = view_of(app).await?;
+    if public {
+        public::redact(&mut v);
+    }
+    Ok(v)
+}
+
+async fn page_as(app: Arc<App>, public: bool) -> Response {
+    let cache = if public { PUBLIC_CACHE } else { LAN_CACHE };
+    match view_for(app, public).await {
+        Ok(v) => ([(header::CACHE_CONTROL, cache)], Html(html::render(&v))).into_response(),
         Err(s) => s.into_response(),
     }
 }
 
-async fn api(State(app): State<Arc<App>>, Path(part): Path<String>) -> Response {
+async fn page(State(app): State<Arc<App>>) -> Response {
+    page_as(app, false).await
+}
+
+async fn public_page(State(app): State<Arc<App>>) -> Response {
+    page_as(app, true).await
+}
+
+/// The JSON parts the public listener serves.
+pub const PUBLIC_PARTS: &[&str] = &["view", "pipeline", "fetch"];
+
+async fn api_as(app: Arc<App>, part: &str, public: bool) -> Response {
     let Some(part) = part.strip_suffix(".json") else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let v = match view_of(app).await {
+    if public && !PUBLIC_PARTS.contains(&part) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let v = match view_for(app, public).await {
         Ok(v) => v,
         Err(s) => return s.into_response(),
     };
@@ -174,10 +199,19 @@ async fn api(State(app): State<Arc<App>>, Path(part): Path<String>) -> Response 
         "ocred" => serde_json::to_value(&v.ocred),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
+    let cache = if public { PUBLIC_CACHE } else { LAN_CACHE };
     match body {
-        Ok(b) => ([(header::CACHE_CONTROL, "no-store")], Json(b)).into_response(),
+        Ok(b) => ([(header::CACHE_CONTROL, cache)], Json(b)).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+async fn api(State(app): State<Arc<App>>, Path(part): Path<String>) -> Response {
+    api_as(app, &part, false).await
+}
+
+async fn public_api(State(app): State<Arc<App>>, Path(part): Path<String>) -> Response {
+    api_as(app, &part, true).await
 }
 
 /// A host pushes its stats: only from its own address, and only its own.
@@ -235,6 +269,34 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/sset/{name}", put(put_sset))
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
+        .with_state(app)
+}
+
+/// Every public response says how long it may be kept: a minute for a
+/// success, not at all for an error (a 404, a 405, a 500).
+async fn public_cache(mut r: Response) -> Response {
+    let v = if r.status().is_success() {
+        PUBLIC_CACHE
+    } else {
+        LAN_CACHE
+    };
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static(v));
+    r
+}
+
+/// The public listener (`--public-listen`), for a tunnel to put on the
+/// internet: GET and HEAD of the page, `/healthz` and
+/// `/api/{view,pipeline,fetch}.json`, all redacted ([`public::redact`]).
+/// No push routes, no `--allow` check (only the tunnel reaches it), no
+/// TLS. Anything else is a 404, or a 405 for another method on a route.
+pub fn public_router(app: Arc<App>) -> Router {
+    Router::new()
+        .route("/", get(public_page))
+        .route("/healthz", get(|| async { "ok\n" }))
+        .route("/api/{part}", get(public_api))
+        .layer(DefaultBodyLimit::max(1024))
+        .layer(middleware::map_response(public_cache))
         .with_state(app)
 }
 
@@ -499,5 +561,315 @@ mod tests {
         assert!(json.contains("\"curated\":120"));
         let (_, page) = call(a, "198.51.100.50", "GET", "/", "").await;
         assert!(page.contains("Serial Set"));
+    }
+
+    /// The lab's names, numbers, paths and addresses, as the LAN sees them.
+    fn realistic(dir: &std::path::Path) -> Arc<App> {
+        use usnm_ocr_contract::status::{
+            Completion, Dataset, DeadLetterView, HostStats, Pool, PveGuest, QueueStats,
+            WorkerStatus,
+        };
+        let now = Utc::now();
+        let at = (now - chrono::Duration::minutes(2)).to_rfc3339();
+        let scans = dir.join("scans");
+        std::fs::create_dir_all(&scans).unwrap();
+        std::fs::write(
+            scans.join("status-full.json"),
+            format!(
+                "{{\"state\":\"running\",\"updated_at\":\"{at}\",\"started_at\":\"{at}\",\
+                 \"manifest\":\"/tank/ocr/manifests/queue-ocr-20261025t015125/manifest.parquet\",\
+                 \"out\":\"/tank/ocr/scans\",\"pid\":4242,\
+                 \"error\":\"can't write /var/lib/usnm/x on pve-big\"}}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            scans.join("failures-full.jsonl"),
+            format!(
+                "{{\"doc_id\":\"sn1_1890-01-01_ed-1_seq-1\",\"kind\":\"transient\",\
+                 \"error\":\"http://192.0.2.10:8390/scan: refused (CT 212, /srv/usnm/cache)\",\"at\":\"{at}\"}}\n"
+            ),
+        )
+        .unwrap();
+        let mut workbook =
+            "https://portal.azure.com/#@00000000-0000-0000-0000-000000000001".to_owned();
+        workbook.push_str("/resource/subscriptions/00000000-0000-0000-0000-000000000002/workbook");
+        let a = Arc::new(App {
+            pipeline: Mutex::new(pipeline::Pipeline::new(None, 900)),
+            fetch: Mutex::new(Fetch::new(
+                scans,
+                Some(dir.join("etc-manifest").join("manifest.parquet")),
+            )),
+            nodes: Mutex::new(
+                Nodes::open(
+                    dir.join("state"),
+                    &[(
+                        "usnm-ocr-node3".to_owned(),
+                        "http://192.0.2.10:8381".to_owned(),
+                    )],
+                )
+                .unwrap(),
+            ),
+            hosts: Mutex::new(Hosts::new(Vec::new())),
+            ssets: Mutex::new(Ssets::default()),
+            seed_plan_path: None,
+            seed_plan: Mutex::new(Some(
+                [("pve-big".to_owned(), "/etc/usnm/seed.env".to_owned())].into(),
+            )),
+            settings: Settings {
+                next_n: 10,
+                refresh_secs: 30,
+                guest_prefix: "usnm-".into(),
+                workbook_url: Some(workbook),
+            },
+            allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
+            pushers: BTreeMap::new(),
+            sset_pushers: BTreeMap::new(),
+        });
+        let guest = |vmid, kind: &str, name: &str, node: &str| PveGuest {
+            vmid,
+            kind: kind.into(),
+            name: name.into(),
+            node: node.into(),
+            status: "running".into(),
+            ..PveGuest::default()
+        };
+        {
+            let mut h = a.hosts.lock().unwrap();
+            h.put(
+                HostStats {
+                    schema: 1,
+                    host: "pve-big".into(),
+                    collected_at: now,
+                    resources: vec![
+                        guest(212, "lxc", "usnm-ocrdash", "pve-big"),
+                        guest(215, "lxc", "usnm-release", "pve-big"),
+                        guest(205, "qemu", "usnm-gpu1", "pve-big"),
+                    ],
+                    pools: vec![Pool {
+                        name: "tank".into(),
+                        health: "ONLINE".into(),
+                        status_x: "pool 'tank' is healthy".into(),
+                        ..Pool::default()
+                    }],
+                    datasets: vec![Dataset {
+                        name: "tank/ocr/scans".into(),
+                        ..Dataset::default()
+                    }],
+                    ..HostStats::default()
+                },
+                now,
+            );
+            h.put(
+                HostStats {
+                    schema: 1,
+                    host: "pve".into(),
+                    collected_at: now,
+                    resources: vec![guest(230, "lxc", "usnm-boinc", "pve")],
+                    ..HostStats::default()
+                },
+                now,
+            );
+        }
+        {
+            let mut n = a.nodes.lock().unwrap();
+            let node = &mut n.nodes[0];
+            node.last_ok = Some(now);
+            node.status = Some(WorkerStatus {
+                node_id: "usnm-ocr-node3".into(),
+                started_at: now,
+                now,
+                scan_cache_url: Some("http://pve-big.tjg.fyi:8390".into()),
+                routes: [("scan".to_owned(), "http://192.0.2.11:8390".to_owned())].into(),
+                recent: vec![Completion {
+                    doc_id: "sn1_1890-01-01_ed-1_seq-1".into(),
+                    outcome: "done".into(),
+                    scan: "/tank/ocr/scans/sn1.jp2".into(),
+                    finished_at: now,
+                    started_at: now,
+                    ..Completion::default()
+                }],
+                queues: Some(QueueStats {
+                    checked_at: now,
+                    dead_letters: vec![DeadLetterView {
+                        message_id: "m1".into(),
+                        node: "usnm-ocr-node3".into(),
+                        error: "timed out reaching ocr.tjg.fyi".into(),
+                        ..DeadLetterView::default()
+                    }],
+                    ..QueueStats::default()
+                }),
+                ..WorkerStatus::default()
+            });
+        }
+        a.ssets.lock().unwrap().put(
+            "usnm-ocr-node4",
+            sset::SsetStatus {
+                unit: "usnm-sset.service".into(),
+                active: "active".into(),
+                current_volume: Some("/srv/usnm/sset/vol-1".into()),
+                ..sset::SsetStatus::default()
+            },
+            now,
+        );
+        let mut snap = pipeline::tests::fixture(now);
+        snap["stages"][0]["id"] = "local_usnm-ocr-node3_completed_hour".into();
+        snap["stages"][0]["detail"] = "read /data/scans/status-full.json on pve-big".into();
+        snap["issues"][0]["code"] = "usnm-ocr-node3-stale".into();
+        snap["issues"][0]["detail"] =
+            "tank/ocr/scans/index-full.jsonl from [2001:db8::7]:8381".into();
+        let snap_path = dir.join("pipeline.json");
+        std::fs::write(&snap_path, serde_json::to_vec(&snap).unwrap()).unwrap();
+        *a.pipeline.lock().unwrap() = pipeline::Pipeline::new(Some(snap_path), 900);
+        a.poll_files();
+        a
+    }
+
+    /// What must never reach the internet.
+    fn leaks(body: &str) -> Vec<String> {
+        let mut found: Vec<String> = [
+            "pve",
+            "tjg.fyi",
+            "CT 2",
+            "VM 2",
+            "usnm-ocr-node",
+            "/tank",
+            "tank/",
+            "/var/",
+            "/srv/",
+            "/etc/",
+            "/tmp/",
+            "portal.azure",
+            "subscriptions",
+            "192.0.2.",
+            "198.51.100.",
+            "usnm-ocrdash",
+            "usnm-release",
+            "usnm-sset.service",
+            "seed.env",
+        ]
+        .iter()
+        .filter(|p| body.contains(*p))
+        .map(|p| (*p).to_owned())
+        .collect();
+        // Any dotted quad at all.
+        let b = body.as_bytes();
+        for i in 0..b.len() {
+            if !body.is_char_boundary(i)
+                || (i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b'.'))
+            {
+                continue;
+            }
+            let rest = &body[i..];
+            let quad: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            let parts: Vec<&str> = quad.trim_end_matches('.').split('.').collect();
+            if parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok()) {
+                found.push(quad);
+            }
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn the_public_view_names_no_host_container_path_or_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = realistic(dir.path());
+        // The fixture has them all on the LAN.
+        let (s, lan) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert_eq!(s, StatusCode::OK);
+        for p in [
+            "pve-big",
+            "CT 212",
+            "/tank",
+            "portal.azure",
+            "usnm-ocr-node3",
+        ] {
+            assert!(lan.contains(p), "the LAN page lacks {p}");
+        }
+        for uri in [
+            "/",
+            "/api/view.json",
+            "/api/pipeline.json",
+            "/api/fetch.json",
+        ] {
+            let ((s, body), _) =
+                call_on(public_router(a.clone()), "203.0.113.3", "GET", uri, "").await;
+            assert_eq!(s, StatusCode::OK, "{uri}");
+            let found = leaks(&body);
+            assert!(found.is_empty(), "{uri} shows {found:?}");
+        }
+        let ((_, page), _) = call_on(public_router(a.clone()), "203.0.113.3", "GET", "/", "").await;
+        assert!(page.contains("scan server"));
+        assert!(page.contains("queue-ocr-20261025t015125"));
+        assert!(page.contains("OCR node 1"));
+        let ((_, p), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/api/pipeline.json",
+            "",
+        )
+        .await;
+        assert!(p.contains("local_worker1_completed_hour"), "{p}");
+    }
+
+    #[tokio::test]
+    async fn the_public_listener_serves_reads_only_and_lets_them_be_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let send = |method: &str, uri: &str| {
+            let r = public_router(a.clone()).layer(MockConnectInfo(
+                "203.0.113.3:40000".parse::<SocketAddr>().unwrap(),
+            ));
+            let req = HttpRequest::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::from("{}"))
+                .unwrap();
+            async move { r.oneshot(req).await.unwrap() }
+        };
+        for uri in [
+            "/",
+            "/api/view.json",
+            "/api/pipeline.json",
+            "/api/fetch.json",
+        ] {
+            for m in ["GET", "HEAD"] {
+                let r = send(m, uri).await;
+                assert_eq!(r.status(), StatusCode::OK, "{m} {uri}");
+                assert_eq!(
+                    r.headers()[header::CACHE_CONTROL],
+                    "public, max-age=60",
+                    "{m} {uri}"
+                );
+            }
+        }
+        for (m, uri, want) in [
+            ("PUT", "/api/host/pve", StatusCode::NOT_FOUND),
+            ("PUT", "/api/sset/sset", StatusCode::NOT_FOUND),
+            ("GET", "/api/host/pve", StatusCode::NOT_FOUND),
+            ("GET", "/api/hosts.json", StatusCode::NOT_FOUND),
+            ("GET", "/api/nodes.json", StatusCode::NOT_FOUND),
+            ("GET", "/api/next.json", StatusCode::NOT_FOUND),
+            ("POST", "/", StatusCode::METHOD_NOT_ALLOWED),
+            ("PUT", "/api/view.json", StatusCode::METHOD_NOT_ALLOWED),
+            ("DELETE", "/api/fetch.json", StatusCode::METHOD_NOT_ALLOWED),
+        ] {
+            let r = send(m, uri).await;
+            assert_eq!(r.status(), want, "{m} {uri}");
+            assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store", "{m} {uri}");
+        }
+        // The LAN listener keeps its headers.
+        let r = router(a.clone())
+            .layer(MockConnectInfo(
+                "198.51.100.50:40000".parse::<SocketAddr>().unwrap(),
+            ))
+            .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
     }
 }

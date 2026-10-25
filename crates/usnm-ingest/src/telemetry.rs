@@ -36,6 +36,11 @@ pub struct Metrics {
     pub curate_duration: Histogram<f64>,
     pub docs_expected: Gauge<u64>,
     pub disk_free: Gauge<u64>,
+    /// Commands that ended in error, by `command` and `outcome` (the
+    /// "command failed" line's). The on-prem runs' JSON lines stay in the
+    /// host's journal; this is how a failed one reaches Application
+    /// Insights (the ocr-sync failure alert, #1139).
+    pub command_failures: Counter<u64>,
 }
 
 /// The instruments, created on first use from the global meter provider
@@ -79,6 +84,10 @@ pub fn metrics() -> &'static Metrics {
                 .u64_gauge("work_disk_free_bytes")
                 .with_unit("By")
                 .with_description("Free space on the work directory's file system")
+                .build(),
+            command_failures: m
+                .u64_counter("ingest.command_failures")
+                .with_description("Commands that ended in error, by command and outcome")
                 .build(),
         }
     })

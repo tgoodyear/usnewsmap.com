@@ -17,6 +17,8 @@ pub mod cache;
 pub mod contract;
 pub mod engine;
 pub mod loc;
+/// LoC's word confidence per page from the bulk OCR archives (#962).
+pub mod loc_alto;
 /// Fetching scans ahead of the workers (#368).
 pub mod prefetch;
 /// The page's `run_id` and runs record (13 §13.8, #307).

@@ -159,7 +159,7 @@ The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists fo
 - Message Processor on `ocr-deadletter`, Message Sender and Queue Data Reader on all three (`--from-quarantine` puts dead letters back on `ocr-deadletter`);
 - Cosmos Data Contributor on `ops` only, Monitoring Metrics Publisher, and AcrPull to install the binary.
 
-The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); traces and metrics go to the environment's Application Insights as before. The two alerts below read the Azure job's console logs, so they stay quiet while the pickup runs on-prem.
+The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); metrics go to the environment's Application Insights as before, and the alerts below read them.
 
 Each run:
 
@@ -221,7 +221,15 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --report
 ```
 
-**Alerts** (with alert emails): a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+**Alerts** (with alert emails). For the Azure job, a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+
+For the on-prem pickup, `USNM_OCR_SYNC_ALERTS` (on in prod, with `USNM_OCR_SYNC_ONPREM`; #1139) deploys three log alerts on the environment's workspace (`infra/modules/ocr-sync-alerts.bicep`). They read the metrics the run sends to Application Insights, so CT 215 needs no agent:
+
+- `usnm-ocrs-failed-alert-<env>` (severity 2): a run recorded `ingest.command_failures` (command `ocr-sync`) in the last 30 minutes. Every `usnm-ingest` that ends in error records it before it exits. The error itself is in the journal.
+- `usnm-ocrs-stale-alert-<env>` (severity 2): no `ocr.out.oldest_age_s` for more than 2 hours (2 h 20 min). Only a run that gets through the pickup records it, so this rule catches a stopped timer, a container that is down, a run killed before it could record a failure, and telemetry that no longer arrives.
+- `usnm-ocrs-backlog-alert-<env>` (severity 3): the last run's `ocr.out.oldest_age_s` is over 72 hours. `ocr.out.parts_left` has how many parts wait.
+
+Each email names, in `Detail`, the last failure's time, the last good run's time or the oldest part's day. Each costs $0.50 a month (checked every 15 minutes, the backlog rule hourly). The failure count needs a `usnm-ingest` from #1139 or later in CT 215 (`batch-ct-ingest.sh --install`); the other two work with any release.
 
 ## Our OCR in releases (#296)
 
@@ -256,6 +264,8 @@ States come from the operational view; steps without telemetry show "not tracked
 The panel spans the operational-details section below "At a glance". Its stage list scrolls independently; expand a stage for provenance, or "Coverage, provenance and issues" for source limits and diagnostics. Open details and list positions survive automatic refresh. Closed operational details retain their existing panels and refresh on reopening, preserving list positions while summaries continue to update.
 
 Have the producer atomically publish a readable snapshot file and configure `--pipeline-snapshot` / `USNM_OCRDASH_PIPELINE_SNAPSHOT` through the deployment's infrastructure tooling. Preserve existing source, TLS and access settings. `USNM_OCRDASH_PIPELINE_MAX_AGE_SECS` / `--pipeline-max-age-secs` sets evidence freshness (default 900 seconds; allowed 1–604800).
+
+**Public view.** `--public-listen` / `USNM_OCRDASH_PUBLIC_LISTEN` (an address and port, unset by default) starts a second, plain-HTTP listener for a Cloudflare Tunnel. It serves GET and HEAD of `/`, `/healthz`, `/api/view.json`, `/api/pipeline.json` and `/api/fetch.json` only, redacted (no workbook link, host, node or guest names, container numbers, paths, addresses or seed plan), with `Cache-Control: public, max-age=60`. Pushes and every other route are not on it. It has no `--allow` check: bind it to loopback or an address only cloudflared can reach. See [12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard).
 
 Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
 

@@ -21,7 +21,7 @@ names remain pinned until their migration and rebuild windows.
 - [Environments and deploys](environments-and-deploys.md): settings and where they live, deploying the jobs, the archival storage account, the dev environment lifecycle and the search cluster experiment that runs in dev.
 - [The title catalog and releases](catalog-and-releases.md): the title catalog, the backfill and the first version, switching the API to the published indexes, weekly updates and checking a release's splits.
 - [Full rebuilds and index storage](rebuild-and-index-storage.md): the full rebuild (with duplicate-safe ingest and the on-prem rebuild), the index storage cutover and pruning old index versions.
-- [Search serving](search-serving.md): the Quickwit searcher's caches, threads, capacity, app and image, cache warm-up, and the search log.
+- [Search serving](search-serving.md): the Quickwit searcher's caches, threads, capacity, app and image, cache warm-up, the search log and its daily copy on `tank`.
 - [American Stories](american-stories.md): American Stories' text in the index, its comparison against LoC's text, and writing the text for our pages.
 - [Congress pages and the Serial Set](congress-pages.md): the Congressional Globe and Serial Set fetches, and the Serial Set on an OCR node.
 - [Pictures](pictures.md): Newspaper Navigator's picture boxes in the curated store.
