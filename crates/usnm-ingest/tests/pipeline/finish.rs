@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use serde_json::Value;
+use usnm_ingest::catalog::{Catalog, PlacePeriod};
 use usnm_ingest::release::Release;
 use usnm_ingest::sink::JsonlSink;
 use usnm_store::{LocalStore, ObjectStore};
@@ -574,6 +575,97 @@ fn metastore_splits(qw: &Path, index: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A title's places by date from `(place, from, to)` days, the ends left open
+/// as the catalog has them.
+fn place_periods(spec: &[(&str, Option<&str>, Option<&str>)]) -> Vec<PlacePeriod> {
+    let day = |d: &str| d.parse::<NaiveDate>().unwrap();
+    spec.iter()
+        .map(|&(place, from, to)| PlacePeriod {
+            place_id: place.to_owned(),
+            from: from.map(day),
+            to: to.map(day),
+        })
+        .collect()
+}
+
+/// The titles the real-writer finish moves between places (#1066), by the
+/// dates of their pages as the test lays them out. sn99000002's pages are
+/// dated 1839 to 1841: they are in Illinois's place (P00001) before the first
+/// page of July 1839 and from the first page of July 1841, and in the title's
+/// own, New York's, between, so P00001 has two periods and the search has a
+/// range with both a start and an end. sn99000003's pages are dated 1895 to
+/// 1897: in Georgia's place (P00004) up to its first page of July 1896 and
+/// then in its own, one cut, as a title that moved once has.
+///
+/// The pages are weekly and the cuts are put against them. The second and
+/// third periods of sn99000002 start on the day of a page, so a range that
+/// began a day late, or that counted its last day in the next range too,
+/// would put a page in the wrong period. sn99000003's starts the day after a
+/// page, so a range that began a day early would. A cut in the middle of a
+/// week, as a half-year's first day is, shows none of these.
+fn moved() -> [(&'static str, Vec<PlacePeriod>); 2] {
+    [
+        (
+            "sn99000002",
+            place_periods(&[
+                ("P00001", None, Some("1839-07-05")),
+                ("P00002", Some("1839-07-06"), Some("1841-07-02")),
+                ("P00001", Some("1841-07-03"), None),
+            ]),
+        ),
+        (
+            "sn99000003",
+            place_periods(&[
+                ("P00004", None, Some("1896-07-04")),
+                ("P00003", Some("1896-07-05"), None),
+            ]),
+        ),
+    ]
+}
+
+/// `e`'s catalog with `moved()`'s titles in the places they were in by date,
+/// written before the release starts: a full release puts each page in the
+/// place of its date, and a finish takes the catalog the run had (it refuses
+/// one written since).
+async fn move_titles(e: &Env) {
+    let mut titles = e.reference_json("catalog/titles.json").await;
+    for (lccn, periods) in moved() {
+        let title = titles
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|t| t["lccn"] == lccn)
+            .unwrap();
+        title["place_periods"] = serde_json::to_value(periods).unwrap();
+    }
+    e.reference
+        .put(
+            "catalog/titles.json",
+            serde_json::to_vec(&titles).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+}
+
+/// How many documents `lccn` has in each place, by the periods `catalog` gives
+/// the title, as its pages with text say: a page is in the period its date
+/// falls in, and so in that period's place. Counted from the pages and the
+/// periods' dates, not the days and cuts the search is sent.
+fn docs_by_period(catalog: &Catalog, lccn: &str, pages: &[&Page]) -> BTreeMap<String, Vec<u64>> {
+    let periods = &catalog.title(lccn).unwrap().place_periods;
+    let mut by: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for p in pages
+        .iter()
+        .filter(|p| p.lccn == lccn && !p.text.is_empty())
+    {
+        let i = periods.iter().position(|q| q.contains(p.date)).unwrap();
+        by.entry(periods[i].place_id.clone())
+            .or_insert_with(|| vec![0; periods.len()])[i] += 1;
+    }
+    by
+}
+
 /// `release-finish` on a real Quickwit writer through ingest v1 (#283): a
 /// full base laid out by decade whose merge wait runs out after its count
 /// (a one-second deadline), the writer stopped, and a staged split left in
@@ -582,8 +674,13 @@ fn metastore_splits(qw: &Path, index: &str) -> Vec<(String, String)> {
 /// index with the release's restart, puts its merge policy back, builds the
 /// Japanese index and publishes the version an uninterrupted run of the same
 /// inputs publishes: the same counts, the same splits by decade within the
-/// split ceiling, the same snapshot and pointer, each page once. Runs when
-/// `QUICKWIT_BIN` is set.
+/// split ceiling, the same snapshot and pointer, each page once. Two titles
+/// have moved between places by the dates of their pages (`moved`), so the
+/// finish counts their documents in each place by period with the range
+/// aggregation Quickwit answers and checks them against the catalog (#1132):
+/// the counts are those of the pages' dates, and a catalog that puts a period
+/// elsewhere than the documents are is refused. Runs when `QUICKWIT_BIN` is
+/// set.
 #[tokio::test]
 async fn a_release_whose_merge_wait_ran_out_is_finished_on_a_real_writer() {
     let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
@@ -591,11 +688,12 @@ async fn a_release_whose_merge_wait_ran_out_is_finished_on_a_real_writer() {
         return;
     };
     use usnm_ingest::activity::Reporter;
-    use usnm_ingest::finish::{AsOf, Resume};
+    use usnm_ingest::finish::{check_titles, AsOf, Resume};
     use usnm_ingest::merges::Node;
-    use usnm_ingest::sink::{IngestApi, QuickwitNode, QuickwitSink};
+    use usnm_ingest::sink::{IndexSink, IngestApi, QuickwitNode, QuickwitSink};
 
     let whole = env().await;
+    move_titles(&whole).await;
     let pages = fixture_pages();
     let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
     let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
@@ -635,6 +733,7 @@ async fn a_release_whose_merge_wait_ran_out_is_finished_on_a_real_writer() {
     )
     .await;
     let e = env().await;
+    move_titles(&e).await;
     same_inputs(&whole, &e).await;
     let settings = |e: &Env| Release {
         ja_latin: true,
@@ -762,6 +861,69 @@ async fn a_release_whose_merge_wait_ran_out_is_finished_on_a_real_writer() {
         .await
         .unwrap();
     assert_eq!(v["aggregations"]["twice"]["buckets"], serde_json::json!([]));
+
+    // The finish counted the documents of the titles that moved by place and
+    // period with the search the node answered. Sent again, it counts each
+    // document in the place and period of its date, as the pages say, and the
+    // check passes.
+    let catalog = Catalog::load(e.reference.as_ref()).await.unwrap();
+    let all: Vec<&Page> = early.iter().chain(&late).collect();
+    let held = sink
+        .title_fields(&main, &catalog.period_cuts())
+        .await
+        .unwrap()
+        .unwrap();
+    for (lccn, periods) in moved() {
+        let want = docs_by_period(&catalog, lccn, &all);
+        // Every period has documents, so no count is of nothing.
+        let filled = want.values().flatten().filter(|&&n| n > 0).count();
+        assert_eq!(filled, periods.len(), "{lccn}: {want:?}");
+        assert_eq!(held[lccn].by_period, want, "{lccn}");
+    }
+    check_titles(&catalog, &main, &held).unwrap();
+    // A catalog that gives some dates another place than the documents of
+    // those dates are in is refused: for sn99000002, dates in the middle of
+    // a place's run; for sn99000003, the end of it.
+    let elsewhere = [
+        (
+            "sn99000002",
+            place_periods(&[
+                ("P00001", None, Some("1839-06-30")),
+                ("P00002", Some("1839-07-01"), Some("1840-06-30")),
+                ("P00001", Some("1840-07-01"), Some("1840-12-31")),
+                ("P00002", Some("1841-01-01"), Some("1841-06-30")),
+                ("P00001", Some("1841-07-01"), None),
+            ]),
+            "in P00002 dated 1840-07-01 to 1840-12-31",
+        ),
+        (
+            "sn99000003",
+            place_periods(&[
+                ("P00004", None, Some("1897-06-30")),
+                ("P00003", Some("1897-07-01"), None),
+            ]),
+            "in P00003 dated up to 1897-06-30",
+        ),
+    ];
+    for (lccn, periods, says) in elsewhere {
+        let mut titles = catalog.titles.clone();
+        titles
+            .iter_mut()
+            .find(|t| t.lccn == lccn)
+            .unwrap()
+            .place_periods = periods;
+        let other = Catalog::new(titles, catalog.places.clone()).unwrap();
+        let held = sink
+            .title_fields(&main, &other.period_cuts())
+            .await
+            .unwrap()
+            .unwrap();
+        let err = check_titles(&other, &main, &held).unwrap_err().to_string();
+        assert!(
+            err.contains("catalog changed") && err.contains(says),
+            "{lccn}: {err}"
+        );
+    }
     node.stop().await.unwrap();
 
     // The same version as the whole run's: snapshot, layout and pointer.

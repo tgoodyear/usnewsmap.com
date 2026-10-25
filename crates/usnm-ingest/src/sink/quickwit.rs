@@ -1253,7 +1253,9 @@ mod tests {
     #[test]
     fn reads_a_titles_documents_by_place_and_period() {
         // As Quickwit 0.9.1 answers a range aggregation: the first range
-        // has no `from`, the last no `to`, and empty ranges are listed.
+        // has no `from`, the last no `to`, and empty ranges are listed. A
+        // real node's answer has this shape (the pipeline test
+        // `a_release_whose_merge_wait_ran_out_is_finished_on_a_real_writer`).
         let answer = |p1: Value, p2: Value| {
             serde_json::json!({"num_hits": 5, "aggregations": {"places": {"buckets": [
                 {"key": "P1", "doc_count": 3, "periods": {"buckets": p1}},
