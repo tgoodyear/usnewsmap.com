@@ -17,7 +17,7 @@ ADR-0027 left the identity and the place the copy runs to be decided when it was
 
 | File                          | Runs where                    | What it does                                                                                                                                                                               |
 | ----------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `usnm-searchlog-copy.service` | The copy host, from the timer | Runs `usnm-ingest searchlog-copy` as the host's Arc identity, with write access to the dataset only. Fails if the dataset isn't mounted.                                                   |
+| `usnm-searchlog-copy.service` | The copy host, from the timer | Runs `usnm-ingest searchlog-copy` as the host's Arc identity, with write access to the dataset only. Fails if the dataset isn't mounted, by the command's own check.                       |
 | `usnm-searchlog-copy.timer`   | The copy host                 | Starts the service at 02:30 UTC every day, with up to 20 minutes' delay, and after a missed run when the host is back.                                                                     |
 | `test_units.py`               | CI and locally                | Checks that the units name flags and settings the command has, write only the dataset, keep a private `/tmp`, and run after the day file is written, and that this table lists every file. |
 
@@ -45,12 +45,22 @@ The command is `crates/usnm-ingest/src/cli/searchlog_copy.rs` and the copy logic
    sudo install -m 0755 src/target/release/usnm-ingest /usr/local/bin/
    ```
 
-4. **The grant.** Look up the host's Arc object id, save it as a private setting and provision. Preview first:
+4. **The grant.** Two settings and a provision. The host's Arc object id is a private setting (the settings store, never committed). `USNM_SEARCH_LOG_COPY` is a public one: `settings.sh` writes it into `infra/env/prod.json`, which has to go through a pull request, because `provision.sh` refuses an environment file with uncommitted changes (`--allow-dirty` is for experiments). The same provision opens the lake's firewall to the node IPs (`USNM_OCR_NODE_IPS`), so read the preview first.
 
    ```sh
    az resource show -g <Arc resource group> -n <Arc machine name> --resource-type Microsoft.HybridCompute/machines --query identity.principalId -o tsv
    scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_COPY_HOST --value <that object id>
+   ```
+
+   Then, on a branch:
+
+   ```sh
    scripts/azure/settings.sh --env prod --key USNM_SEARCH_LOG_COPY --value true
+   ```
+
+   Commit `infra/env/prod.json`, open the pull request and merge it. From `main`, preview and then provision:
+
+   ```sh
    scripts/azure/provision.sh --env prod --what-if
    scripts/azure/provision.sh --env prod
    ```

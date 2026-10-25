@@ -73,7 +73,6 @@ class ServiceTest(unittest.TestCase):
 
     def test_the_dataset_is_mounted_and_the_only_place_written(self):
         to = self.words[self.words.index("--to") + 1]
-        self.assertEqual(self.unit["Unit"]["AssertPathIsMountPoint"], [to])
         self.assertEqual(self.unit["Unit"]["RequiresMountsFor"], [to])
         self.assertEqual(self.service["ReadWritePaths"], [to])
         self.assertEqual(self.service["ProtectSystem"], ["strict"])
@@ -82,6 +81,17 @@ class ServiceTest(unittest.TestCase):
         state_dir = "/var/lib/" + self.service["StateDirectory"][0]
         self.assertTrue(status.startswith(state_dir + "/"), status)
         self.assertFalse(status.startswith(to), "status is not in the dataset")
+
+    def test_a_dataset_that_is_not_mounted_fails_the_unit(self):
+        # A failed AssertPathIsMountPoint= fails only the start job: the unit stays "inactive" and
+        # is not in `systemctl --failed`. A failed Condition*= skips the unit without a trace.
+        # So the mount is checked by the command, which exits 1 (and the journal has the JSON
+        # failure line) unless it is given --allow-unmounted, which the unit does not pass.
+        for section in (self.unit["Unit"], self.service):
+            for key in section:
+                self.assertNotRegex(key, r"^(Assert|Condition)PathIsMountPoint$")
+        self.assertNotIn("--allow-unmounted", self.words)
+        self.assertIn("require_mount: !allow_unmounted", read(CLI))
 
     def test_search_text_cannot_rest_in_a_temporary_directory(self):
         self.assertEqual(self.service["PrivateTmp"], ["yes"])

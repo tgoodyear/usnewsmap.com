@@ -18,9 +18,12 @@ Wants=network-online.target himdsd.service
 After=network-online.target himdsd.service
 ConditionFileIsExecutable=/usr/local/bin/usnm-ingest
 RequiresMountsFor=/tank/azure/search-log
-# Fails the unit, not skips it, if the dataset is not mounted: the copy would
-# otherwise write search text to the host's own disk.
-AssertPathIsMountPoint=/tank/azure/search-log
+# No AssertPathIsMountPoint= or ConditionPathIsMountPoint= here: a failed
+# assertion only fails the start job (the unit stays "inactive", never shows
+# in `systemctl --failed`) and a failed condition skips the unit quietly. The
+# command checks the mount itself and exits 1 before it writes anything, which
+# fails the unit and leaves the journal line, so a dataset that is not mounted
+# does not put search text on the host's own disk and is not silent.
 
 [Service]
 Type=oneshot
