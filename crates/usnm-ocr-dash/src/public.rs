@@ -61,10 +61,14 @@ pub fn scrub(s: &str) -> String {
             i += 1;
         }
         let word: String = chars[start..i].iter().collect();
-        // "CT 212", "VM 104", "CT212".
+        // "CT 212", "VM 104", "CT212", "VM205".
         let numbered = |w: &str| {
-            let rest = w.strip_prefix("CT").or_else(|| w.strip_prefix("VM"));
-            rest.is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+            let (label, rest) = if let Some(r) = w.strip_prefix("CT") {
+                ("a container", r)
+            } else {
+                ("a VM", w.strip_prefix("VM")?)
+            };
+            (!rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())).then_some(label)
         };
         if (word == "CT" || word == "VM")
             && chars.get(i) == Some(&' ')
@@ -78,8 +82,8 @@ pub fn scrub(s: &str) -> String {
             i = j;
             continue;
         }
-        if numbered(&word) {
-            out.push_str("a container");
+        if let Some(label) = numbered(&word) {
+            out.push_str(label);
             continue;
         }
         // An IPv6 address or `host:port` spans colons: look at the whole run.
@@ -280,6 +284,7 @@ mod tests {
             assert!(!s.contains(bad), "{bad} in {s}");
         }
         assert!(s.starts_with("can't read a local path on a lab host (a container)"));
+        assert!(s.ends_with("a VM down"), "{s}");
         let keep = "https://tile.loc.gov/storage-services/x/0746.jp2: holding, v1.2.3";
         assert_eq!(scrub(keep), keep);
     }

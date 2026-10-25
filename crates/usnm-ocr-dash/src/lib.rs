@@ -272,6 +272,19 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+/// Every public response says how long it may be kept: a minute for a
+/// success, not at all for an error (a 404, a 405, a 500).
+async fn public_cache(mut r: Response) -> Response {
+    let v = if r.status().is_success() {
+        PUBLIC_CACHE
+    } else {
+        LAN_CACHE
+    };
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static(v));
+    r
+}
+
 /// The public listener (`--public-listen`), for a tunnel to put on the
 /// internet: GET and HEAD of the page, `/healthz` and
 /// `/api/{view,pipeline,fetch}.json`, all redacted ([`public::redact`]).
@@ -283,6 +296,7 @@ pub fn public_router(app: Arc<App>) -> Router {
         .route("/healthz", get(|| async { "ok\n" }))
         .route("/api/{part}", get(public_api))
         .layer(DefaultBodyLimit::max(1024))
+        .layer(middleware::map_response(public_cache))
         .with_state(app)
 }
 
@@ -826,7 +840,9 @@ mod tests {
             ("PUT", "/api/view.json", StatusCode::METHOD_NOT_ALLOWED),
             ("DELETE", "/api/fetch.json", StatusCode::METHOD_NOT_ALLOWED),
         ] {
-            assert_eq!(send(m, uri).await.status(), want, "{m} {uri}");
+            let r = send(m, uri).await;
+            assert_eq!(r.status(), want, "{m} {uri}");
+            assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store", "{m} {uri}");
         }
         // The LAN listener keeps its headers.
         let r = router(a.clone())
