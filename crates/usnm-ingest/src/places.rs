@@ -1065,6 +1065,23 @@ mod tests {
         assert_eq!((city, state.code), ("Chicago", "IL"));
         assert!(geo.title_periods("sn84024055").is_empty(), "one place");
         assert!(geo.title_periods("sn1").is_empty(), "no entry");
+        // The Morning Star was in Limerick, Maine, to the day before it
+        // moved to Dover, N.H., which is its own place (#1066).
+        let (city, state) = geo.title_place("sn84024361").unwrap();
+        assert_eq!((city, state.code), ("Dover", "NH"));
+        let seen: Vec<_> = geo
+            .title_periods("sn84024361")
+            .iter()
+            .map(|p| (p.city.as_str(), p.state.code, p.from, p.to, p.main))
+            .collect();
+        let day = |s: &str| Some(s.parse::<NaiveDate>().unwrap());
+        assert_eq!(
+            seen,
+            [
+                ("Limerick", "ME", None, day("1833-11-13"), false),
+                ("Dover", "NH", day("1833-11-14"), None, true),
+            ]
+        );
         let bad = |json: &str| {
             let t: Vec<TitlePlace> = serde_json::from_str(json).unwrap();
             Geo::default().with_title_places(&t).is_err()
