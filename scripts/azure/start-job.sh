@@ -14,7 +14,7 @@
 # container's arguments; its command stays. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies
 # the job's template and swaps only the arguments (as
-# ja-ocr/tools/start-quality.sh does). An execution's template has no
+# ocr/ja-ocr/tools/start-quality.sh does). An execution's template has no
 # volumes (the API's JobExecutionTemplate takes containers and init
 # containers with image, command, args, env and resources only), so it
 # can't name the job's volumes or mounts: use it for commands that don't

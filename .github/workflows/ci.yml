@@ -484,7 +484,7 @@ jobs:
       # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
         run: |
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ocr/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
         run: scripts/ci/check-ja-ocr-image.sh --image usnm-ja-ocr-check

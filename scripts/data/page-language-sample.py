@@ -5,7 +5,7 @@ crates/usnm-core/tests/data/page-language-parity.jsonl.zst.
     scripts/data/page-language-sample.py --out PATH [--languages french,dutch,...] [--per-language 2]
         [--before 1929] [--chars 8000] [--whole 2]
 
-Needs wordfreq 3.1.1 and zstd (Python 3.14, or pyarrow), as ja-ocr/damage_parity.py does.
+Needs wordfreq 3.1.1 and zstd (Python 3.14, or pyarrow), as ocr/ja-ocr/damage_parity.py does.
 
 For each language (LoC's names, as Chronicling America's `language` facet has them; by default
 every catalog language with a word list), it asks loc.gov's collection search for issues
@@ -13,7 +13,7 @@ before --before, takes up to --per-language of them, and reads the first page of
 second, for a title in several languages), with jaocr.py's pacing. A page's title languages are
 the item's, as MARC codes (crates/usnm-core/src/names.rs). Each page is cut to its first --chars
 characters at a line break, except the --whole longest, kept whole so the window and
-second-script rules run. Each is then scored by ja-ocr/damage_v2.py as damage_parity.py scores
+second-script rules run. Each is then scored by ocr/ja-ocr/damage_v2.py as damage_parity.py scores
 the pages of the damage fixture, in the same format, so the page-language parity test
 (crates/usnm-core/tests/page_language_parity.rs) reads both files. It logs each page's doc id and
 result, never text.
@@ -27,7 +27,7 @@ import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "ja-ocr"))
+sys.path.insert(0, str(ROOT / "ocr" / "ja-ocr"))
 
 SEARCH = "https://www.loc.gov/collections/chronicling-america/"
 ISSUE = re.compile(r"/item/([a-z0-9]+)/(\d{4}-\d{2}-\d{2})/(ed-\d+)/?$")

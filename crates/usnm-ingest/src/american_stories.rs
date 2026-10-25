@@ -1,6 +1,6 @@
 //! American Stories' text for our pages (#218, 04 §4.9, 05 §5.5.4).
 //!
-//! `jaocr.py american-stories-write` (ja-ocr/american_stories_write.py)
+//! `jaocr.py american-stories-write` (ocr/ja-ocr/american_stories_write.py)
 //! writes one row per page to the curated store,
 //! `american-stories/pages/<lccn>/<year>-<nnn>.parquet`, keyed by our
 //! `doc_id`, and marks each year it has finished with

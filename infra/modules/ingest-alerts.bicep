@@ -307,7 +307,7 @@ var rules = [
   {
     name: alertNames.jobFailed
     displayName: 'Pipeline job failed'
-    description: 'A replica of the ingest or backfill job, the Japanese OCR or audit job (caj-usnm-jaocr, caj-usnm-jaone) or the OCR pickup job (usnm-ocrs-caj) failed in the last 30 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Japanese OCR, audit and pickup runs touch no published index. Next: scripts/azure/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it (for a Japanese OCR run, ja-ocr/tools/quality-rows.sh --env <env> --execution <execution>). Fix the cause, then start the job again (or wait for the pickup\'s hourly run); the next run picks up where this one stopped.'
+    description: 'A replica of the ingest or backfill job, the Japanese OCR or audit job (caj-usnm-jaocr, caj-usnm-jaone) or the OCR pickup job (usnm-ocrs-caj) failed in the last 30 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Japanese OCR, audit and pickup runs touch no published index. Next: scripts/azure/logs.sh --env <env> --query-name job-executions --span 1d for how each replica ended, and errors-by-batch 1d for the warnings before it (for a Japanese OCR run, ocr/ja-ocr/tools/quality-rows.sh --env <env> --execution <execution>). Fix the cause, then start the job again (or wait for the pickup\'s hourly run); the next run picks up where this one stopped.'
     severity: 2
     frequency: 'PT15M'
     // Azure accepts only 5, 10, 15, 30, 45, 60 min and up; the query reports the last 30 min

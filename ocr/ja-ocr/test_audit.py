@@ -1,4 +1,4 @@
-"""Tests for audit.py: python3 -m unittest discover ja-ocr."""
+"""Tests for audit.py: python3 -m unittest discover ocr/ja-ocr."""
 
 import csv
 import io

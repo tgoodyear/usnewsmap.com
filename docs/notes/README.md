@@ -42,7 +42,7 @@ Topics: `indexing` (index schema, splits, the search engine), `ocr` (text we pro
 
 Copy [`template.md`](template.md) to `YYYY-MM-DD-slug.md`, fill it in, and add a row to the table above (newest first). Then:
 
-- **Name what was measured.** Every number names the index version, the commit or the data it was measured on, and the script or command that produced it, so someone can run it again. Prefer the repository's own tooling: `scripts/ops/compare-versions.py` for a version's search results, `/v1/status` and `/v1/versions` for the pipeline, the captures under `ops/version-snapshots/`, the Japanese OCR scoring in `ja-ocr/tools/`.
+- **Name what was measured.** Every number names the index version, the commit or the data it was measured on, and the script or command that produced it, so someone can run it again. Prefer the repository's own tooling: `scripts/ops/compare-versions.py` for a version's search results, `/v1/status` and `/v1/versions` for the pipeline, the captures under `ops/version-snapshots/`, the Japanese OCR scoring in `ocr/ja-ocr/tools/`.
 - **Numbers go in tables**, with the environment they were taken in (the job's 2 vCPU, a laptop, cold or warm caches).
 - **Point, don't repeat.** The current description of a mechanism lives in the design documents; the note tells the story and keeps the measurements, and links the section (`05 §5.5.3`) rather than copying it. Link the issue and pull request numbers.
 - **Say what is left.** A note ends with what the work didn't settle and what the next measurement should be.

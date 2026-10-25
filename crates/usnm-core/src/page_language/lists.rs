@@ -1,6 +1,6 @@
 //! Scripts, and each word list's function words
 //! (`data/page-language-words.txt`, built by
-//! `scripts/data/build-page-language-words.py` from `ja-ocr/damage_v2.py`'s
+//! `scripts/data/build-page-language-words.py` from `ocr/ja-ocr/damage_v2.py`'s
 //! models).
 
 use std::collections::{HashMap, HashSet};

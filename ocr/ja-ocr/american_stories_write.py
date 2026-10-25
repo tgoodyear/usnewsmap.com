@@ -23,7 +23,7 @@ rerun skips the years that have one, so an interrupted run resumes.
 
 The release reads these files to index the text beside LoC's (#218). One
 replica of the execution works (solo.py); start it on the one-replica job
-(ja-ocr/tools/start-quality.sh --env prod --command american-stories-write).
+(ocr/ja-ocr/tools/start-quality.sh --env prod --command american-stories-write).
 """
 
 from __future__ import annotations

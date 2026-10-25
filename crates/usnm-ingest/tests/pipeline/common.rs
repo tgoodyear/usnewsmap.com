@@ -371,7 +371,7 @@ pub(crate) async fn curate(e: &Env, list: Vec<ListedBatch>) {
     assert_eq!(e.worker("w").run(None).await.unwrap(), n);
 }
 
-/// One row of a Japanese OCR overlay part, as `ja-ocr/jaocr.py` writes it.
+/// One row of a Japanese OCR overlay part, as `ocr/ja-ocr/jaocr.py` writes it.
 pub(crate) struct JaRow<'a> {
     pub(crate) lccn: &'a str,
     pub(crate) date: NaiveDate,

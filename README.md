@@ -23,7 +23,7 @@ Each directory below, except `.github/`, has a README with the details.
 | `fixtures/`           | The synthetic corpus for development and tests, and the recorded responses and ground-truth samples some tests read.                                                    | [fixtures/README.md](fixtures/README.md)               |
 | `fuzz/`               | A standalone cargo-fuzz crate that fuzzes the parsers of untrusted OCR node output; it is outside the Cargo workspace.                                                  | [fuzz/README.md](fuzz/README.md)                       |
 | `infra/`              | The Azure infrastructure in Bicep, the per-environment settings, the Quickwit configs and the monitoring workbooks.                                                     | [infra/README.md](infra/README.md)                     |
-| `ja-ocr/`             | The Python job that reads Japanese pages the Library of Congress ships without text, the OCR quality audit that shares its image, and their tools (`tools/`).           | [ja-ocr/README.md](ja-ocr/README.md)                   |
+| `ocr/ja-ocr/`         | The Python job that reads Japanese pages the Library of Congress ships without text, the OCR quality audit that shares its image, and their tools (`tools/`).           | [ocr/ja-ocr/README.md](ocr/ja-ocr/README.md)           |
 | `ocr/`                | The OCR engine catalog and routes, the engine contract's schemas, the BOINC app definitions and the OCR benchmark data.                                                 | [ocr/README.md](ocr/README.md)                         |
 | `ops/`                | The saved log queries, the build records of published index versions and the captures that compare versions.                                                            | [ops/README.md](ops/README.md)                         |
 | `scripts/`            | The scripts, grouped by purpose: Azure environments, BOINC, generated data, index and version checks, local development, corpus data flow, OCR nodes and CI checks.     | [scripts/README.md](scripts/README.md)                 |
@@ -64,18 +64,18 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 
 ## Repository layout
 
-| Path        | What                                                                                                                                                                                                                   |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crates/`   | The Rust workspace: `usnm-core` (domain types and the query language), `usnm-search` (search backends), `usnm-store` (Blob Storage), `usnm-api` (the API, which also serves the site) and `usnm-ingest` (the pipeline) |
-| `web/`      | The web app: React, MapLibre GL and deck.gl ([README](web/README.md))                                                                                                                                                  |
-| `infra/`    | The Azure infrastructure in Bicep, one deployment stack per environment, and the Quickwit configs ([README](infra/README.md))                                                                                          |
-| `ja-ocr/`   | The Japanese OCR job (Python, NDLOCR-Lite) and its tools                                                                                                                                                               |
-| `docker/`   | The Dockerfiles for the API, ingest, Japanese OCR and patched Quickwit images; the build context is the repository root ([README](docker/README.md))                                                                   |
-| `edge/`     | The Cloudflare fallback Worker that sends a request to Azure when the on-prem tunnel fails ([README](edge/fallback-worker/README.md))                                                                                  |
-| `scripts/`  | Scripts grouped by purpose: stand an environment up, deploy and tear it down (`azure/`); BOINC; generated data; version checks and load tests (`ops/`); local Azure stand-ins; CI checks ([README](scripts/README.md)) |
-| `fixtures/` | A small synthetic corpus for development and tests ([README](fixtures/README.md))                                                                                                                                      |
-| `ops/`      | Saved log queries and the history of published index versions                                                                                                                                                          |
-| `docs/`     | Guides, the design documents and the technical notes ([index](docs/README.md))                                                                                                                                         |
+| Path          | What                                                                                                                                                                                                                   |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/`     | The Rust workspace: `usnm-core` (domain types and the query language), `usnm-search` (search backends), `usnm-store` (Blob Storage), `usnm-api` (the API, which also serves the site) and `usnm-ingest` (the pipeline) |
+| `web/`        | The web app: React, MapLibre GL and deck.gl ([README](web/README.md))                                                                                                                                                  |
+| `infra/`      | The Azure infrastructure in Bicep, one deployment stack per environment, and the Quickwit configs ([README](infra/README.md))                                                                                          |
+| `ocr/ja-ocr/` | The Japanese OCR job (Python, NDLOCR-Lite) and its tools                                                                                                                                                               |
+| `docker/`     | The Dockerfiles for the API, ingest, Japanese OCR and patched Quickwit images; the build context is the repository root ([README](docker/README.md))                                                                   |
+| `edge/`       | The Cloudflare fallback Worker that sends a request to Azure when the on-prem tunnel fails ([README](edge/fallback-worker/README.md))                                                                                  |
+| `scripts/`    | Scripts grouped by purpose: stand an environment up, deploy and tear it down (`azure/`); BOINC; generated data; version checks and load tests (`ops/`); local Azure stand-ins; CI checks ([README](scripts/README.md)) |
+| `fixtures/`   | A small synthetic corpus for development and tests ([README](fixtures/README.md))                                                                                                                                      |
+| `ops/`        | Saved log queries and the history of published index versions                                                                                                                                                          |
+| `docs/`       | Guides, the design documents and the technical notes ([index](docs/README.md))                                                                                                                                         |
 
 ## Documentation
 

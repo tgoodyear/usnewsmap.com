@@ -6,13 +6,13 @@ Step 4): crates/usnm-core/data/damage-words/<code>.txt.zst
     scripts/data/build-damage-words.py [--out-dir path] [--check]
 
 Needs wordfreq 3.1.1 (`pip install wordfreq==3.1.1`, the version the OCR
-audit pins in ja-ocr/requirements.txt).
+audit pins in ocr/ja-ocr/requirements.txt).
 
-For each wordfreq code in `ja-ocr/damage_v2.py`'s WORDFREQ table, the list is
+For each wordfreq code in `ocr/ja-ocr/damage_v2.py`'s WORDFREQ table, the list is
 `wordfreq.top_n_list(code, 5000)`, the call `damage_v2.py` makes
 (`wordfreq_ranked`): wordfreq's 5,000 most frequent words, most frequent
 first, as wordfreq stores them. Hawaiian (`haw`) and Yiddish (`yi`) have no
-wordfreq list; theirs are copied from ja-ocr/wordlists/, first 5,000 words,
+wordfreq list; theirs are copied from ocr/ja-ocr/wordlists/, first 5,000 words,
 as `damage_v2.py` reads them. One word per line, in rank order; the order
 matters, since the metric takes the top 100 and top 20 from the front.
 
@@ -30,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "crates" / "usnm-core" / "data" / "damage-words"
-LOCAL_DIR = ROOT / "ja-ocr" / "wordlists"
+LOCAL_DIR = ROOT / "ocr" / "ja-ocr" / "wordlists"
 WORDFREQ_VERSION = "3.1.1"
 TOP_REAL = 5000
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score the OCR engines' output on a sample (#128).
 
-    ja-ocr/tools/score.py --sample-dir SAMPLE_DIR [--engines ndlocr-lite azure tesseract-jpn_vert]
+    ocr/ja-ocr/tools/score.py --sample-dir SAMPLE_DIR [--engines ndlocr-lite azure tesseract-jpn_vert]
 
 Needs rapidfuzz (pip install rapidfuzz). Prints markdown:
 

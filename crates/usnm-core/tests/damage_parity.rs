@@ -1,6 +1,6 @@
-//! The damage metric's Rust port against `ja-ocr/damage_v2.py` (12 §12.5
+//! The damage metric's Rust port against `ocr/ja-ocr/damage_v2.py` (12 §12.5
 //! Step 5): every page of `tests/data/damage-parity.jsonl.zst`, scored in
-//! Python by `ja-ocr/damage_parity.py`, must score the same here.
+//! Python by `ocr/ja-ocr/damage_parity.py`, must score the same here.
 #![cfg(feature = "damage")]
 
 use sha2::{Digest, Sha256};
@@ -22,12 +22,12 @@ fn sha256(path: &str) -> String {
 }
 
 const RESCORE: &str = "port the change and score the fixture's pages again: \
-    python3 ja-ocr/damage_parity.py --rescore crates/usnm-core/tests/data/damage-parity.jsonl.zst --out <new file>";
+    python3 ocr/ja-ocr/damage_parity.py --rescore crates/usnm-core/tests/data/damage-parity.jsonl.zst --out <new file>";
 
 #[test]
 fn fixture_was_scored_by_this_damage_v2_py() {
     let (header, _) = fixture();
-    let ja_ocr = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr");
+    let ja_ocr = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ocr/ja-ocr");
     assert_eq!(
         header.damage_v2_sha256,
         sha256(&format!("{ja_ocr}/damage_v2.py")),
@@ -42,7 +42,7 @@ fn fixture_was_scored_by_this_damage_v2_py() {
         assert_eq!(
             want,
             &sha256(&format!("{ja_ocr}/wordlists/{code}.txt")),
-            "ja-ocr/wordlists/{code}.txt changed since the fixture was built: {RESCORE}"
+            "ocr/ja-ocr/wordlists/{code}.txt changed since the fixture was built: {RESCORE}"
         );
     }
     assert_eq!(header.wordfreq, "3.1.1");

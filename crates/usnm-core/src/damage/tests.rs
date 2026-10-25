@@ -1,4 +1,4 @@
-//! `ja-ocr/test_quality.py`'s detection and damage tests, ported. The
+//! `ocr/ja-ocr/test_quality.py`'s detection and damage tests, ported. The
 //! parity fixture (`tests/damage_parity.rs`) checks the numbers against
 //! Python's on real pages.
 

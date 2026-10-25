@@ -28,7 +28,7 @@ scripts/azure/logs.sh --env prod --query-name curation-throughput --span 6h
 | API and site       | `api-errors`, `api-requests`, `backend-latency`, `traffic`, `warm-up`                                                                                          |
 | Searcher           | `searcher-caches`, `searcher-health`, `searcher-threads`                                                                                                       |
 | Ingest and release | `curate-replicas`, `curation-throughput`, `errors-by-batch`, `index-layout`, `ingest-endings`, `job-executions`, `prune`, `release-progress`, `titles-archive` |
-| OCR                | `ocr-node-errors`, `ocr-node-health`, `ocr-node-updates` (the on-prem nodes), `ocr-quality` (the OCR quality audit of `ja-ocr/quality.py`)                     |
+| OCR                | `ocr-node-errors`, `ocr-node-health`, `ocr-node-updates` (the on-prem nodes), `ocr-quality` (the OCR quality audit of `ocr/ja-ocr/quality.py`)                 |
 
 Three queries are kept in step with workbook panels by a test: `ocr-node-health`, `searcher-caches` and `searcher-threads` (`scripts/ci/test_check_workbooks.py`). `ocr-node-health.kql` also holds the nodes' workspace cap (`cap_gb`), which `infra/modules/ocr-node-monitoring.bicep` repeats.
 

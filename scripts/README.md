@@ -4,7 +4,7 @@ Shell and Python for the work around the code: standing an Azure environment up 
 
 Scripts take named flags (`--env prod --key K`), never positional arguments. `scripts/ci/no-positional-args.py` fails CI on a script that reads them. The examples assume the repository root. The Azure scripts use your own `az` sign-in.
 
-Every script sits in a directory named for what it is for, and a test sits beside the script it tests. Only this README is directly in `scripts/`. The Japanese OCR's own tools are not here: they are in [`ja-ocr/tools/`](../ja-ocr/README.md), beside the job they work on.
+Every script sits in a directory named for what it is for, and a test sits beside the script it tests. Only this README is directly in `scripts/`. The Japanese OCR's own tools are not here: they are in [`ocr/ja-ocr/tools/`](../ocr/ja-ocr/README.md), beside the job they work on.
 
 ## Directories
 
@@ -25,7 +25,7 @@ Every script sits in a directory named for what it is for, and a test sits besid
 | `onprem/`                                | A full release on an on-prem host (`release.sh`, `install-quickwit.sh`; [Operations](../docs/operations/rebuild-and-index-storage.md#full-rebuild-on-prem)) and `queue/`, the PostgreSQL and pgmq setup for the OCR work queues ([README](onprem/queue/README.md)).                                                                                                                                                                                                                                                                                               | live                                                                                                                                      |
 | [`ops/`](#index-version-and-load-checks) | Checks and measurements of the live index, its versions and the data kept outside the tree.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | live                                                                                                                                      |
 
-The Japanese OCR's tools are in [`ja-ocr/tools/`](../ja-ocr/README.md), beside the job they work on: the engine-choice tools (`sample.py`, `crops.py`, `run.py`, `score.py`), `build-wordlists.py`, and `start-quality.sh` and `quality-rows.sh`, which start the job's audit commands and read their results. `start-quality.sh`, `quality-rows.sh` and `build-wordlists.py` are live. The four engine-choice tools: see [the note](../docs/notes/2026-10-05-japanese-ocr.md).
+The Japanese OCR's tools are in [`ocr/ja-ocr/tools/`](../ocr/ja-ocr/README.md), beside the job they work on: the engine-choice tools (`sample.py`, `crops.py`, `run.py`, `score.py`), `build-wordlists.py`, and `start-quality.sh` and `quality-rows.sh`, which start the job's audit commands and read their results. `start-quality.sh`, `quality-rows.sh` and `build-wordlists.py` are live. The four engine-choice tools: see [the note](../docs/notes/2026-10-05-japanese-ocr.md).
 
 ## Azure environments
 
@@ -51,13 +51,13 @@ The Japanese OCR's tools are in [`ja-ocr/tools/`](../ja-ocr/README.md), beside t
 
 Their tests are in the same directory, offline, against a stub `az`:
 
-| Test                                             | What it tests                                                                                                              |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `test_env_scripts.py`                            | The dev lifecycle pieces of `lib/env.sh`, `dev-status.sh` and the other scripts above, and `ja-ocr/tools/start-quality.sh` |
-| `test_rename_guard.py`, `test_resource_names.py` | The protected-resource removal gate and the script-owned names ([ADR-0017](../docs/design/adr/0017-resource-naming.md))    |
-| `test_host_boundary.py`                          | That application onboarding does not own lab OS subscriptions or hypervisors                                               |
-| `test_date_spans.py`                             | `lib/date-spans.jq`, the date-span tables of `searches.sh`                                                                 |
-| `test_qwcluster_report.py`                       | `qwcluster-report.py`, on `testdata/qwcluster/`, which holds `qwcluster report` log lines                                  |
+| Test                                             | What it tests                                                                                                                  |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `test_env_scripts.py`                            | The dev lifecycle pieces of `lib/env.sh`, `dev-status.sh` and the other scripts above, and `ocr/ja-ocr/tools/start-quality.sh` |
+| `test_rename_guard.py`, `test_resource_names.py` | The protected-resource removal gate and the script-owned names ([ADR-0017](../docs/design/adr/0017-resource-naming.md))        |
+| `test_host_boundary.py`                          | That application onboarding does not own lab OS subscriptions or hypervisors                                                   |
+| `test_date_spans.py`                             | `lib/date-spans.jq`, the date-span tables of `searches.sh`                                                                     |
+| `test_qwcluster_report.py`                       | `qwcluster-report.py`, on `testdata/qwcluster/`, which holds `qwcluster report` log lines                                      |
 
 ## BOINC
 

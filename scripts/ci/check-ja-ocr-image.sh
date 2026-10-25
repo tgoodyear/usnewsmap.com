@@ -42,7 +42,7 @@ print("word lists ok")'
 work=$(mktemp -d)
 mkdir -p "$work/img" "$work/out"
 chmod 777 "$work/out"
-cp ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg "$work/img/"
+cp ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg "$work/img/"
 docker run --rm -v "$work/img:/img:ro" -v "$work/out:/out" -w /opt/ndlocr-lite/src \
   --entrypoint python3 "$image" ocr.py --sourcedir /img --output /out > /dev/null
 grep -q '去年の大記事' "$work/out/rocky-shimpo-1945-01-01-seq-4-headline.txt" ||

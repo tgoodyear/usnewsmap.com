@@ -594,7 +594,7 @@ class LogsCallerSubscriptions(unittest.TestCase):
     def test_environment_shell_callers_forward_subscription(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("scripts/lib", "scripts/azure", "ja-ocr/tools", "ops/queries", "bin"):
+            for name in ("scripts/lib", "scripts/azure", "ocr/ja-ocr/tools", "ops/queries", "bin"):
                 (root / name).mkdir(parents=True)
             (root / "settings.env").write_text("fixture\n")
             (root / "ops/queries/fixture.kql").write_text("print 1")
@@ -608,7 +608,7 @@ class LogsCallerSubscriptions(unittest.TestCase):
             stub.chmod(0o755)
             for script, args in (
                 ("scripts/azure/logs.sh", ["--env", "prod", "--query-name", "fixture"]),
-                ("ja-ocr/tools/quality-rows.sh", ["--env", "prod", "--execution",
+                ("ocr/ja-ocr/tools/quality-rows.sh", ["--env", "prod", "--execution",
                                                   "usnm-jaocr-caj-prod-fixture"])):
                 target = root / script
                 shutil.copy(Path(ROOT, script), target)
