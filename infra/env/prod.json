@@ -17,7 +17,7 @@
   "USNM_GITHUB_REPO": "tgoodyear/usnewsmap.com",
   "USNM_INDEX_STORAGE": true,
   "USNM_INDEX_STORAGE_SERVE": true,
-  "USNM_INGEST_JOBS": true,
+  "USNM_INGEST_JOBS": false,
   "USNM_INGEST_ONPREM": true,
   "USNM_JA_LATIN": true,
   "USNM_JA_OCR_JOB": false,

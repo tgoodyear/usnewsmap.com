@@ -448,7 +448,10 @@ module registry 'modules/registry.bicep' = {
     name: n.registry
     ciIdentityId: identities.outputs.ciId
     ciPrincipalId: identities.outputs.ciPrincipalId
-    pullPrincipalIds: [identities.outputs.appPrincipalId, identities.outputs.ingestPrincipalId]
+    pullPrincipalIds: concat(
+      [identities.outputs.appPrincipalId],
+      ingestIdentityOn ? [identities.outputs.ingestPrincipalId] : []
+    )
   }
 }
 
@@ -472,12 +475,18 @@ module identities 'modules/identities.bicep' = {
     tags: tags
     appName: n.apiIdentity
     ingestName: n.ingestIdentity
+    ingest: ingestIdentityOn
     ciName: n.ciIdentity
     githubRepo: githubRepo
     githubRepoIds: githubRepoIds
     githubEnvironment: env
   }
 }
+
+// id-usnm-ingest is the identity of the Azure ingest-image jobs (ingestjobs.bicep) and of
+// the Document Intelligence calls (ocr). With neither, it and every grant it holds go
+// (#917): the jobs' commands run on-prem as the batch container's own identity.
+var ingestIdentityOn = (ingestJobs && useAcr) || ocr
 
 // The data lake opens to the node IPs only for the on-prem Serial Set
 // runner (serialSetOnPrem), the Japanese OCR, the release or the serving
@@ -735,6 +744,7 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
       : []
     nodeGroupId: trim(ocrNodeGroupId)
     ingestPrincipalId: identities.outputs.ingestPrincipalId
+    ingest: ingestIdentityOn
     nodeWriterRoleLabel: n.ocrNodeWriterRole
   }
 }
@@ -865,6 +875,7 @@ module rbac 'modules/rbac.bicep' = {
     searchLogRoleLabel: n.searchLogRole
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
+    ingest: ingestIdentityOn
     searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
   }
 }
@@ -893,7 +904,7 @@ module ocrService 'modules/ocr.bicep' = if (ocr) {
     sku: ocrSku
     workspaceId: monitoring.outputs.workspaceId
     users: filter(map(split(ocrUsers, ','), u => trim(u)), u => !empty(u))
-    identities: [identities.outputs.ingestPrincipalId]
+    identities: ingestIdentityOn ? [identities.outputs.ingestPrincipalId] : []
   }
 }
 
@@ -958,7 +969,8 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
-    ocrRequests: ocrNodes && ingestJobs && useAcr
+    // The API writes the hit requests the pickup reads, in Azure or on-prem (#917).
+    ocrRequests: ocrNodes && useAcr && (ingestJobs || (ocrSyncOnPrem && !empty(trim(batchHost))))
     indexStorageAccountName: indexStorage ? indexStore!.outputs.name : ''
     indexSearcherName: n.indexSearcherApp
     indexStorageServe: indexStorageServe && !indexStorage
@@ -1025,7 +1037,7 @@ module archiveGrant 'modules/archive-grant.bicep' = if (!empty(archiveAccountId)
     roleLabel: n.archiveWriterRole
     roleScopeEnv: n.archiveWriterRoleScopeEnv
     grants: concat(
-      [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'writer' }],
+      ingestIdentityOn ? [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'writer' }] : [],
       searchClusterOn
         ? [
             { container: 'raw', principalId: searchClusterModule!.outputs.benchPrincipalId, role: 'reader' }
@@ -1042,6 +1054,7 @@ module rawStore 'modules/raw-store.bicep' = if (retainRaw) {
   params: {
     storageAccountName: storage.outputs.name
     ingestPrincipalId: identities.outputs.ingestPrincipalId
+    ingest: ingestIdentityOn
   }
 }
 
