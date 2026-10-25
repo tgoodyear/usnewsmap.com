@@ -11,6 +11,8 @@ param cosmosName string
 param appInsightsName string
 param appPrincipalId string
 param ingestPrincipalId string
+@description('Whether id-usnm-ingest exists (main.bicep ingestIdentityOn); false leaves out its grants here.')
+param ingest bool = true
 @description('The search log writer role\'s name, before its scope (infra/naming.bicep).')
 param searchLogRoleLabel string
 @description('Entra object ids (people or groups) that may read the search log.')
@@ -26,15 +28,21 @@ var cosmosDataReader = '00000000-0000-0000-0000-000000000001'
 // component, which accepts Entra-authenticated ingestion only.
 var metricsPublisher = '3913510d-42f4-4e42-8a64-420c390055eb'
 
-var grants = [
-  { container: 'reference', principal: appPrincipalId, role: blobReader }
-  { container: 'qw-index', principal: appPrincipalId, role: blobReader }
-  { container: 'cache', principal: appPrincipalId, role: blobContributor }
-  { container: 'curated', principal: ingestPrincipalId, role: blobContributor }
-  { container: 'reference', principal: ingestPrincipalId, role: blobContributor }
-  { container: 'qw-index', principal: ingestPrincipalId, role: blobContributor }
-  { container: 'ocr-requests', principal: ingestPrincipalId, role: blobContributor }
-]
+var grants = concat(
+  [
+    { container: 'reference', principal: appPrincipalId, role: blobReader }
+    { container: 'qw-index', principal: appPrincipalId, role: blobReader }
+    { container: 'cache', principal: appPrincipalId, role: blobContributor }
+  ],
+  ingest
+    ? [
+        { container: 'curated', principal: ingestPrincipalId, role: blobContributor }
+        { container: 'reference', principal: ingestPrincipalId, role: blobContributor }
+        { container: 'qw-index', principal: ingestPrincipalId, role: blobContributor }
+        { container: 'ocr-requests', principal: ingestPrincipalId, role: blobContributor }
+      ]
+    : []
+)
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageName
@@ -140,7 +148,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
 // The ingest and backfill jobs export traces and metrics as id-usnm-ingest,
 // the API as id-usnm-app.
 resource telemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for principal in [ingestPrincipalId, appPrincipalId]: {
+  for principal in concat(ingest ? [ingestPrincipalId] : [], [appPrincipalId]): {
     scope: appInsights
     name: guid(appInsights.id, principal, metricsPublisher)
     properties: {
@@ -151,7 +159,7 @@ resource telemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
-resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
+resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = if (ingest) {
   parent: cosmos
   name: guid(cosmos.id, ingestPrincipalId, cosmosDataContributor)
   properties: {
@@ -190,7 +198,7 @@ resource indexAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = 
     }
   }
 }
-resource newIngestIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(indexStorageName) && true) {
+resource newIngestIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(indexStorageName) && ingest) {
   scope: indexAccount::blobs::index
   name: guid(indexAccount::blobs::index.id, ingestPrincipalId, blobContributor)
   properties: {
