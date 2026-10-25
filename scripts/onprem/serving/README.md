@@ -101,7 +101,7 @@ The journal keeps 30 days.
 
 ## Searcher restarts
 
-An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). While the searcher restarts, the API serves cached searches and answers the rest with its own 503, which the fallback Worker passes through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
+An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). While the searcher restarts, the API serves cached searches and answers the rest with its own 503, which the [fallback Worker](../../../edge/fallback-worker/README.md) passes through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
 
 ## Open items for Phase 2
 

@@ -1,4 +1,4 @@
-"""Tests for damage_parity.py: python3 -m unittest discover ja-ocr (pyarrow for zstd before Python 3.14)."""
+"""Tests for damage_parity.py: python3 -m unittest discover ocr/ja-ocr (pyarrow for zstd before Python 3.14)."""
 
 import csv
 import gzip

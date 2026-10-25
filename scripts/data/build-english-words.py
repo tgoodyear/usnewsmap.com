@@ -7,7 +7,7 @@ build.rs decompresses them).
     scripts/data/build-english-words.py [--top 100000] [--shared-ratio 10] [--out-dir path] [--check]
 
 Needs wordfreq 3.1.1 (`pip install wordfreq==3.1.1`, the version the OCR
-audit pins in ja-ocr/requirements.txt).
+audit pins in ocr/ja-ocr/requirements.txt).
 
 Words are folded as the index folds a page's words (lowercase, accents
 dropped: `usnm_core::text::fold`), and a word's frequency in a language is

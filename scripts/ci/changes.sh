@@ -16,6 +16,8 @@
 # check run in the infra job. Most fixtures/ocr-gold/ files count for none
 # of rust/quickwit/web/image/fixtures. The v1 lock is embedded in the Rust
 # mirror CLI, and it and reviewed selections also build the bridge.
+# edge: the Cloudflare fallback Worker (edge/: JavaScript, its Wrangler config and deploy
+# script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098).
 # boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
@@ -64,7 +66,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -76,7 +78,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages; do
+      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages edge; do
         case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
@@ -176,7 +178,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/dev/quickwit-fixtures\.sh)'
+rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ocr/ja-ocr/damage_v2\.py$|ocr/ja-ocr/wordlists/|scripts/dev/quickwit-fixtures\.sh)'
 rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
@@ -191,7 +193,7 @@ web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtu
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
-image="$rust_files|^(web/|ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
@@ -218,7 +220,7 @@ ocr_dashboard=$ocr_dash
 boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/boinc/Containerfile$|scripts/boinc/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_qwen='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
 boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
-boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
 # The native apps (boinc-quality-native.yml) build usnm-quality-app and
 # usnm-qwen-app and test those and the two crates they share with the engines;
 # usnm-ocr-contract's tests read the v1 contract files.
@@ -232,6 +234,9 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 # documentation, above), and the workflow, which matches earlier.
 contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v1\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
+# The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
+# documentation, above).
+edge='^edge/'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path
 # dependencies in their manifests), from cargo metadata, so a new dependency
@@ -393,7 +398,7 @@ for part in rust quickwit web image e2e fixtures ocr_worker ocr_dash ocr_dashboa
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
     [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
-for part in page_language contrib ocr_gold; do
+for part in page_language contrib ocr_gold edge; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"

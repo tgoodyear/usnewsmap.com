@@ -594,7 +594,7 @@ class LogsCallerSubscriptions(unittest.TestCase):
     def test_environment_shell_callers_forward_subscription(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("scripts/lib", "scripts/azure", "ja-ocr/tools", "ops/queries", "bin"):
+            for name in ("scripts/lib", "scripts/azure", "ocr/ja-ocr/tools", "ops/queries", "bin"):
                 (root / name).mkdir(parents=True)
             (root / "settings.env").write_text("fixture\n")
             (root / "ops/queries/fixture.kql").write_text("print 1")
@@ -608,7 +608,7 @@ class LogsCallerSubscriptions(unittest.TestCase):
             stub.chmod(0o755)
             for script, args in (
                 ("scripts/azure/logs.sh", ["--env", "prod", "--query-name", "fixture"]),
-                ("ja-ocr/tools/quality-rows.sh", ["--env", "prod", "--execution",
+                ("ocr/ja-ocr/tools/quality-rows.sh", ["--env", "prod", "--execution",
                                                   "usnm-jaocr-caj-prod-fixture"])):
                 target = root / script
                 shutil.copy(Path(ROOT, script), target)
@@ -1461,6 +1461,56 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         export = [c for c in self.calls() if c.startswith("export ")]
         self.assertEqual(len(export), 1)
         self.assertNotIn("--claims", export[0])
+
+    def test_handoff_export_on_the_boinc_host_reads_the_pushed_scans(self):
+        # #1116: scans from the mount, no scan or manifest download, and no page back up.
+        mount = os.path.join(self.tmp, "scans-mount")
+        scan = "keep/dlc_abc/sn83045462/1890-05-03/1/1.jp2"
+        os.makedirs(os.path.dirname(os.path.join(mount, scan)))
+        for suffix in ("", ".json"):
+            Path(mount, scan + suffix).write_text("x")
+        job = "a" * 64
+        self.stub(self.COPY_STUB + "\n" +
+                  'if [ "$1" = export ]; then\n'
+                  '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --root ] && j=$((i + 1)) && root=${!j}; done\n'
+                  f'  mkdir -p "$root/jobs/{job}"\n'
+                  f'  for f in page request.json record.json; do echo x > "$root/jobs/{job}/$f"; done\n'
+                  'fi\n'
+                  'if [ "$1 $2" = "handoff put" ]; then\n'
+                  '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --from ] && j=$((i + 1)) && from=${!j}; done\n'
+                  '  ls "$from" >> "$STUB_LOG"\n'
+                  'fi')
+        r = self.handoff(
+            "export",
+            HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+            HANDOFF_PAGES="sn83045462/1890-05-03/ed-1/seq-1",
+            HANDOFF_BATCH="dlc_abc",
+            HANDOFF_SCANS=scan,
+            HANDOFF_PLAN="queue-feed",
+            ENGINE_IMAGE="sha256:" + "a" * 64,
+            HANDOFF_CLAIMS="1",
+            HANDOFF_LOCAL_SCANS="1",
+            USNM_HANDOFF_SCANS_MOUNT=mount,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertFalse([c for c in calls if "--path scans/" in c or "--path manifests/" in c], calls)
+        (export,) = [c for c in calls if c.startswith("export ")]
+        # Only the listed files, copied out of the staging tree, which may hold other formats.
+        self.assertNotIn(f"--scans {mount} ", export)
+        self.assertIn("--scans ", export)
+        self.assertIn("record.json", calls)
+        self.assertIn("request.json", calls)
+        self.assertNotIn("page", calls)
+        # A scan the host doesn't have stops the export before it runs.
+        os.remove(self.log)
+        r = self.handoff("export", HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+                         HANDOFF_PAGES="sn83045462/1890-05-03/ed-1/seq-2", HANDOFF_BATCH="dlc_abc",
+                         HANDOFF_SCANS="keep/dlc_abc/sn83045462/1890-05-03/1/2.jp2", HANDOFF_PLAN="queue-feed",
+                         ENGINE_IMAGE="sha256:" + "a" * 64, HANDOFF_CLAIMS="1", HANDOFF_LOCAL_SCANS="1",
+                         USNM_HANDOFF_SCANS_MOUNT=mount)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("among the scans pushed", r.stderr)
 
     def test_handoff_export_batches_goes_on_past_a_failed_batch(self):
         # #1055: one execution exports a tick's pages from all their batches, one batch at a time.

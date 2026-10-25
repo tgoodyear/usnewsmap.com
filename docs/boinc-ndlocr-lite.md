@@ -2,7 +2,7 @@
 
 Issue [#626](https://github.com/tgoodyear/usnewsmap.com/issues/626) adds a CPU-only
 volunteer engine for Japanese scans. It uses the same upstream revision and
-conversion as `docker/Dockerfile.ja-ocr` and `ja-ocr/jaocr.py`, without the Flet desktop UI.
+conversion as `docker/Dockerfile.ja-ocr` and `ocr/ja-ocr/jaocr.py`, without the Flet desktop UI.
 Engine-level routing is tracked in [#624](https://github.com/tgoodyear/usnewsmap.com/issues/624).
 
 **Status:** the pinned contract engine and dedicated BOINC lifecycle are
@@ -53,7 +53,7 @@ processing an image. Extensionless BOINC scans get a detected JPEG, PNG, or JP2
 suffix in private job scratch.
 
 The adapter converts NDLOCR XML to the **same ALTO 3.1 in inch1200** as
-`ja-ocr/alto.py`: fractional reading order, one String per line, block unions,
+`ocr/ja-ocr/alto.py`: fractional reading order, one String per line, block unions,
 confidence clamping, scan dpi, and optional LoC page-size clamping. It returns
 the upstream text with the NFC, control-character and whitespace rules of
 `jaocr.normalize`, not the general pipeline's Latin ligature expansion or
@@ -122,7 +122,7 @@ identity before comparing hosts or increasing the campaign.
 
 The published BOINC worker was exercised independently in Docker on pve-big
 (CT 100, i7-7700K) and pve-laptop (CT 110, i7-1185G7). Both runs used
-`ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
+`ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
 memory with no additional swap, no network, and a read-only container root.
 No BOINC workunit was submitted, and no curated data or trust state was changed.
 

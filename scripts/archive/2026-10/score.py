@@ -4,7 +4,7 @@
     score.py --sample DIR --work DIR --out docs/reports/2026-10-ocr-engine-survey/data
     score.py --sample DIR --select-control
 
-Scores come from ja-ocr/quality.py, imported, with its word lists (wordfreq
+Scores come from ocr/ja-ocr/quality.py, imported, with its word lists (wordfreq
 3.1.1). Every text of a page is scored against the page's group language
 (not a language detected per text, so a garbled text can't escape its
 language by being undetermined):
@@ -53,7 +53,7 @@ from pathlib import Path
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Archived under scripts/archive/2026-10/: altotext.py and xsd/ stay in scripts/ocr-survey/.
 SURVEY = os.path.join(HERE, "..", "..", "ocr-survey")
-sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "ja-ocr"))
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "ocr", "ja-ocr"))
 sys.path.insert(0, SURVEY)
 
 import altotext  # noqa: E402

@@ -1492,6 +1492,88 @@ async fn handoff_get_file_copies_only_the_named_object_and_rejects_missing_or_un
     );
 }
 
+/// #1116: an export on the BOINC host puts only the job's record and request in the
+/// container; the bridge's pull takes the page from the scans the controller pushed there.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_onprem_export_leaves_the_page_out_of_the_container() {
+    use usnm_boinc::handoff::{self, Pulled, DISPATCH};
+    let fx = Fixture::new("eng").await;
+    let container = store(fx.tmp.path(), "handoff");
+    let mut options = fx.options.clone();
+    options.root = fx.tmp.path().join("job/dispatch");
+    let id = usnm_boinc::export(
+        &options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap()
+    .remove(0);
+    let page = std::fs::read(options.root.join("jobs").join(&id).join("page")).unwrap();
+    std::fs::remove_file(options.root.join("jobs").join(&id).join("page")).unwrap();
+    handoff::put(container.as_ref(), &options.root, DISPATCH)
+        .await
+        .unwrap();
+    assert!(container
+        .get(&format!("{DISPATCH}/jobs/{id}/page"))
+        .await
+        .unwrap()
+        .is_none());
+
+    // Without the staged scans there is no page to submit.
+    let server = fx.tmp.path().join("server-handoff");
+    assert!(handoff::pull(container.as_ref(), &server, &id)
+        .await
+        .is_err());
+    // A staged file that isn't the exported page is not taken either.
+    let other = fx.tmp.path().join("other-scans");
+    let staged = other.join("keep/test_pilot/sn00000001/1900-01-01/1/1.jpg");
+    std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+    std::fs::write(&staged, vec![0u8; page.len()]).unwrap();
+    assert!(
+        handoff::pull_with(container.as_ref(), &server, &id, Some(&other))
+            .await
+            .is_err()
+    );
+    // The scans the controller pushed hold it, under its keep name.
+    let pushed = fx.tmp.path().join("pushed-scans");
+    let to = pushed.join("keep/test_pilot/sn00000001/1900-01-01/1/1.jpg");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::write(&to, &page).unwrap();
+    assert_eq!(
+        handoff::pull_with(container.as_ref(), &server, &id, Some(&pushed))
+            .await
+            .unwrap(),
+        Pulled::Reserved
+    );
+    assert_eq!(
+        std::fs::read(server.join("jobs").join(&id).join("page")).unwrap(),
+        page
+    );
+
+    // After the staged scan is pruned: a retry of the reserved job uses the server's own
+    // copy, and a job past reservation needs no page at all.
+    std::fs::remove_dir_all(&pushed).unwrap();
+    assert_eq!(
+        handoff::pull_with(container.as_ref(), &server, &id, Some(&pushed))
+            .await
+            .unwrap(),
+        Pulled::Reserved
+    );
+    let mut submitted = usnm_boinc::load(&server, &id).unwrap();
+    submitted.stage = Stage::Submitted;
+    usnm_boinc::save(&server, &submitted).unwrap();
+    std::fs::remove_file(server.join("jobs").join(&id).join("page")).unwrap();
+    assert_eq!(
+        handoff::pull_with(container.as_ref(), &server, &id, Some(&pushed))
+            .await
+            .unwrap(),
+        Pulled::Already(Stage::Submitted)
+    );
+}
+
 /// The #469 route on synthetic data, with a local directory standing in for the hand-off
 /// container: the fetcher's scans and manifest in, export and the dispatch root put, the
 /// bridge's pull and submit, the spool and trust list back, and the trusted collect.

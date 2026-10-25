@@ -98,5 +98,7 @@
   "serialSetWriterRole": "usnm-sset-writer-role-prod",
   "jaocrWriterRole": "usnm-jaocr-writer-role-prod",
   "ocrDamageWriterRole": "usnm-ocr-damage-writer-role-prod",
+  "ocrSyncLakeRole": "usnm-ocr-sync-lake-role-prod",
+  "ocrSyncExchangeRole": "usnm-ocr-sync-exchange-role-prod",
   "releaseWriterRole": "usnm-release-writer-role-prod"
 }

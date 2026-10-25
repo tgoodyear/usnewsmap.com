@@ -9,7 +9,7 @@
 //!   For these languages it is ISO 639-2/T, which differs from the MARC code
 //!   only for the twenty or so languages with a bibliographic code.
 //! - **Word lists**: the code of the damage metric's word list for the
-//!   language, copied from `ja-ocr/damage_v2.py`'s `WORDFREQ` table (wordfreq's
+//!   language, copied from `ocr/ja-ocr/damage_v2.py`'s `WORDFREQ` table (wordfreq's
 //!   codes: `hrv` and `srp` are both `sh`, `nor` is `nb`, `tgl` is `fil`) and
 //!   its `LOCAL_WORDLISTS` (Hawaiian `haw`, Yiddish `yi`, our own lists). A
 //!   language with no list (Chinese, Korean, the indigenous languages, Latin,
@@ -29,7 +29,7 @@ pub struct Language {
     pub iso3: &'static str,
     /// The damage metric's word list for it, if it has one.
     pub wordlist: Option<&'static str>,
-    /// The list is our own (`ja-ocr/wordlists/`), not wordfreq's.
+    /// The list is our own (`ocr/ja-ocr/wordlists/`), not wordfreq's.
     pub local_list: bool,
 }
 
@@ -210,8 +210,8 @@ mod tests {
     /// `damage_v2.py`'s `WORDFREQ` and `LOCAL_WORDLISTS`, parsed from its source,
     /// so the two tables can't drift apart.
     fn damage_v2_tables() -> BTreeMap<String, String> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr/damage_v2.py");
-        let src = std::fs::read_to_string(path).expect("ja-ocr/damage_v2.py");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ocr/ja-ocr/damage_v2.py");
+        let src = std::fs::read_to_string(path).expect("ocr/ja-ocr/damage_v2.py");
         let mut out = BTreeMap::new();
         for start in ["WORDFREQ = {", "LOCAL_WORDLISTS = {"] {
             let i = src.find(start).expect(start) + start.len();
@@ -280,12 +280,12 @@ mod tests {
     #[cfg(feature = "damage")]
     #[test]
     fn local_lists_are_ja_ocrs() {
-        // damage_v2.py reads ja-ocr/wordlists/<code>.txt itself: the embedded
+        // damage_v2.py reads ocr/ja-ocr/wordlists/<code>.txt itself: the embedded
         // copies must be its first 5,000 words.
         for l in LANGUAGES.iter().filter(|l| l.local_list) {
             let code = l.wordlist.unwrap();
             let path = format!(
-                "{}/../../ja-ocr/wordlists/{code}.txt",
+                "{}/../../ocr/ja-ocr/wordlists/{code}.txt",
                 env!("CARGO_MANIFEST_DIR")
             );
             let src = std::fs::read_to_string(&path).expect("the local word list");

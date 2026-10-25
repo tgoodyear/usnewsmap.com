@@ -52,6 +52,7 @@ jobs:
       contrib: ${{ steps.f.outputs.contrib }}
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
       boinc_pages: ${{ steps.f.outputs.boinc_pages }}
+      edge: ${{ steps.f.outputs.edge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -347,6 +348,24 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
+  # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
+  # run offline on Node's own test runner with no dependencies, and shellcheck of its deploy
+  # script. No package.json and no npm cache, so it does not use setup-node-web.
+  edge:
+    name: edge (fallback worker tests)
+    needs: changes
+    if: needs.changes.outputs.edge == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: node --test edge/fallback-worker/*.test.mjs
+      - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
+
   quickwit:
     name: quickwit (parity, ingest release)
     needs: changes
@@ -465,7 +484,7 @@ jobs:
       # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
         run: |
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ocr/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
         run: scripts/ci/check-ja-ocr-image.sh --image usnm-ja-ocr-check

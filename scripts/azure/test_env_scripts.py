@@ -903,7 +903,7 @@ class StartQuality(Stubbed):
                 'JA_OCR_JOB="usnm-jaocr-caj-dev"\nJA_AUDIT_JOB="usnm-jaone-caj-dev"\n')
 
     def start(self, *args):
-        return subprocess.run([os.path.join(ROOT, "ja-ocr", "tools", "start-quality.sh"), "--env", "dev", *args],
+        return subprocess.run([os.path.join(ROOT, "ocr", "ja-ocr", "tools", "start-quality.sh"), "--env", "dev", *args],
                               cwd=ROOT, env={**self.env, "STUB_EXECUTION": "usnm-jaocr-caj-dev-abc12"},
                               capture_output=True, text=True)
 

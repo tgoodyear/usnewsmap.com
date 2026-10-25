@@ -1,5 +1,5 @@
 //! A page's own language (05 §5.5.8, #289): a port of `quality.py`'s
-//! `detect` (`ja-ocr/damage_v2.py`) and of the functions it calls, without
+//! `detect` (`ocr/ja-ocr/damage_v2.py`) and of the functions it calls, without
 //! the damage half of the audit.
 //!
 //! A page's language is found among its title's catalog languages plus

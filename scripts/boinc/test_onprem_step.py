@@ -170,6 +170,102 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn("not a controller bridge-step input", done.stderr)
 
+    def receive(self, members, stage):
+        import io
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, data in members:
+                info = tarfile.TarInfo(name)
+                if data is None:
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = "/etc/passwd"
+                    tar.addfile(info)
+                else:
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+        env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": self.conf.name,
+               "USNM_BOINC_SCAN_STAGE": stage, "USNM_BOINC_STEP_RUN": stage + "-run",
+               "SSH_ORIGINAL_COMMAND": "usnm-boinc-step --env prod --target scans --step receive --wait-mins 5"}
+        os.makedirs(stage + "-run", exist_ok=True)
+        return subprocess.run(["bash", str(SCRIPT), "--from-ssh"], env=env, input=buf.getvalue(),
+                              capture_output=True, timeout=60)
+
+    def test_scans_receive_takes_only_staged_scans(self):
+        # #1116: the controller's push sends copies of scans; only that layout lands.
+        with tempfile.TemporaryDirectory() as d:
+            stage = os.path.join(d, "stage")
+            done = self.receive([("keep/nbu_gage/sn1/1890-05-03/1/7.jp2", b"scan"),
+                                 ("keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json", b"{}")], stage)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(b"received 2 files", done.stdout)
+            self.assertEqual(Path(stage, "keep/nbu_gage/sn1/1890-05-03/1/7.jp2").read_bytes(), b"scan")
+            old = Path(stage, "keep/nbu_gage/sn1/1890-01-01/1/1.jpg")
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"old")
+            os.utime(old, (0, 0))
+            for members in ([("../x/sn1/1890-05-03/1/7.jp2", b"x")],
+                            [("keep/nbu_gage/sn1/1890-05-03/1/7.png", b"x")],
+                            [("keep/nbu_gage/sn1/1890-05-03/1/8.jp2", None)],
+                            [("keep/nbu_gage/sn1/1890-05-03/1/9.jp2.json", b"x" * 70000)]):
+                with self.subTest(members=members[0][0]):
+                    done = self.receive(members, stage)
+                    self.assertNotEqual(done.returncode, 0)
+            self.assertFalse(Path(stage, "keep/nbu_gage/sn1/1890-05-03/1/8.jp2").exists())
+            import io
+            import tarfile
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                for i in range(5001):
+                    info = tarfile.TarInfo(f"keep/d{i}")
+                    info.type = tarfile.DIRTYPE
+                    tar.addfile(info)
+            env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": self.conf.name,
+                   "USNM_BOINC_SCAN_STAGE": stage, "USNM_BOINC_STEP_RUN": stage + "-run",
+                   "SSH_ORIGINAL_COMMAND": "usnm-boinc-step --env prod --target scans --step receive --wait-mins 5"}
+            done = subprocess.run(["bash", str(SCRIPT), "--from-ssh"], env=env, input=buf.getvalue(),
+                                  capture_output=True, timeout=60)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(b"more tar entries", done.stderr)
+            done = self.receive([("keep/nbu_gage/sn1/1890-05-03/1/2.jpg", b"s")], stage)
+            self.assertIn(b"pruned 1", done.stdout)
+            self.assertFalse(old.exists())
+
+    def test_scans_receive_refuses_big_extension_records_and_leaves_no_partial_file(self):
+        import io
+        import tarfile
+        with tempfile.TemporaryDirectory() as d:
+            stage = os.path.join(d, "stage")
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+                info = tarfile.TarInfo("keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json")
+                info.pax_headers = {"comment": "x" * 100000}
+                info.size = 2
+                tar.addfile(info, io.BytesIO(b"{}"))
+            env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": self.conf.name,
+                   "USNM_BOINC_SCAN_STAGE": stage, "USNM_BOINC_STEP_RUN": d,
+                   "SSH_ORIGINAL_COMMAND": "usnm-boinc-step --env prod --target scans --step receive --wait-mins 5"}
+            done = subprocess.run(["bash", str(SCRIPT), "--from-ssh"], env=env, input=buf.getvalue(),
+                                  capture_output=True, timeout=60)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertFalse(Path(stage, "keep/nbu_gage/sn1/1890-05-03/1/7.jp2.json").exists())
+            # A stream cut short inside a file.
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                info = tarfile.TarInfo("keep/nbu_gage/sn1/1890-05-03/1/8.jp2")
+                info.size = 100000
+                tar.addfile(info, io.BytesIO(b"s" * 100000))
+            done = subprocess.run(["bash", str(SCRIPT), "--from-ssh"], env=env, input=buf.getvalue()[:60000],
+                                  capture_output=True, timeout=60)
+            self.assertNotEqual(done.returncode, 0)
+            left = [str(p) for p in Path(stage).rglob("*") if p.is_file()]
+            self.assertEqual(left, [])
+
+    def test_scans_receive_takes_no_vars(self):
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target scans --step receive --var X=1 --wait-mins 5")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("no --image or --var", done.stderr)
+
     def write_handoff_env(self, **changes):
         settings = dict(HANDOFF_SETTINGS, **changes)
         Path(self.conf.name, "handoff.env").write_text(

@@ -19,7 +19,7 @@ those words taken out of their lines (words.json lists the words of the
 LoC's text. It prints the per-group medians and writes
 DATA/doctr-dedup.jsonl.
 
-Run it where score.py runs (it imports score.py, so ja-ocr/quality.py and
+Run it where score.py runs (it imports score.py, so ocr/ja-ocr/quality.py and
 wordfreq), on the round-1 work directory.
 """
 

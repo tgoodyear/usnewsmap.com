@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cut reference crops from the sampled pages for accuracy scoring (#128).
 
-    ja-ocr/tools/crops.py --sample-dir SAMPLE_DIR [--count 24] [--seed 128]
+    ocr/ja-ocr/tools/crops.py --sample-dir SAMPLE_DIR [--count 24] [--seed 128]
 
 Picks pages evenly from the typeset papers (Rocky Shimpo, Colorado Times)
 and the camp papers (mostly hand-lettered mimeograph), cuts one region of

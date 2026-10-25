@@ -1,4 +1,4 @@
-# The on-prem Japanese OCR (#917, #128): one replica (%i) of ja-ocr/jaocr.py `run`, the
+# The on-prem Japanese OCR (#917, #128): one replica (%i) of ocr/ja-ocr/jaocr.py `run`, the
 # usnewsmap-ja-ocr image under podman, as the host's Arc machine identity, in place of
 # the Azure job caj-usnm-jaocr-<env>. Replicas claim issues through create-only blobs, so
 # instances never take the same issue, and pace loc.gov together (JAOCR_REPLICAS).

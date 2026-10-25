@@ -8,7 +8,7 @@ Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey
 
 ## Prerequisites
 
-- **A checkout of this repository.** `gold.py` imports `locfetch.py`, `crops.py` and `altotext.py` beside it, and `locfetch.py` imports `ja-ocr/jaocr.py`, so run it from the checkout rather than copying the script out.
+- **A checkout of this repository.** `gold.py` imports `locfetch.py`, `crops.py` and `altotext.py` beside it, and `locfetch.py` imports `ocr/ja-ocr/jaocr.py`, so run it from the checkout rather than copying the script out.
 - **Python 3.9 or later.** The scripts use only the standard library apart from Pillow, and the newest feature in `gold.py` is `str.removesuffix` (3.9). It was run here on 3.14; 3.9 itself is UNVERIFIED.
 - **A Rust toolchain** (`cargo`), for the scorer. The version is pinned in `rust-toolchain.toml`.
 - **Pillow**, for `public-convert`, which opens the page images and cuts the crops (`pip install Pillow`). `validate` and `score` don't need it.

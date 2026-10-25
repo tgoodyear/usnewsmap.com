@@ -1,6 +1,6 @@
 #!/bin/bash
 # Scores every engine on node 2 (#296), in a python:3.12-slim container with wordfreq 3.1.1 and lxml.
-# Code: repo/ (score.py as on ocr/engine-survey; ja-ocr/quality.py as of 5ced3c6).
+# Code: repo/ (score.py as on ocr/engine-survey; ocr/ja-ocr/quality.py as of 5ced3c6).
 cd /tmp
 export XDG_RUNTIME_DIR=/run/user/1000
 echo "$(date -u +%FT%TZ) score start" >> /srv/bulk/ocr-survey/status.txt
