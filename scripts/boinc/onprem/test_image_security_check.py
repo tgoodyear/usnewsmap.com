@@ -427,6 +427,17 @@ class ImageSecurityCheck(unittest.TestCase):
                 self.assertEqual(done.stdout, "")
                 self.assertEqual(self.calls(), [])
 
+    def test_a_mysql_image_with_other_characters_is_refused_for_them(self):
+        # The message names the character rule: the reference may be fine as to its tag.
+        message = "--mysql-image: an image name made only of letters, digits and . _ / : - (up to 200)"
+        for image in ("docker.io/library/mysql:8.4;id", "mysql:8.4 --pull", "my$ql:8.4", "docker.io/library/mysql:8.4" + "a" * 200):
+            with self.subTest(image=image):
+                done = self.run_check("--mysql-image", image)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertEqual(done.stdout, "")
+                self.assertEqual(self.calls(), [])
+
     def test_a_registry_port_is_part_of_the_name_the_unit_must_pin(self):
         image = "registry.example:5000/library/mysql:8.4"
         # Not the registry without its port, not another port, not the same name on docker.io.
