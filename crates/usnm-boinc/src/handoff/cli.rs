@@ -41,6 +41,10 @@ pub enum HandoffCommands {
         root: PathBuf,
         #[arg(long)]
         job: String,
+        /// The scans the controller pushed to this host (`keep/<batch>/...`): the job's page
+        /// comes from there when it matches, and from the container otherwise (#1116).
+        #[arg(long)]
+        scans: Option<PathBuf>,
     },
     /// Server side: write a job's spool files, its host id and trust.json to the container.
     /// With --root (the server's hand-off root), a page submitted in an OCR bundle gets its
@@ -107,7 +111,15 @@ pub async fn run(command: HandoffCommands) -> anyhow::Result<()> {
             from_url,
             root,
             job,
-        } => match x::pull(usnm_store::open(&from_url)?.as_ref(), &root, &job).await? {
+            scans,
+        } => match x::pull_with(
+            usnm_store::open(&from_url)?.as_ref(),
+            &root,
+            &job,
+            scans.as_deref(),
+        )
+        .await?
+        {
             x::Pulled::Reserved => println!("reserved"),
             x::Pulled::Already(stage) => {
                 println!("{}", serde_json::to_value(stage)?.as_str().unwrap_or("?"))
