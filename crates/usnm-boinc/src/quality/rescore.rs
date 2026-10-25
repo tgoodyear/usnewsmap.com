@@ -185,6 +185,23 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         "invalid campaign name {:?}",
         opts.campaign
     );
+    // A new output root: re-staged units must not land on the staging root
+    // (their checksums would no longer match quality.json), nor mix with a
+    // previous run's units that this run skips.
+    let out_units = units(&opts.out_dir);
+    anyhow::ensure!(
+        !out_units.exists() && std::fs::symlink_metadata(&out_units).is_err(),
+        "{} exists: give a new --out-dir",
+        out_units.display()
+    );
+    let root =
+        std::fs::canonicalize(&opts.root).with_context(|| format!("{}", opts.root.display()))?;
+    std::fs::create_dir_all(&opts.out_dir)?;
+    let out = std::fs::canonicalize(&opts.out_dir)?;
+    anyhow::ensure!(
+        !out.starts_with(&root) && !root.starts_with(&out),
+        "--out-dir must be outside --root"
+    );
     let loc = read_loc_texts(&opts.loc_texts)?;
     let places_txt = stage::read_places(&opts.places)?;
     let places = Places::parse(&places_txt);
@@ -405,6 +422,16 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("loc_text label"), "{e}");
+        // A used --out-dir, or one inside --root: refused.
+        let e = run(&opts).unwrap_err().to_string();
+        assert!(e.contains("new --out-dir"), "{e}");
+        let e = run(&Options {
+            out_dir: opts.root.join("out"),
+            ..opts.clone()
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("outside --root"), "{e}");
         // Other places than the unit's: refused.
         let other = tmp.path().join("other-places.txt");
         std::fs::write(&other, "Albany\n").unwrap();

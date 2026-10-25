@@ -157,10 +157,10 @@ WHERE u.campaign = r.campaign AND u.doc_id = r.doc_id AND u.hat_version = 1
   AND r.est_cer_v1 IS NULL AND r.est_cer IS NOT NULL;
 
 -- Campaigns whose hat estimates are wrong and stay out of ranking until fixed; their scan
--- features still count. v1-wave6 was here from 24 October 2026: it staged loc-hist as
--- "bulk", ocr-local's loc_text label, on all its pages (#1079). Its rows were rescored from
--- LoC's curated text (usnm-boinc quality rescore) and reloaded on 25 October 2026, so it is
--- out of the table again.
+-- features still count. Rows are added and removed by hand, with the repair (#1079), never
+-- here: a rerun of this file must not re-enable a campaign that hasn't been repaired, nor
+-- exclude one that has. v1-wave6 (loc-hist staged as "bulk", ocr-local's loc_text label)
+-- was excluded from 24 October 2026 until its rescored rows were loaded (#1079).
 -- Keyed by name only, not a foreign key, so an exclusion can stand before its campaign is
 -- loaded.
 CREATE TABLE IF NOT EXISTS quality.excluded_estimates (
@@ -169,7 +169,6 @@ CREATE TABLE IF NOT EXISTS quality.excluded_estimates (
   since    date NOT NULL DEFAULT current_date
 );
 ALTER TABLE quality.excluded_estimates DROP CONSTRAINT IF EXISTS excluded_estimates_campaign_fkey;
-DELETE FROM quality.excluded_estimates WHERE campaign = 'v1-wave6';
 
 -- A text-only comparison of two readers of a page (no image): LoC against American Stories
 -- over the corpus, and any later reader pair. Rates as quality::Pair: a is the hypothesis.

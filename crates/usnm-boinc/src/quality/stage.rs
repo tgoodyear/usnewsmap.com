@@ -51,12 +51,13 @@ pub const SAMPLE_FILE: &str = "sample.json";
 pub const LOC_READER: &str = "loc";
 pub const LOC_SOURCE: &str = "loc-alto";
 /// The words `ocr-local`'s `loc_text` column holds: why we OCRed the page
-/// (the queue, `bulk` or `priority`, or the Japanese job's reading of
-/// LoC's text). The column is a label, never LoC's text, but its name
-/// invites the mistake: v1-wave6 was staged with `loc-hist` as `bulk` on
-/// all 10,000 pages (#1079).
-pub const LOC_TEXT_LABELS: [&str; 7] = [
-    "bulk", "priority", "missing", "empty", "short", "garbled", "mixed",
+/// (the queue message's reason, `bulk` or `user`, as
+/// `usnm_ocr_contract::message::Reason` names them; `priority` for the
+/// queue's own name; or the Japanese job's reading of LoC's text). The
+/// column is a label, never LoC's text, but its name invites the mistake:
+/// v1-wave6 was staged with `loc-hist` as `bulk` on all 10,000 pages (#1079).
+pub const LOC_TEXT_LABELS: [&str; 8] = [
+    "bulk", "user", "priority", "missing", "empty", "short", "garbled", "mixed",
 ];
 
 #[derive(Debug, Clone)]
