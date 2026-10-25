@@ -172,20 +172,20 @@ Each run:
 
 Request lookups scan each relevant damage table once in published batch order, retaining only matches for the day's bounded set of IDs, and send messages in the original shuffled order. `curated/ocr-local/requests/<day>/lookup.json` checkpoints the published version, requested IDs, completed batch cursor, and resolved scores after each batch. A deadline pause resumes that checkpoint rather than repeating completed lookups or losing resolved candidates; a changed published version resets it. The checkpoint contains no query or request time. Completion empties both the checkpoint and daily payload; interrupted cleanup retries even if the payload is already empty, without spending the next day's processing slot. Their historical versions expire after one day under the lake lifecycle policy (plus configured soft-delete retention). Retries skip every page still charged to that request day, including terminal dead letters; confirmed-unsent attempts remain eligible. Request-step failures are returned after publishing status for completed imports and successful request sends, including successes before a later send or completion write failed; bulk seeding still runs when its deadline allows.
 
-**Queue pages for the pilot.** Nobody but `id-usnm-ingest` can add messages, so `ocr-enqueue` runs as an execution of the pickup job, which has the exchange account's endpoints. It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages. If a send fails, the pages after it get a `not_sent` outcome, so running the same command again queues them; the page whose send failed may have gone out, and `--include-outstanding` queues it again. Outside a dry run, `ocr-enqueue` and `ocr-requeue` hold the `ops/ocr-sync` lock, so they fail while a pickup run is going; start them again once it ends.
+**Queue pages for the pilot.** Only the pickup's identity can add messages, so `ocr-enqueue` runs in CT 215 with the pickup's settings (`usnm-ingest-run`, run as root on pve-laptop; home-infra `docs/lab.md`, "Ingest commands"). It finds each page in the published version (Step 6's damage tables, or the curated text where they lack the batch). It then writes a ledger row, `curated/ocr-local/queued/<day>/<run>.parquet`, and puts the message: the base batch, the page's detected language in ISO 639-3 (its title's first language for `und`), and LoC's damage rate as the score. It skips pages already outstanding and Japanese titles. `--dry-run` only counts. The ledger rows are written before the messages. If a send fails, the pages after it get a `not_sent` outcome, so running the same command again queues them; the page whose send failed may have gone out, and `--include-outstanding` queues it again. Outside a dry run, `ocr-enqueue` and `ocr-requeue` hold the `ops/ocr-sync` lock, so they fail while a pickup run is going; start them again once it ends.
 
 ```sh
-scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-enqueue --pages sn83045462_1890-05-03_ed-1_seq-7,... \
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-enqueue -- --pages sn83045462_1890-05-03_ed-1_seq-7,... \
   --reason bulk --plan pilot-german [--batch nbu_gage] [--dry-run]
 ```
 
 **Queue dead-lettered pages again,** by cause (`dequeue_count`, `invalid`, `permanent`, `unroutable`) and, for `invalid`, kind. Pages queued since their dead letter, imported since, or whose latest dead letter has another cause, are skipped.
 
 ```sh
-scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeue_count [--since 2026-10-20] [--dry-run]
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-requeue -- --cause dequeue_count [--since 2026-10-20] [--dry-run]
 ```
 
-**Seeding** ([12 §12.5 Step 10](../design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/azure/settings.sh` and provision.
+**Seeding** ([12 §12.5 Step 10](../design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/azure/settings.sh` and provision, then write CT 215's settings file again (`scripts/onprem/ingest-env.sh`, as below): the pickup there reads `/etc/usnm/ingest.env`, not the stack.
 
 It skips Japanese titles and pages already in the ledger, and copies of a page that another batch's copy wins (the release's duplicate rule). A page of the plan outstanding for 14 days, or dead-lettered with cause `dequeue_count`, is queued again at most 3 times. One dead-lettered as `unroutable` is queued again after 6 hours, doubling per cycle up to 48. A page whose message a failed run never sent (`not_sent`) goes out in the next run. Each batch's ranked units are stored under `curated/ocr-local/seed/rank/`, and the units a plan has finished under `curated/ocr-local/seed/plans/<plan>/done/`. A run that reaches its time limit before every batch is ranked queues no new pages; the next run continues from there.
 
@@ -194,7 +194,7 @@ It skips Japanese titles and pages already in the ledger, and copies of a page t
 `ocr-seed` is the same step on its own. Use `--dry-run` to print what it would queue as JSON, page ids per unit included, without writing anything. Its flags override the settings. For the pilot (Step 11), preview it, then set the plan:
 
 ```sh
-scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-seed --dry-run --seed-plan pilot-deu --seed-pilot \
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-seed -- --dry-run --seed-plan pilot-deu --seed-pilot \
   --seed-languages deu --seed-years 1850-1919 --seed-max-pages 3000 --bulk-window 1000
 scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PLAN --value pilot-deu
 scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_PILOT --value true
@@ -203,12 +203,14 @@ scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_YEARS --value 1850-1919
 scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
 scripts/azure/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
 scripts/azure/provision.sh --env prod
+# CT 215 reads its own copy of the settings: write it again.
+scripts/onprem/ingest-env.sh --env prod | ssh root@pve-laptop.tjg.fyi /root/batch-ct-ingest.sh --env-file -
 ```
 
 **Quarantine.** Rejects are kept for 30 days as `rejects/<run>/<source path>` (a dead letter as `rejects/<run>/deadletter/<message id>.txt`), each with a `.reason.json` record: the reason code, the source, its ETag, size and creation time, never its content. A source over its size limit isn't read, so it has a record only. Read them with your own sign-in from home (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:
 
 ```sh
-scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --from-quarantine --reason not_requested
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --from-quarantine --reason not_requested
 ```
 
 Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url` (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
@@ -216,7 +218,7 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 **The gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to the scores stored in every merged part, without picking anything up. It writes `curated/ocr-local/report/<run>.json` with pages considered and replaced, the reasons LoC's text stays, and counts by language and by engine.
 
 ```sh
-scripts/azure/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --report
 ```
 
 **Alerts** (with alert emails): a failed execution is reported by the pipeline's job-failed rule, `usnm-ingest-job-failed-alert-<env>` (severity 2, its `Execution` names the job; #308), and `usnm-ocrs-backlog-alert-<env>` (severity 3) fires when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.

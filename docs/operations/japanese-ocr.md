@@ -104,12 +104,12 @@ ja-ocr/tools/start-quality.sh --env prod --command damage-parity --pages 400
 
 ### OCR damage tables (#296)
 
-`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs as one-off executions of the ingest job, which reads and writes the curated container. `scripts/azure/start-job.sh` starts one with the job's image and settings and other arguments. An execution can't mount the job's scratch share, and this command needs none. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
+`usnm-ingest ocr-damage` scores pages with the Rust port (12 §12.5 Step 6). It runs on-prem in pve-laptop CT 215 (`usnm-batch`), as that container's own Arc machine identity (#917): run as root on pve-laptop, `usnm-ingest-run` starts one command as a transient systemd unit with the container's settings and its installed release (home-infra `docs/lab.md`, "Ingest commands"); its log is `journalctl -u usnm-ingest-ocr-damage-<stamp>` in the container. The grants are in "On-prem" below. It logs counts and doc_ids, never text. Run the three modes in this order: parity, the gate, then the full pass.
 
 1. **Parity on curated text** (Step 5's cloud check). Write the pages with `damage-parity` ([above](#damage-metric-parity-296)), take the path from its `damage parity written` line, then:
 
    ```sh
-   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --parity audit/damage-parity/<stamp>.jsonl.zst
+   pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-damage -- --parity audit/damage-parity/<stamp>.jsonl.zst
    ```
 
    It logs `ocr damage parity` with the pages that agree and up to 50 doc_ids that don't, and fails if any page differs.
@@ -117,30 +117,24 @@ ja-ocr/tools/start-quality.sh --env prod --command damage-parity --pages 400
 2. **The gate.** The 10% audit's pages, picked by the audit's own sampler from every curated row of `pages-v20261003-1` (duplicate copies included), scored in Rust and compared with the audit's per-page CSV, joined on doc_id and batch. The CSV rounds every score to 4 decimals, so Rust's are formatted the same way before the comparison. A page agrees when the language, the decision and the three scores all match; the gate passes when at least 99.99% of the CSV's 2,368,911 rows agree. It writes no tables, only its result, `audit/damage/v2/gate/<version>-<pct>pct-<stamp>.json`, and the `ocr damage gate` line (counts by kind of difference, up to 50 doc_ids). It fails when the gate does. The result goes in a draft report PR.
 
    ```sh
-   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version pages-v20261003-1 \
+   pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-damage -- --version pages-v20261003-1 \
      --sample-pct 10 --compare-csv audit/ocr-quality-v2-pages-v20261003-1-10pct-pages.csv.gz
    ```
 
 3. **The full pass**, on the live version (`index_version` in the reference container's `current.json`), once the gate has passed:
 
    ```sh
-   scripts/azure/start-job.sh --env prod --job INGEST_JOB -- ocr-damage --version <live version> --max-runtime-secs 165600
+   pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-damage -- --version <live version> --max-runtime-secs 165600
    ```
 
    Each batch version gets `audit/damage/v2/<batch>_ver<NN>.parquet`, one row per page: `doc_id`, `lccn`, `date`, `edition`, `seq`, the base `batch`, `batch_version`, `text_status`, `lang`, `decision` (`detected`, `mixed`, `und`, or `no_text` for pages without text), `mixed_with`, `script`, `damage_rate`, `function_share`, `garbage_share`, `words`, `head` and `near`. Beside it, `<batch>_ver<NN>.summary.json` holds per-title counts (pages, scored pages, und, mixed, damaged and badly damaged), the median damage rate and pages by language. The summary is written last and marks the batch version done, so a later run skips it and pays only for new batches. When every batch of the version has its tables, `audit/damage/v2/versions/<version>.json` lists them; the seeder and `ocr-sync` read that list. A second run on the same version writes nothing. `--batches a,b_ver02` scores only those batches and doesn't write the list. A page is scored against its title's languages in the version's `titles.json`, which the command requires (the working catalog only fills in titles it lacks). A later correction to a title's catalog languages doesn't rescore tables already written. Tables are create-only, so to rescore, delete both the `.parquet` and the `.summary.json` of each of that title's batch versions, then run the pass again.
 
-   The ingest job has a 48-hour replica timeout. `--max-runtime-secs` stops the run from starting new batches (it finishes those it has started), and the next execution continues. `ocr damage progress` lines come once a minute with the pages per second. Batches are scored `--parallel` at a time, by default one per CPU. On one laptop core the scoring runs at about 1,650 pages a second, so the corpus's 23.7 million pages are a few hours of CPU on the job's 4 vCPUs, plus reading the curated parts. The Python audit's 10% sample took 5,725 s. Time the first full run and record it here. On the Consumption profile the job costs about $0.43 an hour, and reading curated parts that have moved to Cool adds about $0.01 per GB read.
+   `--max-runtime-secs` stops the run from starting new batches (it finishes those it has started), and the next run continues. `ocr damage progress` lines come once a minute with the pages per second. Batches are scored `--parallel` at a time, by default one per CPU. On one laptop core the scoring runs at about 1,650 pages a second, so the corpus's 23.7 million pages are a few hours of CPU on the job's 4 vCPUs, plus reading the curated parts. The Python audit's 10% sample took 5,725 s. Time the first full run and record it here. On the Consumption profile the job costs about $0.43 an hour, and reading curated parts that have moved to Cool adds about $0.01 per GB read.
 
-**On-prem.** Since 24 October 2026 the pass can run on an on-prem host instead, as that host's own Arc machine identity (pve-laptop CT 215, `usnm-batch`). With `USNM_OCR_DAMAGE_ONPREM` on and `USNM_OCR_DAMAGE_RUNNER` set to that identity's object id, provision grants it a role that can only create new blobs, under `curated/audit/damage/`, with no read, overwrite or delete (`infra/modules/damage-writer.bicep`). It reads curated and reference through the on-prem hosts' group (`USNM_JA_OCR_ONPREM`). Run it detached with the Arc agent's token endpoint and the lake's URLs (the command uses no state, but the binary wants a `--state-file`):
+**On-prem.** Since 24 October 2026 the pass can run on an on-prem host instead, as that host's own Arc machine identity (pve-laptop CT 215, `usnm-batch`). With `USNM_OCR_DAMAGE_ONPREM` on and `USNM_OCR_DAMAGE_RUNNER` set to that identity's object id, provision grants it a role that can only create new blobs, under `curated/audit/damage/`, with no read, overwrite or delete (`infra/modules/damage-writer.bicep`). It reads curated and reference through the on-prem hosts' group (`USNM_JA_OCR_ONPREM`). Run it detached at nice 19, as above:
 
 ```sh
-systemd-run --unit usnm-ocr-damage --nice 19 \
-  --setenv IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
-  --setenv IMDS_ENDPOINT=http://localhost:40342 \
-  /usr/local/bin/usnm-ingest --state-file /var/lib/usnm-ocr-damage/state.json \
-  --curated https://<lake>.blob.core.windows.net/curated \
-  --reference https://<lake>.blob.core.windows.net/reference ocr-damage --version <live version>
-journalctl -u usnm-ocr-damage
+pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-damage --nice 19 -- --version <live version>
 ```
 
 **A dev-scale test** (dev holds nothing outside a focused experiment, so this needs the maintainer's approval first). Locally, from the repository root:
