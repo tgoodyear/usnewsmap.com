@@ -189,6 +189,23 @@ fn queries() -> Vec<(&'static str, Node)> {
             build("wheat ½", Some(Mode::Near), 2, 0).unwrap(),
         ),
         ("slash between digits", parse("1/2").unwrap()),
+        // A fraction joined to a number is also searched as OCR prints it
+        // with a slash (#1067): `(text:61¼ OR text:"61 1 4" OR text:"611
+        // 4")`. The fixtures print `61¼` and `20¾` as the glyph only, so
+        // these count what the glyph counts and check the engine takes the
+        // query as the reference backend reads it, in every layout.
+        (
+            "phrase with a fraction in a number",
+            parse(r#""higher at 61¼""#).unwrap(),
+        ),
+        (
+            "fraction in a number excluded",
+            parse("wheat -61¼").unwrap(),
+        ),
+        (
+            "fraction in a number or a word",
+            parse("20¾ OR orator").unwrap(),
+        ),
         // Characters that fold to Japanese ones stay themselves (#241), as
         // the analyzer has them: `b㊁` is one word.
         ("circled ideograph", parse("㊀").unwrap()),

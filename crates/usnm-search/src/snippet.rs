@@ -75,6 +75,13 @@ fn patterns(query: &Node) -> Vec<Pattern> {
     let mut out = Vec::new();
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
+        // A fraction read with a slash is marked as a whole, as the phrase it
+        // is (`611/2` for `61½`, #1067).
+        out.extend(
+            usnm_core::fractions::slash_phrases(node)
+                .into_iter()
+                .map(Pattern::Phrase),
+        );
         match node {
             Node::Term(t) => out.push(Pattern::Term(t.clone())),
             Node::Phrase { terms, slop: 0 } => out.push(Pattern::Phrase(terms.clone())),
@@ -158,9 +165,11 @@ fn word_end(chars: &[char], mut at: usize) -> usize {
 /// Up to [`MAX_FRAGMENTS`] fragments of `text` around the matches of the
 /// query's positive words and phrases: exact phrases marked as a whole, a
 /// NEAR phrase's words one by one, prefix, wildcard and fuzzy terms on each
-/// word they match. Matches closer together than the context share a
-/// fragment, and fragments never overlap. Line breaks (columns) become spaces; a fragment
-/// that doesn't reach the text's start or end is marked with `…`. The words
+/// word they match. A number with a fraction (`61½`) is also marked where
+/// OCR read it with a slash (`611/2`, `61 1/2`), as a whole (#1067). Matches
+/// closer together than the context share a fragment, and fragments never
+/// overlap. Line breaks (columns) become spaces; a fragment that doesn't
+/// reach the text's start or end is marked with `…`. The words
 /// are matched as the engine matches them: the text's as `usnm_text` reads
 /// them, the query's analyzed again ([`as_analyzed`]), so with any analyzer
 /// version the marks land on the words the engine found (#168), and with
@@ -468,6 +477,42 @@ mod tests {
             ["Oats closed <mark>1/2</mark> lower"]
         );
         assert!(text_snippets("Wheat closed ½ higher", &q, TextLayout::Separate).is_empty());
+    }
+
+    #[test]
+    fn marks_a_fraction_read_with_a_slash_as_a_whole() {
+        // `61½` is also found as OCR prints it (#1067), and the mark covers
+        // the whole spelling, not its digits one by one.
+        let text = "Wheat 61½, then 61 1/2, then 611/2, then 61 and 1/2, then 62½.";
+        assert_eq!(
+            snip(text, "61½"),
+            [
+                "Wheat <mark>61½</mark>, then <mark>61 1/2</mark>, then <mark>611/2</mark>, \
+              then 61 and 1/2, then 62½."
+            ]
+        );
+        // A bare fraction is the glyph alone; so is a NEAR phrase.
+        assert_eq!(
+            snip("Wheat ½, then 1/2.", "½"),
+            ["Wheat <mark>½</mark>, then 1/2."]
+        );
+        assert_eq!(
+            snip("Wheat 61½, then wheat 611/2.", r#""wheat 61½"~2"#),
+            ["<mark>Wheat</mark> <mark>61½</mark>, then <mark>wheat</mark> 611/2."]
+        );
+        // A phrase is marked as a whole in either spelling.
+        assert_eq!(
+            snip(text, r#""then 61½""#),
+            [
+                "Wheat 61½, <mark>then 61 1/2</mark>, <mark>then 611/2</mark>, \
+              then 61 and 1/2, then 62½."
+            ]
+        );
+        // An exclusion marks nothing.
+        assert_eq!(
+            snip("Wheat 611/2 and gold", "gold -61½"),
+            ["Wheat 611/2 and <mark>gold</mark>"]
+        );
     }
 
     #[test]
