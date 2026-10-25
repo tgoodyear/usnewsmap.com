@@ -742,6 +742,75 @@ fn a_mount_point_is_told_from_a_directory() {
     assert!(is_mount_point(&dir.path().join("missing")).is_err());
 }
 
+#[test]
+fn the_root_of_the_tree_is_a_mount_point() {
+    // `/..` is `/` itself, on the same device, so comparing devices alone calls the root no mount
+    // point. The root has no parent to be told from.
+    assert!(is_mount_point(Path::new("/")).unwrap());
+    assert!(is_mount_point(Path::new("/.")).unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    assert!(!is_mount_point(&dir.path().join("sub/../sub")).unwrap());
+}
+
+#[test]
+fn the_status_file_is_complete_and_synced_before_and_after_it_is_named() {
+    let out = tempfile::tempdir().unwrap();
+    let status = out.path().join("status.json");
+    let report = Report {
+        ok: true,
+        source_days: 3,
+        ..Report::default()
+    };
+    let mode = |m: &std::fs::Metadata| m.permissions().mode() & 0o777;
+    let (mut synced_file, mut synced_dir) = (false, None);
+
+    write_status_with(
+        &status,
+        &report,
+        |file| {
+            // What is synced is the file as it will be read: its bytes and its mode, not yet
+            // under the name a reader looks for.
+            let meta = file.metadata().unwrap();
+            assert_eq!(mode(&meta), STATUS_MODE);
+            assert!(meta.len() > 0);
+            assert!(!status.exists());
+            synced_file = true;
+            Ok(())
+        },
+        |dir| {
+            // The rename has been done, and it is the directory entry that is synced.
+            assert_eq!(mode(&std::fs::metadata(&status).unwrap()), STATUS_MODE);
+            let written: Report = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
+            assert_eq!(written, report);
+            assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1);
+            synced_dir = Some(dir.to_path_buf());
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert!(synced_file);
+    assert_eq!(synced_dir.as_deref(), Some(out.path()));
+
+    // A sync that fails fails the write, and a failed one leaves nothing behind.
+    let failing = out.path().join("failing.json");
+    let err = |what: &'static str| std::io::Error::other(what);
+    let result = write_status_with(&failing, &report, |_| Err(err("file")), |_| Ok(()));
+    assert!(format!("{:#}", result.unwrap_err()).contains("file"));
+    assert!(!failing.exists());
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 1);
+    let result = write_status_with(&failing, &report, |_| Ok(()), |_| Err(err("directory")));
+    assert!(format!("{:#}", result.unwrap_err()).contains("directory"));
+}
+
+#[test]
+fn a_directory_is_synced_by_its_path() {
+    let dir = tempfile::tempdir().unwrap();
+    sync_dir(dir.path()).unwrap();
+    assert!(sync_dir(&dir.path().join("missing")).is_err());
+}
+
 #[tokio::test]
 async fn one_run_at_a_time() {
     let lake = Lake::new();

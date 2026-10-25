@@ -303,10 +303,18 @@ fn prepare(o: &Options<'_>) -> anyhow::Result<DaysDir> {
     Ok(days)
 }
 
-/// Whether `dir` is the root of a mounted file system: on another device than its parent. A
-/// bind mount of a directory on the parent's own file system is not told apart.
+/// Whether `dir` is the root of a mounted file system: the root of the tree, or on another
+/// device than its parent. A bind mount of a directory on the parent's own file system is not
+/// told apart.
+///
+/// The path is resolved first, so the parent is the real one: `dir.join("..")` at the root is the
+/// root again, on the same device, and would call it no mount point.
 fn is_mount_point(dir: &Path) -> std::io::Result<bool> {
-    Ok(std::fs::metadata(dir)?.dev() != std::fs::metadata(dir.join(".."))?.dev())
+    let dir = std::fs::canonicalize(dir)?;
+    let Some(parent) = dir.parent() else {
+        return Ok(true);
+    };
+    Ok(std::fs::metadata(&dir)?.dev() != std::fs::metadata(parent)?.dev())
 }
 
 /// The copy's `days/` directory, opened once and held open (and locked) for the run. Every file
@@ -624,21 +632,41 @@ fn previous_success(path: &Path) -> Option<DateTime<Utc>> {
         .last_success
 }
 
-/// Replace the status file whole: readers see the old one or the new one.
+/// Replace the status file whole: readers see the old one or the new one, and once this returns
+/// the new one survives a crash.
 fn write_status(path: &Path, report: &Report) -> anyhow::Result<()> {
+    write_status_with(path, report, std::fs::File::sync_all, sync_dir)
+}
+
+/// [`write_status`] with its two syncs given, so a test can look at the file at each.
+fn write_status_with(
+    path: &Path,
+    report: &Report,
+    sync_file: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     use std::io::Write;
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+    // Private (`0600`) while it is written, and under a name nothing reads.
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(&serde_json::to_vec_pretty(report)?)?;
     tmp.write_all(b"\n")?;
-    tmp.as_file().sync_all()?;
+    // The mode is part of what the sync makes durable, so it is set before it, not after.
     tmp.as_file()
         .set_permissions(std::fs::Permissions::from_mode(STATUS_MODE))?;
+    sync_file(tmp.as_file())?;
     tmp.persist(path)?;
+    // The rename is an entry in the directory, which has to reach the disk as well.
+    sync_parent(dir)?;
     Ok(())
+}
+
+/// Make the entries of the directory `dir` survive a crash.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]
