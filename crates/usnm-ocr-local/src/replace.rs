@@ -6,7 +6,9 @@
 //!   ([`Listing::load`]), so memory holds one batch's titles; a title in
 //!   several batches is read once for each. For each page it takes the row
 //!   with the lowest stored damage rate (ties: the newest) from the stored
-//!   scores alone, then reads the text of the chosen rows only.
+//!   scores alone, then reads the text of the chosen rows only and
+//!   normalizes it again for the row's engine, so a rule added since the
+//!   part was written (#1065) applies to pages already read.
 //! - **Revocations.** `ocr-local/revoked/<stamp>.json` files, create-only,
 //!   each naming a node, an engine, a time window or an import run, with a
 //!   reason and a reference ([`Revocation`]). Rows they match are left out
@@ -32,6 +34,7 @@ use super::report::{engine_key, Tally as Count};
 use super::rule::{self, Keep};
 use super::ROOT;
 use usnm_core::digest::hex;
+use usnm_core::text::{normalize_ocr_for, Hyphenation};
 
 /// Where revocations are.
 pub fn revoked_prefix() -> String {
@@ -147,6 +150,13 @@ impl Listing {
                     .with_context(|| format!("`{id}` has scores but no text"))?;
                 anyhow::ensure!(doc_id == id, "`{}` row {r} changed between reads", paths[i]);
                 withdrawn.remove(&id);
+                // Stored text was normalized when the page was read, by the
+                // rules of that day: rejoin the line-end marks the rules
+                // since take (`⸗`, and `—` in Fraktur text), as a worker
+                // would now. Normalizing is idempotent, so text that has
+                // nothing new to join stays as it is. The stored scores
+                // chose the row; the release scores this text again.
+                let text = normalize_ocr_for(&text, Hyphenation::for_engine(&row.ocr_engine));
                 out.pages.insert(id, Candidate { row, text });
             }
             out.revoked.extend(withdrawn);
@@ -564,6 +574,87 @@ mod tests {
             "the current metric's row wins"
         );
         assert!(rule::verdict(&rows[0].ours, &rows[0].loc, None).is_err());
+    }
+
+    /// An `Imported` page of title `sn1` with `text`, read by `ocr_engine`.
+    fn imported(seq: u16, ocr_engine: &str, text: &str) -> pages::Imported {
+        let loc = Scores::of("", &["deu"]);
+        pages::Imported {
+            row: usnm_overlay::OverlayRow {
+                key: usnm_core::ids::PageKey::new(
+                    "sn1",
+                    chrono::NaiveDate::from_ymd_opt(1900, 1, 1).unwrap(),
+                    1,
+                    seq,
+                )
+                .unwrap(),
+                batch: "batch_a".into(),
+                ocr_source: "usnm-tesseract".into(),
+                ocr_engine: ocr_engine.into(),
+                loc_text: "bulk".into(),
+                text: text.into(),
+                image_url: "https://tile.loc.gov/x".into(),
+                ocred_at: chrono::DateTime::from_timestamp(1, 0).unwrap(),
+            },
+            batch_version: 1,
+            source_part: "pages/x.parquet".into(),
+            node: "node1".into(),
+            reason: "bulk".into(),
+            ours: Scores::of(text, &["deu"]),
+            loc,
+        }
+    }
+
+    /// Pages stored before the line-end `⸗` and `—` rules (#1065) are
+    /// normalized again as they are loaded, for the engine that read them.
+    #[tokio::test]
+    async fn loads_text_normalized_again_for_its_engine() {
+        const FRAKTUR: &str = "tesseract/5.5.1 profile=frak2021 image=sha256:3f9a0c1d2e4b \
+            models=sha256:8c2d71aa09fe route=minimal@r1 contract=0";
+        const ENGLISH: &str = "tesseract/5.5.1 profile=eng image=sha256:3f9a0c1d2e4b \
+            models=sha256:8c2d71aa09fe route=minimal@r1 contract=0";
+        // As a worker stored it before: only `-` was rejoined.
+        let stored =
+            "durch den engen Haus\u{2014}\ngang schritt, weiter und Draht\u{2E17}\nzaun,\n\
+            Haus\u{2014}\nCunow";
+        let fraktur =
+            "durch den engen Hausgang schritt, weiter und Drahtzaun,\nHaus\u{2014}\nCunow";
+        let other = "durch den engen Haus\u{2014}\ngang schritt, weiter und Drahtzaun,\nHaus\u{2014}\nCunow";
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let rows = [
+            imported(1, FRAKTUR, stored),
+            imported(2, ENGLISH, stored),
+            // A legacy tag that names a Fraktur model.
+            imported(3, "tesseract-5.5.1/deu_latf+deu", stored),
+            imported(4, "tesseract-5.5.1/eng", stored),
+        ];
+        let part = pages::encode(&rows).unwrap();
+        curated
+            .put_new(
+                &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
+                part,
+                "x",
+            )
+            .await
+            .unwrap();
+        let listing = Listing::list(curated.as_ref()).await.unwrap();
+        let loaded = listing
+            .load(curated.as_ref(), ["sn1"].into_iter(), &[])
+            .await
+            .unwrap();
+        let text = |seq: u16| {
+            loaded.pages[&format!("sn1_1900-01-01_ed-1_seq-{seq}")]
+                .text
+                .as_str()
+        };
+        assert_eq!(text(1), fraktur);
+        assert_eq!(text(2), other);
+        assert_eq!(text(3), fraktur);
+        assert_eq!(text(4), other);
+        // The stored scores are the ones that chose the row.
+        let row = &loaded.pages["sn1_1900-01-01_ed-1_seq-1"].row;
+        assert_eq!(row.ours, Scores::of(stored, &["deu"]));
     }
 
     #[test]

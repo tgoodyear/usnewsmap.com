@@ -605,6 +605,22 @@ pub async fn export(
     Ok(ids)
 }
 
+/// A returned result's `text.txt` as a job's page is stored: normalized for the
+/// job's engine and language, so a German or Fraktur page's broken words are
+/// rejoined whatever dash ended the line (#1065). `import` stores this text,
+/// and the spot check compares two hosts' answers as this text, so a pair
+/// agrees exactly when what would be stored agrees.
+pub(crate) fn normalized_text(job: &Job, text: &[u8]) -> anyhow::Result<String> {
+    let hyphenation = usnm_core::text::Hyphenation::for_page(
+        &job.engine_tag()?.to_string(),
+        &job.message.language,
+    );
+    Ok(usnm_core::text::normalize_ocr_for(
+        std::str::from_utf8(text)?,
+        hyphenation,
+    ))
+}
+
 /// Publish a validated result using fixed names. No source scans are deleted.
 pub async fn import(
     root: &Path,
@@ -649,7 +665,7 @@ pub async fn import(
     checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
     let key = record.job.message.key()?;
     let raw_text = text.clone();
-    let text = usnm_core::text::normalize_ocr(std::str::from_utf8(&text)?);
+    let text = normalized_text(&record.job, &text)?;
     let raw_alto = alto.clone();
     let alto = engine::set_alto_source(
         std::str::from_utf8(&alto)?,

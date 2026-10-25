@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use usnm_alto::{Description, Page, ParseOptions, Software, Step};
 
 use usnm_core::ocr_engine::{EngineTag, OcrEngineTag};
+use usnm_core::text::{normalize_ocr_for, Hyphenation};
 
 use crate::engine::ReadInfo;
 
@@ -207,7 +208,12 @@ pub fn store_from(
         }),
     };
     let alto = usnm_alto::write(&page, &desc, language);
-    let text = usnm_core::text::normalize_ocr(&usnm_alto::text(&page));
+    // A German page, or a Fraktur model's, can end a line in an em dash or a
+    // `⸗` for a broken word's hyphen (#1065).
+    let text = normalize_ocr_for(
+        &usnm_alto::text(&page),
+        Hyphenation::for_page(ocr_engine, language),
+    );
     Stored { alto, text, page }
 }
 
@@ -426,6 +432,64 @@ mod tests {
             ]
         );
         usnm_ingest::ocr_local::checks::check_alto(stored.alto.as_bytes()).unwrap();
+    }
+
+    /// An engine's ALTO with a word broken at a line end four ways: the
+    /// dash in the word (`Haus—`), a dash printed as the line's `HYP`
+    /// (`wei`, `—`), a `⸗` in the word and a `⸗` as a `HYP`, and an em dash
+    /// before a capital, which is a column break.
+    const BROKEN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#">
+  <Description><MeasurementUnit>pixel</MeasurementUnit></Description>
+  <Layout><Page ID="p1" WIDTH="1000" HEIGHT="1000"><PrintSpace>
+    <TextBlock ID="b1" HPOS="0" VPOS="0" WIDTH="500" HEIGHT="500">
+      <TextLine ID="l1"><String CONTENT="engen"/><String CONTENT="Haus—"/></TextLine>
+      <TextLine ID="l2"><String CONTENT="gang"/><String CONTENT="schritt"/></TextLine>
+      <TextLine ID="l3"><String CONTENT="Abend"/><String CONTENT="wei"/><HYP CONTENT="—"/></TextLine>
+      <TextLine ID="l4"><String CONTENT="ter"/><String CONTENT="aus"/></TextLine>
+    </TextBlock>
+    <TextBlock ID="b2" HPOS="0" VPOS="500" WIDTH="500" HEIGHT="500">
+      <TextLine ID="l5"><String CONTENT="der"/><String CONTENT="Draht⸗"/></TextLine>
+      <TextLine ID="l6"><String CONTENT="zaun"/><String CONTENT="und"/></TextLine>
+      <TextLine ID="l7"><String CONTENT="Stahl"/><HYP CONTENT="⸗"/></TextLine>
+      <TextLine ID="l8"><String CONTENT="werk"/><String CONTENT="Haus—"/></TextLine>
+      <TextLine ID="l9"><String CONTENT="Cunow"/></TextLine>
+    </TextBlock>
+  </PrintSpace></Page></Layout>
+</alto>"#;
+
+    /// German pages and Fraktur models rejoin a word broken with a dash at a
+    /// line end; other pages rejoin the `⸗` and leave the dash (#1065).
+    #[test]
+    fn an_em_dash_line_end_is_rejoined_for_german_and_fraktur_pages() {
+        let source = Source {
+            url: URL,
+            sha256: SHA,
+            md5: None,
+            run_id: None,
+            damage_before: None,
+        };
+        let now: DateTime<Utc> = "2026-10-20T14:04:31Z".parse().unwrap();
+        let store = |tag: &str, language: &str| {
+            from_engine_alto(BROKEN.as_bytes(), tag, language, 300, &source, "0.1.0", now)
+                .unwrap()
+                .text
+        };
+        let german = "engen Hausgang schritt\nAbend weiter aus\n\
+            der Drahtzaun und\nStahlwerk Haus—\nCunow";
+        let english = "engen Haus—\ngang schritt\nAbend wei—\nter aus\n\
+            der Drahtzaun und\nStahlwerk Haus—\nCunow";
+        let frak = TAG.replace("profile=eng", "profile=frak2021");
+        // The Fraktur model, whatever the language it was routed for.
+        assert_eq!(store(&frak, "deu"), german);
+        assert_eq!(store(&frak, "eng"), german);
+        // The German language, whatever the model.
+        assert_eq!(store(TAG, "deu"), german);
+        // Neither: only the `⸗` is a hyphen.
+        assert_eq!(store(TAG, "eng"), english);
+        // The older tag form names the model after the `/`.
+        assert_eq!(store("tesseract-5.5.1/frak2021", "eng"), german);
+        assert_eq!(store("tesseract-5.5.1/eng", "eng"), english);
     }
 
     #[test]
