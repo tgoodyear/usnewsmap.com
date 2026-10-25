@@ -479,11 +479,12 @@ module identities 'modules/identities.bicep' = {
 // public-network policy then exempts each by resource id, like the accounts
 // below. Provision writes the policy's exemptions before the stack
 // (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing, ocrNodeIps)
+var dataLakeOpen = lakeOpen(serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem, ocrNodeIps)
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
-// on-prem BOINC host's claim and collect (#967).
-var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess, ocrNodeIps)
+// on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
+// which also uses the lake.
+var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
 
 module storage 'modules/storage.bicep' = {
   scope: rg
@@ -568,7 +569,7 @@ module damageWriterGrant 'modules/damage-writer.bicep' = if (ocrDamageOnPrem && 
 
 // The on-prem OCR pickup's roles, kept while the batch host is set: the stack can't
 // delete them once ocrSyncOnPrem turns off (modules/ocr-sync-runner-role.bicep).
-module ocrSyncRunnerRole 'modules/ocr-sync-runner-role.bicep' = if (ocrNodes && !empty(trim(batchHost))) {
+module ocrSyncRunnerRole 'modules/ocr-sync-runner-role.bicep' = if (!empty(trim(batchHost))) {
   scope: rg
   name: 'ocr-sync-runner-role'
   params: {

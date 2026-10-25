@@ -156,7 +156,7 @@ The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists fo
 
 - the lake role (read, write, create; no delete) on `curated`, writing only under `ocr-local/`; on `reference`, writing only `status/ocr-local.json`; and on `ocr-requests`;
 - the exchange role (read, write, create, delete; no container actions) on `ocr-out` and `ocr-quarantine`;
-- Message Processor on `ocr-deadletter`, Message Sender on `ocr-priority` and `ocr-bulk`, and Queue Data Reader on all three;
+- Message Processor on `ocr-deadletter`, Message Sender and Queue Data Reader on all three (`--from-quarantine` puts dead letters back on `ocr-deadletter`);
 - Cosmos Data Contributor on `ops` only, Monitoring Metrics Publisher, and AcrPull to install the binary.
 
 The lock holder then reads `usnm-batch-<pid>-<nanos>` (#1133). Its log is the container's journal (`journalctl -u usnm-ocr-sync` in CT 215); traces and metrics go to the environment's Application Insights as before. The two alerts below read the Azure job's console logs, so they stay quiet while the pickup runs on-prem.

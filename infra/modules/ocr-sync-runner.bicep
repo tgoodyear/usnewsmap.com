@@ -13,9 +13,10 @@
 // - ocr-out and ocr-quarantine: the exchange role (read, write, create, delete; no
 //   container actions): parts are deleted with If-Match once imported or quarantined,
 //   and --from-quarantine puts rejects back;
-// - queues: Message Processor on ocr-deadletter (drained), Message Sender on
-//   ocr-priority and ocr-bulk (the seeder and hit requests), Queue Data Reader on all
-//   three (the approximate counts in the status file and the seeder's refill);
+// - queues: Message Processor on ocr-deadletter (drained), Message Sender on all three
+//   (the seeder and hit requests on ocr-priority and ocr-bulk; --from-quarantine puts
+//   rejected dead letters back on ocr-deadletter), Queue Data Reader on all three (the
+//   approximate counts in the status file and the seeder's refill);
 // - Cosmos: Built-in Data Contributor on `ops` alone (the ocr-sync lease and
 //   ops/current);
 // - Application Insights: Monitoring Metrics Publisher (traces and metrics);
@@ -163,7 +164,7 @@ resource drainDeadLetters 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 }
 
 resource sendWork 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for i in range(0, 2): {
+  for (q, i) in queueNames: {
     scope: queues[i]
     name: guid(queues[i].id, principalId, queueMessageSender)
     properties: {
