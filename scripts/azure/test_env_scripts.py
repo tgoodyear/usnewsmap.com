@@ -29,7 +29,13 @@ one per line). For the public-network policy's assignment (#336):
 STUB_ASSIGNMENT_GROUP (the one group that holds it; unset: none),
 STUB_ASSIGNED_IDS (its publicAccountIds, JSON), STUB_ASSIGNMENT_ERROR
 (reading it fails with that message) and STUB_EXEMPTIONS_WHATIF (the
-policy step's what-if, JSON).
+policy step's what-if, JSON). For the API app's image (#1071): STUB_API_IMAGE
+(what `containerapp show` prints as the image of its `api` container; unset:
+the app isn't found), STUB_API_ERROR (reading it fails with that message),
+STUB_ACTION_ON_UNMANAGE (when set, `stack sub create --help` lists the flag
+need_stack_az looks for) and STUB_CAPTURE_API_TAG (when set, each stack or
+deployment call logs its arguments and the USNM_API_IMAGE_TAG it was started
+with to STUB_LOG.apitag, tab separated).
 `az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
 signed in to, one per line; unset: any), and each store call is logged
 with the selected one, the operation and the label to STUB_LOG.store, and
@@ -56,6 +62,11 @@ ROOT = os.path.dirname(SCRIPTS)
 
 STUB_AZ = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
+if [ -n "${STUB_CAPTURE_API_TAG:-}" ]; then
+  case "$1 $2" in
+    "stack sub"|"stack-whatif sub"|"deployment sub") printf '%s\t%s\n' "$*" "${USNM_API_IMAGE_TAG-unset}" >> "$STUB_LOG.apitag" ;;
+  esac
+fi
 case "$1 $2" in
   "account show") case "$*" in *"--query id"*) echo sub-1 ;; *"--query tenantId"*) echo tenant-1 ;; esac ;;
   "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
@@ -68,7 +79,8 @@ case "$1 $2" in
       "stack sub list"*)
         if [ -n "${STUB_STACK_LIST_ERROR:-}" ]; then echo "$STUB_STACK_LIST_ERROR" >&2; exit 1; fi
         printf '%s\n' "${STUB_STACK_NAMES:-}" ;;
-      "stack sub create"*) ;;
+      "stack sub create"*)
+        case "$*" in *--help*) [ -z "${STUB_ACTION_ON_UNMANAGE:-}" ] || echo "    --action-on-unmanage" ;; esac ;;
       "stack sub delete"*) ;;
       "stack sub validate"*)
         if [ -n "${STUB_VALIDATE_ERROR:-}" ]; then echo "$STUB_VALIDATE_ERROR" >&2; exit 1; fi ;;
@@ -168,6 +180,11 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
+  "containerapp show")
+    if [ -n "${STUB_API_ERROR:-}" ]; then echo "$STUB_API_ERROR" >&2; exit 1; fi
+    case "$*" in *"containers[?name=='api'] | [0].image"*) ;; *) echo "stub az: unexpected: $*" >&2; exit 9 ;; esac
+    if [ -n "${STUB_API_IMAGE+x}" ]; then printf '%s\n' "$STUB_API_IMAGE"
+    else echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.App/containerApps/$4' under resource group '$6' was not found." >&2; exit 3; fi ;;
   "containerapp job")
     case "$*" in
       *"execution show"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
@@ -1147,7 +1164,7 @@ class StackRenameGuard(Stubbed):
     def test_guard_failure_is_not_retried(self):
         r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "
                      "load_store_after_create() { :; }; settings_check() { :; }; "
-                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; "
+                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; api_pin_check() { :; }; "
                      "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; "
                      "deploy_stack() { return 42; }; provision")
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -1300,6 +1317,17 @@ class TeardownRenameGuard(Stubbed):
             r = self.teardown("--allow-rename=" + name)
             self.assertEqual(r.returncode, 2, r.stderr)
         self.assertFalse(os.path.exists(self.log))
+
+    def test_partial_provision_does_not_compare_the_apis_pinned_tag(self):
+        # It only takes the environment apart (#1071): a pin that differs
+        # from the running tag neither stops it nor is read from Azure.
+        self.committed({"USNM_API_IMAGE_TAG": "pin1"})
+        with open(os.path.join(self.settings, "dev", ".env"), "a") as f:
+            f.write('API_APP="ca-usnm-api-dev"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n')
+        r = self.teardown(STUB_API_IMAGE="crusnmdev.azurecr.io/usnewsmap-api:live1")
+        self.assertIn("not retried", r.stderr)
+        self.assertNotIn("USNM_API_IMAGE_TAG", r.stderr)
+        self.assertFalse(any(c.startswith("containerapp show") for c in self.calls()))
 
 
 class PolicyExemptions(Stubbed):
@@ -2177,6 +2205,265 @@ class SettingsScript(Stubbed):
     def test_migrate_takes_only_the_environment(self):
         r = self.run_settings("--env", "dev", "--migrate", "--key", "USNM_OCR")
         self.assertEqual(r.returncode, 2)
+
+
+class ApiPinGuard(Stubbed):
+    """A provision doesn't roll the API back to a pin CI has left behind (#1071)."""
+
+    APP = "ca-usnm-api-dev"
+    LIVE = "crusnmdev.azurecr.io/usnewsmap-api:live1"
+    PIN_RUNNING = "crusnmdev.azurecr.io/usnewsmap-api:pin1"
+    EP = "https://usnm-config-appcs-abc123.azconfig.io"
+
+    def setUp(self):
+        super().setUp()
+        # A private block, built from its parts (scripts/ci/no-private-addresses.sh).
+        vnet = ".".join(str(n) for n in (10, 99, 0, 0)) + "/24"
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n'
+                           f'SETTINGS_STORE_ENDPOINT="{self.EP}"\nUSNM_EXPERIMENT="1071"\n'
+                           f'API_APP="{self.APP}"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n'
+                           f'USNM_VNET_ADDRESS_PREFIX="{vnet}"\n')
+        self.committed({"USNM_API_IMAGE_TAG": "pin1"})
+
+    def shows(self):
+        if not os.path.exists(self.log):
+            return []
+        return [c for c in self.calls() if c.startswith("containerapp show")]
+
+    def test_a_pin_that_differs_from_the_running_tag_refuses(self):
+        r = self.lib("api_pin_check", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("runs usnewsmap-api:live1", r.stderr)
+        self.assertIn("pins USNM_API_IMAGE_TAG to pin1", r.stderr)
+        # Both ways on, and the pin that would make a script other than
+        # provision.sh (bootstrap) pass.
+        self.assertIn("scripts/azure/provision.sh --env dev --api-tag=live", r.stderr)
+        self.assertIn("scripts/azure/provision.sh --env dev --api-tag=pin1", r.stderr)
+        self.assertIn("set the pin to live1", r.stderr)
+        # One read, of the api container's image in the app the outputs name.
+        self.assertEqual(len(self.shows()), 1)
+        self.assertIn(f"-n {self.APP} -g rg-usnm-dev", self.shows()[0])
+        self.assertIn("containers[?name=='api'] | [0].image", self.shows()[0])
+
+    def test_the_running_tag_passes(self):
+        r = self.lib('api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"', STUB_API_IMAGE=self.PIN_RUNNING)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "[]")
+
+    def test_no_pin_reads_nothing(self):
+        # The API then follows USNM_IMAGE_TAG, which dev's stand-up sets on purpose.
+        self.committed({})
+        r = self.lib("api_pin_check", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_teardown_skips_the_check(self):
+        r = self.lib("api_pin_check", NO_API_PIN_CHECK="true", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_live_keeps_the_running_tag(self):
+        r = self.lib('API_TAG_REQUEST=live; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keeping the API on usnewsmap-api:live1 (--api-tag=live), not the pin pin1", r.stdout)
+        self.assertTrue(r.stdout.endswith("[live1]"), r.stdout)
+
+    def test_live_with_a_current_pin_says_nothing(self):
+        r = self.lib('API_TAG_REQUEST=live; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.PIN_RUNNING)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "[pin1]")
+
+    def test_live_without_a_pin_still_keeps_the_running_tag(self):
+        self.committed({})
+        r = self.lib('API_TAG_REQUEST=live; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.endswith("[live1]"), r.stdout)
+
+    def test_an_explicit_tag_needs_no_comparison(self):
+        r = self.lib('API_TAG_REQUEST=tag2; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("deploying the API at tag2 (--api-tag), not the pin pin1", r.stdout)
+        self.assertTrue(r.stdout.endswith("[tag2]"), r.stdout)
+        self.assertEqual(self.shows(), [])
+        # The pin itself, asked for by name, is not news.
+        r = self.lib('API_TAG_REQUEST=pin1; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                     STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.stdout, "[pin1]")
+
+    def test_the_stack_gets_the_pin_unless_a_tag_is_chosen(self):
+        export = 'api_pin_check > /dev/null; export_stack_settings; printf "%s" "$USNM_API_IMAGE_TAG"'
+        for request, expected in (("", "pin1"), ("live", "live1"), ("tag2", "tag2")):
+            with self.subTest(request=request):
+                r = self.lib(f"API_TAG_REQUEST={request}; " + export, STUB_API_IMAGE=self.PIN_RUNNING.replace("pin1", "live1")
+                             if request == "live" else self.PIN_RUNNING)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout, expected)
+        # Without a pin, nothing is exported for the template's default to lose to.
+        self.committed({})
+        r = self.lib('export_stack_settings; printf "[%s]" "${USNM_API_IMAGE_TAG-unset}"')
+        self.assertEqual(r.stdout, "[unset]")
+
+    def test_the_callers_shell_sets_neither_variable(self):
+        # bootstrap.sh, stand-up.sh and teardown.sh never set the request.
+        r = self.lib('printf "[%s][%s]" "$API_TAG_REQUEST" "$API_TAG_OVERRIDE"',
+                     API_TAG_REQUEST="live", API_TAG_OVERRIDE="tag2")
+        self.assertEqual(r.stdout, "[][]")
+
+    def test_there_is_nothing_to_compare_without_an_app(self):
+        # No outputs yet (the first provision), or the app was deleted.
+        for request in ("", "live"):
+            with self.subTest(request=request):
+                self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n')
+                r = self.lib(f'API_TAG_REQUEST={request}; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                             STUB_API_IMAGE=self.LIVE)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(r.stdout.endswith("[]"), r.stdout)
+                self.assertEqual(self.shows(), [])
+                self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nAPI_APP="gone"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n')
+                r = self.lib(f'API_TAG_REQUEST={request}; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(r.stdout.endswith("[]"), r.stdout)
+                self.assertEqual(len(self.shows()), 1)
+                os.remove(self.log)
+
+    def test_a_read_that_fails_refuses(self):
+        for request in ("", "live"):
+            with self.subTest(request=request):
+                r = self.lib(f"API_TAG_REQUEST={request}; api_pin_check",
+                             STUB_API_ERROR="ERROR: (AuthorizationFailed) The client does not have authorization")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(f"can't read the image of the API app {self.APP}: ERROR: (AuthorizationFailed)", r.stderr)
+                # A name that merely mentions a missing resource isn't "gone".
+        r = self.lib("provision", STUB_API_ERROR="ERROR: (AuthorizationFailed) no")
+        self.assertIn("not provisioning dev", r.stderr)
+
+    def test_an_image_that_is_not_an_acr_tag_is_skipped(self):
+        digest = "crusnmdev.azurecr.io/usnewsmap-api@sha256:" + "a" * 64
+        for image in ("mcr.microsoft.com/k8se/quickstart:latest", digest,
+                      "crusnmdev.azurecr.io/usnewsmap-ingest:pin2", "crusnmdev.azurecr.io/usnewsmap-api:",
+                      "other.example.org/usnewsmap-api:pin2"):
+            for request in ("", "live"):
+                with self.subTest(image=image, request=request):
+                    r = self.lib(f'API_TAG_REQUEST={request}; api_pin_check; printf "[%s]" "$API_TAG_OVERRIDE"',
+                                 STUB_API_IMAGE=image)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertIn("not an ACR usnewsmap-api:<tag> image", r.stderr)
+                    self.assertEqual(r.stdout, "[]")
+        # az prints a container it doesn't find as None.
+        r = self.lib("api_pin_check", STUB_API_IMAGE="None")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_provision_refuses_before_anything_changes(self):
+        steps = "".join(f'{name}() {{ echo "ran {name}"; }}\n' for name in (
+            "vaults_recover", "settings_store_ensure", "load_store_after_create", "settings_check",
+            "experiment_marker", "ocr_nodes_off_check", "deploy_env_guardrails", "deploy_policy_exemptions",
+            "deploy_stack", "save_outputs"))
+        r = self.lib(steps + "provision", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not provisioning dev", r.stderr)
+        self.assertNotIn("ran ", r.stdout)
+        r = self.lib(steps + "provision", STUB_API_IMAGE=self.PIN_RUNNING)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ran deploy_stack", r.stdout)
+
+    # The stack steps provision runs after the pin check, with the rest
+    # stubbed: the deployment itself is the real one.
+    STACK_ONLY = ("vaults_recover() { :; }; settings_store_ensure() { :; }; load_store_after_create() { :; }\n"
+                  "settings_check() { :; }; experiment_marker() { :; }; ocr_nodes_off_check() { :; }\n"
+                  "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; save_outputs() { :; }\n")
+
+    def seen_tags(self, *prefixes):
+        with open(self.log + ".apitag") as f:
+            rows = [line.rstrip("\n").split("\t") for line in f]
+        return [tag for args, tag in rows if args.startswith(prefixes)]
+
+    def test_provision_deploys_the_tag_that_was_chosen(self):
+        for request, running, expected in (("", self.PIN_RUNNING, "pin1"),
+                                           ("live", self.LIVE, "live1"),
+                                           ("tag2", self.LIVE, "tag2")):
+            with self.subTest(request=request):
+                if os.path.exists(self.log + ".apitag"):
+                    os.remove(self.log + ".apitag")
+                r = self.lib(f"API_TAG_REQUEST={request}\n" + self.STACK_ONLY + "provision",
+                             STUB_API_IMAGE=running, STUB_CAPTURE_API_TAG="1")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                # The rename guard's what-if and the create see the same tag.
+                self.assertEqual(self.seen_tags("deployment sub what-if", "stack sub create"), [expected, expected])
+
+    def test_provision_does_not_roll_the_pin_over_the_running_image(self):
+        r = self.lib(self.STACK_ONLY + "provision", STUB_API_IMAGE=self.LIVE, STUB_CAPTURE_API_TAG="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertFalse(any(c.startswith(("deployment sub", "stack sub create")) for c in self.calls()))
+
+    def test_what_if_refuses_too_and_shows_the_chosen_tag(self):
+        r = self.lib("provision_what_if", STUB_STACK="3", STUB_API_IMAGE=self.LIVE)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pins USNM_API_IMAGE_TAG to pin1", r.stderr)
+        self.assertIn("no what-if for dev", r.stderr)
+        self.assertFalse(any(c.startswith(("stack-whatif", "stack sub validate", "appconfig"))
+                             for c in self.calls()))
+        os.remove(self.log)
+        r = self.lib("API_TAG_REQUEST=live; provision_what_if", STUB_STACK="3", STUB_API_IMAGE=self.LIVE,
+                     STUB_CAPTURE_API_TAG="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.seen_tags("stack-whatif sub create", "stack sub validate"), ["live1", "live1"])
+
+    def run_script(self, *args, **extra):
+        return subprocess.run([os.path.join(HERE, "provision.sh"), "--env", "dev", *args], cwd=ROOT,
+                              env={**self.env, **extra}, capture_output=True, text=True)
+
+    def test_the_flag_takes_live_or_a_valid_tag_before_azure(self):
+        for value in ("", "-x", "a b", "a/b", "live!", "x" * 129, ".tag", "tag:1"):
+            for args in (("--api-tag=" + value,), ("--api-tag", value)):
+                with self.subTest(args=args):
+                    r = self.run_script(*args)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn("--api-tag takes live or an image tag", r.stderr)
+                    self.assertFalse(os.path.exists(self.log))
+        r = self.run_script("--api-tag")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_the_flag_accepts_live_and_tags_in_both_forms(self):
+        for args in (("--api-tag=live",), ("--api-tag", "live"), ("--api-tag", "2e9c646a908e6bc90fa8707532fafeeed98d4b61"),
+                     ("--api-tag=A_b.c-9",), ("--api-tag=" + "x" * 128,)):
+            with self.subTest(args=args):
+                r = self.run_script(*args)
+                # Past the check: the stub az then fails the version check.
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertNotIn("--api-tag takes", r.stderr)
+                self.assertIn("too old for deployment stacks", r.stderr)
+
+    def test_the_usage_names_the_flag(self):
+        r = self.run_script("--no-such-flag")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("[--api-tag <live|TAG>]", r.stderr)
+
+    def test_what_if_through_the_script(self):
+        common = {"STUB_ACTION_ON_UNMANAGE": "1", "STUB_STACK": "3", "STUB_API_IMAGE": self.LIVE,
+                  "STUB_CAPTURE_API_TAG": "1"}
+        r = self.run_script("--what-if", **common)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("runs usnewsmap-api:live1", r.stderr)
+        self.assertIn("scripts/azure/provision.sh --env dev --api-tag=live", r.stderr)
+        self.assertFalse(any(c.startswith("stack-whatif") for c in self.calls()))
+        for args, expected in ((("--api-tag=live",), "live1"), (("--api-tag", "tag2"), "tag2")):
+            with self.subTest(args=args):
+                if os.path.exists(self.log + ".apitag"):
+                    os.remove(self.log + ".apitag")
+                r = self.run_script("--what-if", *args, **common)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.seen_tags("stack-whatif sub create"), [expected])
+
+    def test_the_tag_pattern_is_the_schemas(self):
+        with open(os.path.join(ROOT, "infra", "env", "schema.json")) as f:
+            pattern = json.load(f)["properties"]["USNM_API_IMAGE_TAG"]["pattern"]
+        r = self.lib('printf "%s" "$IMAGE_TAG_RE"')
+        self.assertEqual(r.stdout, pattern)
 
 
 class ProvisionScript(Stubbed):
