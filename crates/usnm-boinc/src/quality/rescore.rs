@@ -132,6 +132,7 @@ fn unit(
     opts: &Options,
     unit: &Path,
     loc: &BTreeMap<String, String>,
+    places_txt: &str,
     places: &Places,
 ) -> anyhow::Result<Outcome> {
     let job_bytes = read(&unit.join(JOB_FILE), MAX_JOB_JSON)?;
@@ -150,7 +151,19 @@ fn unit(
         got.result.job_id == job.id && got.result.engine == job.engine,
         "{wu}: result does not belong to its job"
     );
-    let texts: Texts = serde_json::from_slice(&read(&unit.join(TEXTS_FILE), MAX_TEXTS)?)
+    // The texts and places the unit read, so only LoC's text changes.
+    anyhow::ensure!(
+        job.inputs.places.matches(places_txt.as_bytes()),
+        "{}: --places is not the unit's places.txt",
+        job.doc_id
+    );
+    let texts_bytes = read(&unit.join(TEXTS_FILE), MAX_TEXTS)?;
+    anyhow::ensure!(
+        job.inputs.texts.matches(&texts_bytes),
+        "{}: texts.json is not the one the unit read",
+        job.doc_id
+    );
+    let texts: Texts = serde_json::from_slice(&texts_bytes)
         .with_context(|| format!("{}", unit.join(TEXTS_FILE).display()))?;
     let Some(texts) = loc.get(&job.doc_id).and_then(|t| restage(texts, t)) else {
         return Ok(Outcome::NoLocText);
@@ -173,7 +186,8 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         opts.campaign
     );
     let loc = read_loc_texts(&opts.loc_texts)?;
-    let places = Places::parse(&stage::read_places(&opts.places)?);
+    let places_txt = stage::read_places(&opts.places)?;
+    let places = Places::parse(&places_txt);
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = std::fs::read_dir(&dir)
         .with_context(|| format!("{}", dir.display()))?
@@ -200,7 +214,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 if failed.lock().unwrap().is_some() {
                     break;
                 }
-                match unit(opts, u, &loc, &places) {
+                match unit(opts, u, &loc, &places_txt, &places) {
                     Ok(o) => results.lock().unwrap().push((k, o)),
                     Err(e) => {
                         failed.lock().unwrap().get_or_insert(e);
@@ -391,6 +405,16 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("loc_text label"), "{e}");
+        // Other places than the unit's: refused.
+        let other = tmp.path().join("other-places.txt");
+        std::fs::write(&other, "Albany\n").unwrap();
+        let e = run(&Options {
+            places: other,
+            out_dir: tmp.path().join("out-other"),
+            ..opts.clone()
+        })
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("--places"), "{e:#}");
         // No LoC text for the page: counted, no rows.
         std::fs::write(&opts.loc_texts, "").unwrap();
         let s = run(&Options {
