@@ -291,6 +291,22 @@ impl Gate {
         let mut next = self.next.lock().expect("gate lock");
         *next = (*next).max(Instant::now() + self.gap);
     }
+
+    /// A request starts in this turn: [`Self::done`] runs when the guard
+    /// drops, so one the caller gave up on midway still makes the next
+    /// wait the gap. Drop it before the turn's permit.
+    pub(super) fn sending(&self) -> Sending<'_> {
+        Sending(self)
+    }
+}
+
+/// A request in its turn ([`Gate::sending`]).
+pub(super) struct Sending<'a>(&'a Gate);
+
+impl Drop for Sending<'_> {
+    fn drop(&mut self) {
+        self.0.done();
+    }
 }
 
 #[derive(Debug)]
@@ -610,8 +626,9 @@ impl Mirrors {
             c.skipped_held.fetch_add(1, Ordering::SeqCst);
             return Tried::Skipped;
         };
+        let sending = host.gate.sending();
         let tried = self.send(host, url, max, timeout).await;
-        host.gate.done();
+        drop(sending);
         tried
     }
 

@@ -126,13 +126,13 @@ impl BucketConfig {
         }
         let u = reqwest::Url::parse(root).with_context(|| format!("--loc-bucket {root:?}"))?;
         anyhow::ensure!(
-            matches!(u.scheme(), "https" | "http")
+            u.scheme() == "https"
                 && u.host_str().is_some()
                 && u.query().is_none()
                 && u.fragment().is_none()
                 && u.username().is_empty()
                 && u.password().is_none(),
-            "--loc-bucket {root:?} isn't a plain http(s) URL"
+            "--loc-bucket {root:?} isn't a plain https URL"
         );
         let host = u.host_str().unwrap_or_default().to_ascii_lowercase();
         anyhow::ensure!(
@@ -480,17 +480,19 @@ impl Bucket {
             self.counts.skipped_held.fetch_add(1, Ordering::SeqCst);
             return Tried::Skipped;
         };
-        // Learnt while this one waited its turn.
+        // Learnt while this one waited its turn. Nothing is sent, so the
+        // next needn't wait a gap.
         if self.serves(dir) == Some(false) {
             return Tried::Skipped;
         }
+        let sending = self.gate.sending();
         let tried = self.send(url, max, timeout).await;
         match &tried {
             Tried::Private => self.refused(dir, url, "403"),
             Tried::Missing if manifest => self.refused(dir, url, "404"),
             _ => {}
         }
-        self.gate.done();
+        drop(sending);
         tried
     }
 
@@ -676,6 +678,7 @@ mod tests {
             )
         );
         assert!(BucketConfig::at("ftp://x.s3.amazonaws.com/", gap).is_err());
+        assert!(BucketConfig::at("http://ndnp-batches.s3.amazonaws.com/", gap).is_err());
         assert!(BucketConfig::at("https://x.s3.amazonaws.com/?list-type=2", gap).is_err());
         assert!(BucketConfig::at("not a url", gap).is_err());
         // Never a LoC host, nor anything but S3.

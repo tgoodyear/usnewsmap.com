@@ -38,7 +38,7 @@ struct Inner {
     bags: BTreeMap<String, Vec<String>>,
     hits: Vec<(std::time::Instant, String)>,
     /// Headers sent with a file, by path.
-    headers: HashMap<String, Vec<(String, String)>>,
+    headers: HashMap<String, Vec<(header::HeaderName, header::HeaderValue)>>,
     /// Every answer waits this long.
     delay: Option<Duration>,
     /// Requests being answered now, and the most at once.
@@ -88,7 +88,7 @@ async fn respond(
     scripted: Option<Scripted>,
     redirect: Option<String>,
     file: Option<Vec<u8>>,
-    headers: Vec<(String, String)>,
+    headers: Vec<(header::HeaderName, header::HeaderValue)>,
 ) -> Response {
     let status = |c: u16| StatusCode::from_u16(c).unwrap();
     let retry_after = match scripted {
@@ -135,10 +135,7 @@ async fn respond(
         Some(b) => {
             let mut r = b.into_response();
             for (k, v) in headers {
-                r.headers_mut().insert(
-                    header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
-                    v.parse().unwrap(),
-                );
+                r.headers_mut().insert(k, v);
             }
             r
         }
@@ -186,13 +183,18 @@ impl StandIn {
 
     /// Send header `name: value` with the file at `path`.
     pub fn header(&self, path: &str, name: &str, value: &str) {
+        // Checked here, so a bad one fails the test that set it.
+        let name = header::HeaderName::from_bytes(name.as_bytes())
+            .unwrap_or_else(|e| panic!("stand-in header name {name:?}: {e}"));
+        let value = header::HeaderValue::from_str(value)
+            .unwrap_or_else(|e| panic!("stand-in header {name}: {value:?}: {e}"));
         self.inner
             .lock()
             .unwrap()
             .headers
             .entry(path.to_owned())
             .or_default()
-            .push((name.to_owned(), value.to_owned()));
+            .push((name, value));
     }
 
     /// Make every answer wait `d`.

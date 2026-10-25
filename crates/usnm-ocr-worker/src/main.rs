@@ -634,8 +634,17 @@ enum Command {
 mod cli_tests {
     use super::*;
 
+    /// Held by every test here that sets the environment: parsing reads
+    /// all of the flags' variables, and tests run in parallel.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn run_metadata_flag_and_environment_are_opt_in() {
+        let _env = env_lock();
         const NAME: &str = "USNM_OCR_RUN_METADATA_DIR";
         struct Restore(Option<std::ffi::OsString>);
         impl Drop for Restore {
@@ -684,6 +693,7 @@ mod cli_tests {
 
     #[test]
     fn drain_on_stop_can_be_enabled_through_environment() {
+        let _env = env_lock();
         struct RestoreEnv(Option<std::ffi::OsString>);
 
         impl Drop for RestoreEnv {
@@ -716,6 +726,7 @@ mod cli_tests {
 
     #[test]
     fn locs_bucket_is_off_unless_named_and_never_under_six_seconds_apart() {
+        let _env = env_lock();
         const NAMES: [&str; 2] = [
             "USNM_PREFETCH_LOC_BUCKET",
             "USNM_PREFETCH_LOC_BUCKET_GAP_MS",
