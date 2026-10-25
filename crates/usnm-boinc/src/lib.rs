@@ -606,8 +606,10 @@ pub async fn export(
 }
 
 /// A returned result's `text.txt` as a job's page is stored: normalized for the
-/// job's engine and language, so a German or Fraktur page's broken words are
-/// rejoined whatever dash ended the line (#1065). `import` stores this text,
+/// job's engine and language (`Hyphenation::for_page`), so a word broken at a
+/// line end is rejoined after `-`, `⸗`, `¬` or `‐` on any page, and after an
+/// em dash `—` only on a German page or one read with a Fraktur model, and
+/// then only before a lowercase letter (#1065). `import` stores this text,
 /// and the spot check compares two hosts' answers as this text, so a pair
 /// agrees exactly when what would be stored agrees.
 pub(crate) fn normalized_text(job: &Job, text: &[u8]) -> anyhow::Result<String> {

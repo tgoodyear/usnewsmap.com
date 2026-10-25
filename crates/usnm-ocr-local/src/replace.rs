@@ -152,10 +152,13 @@ impl Listing {
                 withdrawn.remove(&id);
                 // Stored text was normalized when the page was read, by the
                 // rules of that day: rejoin the line-end marks the rules
-                // since take (`⸗`, and `—` in Fraktur text), as a worker
-                // would now. Normalizing is idempotent, so text that has
-                // nothing new to join stays as it is. The stored scores
-                // chose the row; the release scores this text again.
+                // since take, as a worker would now: `⸗`, `¬` and `‐` in any
+                // text, and `—` in text read with a Fraktur model, before a
+                // lowercase letter. A row stores no language, so the engine
+                // alone decides; a worker also takes a German page's `—`.
+                // Normalizing is idempotent, so text that has nothing new
+                // to join stays as it is. The stored scores chose the row;
+                // the release scores this text again.
                 let text = normalize_ocr_for(&text, Hyphenation::for_engine(&row.ocr_engine));
                 out.pages.insert(id, Candidate { row, text });
             }
@@ -605,8 +608,8 @@ mod tests {
         }
     }
 
-    /// Pages stored before the line-end `⸗` and `—` rules (#1065) are
-    /// normalized again as they are loaded, for the engine that read them.
+    /// Pages stored before the line-end `⸗`, `¬`, `‐` and `—` rules (#1065)
+    /// are normalized again as they are loaded, for the engine that read them.
     #[tokio::test]
     async fn loads_text_normalized_again_for_its_engine() {
         const FRAKTUR: &str = "tesseract/5.5.1 profile=frak2021 image=sha256:3f9a0c1d2e4b \

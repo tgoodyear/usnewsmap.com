@@ -208,8 +208,9 @@ pub fn store_from(
         }),
     };
     let alto = usnm_alto::write(&page, &desc, language);
-    // A German page, or a Fraktur model's, can end a line in an em dash or a
-    // `⸗` for a broken word's hyphen (#1065).
+    // A broken word is rejoined after `-`, `⸗`, `¬` or `‐` at a line end, and,
+    // on a German page or one read with a Fraktur model, after an em dash `—`
+    // when the next line starts with a lowercase letter (#1065).
     let text = normalize_ocr_for(
         &usnm_alto::text(&page),
         Hyphenation::for_page(ocr_engine, language),
