@@ -3427,6 +3427,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "usnm-corpus-signals"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "quick-xml",
+ "serde",
+ "usnm-core",
+ "usnm-ocr-contract",
+ "usnm-ocr-quality",
+]
+
+[[package]]
 name = "usnm-ingest"
 version = "0.1.0"
 dependencies = [
@@ -3458,6 +3470,7 @@ dependencies = [
  "usnm-api",
  "usnm-congress",
  "usnm-core",
+ "usnm-corpus-signals",
  "usnm-ocr-contract",
  "usnm-ocr-local",
  "usnm-ocr-quality",
@@ -3652,6 +3665,7 @@ dependencies = [
  "tracing-subscriber",
  "usnm-alto",
  "usnm-core",
+ "usnm-corpus-signals",
  "usnm-ingest",
  "usnm-ocr-contract",
  "usnm-ocr-route",
