@@ -845,7 +845,7 @@ class Wiring(unittest.TestCase):
             self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
-        job = job_text(self.workflow("ci.yml"), "infra")
+        job = job_text(self.workflow("ci.yml"), "infra-checks")
         always = ("actions/checkout", "No shared-key authentication", "Scripts and CLIs take named arguments")
         steps = re.split(r"(?m)^      - ", job.split("    steps:\n", 1)[1])[1:]
         self.assertGreaterEqual(len(steps), 12)  # the split found the steps; script unit tests are one step

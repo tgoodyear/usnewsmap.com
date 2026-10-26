@@ -14,10 +14,16 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Keep CI checks small without changing release builds
+      shell: bash
+      run: |
+        echo 'CARGO_PROFILE_DEV_DEBUG=0' >> "$GITHUB_ENV"
+        echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
       with:
         toolchain: stable
         components: ${{ inputs.components }}
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
-        key: ${{ inputs.cache-key }}
+        key: ci-no-debug-v1-${{ inputs.cache-key }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}

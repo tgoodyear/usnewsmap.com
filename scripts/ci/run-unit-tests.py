@@ -10,9 +10,11 @@ tests. `--list` prints what would run and what is left out. A file left out here
 step of its own.
 """
 import argparse
+import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +29,13 @@ EXCLUDE = {
     "scripts/ops/test_check_version_snapshots.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
     "scripts/boinc/test_patch_server_gold_routing.py": "compiles C++ against nlohmann-json3-dev; ci.yml's contrib job installs it",
 }
+# Seconds in production run 40389690376; other/new modules have equal weight.
+WEIGHTS = {
+    "scripts/ci/test_changes.py": 185,
+    "scripts/boinc/test_boinc_scripts.py": 109,
+    "scripts/azure/test_env_scripts.py": 90,
+    "scripts/ci/test_head_of_main.py": 19,
+}
 
 
 def selected():
@@ -38,11 +47,27 @@ def selected():
     return run, left_out
 
 
-def main():
+def shard_files(files, index, count):
+    shards = [[] for _ in range(count)]
+    loads = [0] * count
+    for item in sorted(files, key=lambda item: (-WEIGHTS.get(item[0], 1), item[0])):
+        shard = min(range(count), key=lambda i: (loads[i], i))
+        shards[shard].append(item)
+        loads[shard] += WEIGHTS.get(item[0], 1)
+    return sorted(shards[index])
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Run every scripts/**/test_*.py unit test.")
     parser.add_argument("--list", action="store_true", help="print the files to run and those left out, then stop")
-    args = parser.parse_args()
+    parser.add_argument("--shard-index", type=int, default=0, help="zero-based shard index")
+    parser.add_argument("--shard-count", type=int, default=1, help="number of isolated CI shards")
+    parser.add_argument("--timings", type=Path, help="write per-module durations and outcomes as JSON")
+    args = parser.parse_args(argv)
+    if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
+        parser.error("require shard-count >= 1 and 0 <= shard-index < shard-count")
     run, left_out = selected()
+    run = shard_files(run, args.shard_index, args.shard_count)
     if args.list:
         print("\n".join(f"run   {rel}" for rel, _ in run))
         print("\n".join(f"skip  {rel}  ({why})" for rel, why in left_out))
@@ -50,14 +75,17 @@ def main():
     if not run:
         print("error: no scripts/**/test_*.py found", file=sys.stderr)
         return 1
-    total, failed = 0, []
+    total, failed, timings = 0, [], []
     for rel, _ in run:
         print(f"=== {rel}", flush=True)
+        started = time.monotonic()
         proc = subprocess.run([sys.executable, "-m", "unittest", "-v", rel], cwd=ROOT, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(proc.stdout, end="", flush=True)
         ran = re.search(r"^Ran (\d+) tests? in", proc.stdout, re.M)
         count = int(ran.group(1)) if ran else 0
+        timings.append({"file": rel, "seconds": round(time.monotonic() - started, 3),
+                        "tests": count, "exitcode": proc.returncode})
         total += count
         if proc.returncode:
             failed.append((rel, "failed"))
@@ -67,6 +95,11 @@ def main():
     print(f"\n{total} tests in {len(run)} files; {len(left_out)} files left out (see --list)")
     for rel, why in failed:
         print(f"FAILED: {rel} ({why})")
+    print("\nSlowest modules:")
+    for item in sorted(timings, key=lambda item: item["seconds"], reverse=True)[:10]:
+        print(f'{item["seconds"]:8.3f}s {item["file"]}')
+    if args.timings:
+        args.timings.write_text(json.dumps(timings, indent=2) + "\n")
     return 1 if failed else 0
 
 
