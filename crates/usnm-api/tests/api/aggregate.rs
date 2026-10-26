@@ -124,6 +124,8 @@ async fn hits_list_one_states_pages() {
     assert_eq!(status, StatusCode::OK, "{hits}");
     assert_eq!(hits["total"], agg["total"]["hits"]);
     assert!(hits["place"].is_null());
+    let (status, _, both) = get(&s, "/v1/hits?q=gold&state=IL&lccn=sn00000001,sn00000002").await;
+    assert_eq!(status, StatusCode::OK, "{both}");
     let (status, _, _) = get(&s, "/v1/hits?q=gold&state=IL,NY").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
