@@ -31,6 +31,7 @@ esac
 case "$(cat "$1")" in
   *crash) echo "Error in pixReadStream" >&2; exit 1 ;;
   *slow) sleep 5 ;;
+  *orphan) sleep 5 & exit 0 ;;
   *long) i=0; while [ $i -lt 400 ]; do printf 'word%03d ' $i; i=$((i+1)); done; echo; exit 0 ;;
 esac
 printf 'THE EVENING GAZETTE\nThe council met on Mon-\nday.\n\n\f'
@@ -140,6 +141,25 @@ async fn a_text_only_engine_through_long_lived_instances() {
     // Nothing is left in the instance's directories between pages.
     let left: Vec<_> = walk(&scratch).into_iter().filter(|p| p.is_file()).collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+#[tokio::test]
+async fn a_child_holding_output_pipes_cannot_outlive_the_page_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let tesseract = stand_in(dir.path());
+    let scratch = dir.path().join("scratch");
+    std::fs::create_dir(&scratch).unwrap();
+    let e = engine(&tesseract, &scratch, Duration::from_millis(250)).await;
+    let image = dir.path().join("page.pgm");
+    std::fs::write(&image, b"P5 4 4 255 orphan").unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(2), e.ocr(&image, "eng", dir.path()))
+        .await
+        .expect("the adapter must time out even after the Tesseract parent exits")
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("engine timeout"), "{err:#}");
+
+    std::fs::write(&image, usnm_ocr_worker::testimg::text_image("HELLO")).unwrap();
+    assert!(e.ocr(&image, "eng", dir.path()).await.is_ok());
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

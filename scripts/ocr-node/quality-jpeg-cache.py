@@ -25,8 +25,8 @@ that host in its --allow.
 
 pages.txt has one blob name per line (keep/<batch>/<lccn>/<date>/<ed>/<seq>.jp2),
 in the order to convert. Each master's sha256 must match its fetcher sidecar
-(<scan>.json). A blob already there with the same size is left as it is, so a
-second run is safe; one with another size stops the run. Done pages are listed
+(<scan>.json). An existing blob is left as it is only when its size and all
+provenance metadata match; a mismatch stops the run. Done pages are listed
 in <state>/done-<recipe>.txt and skipped next time; a master that can't be read or
 doesn't match its sidecar is reported and left for the next run. Signs in as the container's Arc
 machine identity, which has the hand-off writer role (read and write, no
@@ -166,7 +166,7 @@ class Blobs:
         return self.opener(urllib.request.Request(url, data=data, method=method, headers=h), timeout=120)
 
     def put_once(self, blob, data, meta):
-        """Upload unless it is there; True if uploaded, False if already there with the same size."""
+        """Upload once; refuse an existing blob unless size and provenance match."""
         h = {"x-ms-blob-type": "BlockBlob", "Content-Type": "image/jpeg", "If-None-Match": "*"}
         h.update({f"x-ms-meta-{k}": str(v) for k, v in meta.items()})
         try:
@@ -175,9 +175,13 @@ class Blobs:
         except urllib.error.HTTPError as e:
             if e.code not in (409, 412):
                 raise
-        size = int(self._req("HEAD", blob).headers.get("Content-Length", -1))
+        existing = {k.lower(): v for k, v in self._req("HEAD", blob).headers.items()}
+        size = int(existing.get("content-length", -1))
         if size != len(data):
             raise Refused(f"{CONTAINER}/{blob} is already there with another size ({size} bytes)")
+        for key, value in meta.items():
+            if existing.get(f"x-ms-meta-{key}".lower()) != str(value):
+                raise Refused(f"{CONTAINER}/{blob} is already there with missing or different {key} metadata")
         return False
 
 

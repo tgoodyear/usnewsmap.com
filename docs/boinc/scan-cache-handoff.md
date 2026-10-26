@@ -218,7 +218,11 @@ its end, or the cache falls behind as shards move into tier 1.
 The output must be byte for byte what the runner would make, so the script runs only on
 Pillow 13.0.0 from the same pinned wheel as the bridge image
 (`contrib-compute/images/bridge/Containerfile`). It checks each master against its fetcher
-sidecar, never replaces a blob (one there with another size stops the run), and lists done
+sidecar and never replaces a blob. An existing blob must match the size and every
+provenance field (source and JPEG sha256, recipe, Pillow version, width and height);
+missing or different metadata stops the run without marking that page done. Reconcile
+the existing blob with the wave owner rather than overwriting it or retrying with
+weaker checks. The script lists done
 pages in `/var/lib/usnm-quality-jpeg-cache/done-l-q75-r2.txt`. The exchange account's lifecycle policy deletes cached
 pages 30 days after they are written (`expire-boinc-handoff-quality-jpeg`, #915), so a wave
 must bundle a page within 30 days of its conversion or the runner converts the master again. `usnm-quality-jpeg-cache.service`
