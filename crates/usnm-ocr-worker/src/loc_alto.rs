@@ -15,26 +15,14 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use arrow_array::{ArrayRef, Float64Array, Int16Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
-use quick_xml::events::Event;
 use serde::Serialize;
-
-/// One page's word confidence.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct PageStats {
-    pub doc_id: String,
-    pub words: u32,
-    pub words_with_wc: u32,
-    pub wc_mean: Option<f64>,
-    pub wc_median: Option<f64>,
-    pub wc_below: Option<f64>,
-    pub software: Option<String>,
-}
+pub use usnm_corpus_signals::confidence::{page_stats, PageStats};
 
 /// `sn84021930/1898/11/23/ed-1/seq-1/ocr.xml` -> `sn84021930_1898-11-23_ed-1_seq-1`.
 pub fn doc_id_of(path: &str) -> Option<String> {
@@ -68,80 +56,6 @@ pub fn batch_of(archive: &str) -> Option<(String, i16)> {
     let (batch, ver) = stem.rsplit_once("_ver")?;
     let v: i16 = ver.parse().ok()?;
     (!batch.is_empty() && v > 0).then(|| (batch.to_owned(), v))
-}
-
-/// The word confidence of one ALTO page.
-pub fn page_stats<R: std::io::BufRead>(
-    doc_id: String,
-    xml: R,
-    threshold: f64,
-) -> anyhow::Result<PageStats> {
-    let mut reader = quick_xml::Reader::from_reader(xml);
-    let mut buf = Vec::new();
-    let mut wcs: Vec<f64> = Vec::new();
-    let mut words: u32 = 0;
-    let mut software: Option<String> = None;
-    let mut in_software = false;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e) | Event::Empty(e)) => {
-                let name = e.local_name();
-                if name.as_ref() == "String" {
-                    words += 1;
-                    for a in e.attributes().flatten() {
-                        if a.key.as_ref() == "WC" {
-                            if let Ok(v) = a.value.trim().parse::<f64>() {
-                                if (0.0..=1.0).contains(&v) {
-                                    wcs.push(v);
-                                }
-                            }
-                        }
-                    }
-                } else if name.as_ref() == "softwareName" && software.is_none() {
-                    in_software = true;
-                }
-            }
-            Ok(Event::Text(t)) if in_software => {
-                let s = t
-                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
-                    .trim()
-                    .to_owned();
-                if !s.is_empty() {
-                    software = Some(s.chars().take(64).collect());
-                }
-                in_software = false;
-            }
-            Ok(Event::End(_)) => in_software = false,
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => bail!("{doc_id}: unreadable ALTO: {e}"),
-        }
-        buf.clear();
-    }
-    let n = wcs.len();
-    let round = |x: f64| (x * 1e6).round() / 1e6;
-    let (mean, median, below) = if n == 0 {
-        (None, None, None)
-    } else {
-        wcs.sort_by(f64::total_cmp);
-        let mean = wcs.iter().sum::<f64>() / n as f64;
-        let median = if n % 2 == 1 {
-            wcs[n / 2]
-        } else {
-            (wcs[n / 2 - 1] + wcs[n / 2]) / 2.0
-        };
-        let below = wcs.iter().filter(|w| **w < threshold).count() as f64 / n as f64;
-        (Some(round(mean)), Some(round(median)), Some(round(below)))
-    };
-    Ok(PageStats {
-        doc_id,
-        words,
-        words_with_wc: u32::try_from(n).unwrap_or(u32::MAX),
-        wc_mean: mean,
-        wc_median: median,
-        wc_below: below,
-        software,
-    })
 }
 
 /// Every page of one archive.

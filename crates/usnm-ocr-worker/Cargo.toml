@@ -10,6 +10,7 @@ rust-version.workspace = true
 usnm-alto.workspace = true
 usnm-ocr-route.workspace = true
 usnm-core = { workspace = true, features = ["damage"] }
+usnm-corpus-signals.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-overlay.workspace = true
 usnm-store.workspace = true

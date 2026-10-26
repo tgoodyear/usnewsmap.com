@@ -1,0 +1,18 @@
+[package]
+name = "usnm-corpus-signals"
+version = "0.1.0"
+description = "Shared deterministic corpus text agreement and ALTO confidence metrics"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+usnm-core = { workspace = true, features = ["damage"] }
+usnm-ocr-contract = { workspace = true, default-features = false }
+usnm-ocr-quality.workspace = true
+
+[lints]
+workspace = true

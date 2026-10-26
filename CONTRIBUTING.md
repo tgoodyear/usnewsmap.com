@@ -65,10 +65,16 @@ seed regeneration, memory budgets and bounded smoke runs.
 
 Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds. [What CI runs](docs/development.md#what-ci-runs) lists each job, when it runs, which ones the repository requires, and the local commands that match.
 
-Request GitHub Copilot Review on every pull request in this repository. Count completed Copilot overview reviews as review rounds, not individual thread comments, and use the latest overview for the current changes:
+Request GitHub Copilot Review for every pull request. Use the latest Copilot review's
+summary verdict, not just its GitHub review state, to decide merge eligibility:
 
-- **Green / Approved:** allow merge only when CI is passing.
-- **Yellow / Changes recommended:** address the concerns with at least one new commit. Reply to the review threads and resolve them once their issues are fixed. Request another Copilot review if fewer than three rounds have completed. A final yellow review does not allow merge, even after three rounds.
-- **Blue / Needs a closer look:** address applicable concerns with at least one new commit. Request another Copilot review if a commit was pushed and fewer than three rounds have completed. After at least three rounds, a final blue review allows merge only when CI is passing.
+| Copilot verdict              | Required action                                                                                                                                                                                                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Green / Approved             | Merge is allowed when CI also passes.                                                                                                                                                                                                                            |
+| Yellow / Changes recommended | Address the concerns with at least one new commit. Reply to the review threads and resolve them once their issues are fixed. Request another review if fewer than three Copilot review rounds have occurred. Yellow is not a merge allowance after three rounds. |
+| Blue / Needs a closer look   | Address concerns with at least one new commit if applicable. If a commit was pushed and fewer than three Copilot review rounds have occurred, request another review. After three or more rounds, a final Blue review allows merge when CI passes.               |
 
-Do not merge while a required re-review or CI is pending. Allowing merge under this policy is not by itself a request to merge a pull request.
+Do not bypass required CI or other repository merge protections. Examples of this
+review cycle are [#1165](https://github.com/tgoodyear/usnewsmap.com/pull/1165),
+[#1143](https://github.com/tgoodyear/usnewsmap.com/pull/1143) and
+[#1138](https://github.com/tgoodyear/usnewsmap.com/pull/1138).
