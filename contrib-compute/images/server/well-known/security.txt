@@ -1,8 +1,0 @@
-Contact: https://github.com/tgoodyear/usnewsmap.com/security/advisories/new
-Expires: 2027-10-26T00:00:00Z
-Preferred-Languages: en
-Canonical: https://usnewsmap.com/.well-known/security.txt
-Canonical: https://api.usnewsmap.com/.well-known/security.txt
-Canonical: https://boinc.usnewsmap.com/.well-known/security.txt
-Canonical: https://boinc-dev.usnewsmap.com/.well-known/security.txt
-Policy: https://github.com/tgoodyear/usnewsmap.com/security/policy

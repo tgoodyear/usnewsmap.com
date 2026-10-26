@@ -1,4 +1,0 @@
-owner = Trevor Goodyear
-control = https://usnewsmap.com
-contact = https://goodyeartechnical.com/contact/
-disclosure = https://usnewsmap.com/privacy

@@ -13,7 +13,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$image" ] || usage
-diff -ru web/public/.well-known contrib-compute/images/server/well-known
 docker run --rm --entrypoint bash "$image" -c '
 set -e
 cd /usr/local/boinc
