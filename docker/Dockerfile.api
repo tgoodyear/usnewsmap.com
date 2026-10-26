@@ -1,4 +1,4 @@
-# usnm-api container image (08 §8.6): static-ish Rust binary on distroless,
+# usnm-api container image (08 §8.6): Rust API with Chromium for share images,
 # non-root, serving the API and the built web app (ADR-0009).
 FROM node:24-bookworm-slim AS web
 WORKDIR /web
@@ -32,7 +32,17 @@ COPY web/src/examples.json ./web/src/examples.json
 COPY ops/index-history.json ./ops/index-history.json
 RUN cargo build --release --locked -p usnm-api
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM node:24-bookworm-slim AS share-browser
+WORKDIR /srv/share
+COPY web/package.json web/package-lock.json ./
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN npm ci --omit=dev --no-audit --no-fund \
+    && node node_modules/playwright-core/cli.js install --with-deps chromium \
+    && chmod -R a+rX /opt/playwright
+COPY web/scripts/render-share.mjs ./render-share.mjs
+USER node
+
+FROM share-browser AS runtime
 COPY --from=build /src/target/release/usnm-api /usr/local/bin/usnm-api
 COPY --from=web /web/dist /srv/site
 # Synthetic fixtures let the image start without cloud data (USNM_BACKEND=memory).
@@ -40,7 +50,8 @@ COPY fixtures/data /srv/fixtures
 ENV USNM_BIND=0.0.0.0:8080 \
     USNM_DATA_DIR=/srv/fixtures \
     USNM_BACKEND=memory \
-    USNM_SITE_DIR=/srv/site
+    USNM_SITE_DIR=/srv/site \
+    USNM_SHARE_SCRIPT=/srv/share/render-share.mjs
 EXPOSE 8080
-USER nonroot
+USER node
 ENTRYPOINT ["/usr/local/bin/usnm-api"]

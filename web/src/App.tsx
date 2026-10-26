@@ -675,7 +675,21 @@ export function App() {
           />
         </main>
       ) : (
-        <main className={agg.isFetching ? "results results--loading" : "results"}>
+        <main
+          className={agg.isFetching ? "results results--loading" : "results"}
+          data-share-ready={
+            !!data &&
+            !!places.data &&
+            !agg.isFetching &&
+            !agg.isPlaceholderData &&
+            !updating &&
+            !problem &&
+            !placesFailed &&
+            !coverageFailed &&
+            !skewNotice &&
+            (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket")
+          }
+        >
           {agg.isFetching && <div className="search-progress" role="progressbar" aria-label="Search running" />}
           {updating && (
             <p className="notice" role="status">

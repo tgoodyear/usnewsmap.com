@@ -41,4 +41,7 @@ curl -fsS "$base/.well-known/gpc.json" | grep -q '"gpc": true'
 curl -fsS "$base/.well-known/assetlinks.json" | grep -qx '\[\]'
 curl -fsS "$base/.well-known/dnt-policy.txt" | grep -q 'Global Privacy Control'
 test "$(curl -sS -o /dev/null -w '%{http_code}' "$base/does-not-exist")" = 404
+curl -fsS "$base/search/cross-of-gold?from=1896-01-01&to=1896-12-31" | grep -q 'property="og:image" content="https://usnewsmap.com/share-image.png?'
+curl -fsS --max-time 45 "$base/share-image.png?page=%2F&q=cross+of+gold&from=1896-01-01&to=1896-12-31" |
+  python3 -c 'import struct, sys; b = sys.stdin.buffer.read(); assert b[:8] == b"\x89PNG\r\n\x1a\n"; assert struct.unpack(">II", b[16:24]) == (1200, 630)'
 echo "api image serves /v1 and the site ($asset)"

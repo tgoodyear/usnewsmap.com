@@ -180,6 +180,18 @@ export default function MapView(props: Props) {
     });
     m.on("idle", () => {
       if (loaded && m.areTilesLoaded()) reveal();
+      element.dataset.basemapReady = String(loaded && m.areTilesLoaded());
+    });
+    m.on("movestart", () => {
+      element.dataset.basemapReady = "false";
+    });
+    m.on("dataloading", () => {
+      element.dataset.basemapReady = "false";
+    });
+    m.on("render", () => {
+      if (latest.current.layer === "states" && latest.current.norm === "raw") {
+        element.dataset.overlayReady = String(nativeStates.current?.hasDrawn() ?? false);
+      }
     });
     if (STYLE_URL === "none") reveal();
 
@@ -335,10 +347,12 @@ export default function MapView(props: Props) {
   }, [styleReady, layer, norm, boundaries.data, hasStates]);
   useEffect(() => {
     nativeStates.current?.update(states ?? [], stateBreaks ?? []);
+    if (container.current && layer === "states" && norm === "raw") container.current.dataset.overlayReady = "false";
   }, [styleReady, layer, norm, boundaries.data, hasStates, states, stateBreaks]);
   useEffect(() => {
     const m = map.current;
     if (!m) return;
+    if (container.current) container.current.dataset.overlayReady = "false";
     drawn.current = { points, maxValue, layer, norm };
     if (tooltip.current) tooltip.current.hidden = true;
     let o = overlay.current;
@@ -348,7 +362,15 @@ export default function MapView(props: Props) {
       if (layer === "states" && norm === "raw") return;
       // Overlaid, not interleaved: deck.gl 9.4's interleaved mode reads
       // MapLibre internals that changed in MapLibre 6.
-      o = new MapboxOverlay({ id: "search-overlay", interleaved: false, layers: [] });
+      o = new MapboxOverlay({
+        id: "search-overlay",
+        interleaved: false,
+        layers: [],
+        onAfterRender: () => {
+          if (container.current && !(latest.current.layer === "states" && latest.current.norm === "raw"))
+            container.current.dataset.overlayReady = "true";
+        },
+      });
       m.addControl(o);
       overlay.current = o;
     }

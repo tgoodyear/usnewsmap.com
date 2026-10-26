@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 // MapLibre and deck.gl need WebGL; stand in for the parts MapView calls.
 const maps: FakeMap[] = [];
+const afterRender: (() => void)[] = [];
 const config = vi.hoisted(() => ({ style: "https://tiles.openfreemap.org/styles/positron", styleLoaded: true }));
 vi.mock("../lib/basemap", () => ({
   get STYLE_URL() {
@@ -69,6 +70,9 @@ vi.mock("./StatesMapLayer", () => ({
 }));
 vi.mock("@deck.gl/mapbox", () => ({
   MapboxOverlay: class {
+    constructor(props: { onAfterRender: () => void }) {
+      afterRender.push(props.onAfterRender);
+    }
     setProps(props: { layers: { id: string; data: unknown }[] }) {
       layers.push(props.layers);
     }
@@ -105,6 +109,7 @@ describe("MapView", () => {
   afterEach(() => {
     cleanup();
     maps.length = 0;
+    afterRender.length = 0;
     layers.length = 0;
     nativeLayers.length = 0;
     vi.unstubAllGlobals();
@@ -130,6 +135,22 @@ describe("MapView", () => {
     m.areTilesLoaded.mockReturnValue(false);
     m.emit("idle");
     expect(element.classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("exposes screenshot readiness only for loaded tiles and a rendered overlay", () => {
+    const { getByTestId, rerender } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const element = getByTestId("map");
+    expect(element.dataset.overlayReady).toBe("false");
+    const m = maps[0]!;
+    m.emit("load");
+    m.emit("idle");
+    afterRender[0]!();
+    expect(element.dataset.basemapReady).toBe("true");
+    expect(element.dataset.overlayReady).toBe("true");
+    m.emit("dataloading");
+    expect(element.dataset.basemapReady).toBe("false");
+    rerender(<MapView {...props} points={[]} zoom={null} center={null} />);
+    expect(element.dataset.overlayReady).toBe("false");
   });
 
   it("reveals the overlay after two seconds if the basemap is blocked", () => {
