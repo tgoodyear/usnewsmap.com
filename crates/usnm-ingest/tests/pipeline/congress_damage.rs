@@ -9,9 +9,9 @@ use arrow_array::{Array, Date32Array, Float64Array, Int32Array, StringArray};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use usnm_congress::curated::{self, Counts, CuratedPage};
+use usnm_congress::release::Listing;
 use usnm_core::damage;
-use usnm_ingest::congress::curated::{self, Counts, CuratedPage};
-use usnm_ingest::congress::release::Listing;
 use usnm_ingest::congress_damage::{
     self, corpus_path, summary_path, table_path, Corpus, Options, PassReport, Summary,
 };

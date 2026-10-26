@@ -18,7 +18,7 @@ usnm-store.workspace = true
 usnm-state.workspace = true
 usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
-usnm-ingest = { path = "../usnm-ingest" }
+usnm-ocr-local.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use usnm_ingest::owner_id;
 use usnm_ingest::release::{self, Published};
 use usnm_ingest::state::State;
+use usnm_state::owner_id;
 
 use crate::Cli;
 

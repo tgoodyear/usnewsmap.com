@@ -16,8 +16,8 @@ use crate::common::{
 /// Serial Set pages curated from the recorded GovInfo responses (#229
 /// phase 2), as `congress-serialset` writes them: volume 33's two
 /// documents, their MODS and the page texts pdftotext gave.
-pub(crate) async fn put_serialset(e: &Env) -> usnm_ingest::congress::curated::Counts {
-    use usnm_ingest::congress::{curated, serialset};
+pub(crate) async fn put_serialset(e: &Env) -> usnm_congress::curated::Counts {
+    use usnm_congress::{curated, serialset};
     let dir = fixtures().join("../congress/govinfo");
     let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
     let urls = serialset::parse_urlset(&read("SERIALSET_1820_sitemap.xml")).unwrap();
@@ -51,7 +51,7 @@ pub(crate) async fn put_serialset(e: &Env) -> usnm_ingest::congress::curated::Co
 /// the setting. The newspapers' baselines never count them.
 #[tokio::test]
 async fn congress_pages_get_an_index_set_of_their_own() {
-    use usnm_ingest::congress;
+    use usnm_congress as congress;
     let e = env().await;
     let pages = fixture_pages();
     let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
@@ -187,7 +187,7 @@ async fn congress_pages_get_an_index_set_of_their_own() {
 /// rebuilds the set with the Globe's pages kept.
 #[tokio::test]
 async fn serial_set_pages_join_the_globe_in_the_congress_set() {
-    use usnm_ingest::congress;
+    use usnm_congress as congress;
     let e = env().await;
     let pages = fixture_pages();
     let early: Vec<&Page> = pages
@@ -350,7 +350,7 @@ async fn kept_indexes(e: &Env) -> std::collections::BTreeSet<String> {
 /// `v` is the serving version and has no Congress set, and its run names
 /// no index it didn't write (there are no Japanese pages).
 async fn assert_no_congress(e: &Env, v: &str) {
-    use usnm_ingest::congress;
+    use usnm_congress as congress;
     let current = e.reference_json("current.json").await;
     assert_eq!(current["index_version"], v);
     assert!(current.get("congress").is_none(), "{current}");

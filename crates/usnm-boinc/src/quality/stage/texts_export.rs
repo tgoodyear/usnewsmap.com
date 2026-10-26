@@ -217,7 +217,7 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
 
     let mut as_by_doc: BTreeMap<String, (Option<PageSize>, TextReader)> = BTreeMap::new();
     for (lccn, years) in &by_lccn_year {
-        let prefix = format!("{}/{lccn}", usnm_ingest::american_stories::PAGES);
+        let prefix = format!("{}/{lccn}", usnm_core::american_stories::PAGES);
         let mut paths = american_stories.list(&prefix).await?;
         paths.sort();
         let dir_prefix = format!("{prefix}/");
@@ -294,13 +294,12 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
         }
     }
 
-    let revoked = usnm_ingest::ocr_local::replace::revocations(&curated).await?;
-    let listing = usnm_ingest::ocr_local::replace::Listing::list(&curated).await?;
+    let revoked = usnm_ocr_local::replace::revocations(&curated).await?;
+    let listing = usnm_ocr_local::replace::Listing::list(&curated).await?;
     let loaded = listing
         .load(&curated, by_lccn_year.keys().map(String::as_str), &revoked)
         .await?;
-    let mut ocr_candidates: BTreeMap<String, usnm_ingest::ocr_local::replace::Candidate> =
-        BTreeMap::new();
+    let mut ocr_candidates: BTreeMap<String, usnm_ocr_local::replace::Candidate> = BTreeMap::new();
     for (doc_id, mut cand) in loaded.pages {
         if !wanted.contains(&doc_id) {
             continue;
@@ -313,7 +312,7 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
 
     let mut altos_by_doc: BTreeMap<String, Vec<String>> = BTreeMap::new();
     if !ocr_candidates.is_empty() {
-        let alto_root = format!("{}/alto", usnm_ingest::ocr_local::ROOT);
+        let alto_root = format!("{}/alto", usnm_ocr_local::ROOT);
         let alto_prefix = format!("{alto_root}/");
         let mut alto_paths = curated.list(&alto_root).await?;
         alto_paths.sort();
@@ -344,11 +343,7 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
     for (doc_id, cand) in ocr_candidates {
         let mut has_alto = false;
         if let Some(paths) = altos_by_doc.get(&doc_id) {
-            let node_needle = format!(
-                "{}/alto/{doc_id}.{}.",
-                usnm_ingest::ocr_local::ROOT,
-                cand.row.node
-            );
+            let node_needle = format!("{}/alto/{doc_id}.{}.", usnm_ocr_local::ROOT, cand.row.node);
             let chosen = paths
                 .iter()
                 .rev()
@@ -431,7 +426,7 @@ mod tests {
         use arrow_schema::{DataType, Field, Schema};
         use parquet::arrow::ArrowWriter;
         use std::sync::Arc;
-        use usnm_ingest::ocr_local::pages::{encode as encode_ocr_local, Imported, Scores};
+        use usnm_ocr_local::pages::{encode as encode_ocr_local, Imported, Scores};
         use usnm_overlay::OverlayRow;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -555,8 +550,8 @@ mod tests {
         // With a local copy of the American Stories shards, the same texts, and the curated
         // store gives only the overlays.
         let local = tmp.path().join("local-copy");
-        let shards = curated_dir.join(usnm_ingest::american_stories::PAGES);
-        let to = local.join(usnm_ingest::american_stories::PAGES);
+        let shards = curated_dir.join(usnm_core::american_stories::PAGES);
+        let to = local.join(usnm_core::american_stories::PAGES);
         copy_tree(&shards, &to);
         std::fs::remove_dir_all(&shards).unwrap();
         let out2 = tmp.path().join("texts-local");

@@ -17,13 +17,13 @@ pub fn read_words(path: &Path) -> anyhow::Result<Vec<String>> {
 }
 
 /// The campaign's `places.txt`: from a `.txt` as it is, or from the
-/// catalog's `places.json` (`usnm_ingest::catalog::Place` rows): every
+/// catalog's `places.json` (`usnm_core::catalog::Place` rows): every
 /// place's name and its titles' variant names, distinct, sorted, one per
 /// line.
 pub fn read_places(path: &Path) -> anyhow::Result<String> {
     let bytes = read(path, MAX_PLACES).with_context(|| format!("reading {}", path.display()))?;
     if path.extension().is_some_and(|e| e == "json") {
-        let places: Vec<usnm_ingest::catalog::Place> =
+        let places: Vec<usnm_core::catalog::Place> =
             serde_json::from_slice(&bytes).context("places.json")?;
         Ok(places_txt(&places))
     } else {
@@ -36,7 +36,7 @@ pub fn read_places(path: &Path) -> anyhow::Result<String> {
     }
 }
 
-pub fn places_txt(places: &[usnm_ingest::catalog::Place]) -> String {
+pub fn places_txt(places: &[usnm_core::catalog::Place]) -> String {
     let mut names: Vec<&str> = places
         .iter()
         .flat_map(|p| {

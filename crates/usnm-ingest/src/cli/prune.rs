@@ -1,10 +1,10 @@
 //! `prune`: deleting the Quickwit indexes no published version names.
 use anyhow::{bail, Context};
 use clap::Args;
-use usnm_ingest::owner_id;
 use usnm_ingest::release::{self, Published};
 use usnm_ingest::sink::QuickwitNode;
 use usnm_ingest::state::State;
+use usnm_state::owner_id;
 
 use super::common::{root, IndexTarget, Stores};
 use crate::Cli;

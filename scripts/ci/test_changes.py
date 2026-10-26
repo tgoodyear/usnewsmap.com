@@ -455,27 +455,40 @@ class BuildInputs(unittest.TestCase):
         on = self.select("crates/usnm-ocr-worker/src/lib.rs")
         self.assertGreaterEqual(on, {"rust", "ocr_worker"} | BOINC_IMAGES | DASHBOARD)
 
+    @unittest.skipUnless(CARGO, "no cargo")
     def test_a_dev_dependency_of_a_dependency_is_not_a_build_input(self):
-        # The worker's tests use usnm-ingest, the BOINC client links it, the dashboard doesn't.
+        # Recreate a dev-only ingest edge in the fixture. The real worker and
+        # BOINC client no longer depend on ingest at all (#1206).
+        manifest = self.repo / "crates/usnm-ocr-worker/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace(
+            "[dev-dependencies]\n",
+            '[dev-dependencies]\nusnm-ingest = { path = "../usnm-ingest" }\n',
+        ))
+        subprocess.run([CARGO, "metadata", "--format-version", "1"],
+                       cwd=self.repo, check=True, capture_output=True)
+        self.commit("dev-only dependency fixture")
         on = self.select("crates/usnm-ingest/src/lib.rs")
-        self.assertGreaterEqual(on, BOINC_IMAGES)
-        self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
+        self.assertGreaterEqual(on, {"rust", "quickwit", "image"})
+        self.assertFalse(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), on)
 
     def test_the_crates_split_out_of_ingest_run_what_ingest_runs(self):
         # The Congress fetches and the local OCR pipeline are crates of their own that usnm-ingest
-        # links: the ingest image, the Quickwit job and the BOINC client rebuild for them; the
-        # web end-to-end job, the worker and the dashboard don't.
+        # links. Only the local OCR pipeline is also a BOINC dependency.
         for path in ["crates/usnm-congress/src/lib.rs", "crates/usnm-ocr-local/src/lib.rs"]:
             with self.subTest(path=path):
                 on = self.select(path)
-                self.assertGreaterEqual(on, {"rust", "quickwit", "image"} | BOINC_IMAGES)
+                self.assertGreaterEqual(on, {"rust", "quickwit", "image"})
+                if "usnm-ocr-local" in path:
+                    self.assertGreaterEqual(on, BOINC_IMAGES)
+                else:
+                    self.assertFalse(on & BOINC_IMAGES, on)
                 self.assertFalse(on & (DASHBOARD | NATIVE | {"ocr_worker", "e2e"}), on)
 
     def test_a_file_a_crate_embeds_counts_for_what_links_the_crate(self):
-        # usnm-ingest embeds the catalog; the BOINC client links usnm-ingest, the worker doesn't.
+        # Only ingest embeds the catalog; BOINC's shared place rows live in core.
         on = self.select("catalog/overrides/places.json")
-        self.assertGreaterEqual(on, BOINC_IMAGES)
-        self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
+        self.assertGreaterEqual(on, {"rust", "image"})
+        self.assertFalse(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), on)
         # usnm-ocr-worker embeds the Tesseract models lock; everything that links it rebuilds.
         on = self.select("ocr/engines/tesseract/models.lock")
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)

@@ -137,7 +137,7 @@ async fn writes_alto_and_a_part_the_release_reads() {
         )
     );
     let bytes = out.get(&parts[0]).await.unwrap().unwrap();
-    let pages = usnm_ingest::ocr_ja::read_part(bytes::Bytes::from(bytes), &parts[0]).unwrap();
+    let pages = usnm_overlay::read_part(bytes::Bytes::from(bytes)).unwrap();
     assert_eq!(pages.len(), 1);
     let p = &pages[0];
     assert_eq!(p.key.to_string(), "sn83045462/1890-05-03/ed-1/seq-7");
@@ -145,10 +145,10 @@ async fn writes_alto_and_a_part_the_release_reads() {
     assert_eq!(p.loc_text, "bulk");
     assert_eq!(p.ocr_source, "usnm-tesseract");
     assert_eq!(p.ocr_engine, "tesseract-5.5.1/deu_latf+deu");
-    assert!(p.ok);
+    assert_eq!(p.text_status, "ok");
     // Normalized as LoC's text is (04 §4.5): hyphenation rejoined, spaces collapsed.
     assert_eq!(
-        p.printed.as_deref(),
+        p.text.as_deref(),
         Some("Die Nebraska Staats-Zeitung\nerscheint jeden Sonnabend.")
     );
 

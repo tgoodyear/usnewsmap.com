@@ -144,18 +144,15 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             let exchange_out = usnm_store::open(&out_url)?;
             let queue = usnm_store::queue::open(&queue_url)?;
             // The lock keeps the ledger as it is while messages are judged against it.
-            let held = usnm_ingest::ocr_local::boinc::Held::take(&state).await?;
+            let held = usnm_ocr_local::boinc::Held::take(&state).await?;
             let mut report = x::Report::default();
             let pulled = async {
                 let snapshot =
-                    usnm_ingest::ocr_local::boinc::Snapshot::load(&state, reference.as_ref())
+                    usnm_ocr_local::boinc::Snapshot::load(&state, reference.as_ref()).await?;
+                let ledger = usnm_ocr_local::ledger::load(curated.as_ref()).await?;
+                let (_, fetched) =
+                    usnm_ocr_local::seed::newest_fetched(exchange_out.as_ref(), &manifest_version)
                         .await?;
-                let ledger = usnm_ingest::ocr_local::ledger::load(curated.as_ref()).await?;
-                let (_, fetched) = usnm_ingest::ocr_local::seed::newest_fetched(
-                    exchange_out.as_ref(),
-                    &manifest_version,
-                )
-                .await?;
                 let installed = crate::installed_models();
                 x::pull(
                     &x::Sources {

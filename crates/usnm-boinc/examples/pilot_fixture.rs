@@ -3,7 +3,6 @@ use chrono::{NaiveDate, Utc};
 use clap::Parser;
 use std::{path::PathBuf, sync::Arc};
 use usnm_core::ids::PageKey;
-use usnm_ingest::curated::{CuratedRow, PartWriter};
 use usnm_ocr_contract::{
     boinc,
     prefetch::{self, ManifestRow},
@@ -13,6 +12,7 @@ use usnm_ocr_worker::{
     prefetch::{scan_path, sidecar_path, Sidecar},
     testimg,
 };
+use usnm_overlay::curated::{CuratedRow, PartWriter};
 use usnm_state::{
     docs::FileDocs,
     state::{Curated, RunBatch, State},

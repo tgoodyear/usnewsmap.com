@@ -8,20 +8,18 @@ use std::{
 };
 use usnm_boinc::{ExportOptions, Stage};
 use usnm_core::ids::PageKey;
-use usnm_ingest::{
-    curated::{CuratedRow, PartWriter},
-    ocr_local::{ledger, sync},
-};
 use usnm_ocr_contract::{
     boinc::{self, Job, ResultManifest},
     prefetch::{self, ManifestRow},
 };
+use usnm_ocr_local::{ledger, sync};
 use usnm_ocr_worker::{
     engine,
     loc::{ImageSize, ScanFormat},
     prefetch::{scan_path, sidecar_path, Sidecar},
     testimg,
 };
+use usnm_overlay::curated::{CuratedRow, PartWriter};
 use usnm_state::{
     docs::MemoryDocs,
     state::{Curated, RunBatch, State},
@@ -805,16 +803,15 @@ async fn conflicting_cohort_does_not_reserve_its_fresh_pages_and_unlocks() {
 async fn snapshot_change_prevents_reservation() {
     let fx = Fixture::new("eng").await;
     let id = fx.export().await;
-    let snapshot =
-        usnm_ingest::ocr_local::boinc::Snapshot::load(&fx.state, fx.stores.reference.as_ref())
-            .await
-            .unwrap();
+    let snapshot = usnm_ocr_local::boinc::Snapshot::load(&fx.state, fx.stores.reference.as_ref())
+        .await
+        .unwrap();
     let row = usnm_boinc::load(&fx.options.root, &id)
         .unwrap()
         .queued()
         .unwrap();
     fx.state.set_current_version("v2").await.unwrap();
-    let error = usnm_ingest::ocr_local::boinc::reserve(
+    let error = usnm_ocr_local::boinc::reserve(
         &fx.state,
         fx.stores.curated.as_ref(),
         &snapshot,
@@ -919,10 +916,10 @@ async fn unpublished_catalog_title_cannot_route_or_reserve_a_page() {
         .put("v1/titles.json", b"[]".to_vec(), "application/json")
         .await
         .unwrap();
-    let snapshot = usnm_ingest::ocr_local::boinc::Snapshot::load(&fx.state, &reference)
+    let snapshot = usnm_ocr_local::boinc::Snapshot::load(&fx.state, &reference)
         .await
         .unwrap();
-    let error = usnm_ingest::ocr_local::boinc::reserve(
+    let error = usnm_ocr_local::boinc::reserve(
         &fx.state,
         fx.stores.curated.as_ref(),
         &snapshot,
@@ -1831,11 +1828,11 @@ mod queue_feed {
     use std::collections::{BTreeSet, HashSet};
     use std::time::Duration;
     use usnm_boinc::claim;
-    use usnm_ingest::ocr_local::{boinc::Snapshot, seed::newest_fetched};
     use usnm_ocr_contract::{
         fetched::{self, Fetched},
         message::{OcrMessage, Reason},
     };
+    use usnm_ocr_local::{boinc::Snapshot, seed::newest_fetched};
     use usnm_store::queue::{BULK, PRIORITY};
 
     const PAGE: &str = "sn00000001/1900-01-01/ed-1/seq-1";
