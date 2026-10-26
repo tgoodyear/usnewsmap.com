@@ -118,11 +118,11 @@ async fn searches_from_the_log_are_logged_by_rank_only() {
     log.shutdown(Duration::from_secs(5)).await;
 
     let console = String::from_utf8(console.0.lock().unwrap().clone()).unwrap();
-    assert!(console.contains("\"from_log\":2"), "{console}");
+    assert!(console.contains("\"from_log\":2"));
     for secret in ["zebrasecret", "parensecret", "cholera"] {
         assert!(
             !console.contains(secret),
-            "`{secret}` was logged: {console}"
+            "sensitive fixture data was logged"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

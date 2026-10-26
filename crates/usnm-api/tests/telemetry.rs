@@ -338,11 +338,11 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         expect("GET (site)", "200", true),
     ];
     expected.sort();
-    assert_eq!(requests, expected, "{all}");
+    assert_eq!(requests, expected);
 
     // Neither search text nor raw paths nor probes appear in any trace.
     for secret in SECRETS {
-        assert!(!all.contains(secret), "`{secret}` was exported: {all}");
+        assert!(!all.contains(secret), "sensitive fixture data was exported");
     }
     let traces: String = envs
         .iter()
@@ -379,10 +379,10 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         ) >= 1.0
     );
     assert_eq!(total("api.rejected_queries", &[("reason", "syntax")]), 1.0);
-    assert!(all.contains("api.backend_duration_seconds"), "{all}");
+    assert!(all.contains("api.backend_duration_seconds"));
     // Request counts and durations are in AppRequests only (#231).
-    assert!(!all.contains("api.requests"), "{all}");
-    assert!(!all.contains("api.request_duration_seconds"), "{all}");
+    assert!(!all.contains("api.requests"));
+    assert!(!all.contains("api.request_duration_seconds"));
     assert_eq!(
         total("api.index_version", &[("index_version", "fixture-v1")]),
         1.0
@@ -393,7 +393,7 @@ async fn requests_are_exported_by_route_template_without_search_text() {
     for secret in SECRETS {
         assert!(
             !console.contains(secret),
-            "`{secret}` was logged: {console}"
+            "sensitive fixture data was logged"
         );
     }
     let request_lines = console
@@ -401,7 +401,7 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
         .filter(|l| l["fields"]["message"] == "request")
         .count();
-    assert_eq!(request_lines, 0, "{console}");
+    assert_eq!(request_lines, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
