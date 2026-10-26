@@ -185,6 +185,10 @@ class Pipeline:
                 self.args.coordination_claim or ""):
             raise PipelineError("execution requires an active #529 coordination claim (not deployment authorization)")
         settings = json.loads(self.git("show", sha + ":" + self.settings))
+        if settings.get("server", "azure") != "azure":
+            raise PipelineError("bootstrap pipeline supports only Azure-hosted BOINC servers; "
+                                "on-prem releases require a separate reviewed orchestration "
+                                "(docs/boinc-onprem.md)")
         if not settings.get("codeSignPublicKey"):
             raise PipelineError("reviewed public signing key is missing")
         if not (ROOT / "scripts/boinc/acceptance.py").is_file():
