@@ -54,7 +54,7 @@ pub(super) async fn titles_sync(
         lccns.extend(b.curated.into_iter().flat_map(|c| c.lccns));
     }
     let reference = usnm_store::open(&cli.reference)?;
-    let report = titles::sync(
+    let synced = titles::sync(
         reference.as_ref(),
         &lccns,
         &titles::title_records()?,
@@ -63,7 +63,7 @@ pub(super) async fn titles_sync(
         &titles::Pacing::loc(deadline).reporting(report.clone()),
     )
     .await?;
-    tracing::info!(?report, "title records");
+    tracing::info!(report = ?synced, "title records");
     geocode(reference.as_ref()).await?;
     // Keep what the sync has outside the environment (#275). A failed copy
     // doesn't fail the sync: the next run tries again.
@@ -72,7 +72,7 @@ pub(super) async fn titles_sync(
             tracing::warn!(error = %format!("{e:#}"), "the title records weren't copied to the raw store");
         }
     }
-    Ok(report)
+    Ok(synced)
 }
 
 /// Copy the record cache and catalog to the raw store (`titles/{time}.json`).
