@@ -755,9 +755,9 @@ fn surya_llama_device(log: &str) -> (String, Option<String>, String) {
 }
 
 fn surya_llama_args(threads: u32, gpu: Option<GpuDevice>) -> String {
+    // llama-library INFO (including offload counts) requires trace level 4.
     match gpu {
-        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i}"),
-        // b11610 maps llama-library INFO (including offload counts) to trace level 4.
+        Some(GpuDevice::Vulkan(i)) => format!("--threads {threads} --device Vulkan{i} -lv 4"),
         _ => format!("--threads {threads} -lv 4"),
     }
 }
@@ -1148,7 +1148,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn surya_cuda_logs_include_library_offload_evidence() {
+    fn surya_logs_include_library_offload_evidence() {
         assert_eq!(
             surya_llama_args(2, Some(GpuDevice::Cuda(0))),
             "--threads 2 -lv 4"
@@ -1156,7 +1156,7 @@ pub(crate) mod tests {
         assert_eq!(surya_llama_args(8, None), "--threads 8 -lv 4");
         assert_eq!(
             surya_llama_args(2, Some(GpuDevice::Vulkan(1))),
-            "--threads 2 --device Vulkan1"
+            "--threads 2 --device Vulkan1 -lv 4"
         );
     }
 
