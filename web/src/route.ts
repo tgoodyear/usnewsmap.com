@@ -45,11 +45,11 @@ export function searchPath(q: string, mode = "phrase"): string {
   // Browsers normalize dot-only path segments, even when percent-encoded.
   if (!q || q === "." || q === "..") return "/";
   const slug = slugFor(q, mode);
-  if (slug) return `/search/${slug}`;
+  if (slug) return `/search/${encodeURIComponent(slug)}`;
   return `/search/${new URLSearchParams({ q }).toString().slice(2).replace(/\+/g, "%20")}`;
 }
 
-export function queryForPath(pathname: string): string | null {
+export function queryForPath(pathname: string, mode = "phrase"): string | null {
   const match = /^\/search\/([^/]+)\/?$/.exec(pathname);
   if (!match) return null;
   let q: string;
@@ -58,8 +58,9 @@ export function queryForPath(pathname: string): string | null {
   } catch {
     return null;
   }
-  // A lowercase hyphenated segment is a readable slug (see `slugFor`).
-  if (SLUG.test(q) && q === q.toLowerCase()) q = q.replace(/-/g, " ");
+  // A lowercase hyphenated segment is a readable slug (see `slugFor`); other
+  // modes keep the hyphen, since `well-known` there is one adjacent phrase.
+  if (mode === "phrase" && SLUG.test(q) && q === q.toLowerCase()) q = q.replace(/-/g, " ");
   return q.length > 0 && q.length <= 256 && q !== "." && q !== ".." ? q : null;
 }
 

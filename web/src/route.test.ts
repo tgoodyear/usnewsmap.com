@@ -58,4 +58,11 @@ describe("readable search paths", () => {
     expect(queryForPath("/search/%22cross%20of%20gold%22")).toBe('"cross of gold"');
     expect(queryForPath("/search/Know-Nothing")).toBe("Know-Nothing");
   });
+
+  it("keeps hyphens outside phrase mode and encodes non-ASCII slugs", () => {
+    expect(queryForPath("/search/well-known", "all")).toBe("well-known");
+    expect(searchPath("well-known", "all")).toBe("/search/well-known");
+    expect(searchPath("日本")).toBe("/search/%E6%97%A5%E6%9C%AC");
+    expect(queryForPath(searchPath("日本"))).toBe("日本");
+  });
 });
