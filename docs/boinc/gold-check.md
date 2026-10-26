@@ -397,12 +397,53 @@ The step (`contrib-compute/images/bridge/gold-bundle.sh`):
    sha256 is refused. One run at a time: a second run stops on the lock
    `<share>/gold/.build-v1.lock`.
 
-The image carries Pillow 11.3.0 (the CI's version, from its manylinux wheel)
-and bsdtar for BLN600's AES zip. The crops are JPEG re-encodes, so a different
-Pillow or libjpeg could change the tar's bytes, and step 4 would catch that.
-UNVERIFIED: that this build reproduces the lock byte for byte (it was built on
-another machine), and how long the run takes on the share. The job allows six
-hours (`--wait-mins 360` on the host).
+New bridge builds carry Pillow 13.0.0 (the CI's version, from its hash-pinned
+manylinux wheel) and bsdtar for BLN600's AES zip. The v1 recipe previously
+used Pillow 11.3.0. The crops are JPEG re-encodes, so a different Pillow or
+libjpeg could change the tar's bytes, and step 4 must still catch that.
+The historical v1 recipe no longer reproduces with current Overproof
+geometry; see the versioned rebuild below. The job allows six hours
+(`--wait-mins 360` on the host).
+
+**Pillow 13 and bundle v2 (26 October 2026):** a full, network-disabled
+conversion of the original six cached datasets produced 142 bundle crops.
+The regenerated v1 lock differs from the historical lock because #660
+corrected Overproof ALTO geometry: 17 selected Overproof crop IDs change.
+A control conversion under Pillow 11.3.0 produces the same Overproof
+manifest as Pillow 13.0.0, excluding the encoder label. The other five
+datasets' converted manifests likewise differ only in that label (BLN600's
+unchanged original crops have no encoder change). This is pre-existing
+recipe drift, not evidence of a Pillow JPEG regression.
+
+The corrected recipe is recorded separately in
+`fixtures/ocr-gold/bundle-v2.lock.json`: tar SHA256
+`1e0fcc7bdc6bb6840658a5f615ad5f6f5a5853598cb2a47a45139c800c67446d`,
+manifest SHA256
+`f7fe39f70b61ba13ce5de1ec85f1cd8b93c07ef9b01518e02bb5abb38b3cffd3`.
+No v1 lock, bundle, submitted job or trust record is replaced.
+
+New builds must explicitly choose v2 and a fresh campaign:
+
+```sh
+usnm-boinc-step --env prod --step gold-bundle \
+  --var GOLD_CAMPAIGN=v2-tess550 --var GOLD_BUNDLE_VERSION=2 --wait-mins 360
+```
+
+The default remains v1 for existing callers. A fresh v1 conversion with the
+current geometry intentionally fails its historical lock; an existing
+verified v1 artifact is still accepted. Never weaken that check.
+`gold-bundle.sh --version 2 --source-cache /sources --share /isolated-share
+--campaign v2-check` supports an offline reproduction, with the original
+dataset cache mounted read-only and no installed bundle in the destination.
+The script selects the committed version's lock and expected hashes and
+keeps version-specific build directories. All versions share the legacy
+build lock to prevent overlapping installs.
+
+Building or installing v2 does not submit work, promote hosts or recalibrate
+trust. Calibrate a new campaign explicitly before using v2 as a trust
+challenge. The `gold mirror-loc` convenience command remains deliberately
+restricted to the locked v1 manifest; v2 uses `gold prepare` and the normal
+verified original-file staging during submission.
 
 Then run `gold-prepare` as above.
 

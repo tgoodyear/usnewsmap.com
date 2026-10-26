@@ -285,6 +285,12 @@ class BoincPages(unittest.TestCase):
         self.assertEqual({key for key, value in o.items() if value == "true"},
                          {"rust", "contrib", "ocr_gold", "code", "infra"} | BOINC_IMAGES)
 
+    def test_v2_gold_lock_runs_bridge_and_gold_checks(self):
+        self.change = lambda: self.touch("fixtures/ocr-gold/bundle-v2.lock.json")
+        o = self.outputs()
+        self.assertEqual((o["contrib"], o["ocr_gold"]), ("true", "true"))
+        self.assertEqual((o["rust"], o["image"], o["fixtures"]), ("false", "false", "false"))
+
 class OcrCatalog(unittest.TestCase):
     """Embedded catalog and routing edits must rebuild and test OCR releases."""
 
