@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -79,6 +83,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Workspace tests
+        shell: bash
         run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"
       - name: Test binary timings
         if: always()
@@ -398,12 +403,14 @@ jobs:
         run: echo "QUICKWIT_URL=$(scripts/dev/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - name: Search parity
         if: matrix.suite == 'parity'
+        shell: bash
         run: cargo test -p usnm-search --test quickwit_parity --locked 2>&1 | tee "$RUNNER_TEMP/quickwit-tests.log"
       # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
       # with the environment the official Quickwit image sets (the ingest image
       # is built on it): the writer must not pick these up.
       - name: Ingest pipeline
         if: matrix.suite == 'pipeline'
+        shell: bash
         run: cargo test -p usnm-ingest --test pipeline --locked 2>&1 | tee "$RUNNER_TEMP/quickwit-tests.log"
         env:
           QW_LISTEN_ADDRESS: 0.0.0.0

@@ -38,3 +38,9 @@ class Gates(unittest.TestCase):
             self.assertNotIn("continue-on-error", job(name), name)
         needs = re.search(r"needs: \[(.*)\]", job("publish"))[1].split(", ")
         self.assertTrue({"quickwit", "image", "infra", "rust"} <= set(needs))
+
+    def test_logged_test_commands_use_explicit_bash_pipefail(self):
+        for name in ("rust", "quickwit-tests"):
+            for step in re.split(r"(?m)^      - ", job(name))[1:]:
+                if "| tee " in step:
+                    self.assertIn("shell: bash", step)
