@@ -497,12 +497,21 @@ fn page_row(
         ..globe::Item::default()
     };
     let mut row = globe::page_row(&item, &canvas, &lines, facts, at);
+    let printed_page = match series {
+        Series::Annals => {
+            parse::printed_page_with_running_heads(None, &lines, &["HISTORY OF CONGRESS"])
+        }
+        Series::Register => {
+            parse::printed_page_with_running_heads(None, &lines, &["DEBATES IN CONGRESS"])
+        }
+    };
     row.doc_id = format!("lcg-{}_p{seq}", volume.unit);
     row.source = SOURCE.to_owned();
     row.series = series.as_str().to_owned();
     row.unit_id = volume.unit.clone();
     row.unit_ordinal = unit_ordinal(volume);
     row.package_id = Some(volume.unit.clone());
+    row.printed_page = printed_page.clone();
     row.citation = Some(format!(
         "{}, {} Cong., {} Sess., Vol. {}, Part {}{}",
         match series {
@@ -513,9 +522,7 @@ fn page_row(
         ordinal(volume.session),
         ordinal(volume.volume),
         ordinal(volume.bound_part),
-        parse::printed_page(None, &lines)
-            .map(|p| format!(" {p}"))
-            .unwrap_or_default()
+        printed_page.map(|p| format!(" {p}")).unwrap_or_default()
     ));
     row.ocr_source = if page.ocr_engine.is_some() {
         "usnm-tesseract"
@@ -754,6 +761,43 @@ mod tests {
         assert_eq!(house.date, NaiveDate::from_ymd_opt(1823, 1, 10).unwrap());
         assert_eq!(house.date_from, "heading");
         assert_eq!(house.chamber, Some(parse::Chamber::House));
+    }
+
+    #[test]
+    fn manual_page_rows_keep_annals_and_register_printed_pages() {
+        let volume = &Manifest::parse(&fixture(), Series::Annals).unwrap().volumes[0];
+        let facts = globe::PageFacts {
+            date: volume.first_day,
+            date_from: "session",
+            chamber: None,
+            appendix: false,
+        };
+        for (series, head, citation) in [
+            (
+                Series::Annals,
+                "28 HISTORY OF CONGRESS.",
+                "Annals, 1st Cong., 1st Sess., Vol. 1st, Part 1st 28",
+            ),
+            (
+                Series::Register,
+                "28 DEBATES IN CONGRESS.",
+                "Register of Debates, 1st Cong., 1st Sess., Vol. 1st, Part 1st 28",
+            ),
+        ] {
+            let row = page_row(
+                volume,
+                series,
+                1,
+                PageText {
+                    text: head.to_owned(),
+                    ocr_engine: None,
+                },
+                &facts,
+                Utc::now(),
+            );
+            assert_eq!(row.printed_page.as_deref(), Some("28"));
+            assert_eq!(row.citation.as_deref(), Some(citation));
+        }
     }
 
     #[cfg(unix)]
