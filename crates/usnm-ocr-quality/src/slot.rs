@@ -47,7 +47,7 @@ pub use gpu_cache::{
     DEFAULT_MESA_SHADER_CACHE_MAX_SIZE,
 };
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use gpu_cache::ensure_writable_cache_pair;
 
 pub const JOB_FILE: &str = "quality.json";
