@@ -196,7 +196,7 @@ JPEG2000 is most of its CPU, and its Container Apps job has 4 vCPUs (#850; the w
 removed with the Azure server and does not run on-prem yet). The scan-fetch
 container holds the masters, so `scripts/ocr-node/quality-jpeg-cache.py` does the same
 conversion there and puts each page in the hand-off container as
-`quality-jpeg/l-q75-r1/<blob name>.jpg`. Blob metadata carries the master's sha256, the
+`quality-jpeg/l-q75-r2/<blob name>.jpg`. Blob metadata carries the master's sha256, the
 recipe, the Pillow version, the size and the JPEG's sha256. The runner takes the cached page
 when it is there and converts the master otherwise. A grayscale JPEG master under 40 Mpx and
 20 MB goes to workers as it is, so the cache skips it.
@@ -216,10 +216,10 @@ cache converts some pages another shard has passed, but none a shard still needs
 its end, or the cache falls behind as shards move into tier 1.
 
 The output must be byte for byte what the runner would make, so the script runs only on
-Pillow 11.3.0 from the same pinned wheel as the bridge image
+Pillow 13.0.0 from the same pinned wheel as the bridge image
 (`contrib-compute/images/bridge/Containerfile`). It checks each master against its fetcher
 sidecar, never replaces a blob (one there with another size stops the run), and lists done
-pages in `/var/lib/usnm-quality-jpeg-cache/done.txt`. The exchange account's lifecycle policy deletes cached
+pages in `/var/lib/usnm-quality-jpeg-cache/done-l-q75-r2.txt`. The exchange account's lifecycle policy deletes cached
 pages 30 days after they are written (`expire-boinc-handoff-quality-jpeg`, #915), so a wave
 must bundle a page within 30 days of its conversion or the runner converts the master again. `usnm-quality-jpeg-cache.service`
 runs it under a dynamic user in the `himds` group, for the Arc token. It runs at low CPU
@@ -227,6 +227,16 @@ and I/O priority, so the prefetcher and the scan server go first. CT 211 has 6 c
 8 GiB for it (`WORKERS=6`), from 19 October 2026: with 2 cores it converted about 1.1
 pages a second, slower than the runner used pages, and with 6 about 2.9. This keeps the
 work on pve-big rather than adding vCPUs to the runner's job.
+
+The Pillow 13 upgrade uses recipe `l-q75-r2` and a recipe-specific completion
+ledger so it neither reads Pillow 11's `l-q75-r1` blobs nor skips pages listed
+in the old `done.txt`. Do not copy the old ledger into the new one. Stop the
+converters before upgrading their wheel and code, rebuild their page lists
+without the old completion ledger, and deploy the matching bridge and runner
+before resuming. Check for a `JPEG_CACHE_PREFIX` override: the new runner must
+use `quality-jpeg/l-q75-r2/`. Existing submitted work and r1 blobs stay unchanged;
+retain the old image and scripts for rollback. When replacing an extracted wheel,
+extract into a fresh directory, not over the old Pillow installation.
 
 ```sh
 # On the operator's machine: the page list from the wave's manifest. --start-after s=k
@@ -237,13 +247,13 @@ work on pve-big rather than adding vCPUs to the runner's job.
 # keep-files.txt: in CT 211, cd /tank/ocr/scans && find keep -type f (all formats: JPEG-only
 # batches still take their turn in the rotation; only JPEG2000 pages are listed).
 scripts/ocr-node/quality-jpeg-list.py --manifest wave9_manifest.parquet --out pages.txt \
-  --damage-index damage.txt --keep-files keep-files.txt --done done.txt \
+  --damage-index damage.txt --keep-files keep-files.txt --done done-l-q75-r2.txt \
   --current 0=dlc_friendship_ver03,1=dlc_eject_ver01,...
 # In CT 211, as root: the pinned Pillow wheel, as the bridge image installs it.
 d=/usr/local/lib/usnm-quality-jpeg-cache
 mkdir -p "$d/py" && cd "$d"
-curl -fsSLo pillow.whl https://files.pythonhosted.org/packages/f2/2f/d7675ecae6c43e9f12aa8d58b6012683b20b6edfbdac7abcb4e6af7a3784/pillow-11.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-echo "106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e5f  pillow.whl" | sha256sum -c
+curl -fsSLo pillow.whl https://files.pythonhosted.org/packages/36/46/f509b74787f40ce0627501089d630b2c741b63b244c1f40b640b3b01e181/pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+echo "a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c  pillow.whl" | sha256sum -c
 python3 -m zipfile -e pillow.whl py && rm pillow.whl
 install -m 0755 /root/quality-jpeg-cache.py "$d/"
 install -m 0644 /root/usnm-quality-jpeg-cache.service /etc/systemd/system/
@@ -262,9 +272,9 @@ group: its member count sets the nodes' LoC pacing. The second is the host on th
 (`USNM_SCANSERVE_ALLOW` in CT 211's `/etc/usnm/scanserve.env`, then restart
 `usnm-scanserve`). The third is its own share of the list: split the pages that remain
 alternately, so the two hosts never convert the same page and both stay just ahead of
-the runner. Install the Pillow 11.3.0 wheel for the host's Python, as above (cp313:
-`pillow-11.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`, sha256
-`13f87d581e71d9189ab21fe0efb5a23e9f28552d5be6979e84001d3b8505abe8`). Before starting it,
+the runner. Install the Pillow 13.0.0 wheel for the host's Python, as above (cp313:
+`pillow-13.0.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl`, sha256
+`5f56499c1a74d2b862beb0c33b8016f99d095858455df9d21583bbbc1c15b582`). Before starting it,
 check that a few of its JPEGs match CT 211's byte for byte (`--what-if` prints the size;
 compare the sha256 of pages both convert).
 
@@ -273,7 +283,7 @@ compare the sha256 of pages both convert).
 # it runs would leave pages queued on both hosts.
 pct exec 211 -- systemctl stop usnm-quality-jpeg-cache
 # On the operator's machine: what CT 211 hasn't done, split alternately.
-grep -vxFf <(cut -f1 done.txt) pages.txt > left.txt
+grep -vxFf <(cut -f1 done-l-q75-r2.txt) pages.txt > left.txt
 awk 'NR % 2 == 1' left.txt > pages-ct211.txt
 awk 'NR % 2 == 0' left.txt > pages-remote.txt
 az ad group member add --group <USNM_ONPREM_GROUP> --member-id <host's Arc principal id>
@@ -284,6 +294,6 @@ install -m 0644 usnm-quality-jpeg-cache-remote.service /etc/systemd/system/
 printf 'ACCOUNT=<exchange account>\nLIST=%s/pages.txt\nWORKERS=6\nSCAN_SERVER=http://<scan-fetch host>:8380\n' \
   /usr/local/lib/usnm-quality-jpeg-cache > /etc/usnm/quality-jpeg-cache.env
 systemctl daemon-reload && systemctl start usnm-quality-jpeg-cache-remote
-# Later lists: append each host's half to its pages.txt and restart it; done.txt skips
+# Later lists: append each host's half to its pages.txt and restart it; done-l-q75-r2.txt skips
 # what it has done.
 ```

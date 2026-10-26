@@ -58,8 +58,8 @@ COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-j
 # (BLN600's zip is AES encrypted), usnm-ocr-survey, and the committed lock it must reproduce.
 # Pillow is the CI's version (ci.yml), from its manylinux wheel, checked by sha256: the crops
 # are JPEG re-encodes, so the tar's bytes depend on it.
-ARG PILLOW_URL=https://files.pythonhosted.org/packages/f2/2f/d7675ecae6c43e9f12aa8d58b6012683b20b6edfbdac7abcb4e6af7a3784/pillow-11.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-ARG PILLOW_SHA256=106064daa23a745510dabce1d84f29137a37224831d88eb4ce94bb187b1d7e5f
+ARG PILLOW_URL=https://files.pythonhosted.org/packages/36/46/f509b74787f40ce0627501089d630b2c741b63b244c1f40b640b3b01e181/pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+ARG PILLOW_SHA256=a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libarchive-tools \
  && rm -rf /var/lib/apt/lists/* \

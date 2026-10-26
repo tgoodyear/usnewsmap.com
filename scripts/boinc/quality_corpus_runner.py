@@ -2,7 +2,7 @@
 """
 Distributed full-corpus (3,011 batches / 23.77M pages) staging + submission + rolling collection/purge
 runner for usnm_quality 1.3 across all 5 native BOINC platforms.
-Runs inside usnm-boinc-quality-caj-prod (Python 3.11 + Pillow 11.3.0 + /usr/local/bin/usnm-boinc).
+Runs inside usnm-boinc-quality-caj-prod (Python 3.11 + Pillow 13.0.0 + /usr/local/bin/usnm-boinc).
 """
 import contextlib
 import fcntl
@@ -263,7 +263,7 @@ def download_bytes(url, retries=4):
             time.sleep(1 + attempt)
 
 
-JPEG_CACHE_PREFIX = os.environ.get("JPEG_CACHE_PREFIX", "quality-jpeg/l-q75-r1/")
+JPEG_CACHE_PREFIX = os.environ.get("JPEG_CACHE_PREFIX", "quality-jpeg/l-q75-r2/")
 
 
 def cached_page(blob_name):
@@ -1789,7 +1789,7 @@ def load_batch_records(
 ):
     """
     Loads unbundled page records for (batch, bv):
-    - pass_mode == "jpeg_cached": only pages already pre-converted in quality-jpeg/l-q75-r1/keep/<batch>/
+    - pass_mode == "jpeg_cached": only pages already pre-converted in quality-jpeg/l-q75-r2/keep/<batch>/
     - pass_mode == "archived": only pages with archived blobs in usnmscansstprodffapzy/scans/keep/<batch>/
     - pass_mode == "loc_fallback": all remaining unbundled pages (including LoC tile.loc.gov fallback)
     """

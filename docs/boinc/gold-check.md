@@ -397,12 +397,24 @@ The step (`contrib-compute/images/bridge/gold-bundle.sh`):
    sha256 is refused. One run at a time: a second run stops on the lock
    `<share>/gold/.build-v1.lock`.
 
-The image carries Pillow 11.3.0 (the CI's version, from its manylinux wheel)
-and bsdtar for BLN600's AES zip. The crops are JPEG re-encodes, so a different
-Pillow or libjpeg could change the tar's bytes, and step 4 would catch that.
+New bridge builds carry Pillow 13.0.0 (the CI's version, from its hash-pinned
+manylinux wheel) and bsdtar for BLN600's AES zip. The v1 recipe previously
+used Pillow 11.3.0. The crops are JPEG re-encodes, so a different Pillow or
+libjpeg could change the tar's bytes, and step 4 must still catch that.
 UNVERIFIED: that this build reproduces the lock byte for byte (it was built on
 another machine), and how long the run takes on the share. The job allows six
 hours (`--wait-mins 360` on the host).
+
+**Pillow 13 rollout gate:** before deploying the new bridge, rebuild from the
+original source cache in an isolated share and compare the resulting lock,
+tar and manifest with v1. The early return for an already installed bundle
+is not evidence of reproducibility. Do not change the v1 lock or the checks
+above to make a changed build pass. If the artifacts differ, review and
+publish a new bundle version, with its own lock, campaign and expected
+hashes, before enabling its builder or issuing new calibration work.
+Existing v1 bundles, submitted jobs and trust records retain their original
+identities. Upgrading the image does not itself deploy it or change any
+campaign's calibration.
 
 Then run `gold-prepare` as above.
 

@@ -27,7 +27,7 @@ pages.txt has one blob name per line (keep/<batch>/<lccn>/<date>/<ed>/<seq>.jp2)
 in the order to convert. Each master's sha256 must match its fetcher sidecar
 (<scan>.json). A blob already there with the same size is left as it is, so a
 second run is safe; one with another size stops the run. Done pages are listed
-in <state>/done.txt and skipped next time; a master that can't be read or
+in <state>/done-<recipe>.txt and skipped next time; a master that can't be read or
 doesn't match its sidecar is reported and left for the next run. Signs in as the container's Arc
 machine identity, which has the hand-off writer role (read and write, no
 delete) and nothing else there.
@@ -47,8 +47,8 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ProcessPoolExecutor
 
-RECIPE = "l-q75-r1"
-PILLOW_VERSION = "11.3.0"
+RECIPE = "l-q75-r2"
+PILLOW_VERSION = "13.0.0"
 CONTAINER = "boinc-handoff"
 PREFIX = f"quality-jpeg/{RECIPE}/"
 IMDS = "http://localhost:40342/metadata/identity/oauth2/token"
@@ -250,7 +250,7 @@ def main(argv=None):
     if pil != PILLOW_VERSION:
         sys.exit(f"error: Pillow {pil}; the runner's recipe is pinned to {PILLOW_VERSION}")
     os.makedirs(a.state, exist_ok=True)
-    ledger = os.path.join(a.state, "done.txt")
+    ledger = os.path.join(a.state, f"done-{RECIPE}.txt")
     done = set()
     if os.path.exists(ledger):
         with open(ledger) as f:

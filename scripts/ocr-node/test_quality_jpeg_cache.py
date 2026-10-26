@@ -43,6 +43,27 @@ class Resp:
 
 
 class Recipe(unittest.TestCase):
+    def test_feeder_and_cache_make_identical_page_jpegs(self):
+        path = os.path.join(HERE, "../boinc/onprem/quality-feed/quality_feed.py")
+        spec = importlib.util.spec_from_file_location("quality_feed", path)
+        feed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(feed)
+        for fmt, size, mode in (("JPEG2000", (4100, 60), "RGB"),
+                                ("JPEG2000", (300, 200), "L"),
+                                ("JPEG", (100, 80), "RGB"),
+                                ("JPEG", (100, 80), "L")):
+            with self.subTest(fmt=fmt, size=size, mode=mode):
+                pixels = bytes((i * 37) % 256 for i in range(size[0] * size[1] * len(mode)))
+                img = Image.frombytes(mode, size, pixels)
+                raw = encode(img, fmt)
+                data, dimensions = feed.page_jpeg(raw, fmt == "JPEG2000")
+                cached = qjc.convert(raw, fmt == "JPEG2000")
+                if cached is None:
+                    self.assertEqual(data, raw)
+                    self.assertEqual(dimensions, size)
+                else:
+                    self.assertEqual((data, *dimensions), cached)
+
     def test_jp2_is_grayscale_q75(self):
         raw = encode(Image.new("RGB", (300, 200), (200, 100, 50)), "JPEG2000")
         data, w, h = qjc.convert(raw, True)
@@ -114,10 +135,10 @@ class Masters(unittest.TestCase):
         _, outcome, _ = qjc.process(self.root, "keep/b/1.jp2", blobs=blobs)
         self.assertEqual(outcome, "uploaded")
         blob, data, meta = blobs.put_once.call_args.args
-        self.assertEqual(blob, "quality-jpeg/l-q75-r1/keep/b/1.jp2.jpg")
+        self.assertEqual(blob, "quality-jpeg/l-q75-r2/keep/b/1.jp2.jpg")
         self.assertEqual(meta["source_sha256"], hashlib.sha256(self.raw).hexdigest())
         self.assertEqual(meta["sha256"], hashlib.sha256(data).hexdigest())
-        self.assertEqual((meta["width"], meta["height"], meta["recipe"]), (64, 48, "l-q75-r1"))
+        self.assertEqual((meta["width"], meta["height"], meta["recipe"]), (64, 48, "l-q75-r2"))
 
     def test_storage_refusal_is_picklable(self):
         import pickle
@@ -140,8 +161,22 @@ class Masters(unittest.TestCase):
             qjc.main(["--account", "acct123", "--list", lst, "--scans-root", self.root, "--state", state])
             qjc.main(["--account", "acct123", "--list", lst, "--scans-root", self.root, "--state", state])
         self.assertEqual(put.call_count, 1)
-        with open(f"{state}/done.txt") as f:
+        with open(f"{state}/done-{qjc.RECIPE}.txt") as f:
             self.assertEqual(f.read(), "keep/b/1.jp2\tuploaded\n")
+
+    def test_new_recipe_does_not_skip_pages_in_old_ledgers(self):
+        lst, state = f"{self.root}/list.txt", f"{self.root}/state"
+        with open(lst, "w") as f:
+            f.write("keep/b/1.jp2\n")
+        os.makedirs(state)
+        for ledger in ("done.txt", "done-l-q75-r1.txt"):
+            with open(f"{state}/{ledger}", "w") as f:
+                f.write("keep/b/1.jp2\tuploaded\n")
+        with mock.patch.object(qjc, "ProcessPoolExecutor", FakePool), \
+                mock.patch.object(qjc.Blobs, "put_once", return_value=True) as put:
+            qjc.main(["--account", "acct123", "--list", lst, "--scans-root", self.root, "--state", state])
+        self.assertEqual(put.call_count, 1)
+        self.assertTrue(put.call_args.args[0].startswith("quality-jpeg/l-q75-r2/"))
 
 
 class ScanServer(unittest.TestCase):
