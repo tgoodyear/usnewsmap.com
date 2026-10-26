@@ -1,5 +1,7 @@
 # Interim Report: BOINC OCR Quality Scoring (`usnm_quality`) & Vision-Language Crop Transcription (`usnm_qwen`) Pilot
 
+Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
+
 **Date:** 2026-10-16  
 **Status:** Multi-platform BOINC pilot and Wave 4 complete (6 `usnm_quality` campaigns collected across 111 canonical workunits / 225 replica tasks with 0 failures; `usnm_qwen` multi-host quorum and `crops.parquet` join verified; 3-dataset gold calibration, Qwen3-VL 2B/8B calibration, and 6-language / 7-reader Wave 4 analysis complete).  
 **Related Issues & PRs:** [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#531](https://github.com/tgoodyear/usnewsmap.com/issues/531), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559); PRs [#503](https://github.com/tgoodyear/usnewsmap.com/pull/503), [#505](https://github.com/tgoodyear/usnewsmap.com/pull/505), [#506](https://github.com/tgoodyear/usnewsmap.com/pull/506), [#534](https://github.com/tgoodyear/usnewsmap.com/pull/534), [#544](https://github.com/tgoodyear/usnewsmap.com/pull/544), [#580](https://github.com/tgoodyear/usnewsmap.com/pull/580), [#646](https://github.com/tgoodyear/usnewsmap.com/pull/646).
@@ -96,9 +98,9 @@ During live onboarding of our Proxmox VE containers (`CT 100` and `CT 101` on `p
 
 ### 3.1 BOINC Fleet Telemetry (`work-volume`, `quality-summary`, `qwen-summary`)
 Preserved raw outputs:
-- [`data/telemetry/work-volume-20261016.txt`](data/telemetry/work-volume-20261016.txt)
-- [`data/telemetry/quality-summary-20261016.txt`](data/telemetry/quality-summary-20261016.txt)
-- [`data/telemetry/qwen-summary-20261016.txt`](data/telemetry/qwen-summary-20261016.txt)
+- [`data/telemetry/work-volume-20261016.txt`](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz)
+- [`data/telemetry/quality-summary-20261016.txt`](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz)
+- [`data/telemetry/qwen-summary-20261016.txt`](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz)
 
 | Application | Execution Targets Verified | Total Results | Validated (`ok`) | Client Errors | Canonical Workunits | Quorum Agreement | Elapsed p50 (s) | Elapsed p90 (s) | CPU p50 (s) | Peak RSS p90 (MB) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -139,7 +141,7 @@ Across all 43 unique pages in `v1-pilot-3r`, `v1-wave1`, and `v1-wave3` (mean di
   - `abs(skew_deg)`: Mean **`0.112°`**, max **`1.000°`**, mean `line_height_px`: **`43.1 px`**, mean `columns`: **`6.1`**.
 
 #### Joined `usnm_qwen` Crop Analysis in `v1-wave2` (`crops.parquet`)
-In [`data/campaigns/v1-wave2/crops.csv`](data/campaigns/v1-wave2/crops.csv), two pages completed full two-host BOINC quorum (`qwen3-vl-2b-q8` on `CT 100` and `CT 101`) and were joined by `quality-collect`:
+In [`data/campaigns/v1-wave2/crops.csv`](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), two pages completed full two-host BOINC quorum (`qwen3-vl-2b-q8` on `CT 100` and `CT 101`) and were joined by `quality-collect`:
 1. **`sn82014761_1866-08-04_ed-1_seq-4`** (an 1866 post-Civil War page with 2 existing readers: `loc` and `ours-tesseract`):
    - Without `usnm_qwen`, this page had only 2 readers (`loc` and `ours-tesseract`), so its page-level 3-cornered hat was **undetermined** (`NULL`).
    - With `usnm_qwen` (`vlm`), all 12 crops had **3 independent readers** (`loc`, `ours-tesseract`, `vlm`), yielding a determined crop-level 3-cornered hat:

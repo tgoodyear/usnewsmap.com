@@ -1,5 +1,7 @@
 # Latest LoC OCR: release inventory and the fixed benchmark coverage gap
 
+Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
+
 Measured 18 October 2026 for [#809](https://github.com/tgoodyear/usnewsmap.com/issues/809)
 and [#810](https://github.com/tgoodyear/usnewsmap.com/issues/810).
 This is an initial inventory and adapter implementation, **not a completed accuracy comparison**.
@@ -9,7 +11,7 @@ No running worker, queue, production index, or published benchmark was changed.
 
 The [improved-text guide](https://guides.loc.gov/chronicling-america/improved-text),
 modified 1 October, lists the following coverage. The
-[machine-readable snapshot](../data/loc-refreshed-2026-10-18.json) contains every
+[machine-readable snapshot](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) contains every
 listed batch, its publication date, title/year hints, denominators and source hashes.
 
 | Measurement                                            | Result                                                             |
@@ -38,7 +40,7 @@ identities.** Do not apply the latest code tag to all published OCR.
 Downloaded only `fu_eleven_ver02.tar.bz2` (56,026,786 bytes), verified against
 [LoC metadata](https://chroniclingamerica.loc.gov/data/ocr/metadata/fu_eleven_ver02.tar.bz2.json).
 The archive was inspected without extracting its paths.
-The [sample summary](../data/loc-refreshed-sample-2026-10-18.json) pins the metadata,
+The [sample summary](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) pins the metadata,
 archive, per-page inventory digest and exact repair-page matches.
 
 | Measurement                                           | Result                                                             |

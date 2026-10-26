@@ -24,6 +24,7 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 | 12  | [On-prem OCR pipeline](12-onprem-ocr-pipeline.md)                    | Re-reading badly OCR'd pages on local machines (#296): what is built, the flows from queue to search, languages, next pull requests                                  |
 | 13  | [OCR engines](13-ocr-engines.md)                                     | The contract between the on-prem OCR worker and its engines, how engines run and are routed, provenance, the survey's use of the same images, and an engine catalog  |
 | 14  | [Corpus data and processing flow](14-corpus-data-flow.md)            | Artifact locations, page/run metadata, reconciled status, bounded queries and the local pipeline dashboard                                                           |
+| --  | [Image reuse](image-reuse.md)                                        | Phase 3 design: licensed models, leakage controls, calibrated duplicate matching and a zero-fetch offline evaluation boundary                                        |
 | ADR | [Architecture decision records](adr/)                                | Short records of each major decision and the alternatives rejected                                                                                                   |
 
 The [technical notes](../notes/README.md) are dated write-ups of the work, with its measurements; they record what was true at the time, while these documents describe how the system stands now.

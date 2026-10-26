@@ -81,6 +81,12 @@ BOINC builds. BOINC build workflows exclude `**/*.md` after their positive path
 patterns; mixed code-and-doc changes still build. CodeQL selects no languages
 for Markdown-only changes.
 
+`python3 scripts/ci/check-doc-links.py` checks local Markdown file destinations
+and heading anchors under `docs/`, without network requests. The Markdown and
+web jobs run it alongside formatting. Data removed from the tree must link to
+its published release asset, with extraction instructions and a verified member
+list, rather than to a nonexistent local file.
+
 Run `npm run format` in `web/` before pushing. It runs Prettier (pinned in `web/package.json`) from the repository root, with the root's `.prettierrc.json` and `.prettierignore`: it formats the web app's TypeScript, JavaScript, CSS, HTML and JSON, except `package-lock.json`, build output and `web/src/examples.json`, which keeps each example's view on one line. It also formats every Markdown file in the repository except the reports under `docs/reports/`, because pandoc builds their PDFs and sizes table columns from the Markdown's layout. In Markdown it keeps prose lines and code blocks as written. It leaves data JSON outside `web/`, YAML, Bicep, Rust and Python alone. `npm run format:check` is the check CI runs. Where Prettier's layout would change how a Markdown block renders, wrap the block in `<!-- prettier-ignore-start -->` and `<!-- prettier-ignore-end -->`.
 
 ### What CI runs

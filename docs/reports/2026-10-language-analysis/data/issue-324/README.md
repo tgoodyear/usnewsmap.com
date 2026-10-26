@@ -1,5 +1,7 @@
 # Japanese release count reconciliation (#324)
 
+Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
+
 Read-only reconciliation completed on 18 October 2026 (UTC), for
 `pages-v20261006-2`, built from commit
 `df5ab03d9397d13790a4b8d31d007cf03fb5a4e3`.
@@ -13,9 +15,9 @@ characters) and 2 `empty` results (zero characters)**. All 109 have a non-null
 text field. The historical rule was `ok && printed.is_some()`; `ok` meant
 `text_status == "ok"`.
 
-[excluded-pages.csv](excluded-pages.csv) contains every excluded page ID,
+[excluded-pages.csv](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) contains every excluded page ID,
 status, text length, source batch, selected timestamp, selected part path,
-and that part's historical SHA-256. [summary.json](summary.json) contains
+and that part's historical SHA-256. [summary.json](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) contains
 counts and hashes, including the digest of the reconstructed eligible IDs
 (sorted by doc_id, UTF-8, one per line with a final newline).
 

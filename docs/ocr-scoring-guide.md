@@ -113,7 +113,7 @@ Run your engine on each `image` and write one JSON object per line:
 {"crop_id": "pub-bln600-001", "text": "The text your engine read,\nwith its line breaks.\n"}
 ```
 
-Both keys are required. A crop with no row in your file is left out of your engine's score, and the `crops` column then shows fewer crops than the set has (see [Comparing engines](#comparing-engines)). Rows whose `crop_id` isn't in `crops.jsonl` are ignored.
+Both keys are required. A crop with no row in your file is left out of your engine's score, and the `crops` column then shows fewer crops than the set has (see [Reading results](#reading-results)). Rows whose `crop_id` isn't in `crops.jsonl` are ignored.
 
 `score` applies the same normalization to your text and to the transcription: Unicode NFC, a hyphen at the end of a line joined to the next line, and every run of whitespace and line breaks turned into one space. So:
 

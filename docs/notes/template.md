@@ -1,6 +1,6 @@
 # Title: what the work was, in a few words
 
-**Status:** shipped in pages-vYYYYMMDD-n / measured, not shipped / superseded by [a later note](…) · **Date:** Month YYYY · **Measured on:** the index version, commit or sample every number below comes from · **Code:** the crates, scripts and design sections · **Issues:** #…
+**Status:** shipped in pages-vYYYYMMDD-n / measured, not shipped / superseded by a later note (link it here) · **Date:** Month YYYY · **Measured on:** the index version, commit or sample every number below comes from · **Code:** the crates, scripts and design sections · **Issues:** #…
 
 ## The question
 
