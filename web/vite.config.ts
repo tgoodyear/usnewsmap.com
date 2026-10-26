@@ -2,6 +2,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
+import examples from "./src/examples.json" with { type: "json" };
+import { searchPath } from "./src/route";
 
 // In development the API runs locally (`cargo run -p usnm-api`) and is
 // proxied, so the app talks to a same-origin `/v1`. Production builds set
@@ -16,6 +18,18 @@ export default defineConfig({
       transform(text, id) {
         if (!id.endsWith("/ocr/engines/engines.toml")) return;
         return { code: `export default ${JSON.stringify(parse(text))}`, map: null };
+      },
+    },
+    {
+      name: "search-sitemap",
+      generateBundle() {
+        const paths = ["/", "/privacy", ...new Set(examples.map(({ view }) => searchPath(view.q)))];
+        const source =
+          '<?xml version="1.0" encoding="UTF-8"?>\n' +
+          '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+          paths.map((path) => `  <url><loc>https://usnewsmap.com${path}</loc></url>`).join("\n") +
+          "\n</urlset>\n";
+        this.emitFile({ type: "asset", fileName: "sitemap.xml", source });
       },
     },
   ],

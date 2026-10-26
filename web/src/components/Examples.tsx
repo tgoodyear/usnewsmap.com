@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { examplesShown, type Example } from "../examples";
+import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
+import { searchPath } from "../route";
 
 interface Props {
   /** Every example, in the order to show them. */
@@ -7,7 +9,7 @@ interface Props {
   /** How many times "Show more" has been pressed. */
   clicks: number;
   onMore: () => void;
-  onPick: (example: Example) => void;
+  onPick: (view: ViewState) => void;
 }
 
 /**
@@ -27,20 +29,32 @@ export function Examples({ order, clicks, onMore, onPick }: Props) {
     const index = focusFrom.current;
     if (index === null) return;
     focusFrom.current = null;
-    list.current?.children[index]?.querySelector("button")?.focus();
+    list.current?.children[index]?.querySelector("a")?.focus();
   }, [shown.length]);
 
   return (
     <>
       <ul className="examples" id="examples" ref={list}>
-        {shown.map((ex) => (
-          <li key={ex.id}>
-            <button type="button" className="example" onClick={() => onPick(ex)}>
-              <strong>{ex.title}</strong>
-              <span>{ex.blurb}</span>
-            </button>
-          </li>
-        ))}
+        {shown.map((ex) => {
+          const view = { ...DEFAULTS, ...ex.view };
+          return (
+            <li key={ex.id}>
+              <a
+                href={viewUrl(view)}
+                className="example"
+                onClick={(event) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  onPick(view);
+                }}
+              >
+                <strong>{ex.title}</strong>
+                <span>{ex.blurb}</span>
+              </a>
+              <a href={searchPath(ex.view.q ?? "")}>Search all dates</a>
+            </li>
+          );
+        })}
       </ul>
       {left > 0 && (
         <p className="examples__more">

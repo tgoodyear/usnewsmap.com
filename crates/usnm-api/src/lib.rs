@@ -369,7 +369,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route_layer(middleware::from_fn(telemetry::record_route))
         .with_state(state.clone());
     if let Some(dir) = site {
-        router = router.fallback_service(site::router(dir));
+        router = router.fallback_service(site::router(dir, state.clone()));
     }
     // Inside the header layers, so redirects carry the security headers too.
     router = router.layer(middleware::from_fn_with_state(
