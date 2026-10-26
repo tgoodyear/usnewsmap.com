@@ -154,12 +154,69 @@ fn is_app_page(path: &str) -> bool {
         )
 }
 
+/// The readable path segment for a plain exact-phrase search: lowercase
+/// words joined by hyphens, quotes dropped. Search is case-insensitive and a
+/// hyphen inside a word is a word break, so it means what the query did.
+/// `None` when the query has syntax or a mode other than the default, where
+/// quotes matter. Mirrors `slugFor` in web/src/route.ts.
+fn slug_for(q: &str, phrase_mode: bool) -> Option<String> {
+    if !phrase_mode {
+        return None;
+    }
+    let mut text = q.trim();
+    match text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        Some(inner) if text.len() >= 2 && !inner.contains('"') => text = inner,
+        _ if text
+            .split_whitespace()
+            .any(|w| matches!(w, "AND" | "OR" | "NOT") || w.starts_with('-')) =>
+        {
+            return None
+        }
+        _ => {}
+    }
+    let words: Vec<String> = text
+        .split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            // Lowercasing can add a combining mark (İ), which splits a token.
+            let lower = w.to_lowercase();
+            lower.chars().all(char::is_alphanumeric).then_some(lower)
+        })
+        .collect::<Option<_>>()?;
+    (!words.is_empty()).then(|| words.join("-"))
+}
+
+fn is_slug(q: &str) -> bool {
+    !q.is_empty()
+        && q.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_alphanumeric() && !c.is_uppercase())
+        })
+}
+
 fn search_path(q: &str) -> String {
+    search_path_in_mode(q, true)
+}
+
+fn search_path_in_mode(q: &str, phrase_mode: bool) -> String {
+    if let Some(slug) = slug_for(q, phrase_mode) {
+        let encoded: String = form_urlencoded::byte_serialize(slug.as_bytes()).collect();
+        return format!("/search/{encoded}");
+    }
     let encoded: String = form_urlencoded::byte_serialize(q.as_bytes()).collect();
     format!("/search/{}", encoded.replace('+', "%20"))
 }
 
+/// The query a search path names, read in the default phrase mode.
 fn search_query(path: &str) -> Option<String> {
+    search_query_in_mode(path, true)
+}
+
+/// Outside phrase mode a hyphen is kept: `well-known` is an adjacent phrase
+/// there only as one word, and its terms would otherwise become separate ANDs.
+fn search_query_in_mode(path: &str, phrase_mode: bool) -> Option<String> {
     let segment = path.strip_prefix("/search/")?;
     let segment = segment.strip_suffix('/').unwrap_or(segment);
     if segment.is_empty() || segment.contains('/') {
@@ -176,15 +233,19 @@ fn search_query(path: &str) -> Option<String> {
             b
         });
     }
-    let q = String::from_utf8(bytes).ok()?;
+    let mut q = String::from_utf8(bytes).ok()?;
+    if phrase_mode && is_slug(&q) {
+        q = q.replace('-', " ");
+    }
     (q.encode_utf16().count() <= 256 && q != "." && q != "..").then_some(q)
 }
 
 fn search_redirect(uri: &Uri) -> Option<String> {
     let mut params: Vec<_> = form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()).collect();
+    let phrase_mode = params.iter().all(|(k, v)| k != "mode" || v == "phrase");
     let q = match uri.path().trim_end_matches('/') {
         "" | "/index.html" => params.iter().find(|(k, _)| k == "q")?.1.to_string(),
-        _ => search_query(uri.path())?,
+        _ => search_query_in_mode(uri.path(), phrase_mode)?,
     };
     if q.is_empty() || q == "." || q == ".." || q.encode_utf16().count() > 256 {
         return None;
@@ -193,7 +254,7 @@ fn search_redirect(uri: &Uri) -> Option<String> {
     let query = form_urlencoded::Serializer::new(String::new())
         .extend_pairs(params)
         .finish();
-    let path = search_path(&q);
+    let path = search_path_in_mode(&q, phrase_mode);
     let target = if query.is_empty() {
         path
     } else {
@@ -351,7 +412,7 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
     let version = snap.refdata.version().to_owned();
     let key = snap
         .refdata
-        .search_key("site-preview-v4", &canonical, &search.query);
+        .search_key("site-preview-v5", &canonical, &search.query);
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
@@ -373,7 +434,7 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
                 .then_with(|| b.place_id.cmp(&a.place_id))
         });
         let Some(top) = top else {
-            return Ok("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned());
+            return Ok("<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned());
         };
         let place = rd
             .place(&top.place_id)
@@ -391,7 +452,7 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
                 .hits(&indexes, &search.query, &search.filters, &page),
         )
         .await?;
-        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        let mut html = format!("<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
         for hit in result.hits {
             let title = rd
                 .titles
@@ -850,13 +911,13 @@ mod tests {
 
     #[test]
     fn search_paths_preserve_syntax_and_legacy_filters() {
-        for q in ["gold", "\"cross of gold\"", "a/b + c? & # = %", "日本"] {
+        for q in ["gold", "gold OR silver", "a/b + c? & # = %", "日本"] {
             assert_eq!(search_query(&search_path(q)).as_deref(), Some(q));
         }
         let to = |uri: &str| search_redirect(&uri.parse().unwrap());
         assert_eq!(
             to("/?q=%22cross+of+gold%22&from=1896-06-01&tab=table").as_deref(),
-            Some("/search/%22cross%20of%20gold%22?from=1896-06-01&tab=table")
+            Some("/search/cross-of-gold?from=1896-06-01&tab=table")
         );
         assert_eq!(to("/index.html/?q=a%2Bb").as_deref(), Some("/search/a%2Bb"));
         assert_eq!(to("/search/gold?q=silver").as_deref(), Some("/search/gold"));
@@ -870,6 +931,57 @@ mod tests {
         ] {
             assert_eq!(to(uri), None, "{uri}");
         }
+    }
+
+    #[test]
+    fn plain_phrases_get_readable_lowercase_paths() {
+        for (q, path) in [
+            ("\"Fifteenth Amendment\"", "/search/fifteenth-amendment"),
+            ("Know-Nothing", "/search/know-nothing"),
+            ("gold", "/search/gold"),
+            ("\"gold OR silver\"", "/search/gold-or-silver"),
+            ("gold OR silver", "/search/gold%20OR%20silver"),
+            ("-gold", "/search/-gold"),
+            (
+                "\"Uncle Tom's Cabin\"",
+                "/search/%22Uncle%20Tom%27s%20Cabin%22",
+            ),
+        ] {
+            assert_eq!(search_path(q), path, "{q}");
+        }
+        assert_eq!(
+            search_query("/search/fifteenth-amendment").as_deref(),
+            Some("fifteenth amendment")
+        );
+        assert_eq!(
+            search_query("/search/Know-Nothing").as_deref(),
+            Some("Know-Nothing")
+        );
+        assert_eq!(
+            search_path_in_mode("\"cross of gold\"", false),
+            "/search/%22cross%20of%20gold%22"
+        );
+
+        let to = |uri: &str| search_redirect(&uri.parse().unwrap());
+        assert_eq!(
+            to("/search/%22Fifteenth%20Amendment%22").as_deref(),
+            Some("/search/fifteenth-amendment")
+        );
+        assert_eq!(
+            to("/search/Know-Nothing?tab=table").as_deref(),
+            Some("/search/know-nothing?tab=table")
+        );
+        assert_eq!(to("/search/fifteenth-amendment"), None);
+        assert_eq!(to("/search/%22cross%20of%20gold%22?mode=all"), None,);
+        assert_eq!(to("/search/%E6%97%A5%E6%9C%AC"), None);
+        assert_eq!(search_path("İstanbul"), "/search/%C4%B0stanbul");
+        assert_eq!(to("/search/%C4%B0stanbul"), None);
+        assert_eq!(search_path("日本"), "/search/%E6%97%A5%E6%9C%AC");
+        assert_eq!(to("/search/well-known?mode=all"), None);
+        assert_eq!(
+            search_query_in_mode("/search/well-known", false).as_deref(),
+            Some("well-known")
+        );
     }
 
     #[test]

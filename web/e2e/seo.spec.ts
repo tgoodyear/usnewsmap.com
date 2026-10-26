@@ -82,11 +82,11 @@ test("curated searches expose top-city results and homepage links without JavaSc
   try {
     await page.goto(`${process.env.PW_BASE_URL}/`);
     const home = page.getByRole("navigation", { name: "Common newspaper searches" });
-    await expect(home.getByRole("link", { name: '"cross of gold"', exact: true })).toHaveAttribute(
+    await expect(home.getByRole("link", { name: "cross of gold", exact: true })).toHaveAttribute(
       "href",
-      "/search/%22cross%20of%20gold%22",
+      "/search/cross-of-gold",
     );
-    await home.getByRole("link", { name: '"cross of gold"', exact: true }).click();
+    await home.getByRole("link", { name: "cross of gold", exact: true }).click();
     const samples = page.getByRole("region", { name: "Sample results" });
     await expect(samples).toContainText("has the most hits");
     await expect(samples.locator("ol > li")).toHaveCount(10);
@@ -257,7 +257,7 @@ test.describe("what the API tells crawlers", () => {
   test("legacy searches redirect without losing filters", async ({ request }) => {
     const res = await request.get("/?q=%22cross+of+gold%22&tab=table", { maxRedirects: 0 });
     expect(res.status()).toBe(301);
-    expect(res.headers()["location"]).toBe("/search/%22cross%20of%20gold%22?tab=table");
+    expect(res.headers()["location"]).toBe("/search/cross-of-gold?tab=table");
   });
 
   test("the privacy page is indexable and names itself in the head", async ({ request }) => {

@@ -651,7 +651,7 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     let robots = header::HeaderName::from_static("x-robots-tag");
     for uri in [
         "/search/x",
-        "/search/%22cross%20of%20gold%22?from=1896-06-01",
+        "/search/cross-of-gold?from=1896-06-01",
         "/datasets",
     ] {
         let (status, h, _) = get_site(&s, uri, None).await;
@@ -686,7 +686,7 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     for (uri, location) in [
         (
             "/?q=%22cross+of+gold%22&tab=table",
-            "/search/%22cross%20of%20gold%22?tab=table",
+            "/search/cross-of-gold?tab=table",
         ),
         ("/index.html?q=gold", "/search/gold"),
         ("/search/whigs/", "/search/whigs"),
@@ -695,14 +695,13 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{uri}");
         assert_eq!(header_str(&headers, header::LOCATION), location);
     }
-    let uri = "/search/%22cross%20of%20gold%22";
+    let uri = "/search/cross-of-gold";
     let (status, headers, body) = get_site(&s, uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
-    assert!(body.contains("<title>&quot;cross of gold&quot; · US News Map</title>"));
-    assert!(body.contains(
-        r#"<link rel="canonical" href="https://usnewsmap.com/search/%22cross%20of%20gold%22" />"#
-    ));
+    assert!(body.contains("<title>cross of gold · US News Map</title>"));
+    assert!(body
+        .contains(r#"<link rel="canonical" href="https://usnewsmap.com/search/cross-of-gold" />"#));
     assert!(body.contains("matching newspaper pages"));
     assert!(body.contains("1896-07-18"), "{body}");
     assert!(
@@ -753,7 +752,7 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
     backend.add_index("pages-base-fixture", vec![doc]);
     backend.add_index("pages-delta-fixture-1", vec![]);
     let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
-    let (status, _, body) = get_site(&s, "/search/%22cross%20of%20gold%22", None).await;
+    let (status, _, body) = get_site(&s, "/search/cross-of-gold", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
         body.contains("Reader&#39;s &amp; Co. &lt;archive&gt;"),
