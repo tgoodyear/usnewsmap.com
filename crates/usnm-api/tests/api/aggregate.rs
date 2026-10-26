@@ -113,6 +113,21 @@ async fn problems_for_bad_requests() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// One state's pages: `/v1/hits` with a single `state` and no place, as many
+/// as the search's total for that state; two states are refused.
+#[tokio::test]
+async fn hits_list_one_states_pages() {
+    let s = state_with(None).await;
+    let (status, _, agg) = get(&s, "/v1/aggregate?q=gold&state=IL").await;
+    assert_eq!(status, StatusCode::OK, "{agg}");
+    let (status, _, hits) = get(&s, "/v1/hits?q=gold&state=IL").await;
+    assert_eq!(status, StatusCode::OK, "{hits}");
+    assert_eq!(hits["total"], agg["total"]["hits"]);
+    assert!(hits["place"].is_null());
+    let (status, _, _) = get(&s, "/v1/hits?q=gold&state=IL,NY").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 /// Wildcards inside words (#124): counted like the reference, one cache key
 /// per spelling, marked in snippets, and refused with a 400 where they
 /// can't work.

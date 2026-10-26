@@ -164,6 +164,12 @@ describe("Congress source (#229)", () => {
     expect(parseView("?q=gold&source=senate").source).toBe("news");
   });
 
+  it("keeps a selected state as the place, and refuses a malformed one", () => {
+    expect(parseView("?q=gold&place=state:PA").place).toBe("state:PA");
+    expect(parseView("?q=gold&place=state:pa").place).toBe("");
+    expect(parseView("?q=gold&place=state:PAX").place).toBe("");
+  });
+
   it("drops the state and language filters, which a Congress search hides", () => {
     // From a shared link they would filter out every Congress page, unseen.
     const v = parseView("?q=gold&source=congress&state=GA&lang=ger");

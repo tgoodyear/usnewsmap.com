@@ -49,7 +49,7 @@ import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
 import { congressFeature } from "./lib/congress";
 import { SampleResults, topPlace } from "./components/SampleResults";
-import { prepareStates, stateTotals, stateBreaks } from "./engine/states";
+import { STATE_NAMES, prepareStates, stateTotals, stateBreaks } from "./engine/states";
 import { StatesLegend, StatesTable } from "./components/StatesPanel";
 
 const MapView = lazy(() => import("./components/MapView"));
@@ -492,6 +492,7 @@ export function App() {
     const hi = t + 1 >= count ? Infinity : dayNumber(bucketStart(unit, from, t + 1)) - 1;
     return new Map(daysSource.places.map((p) => [p.id, exactMedian(p.days, p.hits, lo, hi)]));
   }, [data, daysSource, medianStatus, view.win, t, count]);
+  const statePanel = view.place.startsWith("state:") ? view.place.slice(6) : null;
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
   const problem: Problem | null =
@@ -599,10 +600,18 @@ export function App() {
           params={params}
           version={version}
           placeId={view.place}
-          placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
+          placeName={
+            statePanel
+              ? (STATE_NAMES[statePanel] ?? statePanel)
+              : (selected?.name ?? features.get(view.place)?.properties.name ?? view.place)
+          }
           sort={view.sort}
           onSort={(sort) => setView({ sort })}
-          windowHits={selected?.value ?? 0}
+          windowHits={
+            statePanel
+              ? visible.reduce((a, r) => (r.state === statePanel ? a + Math.max(r.value, 0) : a), 0)
+              : (selected?.value ?? 0)
+          }
           note={norm === "skew" ? skewRows.find((r) => r.id === view.place)?.skew : undefined}
           synthetic={data.synthetic}
           onClose={() => setView({ place: "", sort: "oldest" })}

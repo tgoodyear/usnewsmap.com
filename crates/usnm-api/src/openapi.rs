@@ -99,12 +99,12 @@ fn search_keys(extra: &[&'static str]) -> Vec<&'static str> {
 fn ops(config: &Config, gen: &mut SchemaGenerator) -> Vec<Op> {
     let day = "`public, max-age=86400` with `v` (and an `ETag`), `public, max-age=300` without";
     let hits = if config.browse_pages {
-        "Pages for `place`, or for a single `lccn`, with snippets and a link to the page at the \
+        "Pages for `place`, a single `lccn` or a single `state`, with snippets and a link to the page at the \
          Library of Congress, oldest first by default. When `next_cursor` isn't null, pass it as \
          `cursor` for the next page. Without `q`, a single `lccn` lists that newspaper's pages \
          by date."
     } else {
-        "Pages for `place`, or for a single `lccn`, with snippets and a link to the page at the \
+        "Pages for `place`, a single `lccn` or a single `state`, with snippets and a link to the page at the \
          Library of Congress, oldest first by default. When `next_cursor` isn't null, pass it as \
          `cursor` for the next page."
     };
@@ -437,7 +437,7 @@ fn param(path: &str, name: &str, config: &Config) -> Value {
         "place" => query_param(
             "place",
             false,
-            "A place id from `/v1/places`. `/v1/hits` needs `place` or a single `lccn`.".into(),
+            "A place id from `/v1/places`. `/v1/hits` needs `place`, a single `lccn` or a single `state`.".into(),
             json!({ "type": "string" }),
         ),
         "cursor" => query_param(
