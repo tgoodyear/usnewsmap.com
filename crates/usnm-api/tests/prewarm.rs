@@ -71,6 +71,10 @@ struct Counting {
     reject: bool,
     /// The query of each summary call (one per search), in order.
     searched: std::sync::Mutex<Vec<String>>,
+    block_at: AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    prepared: tokio::sync::Notify,
 }
 
 impl Counting {
@@ -83,6 +87,10 @@ impl Counting {
             fail_first: AtomicUsize::new(0),
             reject: false,
             searched: Default::default(),
+            block_at: AtomicUsize::new(usize::MAX),
+            entered: Default::default(),
+            release: Default::default(),
+            prepared: Default::default(),
         })
     }
 
@@ -95,6 +103,10 @@ impl Counting {
             fail_first: AtomicUsize::new(0),
             reject: true,
             searched: Default::default(),
+            block_at: AtomicUsize::new(usize::MAX),
+            entered: Default::default(),
+            release: Default::default(),
+            prepared: Default::default(),
         })
     }
 
@@ -108,8 +120,16 @@ impl Counting {
         self.calls.load(Ordering::SeqCst)
     }
 
+    fn block_at(&self, call: usize) {
+        self.block_at.store(call, Ordering::SeqCst);
+    }
+
     async fn enter(&self) -> Result<(), SearchError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.block_at.load(Ordering::SeqCst) == call {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
         tokio::time::sleep(self.delay).await;
         if self.fail {
             return Err(SearchError::Backend("engine down".into()));
@@ -147,6 +167,10 @@ impl Counting {
 
 #[async_trait]
 impl SearchBackend for Counting {
+    async fn prepare(&self, _i: &IndexSet) -> Result<(), SearchError> {
+        self.prepared.notify_one();
+        Ok(())
+    }
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
@@ -309,7 +333,7 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
 }
 
 fn persisted(dir: &Path, version: &str) -> usize {
-    std::fs::read_dir(dir.join(version).join("f7"))
+    std::fs::read_dir(dir.join(version).join("f8"))
         .map(|d| d.count())
         .unwrap_or(0)
 }
@@ -1352,28 +1376,59 @@ async fn a_searcher_restart_during_a_publish_warms_the_new_version_after_it() {
 async fn a_publish_during_a_restart_warm_up_waits_its_turn() {
     // Never dropped: the publish runs after the restart's warm-up, and a
     // restart seen meanwhile runs after the publish.
-    let backend = Counting::new(Duration::from_millis(2), false);
+    async fn stage(signal: &tokio::sync::Notify) {
+        tokio::time::timeout(Duration::from_secs(10), signal.notified())
+            .await
+            .expect("warm-up stage did not arrive");
+    }
+    let backend = Counting::new(Duration::ZERO, false);
     let (dir, state, run) = cold_state("publish-at-restart", backend.clone()).await;
+    // Consume the notification from loading fixture-v1.
+    stage(&backend.prepared).await;
     publish_v2(&dir);
 
     let before = backend.calls();
+    backend.block_at(before);
     let first = spawn_searcher_warm_up(state.clone()).expect("a restart's warm-up");
+    stage(&backend.entered).await;
     let publish = tokio::spawn({
         let state = state.clone();
         async move { reload_if_changed(&state).await }
     });
-    // The publish loads the new version, then waits behind the warm-up.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(backend.calls() - before < run, "the warm-up ended too soon");
+    // prepare returns without yielding; on this single-thread runtime the
+    // publish therefore reaches the warm-up queue before this task resumes.
+    stage(&backend.prepared).await;
+    assert_eq!(
+        backend.calls(),
+        before + 1,
+        "the restart is held in its first search"
+    );
     let second = spawn_searcher_warm_up(state.clone()).expect("queued behind the publish");
     assert!(spawn_searcher_warm_up(state.clone()).is_none());
+
+    backend.block_at(before + run);
+    backend.release.notify_one();
     first.await.unwrap();
-    let restarted = backend.calls() - before;
-    assert!(runs_done(restarted, run, 1), "{restarted} of {run}");
+    stage(&backend.entered).await;
+    assert_eq!(
+        backend.calls() - before,
+        run + 1,
+        "only the first restart completed"
+    );
     assert_eq!(state.snapshot.load().refdata.version(), "fixture-v1");
+
+    backend.block_at(before + 2 * run);
+    backend.release.notify_one();
     assert_eq!(publish.await.unwrap(), Ok(true));
-    let published = backend.calls() - before;
-    assert!(runs_done(published, run, 2), "{published} of {run}");
+    stage(&backend.entered).await;
+    assert_eq!(
+        backend.calls() - before,
+        2 * run + 1,
+        "restart, then publish"
+    );
+    assert_eq!(state.snapshot.load().refdata.version(), "fixture-v2");
+
+    backend.release.notify_one();
     second.await.unwrap();
     assert_eq!(
         backend.calls() - before,

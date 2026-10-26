@@ -1,5 +1,5 @@
-# The OCR dashboard (12 §12.2.5) in its container on pve-big
-# (scripts/ocr-node/ocrdash-ct.sh installs it): a read-only page of the scan
+# The OCR dashboard (12 §12.2.5), deployed by infrastructure tooling:
+# a read-only page of the scan
 # fetch, the OCR nodes and the Proxmox hosts, for the LAN only. Its settings
 # are in /etc/usnm/ocrdash.env; the copies of the workers' journals are in
 # /var/lib/usnm-ocrdash.

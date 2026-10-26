@@ -4,7 +4,7 @@
 //!
 //! - **Gazetteer** (`catalog/gazetteer/us-places.csv`, compiled in): the
 //!   Census Bureau's national places file reduced to `state,name,lat,lon`
-//!   by `scripts/build-gazetteer.py` (public domain, a US government work).
+//!   by `scripts/data/build-gazetteer.py` (public domain, a US government work).
 //! - **Aliases** (`catalog/overrides/place-aliases.json`, compiled in):
 //!   misspellings and renamed towns, `[{added, from, reason, ref, source, state, to}]`, applied to
 //!   a city before it is keyed.
@@ -20,14 +20,16 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context};
+use chrono::NaiveDate;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::audit::{self, Audit, Earlier};
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 use usnm_core::names::{State, STATES};
 
-/// `state,name,lat,lon`, from `scripts/build-gazetteer.py`.
+/// `state,name,lat,lon`, from `scripts/data/build-gazetteer.py`.
 pub const GAZETTEER: &str = include_str!("../../../catalog/gazetteer/us-places.csv");
 
 /// `[{added, from, reason, ref, source, state, to}]` (with the audit fields
@@ -36,8 +38,9 @@ pub const GAZETTEER: &str = include_str!("../../../catalog/gazetteer/us-places.c
 pub const PLACE_ALIASES: &str = include_str!("../../../catalog/overrides/place-aliases.json");
 
 /// `[{added, city, lccn, reason, ref, source, state}]` (with the audit
-/// fields of [`crate::audit`]): the place of a title whose LoC record lists
-/// several, kept in git and compiled in.
+/// fields of [`crate::audit`], and `places` for a title that moved): the
+/// place of a title whose LoC record lists several, kept in git and
+/// compiled in.
 pub const TITLE_PLACES: &str = include_str!("../../../catalog/overrides/title-places.json");
 
 /// Real place names with a hyphen between capitalized words, which the
@@ -262,9 +265,15 @@ pub struct TitlePlace {
     /// Its earlier versions, oldest first (with `updated`).
     #[serde(default)]
     pub history: Vec<Earlier>,
-    /// The city, as a title's place label would name it.
+    /// The city, as a title's place label would name it. For a title with
+    /// `places`, the one of them where most of its pages were published.
     pub city: String,
     pub lccn: String,
+    /// The title's places by the dates of its pages (#1066), for a paper
+    /// that moved and whose record dates the moves: at least two, oldest
+    /// first, without gaps. Empty for a title in one place.
+    #[serde(default)]
+    pub places: Vec<DatedPlace>,
     /// Why: where the paper was published, and when.
     pub reason: String,
     /// The issue or pull request where it was decided.
@@ -277,6 +286,22 @@ pub struct TitlePlace {
     /// When it last changed (`YYYY-MM-DD`), with `history`.
     #[serde(default)]
     pub updated: Option<String>,
+}
+
+/// A place of a [`TitlePlace`] for the pages dated from `from` to `to`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatedPlace {
+    /// The city, as a title's place label would name it.
+    pub city: String,
+    /// The first day (`YYYY-MM-DD`); absent for the first place.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Postal code, e.g. `ME`.
+    pub state: String,
+    /// The last day (`YYYY-MM-DD`); absent for the last place.
+    #[serde(default)]
+    pub to: Option<String>,
 }
 
 impl TitlePlace {
@@ -292,14 +317,108 @@ impl TitlePlace {
     }
 }
 
+/// A place a title is in for the pages dated from `from` to `to`
+/// (`places` of a [`TitlePlace`], checked).
+#[derive(Clone)]
+pub struct TitlePeriod {
+    /// The city, as a title's place label would name it.
+    pub city: String,
+    pub state: &'static State,
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    /// Whether it is the place the entry's own `city` and `state` name: the
+    /// title's place (where most of its pages were published).
+    pub main: bool,
+}
+
+impl std::fmt::Debug for TitlePeriod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TitlePeriod")
+            .field("city", &self.city)
+            .field("state", &self.state.code)
+            .field("from", &self.from)
+            .field("to", &self.to)
+            .field("main", &self.main)
+            .finish()
+    }
+}
+
+/// An earlier version's `places`: none (`null`) or a list that is valid as
+/// an entry's own is.
+fn dated_places_value(v: &Value) -> bool {
+    v.is_null()
+        || serde_json::from_value::<Vec<DatedPlace>>(v.clone())
+            .is_ok_and(|places| title_periods(&places).is_ok())
+}
+
+/// The places of a title by date, checked: at least two, each with a city
+/// in a known state, in date order from the title's start to its end, with
+/// each starting the day after the one before it ends.
+fn title_periods(places: &[DatedPlace]) -> anyhow::Result<Vec<TitlePeriod>> {
+    if places.len() < 2 {
+        bail!("`places` lists fewer than two places: a title in one place has none");
+    }
+    let mut out: Vec<TitlePeriod> = Vec::new();
+    for (i, p) in places.iter().enumerate() {
+        let at = || format!("places[{i}]");
+        if p.city.trim().is_empty() {
+            bail!("{}: no city", at());
+        }
+        let state = STATES
+            .iter()
+            .find(|s| s.code == p.state)
+            .with_context(|| format!("{}: unknown state `{}`", at(), p.state))?;
+        let day = |d: &Option<String>| d.as_deref().map(audit::date).transpose().with_context(at);
+        let (from, to) = (day(&p.from)?, day(&p.to)?);
+        let (first, last) = (i == 0, i + 1 == places.len());
+        match (first, from, last, to) {
+            (true, Some(_), _, _) => bail!("{}: the first place has no `from`", at()),
+            (false, None, _, _) => bail!("{}: no `from`", at()),
+            (_, _, true, Some(_)) => bail!("{}: the last place has no `to`", at()),
+            (_, _, false, None) => bail!("{}: no `to`", at()),
+            _ => {}
+        }
+        if from.zip(to).is_some_and(|(f, t)| f > t) {
+            bail!("{}: `from` is after `to`", at());
+        }
+        if let Some(before) = out.last() {
+            if before.to.and_then(|t| t.succ_opt()) != from {
+                bail!(
+                    "{}: doesn't start the day after the place before it ends",
+                    at()
+                );
+            }
+        }
+        out.push(TitlePeriod {
+            city: p.city.trim().to_owned(),
+            state,
+            from,
+            to,
+            main: false,
+        });
+    }
+    Ok(out)
+}
+
 /// The gazetteer, the aliases and the per-title places: what `geocode`
 /// uses to place, key and name places.
 #[derive(Debug, Default)]
 pub struct Geo {
     pub gazetteer: Gazetteer,
     aliases: HashMap<(&'static str, String), String>,
-    /// LCCN → (city, state code).
-    titles: HashMap<String, (String, &'static str)>,
+    /// LCCN → what `title-places.json` says about the title.
+    titles: HashMap<String, TitleEntry>,
+}
+
+/// A title's entry of [`TITLE_PLACES`], checked.
+#[derive(Debug)]
+struct TitleEntry {
+    city: String,
+    /// The state's postal code.
+    state: &'static str,
+    /// The title's places by date, oldest first; empty for a title in one
+    /// place.
+    periods: Vec<TitlePeriod>,
 }
 
 /// A title's city, cleaned and keyed.
@@ -383,11 +502,16 @@ impl Geo {
     }
 
     /// Place these titles in the city and state given, whatever their LoC
-    /// record lists. Each LCCN once, in a known state, with an audit trail.
+    /// record lists, by date where the entry gives places. Each LCCN once,
+    /// in a known state, with an audit trail.
     pub fn with_title_places(mut self, entries: &[TitlePlace]) -> anyhow::Result<Self> {
         for t in entries {
             t.audit()
-                .check(&[("city", audit::text), ("state", audit::state)])
+                .check(&[
+                    ("city", audit::text),
+                    ("places", dated_places_value),
+                    ("state", audit::state),
+                ])
                 .with_context(|| format!("title place `{}`", t.lccn))?;
             let state = STATES.iter().find(|s| s.code == t.state).with_context(|| {
                 format!("title place `{}`: unknown state `{}`", t.lccn, t.state)
@@ -397,21 +521,51 @@ impl Geo {
             {
                 bail!("title place `{}`: an invalid LCCN or no city", t.lccn);
             }
-            if self
-                .titles
-                .insert(t.lccn.clone(), (t.city.trim().to_owned(), state.code))
-                .is_some()
-            {
+            let mut periods = if t.places.is_empty() {
+                Vec::new()
+            } else {
+                title_periods(&t.places).with_context(|| format!("title place `{}`", t.lccn))?
+            };
+            // The title's place is one of the places by date.
+            if !periods.is_empty() {
+                let city = t.city.trim();
+                let Some(main) = periods
+                    .iter_mut()
+                    .find(|p| p.city == city && p.state.code == state.code)
+                else {
+                    bail!(
+                        "title place `{}`: `{}, {}` isn't one of its `places`",
+                        t.lccn,
+                        t.city,
+                        t.state
+                    );
+                };
+                main.main = true;
+            }
+            let entry = TitleEntry {
+                city: t.city.trim().to_owned(),
+                state: state.code,
+                periods,
+            };
+            if self.titles.insert(t.lccn.clone(), entry).is_some() {
                 bail!("title place `{}` is listed twice", t.lccn);
             }
         }
         Ok(self)
     }
 
-    /// The city and state a title is placed in by [`TITLE_PLACES`].
+    /// The city and state a title is placed in by [`TITLE_PLACES`]: for a
+    /// title with places by date, the one where most of its pages were
+    /// published.
     pub fn title_place(&self, lccn: &str) -> Option<(&str, &'static State)> {
-        let (city, code) = self.titles.get(lccn)?;
-        Some((city.as_str(), STATES.iter().find(|s| s.code == *code)?))
+        let e = self.titles.get(lccn)?;
+        Some((e.city.as_str(), STATES.iter().find(|s| s.code == e.state)?))
+    }
+
+    /// The places [`TITLE_PLACES`] gives a title by the dates of its pages,
+    /// oldest first; none for a title that has no entry or is in one place.
+    pub fn title_periods(&self, lccn: &str) -> &[TitlePeriod] {
+        self.titles.get(lccn).map_or(&[], |e| e.periods.as_slice())
     }
 
     /// Whether the gazetteer has `city` in `state` (as "X" or "X City").
@@ -909,6 +1063,25 @@ mod tests {
         let geo = Geo::compiled().unwrap();
         let (city, state) = geo.title_place("sn84024055").unwrap();
         assert_eq!((city, state.code), ("Chicago", "IL"));
+        assert!(geo.title_periods("sn84024055").is_empty(), "one place");
+        assert!(geo.title_periods("sn1").is_empty(), "no entry");
+        // The Morning Star was in Limerick, Maine, to the day before it
+        // moved to Dover, N.H., which is its own place (#1066).
+        let (city, state) = geo.title_place("sn84024361").unwrap();
+        assert_eq!((city, state.code), ("Dover", "NH"));
+        let seen: Vec<_> = geo
+            .title_periods("sn84024361")
+            .iter()
+            .map(|p| (p.city.as_str(), p.state.code, p.from, p.to, p.main))
+            .collect();
+        let day = |s: &str| Some(s.parse::<NaiveDate>().unwrap());
+        assert_eq!(
+            seen,
+            [
+                ("Limerick", "ME", None, day("1833-11-13"), false),
+                ("Dover", "NH", day("1833-11-14"), None, true),
+            ]
+        );
         let bad = |json: &str| {
             let t: Vec<TitlePlace> = serde_json::from_str(json).unwrap();
             Geo::default().with_title_places(&t).is_err()
@@ -959,6 +1132,92 @@ mod tests {
             r#"[{"city": "X", "lccn": "sn1", "note": "Why.", "state": "IL"}]"#
         )
         .is_err());
+    }
+
+    /// An entry for sn1, Dover being its own place, with `places` as given.
+    fn dated_entry(places: &str, extra: &str) -> String {
+        format!(
+            r#"[{{"added": "2026-10-24", "city": "Dover", "lccn": "sn1", "places": {places}, "reason": "Why.", "ref": 1066, "source": "Where from.", "state": "NH"{extra}}}]"#
+        )
+    }
+
+    const LIMERICK: &str = r#"{"city": "Limerick", "state": "ME", "to": "1833-11-13"}"#;
+    const DOVER: &str = r#"{"city": "Dover", "from": "1833-11-14", "state": "NH"}"#;
+
+    #[test]
+    fn a_title_can_have_places_by_date() {
+        let load = |json: &str| {
+            let t: Vec<TitlePlace> = serde_json::from_str(json).unwrap();
+            Geo::default().with_title_places(&t)
+        };
+        let geo = load(&dated_entry(&format!("[{LIMERICK}, {DOVER}]"), "")).unwrap();
+        let (city, state) = geo.title_place("sn1").unwrap();
+        assert_eq!((city, state.code), ("Dover", "NH"));
+        let periods = geo.title_periods("sn1");
+        assert_eq!(periods.len(), 2);
+        assert_eq!(
+            (periods[0].main, periods[1].main),
+            (false, true),
+            "the entry's city and state mark its own place"
+        );
+        let bad = |places: &str| load(&dated_entry(places, "")).is_err();
+        // One place isn't places by date.
+        assert!(bad(&format!("[{DOVER}]")));
+        // The first has no start, the last no end, the ones between both.
+        assert!(bad(&format!(
+            r#"[{}, {DOVER}]"#,
+            LIMERICK.replace(r#""city""#, r#""from": "1826-05-01", "city""#)
+        )));
+        assert!(bad(&format!(
+            "[{LIMERICK}, {}]",
+            DOVER.replace(r#""state""#, r#""to": "1857-04-01", "state""#)
+        )));
+        assert!(bad(&format!(
+            "[{}, {DOVER}]",
+            LIMERICK.replace(r#", "to": "1833-11-13""#, "")
+        )));
+        // No gap and no overlap between one and the next.
+        assert!(bad(&format!(
+            "[{LIMERICK}, {}]",
+            DOVER.replace("1833-11-14", "1833-11-15")
+        )));
+        assert!(bad(&format!(
+            "[{LIMERICK}, {}]",
+            DOVER.replace("1833-11-14", "1833-11-13")
+        )));
+        // Real dates, in order, in known states, each with a city.
+        assert!(bad(&format!(
+            "[{}, {DOVER}]",
+            LIMERICK.replace("1833-11-13", "1833-13-13")
+        )));
+        assert!(bad(&format!("[{}, {DOVER}]", LIMERICK.replace("ME", "XX"))));
+        assert!(bad(&format!(
+            "[{}, {DOVER}]",
+            LIMERICK.replace("Limerick", " ")
+        )));
+        // The entry's own city and state are one of the places.
+        assert!(bad(&format!(
+            "[{LIMERICK}, {}]",
+            DOVER.replace("Dover", "Rochester")
+        )));
+        assert!(bad(&format!("[{LIMERICK}, {}]", DOVER.replace("NH", "ME"))));
+        // Unknown keys are refused, as in every entry.
+        assert!(serde_json::from_str::<Vec<TitlePlace>>(&dated_entry(
+            &format!("[{LIMERICK}, {}]", DOVER.replace("state", "when")),
+            ""
+        ))
+        .is_err());
+        // An earlier version without places says so, or lists its own.
+        let earlier = |places: &str| {
+            let history = format!(
+                r#", "history": [{{"places": {places}, "reason": "Old.", "ref": 235, "source": "Old.", "updated": "2026-10-24"}}], "updated": "2026-10-25""#
+            );
+            load(&dated_entry(&format!("[{LIMERICK}, {DOVER}]"), &history)).is_ok()
+        };
+        assert!(earlier("null"));
+        assert!(earlier(&format!("[{LIMERICK}, {DOVER}]")));
+        assert!(!earlier(&format!("[{DOVER}]")));
+        assert!(!earlier(r#""Dover""#));
     }
 
     #[test]

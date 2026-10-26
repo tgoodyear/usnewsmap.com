@@ -1,0 +1,45 @@
+{
+  "by_source": {
+    "govinfo": {
+      "cer": 0.1295288446586845,
+      "cer_missing_as_empty": 0.1295288446586845,
+      "edits": 833,
+      "missing": 0,
+      "missing_chars": 0,
+      "reference_chars": 6431,
+      "samples": 3,
+      "scored": 3
+    }
+  },
+  "release": "v0.0.0",
+  "rows": [
+    {
+      "edits": 22,
+      "id": "serialset/00033-009-0042-p03",
+      "reference_chars": 1938
+    },
+    {
+      "edits": 781,
+      "id": "serialset/00033-020-0053-p05",
+      "reference_chars": 1557
+    },
+    {
+      "edits": 30,
+      "id": "serialset/13993-021-0183-p03",
+      "reference_chars": 2936
+    }
+  ],
+  "rule": "raw-v1",
+  "subset": "serialset/verified-3",
+  "subset_digest": "a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9",
+  "total": {
+    "cer": 0.1295288446586845,
+    "cer_missing_as_empty": 0.1295288446586845,
+    "edits": 833,
+    "missing": 0,
+    "missing_chars": 0,
+    "reference_chars": 6431,
+    "samples": 3,
+    "scored": 3
+  }
+}

@@ -3,9 +3,10 @@
 //! Quickwit 0.9.1 has no fuzzy matching (05 §5.5.1), so an OCR-tolerant
 //! search names the misreadings it accepts instead: the word and each
 //! spelling one confusion in [`CONFUSIONS`] away from it, sent to the engine
-//! as one term set (`text:IN [...]`). The table is fixed and short, so the
-//! same word always has the same spellings (and a search one cache key),
-//! and the set stays small: a word of the English list has at most 16.
+//! `OR`ed (`(text:goid OR text:golcl OR text:gold)`). The table is fixed and
+//! short, so the same word always has the same spellings (and a search one
+//! cache key), and the set stays small: a word of the English list has at
+//! most 16.
 
 use std::collections::BTreeSet;
 
@@ -70,11 +71,11 @@ pub fn is_variant(word: &str, token: &str) -> bool {
         })
 }
 
-/// Whether `word` is one index token that a term set can hold as typed:
+/// Whether `word` is one index token that the engine can be sent as typed:
 /// letters and digits only. [`Analyzer::V1`](crate::text::Analyzer::V1)
 /// can fold one word into several (`ﷺ` into four Arabic words) or into
-/// text with a separator (`½` into `1⁄2`), which the engine's term-set
-/// syntax would split into several members, and no page token equals.
+/// text with a separator (`½` into `1⁄2`), which the engine would split
+/// into several words, and no page token equals.
 /// Its [`variants`] only swap ASCII letters, so they are one token too.
 pub fn is_one_token(word: &str) -> bool {
     !word.is_empty() && word.chars().all(char::is_alphanumeric)

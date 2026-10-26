@@ -1,5 +1,5 @@
 //! Title records kept outside an environment's lifetime (#275;
-//! docs/operations.md, "Dev environment lifecycle").
+//! docs/operations/environments-and-deploys.md, "Dev environment lifecycle").
 //!
 //! titles-sync's record cache (`raw/titles.json` in the reference store) and
 //! the catalog geocode built from it (`catalog/titles.json`,
@@ -9,7 +9,7 @@
 //! the archival account's `raw` container in dev), titles-sync also saves
 //! all three as one create-only copy, `titles/{time}.json`
 //! ([`save`]), and a new environment starts from the newest copy
-//! ([`seed`], `usnm-ingest titles-seed`, which scripts/stand-up.sh runs).
+//! ([`seed`], `usnm-ingest titles-seed`, which scripts/azure/stand-up.sh runs).
 //!
 //! The catalog goes with the records because titles-sync skips titles the
 //! catalog already has, and geocode keeps the catalog's ordinals and place

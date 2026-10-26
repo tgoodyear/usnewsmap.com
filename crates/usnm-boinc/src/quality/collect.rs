@@ -47,12 +47,14 @@ use usnm_ocr_contract::{
     },
     qwen::{self, Crop, Readings},
 };
-use usnm_ocr_quality::{align, crops, hat, report::round6};
+use usnm_ocr_quality::{align, crops, hat, page_hat, report::round6};
 
 /// Our ALTO of the page, when a reader of `texts.json` is marked `alto`.
 pub const OURS_FILE: &str = "ours.xml";
 /// The vision-language reader's name in the crop tables.
 pub const VLM: &str = "vlm";
+/// Surya's name in the crop tables, read from its crop units (#968).
+pub const SURYA: &str = crate::surya::collect::CROP_READER;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -63,6 +65,10 @@ pub struct Options {
     /// The `usnm_qwen` staging root and spool.
     pub qwen_root: PathBuf,
     pub qwen_spool: PathBuf,
+    /// The `usnm_surya` staging root and spool (#968): its crop units'
+    /// texts join `crops.parquet` as the reader `surya`.
+    pub surya_root: Option<PathBuf>,
+    pub surya_spool: Option<PathBuf>,
     /// A local directory instead of the curated store.
     pub out_dir: Option<PathBuf>,
     pub curated_url: Option<String>,
@@ -74,12 +80,17 @@ pub struct Summary {
     pub pages: usize,
     /// Of them, pages whose `usnm_qwen` readings are in too.
     pub with_readings: usize,
+    /// Of them, pages with at least one Surya crop text in.
+    pub with_surya: usize,
     /// Submitted units with no canonical result yet.
     pub pending: usize,
     /// Units BOINC gave up on.
     pub failed: usize,
     pub page_rows: usize,
     pub crop_rows: usize,
+    /// Pages whose rows keep the unit's version 1 hat: the texts were not
+    /// readable, or LoC's text needs the ALTO's and no ALTO is staged.
+    pub hat_v1_kept: usize,
 }
 
 /// One row of `crops.parquet`.
@@ -122,6 +133,8 @@ pub struct CropInputs<'a> {
     pub readers: &'a [String],
     pub crops: &'a [Crop],
     pub readings: Option<&'a Readings>,
+    /// Surya's read of each crop, by crop id, from the crop units.
+    pub surya: Option<&'a BTreeMap<String, crate::surya::collect::CropText>>,
 }
 
 /// One reader's text in a crop box and the region of its text that
@@ -164,14 +177,26 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
                 region.and_then(|g| g.legibility.clone()),
             ));
         }
+        // Surya's read of the crop, from its crop unit, when it read it.
+        // Crop ids are ordinal (`c01`, ...), so the unit's box and stratum
+        // must be this crop's: a Surya campaign cut with another seed or
+        // ALTO is not joined.
+        let surya = inputs
+            .surya
+            .and_then(|m| m.get(crop.id.as_str()))
+            .filter(|c| c.rect == crop.rect && c.stratum == crop.stratum)
+            .filter(|c| !c.text.trim().is_empty());
         // The crop-level hat over the readers with text in the box, plus
-        // the vision-language reading.
+        // the vision-language reading and Surya's.
         let mut hat_members: Vec<(&str, &str)> = texts
             .iter()
             .filter_map(|(n, t, _, _, _)| t.as_deref().map(|t| (n.as_str(), t)))
             .collect();
         if let Some(v) = vlm {
             hat_members.push((VLM, &v.text));
+        }
+        if let Some(c) = surya {
+            hat_members.push((SURYA, &c.text));
         }
         let mut pairs = Vec::new();
         for i in 0..hat_members.len() {
@@ -237,6 +262,17 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             row.hat_est_cer = est(VLM);
             rows.push(row);
         }
+        if let Some(c) = surya {
+            let mut row = base(SURYA.into());
+            row.text = Some(c.text.clone());
+            if let Some(v) = vlm {
+                let p = align::pair(&c.text, &v.text);
+                row.cer_vs_vlm = Some(round6(p.cer_a));
+                row.dice_vs_vlm = Some(round6(p.dice));
+            }
+            row.hat_est_cer = est(SURYA);
+            rows.push(row);
+        }
     }
     rows
 }
@@ -270,6 +306,10 @@ pub struct PageRow {
     pub damage_rate: Option<f64>,
     pub function_share: Option<f64>,
     pub garbage_share: Option<f64>,
+    pub numeric_share: Option<f64>,
+    pub short_line_share: Option<f64>,
+    pub fraktur_score: Option<f64>,
+    pub ink_word_coverage: Option<f64>,
     pub head_words: Option<u64>,
     pub near_words: Option<u64>,
     pub known_words: Option<u64>,
@@ -288,6 +328,12 @@ pub struct PageRow {
     pub noise: Option<f64>,
     pub bleed_through: Option<f64>,
     pub ink_density: Option<f64>,
+    pub bg_tile_std: Option<f64>,
+    pub otsu_local_diff: Option<f64>,
+    pub img_columns: Option<usize>,
+    pub gutter_clarity: Option<f64>,
+    pub est_line_height_px: Option<f64>,
+    pub vertical_stroke_ratio: Option<f64>,
     pub blocks: Option<usize>,
     pub lines: Option<usize>,
     pub line_words: Option<usize>,
@@ -297,6 +343,40 @@ pub struct PageRow {
     pub total_ms: u64,
     pub plan_class: Option<String>,
     pub with_readings: bool,
+    /// Which hat `est_cer`, `est_cer_raw`, `hat_determined`, `hat_residual`
+    /// and `legibility_ceiling` are: 2 (`usnm_ocr_quality::page_hat`,
+    /// passage-matched) where the page's texts were read, else 1 (the
+    /// unit's whole-page hat). A table without this column is 1.
+    pub hat_version: u32,
+    /// The unit's own (version 1) values, whatever `hat_version` is.
+    pub est_cer_v1: Option<f64>,
+    pub est_cer_raw_v1: Option<f64>,
+    pub hat_determined_v1: Option<bool>,
+    pub hat_residual_v1: Option<f64>,
+    pub legibility_ceiling_v1: Option<f64>,
+    /// Version 2: the mean share of this reader's characters placed in the
+    /// other readers' texts (coverage, not error).
+    pub matched: Option<f64>,
+    /// Version 2: the page's pairs (`page_hat::PairD`) as JSON; empty for 1.
+    pub hat_pairs_json: String,
+}
+
+fn compute_ink_word_coverage(
+    words: usize,
+    img: Option<&usnm_ocr_contract::quality::ImageFeatures>,
+    lay: Option<&usnm_ocr_contract::quality::LayoutFeatures>,
+) -> Option<f64> {
+    let i = img?;
+    if i.width == 0 || i.height == 0 || i.ink_density <= 0.0 {
+        return None;
+    }
+    let lh = i
+        .est_line_height_px
+        .or_else(|| lay.and_then(|l| l.line_height_px))?
+        .max(6.0);
+    let ink_area = f64::from(i.width) * f64::from(i.height) * i.ink_density;
+    let expected_words = (ink_area / (lh * lh)).max(1.0);
+    Some(round6(words as f64 / expected_words))
 }
 
 fn loc_pair_metrics(
@@ -350,6 +430,12 @@ pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback
             .or(scored.function_share)
             .map(round6);
         row.garbage_share = scored.garbage_share.map(round6);
+        row.numeric_share = scored.numeric_share.map(round6);
+        row.short_line_share = scored.short_line_share.map(round6);
+        row.fraktur_score = forced
+            .and_then(|f| f.fraktur_score)
+            .or(scored.fraktur_score)
+            .map(round6);
         row.head_words = forced
             .map(|f| f.damage.head)
             .or_else(|| scored.damage.map(|d| d.head));
@@ -362,6 +448,52 @@ pub fn enrich_rows_with_damage(rows: &mut [PageRow], texts: &Texts, loc_fallback
     }
 }
 
+/// Replaces the rows' hat with version 2 (`page_hat`), solved on the
+/// passage-matched disagreement over the page's texts as the unit read
+/// them (`slot::reader_inputs`, with LoC's ALTO text from `alto_text` for an
+/// empty LoC text). The unit's values stay in the `*_v1` columns. When a
+/// LoC reader needs the ALTO text and `alto_text` has none, the unit's
+/// texts can't be rebuilt: the rows keep version 1 and this returns false.
+pub fn apply_hat_v2(
+    rows: &mut [PageRow],
+    readers: &[usnm_ocr_contract::quality::ReaderSpec],
+    texts: &Texts,
+    alto_text: impl FnOnce() -> Option<String>,
+) -> bool {
+    let Some(inputs) = usnm_ocr_quality::slot::reader_inputs(readers, texts, alto_text) else {
+        return false;
+    };
+    let named: Vec<(&str, &str)> = inputs
+        .iter()
+        .map(|r| (r.name.as_str(), r.text.as_str()))
+        .collect();
+    let h = page_hat::solve(&named);
+    let pairs_json = serde_json::to_string(&h.pairs).unwrap_or_default();
+    for row in rows {
+        let Some(x) = h.readers.iter().find(|x| x.name == row.reader) else {
+            continue;
+        };
+        row.hat_version = page_hat::VERSION;
+        row.est_cer = x.est_cer;
+        row.est_cer_raw = x.est_cer_raw;
+        row.matched = x.matched;
+        row.hat_determined = Some(h.determined);
+        row.hat_residual = h.residual;
+        row.legibility_ceiling = h.ceiling_est;
+        row.hat_pairs_json = pairs_json.clone();
+    }
+    true
+}
+
+/// LoC's ALTO text, for the unit's empty-text fallback; none when the ALTO
+/// is missing, empty (truncated after submission) or does not parse.
+pub fn alto_text_of(bytes: Option<&[u8]>) -> Option<String> {
+    bytes
+        .filter(|b| !b.is_empty())
+        .and_then(|b| parse_alto(b, 1000.0, 1000.0).ok())
+        .map(|p| usnm_alto::text(&p))
+}
+
 /// The rows of `pages.parquet` for one result.
 pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<PageRow> {
     let img = r.page.as_ref().and_then(|p| p.image.as_ref());
@@ -370,6 +502,7 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
         .iter()
         .map(|x| {
             let (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc) = loc_pair_metrics(x);
+            let ink_word_coverage = compute_ink_word_coverage(x.words, img, lay);
             PageRow {
                 doc_id: job.doc_id.clone(),
                 group: job.group.clone(),
@@ -397,6 +530,10 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 damage_rate: None,
                 function_share: None,
                 garbage_share: None,
+                numeric_share: None,
+                short_line_share: None,
+                fraktur_score: None,
+                ink_word_coverage,
                 head_words: None,
                 near_words: None,
                 known_words: None,
@@ -415,6 +552,12 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 noise: img.map(|i| i.noise),
                 bleed_through: img.map(|i| i.bleed_through),
                 ink_density: img.map(|i| i.ink_density),
+                bg_tile_std: img.and_then(|i| i.bg_tile_std),
+                otsu_local_diff: img.and_then(|i| i.otsu_local_diff),
+                img_columns: img.and_then(|i| i.img_columns),
+                gutter_clarity: img.and_then(|i| i.gutter_clarity),
+                est_line_height_px: img.and_then(|i| i.est_line_height_px),
+                vertical_stroke_ratio: img.and_then(|i| i.vertical_stroke_ratio),
                 blocks: lay.map(|l| l.blocks),
                 lines: lay.map(|l| l.lines),
                 line_words: lay.map(|l| l.words),
@@ -424,6 +567,14 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 total_ms: r.timings.total_ms,
                 plan_class: r.host.plan_class.clone(),
                 with_readings,
+                hat_version: 1,
+                est_cer_v1: x.est_cer,
+                est_cer_raw_v1: x.est_cer_raw,
+                hat_determined_v1: r.hat.as_ref().map(|h| h.determined),
+                hat_residual_v1: r.hat.as_ref().and_then(|h| h.residual),
+                legibility_ceiling_v1: r.legibility.as_ref().and_then(|l| l.ceiling_est),
+                matched: None,
+                hat_pairs_json: String::new(),
             }
         })
         .collect()
@@ -443,6 +594,7 @@ pub fn bundle_page_rows(
         .iter()
         .map(|x| {
             let (cer_vs_loc, wer_vs_loc, dice_vs_loc, word_ratio_vs_loc) = loc_pair_metrics(x);
+            let ink_word_coverage = compute_ink_word_coverage(x.words, img, lay);
             PageRow {
                 doc_id: bp.doc_id.clone(),
                 group: bp.group.clone(),
@@ -470,6 +622,10 @@ pub fn bundle_page_rows(
                 damage_rate: None,
                 function_share: None,
                 garbage_share: None,
+                numeric_share: None,
+                short_line_share: None,
+                fraktur_score: None,
+                ink_word_coverage,
                 head_words: None,
                 near_words: None,
                 known_words: None,
@@ -488,6 +644,12 @@ pub fn bundle_page_rows(
                 noise: img.map(|i| i.noise),
                 bleed_through: img.map(|i| i.bleed_through),
                 ink_density: img.map(|i| i.ink_density),
+                bg_tile_std: img.and_then(|i| i.bg_tile_std),
+                otsu_local_diff: img.and_then(|i| i.otsu_local_diff),
+                img_columns: img.and_then(|i| i.img_columns),
+                gutter_clarity: img.and_then(|i| i.gutter_clarity),
+                est_line_height_px: img.and_then(|i| i.est_line_height_px),
+                vertical_stroke_ratio: img.and_then(|i| i.vertical_stroke_ratio),
                 blocks: lay.map(|l| l.blocks),
                 lines: lay.map(|l| l.lines),
                 line_words: lay.map(|l| l.words),
@@ -497,6 +659,14 @@ pub fn bundle_page_rows(
                 total_ms: pr.timings.total_ms,
                 plan_class: plan_class.clone(),
                 with_readings,
+                hat_version: 1,
+                est_cer_v1: x.est_cer,
+                est_cer_raw_v1: x.est_cer_raw,
+                hat_determined_v1: pr.hat.as_ref().map(|h| h.determined),
+                hat_residual_v1: pr.hat.as_ref().and_then(|h| h.residual),
+                legibility_ceiling_v1: pr.legibility.as_ref().and_then(|l| l.ceiling_est),
+                matched: None,
+                hat_pairs_json: String::new(),
             }
         })
         .collect()
@@ -631,7 +801,7 @@ fn opt(x: Option<f64>) -> String {
 
 /// The campaign in one Markdown table per reader, over the rows.
 pub fn summary_md(campaign: &str, s: &Summary, pages: &[PageRow], crops: &[CropRow]) -> String {
-    let mut out = format!("# Quality campaign {campaign}\n\nPages with a result: {}; with readings: {}; pending: {}; failed: {}.\n\n", s.pages, s.with_readings, s.pending, s.failed);
+    let mut out = format!("# Quality campaign {campaign}\n\nPages with a result: {}; with readings: {}; with Surya crops: {}; pending: {}; failed: {}.\n\n", s.pages, s.with_readings, s.with_surya, s.pending, s.failed);
     out.push_str("| Reader | Pages | Mean est. CER | Mean completeness | Mean precision | Mean findable content | Mean findable places |\n|---|---|---|---|---|---|---|\n");
     let mut readers: Vec<&str> = pages.iter().map(|r| r.reader.as_str()).collect();
     readers.sort_unstable();
@@ -667,14 +837,14 @@ pub fn summary_md(campaign: &str, s: &Summary, pages: &[PageRow], crops: &[CropR
     out
 }
 
-fn spool_files(spool: &Path, workunit: &str, names: &[&str]) -> Vec<PathBuf> {
+pub(crate) fn spool_files(spool: &Path, workunit: &str, names: &[&str]) -> Vec<PathBuf> {
     names
         .iter()
         .map(|n| spool.join(format!("{workunit}__file_{n}")))
         .collect()
 }
 
-fn gave_up(spool: &Path, workunit: &str) -> bool {
+pub(crate) fn gave_up(spool: &Path, workunit: &str) -> bool {
     spool.join(format!("{workunit}_error")).exists()
         || spool.join(format!("{workunit}_no_output_files")).exists()
 }
@@ -758,6 +928,27 @@ fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, Qwen
     Ok(out)
 }
 
+/// The crops to join for a page: the `usnm_qwen` unit's when there is one,
+/// else, when Surya crop units exist, the recipe's cut from the page and
+/// ALTO with the quality job's seed and count (the same cut `stage-crops`
+/// made), so Surya's rows are not lost to a campaign without Qwen.
+fn crops_for_page(
+    q: Option<&QwenPage>,
+    surya: Option<&BTreeMap<String, crate::surya::collect::CropText>>,
+    page: &[u8],
+    alto: &[u8],
+    crop_seed: u64,
+    k_crops: u32,
+) -> anyhow::Result<Option<Vec<Crop>>> {
+    Ok(match (q, surya) {
+        (Some(q), _) => Some(q.crops.clone()),
+        (None, Some(s)) if !s.is_empty() => {
+            Some(crate::qwen::stage::cut(page, alto, crop_seed, k_crops)?)
+        }
+        (None, _) => None,
+    })
+}
+
 /// The three tables of a campaign, built from the roots and spools.
 pub struct Collected {
     pub summary: Summary,
@@ -770,6 +961,11 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     let mut pages = Vec::new();
     let mut crop_table = Vec::new();
     let qwen = qwen_pages(&opts.qwen_root, &opts.qwen_spool)?;
+    let surya = match (&opts.surya_root, &opts.surya_spool) {
+        (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
+        (None, None) => BTreeMap::new(),
+        _ => anyhow::bail!("--surya-root and --surya-spool go together"),
+    };
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = if dir.exists() {
         std::fs::read_dir(&dir)?
@@ -806,24 +1002,38 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             if readings.is_some() {
                 summary.with_readings += 1;
             }
+            let surya_crops = surya.get(&job.doc_id);
+            if surya_crops.is_some_and(|c| c.values().any(|t| !t.text.trim().is_empty())) {
+                summary.with_surya += 1;
+            }
             let texts_opt: Option<Texts> = read(&unit.join(TEXTS_FILE), MAX_TEXTS)
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok());
             let mut unit_rows = page_rows(&job, &got.result, readings.is_some());
-            if let Some(ref texts) = texts_opt {
+            let alto_bytes = read(&unit.join(ALTO_FILE), MAX_ALTO)?;
+            let v2 = texts_opt.as_ref().is_some_and(|texts| {
                 enrich_rows_with_damage(&mut unit_rows, texts, None);
+                apply_hat_v2(&mut unit_rows, &job.readers, texts, || {
+                    alto_text_of(Some(&alto_bytes))
+                })
+            });
+            if !v2 {
+                summary.hat_v1_kept += 1;
             }
             pages.extend(unit_rows);
-            if let Some(q) = q {
-                let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
+            let page = read(&unit.join(PAGE_FILE), MAX_SCAN)?;
+            if let Some(crops) = crops_for_page(
+                q,
+                surya_crops,
+                &page,
+                &alto_bytes,
+                job.crop_seed,
+                job.k_crops,
+            )? {
                 let (w, h) = image::load_from_memory(&page)
                     .with_context(|| format!("{wu}: page.jpg"))?
                     .dimensions();
-                let loc = parse_alto(
-                    &read(&unit.join(ALTO_FILE), MAX_ALTO)?,
-                    f64::from(w),
-                    f64::from(h),
-                )?;
+                let loc = parse_alto(&alto_bytes, f64::from(w), f64::from(h))?;
                 let ours = if unit.join(OURS_FILE).exists() {
                     Some(parse_alto(
                         &read(&unit.join(OURS_FILE), MAX_ALTO)?,
@@ -844,8 +1054,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     ours: ours.as_ref(),
                     texts: &texts,
                     readers: &readers,
-                    crops: &q.crops,
+                    crops: &crops,
                     readings,
+                    surya: surya_crops,
                 }));
             }
         } else {
@@ -871,6 +1082,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 if readings.is_some() {
                     summary.with_readings += 1;
                 }
+                let surya_crops = surya.get(&bp.doc_id);
+                if surya_crops.is_some_and(|c| c.values().any(|t| !t.text.trim().is_empty())) {
+                    summary.with_surya += 1;
+                }
                 let mut unit_rows = bundle_page_rows(
                     &job,
                     bp,
@@ -878,15 +1093,24 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     got.result.host.plan_class.clone(),
                     readings.is_some(),
                 );
+                let mut v2 = false;
                 if let Ok(t_bytes) = bp.inputs.texts.extract(&bundle_texts, "texts") {
                     if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
                         enrich_rows_with_damage(&mut unit_rows, &page_texts, None);
+                        v2 = apply_hat_v2(&mut unit_rows, &bp.readers, &page_texts, || {
+                            alto_text_of(bp.inputs.alto.extract(&bundle_alto, "alto").ok())
+                        });
                     }
                 }
+                if !v2 {
+                    summary.hat_v1_kept += 1;
+                }
                 pages.extend(unit_rows);
-                if let Some(q) = q {
-                    let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
-                    let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
+                let p_bytes = bp.inputs.page.extract(&bundle_page, "page")?;
+                let a_bytes = bp.inputs.alto.extract(&bundle_alto, "alto")?;
+                if let Some(crops) =
+                    crops_for_page(q, surya_crops, p_bytes, a_bytes, bp.crop_seed, bp.k_crops)?
+                {
                     let t_bytes = bp.inputs.texts.extract(&bundle_texts, "texts")?;
                     let (w, h) = image::load_from_memory(p_bytes)
                         .with_context(|| format!("{wu} ({}): page.jpg", bp.doc_id))?
@@ -910,8 +1134,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                         ours: ours.as_ref(),
                         texts: &texts,
                         readers: &readers,
-                        crops: &q.crops,
+                        crops: &crops,
                         readings,
+                        surya: surya_crops,
                     }));
                 }
             }
@@ -1060,6 +1285,7 @@ mod tests {
             readers: &readers,
             crops: &crops,
             readings: Some(&readings),
+            surya: None,
         });
         // Three readers plus the vision-language row per crop.
         assert_eq!(rows.len(), crops.len() * 4);
@@ -1084,13 +1310,220 @@ mod tests {
             readers: &readers,
             crops: &crops,
             readings: None,
+            surya: None,
         });
         assert_eq!(rows.len(), crops.len() * 3);
         assert!(rows.iter().all(|r| r.vlm_text.is_none()));
+        // Surya's crop texts join as a reader of their own, in the hat with
+        // LoC and the reading; a crop Surya did not read gets no row.
+        let mut surya = BTreeMap::new();
+        surya.insert(
+            crops[0].id.clone(),
+            crate::surya::collect::CropText {
+                job_id: "j".into(),
+                crop_id: crops[0].id.clone(),
+                rect: crops[0].rect,
+                stratum: crops[0].stratum.clone(),
+                outcome: usnm_ocr_contract::surya::Outcome::Ok,
+                device: "cpu".into(),
+                text: format!("{} extra", crops[0].loc_text),
+                plan_class: None,
+            },
+        );
+        let rows = crop_rows(&CropInputs {
+            doc_id: "p1",
+            loc: &loc,
+            ours: None,
+            texts: &l.texts,
+            readers: &readers,
+            crops: &crops,
+            readings: Some(&readings),
+            surya: Some(&surya),
+        });
+        assert_eq!(rows.len(), crops.len() * 4 + 1);
+        // The same id with another box (a campaign cut with another seed)
+        // is not this crop and gets no row.
+        let mut other = surya.clone();
+        other.get_mut(&crops[0].id).unwrap().rect[0] += 1;
+        let misaligned = crop_rows(&CropInputs {
+            doc_id: "p1",
+            loc: &loc,
+            ours: None,
+            texts: &l.texts,
+            readers: &readers,
+            crops: &crops,
+            readings: Some(&readings),
+            surya: Some(&other),
+        });
+        assert_eq!(misaligned.len(), crops.len() * 4);
+        assert!(misaligned.iter().all(|r| r.reader != SURYA));
+        let s_row = rows.iter().find(|r| r.reader == SURYA).unwrap();
+        assert_eq!(s_row.crop_id, crops[0].id);
+        assert!(s_row.text.as_deref().is_some_and(|t| t.ends_with(" extra")));
+        assert!(s_row.cer_vs_vlm.is_some_and(|c| c > 0.0));
+        // LoC, the reading and Surya: three members, so the hat solves.
+        assert_eq!(s_row.hat_readers, 3);
+        assert!(s_row.hat_est_cer.is_some());
+        let loc_row = rows
+            .iter()
+            .find(|r| r.reader == "loc" && r.crop_id == crops[0].id)
+            .unwrap();
+        assert_eq!(loc_row.hat_readers, 3);
         assert!(overlaps([0, 0, 10, 10], [5, 5, 20, 20]));
         assert!(!overlaps([0, 0, 10, 10], [10, 0, 20, 20]));
     }
 
+    /// A campaign with Surya crop units and no Qwen unit still gets its
+    /// crop rows: the crops are cut with the quality job's recipe, Surya's
+    /// text is a reader among them, and nothing is compared with a reading.
+    #[tokio::test]
+    async fn surya_crop_rows_join_without_a_qwen_unit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let unit = units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        let job = crate::quality::work::tests::unit(&unit);
+        std::fs::write(unit.join("submitted"), b"").unwrap();
+        crate::quality::work::run(&unit).await.unwrap();
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        for name in crate::quality::outputs() {
+            std::fs::copy(
+                unit.join(name),
+                spool.join(format!("{}__file_{name}", job.workunit())),
+            )
+            .unwrap();
+        }
+        let page = std::fs::read(unit.join(PAGE_FILE)).unwrap();
+        let alto = std::fs::read(unit.join(ALTO_FILE)).unwrap();
+        let crops = crate::qwen::stage::cut(&page, &alto, job.crop_seed, job.k_crops).unwrap();
+        assert!(!crops.is_empty());
+        let (sroot, sspool) = (tmp.path().join("surya"), tmp.path().join("surya-spool"));
+        let mut base = crate::surya::work::tests::job();
+        base.doc_id = job.doc_id.clone();
+        let cj = crate::surya::collect::tests::crop_job(
+            &base,
+            &crops[0].id,
+            crops[0].rect,
+            &crops[0].stratum,
+        );
+        crate::surya::collect::tests::unit_with_result(
+            &sroot,
+            &sspool,
+            &cj,
+            &[(
+                usnm_ocr_contract::surya::InputMode::Whole,
+                usnm_ocr_contract::surya::Outcome::Ok,
+                "Surya read this line\n",
+            )],
+        );
+        let c = collect(&Options {
+            campaign: "t".into(),
+            root: qroot,
+            spool,
+            qwen_root: tmp.path().join("no-qwen"),
+            qwen_spool: tmp.path().join("no-qwen"),
+            surya_root: Some(sroot),
+            surya_spool: Some(sspool),
+            out_dir: Some(tmp.path().join("out")),
+            curated_url: None,
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                c.summary.pages,
+                c.summary.with_readings,
+                c.summary.with_surya
+            ),
+            (1, 0, 1)
+        );
+        // Every reader of the job per crop, plus Surya's row on its crop.
+        assert_eq!(c.crops.len(), crops.len() * job.readers.len() + 1);
+        let s_row = c.crops.iter().find(|r| r.reader == SURYA).unwrap();
+        assert_eq!(s_row.crop_id, crops[0].id);
+        assert_eq!((s_row.x0, s_row.y1), (crops[0].rect[0], crops[0].rect[3]));
+        assert_eq!(s_row.text.as_deref(), Some("Surya read this line\n"));
+        assert!(s_row.vlm_text.is_none() && s_row.cer_vs_vlm.is_none());
+        // LoC and Surya have text in the box: two members, no estimate.
+        assert_eq!(s_row.hat_readers, 2);
+        assert!(c.crops.iter().all(|r| r.vlm_text.is_none()));
+    }
+
+    #[test]
+    fn old_results_preserve_unmeasured_metrics_in_both_collector_paths() {
+        use usnm_ocr_contract::quality::{BundlePageInputs, BundleSlice};
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+        })
+        .unwrap();
+        let mut legacy = serde_json::to_value(&c.result).unwrap();
+        let image = legacy["page"]["image"].as_object_mut().unwrap();
+        for key in [
+            "bg_tile_std",
+            "otsu_local_diff",
+            "img_columns",
+            "gutter_clarity",
+            "est_line_height_px",
+            "vertical_stroke_ratio",
+        ] {
+            image.remove(key);
+        }
+        let result: ResultManifest = serde_json::from_value(legacy).unwrap();
+        let bp = BundlePage {
+            crop_seed: job.crop_seed,
+            doc_id: job.doc_id.clone(),
+            function_words: vec![],
+            group: job.group.clone(),
+            k_crops: job.k_crops,
+            language: job.language.clone(),
+            readers: job.readers.clone(),
+            inputs: BundlePageInputs {
+                page: BundleSlice::of(0, b"", "fixture"),
+                alto: BundleSlice::of(0, b"", "fixture"),
+                texts: BundleSlice::of(0, b"", "fixture"),
+            },
+        };
+        let pr = PageResult {
+            doc_id: job.doc_id.clone(),
+            hat: result.hat.clone(),
+            legibility: result.legibility.clone(),
+            outcome: result.outcome,
+            page: result.page.clone(),
+            readers: result.readers.clone(),
+            timings: result.timings.clone(),
+            unit_error: None,
+        };
+        for rows in [
+            page_rows(&job, &result, false),
+            bundle_page_rows(&job, &bp, &pr, None, false),
+        ] {
+            assert!(!rows.is_empty());
+            for row in rows {
+                assert!(row.bg_tile_std.is_none());
+                assert!(row.otsu_local_diff.is_none());
+                assert!(row.img_columns.is_none());
+                assert!(row.gutter_clarity.is_none());
+                assert!(row.est_line_height_px.is_none());
+                assert!(row.vertical_stroke_ratio.is_none());
+            }
+        }
+        let mut measured = result.clone();
+        measured
+            .page
+            .as_mut()
+            .unwrap()
+            .image
+            .as_mut()
+            .unwrap()
+            .bg_tile_std = Some(0.0);
+        assert_eq!(page_rows(&job, &measured, false)[0].bg_tile_std, Some(0.0));
+    }
     #[test]
     fn page_rows_enrich_lexical_damage_and_loc_pairwise_metrics() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1120,5 +1553,78 @@ mod tests {
         assert!(ours_row.word_ratio_vs_loc.is_some());
         assert!(ours_row.function_share.is_some());
         assert!(ours_row.known_words.is_some());
+        assert!(ours_row.numeric_share.is_some());
+        assert!(ours_row.short_line_share.is_some());
+        assert!(ours_row.fraktur_score.is_some());
+        assert!(ours_row.ink_word_coverage.is_some());
+        assert!(ours_row.bg_tile_std.is_some());
+        assert!(ours_row.otsu_local_diff.is_some());
+        assert!(ours_row.img_columns.is_some());
+        assert!(ours_row.gutter_clarity.is_some());
+        assert!(ours_row.est_line_height_px.is_some());
+        assert!(ours_row.vertical_stroke_ratio.is_some());
+
+        // Analytic cross-reader coverage ratio identity:
+        // ink_word_coverage(A) / ink_word_coverage(loc) == word_ratio_vs_loc(A).
+        let cov_ratio = ours_row.ink_word_coverage.unwrap() / loc_row.ink_word_coverage.unwrap();
+        assert!(
+            (cov_ratio - ours_row.word_ratio_vs_loc.unwrap()).abs() <= 1e-4,
+            "cov_ratio {cov_ratio} != word_ratio_vs_loc {:?}",
+            ours_row.word_ratio_vs_loc
+        );
+    }
+
+    #[test]
+    fn hat_v2_replaces_the_estimate_and_keeps_the_units() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+        })
+        .unwrap();
+        let mut rows = page_rows(&job, &c.result, false);
+        assert!(rows.iter().all(|r| r.hat_version == 1
+            && r.est_cer == r.est_cer_v1
+            && r.hat_pairs_json.is_empty()));
+        let v1: Vec<Option<f64>> = rows.iter().map(|r| r.est_cer).collect();
+        // A LoC text that needs the ALTO, with none staged: version 1 stays.
+        let mut needs = l.texts.clone();
+        for r in needs.readers.iter_mut().filter(|r| r.name == "loc") {
+            r.text = "none".into();
+        }
+        let before = rows.clone();
+        assert!(!apply_hat_v2(&mut rows, &job.readers, &needs, || {
+            alto_text_of(Some(b""))
+        }));
+        assert_eq!(rows, before);
+        assert!(apply_hat_v2(&mut rows, &job.readers, &l.texts, || {
+            alto_text_of(Some(&l.alto))
+        }));
+        for (r, old) in rows.iter().zip(&v1) {
+            assert_eq!(r.hat_version, page_hat::VERSION);
+            assert_eq!(&r.est_cer_v1, old);
+            assert!(r.est_cer.is_some(), "{}", r.reader);
+            assert!(r.matched.is_some(), "{}", r.reader);
+            let pairs: Vec<page_hat::PairD> = serde_json::from_str(&r.hat_pairs_json).unwrap();
+            assert_eq!(pairs.len(), 3);
+        }
+        // The fixture's readers are in one order, so both hats rank them
+        // the same.
+        let order = |f: &dyn Fn(&PageRow) -> f64| {
+            let mut v: Vec<(String, f64)> = rows.iter().map(|r| (r.reader.clone(), f(r))).collect();
+            v.sort_by(|a, b| a.1.total_cmp(&b.1));
+            v.into_iter().map(|x| x.0).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(&|r| r.est_cer.unwrap()),
+            order(&|r| r.est_cer_v1.unwrap())
+        );
+        // The columns are typed in Parquet.
+        assert!(to_parquet(&rows).is_ok());
     }
 }

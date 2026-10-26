@@ -1,4 +1,4 @@
-//! `ja-ocr/test_quality.py`'s detection and damage tests, ported. The
+//! `ocr/ja-ocr/test_quality.py`'s detection and damage tests, ported. The
 //! parity fixture (`tests/damage_parity.rs`) checks the numbers against
 //! Python's on real pages.
 
@@ -309,4 +309,39 @@ fn forced_language() {
         "MARC codes aren't ISO 639-3"
     );
     assert!(score_forced(ENGLISH_TEXT, "zho").is_none(), "no word list");
+}
+
+#[test]
+fn numeric_short_line_and_fraktur_analytic_identities() {
+    // 1. Disjoint partition bound: words/tokens + numeric_share <= 1.0, and short_line_share in 0..=1.
+    let tabular = "Wheat $1.25 1890\nCorn $0.85 1891\nOats $0.45\nThe market closed steady across all active trading floors today in Chicago\n";
+    let s = score(tabular, &["eng"]);
+    let word_share = s.words as f64 / s.tokens as f64;
+    let num_share = s.numeric_share.unwrap();
+    assert!((num_share - 5.0 / 20.0).abs() < 1e-12);
+    assert!(word_share + num_share <= 1.0 + 1e-12);
+    assert!((s.short_line_share.unwrap() - 3.0 / 4.0).abs() < 1e-12);
+
+    // 2. Fraktur score bound: 0 <= fraktur_score <= damage_rate when no explicit long-s is present,
+    // and equals damage_rate when all near-misses are Fraktur confusions.
+    let frak_de = GERMAN_TEXT
+        .replace("die ", "bie ")
+        .replace("der ", "dcr ")
+        .replace("und ", "uud ")
+        .replace("ist ", "ift ")
+        .replace("sich ", "fich ");
+    let sf = score(&frak_de, &["ger"]);
+    let dr = sf.damage_rate.unwrap();
+    let fs = sf.fraktur_score.unwrap();
+    assert!(dr > 0.15);
+    assert!(
+        (fs - dr).abs() < 1e-12,
+        "fraktur_score {fs} != damage_rate {dr}"
+    );
+
+    // Explicit Unicode long-s ('ſ') also raises fraktur_score even when casefolded words match head words.
+    let long_s_de = GERMAN_TEXT.replace("sich", "ſich").replace("ist", "iſt");
+    let sl = score(&long_s_de, &["ger"]);
+    assert_eq!(sl.damage_rate, Some(0.0));
+    assert!(sl.fraktur_score.unwrap() > 0.05);
 }

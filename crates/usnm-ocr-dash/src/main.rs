@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use usnm_ocr_dash::net::{Allow, Source};
 use usnm_ocr_dash::nodes::{check_name, Nodes};
 use usnm_ocr_dash::sset::Ssets;
 use usnm_ocr_dash::view::Settings;
-use usnm_ocr_dash::{redirect_router, router, App};
+use usnm_ocr_dash::{public_router, redirect_router, router, App};
 
 static VERSION: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -47,6 +47,13 @@ struct Cli {
     /// The certificate's private key (PEM).
     #[arg(long, env = "USNM_OCRDASH_TLS_KEY", requires = "tls_cert")]
     tls_key: Option<PathBuf>,
+    /// A second, public listener, plain HTTP, for a tunnel (cloudflared) to
+    /// put on the internet: only GET and HEAD of the page, `/healthz` and
+    /// `/api/{view,pipeline,fetch}.json`, redacted, with no `--allow` check
+    /// and no push routes. Off unless set; bind it to loopback or an
+    /// address only the tunnel reaches.
+    #[arg(long, env = "USNM_OCRDASH_PUBLIC_LISTEN")]
+    public_listen: Option<SocketAddr>,
     /// Where to serve HTTPS.
     #[arg(long, env = "USNM_OCRDASH_TLS_LISTEN", default_value = "0.0.0.0:443")]
     tls_listen: SocketAddr,
@@ -68,9 +75,25 @@ struct Cli {
     /// `failures-full.jsonl`), read-only.
     #[arg(long, env = "USNM_OCRDASH_SCANS", default_value = "/tank/ocr/scans")]
     scans: PathBuf,
-    /// The manifest, when the fetcher's status doesn't name one.
+    /// The plan to count the keep and buffer sets against, pinned: the
+    /// fetcher's status naming another manifest doesn't replace it. Without
+    /// it, the status's manifest is used unless it is a queued one.
     #[arg(long, env = "USNM_OCRDASH_MANIFEST")]
     manifest: Option<PathBuf>,
+    /// Where the fetch queue's manifests are (`queue-ocr-*/`,
+    /// `queue-quality-*/`), read-only. `none` to not read a queue.
+    #[arg(
+        long,
+        env = "USNM_OCRDASH_MANIFESTS",
+        default_value = "/tank/ocr/manifests"
+    )]
+    manifests: PathBuf,
+    /// The bulk OCR archive download's `bulk-status.json`, read-only.
+    #[arg(long, env = "USNM_OCRDASH_BULK_STATUS")]
+    bulk_status: Option<PathBuf>,
+    /// The global LoC pacer's `pacer.json`, read-only.
+    #[arg(long, env = "USNM_OCRDASH_PACER")]
+    pacer: Option<PathBuf>,
     /// A host stats file to read (`<host>.json`), comma-separated or
     /// repeated.
     #[arg(long, env = "USNM_OCRDASH_HOST_FILE", value_delimiter = ',')]
@@ -169,7 +192,11 @@ async fn main() -> anyhow::Result<()> {
             cli.pipeline_snapshot.clone(),
             cli.pipeline_max_age_secs,
         )),
-        fetch: Mutex::new(Fetch::new(cli.scans.clone(), cli.manifest.clone())),
+        fetch: Mutex::new(
+            Fetch::new(cli.scans.clone(), cli.manifest.clone())
+                .with_manifests((cli.manifests != Path::new("none")).then(|| cli.manifests.clone()))
+                .with_files(cli.bulk_status.clone(), cli.pacer.clone()),
+        ),
         nodes: Mutex::new(Nodes::open(cli.state_dir.clone(), &workers)?),
         hosts: Mutex::new(Hosts::new(cli.host_file.clone())),
         ssets: Mutex::new(Ssets::default()),
@@ -220,6 +247,22 @@ async fn main() -> anyhow::Result<()> {
                     tracing::error!(error = %e, "reading the files panicked");
                 }
                 app.poll_nodes(&client).await;
+            }
+        });
+    }
+    if let Some(addr) = cli.public_listen {
+        let public = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("listening on {addr} (--public-listen)"))?;
+        tracing::info!(public_listen = %addr, "serving the public, read-only view");
+        let app = app.clone();
+        tokio::spawn(async move {
+            let r = axum::serve(public, public_router(app).into_make_service())
+                .with_graceful_shutdown(stop_requested())
+                .await;
+            if let Err(e) = r {
+                tracing::error!(error = %e, "the public listener stopped");
+                std::process::exit(1);
             }
         });
     }

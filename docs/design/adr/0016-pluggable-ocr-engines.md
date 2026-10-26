@@ -37,8 +37,8 @@
 **Gaps on main that the design has to close:**
 
 - **Language codes.** The catalog stores MARC codes (`ger`, `cze`; `crates/usnm-core/src/names.rs`), or LoC's lower-cased name for a language not in its table (`pennsylvania german`). The worker expects ISO 639-3. Message validation only checks for three lower-case letters, so a `ger` message passes, routes to a Tesseract model named `ger`, and fails as `no_model` on every node until it is dead-lettered. 12 Steps 4 and 7 add the map and the check.
-- **ALTO.** The only ALTO writer is Python (`ja-ocr/alto.py`, v3.1 in inch1200). The worker's only ALTO handling is a string replace of `fileName`.
-- **Damage.** The damage metric exists only in Python (`ja-ocr/quality.py`). 12 Steps 4 to 6 port it to `usnm_core::damage`.
+- **ALTO.** The only ALTO writer is Python (`ocr/ja-ocr/alto.py`, v3.1 in inch1200). The worker's only ALTO handling is a string replace of `fileName`.
+- **Damage.** The damage metric exists only in Python (`ocr/ja-ocr/quality.py`). 12 Steps 4 to 6 port it to `usnm_core::damage`.
 - **`loc_text`.** The worker writes the queue reason (`bulk` or `user`) there, and `usnm_ingest::ocr_ja` reads the column as LoC's failure class. Nothing reads `ocr-out` or `curated/ocr-local/` yet; 12 Steps 8 and 9 plan the pickup and the release's reader. Read through `ocr_ja::load`, a worker row with `loc_text = bulk` would count as indexable Japanese text.
 - **The worker's unit can't run rootless podman.** `usnm-ocr-worker.service` runs as `usnm` and sets `PrivateDevices`, `ProtectKernelTunables`, `RestrictSUIDSGID`, `RestrictAddressFamilies` and similar options. systemd documents that, for a unit without `CAP_SYS_ADMIN`, these imply `NoNewPrivileges=yes`. Under no_new_privs, `newuidmap` can't use its file capabilities, so podman can't map the subordinate ids `node-setup.sh` gives `usnm`. The unit's comment assumes that leaving out `NoNewPrivileges=` is enough. `ProtectHome=yes` also hides `/run/user`, where rootless podman keeps its runtime state. 12 Step 2 moves the unit to `scripts/ocr-node/usnm-ocr-worker.service`.
 - **Node 1** has 8 GB of memory, 2 cores and 4 threads, and no GPU, so engine instances have to share its memory under a budget.
@@ -133,9 +133,34 @@ We compared three full designs. This decision is the one with a container per en
 - **Contract changes are expensive.** A breaking change means rebuilding every image, so the worker supports versions N and N-1 while it happens.
 - **Two ALTO unit systems.** The stored ALTO is in pixels, while LoC's and the Japanese job's are in inch1200. Readers must check `MeasurementUnit`.
 
+## Runtime spike evidence (2026-10-18)
+
+[Issue #307's item-0 receipt](https://github.com/tgoodyear/usnewsmap.com/issues/307#issuecomment-6250783922)
+records a passing SELinux-enforcing run on a new, isolated RHEL 10.2 VM
+on pve-big (VM 104), not either production OCR node. It used kernel
+6.12.0-211.66.1, Podman 5.8.2, crun 1.27, container-selinux 2.248.0 and
+systemd 257. The worker unit's hardening remained intact. The checks cover
+the rootless API socket, delegated controllers, subordinate IDs, JSON-line
+attach streams with logging disabled, MCS/ACL isolation, effective limits,
+OOM state before removal, and memory charging for both scratch and
+container-local tmpfs writes. No SELinux policy changes were needed; the
+boot audit search found no `nnp_transition` denial. VM 104 was shut down
+and retained with automatic startup disabled.
+
+Podman's reported `State.CgroupPath` names the libpod scope on this stack,
+not the process's `/container` child. The child's no-swap limit is tighter
+than its parent's. The spike therefore reads `/proc/<State.Pid>/cgroup`
+and walks from that leaf through the scope when checking effective limits;
+the existing container memory/swap flags do not need changing.
+
+This accepts the runtime transport/isolation spike only. Its synthetic
+`{"type":"hello","contract":1}` round trip is not a real adapter hello or
+production `contract=1` OCR result. Real-image conformance, lock/registry,
+engine-host completion and production deployment remain separate gates.
+
 ## Optional BOINC batch transport (#438)
 
-The [BOINC pilot](../../boinc.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models and routing and the native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
+The [BOINC pilot](../../boinc/README.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models and routing and the native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
 
 ### OCR credits page (#372)
 

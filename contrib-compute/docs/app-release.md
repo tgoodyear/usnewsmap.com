@@ -1,27 +1,75 @@
 # Releasing a BOINC app version
 
 Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and 1,000
-shared-memory work slots so older queued applications cannot starve newer
-canaries. Re-rendering an existing project also leaves already-correct config and
+shared-memory work slots, with an explicit query budget as described below.
+Re-rendering an existing project also leaves already-correct config and
 key symlinks intact; a runtime upgrade must not transiently remove its signing
 paths.
 
-`scripts/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
+### Feeder visibility
+
+`shmem_work_items` sizes the cache, **not** the database enumeration. In the
+[pinned BOINC feeder](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp),
+the default query budget is independently `MAX_WU_RESULTS * 2 = 200`.
+With `--allapps`, each application's enumeration limit is
+`floor(0.5 + feeder_query_size * app_weight / total_app_weight)`.
+Nine equally weighted applications therefore got only 22 candidates each,
+despite 1,000 cache slots (about 111 per app). Replicas already completed by
+the requesting host still occupy that prefix: distinct-host validation correctly
+blocks them, leaving eligible work beyond enumeration invisible (#860).
+
+The template sets `feeder_query_size=20000`: 2,222 candidates per equal-weight
+app. The sizing invariant is that **each positive-weight app's rounded query
+budget covers at least twice the entire cache capacity**, and Qwen's covers
+at least four times the 455 ready results across its current batches (2, 8, 12
+and 18). The whole-cache floor is deliberately conservative; this allocation
+is about 20 times each app's current cache share and 4.9 times the Qwen
+baseline. Tests derive the budgets from `project.xml` weights, so app additions,
+weight changes and cache growth must still satisfy the invariant.
+
+This is a bounded fix, not infinite fairness: queries may enumerate roughly
+20,000 joined result/workunit rows across apps per pass (rounding can vary the
+total), increasing database, feeder memory and collision-check costs without
+allocating more shared-memory slots. A larger blocked prefix or a full cache
+of infeasible work can still hide eligible results. Recheck actual registered
+app weights, ready counts, cache contents and feeder/database load before
+backlog growth exhausts this headroom; update the sizing baseline and budget
+together. Do not clear queues or weaken `one_result_per_host_per_wu` or quorum
+to improve apparent dispatch.
+
+Release verification remains separate from these configuration tests: confirm
+the rendered runtime query size, feeder restart/cache visibility and actual
+GPU returns, distinct-host validation and collection before claiming recovery.
+Ship the reviewed `refresh-plan-policy.py` startup path and Vulkan definitions
+already on main, not the old unconditional policy copy. The refresher preserves
+operator-controlled cohort bounds while restoring missing classes closed;
+registration alone does not admit work. Preview then open at most ten audited
+units through `native-qwen-cohort.php --plan-class shared_8b`, under the existing
+release coordination and locks. Preserve live configuration, quality metrics,
+queues and pins; this code change neither deploys nor opens a cohort.
+
+`scripts/boinc/boinc-app-release.sh` builds, stages, signs and publishes one app version on the
 live server in one command:
 
 ```sh
-scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST --what-if
-scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST --what-if
+scripts/boinc/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-host HOST
 ```
+
+With `"server": "onprem"` in the settings (prod since 21 October 2026) the script stops
+unless it also gets `--onprem-host` and `--onprem-ct` (step 4 below). Every `--env prod`
+release command on this page then takes them.
 
 `--signing-key-dir` (default `/usbbak/signing/boinc`) and `--signing-dataset` (default
 `usbbak/signing`) name where the private key is on the signing host. `--what-if` runs the
 read-only checks and prints the plan.
 
 For a **PR-first release**, use `--prepare-only` to stage, sign and build the
-immutable app-version image without publishing. It changes only `images.appver`;
-the key stays on the signing host. After pin review, green CI and merge, run
-`scripts/provision-boinc.sh --env prod` to publish and verify registration.
+immutable app-version image without publishing. On the Azure server it changes only
+`images.appver`; the key stays on the signing host. After pin review, green CI and merge,
+run `scripts/boinc/provision-boinc.sh --env prod` to publish and verify registration. On the
+on-prem server it writes no pin: it builds the image there and prints the
+`usnm-boinc-step --target publish` command to publish it with.
 Preparation proves neither publication nor volunteer execution. Omit
 `--prepare-only` only when immediate publication is authorized.
 
@@ -65,13 +113,56 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --stop --apply
 ```
 
+`nvidia_vulkan_8b` can also take general admission, as `amd_vulkan_8b` does: no workunit
+bounds, so any NVIDIA host the class admits takes any Qwen work. It qualified on 17 audited
+units on usnm-rtx-compute (RTX 2060 SUPER, 13 valid and none failed, October 2026). The
+CUDA classes have no such record and stay bounded. Preview, then apply:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_8b --general
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --plan-class nvidia_vulkan_8b --general --apply
+```
+
+The marker comment `usnm-nvidia-general-admission-v1` records it, and
+`refresh-plan-policy.py` keeps it across restarts. A bounded window for another class leaves
+it as it is; a window that includes `nvidia_vulkan_8b` (its own, or `shared_8b`) replaces it
+with that window's bounds, and the operator stop above closes it.
+
 The helper checks Qwen identity, model batch, disk bound, independent quorum and
 target of 2, and two unsent results. It journals the old plan, atomically opens
 one WU in one class and closes the other. Stock scheduler range and batch checks
 enforce that window. It creates no work and changes no scientific rows, account
-rows or resource choices. Deployment or reinitialization restores the closed
-template; re-audit before reopening. Stop after the cohort. The helper does not
-authorize general unvalidated dispatch.
+rows or resource choices. Normal server startup refreshes reviewed policy while
+preserving existing bounded admission, including the shared Vulkan window and
+closed container class. Newly introduced classes start closed; reinitialization
+uses the closed template. Re-audit before opening or widening any cohort. Stop
+after the cohort. The helper does not authorize general unvalidated dispatch.
+
+AMD native Vulkan (`amd_vulkan_8b`, Linux x86-64 and Windows x64 only) installs
+closed, then uses the explicitly authorized `--plan-class amd_vulkan_8b --general`
+(preview, then `--apply`) after signed publication for automatic compatible-host
+GPU-only batch-8 scheduling. Initial use is hardware-unverified (#885), not blocked
+on a manual cohort for each volunteer. The persistent XML admission marker survives
+refresh; normal GPU, memory and independent quorum gates remain intact.
+It also retains an optional exact-one-WU
+diagnostic window: `--plan-class amd_vulkan_8b --workunit ID` (preview, then `--apply`),
+and `--plan-class amd_vulkan_8b --stop --apply` to close **only AMD**. It never
+joins `shared_8b`, and neither AMD nor legacy/shared operations reset the other's
+window or general mode. In particular, unqualified `--stop` does not stop AMD.
+An explicit AMD stop removes the general marker and remains closed across restart.
+See [AMD onboarding and pending hardware evidence](../../docs/boinc-amd-gpu.md)
+for signed Vulkan bundle, driver, model, quorum and optional diagnostic requirements.
+Unlike the generic native cohorts above, optional AMD acceptance stages with
+`acceptance_server.py --stage-fixture` and the reviewed
+`create_work --no_new_results` base-image extension. Audit/admission requires
+**zero results**, `TRANSITION_NO_NEW_RESULTS` and a future transition time.
+After admission, dispatch adds the exact client/peer assignments to the same
+audited workunit; stock targeted scheduling creates the two results itself.
+Never delete generic replicas to convert an old fixture or reduce quorum/target 2. Publish the signed registry (`libggml.so` / `ggml.dll`), base and Vulkan
+libraries alongside the AMD PCI helper.
+`audited_workunit_id` is accepted only for this AMD targeted-staging route.
+Other plans must omit it and retain their existing fresh create-on-dispatch flow;
+generic unsent replicas cannot be resumed through targeted assignments.
 
 These native-only classes admit stable BOINC 8.2.11+ and do not require a
 container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
@@ -123,6 +214,10 @@ summary enters task stderr and the scheduler result report even if output upload
 fails. Windows appends it to the slot's `stderr.txt`; Unix uses stderr. Fields
 cover outcome, runtime and model identities, driver, memory, timings and failure
 category. They exclude raw paths, input text, prompts, account data and full logs.
+BOINC uploads no output files for a failed task, so `diag.txt` follows the summary
+between `USNM_QWEN_DIAG_BEGIN` and `USNM_QWEN_DIAG_END`. It is the same file a
+successful task uploads, cut to its first 2 KB and last 4 KB, with absolute paths
+reduced to file names. A slot I/O failure sends its error chain the same way.
 Successful tasks upload three checksummed outputs. Download, signature and loader
 failures can precede app startup and lack an application summary; inspect normal
 BOINC status, stderr and event reports. Verify server receipt with real canary
@@ -191,10 +286,10 @@ fake migration.
      [disk policy and rollout](../../docs/boinc-quality.md#qwen-disk-admission-and-cold-cache-acceptance-559).
 
    ```sh
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
      --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
      --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
    ```
 
@@ -208,15 +303,15 @@ fake migration.
      `apps/usnm_quality/<version>/<platform>/` with no plan-class suffix):
 
    ```sh
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
      --platform x86_64-pc-linux-gnu \
      --binary /path/to/usnm_quality_1.1_x86_64-pc-linux-gnu \
      --binary-sha256 CHECKED_SHA256 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
      --platform arm64-apple-darwin \
      --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
      --binary-sha256 CHECKED_SHA256 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
      --platform windows_x86_64 \
      --binary /path/to/usnm_quality_1.1_windows_x86_64.exe \
      --binary-sha256 CHECKED_SHA256 --signing-host HOST
@@ -228,14 +323,16 @@ fake migration.
      libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
-     `aarch64-unknown-linux-gnu`, `windows_x86_64`), and `mt` (all five platforms). Model files
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
+     `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`
+     (`x86_64-pc-linux-gnu`), and `mt` (all five platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
      `usnm_qwen_2b_in` for 2B/`mt` classes).
 
 ## What it needs
 
-- The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/build-boinc-images.sh`).
+- The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/boinc/build-boinc-images.sh`).
   Provisioning ensures the project is initialised automatically.
 - `codeSignPublicKey` in the settings: the public half of the key on the signing host.
 - `images.worker`: the public GHCR worker image, by digest (below).
@@ -298,6 +395,16 @@ flowchart LR
    and checks the public project configuration. It refuses to overwrite partial project data or
    an existing database, and never prints a manual bootstrap checklist.
 
+   **On-prem server** (`"server": "onprem"` in the settings, `docs/boinc-onprem.md`, #961).
+   Give `--onprem-host` (the Proxmox host) and `--onprem-ct` (the BOINC container). Stages 1
+   to 3 are the same. Step 4 sends the same build context to the container and builds
+   `localhost/usnm-boinc-appver:<tag>` there with podman, `--network=none`, on the
+   `SERVER_IMAGE` the server runs (`/etc/usnm-boinc/server.env`), with the same
+   `check_appver.py` checks. `usnm-boinc-step --target publish` then runs the image's
+   `publish-appver.sh` with the server's settings and mounts, as the Azure job did. Nothing goes
+   to ACR, and `images.appver` isn't written: the on-prem host has no publish job to keep on
+   it. `--prepare-only` builds the image and stops, printing the publish command to run there.
+
 Deployment previews use GA `az stack-whatif group create`, with the same unmanage and deny
 settings as deployment, three-hour retention and Azure's baseline-based noise reduction.
 Existing managed-identity principal IDs are resolved before template evaluation so role
@@ -309,14 +416,14 @@ noise reduction is not evidence that all differences are real or safe.
 An end-to-end test needs a BOINC client with Docker (and an NVIDIA GPU for `docker_nvidia_cuda`
 versions), attached to the master URL with a test account, that downloads a staged workunit
 and returns a result that validates and is assimilated (#484). Container Apps and ACI cannot
-run Docker in a container, so `scripts/boinc-test-client.sh` and
+run Docker in a container, so `scripts/boinc/boinc-test-client.sh` and
 `contrib-compute/infra/boinc/test-client.bicep` deploy a short-lived VM in its own resource
 group (`usnm-boinc-test-rg-<env>`) and delete the group when the test is done:
 
 ```sh
-scripts/boinc-test-client.sh --env prod --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo] \
+scripts/boinc/boinc-test-client.sh --env prod --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo] \
   [--authenticator-file <path>] [--what-if]
-scripts/boinc-test-client.sh --env prod --delete [--what-if]
+scripts/boinc/boinc-test-client.sh --env prod --delete [--what-if]
 ```
 
 Flags:
@@ -345,14 +452,197 @@ Ubuntu, BOINC (`https://boinc.berkeley.edu/dl/linux/stable/noble`), and NVIDIA p
 repositories. Cloud-init installs Docker, `boinc-client` (>= 8.2.13 from the upstream BOINC
 noble repository, using `/var/lib/boinc`), and (when an NVIDIA GPU is present) the NVIDIA
 driver and `nvidia-container-toolkit`, adds `boinc` to the `docker` group, starts the client,
-creates a disposable account when `projectAuthenticator` is empty, and runs
-`boinccmd --project_attach https://<masterHost>/usnmocr/ <authenticator>`.
+creates a disposable account when `projectAuthenticator` is empty, and attaches to the exact
+configured BOINC master URL (for production, `https://boinc.usnewsmap.com/`). The project's
+filesystem path `/project/usnmocr` is not part of that URL.
 
 UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by
 `boinc-client`, workunit execution on the VM, and end-to-end result assimilation.
-Automated release-to-client acceptance orchestration is tracked in
-[#548](https://github.com/tgoodyear/usnewsmap.com/issues/548); app registration and public
-health are not a substitute for execution and canonical assimilation.
+
+### Opt-in bounded client acceptance (#548)
+
+Registration/public health is **not** execution acceptance. Add
+`--acceptance-config FILE --acceptance-evidence FILE` to `boinc-app-release.sh`
+to run acceptance after publication. Only a successful matching client result,
+independently validated canonical result, expected nonempty outputs, and confirmed
+cleanup print `release-ready`. A failure exits nonzero **without rolling back the
+published version**. `--prepare-only` cannot be combined with acceptance.
+`--what-if` validates and prints the acceptance plan without reserving or driving
+clients. This does not change existing signing-host isolation or deployment locks.
+
+Already-published versions can be tested without building/signing/publishing:
+
+```sh
+python3 scripts/boinc/acceptance.py --env prod \
+  --app usnm_qwen --version 1.0 --platform x86_64-pc-linux-gnu \
+  --plan-class docker_mt_2b --config acceptance-config.json \
+  --evidence acceptance-receipt.json --timeout 1800 --dry-run
+```
+
+Remove `--dry-run` only after following the **current #529 coordination protocol**
+and add `--coordination-claim https://github.com/tgoodyear/usnewsmap.com/issues/529#issuecomment-N`.
+The argument records operator acknowledgement, **not** an automatic distributed
+lock or authorization. The same argument is required on a production release
+with acceptance enabled. No automation here approves paid resources or publishes
+an app on its own.
+
+Example **operator-local, secret-free** config for an existing dedicated client
+(the paths/transport must be adapted to the actual test installation):
+
+```json
+{
+  "fixture": "qwen-cpu",
+  "server_command": ["ssh", "test-server", "python3 /reviewed/scripts/boinc/acceptance_server.py --project /project --fixtures /project/acceptance"],
+  "client": {
+    "mode": "existing",
+    "dedicated_test_client": true,
+    "python_command": ["ssh", "pve-big", "pct exec 100 -- runuser -u boinc -- python3 -"]
+  }
+}
+```
+
+`server_command` is an argv transport accepting one JSON request on stdin and
+returning one JSON receipt. Use the included server adapter **on the project
+host**, as project owner, never on the signing host. It uses the existing TLS
+MySQL connector and project configuration; no DB credentials leave the server.
+`python_command` executes Python source from stdin as the **BOINC service user**,
+with its normal local RPC-password lookup. For nonstandard data directories,
+put `env BOINC_DIR=/path/to/data` before `python3 -`. This also permits Mac,
+Windows (with an appropriate transport), and ARM test clients. Before any attachment/update, the server must verify a **dedicated assignment-only
+account**: stock pinned BOINC uses the existing `user.seti_id` only-run-own-jobs
+gate to serve targeted assignments and then skip ordinary/broadcast scheduling.
+The account must have no team, unrelated active assignments, or unrelated
+in-progress results. Its hosts/peers must belong to that account. Establish this
+account deliberately under #529 coordination; the runner does not change account
+flags, trust, project preferences, or scheduler policy. Every dispatch/status
+rechecks isolation; fixture targeting alone is not sufficient. Existing clients
+must already be attached to that isolated account; acceptance only probes and requests scheduler updates,
+never detaches, deletes, or rewrites their preferences. Do not select a volunteer
+or any client running unrelated work.
+
+There is **no automatic paid fallback**. To explicitly opt into the existing
+Azure ephemeral infrastructure, use `"client": {"mode": "ephemeral", "sku":
+"Standard_D8s_v5", "authenticator_file": "/private/test-account.auth"}` (CPU), or an explicitly approved NVIDIA SKU for a CUDA plan.
+Only Linux x86 CPU/NVIDIA clients are provisionable by that template; unsupported
+platform/GPU combinations fail before reservation. Each run uses a random,
+run-specific resource group, including partial creates. Dedicated acceptance
+VMs use the **existing isolated account**, never the template's default new
+disposable account. The private regular authenticator file must have mode 0600
+or stricter. Its fingerprint is verified against the isolated server account
+before provisioning; the key is copied once to a run-private 0600 file to avoid
+attachment to changed credentials, and removed during teardown. Provisioning uses
+a parent-owned mode-0700 `.boinc-provision-<run_id>` directory so the runner also
+removes credential-bearing ARM parameters if its child must be forcibly killed.
+Failure to remove either private staging artifact fails cleanup. Keys are never
+placed in JSON config, logs, evidence, or command arguments. Dedicated acceptance
+VMs expose all CPUs and 90% RAM; existing volunteer defaults remain unchanged.
+The runner invokes VM commands as `boinc` and waits for attachment. CPU counts
+are **effective preference-limited CPUs**, not physical cores (`max_ncpus_pct=0`
+means unrestricted); memory/disk, client
+version, GPU vendor/VRAM/CUDA/compute/OpenCL capability, platform, and container runtime must meet the fixture
+and current server plan class. Closed cohorts/batch mismatches are rejected;
+acceptance never opens experimental cohorts or changes production trust policy.
+On macOS, the probe discovers Podman through BOINC's Terminal-PATH/installer/Homebrew
+locations and runs `info` through `/Library/Application Support/BOINC Data/Run_Podman`,
+not the login user's separate Podman machine. Structured runtime output must confirm
+a working server; an empty successful helper response is insufficient. Unavailable,
+timed-out, or unlaunchable optional runtimes do not reject native apps or prevent
+trying a fallback runtime. Mac RPC updates also discover the installed BOINC app's
+`boinccmd` when the service user's PATH is restricted.
+Because stock workunit routing binds a numeric version rather than an exact
+app-version ID, reservation rejects another active platform/plan at the same app
+and numeric version. Use distinct candidate version numbers per platform/plan;
+the runner never globally deprecates other versions to force routing.
+
+#### Pre-staging an acceptance fixture
+
+Before running, the operator stages licensed test inputs in the project's normal
+hashed download hierarchy, installs the reviewed app's existing input/output
+templates and any app-specific validator job registry, and writes
+`/project/acceptance/qwen-cpu.json`. The fixture includes its app-native workunit
+identity (for example, `usnm_qwen_` plus its actual job hash); the adapter refuses
+an identity already present in the database rather than renaming it and breaking
+validator identity binding. Stage a fresh job identity for each acceptance run.
+The adapter creates one fresh host-targeted workunit, **not** a claim on production queue work. Example
+manifest shape (replace input names/digests and resource bounds with the reviewed
+fixture's actual requirements, including cold image/model extraction space):
+
+```json
+{
+  "release": {"app": "usnm_qwen", "version_num": 100, "platform": "x86_64-pc-linux-gnu", "plan_class": "docker_mt_2b"},
+  "workunit_name": "REPLACE_WITH_ACTUAL_APP_WORKUNIT_NAME",
+  "account_id": 42,
+  "batch": 12,
+  "min_quorum": 2,
+  "peer_host_ids": [3],
+  "profile": {"cpus": 4, "memory_bytes": 6442450944, "disk_bytes": 42949672960, "gpu": "none"},
+  "input_template": "usnm_qwen_acceptance_in",
+  "output_template": "usnm_qwen_out",
+  "inputs": [{"name": "fixture-physical-input", "sha256": "REPLACE_WITH_ACTUAL_SHA256"}],
+  "outputs": [{"name": "result.json", "kind": "json", "equals": {"unit_error": null}, "nonempty": ["transcription"]}]
+}
+```
+
+Stage an acceptance-specific input template whose explicit quorum, replica,
+RAM/disk, error/result limits and deadline match the manifest/runner bounds:
+`min_quorum=target_nresults=Q`, `max_error_results=1`,
+`max_total_results=max_success_results=Q+1`, resource bounds equal `profile`,
+and `delay_bound=14400`. A stock production template may override CLI flags;
+conflicts are rejected before reservation/provisioning, and effective database
+workunit fields are verified after creation and before accepting output. The
+manifest quorum must also be satisfied by successful validated results from all
+approved distinct hosts, not merely by an early canonical ID. Input hashing is
+streamed in bounded chunks, including multi-gigabyte native model payloads.
+
+List **all** template inputs in positional order, with actual content hashes, and
+all required canonical outputs. JSON checks use dotted object keys; `text` checks
+require non-whitespace UTF-8, `xml` checks require well-formed XML. Use the
+application's actual result schema; this example is not a ready-to-submit Qwen
+job. Project host assignments must already be enabled. The manifest quorum is
+never reduced by the runner: `peer_host_ids` must name exactly quorum-minus-one
+existing dedicated independent peers (distinct from the driven client). The adapter
+adds only exact-workunit, exact-host assignments for these peers; it never opens
+work to an entire account/team. Those peers must already be compatible and
+attached/running on the same isolated account; absent consensus correctly times out. A
+single-client structural-validation fixture is suitable only where the app's
+existing scientific/trust policy permits it, not as a consensus bypass.
+
+Fixture reservation and dispatch intent are durable and serialized per fixture.
+An interrupted/uncertain dispatch is never retried automatically. After a
+transport failure, inspect the server's `*.reservation.json` and actual BOINC
+workunit before manual recovery. Releasing a fixture does not delete/cancel its
+workunit, outputs, or validation history; late results remain reportable. The
+runner never mutates project trust, validation, or queue-allocation policy.
+
+Every catchable exit (success, timeout, command failure, SIGINT/SIGTERM/SIGHUP)
+attempts fixture release and ephemeral-client teardown. Teardown has its own
+bounded budget and polls until the resource group is absent; an unconfirmed
+delete makes acceptance fail and records the exact group for recovery. Recovery
+can use `scripts/boinc/boinc-test-client.sh --env prod --delete --resource-suffix <run_id>`
+without an authenticator file. If the runner itself is killed or its host fails,
+also reconcile/remove its local `.boinc-acceptance-<run_id>` credential copy and
+`.boinc-provision-<run_id>` parameter directory; these private artifacts are ignored
+by Git but must not be retained or committed. As with
+any process, SIGKILL, host failure, or an unavailable control plane needs operator
+reconciliation using the run ID/resource group; no cleanup guarantee is possible
+under those conditions. Total run defaults to 30 minutes (maximum 4 hours),
+commands to 120 seconds, cleanup to 10 minutes (maximum 30 minutes).
+
+Evidence is created exclusively with mode 0600 and contains the exact release,
+host/resource preflight, canonical result ID, output hashes/sizes, and cleanup
+outcome. Raw RPC state, authenticators, DB errors, output transcription, and
+subprocess stdout/stderr are never logged or persisted. Canonical bytes are
+retrieved only to check their hashes/lengths and the server-side output contract.
+Canonical bytes can be read from the upload hierarchy or, after completed
+assimilation, the exact workunit/batch collected-output path. Moves during
+collection are retried safely. Missing files in both locations, registration
+alone, and a successful upload without independent validation cannot pass. Evidence paths must be new for each run.
+
+Offline tests (mock Azure/BOINC; no Docker or resources needed):
+
+```sh
+python3 -m unittest discover -s scripts/boinc -p test_acceptance.py
+```
 
 ## Mac app versions
 
@@ -364,7 +654,7 @@ maintainer publishes and signs from the merged commit.
 1. Merge the native build changes, then dispatch `boinc-worker.yml` from `main`.
    Verify both architecture checks and anonymous pulls, and commit its index
    digest as `images.worker` through a PR. Follow the cohort drain procedure in
-   [docs/boinc.md](../../docs/boinc.md#publish-the-worker-image).
+   [docs/boinc/worker-image.md](../../docs/boinc/worker-image.md#publish-the-worker-image).
 2. Dispatch `boinc-mac-wrapper.yml` from the same reviewed commit. Download the
    `boinc-mac-wrappers` artifact: `docker_wrapper_arm64`, `docker_wrapper_x86_64`,
    `BOINC_COMMIT`, and `SHA256SUMS`. Alternatively, on a Mac with Xcode:
@@ -387,7 +677,7 @@ maintainer publishes and signs from the merged commit.
    ```sh
    (cd /tmp/mac-wrappers && shasum -a 256 -c SHA256SUMS)
    # Run from the clean repository checkout, using the checked checksum below.
-   scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.1 \
+   scripts/boinc/boinc-app-release.sh --env prod --app usnm_ocr --version 1.1 \
      --signing-host HOST --platform arm64-apple-darwin \
      --wrapper /tmp/mac-wrappers/docker_wrapper_arm64 \
      --wrapper-sha256 CHECKED_SHA256 \
@@ -412,8 +702,8 @@ maintainer publishes and signs from the merged commit.
 
 The standalone Mac spike found an upstream `Run_Podman` command-quoting failure
 when restarting a paused container, which `scripts/boinc/patch-mac-wrapper.py`
-fixes during `scripts/boinc/build-mac-wrapper.sh` ([evaluation
-note](../../docs/notes/boinc-buda-arm-evaluation.md)). Native image execution
+fixes during `scripts/boinc/build-mac-wrapper.sh` ([Mac tests without a project
+server](../../docs/notes/2026-10-14-buda-mac-offline-tests.md)). Native image execution
 succeeds; BOINC lifecycle behavior still needs full client and server validation
 on a reserved Mac workunit. See
 [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),

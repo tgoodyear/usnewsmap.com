@@ -241,6 +241,7 @@ mod tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            text_loc: None,
             page_language: Vec::new(),
             page_language_set: None,
             congress: Default::default(),
@@ -339,11 +340,16 @@ mod tests {
             run(on.clone(), none.clone()).await.american_stories_only,
             Some(0)
         );
-        // One field for both texts (05 §5.5.7): the same pages, no count.
-        let single = on.with_text_layout(usnm_core::text_layout::TextLayout::Single);
-        let a = run(single.clone(), q).await;
-        assert_eq!((a.summary.total_hits, a.american_stories_only), (25, None));
-        assert_eq!(run(single, none).await.american_stories_only, None);
+        // One field for all the texts (05 §5.5.7): the same pages, no count.
+        for layout in [
+            usnm_core::text_layout::TextLayout::Single,
+            usnm_core::text_layout::TextLayout::SingleWithLoc,
+        ] {
+            let single = on.clone().with_text_layout(layout);
+            let a = run(single.clone(), q.clone()).await;
+            assert_eq!((a.summary.total_hits, a.american_stories_only), (25, None));
+            assert_eq!(run(single, none.clone()).await.american_stories_only, None);
+        }
     }
 
     #[tokio::test]

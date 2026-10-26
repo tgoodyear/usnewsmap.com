@@ -20,18 +20,13 @@
 #   2. unless the node is already connected, creates a throwaway app
 #      registration and service principal with a 2-hour secret and only
 #      Azure Connected Machine Onboarding on the environment's group;
-#   3. copies scripts/ocr-node/node-setup.sh, the worker's unit,
-#      usnm-ocr-worker.service, and reboot-if-needed.sh (the weekly reboot
-#      window's script) to the node and runs node-setup.sh with
-#      sudo, sending the tenant, app id and secret on its stdin (never on a
-#      command line, never on the node's disk); on a RHEL node that isn't
-#      registered with Red Hat yet, also the organization id and activation
-#      key, which it reads from the nodes' Key Vault (OCR_KEYVAULT, secrets
-#      rhel-org-id and rhel-activation-key) with your sign-in, the same way
-#      (docs/operations.md); and the exchange account
-#      and the nodes' Application Insights connection string
-#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
-#      unit, and --reboot-day, the node's day for its weekly reboot window
+#   3. copies scripts/ocr-node/node-setup.sh and reboot-if-needed.sh (the
+#      weekly reboot window's script) to the node and runs node-setup.sh
+#      with sudo, sending the tenant, app id and secret on its stdin (never
+#      on a command line, never on the node's disk); and the exchange
+#      account and the nodes' Application Insights connection string
+#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets), and --reboot-day,
+#      the node's day for its weekly reboot window
 #      (a new node needs one no other node has; without it, a node keeps
 #      the day it has);
 #   4. deletes the role assignment, the service principal and the app
@@ -48,8 +43,7 @@
 #
 # --dry-run checks the settings and your sign-in and prints the plan; it
 # registers nothing, creates nothing in Entra, doesn't connect to the node,
-# adds no group member and installs nothing. It lists the Key Vault's secret
-# names (not their values) to check the Red Hat ones are there.
+# adds no group member and installs nothing.
 #
 # Needs az signed in with the right to register applications in the tenant,
 # to assign roles on the environment's group and to write its Arc machines,
@@ -57,9 +51,8 @@
 # User Access Administrator plus Contributor, or plus Azure Connected
 # Machine Resource Administrator and Monitoring Contributor), and to add
 # members to the nodes' group (an owner of it, as group.sh makes you), and
-# ssh. For a RHEL node, also Key Vault Secrets Officer on the nodes' Key
-# Vault (USNM_OCR_KEYVAULT_ADMINS), from an address its firewall allows
-# (USNM_OCR_NODE_IPS). Registering the three providers is a subscription-level action
+# ssh. RHEL hosts must already be registered and have their OS repositories
+# enabled by their infrastructure operator. Registering the three providers is a subscription-level action
 # (Microsoft.<namespace>/register/action, in Contributor or Owner on the
 # subscription); without it they have to be registered already.
 # Works with macOS's bash 3.2.
@@ -95,7 +88,7 @@ case "$REBOOT_DAY" in ""|Mon|Tue|Wed|Thu|Fri|Sat|Sun) ;; *) die "--reboot-day: M
 
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
-[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/azure/bootstrap.sh --env $ENV_NAME first"
 
 SUBSCRIPTION=$(aget AZURE_SUBSCRIPTION_ID)
 TENANT=$(aget AZURE_TENANT_ID)
@@ -109,20 +102,18 @@ NODE_GROUP=$(aget USNM_OCR_NODE_GROUP)
 CONN=$(aget OCR_NODE_APPINSIGHTS)
 APPI_ID=$(aget OCR_NODE_APPINSIGHTS_ID)
 DCR_ID=$(aget OCR_NODE_DCR_ID)
-# The nodes' Key Vault, for a RHEL node's Red Hat registration.
-KEYVAULT=$(aget OCR_KEYVAULT)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
-  die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh --env $ENV_NAME"
+  die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/azure/provision.sh --env $ENV_NAME"
 [ "$NODES" = true ] ||
-  die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/settings.sh --env $ENV_NAME --key USNM_OCR_NODES --value true, then scripts/provision.sh --env $ENV_NAME"
+  die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/azure/settings.sh --env $ENV_NAME --key USNM_OCR_NODES --value true, then scripts/azure/provision.sh --env $ENV_NAME"
 [ -n "$EXCHANGE" ] ||
-  die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/provision.sh --env $ENV_NAME first"
+  die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/azure/provision.sh --env $ENV_NAME first"
 [ -n "$NODE_GROUP" ] ||
-  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/provision.sh --env $ENV_NAME"
+  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/azure/provision.sh --env $ENV_NAME"
 [ -n "$DCR_ID" ] ||
-  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/provision.sh --env $ENV_NAME first"
+  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/azure/provision.sh --env $ENV_NAME first"
 [ -n "$CONN" ] ||
-  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/provision.sh --env $ENV_NAME"
+  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/azure/provision.sh --env $ENV_NAME"
 [ -n "$NODE_IPS" ] ||
   echo "warning: USNM_OCR_NODE_IPS is empty, so the exchange account's firewall lets no node in; set it to the node's public IP and provision"
 
@@ -145,10 +136,20 @@ echo "node group $NODE_GROUP_NAME ($NODE_GROUP)"
 appi=${APPI_ID##*/}
 echo "data collection rule ${DCR_ID##*/}; worker telemetry to ${appi:-none}"
 echo "node $HOST, Arc resource $NAME"
-echo "Red Hat secrets, for a RHEL node: ${KEYVAULT:-no OCR_KEYVAULT}"
 [ "$DRY_RUN" = false ] || echo "dry run: nothing is changed"
 
 TAGS="project=usnewsmap,environment=$ENV_NAME,role=ocr-node"
+
+# Check the OS before changing Azure resources or creating credentials.
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20)
+[ -z "$SSH_KEY" ] || SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
+if [ "$DRY_RUN" = false ]; then
+  ssh "${SSH_OPTS[@]}" "$HOST" \
+    'if [ "$(. /etc/os-release && printf %s "${ID:-}")" = rhel ]; then
+       sudo -n subscription-manager identity >/dev/null
+     fi' < /dev/null ||
+    die "can't verify host prerequisites; RHEL must be registered by the infrastructure operator before application onboarding"
+fi
 
 step "Resource providers"
 for ns in Microsoft.HybridCompute Microsoft.GuestConfiguration Microsoft.HybridConnectivity; do
@@ -206,7 +207,7 @@ cleanup() {
   # called once node-setup.sh has finished.
   # shellcheck disable=SC2319
   local status=$? ids id deleted="" ok attempt
-  SECRET="" RH_ORG="" RH_KEY=""
+  SECRET=""
   [ "$SP_CREATED" = true ] || return "$status"
   set +e
   step "Deleting the onboarding service principal"
@@ -309,38 +310,10 @@ elif [ "$DRY_RUN" = true ]; then
   echo "assign it Azure Connected Machine Onboarding ($ONBOARD_ROLE) on $SCOPE,"
   echo "and delete all three (purging the Entra objects) when this script exits"
 fi
-# The Red Hat organization id and activation key: read from the nodes' Key
-# Vault only for a RHEL node that isn't registered, kept in this shell's
-# memory, sent on node-setup.sh's stdin and cleared. Never printed.
-RH_ORG="" RH_KEY=""
-RH_SECRETS="rhel-org-id rhel-activation-key"
-read_rh_secrets() {
-  [ -n "$KEYVAULT" ] ||
-    die "$HOST runs RHEL and isn't registered with Red Hat, and there's no OCR_KEYVAULT for $ENV_NAME: run scripts/provision.sh --env $ENV_NAME, then set the secrets (docs/operations.md)"
-  local why="(you need Key Vault Secrets Officer, from USNM_OCR_KEYVAULT_ADMINS, and to be at an address in USNM_OCR_NODE_IPS)"
-  RH_ORG=$(az keyvault secret show --vault-name "$KEYVAULT" --name rhel-org-id --query value -o tsv) ||
-    die "can't read rhel-org-id from $KEYVAULT $why"
-  RH_KEY=$(az keyvault secret show --vault-name "$KEYVAULT" --name rhel-activation-key --query value -o tsv) ||
-    die "can't read rhel-activation-key from $KEYVAULT $why"
-  [ -n "$RH_ORG" ] && [ -n "$RH_KEY" ] || die "rhel-org-id or rhel-activation-key in $KEYVAULT is empty"
-  echo "read rhel-org-id and rhel-activation-key from $KEYVAULT"
-}
 if [ "$DRY_RUN" = true ]; then
-  if [ -z "$KEYVAULT" ]; then
-    echo "warning: no OCR_KEYVAULT, so a RHEL node that isn't registered with Red Hat can't be onboarded; run scripts/provision.sh --env $ENV_NAME"
-  elif names=$(az keyvault secret list --vault-name "$KEYVAULT" --query '[].name' -o tsv 2> /dev/null); then
-    for n in $RH_SECRETS; do
-      if grep -qx "$n" <<< "$names"; then
-        echo "$KEYVAULT has $n"
-      else
-        echo "warning: $KEYVAULT has no $n; a RHEL node that isn't registered can't be onboarded (docs/operations.md)"
-      fi
-    done
-  else
-    echo "warning: can't list $KEYVAULT's secrets (Key Vault Secrets Officer from USNM_OCR_KEYVAULT_ADMINS, at an address in USNM_OCR_NODE_IPS?)"
-  fi
-  echo "would copy scripts/ocr-node/node-setup.sh, usnm-ocr-worker.service and reboot-if-needed.sh to $HOST and run:"
-  echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret; on RHEL not yet registered, the Red Hat organization id and activation key from ${KEYVAULT:-OCR_KEYVAULT})"
+  echo "RHEL hosts must be registered and have OS repositories enabled before onboarding"
+  echo "would copy scripts/ocr-node/node-setup.sh and reboot-if-needed.sh to $HOST and run:"
+  echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret)"
 else
   if [ "$connected" != Connected ]; then
     # macOS date, then GNU date.
@@ -376,37 +349,18 @@ else
   # shellcheck disable=SC2029 # $remote is meant to expand here
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
   # shellcheck disable=SC2029
-  ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
-  # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/reboot-if-needed.sh" < scripts/ocr-node/reboot-if-needed.sh
-  # A RHEL node registers with Red Hat before node-setup.sh installs
-  # anything; one that's registered already needs no secrets.
-  # shellcheck disable=SC2016 # expanded on the node
-  rh=$(ssh "${SSH_OPTS[@]}" "$HOST" 'id=$(. /etc/os-release && printf %s "${ID:-}")
-    if [ "$id" != rhel ]; then echo other
-    elif sudo -n subscription-manager identity > /dev/null 2>&1; then echo registered
-    else echo unregistered; fi' < /dev/null) || die "can't check $HOST's OS over ssh"
-  case "$rh" in
-    other) ;;
-    registered) echo "$HOST runs RHEL and is registered with Red Hat" ;;
-    unregistered) read_rh_secrets ;;
-    *) die "unexpected answer from $HOST about its OS: $rh" ;;
-  esac
-  # The tenant, app id and secret, then the Red Hat organization id and
-  # activation key, go to the node on ssh's stdin, never on a command line;
-  # node-setup.sh reads them there. printf is a shell builtin, so they
-  # aren't in this machine's process list either. On a connected,
-  # registered node, nothing is sent.
+  # Only the application's temporary Azure onboarding credential is sent.
   status=0
-  if [ -n "$SECRET$RH_KEY" ]; then
+  if [ -n "$SECRET" ]; then
     # shellcheck disable=SC2029 # the arguments are meant to expand here
-    printf '%s\n%s\n%s\n%s\n%s\n' "${SECRET:+$TENANT}" "${SECRET:+$APP_ID}" "$SECRET" "$RH_ORG" "$RH_KEY" |
+    printf '%s\n%s\n%s\n' "$TENANT" "$APP_ID" "$SECRET" |
       ssh "${SSH_OPTS[@]}" "$HOST" "sudo bash $remote/node-setup.sh $SETUP_ARGS" || status=$?
   else
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" "$HOST" "sudo bash $remote/node-setup.sh $SETUP_ARGS" < /dev/null || status=$?
   fi
-  SECRET="" RH_ORG="" RH_KEY=""
+  SECRET=""
   # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "rm -rf $remote" || true
   [ "$status" -eq 0 ] || die "node-setup.sh failed on $HOST ($status)"
@@ -676,6 +630,5 @@ echo "$NAME has the node roles on $EXCHANGE through $NODE_GROUP_NAME; no provisi
 echo "A token the node fetched for storage before it joined the group lacks the membership"
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
 echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
-echo "  scripts/logs.sh --env $ENV_NAME --query-name ocr-node-health"
-echo "The worker starts once its binary is installed on the node, as root:"
-echo "  install -m 0755 usnm-ocr-worker /usr/local/bin/ && systemctl enable --now usnm-ocr-worker"
+echo "  scripts/azure/logs.sh --env $ENV_NAME --query-name ocr-node-health"
+echo "No direct queue worker is installed: local OCR runs through BOINC only (#966; docs/boinc/README.md)."

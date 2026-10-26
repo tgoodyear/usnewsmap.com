@@ -17,7 +17,7 @@ export const TERMS: [term: string, meaning: string][] = [
   ["Catalog", "The newspapers whose details are looked up."],
   [
     "OCR",
-    "Optical character recognition: reading the text off a page image. We run it ourselves only on Japanese-language pages the Library ships without searchable text (see OCR experiments).",
+    "Optical character recognition: reading the text off a page image. We also run it ourselves, on pages whose Library of Congress text is missing or misreads more words than ours: Japanese-language pages with NDLOCR-Lite, and others, such as German pages set in Fraktur, with Tesseract. New OCR runs through BOINC, on volunteers' computers (see Pages we read ourselves).",
   ],
   ["Release", "Building a new version of the search index (step 3) and publishing it (step 4)."],
   ["Version", "One published state of the search index. The site searches exactly one version at a time."],

@@ -2,6 +2,7 @@
 
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_core::params::ParamError;
 use usnm_search::SearchError;
@@ -40,7 +41,7 @@ pub enum ApiError {
     MediaType(String),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct Problem<'a> {
     #[serde(rename = "type")]
     kind: &'a str,
@@ -51,6 +52,11 @@ struct Problem<'a> {
     hint: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     position: Option<usize>,
+}
+
+/// The schema of a problem, for `/v1/openapi.json`.
+pub(crate) fn problem_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<Problem<'static>>()
 }
 
 impl From<ParamError> for ApiError {
@@ -66,6 +72,8 @@ impl From<SearchError> for ApiError {
             SearchError::Timeout => Self::Timeout,
             SearchError::Backend(msg) => Self::Backend(msg),
             SearchError::Rejected(msg) => Self::BackendRejected(msg),
+            // Only a version's load looks indexes up, so a search never sees it.
+            e @ SearchError::MissingIndex(_) => Self::Backend(e.to_string()),
         }
     }
 }

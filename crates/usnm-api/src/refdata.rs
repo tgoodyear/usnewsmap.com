@@ -12,6 +12,7 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use usnm_core::digest::hex;
 use usnm_core::params::{ParamError, RawParams, SearchRequest, Source};
 use usnm_core::query::Node;
 use usnm_core::text::{Analyzer, Analyzers};
@@ -34,7 +35,7 @@ pub const AMERICAN_STORIES_OFF_KEY: &str = "|american_stories=off";
 /// The reference files the API loads from each snapshot.
 const FILES: [&str; 3] = ["places.json", "titles.json", "baselines.json"];
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Bounds {
     pub from: NaiveDate,
     pub to: NaiveDate,
@@ -68,8 +69,10 @@ pub struct Current {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decades: Option<u32>,
     /// The `usnm_core::text_layout::TextLayout` of every main index (05
-    /// §5.5.7, #283): absent for a searched field per text (1), 2 for one
-    /// field for both. A layout this API doesn't know isn't loaded.
+    /// §5.5.7, #283, #925): absent for a searched field per text (1), 2 for
+    /// one field for both texts, 3 for one field that also holds LoC's
+    /// original text of the pages our OCR replaced it on. A layout this API
+    /// doesn't know isn't loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_layout: Option<u32>,
     /// The `usnm_core::page_language::VERSION` every main index's page
@@ -104,7 +107,7 @@ pub struct CongressIndexes {
 
 /// One Congress series in a version: `globe`, `serialset`, `annals` or
 /// `register` (`usnm_core::params::CONGRESS_SERIES`).
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct CongressSeries {
     pub series: String,
     pub pages: u64,
@@ -121,7 +124,7 @@ pub const CONGRESS_PLACE: &str = "PC001";
 pub const CONGRESS_PLACE_NAME: &str = "Congress";
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct JaIndexes {
     pub indexes: Vec<String>,
     /// The `usnm_core::ja` fold version the index was built with, which
@@ -158,6 +161,43 @@ pub struct Title {
     pub first_year: Option<u16>,
     #[serde(default)]
     pub last_year: Option<u16>,
+    /// The places of a title that moved, by the dates of its pages, oldest
+    /// first (`catalog/overrides/title-places.json`, #1066): a page dated
+    /// in one of them is in that place, and one in none is in `place_id`.
+    /// Empty for a title in one place and for a snapshot written before
+    /// they were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub place_periods: Vec<PlacePeriod>,
+}
+
+/// A place a title is in for part of its run: its pages dated from `from`
+/// to `to`, both days included. No `from` starts with the title, no `to`
+/// runs to its end.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PlacePeriod {
+    pub place_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<NaiveDate>,
+}
+
+impl Title {
+    /// Every place a page of the title can be in, each once: its periods'
+    /// places, oldest first, then its own place if no period is there.
+    /// Allocates nothing, for loops over every title.
+    pub fn place_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let periods = &self.place_periods;
+        periods
+            .iter()
+            .enumerate()
+            .filter(move |&(i, p)| !periods[..i].iter().any(|q| q.place_id == p.place_id))
+            .map(|(_, p)| p.place_id.as_str())
+            .chain(
+                Some(self.place_id.as_str())
+                    .filter(move |own| !periods.iter().any(|q| q.place_id == *own)),
+            )
+    }
 }
 
 /// Everything the API needs in memory for one published version.
@@ -493,20 +533,21 @@ impl RefData {
                     TextLayout::LATEST.version()
                 ))
             }
-            // One field for both texts holds the words as the version's
+            // One field for all the texts holds the words as the version's
             // analyzer folded them, and American Stories' text if the
             // version has any: queries folded by another analyzer would
             // silently miss, and text of an unknown version would be
             // searched without `matched_in` saying so. So both versions must
             // be ones this API knows.
-            Some(TextLayout::Single) => {
+            Some(layout) if layout.searches_one_field() => {
+                let n = layout.version();
                 if current
                     .common_grams
                     .and_then(usnm_core::common_grams::analyzer)
                     .is_none()
                 {
                     return Err(format!(
-                        "current.json's text_layout 2 needs a common_grams version this API \
+                        "current.json's text_layout {n} needs a common_grams version this API \
                          knows, not {:?}",
                         current.common_grams
                     ));
@@ -516,13 +557,13 @@ impl RefData {
                     .is_some_and(|v| v != usnm_core::american_stories::VERSION)
                 {
                     return Err(format!(
-                        "current.json's text_layout 2 holds American Stories' text of version \
+                        "current.json's text_layout {n} holds American Stories' text of version \
                          {:?}, which this API doesn't know",
                         current.american_stories
                     ));
                 }
             }
-            Some(TextLayout::Separate) => {}
+            Some(_) => {}
         }
         let place_pages: HashMap<String, u64> = baselines
             .iter()
@@ -660,11 +701,11 @@ impl RefData {
 
     /// Whether searches cover American Stories' text: the version has it and
     /// `USNM_AMERICAN_STORIES_SEARCH` doesn't switch it off. With one field
-    /// for both texts the setting can't: the text is searched whatever it
+    /// for all the texts the setting can't: the text is searched whatever it
     /// says (05 §5.5.7).
     pub fn searches_american_stories(&self) -> bool {
         self.has_american_stories()
-            && (self.american_stories_search || self.text_layout() == TextLayout::Single)
+            && (self.american_stories_search || self.text_layout().searches_one_field())
     }
 
     /// Whether the setting leaves out the American Stories' text the version
@@ -680,7 +721,7 @@ impl RefData {
     pub fn american_stories_setting_ignored(&self) -> bool {
         self.has_american_stories()
             && !self.american_stories_search
-            && self.text_layout() == TextLayout::Single
+            && self.text_layout().searches_one_field()
     }
 
     /// The response caches' key (in process and, hashed, in Blob, 06 §6.5)
@@ -1037,10 +1078,6 @@ async fn fetch(store: &dyn ObjectStore, path: &str) -> Result<Vec<u8>, String> {
 
 fn parse<T: for<'de> Deserialize<'de>>(path: &str, bytes: &[u8]) -> Result<T, String> {
     serde_json::from_slice(bytes).map_err(|e| format!("{path}: {e}"))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

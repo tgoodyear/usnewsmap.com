@@ -38,7 +38,7 @@ impl Controller {
             &bin.join("mysql"),
             r#"#!/bin/sh
 case "$*" in
-  *"SELECT id FROM host"*) printf '1\n2\n3\n4\n';;
+  *"SELECT id FROM host"*) printf '%b' "${HOST_IDS:-1\n2\n3\n4\n}";;
   *"usnm_spot_"*) printf '%s\n' "${SPOT_HOST:-2}";;
   *"SELECT r.hostid"*) printf '%s\n' "${SOURCE_HOST:-1}";;
   *"r.workunitid=w.id"*) printf '%b' "${GOLD_STATUS:-}";;
@@ -106,6 +106,7 @@ exit "${CREATE_STATUS:-0}"
                 "root": root, "project": project, "jobs_root": fx.options.root,
                 "mysql_defaults": defaults, "mysql_ca": ca, "database": "fixture",
                 "trust": trust, "prepared": prepared,
+                "scope": {"language":"eng", "profile":"eng", "psm":3, "dpi":300},
                 "engine": {"base":format!("fixture@sha256:{}", "c".repeat(64)),
                     "dpi":300, "image": IMAGE, "psm":3, "timeout_secs":300, "version":"5.5.0"},
                 "max_hosts":1, "max_spots":1, "sample_every":1
@@ -560,4 +561,169 @@ async fn quarantine_view_is_read_only_and_excludes_released_or_failed_jobs() {
         .unwrap()
         .is_empty());
     assert!(!c.root.exists());
+}
+
+#[tokio::test]
+async fn onboarding_checks_only_prepared_campaign_scope_and_manifest() {
+    let c = Controller::new().await;
+    let base = c.fx.tmp.path();
+    let trust_path = base.join("trust.json");
+    let prepared_json = base.join("prepared/prepared.json");
+    let eng_manifest = "b".repeat(64);
+    let deu_manifest = "d".repeat(64);
+
+    // Coexisting English hosts {1, 8} and German hosts {1, 9}.
+    let coexisting = serde_json::json!({
+        "hosts": { IMAGE: [1, 8] },
+        "manifest_sha256": eng_manifest,
+        "scope": { "language": "eng", "profile": "eng", "psm": 3, "dpi": 300 },
+        "max_cer": 0.08734328574534386,
+        "policies": [
+            {
+                "hosts": { IMAGE: [1, 8] },
+                "manifest_sha256": eng_manifest,
+                "scope": { "language": "eng", "profile": "eng", "psm": 3, "dpi": 300 },
+                "max_cer": 0.08734328574534386
+            },
+            {
+                "hosts": { IMAGE: [1, 9] },
+                "manifest_sha256": deu_manifest,
+                "scope": { "language": "deu", "profile": "frak2021", "psm": 3, "dpi": 300 },
+                "max_cer": 0.06755715386591318
+            }
+        ],
+        "v": usnm_boinc::trust::TRUST_VERSION
+    });
+    write(&trust_path, serde_json::to_vec(&coexisting).unwrap());
+
+    let mut cfg: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c.config).unwrap()).unwrap();
+    cfg["max_hosts"] = serde_json::json!(10);
+    write(&c.config, serde_json::to_vec(&cfg).unwrap());
+
+    // English campaign skips {1, 8} (does NOT submit Gold to host 8) and targets [9].
+    let out = c
+        .command("onboard")
+        .env("HOST_IDS", "1\\n8\\n9\\n")
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[9]");
+
+    // German campaign skips {1, 9} and targets [8].
+    let mut prep: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&prepared_json).unwrap()).unwrap();
+    prep["manifest_sha256"] = serde_json::json!(deu_manifest);
+    write(&prepared_json, serde_json::to_vec(&prep).unwrap());
+    cfg["scope"] =
+        serde_json::json!({"language": "deu", "profile": "frak2021", "psm": 3, "dpi": 300});
+    write(&c.config, serde_json::to_vec(&cfg).unwrap());
+    let out = c
+        .command("onboard")
+        .env("HOST_IDS", "1\\n8\\n9\\n")
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[8]");
+
+    // Loading the English-only v4 policy must NOT skip hosts 1 and 8 for a German campaign.
+    let v4_eng_only = serde_json::json!({
+        "hosts": { IMAGE: [1, 8] },
+        "manifest_sha256": eng_manifest,
+        "scope": { "language": "eng", "profile": "eng", "psm": 3, "dpi": 300 },
+        "max_cer": 0.08734328574534386,
+        "v": 4
+    });
+    write(&trust_path, serde_json::to_vec(&v4_eng_only).unwrap());
+    let out = c
+        .command("onboard")
+        .env("HOST_IDS", "1\\n8\\n9\\n")
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[1,8,9]");
+
+    // Missing campaign scope on controller config is rejected for onboarding.
+    cfg.as_object_mut().unwrap().remove("scope");
+    write(&c.config, serde_json::to_vec(&cfg).unwrap());
+    assert!(!c
+        .command("onboard")
+        .env("HOST_IDS", "1\\n8\\n9\\n")
+        .output()
+        .unwrap()
+        .status
+        .success());
+}
+
+#[tokio::test]
+async fn onboarding_upgrade_respects_legacy_pending_and_uncertain_attempts() {
+    let c = Controller::new().await;
+    let base = c.fx.tmp.path();
+    let prepared = usnm_boinc::gold::prepare::read(&base.join("prepared")).unwrap();
+    let cfg: usnm_boinc::host_trust::Config =
+        serde_json::from_slice(&std::fs::read(&c.config).unwrap()).unwrap();
+    let legacy_campaign = boinc::sha256(&serde_json::to_vec(&(&prepared, &cfg.engine)).unwrap());
+    let legacy_host3 = c.root.join("onboard").join(&legacy_campaign).join("3");
+    let legacy_unit = legacy_host3.join("units/0000");
+
+    // 1. An uncertain `submitting` marker in the pre-upgrade legacy campaign root refuses
+    // both planning and execution instead of creating a fresh workunit in the scoped root.
+    write(&legacy_unit.join("submitting"), b"");
+    assert!(!c.command("onboard").output().unwrap().status.success());
+    assert!(!c
+        .command("onboard")
+        .arg("--execute")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(c.calls().is_empty());
+
+    // 2. Reconciling an absent workunit by removing `submitting` (leaving the legacy directory
+    // without `submitted`) allows a fresh scoped attempt for host 3.
+    std::fs::remove_file(legacy_unit.join("submitting")).unwrap();
+    let out = c.command("onboard").output().unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[3]");
+
+    // 3. Reconciling the legacy marker to `submitted` with a pending unit skips host 3 and
+    // plans/dispatches host 4 instead of re-submitting host 3.
+    let job = usnm_boinc::gold::submit::job(&prepared, &cfg.engine, 0).unwrap();
+    write(
+        &legacy_unit.join(usnm_boinc::gold::job::JOB_FILE),
+        serde_json::to_vec_pretty(&job).unwrap(),
+    );
+    write(&legacy_unit.join("submitted"), b"");
+
+    let pending_status = "NULL\\tNULL\\tNULL\\tNULL\\tNULL\\tNULL\\n";
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", pending_status)
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[4]");
+
+    // 3. If the legacy attempt failed terminally, `onboard --execute` records `failure.json`
+    // in the legacy root and issues a retry for host 3 in the scoped campaign root.
+    let failed_status = "11\\t5\\t3\\t5\\t255\\t4572726F72202D31\\n";
+    let out = c
+        .command("onboard")
+        .env("GOLD_STATUS", failed_status)
+        .output()
+        .unwrap();
+    success(&out);
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[3]");
+    assert!(!legacy_host3.join("failure.json").exists());
+
+    success(
+        &c.command("onboard")
+            .arg("--execute")
+            .env("GOLD_STATUS", failed_status)
+            .output()
+            .unwrap(),
+    );
+    assert!(legacy_host3.join("failure.json").is_file());
+    assert_eq!(c.calls().lines().count(), 1);
+    assert!(c.calls().contains("--target_host 3"));
 }

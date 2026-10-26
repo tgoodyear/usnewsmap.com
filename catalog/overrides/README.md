@@ -77,7 +77,7 @@ own place. For a title naming two cities ("Fort Worth-Dallas"), alias it
 to the first. `history` items can hold `to`.
 
 The gazetteer `geocode` uses is `../gazetteer/us-places.csv`, built by
-`scripts/build-gazetteer.py` from the Census Bureau's national places
+`scripts/data/build-gazetteer.py` from the Census Bureau's national places
 file (public domain).
 
 Spellings that key alike ("St. Paul" and "Saint Paul") and "X City" next
@@ -89,8 +89,9 @@ coordinates came from (`coordinates_from`).
 ## Title places
 
 `title-places.json` places a title whose LoC record lists several places
-(a paper that moved) in one city and state, whatever its record says.
-Entries are sorted by `lccn`, with keys in alphabetical order:
+(a paper that moved) in one city and state, where most of its pages were
+published, whatever its record says. Entries are sorted by `lccn`, with keys in
+alphabetical order:
 
 ```json
 [
@@ -98,7 +99,31 @@ Entries are sorted by `lccn`, with keys in alphabetical order:
 ]
 ```
 
-`history` items can hold `city` and `state`.
+A paper whose record dates its moves can also give its places by date, with
+`places` (#1066). Each page then takes the place for its date, and the entry's
+own `city` and `state` stay the title's place, where most of its pages were
+published. `places` lists at least two places, oldest
+first. The first has no `from` and the last no `to`, and each starts
+(`from`) the day after the one before ends (`to`), so every date has a place.
+Dates are `YYYY-MM-DD`, and both days are in the place. The entry's `city`
+and `state` must be one of the places, spelled the same. A place `geocode`
+can't find in the gazetteer needs its own entry in `places.json`.
+
+```json
+[
+  { "added": "2026-10-10", "city": "Dover", "lccn": "sn84024361", "places": [{ "city": "Limerick", "state": "ME", "to": "1833-11-13" }, { "city": "Dover", "from": "1833-11-14", "state": "NH" }], "reason": "Where and when it was published.", "ref": 235, "source": "Where that comes from, for each date.", "state": "NH" }
+]
+```
+
+Give a date only where a source gives it, and name the source in `source`:
+a place with no dated source stays out of `places`. A change of an entry to
+or from places by date shows in `history` with `"places": null` for a
+version that had none. `history` items can hold `city`, `places` and
+`state`.
+
+The change reaches the pages with the next full release, as any change to a
+published title's place does; incremental releases keep a published title in
+its one place until then.
 
 ## Title overrides
 

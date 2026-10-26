@@ -5,7 +5,9 @@
 //! Clients are keyed by a salted hash of their address (IPv6 by /64), held
 //! only in memory; addresses are never logged (09 §9.4.2). The address is
 //! taken from `X-Forwarded-For` counting back `trusted_proxy_hops` entries
-//! from the right, since entries further left are client-supplied.
+//! from the right, since entries further left are client-supplied, or, with
+//! `USNM_TRUST_CF_CONNECTING_IP`, from Cloudflare's `CF-Connecting-IP` when
+//! the request comes from this host (see [`ClientAddress`]).
 
 use std::hash::BuildHasher;
 use std::net::IpAddr;
@@ -21,23 +23,23 @@ pub struct Limiter {
     buckets: DefaultKeyedRateLimiter<u64>,
     /// Randomly keyed per process: the salt for client keys.
     salt: std::collections::hash_map::RandomState,
-    hops: usize,
+    source: ClientAddress,
 }
 
 impl Limiter {
-    pub fn new(limit: RateLimit, trusted_proxy_hops: usize) -> Self {
+    pub fn new(limit: RateLimit, source: ClientAddress) -> Self {
         Self {
             buckets: RateLimiter::keyed(
                 Quota::per_minute(limit.per_minute).allow_burst(limit.burst),
             ),
             salt: Default::default(),
-            hops: trusted_proxy_hops,
+            source,
         }
     }
 
     /// Take one token for this client, or say how long until one is available.
     pub fn check(&self, headers: &HeaderMap, peer: Option<IpAddr>) -> Result<(), Duration> {
-        let key = client_ip(headers, peer, self.hops).map_or(0, |ip| self.key(ip));
+        let key = self.source.of(headers, peer).map_or(0, |ip| self.key(ip));
         self.buckets
             .check_key(&key)
             .map_err(|not_until| not_until.wait_time_from(DefaultClock::default().now()))
@@ -55,6 +57,44 @@ impl Limiter {
     pub fn housekeeping(&self) {
         self.buckets.retain_recent();
         self.buckets.shrink_to_fit();
+    }
+}
+
+/// Where a request's client address comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientAddress {
+    /// `hops` entries from the right of `X-Forwarded-For` ([`client_ip`]):
+    /// 1 behind Container Apps' ingress.
+    Forwarded { hops: usize },
+    /// `CF-Connecting-IP`, which Cloudflare's edge sets, but only on a request
+    /// from a loopback peer: the cloudflared and proxy on this host. Any
+    /// other peer could have written the header itself, so its own address
+    /// counts, as it does for a request without the header (a local probe).
+    /// `X-Forwarded-For` isn't read.
+    CloudflareViaLoopback,
+}
+
+impl ClientAddress {
+    /// The client address of a request with these headers from `peer`.
+    pub fn of(self, headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
+        match self {
+            Self::Forwarded { hops } => client_ip(headers, peer, hops),
+            Self::CloudflareViaLoopback => cf_connecting_ip(headers, peer),
+        }
+    }
+}
+
+/// `CF-Connecting-IP` if `peer` is loopback and the request has the header
+/// once, with an address; otherwise `peer`.
+fn cf_connecting_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
+    if !peer.is_some_and(|p| p.to_canonical().is_loopback()) {
+        return peer;
+    }
+    // Two copies can't both be Cloudflare's.
+    let mut values = headers.get_all("cf-connecting-ip").iter();
+    match (values.next(), values.next()) {
+        (Some(v), None) => v.to_str().ok().and_then(|s| parse_ip(s.trim())).or(peer),
+        _ => peer,
     }
 }
 
@@ -115,6 +155,46 @@ mod tests {
         assert_eq!(client_ip(&xff(&["garbage"]), peer, 1), peer);
     }
 
+    fn cf(values: &[&str]) -> HeaderMap {
+        let mut h = xff(&["198.51.100.20"]);
+        for v in values {
+            h.append("cf-connecting-ip", v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn cf_connecting_ip_counts_only_from_a_loopback_peer() {
+        let source = ClientAddress::CloudflareViaLoopback;
+        let visitor: IpAddr = "203.0.113.7".parse().unwrap();
+        for peer in ["127.0.0.1", "127.0.0.53", "::1", "::ffff:127.0.0.1"] {
+            let peer = Some(peer.parse().unwrap());
+            assert_eq!(source.of(&cf(&["203.0.113.7"]), peer), Some(visitor));
+            assert_eq!(
+                source.of(&cf(&["2001:db8::7"]), peer),
+                Some("2001:db8::7".parse().unwrap())
+            );
+            // No header (a local probe), a bad one or two of them: the peer.
+            assert_eq!(source.of(&cf(&[]), peer), peer);
+            assert_eq!(source.of(&cf(&["garbage"]), peer), peer);
+            assert_eq!(source.of(&cf(&["203.0.113.7", "203.0.113.8"]), peer), peer);
+        }
+        // Any other peer could have set it: its own address, never the header's
+        // or X-Forwarded-For's.
+        for peer in ["192.0.2.9", "2001:db8::9"] {
+            let peer = Some(peer.parse().unwrap());
+            assert_eq!(source.of(&cf(&["203.0.113.7"]), peer), peer);
+        }
+        assert_eq!(source.of(&cf(&["203.0.113.7"]), None), None);
+        // The default reads X-Forwarded-For as before and ignores the header.
+        let forwarded = ClientAddress::Forwarded { hops: 1 };
+        let peer = Some("127.0.0.1".parse().unwrap());
+        assert_eq!(
+            forwarded.of(&cf(&["203.0.113.7"]), peer),
+            Some("198.51.100.20".parse().unwrap())
+        );
+    }
+
     #[test]
     fn buckets_are_per_client_and_ipv6_by_prefix() {
         let l = Limiter::new(
@@ -122,7 +202,7 @@ mod tests {
                 per_minute: NonZeroU32::new(1).unwrap(),
                 burst: NonZeroU32::new(2).unwrap(),
             },
-            1,
+            ClientAddress::Forwarded { hops: 1 },
         );
         let a = xff(&["1.1.1.1"]);
         assert!(l.check(&a, None).is_ok());

@@ -9,10 +9,11 @@
 <g id="volunteer-inputs" class="box" data-state="@@cls:boinc-staging@@">
 <rect class="card" x="10" y="40" width="240" height="126" rx="4"/>
 <rect class="bar" x="10" y="41" width="6" height="124" rx="2"/>
-<text class="ttl" x="24" y="60">1  Campaign inputs / mirror</text>
+<text class="ttl" x="24" y="60">1  Campaign inputs</text>
 <text x="24" y="80">Explicitly staged originals or crops;</text>
 <text x="24" y="98">input provenance and rollout gates.</text>
-<text x="24" y="116">Mirror coverage not verified here.</text>
+<text x="24" y="116">Served from the BOINC server;</text>
+<text x="24" y="134">the R2 relay is gone (ADR-0024).</text>
 <text class="st" x="24" y="150">@@lbl:boinc-staging@@</text>
 </g>
 <g id="volunteer-ready" class="box" data-state="@@cls:boinc-ready@@">

@@ -3,13 +3,16 @@
 //! See `docs/design/` for the design these modules implement:
 //! - [`american_stories`]: American Stories' second text of a page (05 §5.5.4, #218)
 //! - [`ids`]: page keys and collision-free document ids (04 §4.2)
+//! - [`page_id`]: source-qualified page identifiers, `<source>:<local id>` (ADR-0026)
 //! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
 //! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
 //! - [`common_grams`]: common-word pairs, so phrases skip common words' positions (05 §5.5.3)
 //! - `damage` (feature `damage`): the OCR damage metric, version 2 (12 §12.5, #296)
 //! - [`decade`]: decade partitions, so date-limited searches skip splits (05 §5.5.5, #123)
+//! - [`digest`]: lowercase hex and sha256 of bytes and files
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
 //! - [`ocr_variants`]: the spellings OCR commonly gives a word, for `word~ocr` (06 §6.4, #124)
+//! - [`fractions`]: a number and a fraction glyph, also searched as OCR reads them with a slash (06 §6.4, #1067)
 //! - [`lang`]: MARC, ISO 639-3 and word-list language codes; with feature `damage`, the word lists (12 §12.5, #296)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
@@ -28,12 +31,15 @@ pub mod cube;
 #[cfg(feature = "damage")]
 pub mod damage;
 pub mod decade;
+pub mod digest;
+pub mod fractions;
 pub mod ids;
 pub mod ja;
 pub mod lang;
 pub mod names;
 pub mod ocr_engine;
 pub mod ocr_variants;
+pub mod page_id;
 pub mod page_language;
 pub mod params;
 pub mod query;
@@ -43,3 +49,5 @@ pub mod skew;
 pub mod text;
 pub mod text_layout;
 pub mod time;
+
+pub use digest::{hex, sha256_file, sha256_hex};

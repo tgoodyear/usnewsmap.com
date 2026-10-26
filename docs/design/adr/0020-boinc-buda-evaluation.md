@@ -4,7 +4,7 @@
 - **Date:** 2026-10-16
 - **Extends:** [ADR-0019](0019-boinc-server-hosting.md)
 - **Issue:** [#481](https://github.com/tgoodyear/usnewsmap.com/issues/481)
-- **Evidence:** [evaluation note](../../notes/2026-10-14-buda-evaluation.md), [Mac standalone tests](../../notes/2026-10-14-buda-mac-offline-tests.md), [native ARM worker tests](../../notes/2026-10-14-buda-native-arm64.md) and [remaining spike procedure](../../experiments/2026-10-14-buda/README.md)
+- **Evidence:** [evaluation note](../../notes/2026-10-14-buda-evaluation.md), [Mac standalone tests](../../notes/2026-10-14-buda-mac-offline-tests.md), [native ARM worker tests](../../notes/2026-10-14-buda-native-arm64.md) and [remaining spike procedure](../../notes/2026-10-14-buda/README.md)
 
 ## Context
 

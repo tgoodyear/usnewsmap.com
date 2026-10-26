@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest as _, Sha256};
+use usnm_core::digest::hex;
 use usnm_core::ocr_engine::EngineTag;
 use usnm_ocr_contract::message::OcrMessage;
 use usnm_ocr_contract::runs::RunRecord;
@@ -235,10 +236,6 @@ pub fn emit_failed(r: &FailedRead<'_>) {
         cold_start = r.info.cold_start,
         "ocr_engine_run"
     );
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 #[cfg(test)]

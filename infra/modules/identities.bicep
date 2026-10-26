@@ -11,6 +11,8 @@ param location string
 param tags object
 param appName string
 param ingestName string
+@description('Create id-usnm-ingest, the Azure ingest jobs\' identity. False (once every ingest-image job is gone, #917) deletes it, and its outputs are empty.')
+param ingest bool = true
 @description('The CI identity\'s name.')
 param ciName string
 @description('GitHub repository allowed to deploy, as owner/name.')
@@ -26,7 +28,7 @@ resource app 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   tags: tags
 }
 
-resource ingest 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+resource ingestIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (ingest) {
   name: ingestName
   location: location
   tags: tags
@@ -66,9 +68,9 @@ output appId string = app.id
 output appName string = app.name
 output appClientId string = app.properties.clientId
 output appPrincipalId string = app.properties.principalId
-output ingestId string = ingest.id
-output ingestClientId string = ingest.properties.clientId
-output ingestPrincipalId string = ingest.properties.principalId
+output ingestId string = ingest ? ingestIdentity.id : ''
+output ingestClientId string = ingest ? ingestIdentity!.properties.clientId : ''
+output ingestPrincipalId string = ingest ? ingestIdentity!.properties.principalId : ''
 output ciId string = ci.id
 output ciClientId string = ci.properties.clientId
 output ciPrincipalId string = ci.properties.principalId

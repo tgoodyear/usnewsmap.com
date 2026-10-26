@@ -7,12 +7,15 @@
 //!   `/assets/`) get `index.html`, so client-side routes survive a reload.
 //!   The app's own pages (`/`, `/datasets`, `/privacy`, `/credits`) are 200; any other
 //!   such path gets the same shell with a 404, and the app shows a not-found
-//!   page. Missing files are a plain 404. `/privacy` gets its own title,
-//!   canonical link and `og:url` in the shell, since it is indexed.
+//!   page. Missing files are a plain 404, which no cache may keep
+//!   (`no-store`): it can be a gap in a deploy. `/privacy` gets its own
+//!   title, canonical link and `og:url` in the shell, since it is indexed.
 //! - `/status`, the dataset details page's old path, is redirected (301) to
 //!   `/datasets` with its query, so existing links keep working.
 //! - Hashed assets are cached for a year; `index.html` is revalidated on
-//!   every load so a release shows up at once.
+//!   every load so a release shows up at once. The app's pages carry an
+//!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
+//!   costs a `304`.
 //! - Legacy search links redirect to `/search/<query>`. Curated base searches
 //!   are indexable; other searches and filter variants carry `noindex`.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
@@ -22,20 +25,28 @@ use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::handler::HandlerWithoutStateExt;
-use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use sha2::{Digest, Sha256};
 use tower_http::services::ServeDir;
 
+use crate::error::ApiError;
+use crate::AppState;
+
 /// Headers on every response (the site's and the API's). `connect-src`
-/// allows the same-origin API and the OpenFreeMap basemap.
-pub const SECURITY_HEADERS: [(&str, &str); 4] = [
+/// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
+///
+/// HSTS starts at five minutes, for the host that sends it alone (no
+/// `includeSubDomains`) and without `preload`: a browser keeps it for
+/// `max-age` even after a release removes it, so it grows in steps (#955).
+pub const SECURITY_HEADERS: [(&str, &str); 5] = [
     (
         "content-security-policy",
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob: https:; font-src 'self' https://tiles.openfreemap.org; \
-         connect-src 'self' https://tiles.openfreemap.org; \
+         connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com; \
          worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; \
          form-action 'self'",
     ),
@@ -45,6 +56,7 @@ pub const SECURITY_HEADERS: [(&str, &str); 4] = [
         "permissions-policy",
         "geolocation=(), camera=(), microphone=()",
     ),
+    ("strict-transport-security", "max-age=300"),
 ];
 
 /// The longest file name the filesystem takes (Linux `NAME_MAX`).
@@ -55,13 +67,15 @@ const NAME_MAX: usize = 255;
 const NAME_LIMIT: usize = NAME_MAX - ".br".len();
 
 /// The site as a service for the API router's fallback.
-pub fn router(dir: PathBuf) -> Router {
+pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     let index = dir.join("index.html");
     let spa = {
         let index = index.clone();
+        let state = state.clone();
         move |req: Request| {
             let index = index.clone();
-            async move { app_route(req, index).await }
+            let state = state.clone();
+            async move { app_route(req, index, state).await }
         }
     };
     let files = ServeDir::new(dir)
@@ -74,6 +88,7 @@ pub fn router(dir: PathBuf) -> Router {
     // like any other path with no file.
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
+        let state = state.clone();
         async move {
             if let Some(location) = matches!(*req.method(), Method::GET | Method::HEAD)
                 .then(|| search_redirect(req.uri()))
@@ -91,13 +106,14 @@ pub fn router(dir: PathBuf) -> Router {
             // Search terms can contain dots, encoded slashes or long segments;
             // they are routes, never files in the static directory.
             if search_query(req.uri().path()).is_some()
+                || matches!(req.uri().path(), "/" | "/index.html")
                 || req
                     .uri()
                     .path()
                     .split('/')
                     .any(|s| decoded_len(s) > NAME_LIMIT)
             {
-                app_route(req, index).await
+                app_route(req, index, state).await
             } else {
                 next.run(req).await
             }
@@ -277,9 +293,146 @@ fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
     html.into_bytes()
 }
 
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn insert_content(body: Vec<u8>, content: &str) -> Vec<u8> {
+    // The built shell is UTF-8. Preserve its bytes if an invalid file is deployed.
+    match String::from_utf8(body) {
+        Ok(html) => html
+            .replacen("</main>", &format!("{content}</main>"), 1)
+            .into_bytes(),
+        Err(error) => {
+            tracing::error!("site index is not UTF-8");
+            error.into_bytes()
+        }
+    }
+}
+
+fn curated_links() -> String {
+    let mut paths: Vec<_> = CURATED_SEARCHES.iter().collect();
+    paths.sort();
+    let links: String = paths
+        .into_iter()
+        .map(|path| {
+            let q = search_query(path).expect("curated search path");
+            format!(r#"<li><a href="{path}">{}</a></li>"#, escape_html(&q))
+        })
+        .collect();
+    format!("<nav aria-label=\"Common newspaper searches\"><h2>Common searches</h2><ul>{links}</ul></nav>")
+}
+
+async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
+    use crate::routes::{cached_body, with_timeout, Job};
+    use crate::version::Pinning;
+    use usnm_core::ids::PageKey;
+    use usnm_core::params::RawParams;
+    use usnm_core::time::date_from_day;
+    use usnm_search::HitsQuery;
+
+    let snap = state.snapshot.load_full();
+    let raw = form_urlencoded::Serializer::new(String::new())
+        .append_pair("q", q)
+        .finish();
+    let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
+    let canonical = search.canonical();
+    let version = snap.refdata.version().to_owned();
+    let key = snap
+        .refdata
+        .search_key("site-preview-v2", &canonical, &search.query);
+    let st = state.clone();
+    let compute = async move {
+        let rd = &snap.refdata;
+        let indexes = rd.index_set_for_request(&search)?;
+        let summary = with_timeout(
+            &st,
+            st.config.compute_cap,
+            snap.backend.summary(
+                &indexes,
+                &search.query,
+                &search.filters,
+                &search.bucket_spec(),
+            ),
+        )
+        .await?;
+        let top = summary.places.iter().max_by(|a, b| {
+            a.hits
+                .cmp(&b.hits)
+                .then_with(|| b.place_id.cmp(&a.place_id))
+        });
+        let Some(top) = top else {
+            return Ok("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned());
+        };
+        let place = rd
+            .place(&top.place_id)
+            .map(|p| format!("{}, {}", p.name, p.state))
+            .unwrap_or_else(|| top.place_id.clone());
+        let page = HitsQuery {
+            place_id: Some(top.place_id.clone()),
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let result = with_timeout(
+            &st,
+            st.config.compute_cap,
+            snap.backend
+                .hits(&indexes, &search.query, &search.filters, &page),
+        )
+        .await?;
+        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        for hit in result.hits {
+            let title = rd
+                .titles
+                .get(&hit.lccn)
+                .map_or(hit.lccn.as_str(), |title| title.name.as_str());
+            let date = date_from_day(hit.day);
+            let label = format!("{} — {date}, page {}", escape_html(title), hit.seq);
+            let citation = match (!rd.current.synthetic)
+                .then(|| PageKey::from_doc_id(&hit.doc_id).ok())
+                .flatten()
+                .map(|key| key.viewer_url(None))
+            {
+                Some(url) => format!(r#"<a href="{}">{label}</a>"#, escape_html(&url)),
+                None => label,
+            };
+            html.push_str(&format!("<li><p>{citation}</p>"));
+            for snippet in hit.snippets {
+                html.push_str(&format!(
+                    "<p>{}</p>",
+                    escape_html(&snippet.replace("<mark>", "").replace("</mark>", ""))
+                ));
+            }
+            html.push_str("</li>");
+        }
+        html.push_str(
+            "</ol><p>The interactive map and full results require JavaScript.</p></section>",
+        );
+        Ok::<_, ApiError>(html)
+    };
+    let (_, body) = cached_body(
+        state,
+        Job::search("site-preview", false, state.config.compute_cap),
+        key,
+        &Pinning::Unversioned,
+        &version,
+        "/search",
+        &canonical,
+        compute,
+    )
+    .await?;
+    let body = body.ok_or(ApiError::Busy)?;
+    serde_json::from_slice(&body)
+        .map_err(|error| ApiError::Backend(format!("invalid search preview cache: {error}")))
+}
+
 /// A path with no file behind it: `index.html` for app routes (404 unless
 /// the app has a page there), else a plain 404.
-async fn app_route(req: Request, index: PathBuf) -> Response {
+async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Response {
     let path = req.uri().path();
     // The last segment ignoring a trailing slash, so `/favicon.svg/` is a
     // missing file (a plain 404), not an app route.
@@ -313,34 +466,102 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
     } else {
         StatusCode::NOT_FOUND
     };
-    let html = (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned());
-    // HEAD: the headers GET would send, without sending the body.
-    if req.method() == Method::HEAD {
-        return match tokio::fs::read(&index).await {
-            Ok(body) => (
-                status,
-                [
-                    html,
-                    (
-                        header::CONTENT_LENGTH,
-                        shell_for(path, body).len().to_string(),
-                    ),
-                ],
-            )
-                .into_response(),
-            Err(e) => {
-                tracing::error!(error = %e, path = %index.display(), "site index missing");
-                (StatusCode::NOT_FOUND, "not found").into_response()
-            }
-        };
-    }
-    match tokio::fs::read(&index).await {
-        Ok(body) => (status, [html], shell_for(path, body)).into_response(),
+    let mut body = match tokio::fs::read(&index).await {
+        Ok(body) => shell_for(path, body),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
-            (StatusCode::NOT_FOUND, "not found").into_response()
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        }
+    };
+    if status == StatusCode::OK {
+        if let Some(q) = search_query(path) {
+            // Only bounded, curated base searches add backend work on a page load.
+            if !noindex(req.uri()) {
+                match search_preview(&state, &q).await {
+                    Ok(preview) => body = insert_content(body, &preview),
+                    Err(error) => {
+                        tracing::warn!("search page preview unavailable");
+                        return error.into_response();
+                    }
+                }
+            }
+        } else if matches!(path, "/" | "/index.html") {
+            body = insert_content(body, &curated_links());
         }
     }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    // A page gets a validator; the not-found shell doesn't, since a 404
+    // ignores preconditions (RFC 9110 §13.2.1).
+    if status == StatusCode::OK {
+        let etag = page_etag(&body);
+        if not_modified(req.headers(), &etag) {
+            // The 304 carries what a cache keeps from it, as the 200 would,
+            // `Vary` included: the compression layer adds `Accept-Encoding`
+            // to the 200 but never sees this empty body. (CORS adds its own.)
+            return (
+                StatusCode::NOT_MODIFIED,
+                [
+                    (header::ETAG, etag),
+                    (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+                    (header::VARY, HeaderValue::from_static("accept-encoding")),
+                ],
+            )
+                .into_response();
+        }
+        headers.insert(header::ETAG, etag);
+    }
+    // HEAD: the headers GET would send, without sending the body.
+    if req.method() == Method::HEAD {
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from(body.len()));
+        return (status, headers).into_response();
+    }
+    (status, headers, body).into_response()
+}
+
+/// A page's validator, from the bytes it sends, so every replica serving
+/// one build sends the same one. Weak, because the compression layer sends
+/// those bytes in more than one encoding.
+fn page_etag(body: &[u8]) -> HeaderValue {
+    let digest = Sha256::digest(body);
+    let tag = format!(
+        "W/\"{:016x}\"",
+        u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"))
+    );
+    HeaderValue::from_str(&tag).expect("hex is a valid header value")
+}
+
+/// Whether `If-None-Match` names `etag` (or is `*`), compared weakly as
+/// RFC 9110 §13.1.2 asks: `W/"x"` and `"x"` match.
+fn not_modified(headers: &HeaderMap, etag: &HeaderValue) -> bool {
+    let Ok(ours) = etag.to_str() else {
+        return false;
+    };
+    let ours = ours.strip_prefix("W/").unwrap_or(ours);
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.trim() == "*" || entity_tags(v).any(|t| t == ours))
+}
+
+/// The tags in an `If-None-Match` list, each with its quotes and without
+/// `W/`, up to anything malformed. A tag can hold commas (and `*`), so the
+/// list is read tag by tag, not split.
+fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
+    let mut rest = list;
+    std::iter::from_fn(move || {
+        rest = rest.trim_start_matches(|c: char| c == ',' || c.is_ascii_whitespace());
+        let tag = rest.strip_prefix("W/").unwrap_or(rest);
+        // The closing quote, counting the opening one.
+        let end = tag.strip_prefix('"')?.find('"')? + 2;
+        let (opaque, after) = tag.split_at(end);
+        rest = after;
+        Some(opaque)
+    })
 }
 
 async fn cache_control(req: Request, next: Next) -> Response {
@@ -351,6 +572,13 @@ async fn cache_control(req: Request, next: Next) -> Response {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
+    // A missing file: a cache that kept it (the edge's, for one) could go on
+    // answering 404 for a file the next deploy brings.
+    if resp.status() == StatusCode::NOT_FOUND && !html {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return resp;
+    }
     // The 404 app shell names this release's assets, like the 200 one.
     if !resp.status().is_success() && !(html && resp.status() == StatusCode::NOT_FOUND) {
         return resp;
@@ -431,7 +659,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connect_src_allows_only_the_api_and_basemap() {
+    fn connect_src_allows_only_the_api_basemap_and_boinc() {
         let csp = SECURITY_HEADERS
             .iter()
             .find(|(name, _)| *name == "content-security-policy")
@@ -442,8 +670,54 @@ mod tests {
             .map(str::trim)
             .find(|directive| directive.starts_with("connect-src "))
             .unwrap();
-        assert_eq!(connect, "connect-src 'self' https://tiles.openfreemap.org");
+        assert_eq!(
+            connect,
+            "connect-src 'self' https://tiles.openfreemap.org https://boinc.usnewsmap.com"
+        );
         assert!(!csp.contains("blob.core.windows.net"));
+    }
+
+    #[test]
+    fn hsts_is_short_and_for_this_host_alone() {
+        let hsts = SECURITY_HEADERS
+            .iter()
+            .find(|(name, _)| *name == "strict-transport-security")
+            .unwrap()
+            .1;
+        assert_eq!(hsts, "max-age=300");
+        let lower = hsts.to_ascii_lowercase();
+        assert!(!lower.contains("includesubdomains") && !lower.contains("preload"));
+    }
+
+    #[test]
+    fn if_none_match_compares_weakly_and_takes_a_list() {
+        let etag = page_etag(b"<!doctype html>");
+        let tag = etag.to_str().unwrap();
+        assert!(tag.starts_with("W/\"") && tag.len() == 2 + 16 + 2, "{tag}");
+        assert_eq!(page_etag(b"<!doctype html>"), etag);
+        assert_ne!(page_etag(b"<!doctype html> "), etag);
+        let strong = tag.trim_start_matches("W/");
+        let matches = |values: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in values {
+                h.append(header::IF_NONE_MATCH, HeaderValue::from_str(v).unwrap());
+            }
+            not_modified(&h, &etag)
+        };
+        assert!(matches(&[tag]));
+        assert!(matches(&[strong]));
+        assert!(matches(&["*"]));
+        assert!(matches(&[&format!("\"other\", {tag}")]));
+        assert!(matches(&[&format!("\"a,b\",W/\"c\" , {strong}")]));
+        assert!(matches(&["\"other\"", tag]));
+        assert!(!matches(&[]));
+        assert!(!matches(&["\"other\""]));
+        assert!(!matches(&["W/\"0000000000000000\""]));
+        // One tag that holds commas and `*`, not a list with `*` in it.
+        assert!(!matches(&["\"old,*,release\""]));
+        // Nothing after a malformed entry counts.
+        assert!(!matches(&[&format!("garbage, {tag}")]));
+        assert!(!matches(&[&format!("\"unclosed, {tag}")]));
     }
 
     #[test]

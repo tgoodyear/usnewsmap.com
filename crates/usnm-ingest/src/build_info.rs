@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::source::hex;
 
 /// The commit the image was built from (`ARG USNM_GIT_SHA` in
-/// `Dockerfile.ingest`, set by CI). Absent outside CI builds.
+/// `docker/Dockerfile.ingest`, set by CI). Absent outside CI builds.
 const COMMIT_ENV: &str = "USNM_GIT_SHA";
 
 /// What a run builds: which indexes it writes, on which engine.
@@ -264,6 +264,17 @@ mod tests {
         assert_eq!(v["features"]["text_layout"], 2);
         let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
         assert!(yaml.contains("name: text_all,") && !yaml.contains("name: text_cg,"));
+    }
+
+    #[test]
+    fn records_the_layout_that_keeps_locs_original_text() {
+        let mut b = built(true, false);
+        b.text_layout = usnm_core::text_layout::TextLayout::SingleWithLoc;
+        let v = record(&b);
+        assert_eq!(v["features"]["text_layout"], 3);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("name: text_all,") && yaml.contains("name: text_loc,"));
+        assert!(!yaml.contains("name: text_cg,"));
     }
 
     #[test]

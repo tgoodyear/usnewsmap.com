@@ -1,0 +1,14 @@
+{
+  "bench-assets": {
+    "asset": "bench-assets.tar.gz",
+    "members": "ocr/bench page images and raw native result archives",
+    "sha256": "4fca03750551f6787920c92bfc3a33d948da7524cf07e2b01c710cc695851a89",
+    "tag": "data-bench-assets-20261023-48fbb2a"
+  },
+  "report-data": {
+    "asset": "report-data.tar.gz",
+    "members": "docs/reports and docs/data files that are not prose or code",
+    "sha256": "47e0ee3387b3b596d932221f7fbaecefed0b548835f3d8aa4c3a5489449d148e",
+    "tag": "data-report-data-20261023-48fbb2a"
+  }
+}

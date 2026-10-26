@@ -16,8 +16,9 @@ joined PC can sit idle for a while. That is normal.
   and at least 3 GB of free video memory. A PC without one (AMD or Intel
   graphics, or no GPU) can only offer CPU time: add `-AllowCpuOnly` to both
   helper commands below. CPU work is optional and not always available.
-- 6 GB of RAM and 12 GB of free disk, or 18 GB if your GPU has 7 GB or more of
-  video memory.
+- 6 GB of RAM and 12 GiB of free disk, or 18 GiB if your GPU has 7 GB or more
+  of video memory (binary gigabytes: about 13 and 20 GB as most disk tools
+  show them).
 
 ## 2. Run the helper
 

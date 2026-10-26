@@ -17,7 +17,7 @@
 //   each execution until the queue is empty (or on `backfillCron`, while a
 //   backfill lasts). Archives are streamed, so no scratch disk is needed.
 // - `caj-usnm-jaocr-{env}` (when `jaOcrImage` is set): manual; `jaOcrReplicas`
-//   replicas of ja-ocr/jaocr.py, which OCRs the Japanese pages LoC has no text
+//   replicas of ocr/ja-ocr/jaocr.py, which OCRs the Japanese pages LoC has no text
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
@@ -29,7 +29,7 @@
 //   seed plan (`ocrSeed`), each run then tops `ocr-bulk` up with the
 //   pages LoC read worst (12 §12.5 Step 10).
 //   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
-//   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
+//   it (scripts/azure/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
 //   account's endpoints.
 // - `usnm-cong-caj-{env}` (when `congressJob`, named in main.bicep): manual, one replica of
 //   `usnm-ingest congress-globe` as id-usnm-ingest (#229, 04 §4.10): fetches
@@ -50,7 +50,7 @@
 // - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
-//   added a way for the execution to fail. scripts/ja-ocr/start-quality.sh
+//   added a way for the execution to fail. ocr/ja-ocr/tools/start-quality.sh
 //   starts those here and `quality` (which shares its chunks) on the jaocr job.
 //
 // The ingest job's Quickwit writer keeps its data on an NFS share
@@ -117,6 +117,9 @@ param pageLanguage bool = false
 @minValue(0)
 @maxValue(999999)
 param splitDocs int = 0
+@description('The writer\'s ingest API: v2 (at least once) or v1 (each accepted page once; the release restarts the writer for its final merges) (#283).')
+@allowed(['v1', 'v2'])
+param writerIngest string = 'v2'
 @minValue(1)
 @maxValue(32)
 param workers int = 8
@@ -185,12 +188,12 @@ var backfillMaxRuntimeSecs = 79200
 // ordinary ingest keeps its 48 h timeout; explicit full/staging runs get 96 h
 // (`ingestReplicaTimeoutSecs`). A full run that titles-sync didn't
 // finish releases nothing and fails, so the next execution resumes the sync
-// before it rebuilds (docs/operations.md, "Full rebuild").
+// before it rebuilds (docs/operations/rebuild-and-index-storage.md, "Full rebuild").
 var ingestCurateMaxRuntimeSecs = 21600
 var ingestTitlesMaxRuntimeSecs = 28800
 
 var scratch = !empty(scratchStorageName)
-// The pipeline runs as uid 10001 (Dockerfile.ingest); a new NFS share's root
+// The pipeline runs as uid 10001 (docker/Dockerfile.ingest); a new NFS share's root
 // belongs to root.
 var scratchDir = '/scratch/usnm'
 // The init container's 0.25 vCPU / 0.5 GiB count toward the replica's
@@ -309,6 +312,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
           env: concat(env, rawEnv, scratchEnv, writerTuningEnv, [
             { name: 'QW_AZURE_STORAGE_ACCOUNT', value: empty(indexStorageAccountName) ? storageAccountName : indexStorageAccountName }
             { name: 'USNM_MERGE_TIMEOUT_SECS', value: string(mergeTimeoutSecs) }
+            { name: 'USNM_WRITER_INGEST', value: writerIngest }
           ])
           volumeMounts: scratch ? [{ volumeName: 'scratch', mountPath: '/scratch' }] : null
         }
@@ -414,7 +418,7 @@ resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
       triggerType: 'Manual'
       manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
       replicaTimeout: replicaTimeoutSecs
-      // A retried replica takes its run's lock back (ja-ocr/solo.py).
+      // A retried replica takes its run's lock back (ocr/ja-ocr/solo.py).
       replicaRetryLimit: 1
     }
     template: {

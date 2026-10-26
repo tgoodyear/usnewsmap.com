@@ -48,7 +48,8 @@ impl Target {
     /// - `12` (`Container`): `docker_mt_2b` (2B CPU)
     /// - `18` (`Container8b`): `docker_nvidia_cuda_8b` (8B GPU)
     /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`)
-    /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`)
+    /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`,
+    ///   `intel_vulkan_8b`, `nvidia_vulkan_8b`, `amd_vulkan_8b`)
     pub fn batch(self) -> i32 {
         match self {
             Self::Container => 12,
@@ -568,6 +569,9 @@ mod tests {
 
         assert!(Target::Native8b.is_plan_class_compatible("apple_gpu_8b"));
         assert!(Target::Native8b.is_plan_class_compatible("nvidia_cuda_8b"));
+        assert!(Target::Native8b.is_plan_class_compatible("amd_vulkan_8b"));
+        assert!(!Target::Native2b.is_plan_class_compatible("amd_vulkan_8b"));
+        assert!(!Target::Container8b.is_plan_class_compatible("amd_vulkan_8b"));
         assert!(!Target::Native8b.is_plan_class_compatible("mt"));
         assert!(!Target::Native8b.is_plan_class_compatible("nvidia_cuda_2b"));
         assert!(!Target::Native8b.is_plan_class_compatible("docker_nvidia_cuda"));

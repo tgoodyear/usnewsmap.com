@@ -1,5 +1,104 @@
 # OCR gold set
 
+## German Fraktur cutover diagnostic (18 October 2026)
+
+[#835](https://github.com/tgoodyear/usnewsmap.com/issues/835) blocks the German
+bulk-feed handoff in [#833](https://github.com/tgoodyear/usnewsmap.com/issues/833).
+The existing shared trust policy is **English-only**; the German experiments
+below neither replace it nor authorize German publication.
+
+The pinned `247c` worker described below contains Tesseract 5.5.0 and
+`frak2021.traineddata` with SHA-256
+`1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a`,
+matching the model lock. Native ARM64 Docker execution verified this identity;
+it is not canonical BOINC host evidence.
+
+The NewsEye/READ Austrian newspaper training and validation archives from
+[Zenodo 3387369](https://doi.org/10.5281/zenodo.3387369) converted successfully
+using the existing public-source tooling. Credit ONB, NewsEye and READ under
+CC BY 4.0. Among regions meeting the default 200-2,500-character window, the
+training archive covers eight newspaper/date issues, all also represented in
+validation. The combined eligible universe has only **nine issues**. The
+publisher's train/validation split is therefore not an issue-disjoint split
+for this experiment. A bounded repository/history search found no previous
+ONB outcome record; this does not establish absence of previous evaluation
+or model-training overlap.
+
+Before running OCR, SHA-ranked issue selection with seed
+`835:onb-diagnostic-v1` froze four calibration issues, three heldout issues
+and two reserve issues. Each issue contributes at most three pages, with one
+region per page. Selection receipt SHA-256:
+`e24325e6ad77df7f5345859b9dfb524b590cb6db728876aefabecdeea35c81cd`.
+The partitions have no shared newspaper/date issue. Reference text, images,
+source archives and executable experiment scripts remain local; issue comments
+retain counts, provenance and artifact hashes.
+
+| Partition   | Issues | Crops | Character edits / reference characters |          CER | Word edits / reference words |
+| ----------- | -----: | ----: | -------------------------------------: | -----------: | ---------------------------: |
+| Calibration |      4 |    12 |                            420 / 7,786 |     0.053943 |                  289 / 1,118 |
+| Heldout     |      3 |     9 |                            582 / 5,860 |     0.099317 |                    253 / 844 |
+| Reserve     |      2 |     4 |                           Not executed | Not measured |                 Not measured |
+
+These runs used the exact worker, `frak2021`, PSM 3 and 300 DPI, with no
+complete-loss crops. Calibration controls replaced one, two or four
+deterministically hash-ranked real-engine predictions with empty output and
+recomputed scores. These are **synthetic output-loss controls**, not separate
+faulty-engine or volunteer runs. Their calibration CERs were 0.081171,
+0.122656 and 0.235936.
+
+Before heldout execution, the diagnostic candidate fixed a maximum CER of
+`0.06755715386591318`, halfway between the calibration positive and nearest
+loss control, plus complete-scoring and no-complete-loss guards. Candidate
+SHA-256:
+`3bde526c319ea225c852f60a5b6b0fbce4995ba838bc0ec3b552e8d1dc610a1f`.
+**The candidate failed:** it refused the genuine heldout output. All three
+heldout output-loss controls were refused too, but that does not repair the
+false rejection. The threshold was not retuned against the spent heldout,
+and the difficult region was not removed.
+
+### Segmentation investigation on spent data
+
+PSM 6 was evaluated only as development diagnosis on the already-used
+calibration and heldout crops:
+
+| Segmentation | Calibration character edits / 7,786 | Spent heldout character edits / 5,860 |
+| ------------ | ----------------------------------: | ------------------------------------: |
+| PSM 3        |                                 420 |                                   582 |
+| PSM 6        |                                 445 |                                   404 |
+
+PSM 6 worsens calibration while improving the spent heldout. This is not a
+fresh acceptance result, a reason to reinterpret the frozen candidate as
+passing, or approval to change the production PSM.
+
+The largest heldout error is a 673-by-157-pixel advertisement region from
+`ONB_aze_18950706_8`: crop PSM 3 produced 354 character edits / 538 reference
+characters. A separate full-page PSM 3 TSV run selected words whose centers
+lie inside the original region, retaining engine reading order without
+text-dependent matching. It produced 316 edits / 538 characters. More page
+context did not eliminate the error; this observation does not establish
+whether recognition, segmentation, reference alignment or their interaction
+is responsible.
+
+The broader Reichsanzeiger-GT reference archive was retrieved, but its
+maintainer-documented Mannheim image endpoint returned HTTP 503 on the
+initial image request and a separate service check. The Zenodo archive
+contains PAGE XML, not the corresponding scans; the checked GitHub releases
+have no image assets. No missing image was replaced with an unmatched scan.
+Broader image-backed evidence remains unavailable through that path until
+the source service recovers or a verified alternate source is established.
+
+Do not promote a German host or replace the shared English policy from these
+diagnostics. Scoped policy coexistence (`policies` in `trust.json`) now allows
+the shared `/project/gold/trust.json` artifact to retain existing calibrated v4/v5
+`eng/eng` trust while merging a separately calibrated `(language, profile)`
+scope (`usnm-boinc gold trust ... --out /project/gold/trust.json`), and both
+collection and spot-check planning enforce the workunit's exact
+`(language, profile, psm, dpi)` against its matching scoped entry without
+authorizing cross-scope collection. Remaining requirements before promoting a
+German scope include broader reference coverage, revised criteria frozen before
+fresh evaluation, partial-omission/wrong-model controls, and canonical
+exact-image BOINC Gold evidence. The two reserve issues remain unexecuted.
+
 ## Issue-disjoint current-worker calibration (17 October 2026)
 
 For #527/#751, the original BLN600 archive's publication/date metadata excluded
@@ -116,8 +215,9 @@ emulation also matched those counts (report SHA-256
 `c17ff88f1051623b5f71879981b07b8d8a900e08771f751b8536522a1c1baf41`);
 it is not a substitute for the actual Linux BOINC result.
 
-At `2026-10-17T07:19:56Z`, the normal local production mutex, all-six-idle
-preflight and infinite controller lease guarded the global trust promotion.
+At `2026-10-17T07:19:56Z`, the normal local production mutex, per-job idle
+preflight (historically all-six-idle before [#856](boinc-start-guard.md#coordination-boundaries))
+and infinite controller lease guarded the global trust promotion.
 Native receipts and the unchanged old policy were rechecked before publishing.
 `/project/gold/current247c-scope-eng-20261017/` retains the before-policy
 snapshot, generated candidate and promotion receipt. The actual shared
@@ -138,7 +238,7 @@ was used.
 
 Part of [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). The [engine survey](reports/2026-10-ocr-engine-survey/report.md) has no ground truth, so it can't report a character error rate (CER) or word error rate (WER); it relies on the damage metric. The gold set is a fixed set of crops with a person's transcription, so any engine, profile or route change can be scored by CER and WER on the same text. The plan in [13 §13.9](design/13-ocr-engines.md#139-how-the-survey-and-production-share-engine-images) already names `score --truth <crops dir>`; the gold set is what goes in that directory.
 
-The transcriptions of the 60 crops are not written yet. Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).
+The transcriptions of the 60 crops are not written yet, though the 40 Czech, Serbian, Polish and Russian crops are out for transcription (see [Selection](#selection)). Every `transcription` field is empty, and none may be filled from an engine's output. Until they are, the 60 are scored as engine agreement only (`gold.py agree`), and the accuracy numbers come from public datasets that already have human transcriptions, described in [Public ground truth](#public-ground-truth).
 
 ## Selection
 
@@ -149,6 +249,8 @@ The transcriptions of the 60 crops are not written yet. Every `transcription` fi
 - **Not stratified by typeface.** The sample records no typeface (Fraktur or Antiqua, for German). Record it in `notes` when transcribing; if a stratum turns out to hold one typeface only, add pages.
 - **Crop box.** One text region per page, chosen as the survey's `crops.py` does (a line of LoC's ALTO with 4 or more words in a block at least 600 pixels wide, and the region below it, up to 1,600 pixels wide and 6% of the page high), seeded per page. The box is fixed in the manifest.
 
+The survey's `scores.jsonl` is in the `report-data` set, so fetch it first: `scripts/ops/data-assets.sh --fetch --set report-data` ([reports/README.md](reports/README.md), "Data").
+
 ```sh
 scripts/ocr-survey/gold.py select --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl \
   --out fixtures/ocr-gold/selection.jsonl --target 60 --seed 296
@@ -158,11 +260,13 @@ scripts/ocr-survey/gold.py cut --selection fixtures/ocr-gold/selection.jsonl --s
 
 `select` with `--manifest SAMPLE/manifest-final.jsonl` gives the same choice and carries the image and ALTO URLs and checksums.
 
+The 40 Czech, Serbian, Polish and Russian crops (ten each) were cut on 22 October 2026 with `gold.py cut`'s box rule at seed 296. Polish and Russian have five pages each, so each of those pages gives a second, non-overlapping box. Their manifest and the empty transcription template are in `fixtures/ocr-gold/cze-srp-pol-rus/` (`manifest.jsonl`, `crops.jsonl`; the crop images are not committed), and the crops are out for transcription. Surya reads the same boxes as BOINC crop units, so its character error rate can be scored once the transcriptions come back: see [Surya on the gold crops](boinc-surya.md#surya-on-the-gold-crops-968).
+
 ## Japanese crops
 
 The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. Reference texts exist for them outside the repository: 23 files, and one more set aside. What their files and logs show about provenance:
 
-- No script, log or note beside them or in the repository records how the refs were made. `ja-ocr/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
+- No script, log or note beside them or in the repository records how the refs were made. `ocr/ja-ocr/tools/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
 - None is identical to any engine's text for the crop (best similarity per file 0.36 to 0.93 against NDLOCR-Lite, the prototype NDLOCR run, or Azure), so they are not copies of one engine's output.
 - The files were written between 10:35:20 and 10:50:46 on 4 October, 20 to 60 seconds apart, some of 1,400 to 1,700 characters, and two in the same second. That pace is not typing by a person. It fits transcription by a program or an AI model reading the images, but nothing on disk says which.
 - Fifteen lines contain the geta mark 〓 for an unreadable character. No engine's output contains it.
@@ -198,7 +302,7 @@ Needs transcription (crop from `sample.csv`, all unverified):
 | `sn83025333_1943-04-24_ed-1_seq-9`  | camp    | ref                                     |
 | `sn84025952_1944-04-20_ed-1_seq-7`  | camp    | ref                                     |
 
-The scorer for these is `scripts/ja-ocr/score.py`, which folds old character forms and also reports bigram F1. Japanese text has no spaces, so `gold.py`'s WER doesn't apply to it; once transcribed, the crops can be added to `crops.jsonl` with `lang` `jpn` and scored by CER.
+The scorer for these is `ocr/ja-ocr/tools/score.py`, which folds old character forms and also reports bigram F1. Japanese text has no spaces, so `gold.py`'s WER doesn't apply to it; once transcribed, the crops can be added to `crops.jsonl` with `lang` `jpn` and scored by CER.
 
 ## Crop format
 
@@ -250,7 +354,7 @@ cargo run --release -p usnm-ocr-survey -- score --crops OUT/crops.jsonl --hints 
 
 ## Public ground truth
 
-The 60-page selection stays untranscribed: the maintainer will not hand-transcribe pages. For those crops `gold.py agree` compares the engines' texts for the same box with each other. That number is agreement, not accuracy: two engines can agree and both be wrong. It says which engine is the odd one out on our pages, and nothing about how close any of them is to the printed text.
+The 60-page selection stays untranscribed: the maintainer will not hand-transcribe pages, though a named person may (see [Selection](#selection) for the 40 now out for transcription). For those crops `gold.py agree` compares the engines' texts for the same box with each other. That number is agreement, not accuracy: two engines can agree and both be wrong. It says which engine is the odd one out on our pages, and nothing about how close any of them is to the printed text.
 
 Accuracy needs a human transcription, so this section looks for public datasets that have one. Checked on 13 October 2026 from public documentation, dataset cards and repository metadata only; nobody was contacted. Anything I could not confirm is marked UNVERIFIED. Licences are quoted from the source named in the table.
 
@@ -350,7 +454,7 @@ cargo run --release -p usnm-ocr-survey -- score --crops OUT/reichsanzeiger/crops
 
 `--dataset` is `bln600`, `overproof-ca`, `reichsanzeiger`, `austrian`, `newseye-bnf`, `newseye-nlf-fi`, `newseye-nlf-sv` or `nzz` for scoring. The NewsEye sets take `--subset validation|training|all` (default `validation`, 16 to 122 MB; the Finnish training zip is 5.4 GB). `bln600` checks the zip's sha256 before opening it; the zip is AES-encrypted with the password `BLN600` printed on the dataset page, which Python's zipfile can't read, so it needs `bsdtar` or 7-Zip. `overproof-ca` fetches loc.gov's issue JSON, then each page's ALTO and full image, paced as `locfetch` does, and `public-convert` writes the line match rate to `match.json`. Its crop geometry comes from matched ALTO strings. String text is retained even when its coordinates are invalid. Implausible dimensions are repaired from page medians when the TextLine bounds do not confirm them. Plausible TextLine bounds constrain String origins and extents and provide a fallback. Conversion fails if a matched nonempty line has no usable geometry. Matched lines are kept in one crop only while consecutive in ALTO and spatially adjacent; distant lines remain in separate crops rather than producing a page-spanning union. `overproof-smh`, `enp-berlin`, `americanstories` and `ndl-pdm` fail the [source policy](#source-policy); `public-convert` refuses them unless `--not-for-scoring` is given, and their rows then carry `for_scoring: false`. Don't quote their numbers as accuracy. A crop is one transcribed region (a block of lines for the first three, one line for NDL), chosen by seed: regions inside a length window (200 to 2,500 normalized characters; 12 to 300 for NDL lines, overridable with `--min-chars` and `--max-chars`), at most `--per-page` (3) per page, taking one from each page before a second from any. Each crop row carries `source_dataset`, `source_url` and `source_license`, and `transcriber` reads "`<dataset>`: published ground truth" with `reviewer` "not applicable: published ground truth", which is what lets `validate` accept it. Nobody here reviewed those transcriptions; the dataset's authors did, by the process they describe.
 
-Three things were tested. Unit tests run on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing). A real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB) cut readable crops that line up with their text. The third is the set of real runs in the table below. The Reichsanzeiger conversion, the Austrian one and the NDL one have not run against real data yet. The Reichsanzeiger PAGE files were read, but its images were not downloaded. The NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on the real files.
+Three things were tested initially. Unit tests run on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing). A real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB) cut readable crops that line up with their text. The third is the set of real runs in the table below. The [18 October German diagnostic](#german-fraktur-cutover-diagnostic-18-october-2026) subsequently verified real Austrian archive parsing and conversion; the earlier inventory table's unverified-layout note is historical. Reichsanzeiger image retrieval returned HTTP 503, so its conversion still lacks real image-backed coverage. The NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on the real files.
 
 Real runs on 13 October 2026 (`public-fetch`, then `public-convert`, then `validate` with 0 errors):
 
@@ -401,11 +505,11 @@ cargo run --release -p usnm-ocr-survey -- bundle-build --version 1 --per-source 
 cargo run --release -p usnm-ocr-survey -- bundle-verify --bundle OUT/bundle/usnm-ocr-gold-v1.tar
 ```
 
-The deployed BOINC server can run the same build inside its VNet and check it against the lock: [Build the gold bundle](boinc.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
+The BOINC server can run the same build and check it against the lock, on the on-prem host with `usnm-boinc-step --step gold-bundle` ([boinc-onprem.md](boinc-onprem.md)); the Azure server ran it inside its VNet: [Build the gold bundle](boinc/gold-check.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
 
 **Version 1** (built 2026-10-13, seed 457, 30 per source): 142 crops, 30 BLN600, 30 Overproof CA (from 18 LoC pages), 24 NewsEye BnF, 18 NewsEye NLF Finnish, 10 NewsEye NLF Swedish and 30 NZZ lines. The tar is 9.6 MB (9.1 MB of shipped crops, a 140 KB manifest, 128 KB of licence files). A client also downloads 19 remotes: the 68 MB BLN600 zip and 18 page images. All 18 LoC page images matched the checksums recorded at conversion when fetched again on the same day.
 
-**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc.md](boinc.md#gold-check). For `usnm_gold` (#462), the server-side prepare step fetches each original once into its cache; submission verifies the MD5 and SHA-256 from `prepared.json` and stages ordinary sticky project downloads. Volunteers receive the unchanged archive and image files from the project server, then cut crops locally; the run step stays offline ([boinc.md](boinc.md#as-boinc-work-usnm_gold)). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
+**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc/gold-check.md](boinc/gold-check.md#gold-check). For `usnm_gold` (#462), the server-side prepare step fetches each original once into its cache; submission verifies the MD5 and SHA-256 from `prepared.json` and stages ordinary sticky project downloads. Volunteers receive the unchanged archive and image files from the project server, then cut crops locally; the run step stays offline ([boinc/gold-check.md](boinc/gold-check.md#as-boinc-work-usnm_gold)). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
 
 ### Current-worker observations, 16 October 2026
 
@@ -647,7 +751,7 @@ Checked in public documentation only, nobody contacted.
 
 ## Open
 
-- A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
+- A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only. The 40 Czech, Serbian, Polish and Russian crops are out for transcription (see [Selection](#selection)); none is filled in yet.
 - Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
 - Decide whether to commit the images once `cut` has run and the total is known.
 - `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.

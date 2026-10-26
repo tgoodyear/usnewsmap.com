@@ -1,5 +1,5 @@
 // Ephemeral BOINC volunteer test client VM (#484), deployed into its own resource group
-// usnm-boinc-test-rg-<env> by scripts/boinc-test-client.sh and removed by deleting that group.
+// usnm-boinc-test-rg-<env> by scripts/boinc/boinc-test-client.sh and removed by deleting that group.
 //
 // Outbound-only: the NSG denies all inbound traffic. Cloud-init installs Docker, the NVIDIA
 // driver and container toolkit when a GPU is present, and boinc-client (>= 8.2.13 from the
@@ -20,12 +20,15 @@ param vmSize string = 'Standard_NC4as_T4_v3'
 @description('Run as an Azure Spot VM with Delete eviction policy.')
 param spot bool = true
 
-@description('BOINC project master URL, for example https://boinc.usnewsmap.com/usnmocr/.')
+@description('BOINC project master URL, for example https://boinc.usnewsmap.com/.')
 param projectUrl string
 
 @secure()
 @description('Optional BOINC account authenticator; when empty, cloud-init creates a disposable test account on the project server.')
 param projectAuthenticator string = ''
+
+@description('Dedicated release acceptance: allow all CPUs and 90% RAM; never used for volunteer clients.')
+param acceptanceMode bool = false
 
 @description('Admin username for the Linux OS profile.')
 param adminUsername string = 'azureuser'
@@ -72,6 +75,11 @@ if lspci | grep -qi nvidia; then
 fi
 systemctl enable --now docker
 systemctl restart docker
+if [ '__ACCEPTANCE_MODE__' = true ]; then
+  install -d -o boinc -g boinc /var/lib/boinc
+  printf '%s\n' '<global_preferences><max_ncpus_pct>100</max_ncpus_pct><ram_max_used_busy_pct>90</ram_max_used_busy_pct><ram_max_used_idle_pct>90</ram_max_used_idle_pct></global_preferences>' > /var/lib/boinc/global_prefs_override.xml
+  chown boinc:boinc /var/lib/boinc/global_prefs_override.xml
+fi
 systemctl enable --now boinc-client
 systemctl restart boinc-client
 cd /var/lib/boinc
@@ -91,7 +99,7 @@ boinccmd --project_attach '__PROJECT_URL__' "$auth_key"
 '''
 
 var cloudInit = replace(
-  replace(cloudInitTemplate, '__PROJECT_URL__', projectUrl),
+  replace(replace(cloudInitTemplate, '__PROJECT_URL__', projectUrl), '__ACCEPTANCE_MODE__', string(acceptanceMode)),
   '__PROJECT_AUTHENTICATOR__',
   projectAuthenticator
 )

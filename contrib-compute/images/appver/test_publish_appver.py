@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 
 class PublishTests(unittest.TestCase):
@@ -30,7 +31,7 @@ class PublishTests(unittest.TestCase):
         (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('template')
         (self.source / 'project.xml').write_text('<project/>')
         lib = self.root / 'lib.sh'
-        lib.write_text('fail() { echo "$*" >&2; exit 1; }\nlog() { :; }\nfetch_secrets() { :; }\nrender_config() { :; }\n')
+        lib.write_text('SECRETS="$PROJ/local-secrets"\nDB_RUNTIME_USER=fixture\nexport DB_RUNTIME_USER\nfail() { echo "$*" >&2; exit 1; }\nlog() { :; }\nfetch_secrets() { mkdir -p "$SECRETS/keys"; printf fixture > "$SECRETS/db-runtime"; }\nrender_config() { :; }\n')
         script = Path(__file__).with_name('publish-appver.sh').read_text()
         script = script.replace('. /usr/local/lib/usnm-boinc/lib.sh', f'. "{lib}"')
         script = script.replace('src=/usr/local/lib/usnm-boinc/appver', f'src="{self.source}"')
@@ -44,6 +45,7 @@ class PublishTests(unittest.TestCase):
         return subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
                               env={**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr',
                                    'APPVER_VERSION': version, 'APPVER_PLATFORM': platform,
+                                   'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
                                    'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
 
     def test_sibling_platform_publish_and_replay_preserve_linux(self):
@@ -60,6 +62,69 @@ class PublishTests(unittest.TestCase):
         self.assertEqual((template.stat().st_ino, template.stat().st_mtime_ns), template_before)
         self.assertEqual(len((self.project / 'calls').read_text().splitlines()), 6)
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
+
+    def test_scoped_publication_preserves_live_configuration_and_app_registry(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing database configuration')
+        (self.project / 'config.xml').unlink()
+        (self.project / 'config.xml').symlink_to('/dev/shm/absent-web-config.xml')
+        (self.project / 'keys').symlink_to('/dev/shm/absent-web-keys')
+        before = os.readlink(self.project / 'config.xml')
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(os.readlink(self.project / 'config.xml'), before)
+        self.assertEqual(os.readlink(self.project / 'keys'), '/dev/shm/absent-web-keys')
+        self.assertTrue((self.project / 'local-secrets/appver-config.xml').is_file())
+        calls = (self.project / 'calls').read_text().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].endswith('update_versions'))
+        self.assertFalse((self.project / 'project.xml').exists())
+
+    def test_registration_workspace_is_private_secrets_local_and_removed(self):
+        update = self.project / 'bin/update_versions'
+        update.write_text('#!/bin/sh\npwd > "$PROJ/registration-workspace"\n'
+                          'python3 -c \'import os; assert os.stat(".").st_mode & 0o777 == 0o700\'\n')
+        forbidden = self.root / 'mktemp'
+        forbidden.write_text('#!/bin/sh\nexit 91\n')
+        forbidden.chmod(0o755)
+        with unittest.mock.patch.dict(os.environ, {'TMPDIR': str(self.root / 'absent')}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        workspace = Path((self.project / 'registration-workspace').read_text().strip())
+        self.assertEqual(workspace.parent, self.project / 'local-secrets')
+        self.assertTrue(workspace.name.startswith('appver-registration.'))
+        self.assertFalse(workspace.exists())
+        self.assertFalse(list((self.project / 'local-secrets').glob('appver-registration.*')))
+
+    def test_registration_refuses_fixed_share_modes_before_executing_php(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing configuration')
+        script = self.script.read_text().replace(
+            'path.mkdir(mode=0o700)',
+            'path.mkdir(mode=0o700)\npath.chmod(0o775)',
+        )
+        self.script.write_text(script)
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('must enforce private owner-only permissions', result.stderr)
+        self.assertFalse((self.project / 'calls').exists())
+        self.assertFalse(list((self.project / 'local-secrets').glob('appver-registration.*')))
+
+    def test_scoped_ownership_does_not_walk_live_download_tree(self):
+        (self.project / 'html/inc/boinc_db.inc').write_text('existing configuration')
+        chown = self.root / 'chown'
+        chown.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$PROJ/ownership-args"\n')
+        chown.chmod(0o755)
+        with unittest.mock.patch.dict(os.environ, {'APPVER_REUSE_PROJECT': '1'}):
+            result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = (self.project / 'ownership-args').read_text().splitlines()
+        self.assertIn(str(self.project / 'templates'), args)
+        self.assertNotIn(str(self.project / 'download'), args)
+        result = self.publish('x86_64-pc-linux-gnu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.project / 'download'),
+                      (self.project / 'ownership-args').read_text().splitlines())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_all_container_classes_publish_and_pass_actual_php_verification(self):
@@ -96,7 +161,8 @@ class BoincAppVersion {
                     env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
                          'APPVER_APP': app, 'APPVER_VERSION': '1.0',
                          'APPVER_PLATFORM': 'x86_64-pc-linux-gnu', 'APPVER_PLAN_CLASS': plan,
-                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                         'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                                   'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f'Verified {app} 1.0 x86_64-pc-linux-gnu {plan}', result.stdout)
@@ -117,7 +183,8 @@ class BoincAppVersion {
                     env={**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'container',
                          'APPVER_APP': app, 'APPVER_VERSION': '1.0', 'APPVER_PLATFORM': platform,
                          'APPVER_PLAN_CLASS': plan,
-                         'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
+                         'DB_HOST': 'db.example.org', 'DB_NAME': 'fixture', 'MASTER_HOST': 'boinc.example.org',
+                                   'PATH': str(self.root) + os.pathsep + os.environ['PATH']},
                 )
                 self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.project / 'calls').exists())
@@ -224,6 +291,40 @@ class BoincAppVersion {
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.project / 'reread_db').exists())
         self.assertFalse((self.project / '.usnm-publish.lock').exists())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_native_amd_publication_platforms_and_verification_contract(self):
+        for platform in ('x86_64-pc-linux-gnu', 'windows_x86_64',
+                         'aarch64-unknown-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin'):
+            with self.subTest(platform=platform):
+                subdir = f'{platform}__amd_vulkan_8b'
+                src = self.source / f'apps/usnm_qwen/1.0/{subdir}'
+                src.mkdir(parents=True)
+                (src / 'usnm_qwen').write_text('native-fixture')
+                # PHP checks the production verifier's allowlists without a real database.
+                (self.project / 'html/inc/boinc_db.inc').write_text('''<?php
+class BoincApp { static function lookup($query) { return (object)["id"=>1]; } }
+class BoincPlatform { static function lookup($query) { return (object)["id"=>2]; } }
+class BoincAppVersion { static function enum($query) {
+    if (strpos($query, "plan_class='amd_vulkan_8b'") === false) exit(9);
+    return [(object)["id"=>3]];
+} }
+''')
+                env = {**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'native',
+                       'APPVER_APP': 'usnm_qwen', 'APPVER_VERSION': '1.0',
+                       'APPVER_PLATFORM': platform, 'APPVER_PLAN_CLASS': 'amd_vulkan_8b',
+                       'DB_HOST': 'fixture', 'DB_NAME': 'fixture', 'MASTER_HOST': 'fixture',
+                       'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+                # Use real PHP for the database readback allowlist, not the default stub.
+                (self.root / 'php').unlink(missing_ok=True)
+                result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+                if platform in ('x86_64-pc-linux-gnu', 'windows_x86_64'):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f'Verified usnm_qwen 1.0 {platform} amd_vulkan_8b', result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('is not supported on', result.stderr)
+                    self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
 
 
 if __name__ == '__main__':

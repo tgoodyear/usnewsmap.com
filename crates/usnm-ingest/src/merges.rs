@@ -31,26 +31,35 @@
 //! leaves. The writer's output is watched for a full disk and for failed
 //! merges; either stops the release, so nothing is published half merged.
 
-use std::collections::BTreeMap;
+mod events;
+mod layout;
+mod node;
+mod watch;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::activity::Reporter;
-use crate::progress;
 use crate::sink::INDEX_TEMPLATE;
 use crate::state::MergeProgress;
 
+pub use events::{explained, FinalMerges, NodeEvents, EXIT_GRACE};
+pub use layout::{IndexLayout, Split};
+pub use node::{merge_gauges, Node};
+pub use watch::{Burn, Burndown, MergeWatch};
+
+use events::excerpt;
+use layout::check;
+use watch::{immature, log_wait};
+
 /// The ingest API's source in every index (Quickwit's ingest v2).
 pub const INGEST_SOURCE: &str = "_ingest-source";
-
-/// Splits listed per request.
-const PAGE: usize = 1000;
+/// Ingest v1's source in every index (`sink::IngestApi::V1`).
+pub const INGEST_V1_SOURCE: &str = "_ingest-api-source";
 
 /// A setting from the index template's `indexing_settings`, e.g.
 /// `split_num_docs_target`: the merge checks read the policy the indexes
@@ -87,215 +96,6 @@ pub fn max_partitioned_splits(docs: impl IntoIterator<Item = u64>, target: u64) 
     docs.into_iter().map(|d| max_splits(d, target)).sum()
 }
 
-/// What the writer node's output has said about the release so far: read
-/// line by line as the node writes it (`sink::forward`).
-#[derive(Debug, Default)]
-pub struct NodeEvents(Mutex<Events>);
-
-#[derive(Debug, Default)]
-struct Events {
-    /// Why the writer process ended, once it has.
-    exited: Option<String>,
-    disk_full: Option<String>,
-    merge_failed: Option<String>,
-    /// Each index's `_ingest-source` merge pipeline, by index id.
-    pipelines: BTreeMap<String, Pipeline>,
-}
-
-/// What the writer's output has said about one index's `_ingest-source`
-/// merge pipeline. The flags are about its current run: Quickwit logs
-/// "spawning merge pipeline" for a new pipeline and for each restart.
-#[derive(Debug, Default)]
-struct Pipeline {
-    spawns: u32,
-    /// The indexing service told it to run its final merges and stop.
-    stopping: bool,
-    /// It failed: the line. Quickwit restarts it unless it was `stopping`.
-    failed: Option<String>,
-    /// It ran its final merges and exited.
-    completed: bool,
-}
-
-/// Where an index's final merges stand, from the writer's output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FinalMerges {
-    /// Not asked for yet: the pipeline runs, or Quickwit will restart it.
-    Pending,
-    /// The pipeline was told to stop and is merging what is left.
-    Running,
-    /// The pipeline ran its final merges and exited.
-    Done,
-    /// The pipeline failed after it was told to stop: Quickwit won't restart
-    /// it, so nothing more will merge. The writer's line.
-    Stopped(String),
-}
-
-/// What a writer line says about an `_ingest-source` merge pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PipelineEvent {
-    Spawned,
-    Stopping,
-    Failed,
-    Completed,
-}
-
-impl PipelineEvent {
-    fn of(line: &str) -> Option<Self> {
-        if !line.contains(&format!("source_id={INGEST_SOURCE}")) {
-            return None;
-        }
-        [
-            ("spawning merge pipeline", Self::Spawned),
-            ("shutting down orphan merge pipeline", Self::Stopping),
-            ("merge pipeline failed", Self::Failed),
-            ("merge pipeline completed successfully", Self::Completed),
-        ]
-        .into_iter()
-        .find_map(|(text, event)| line.contains(text).then_some(event))
-    }
-}
-
-/// The first 300 characters of a line, for an error message.
-fn excerpt(line: &str) -> String {
-    line.chars().take(300).collect()
-}
-
-impl NodeEvents {
-    pub fn observe(&self, line: &str) {
-        let disk_full = line.contains("No space left on device") || line.contains("os error 28");
-        let merge_failed = line.contains("failed to merge splits")
-            || line.contains("merge scheduler service is dead");
-        let event = PipelineEvent::of(line);
-        if !(disk_full || merge_failed || event.is_some()) {
-            return;
-        }
-        let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if disk_full && e.disk_full.is_none() {
-            e.disk_full = Some(excerpt(line));
-        }
-        if merge_failed && e.merge_failed.is_none() {
-            e.merge_failed = Some(excerpt(line));
-        }
-        // `index_uid=pages-delta-20261008-1:01M3…`: the field, not the span
-        // (`spawn_merge_pipeline{index_uid=…`).
-        let id = line
-            .split_whitespace()
-            .find_map(|w| w.strip_prefix("index_uid="))
-            .and_then(|uid| uid.split(':').next());
-        if let (Some(event), Some(id)) = (event, id) {
-            let p = e.pipelines.entry(id.to_owned()).or_default();
-            match event {
-                PipelineEvent::Spawned => {
-                    *p = Pipeline {
-                        spawns: p.spawns + 1,
-                        ..Pipeline::default()
-                    }
-                }
-                PipelineEvent::Stopping => p.stopping = true,
-                PipelineEvent::Failed => p.failed = Some(excerpt(line)),
-                PipelineEvent::Completed => p.completed = true,
-            }
-        }
-    }
-
-    /// Record that the writer process has ended, and why (`sink::describe_exit`).
-    pub fn writer_exited(&self, why: &str) {
-        let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        e.exited.get_or_insert_with(|| why.to_owned());
-    }
-
-    /// Why the writer process ended, if it has.
-    pub fn exit(&self) -> Option<String> {
-        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        e.exited.clone()
-    }
-
-    /// Fails once the writer has exited, run out of disk, or failed a merge.
-    pub fn check(&self) -> anyhow::Result<()> {
-        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(why) = &e.exited {
-            bail!("{why}; not publishing");
-        }
-        if let Some(line) = &e.disk_full {
-            bail!("the Quickwit writer ran out of disk; not publishing. Its output: {line}");
-        }
-        if let Some(line) = &e.merge_failed {
-            bail!(
-                "a Quickwit merge failed; not publishing a half-merged index. Its output: {line}"
-            );
-        }
-        Ok(())
-    }
-
-    /// `err`, from a request to the writer, with the reason the writer
-    /// exited in front if it has (or does within `grace`): a writer the
-    /// kernel killed shows up first as "connection refused", and the exit
-    /// status takes a moment to be reaped.
-    pub async fn explain(&self, err: anyhow::Error, grace: Duration) -> anyhow::Error {
-        let until = tokio::time::Instant::now() + grace;
-        loop {
-            if let Some(why) = self.exit() {
-                return err.context(why);
-            }
-            if tokio::time::Instant::now() >= until {
-                return err;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Where `index_id`'s final merges stand.
-    pub fn final_merges(&self, index_id: &str) -> FinalMerges {
-        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        match e.pipelines.get(index_id) {
-            Some(p) if p.completed => FinalMerges::Done,
-            Some(Pipeline {
-                stopping: true,
-                failed: Some(line),
-                ..
-            }) => FinalMerges::Stopped(line.clone()),
-            Some(p) if p.stopping => FinalMerges::Running,
-            _ => FinalMerges::Pending,
-        }
-    }
-
-    /// How many times Quickwit has started `index_id`'s merge pipeline.
-    pub fn spawns(&self, index_id: &str) -> u32 {
-        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        e.pipelines.get(index_id).map_or(0, |p| p.spawns)
-    }
-}
-
-/// `(running, queued)` merge operations, from the node's Prometheus metrics.
-/// Quickwit registers the gauges with the first merge, so a missing one is 0.
-pub fn merge_gauges(metrics: &str) -> (u64, u64) {
-    let gauge = |name: &str| {
-        metrics
-            .lines()
-            .find_map(|line| {
-                let value = line.strip_prefix(name)?.strip_prefix(' ')?;
-                let v: f64 = value.trim().parse().ok()?;
-                (v >= 0.0).then_some(v as u64)
-            })
-            .unwrap_or(0)
-    };
-    (
-        gauge("quickwit_indexing_ongoing_merge_operations"),
-        gauge("quickwit_indexing_pending_merge_operations"),
-    )
-}
-
-/// How long a failed request to the writer waits for its exit to be reaped.
-pub const EXIT_GRACE: Duration = Duration::from_secs(5);
-
-/// `r`, with the writer's exit in front of an error if it has exited.
-pub async fn explained<T>(events: Option<&NodeEvents>, r: anyhow::Result<T>) -> anyhow::Result<T> {
-    match (r, events) {
-        (Err(e), Some(ev)) => Err(ev.explain(e, EXIT_GRACE).await),
-        (r, _) => r,
-    }
-}
-
 /// Decides when merging has settled: no merge running or queued, and the
 /// same splits, for `needed` polls in a row.
 #[derive(Debug)]
@@ -324,247 +124,6 @@ impl Settle {
         self.stable >= self.needed
     }
 }
-
-/// One published split.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Split {
-    pub id: String,
-    pub docs: u64,
-    pub bytes: u64,
-    /// The size of its footer (the hotcache and the file list), which a
-    /// searcher reads first and keeps in `split_footer_cache_capacity`;
-    /// `None` if the metastore doesn't say.
-    pub footer_bytes: Option<u64>,
-    /// Quickwit's partition: 0 unless the index has a `partition_key`
-    /// (05 §5.5.5).
-    pub partition_id: u64,
-    /// The decades its pages are in, from its `decade:` tags; empty for an
-    /// index without them.
-    pub decades: Vec<u16>,
-}
-
-/// An index's published splits, as the release log and manifest report them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct IndexLayout {
-    pub index_id: String,
-    pub splits: u64,
-    pub docs: u64,
-    /// The split files' total size.
-    pub bytes: u64,
-    pub smallest_split_docs: u64,
-    pub largest_split_docs: u64,
-    /// The splits' footers in all: what a searcher's split footer cache needs
-    /// to hold them all (#125). Absent when a split doesn't give its footer,
-    /// and in manifests written before releases recorded it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub footer_bytes: Option<u64>,
-    /// The largest single footer; absent like `footer_bytes`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub largest_footer_bytes: Option<u64>,
-    /// Splits per decade, for an index partitioned by decade (05 §5.5.5),
-    /// where every split holds one; absent otherwise.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub splits_by_decade: BTreeMap<u16, u64>,
-}
-
-impl IndexLayout {
-    pub fn of(index_id: &str, splits: &[Split]) -> Self {
-        let footers: Option<Vec<u64>> = splits.iter().map(|s| s.footer_bytes).collect();
-        Self {
-            index_id: index_id.to_owned(),
-            splits: splits.len() as u64,
-            docs: splits.iter().map(|s| s.docs).sum(),
-            bytes: splits.iter().map(|s| s.bytes).sum(),
-            smallest_split_docs: splits.iter().map(|s| s.docs).min().unwrap_or(0),
-            largest_split_docs: splits.iter().map(|s| s.docs).max().unwrap_or(0),
-            footer_bytes: footers.as_ref().map(|f| f.iter().sum()),
-            largest_footer_bytes: footers
-                .as_ref()
-                .map(|f| f.iter().copied().max().unwrap_or(0)),
-            // Only a partitioned index (a partition key, so nonzero
-            // partition ids): a tagged delta's split can also hold one decade.
-            splits_by_decade: if splits
-                .iter()
-                .all(|s| s.partition_id != 0 && s.decades.len() == 1)
-            {
-                let mut by = BTreeMap::new();
-                for s in splits {
-                    *by.entry(s.decades[0]).or_default() += 1;
-                }
-                by
-            } else {
-                BTreeMap::new()
-            },
-        }
-    }
-
-    /// One "index layout" line.
-    pub fn log(&self) {
-        tracing::info!(
-            index = %self.index_id,
-            splits = self.splits,
-            docs = self.docs,
-            mb = (self.bytes as f64 / (1024.0 * 1024.0)).round() as u64,
-            smallest_split_docs = self.smallest_split_docs,
-            largest_split_docs = self.largest_split_docs,
-            footer_bytes = self.footer_bytes,
-            largest_footer_bytes = self.largest_footer_bytes,
-            splits_by_decade = ?self.splits_by_decade,
-            "index layout"
-        );
-    }
-}
-
-/// The splits in one page of `GET /api/v1/indexes/{id}/splits`.
-fn parse_splits(v: &Value) -> anyhow::Result<Vec<Split>> {
-    v["splits"]
-        .as_array()
-        .context("the split list has no `splits`")?
-        .iter()
-        .map(|s| {
-            Ok(Split {
-                id: s["split_id"]
-                    .as_str()
-                    .context("a split has no id")?
-                    .to_owned(),
-                docs: s["num_docs"].as_u64().context("a split has no num_docs")?,
-                // The footer ends the split file.
-                bytes: s["footer_offsets"]["end"].as_u64().unwrap_or(0),
-                footer_bytes: footer_bytes(&s["footer_offsets"]),
-                partition_id: s["partition_id"].as_u64().unwrap_or(0),
-                decades: decade_tags(&s["tags"]),
-            })
-        })
-        .collect()
-}
-
-/// The decades in a split's tags (`decade:1890`), sorted.
-fn decade_tags(tags: &Value) -> Vec<u16> {
-    let mut decades: Vec<u16> = tags
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|t| t.as_str()?.strip_prefix("decade:")?.parse().ok())
-        .collect();
-    decades.sort_unstable();
-    decades.dedup();
-    decades
-}
-
-/// A split's footer size from its `footer_offsets` (`{"start", "end"}`,
-/// byte offsets in the split file).
-fn footer_bytes(offsets: &Value) -> Option<u64> {
-    offsets["end"]
-        .as_u64()?
-        .checked_sub(offsets["start"].as_u64()?)
-}
-
-/// The writer node's REST API, for merges and splits.
-pub struct Node<'a> {
-    pub http: &'a reqwest::Client,
-    pub base: &'a str,
-}
-
-impl Node<'_> {
-    /// Every published split of `index_id`, sorted by id.
-    pub async fn splits(&self, index_id: &str) -> anyhow::Result<Vec<Split>> {
-        let mut all = Vec::new();
-        loop {
-            let v: Value = self
-                .http
-                .get(format!("{}/api/v1/indexes/{index_id}/splits", self.base))
-                .query(&[
-                    ("split_states", "Published"),
-                    ("offset", &all.len().to_string()),
-                    ("limit", &PAGE.to_string()),
-                ])
-                .send()
-                .await?
-                .error_for_status()
-                .with_context(|| format!("listing the splits of `{index_id}`"))?
-                .json()
-                .await?;
-            let page = parse_splits(&v)?;
-            let n = page.len();
-            all.extend(page);
-            if n < PAGE {
-                break;
-            }
-        }
-        all.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(all)
-    }
-
-    async fn gauges(&self) -> anyhow::Result<(u64, u64)> {
-        let text = self
-            .http
-            .get(format!("{}/metrics", self.base))
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        Ok(merge_gauges(&text))
-    }
-
-    /// Stop ingesting into `index_id`, which runs its final merges.
-    pub async fn close(&self, index_id: &str) -> anyhow::Result<()> {
-        self.toggle(index_id, false).await
-    }
-
-    /// Enable `index_id`'s ingest source again and have Quickwit start its
-    /// pipelines, without adding a document: a new merge pipeline reads the
-    /// index's unmerged splits from the metastore.
-    ///
-    /// Quickwit starts an ingest source's pipelines only while it has shards,
-    /// and deletes them once they have been idle for 15 minutes and indexed.
-    /// A document the index's strict mapping rejects opens a shard (an empty
-    /// one) and is not written.
-    async fn reopen(&self, index_id: &str) -> anyhow::Result<()> {
-        self.toggle(index_id, true).await?;
-        let v: Value = self
-            .http
-            .post(format!("{}/api/v1/{index_id}/ingest", self.base))
-            .body(format!("{{\"{REOPEN_FIELD}\": true}}\n"))
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("reopening `{index_id}`"))?
-            .json()
-            .await?;
-        let ingested = v["num_ingested_docs"].as_u64();
-        if ingested != Some(0) || v["num_rejected_docs"].as_u64() != Some(1) {
-            bail!("reopening `{index_id}`: the writer did not reject the empty document: {v}");
-        }
-        Ok(())
-    }
-
-    async fn toggle(&self, index_id: &str, enable: bool) -> anyhow::Result<()> {
-        let resp = self
-            .http
-            .put(format!(
-                "{}/api/v1/indexes/{index_id}/sources/{INGEST_SOURCE}/toggle",
-                self.base
-            ))
-            .json(&serde_json::json!({ "enable": enable }))
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            bail!(
-                "{} ingest into `{index_id}` returned {status}: {}",
-                if enable { "enabling" } else { "disabling" },
-                text.chars().take(300).collect::<String>()
-            );
-        }
-        Ok(())
-    }
-}
-
-/// A field no index mapping has: a document with only this field is
-/// rejected (`mode: strict`), which `Node::reopen` relies on.
-const REOPEN_FIELD: &str = "usnm_reopen";
 
 /// Tries at the final merges before the release gives up.
 pub const FINAL_MERGE_TRIES: u32 = 3;
@@ -679,12 +238,19 @@ async fn poll_until_sealed(
     let mut closed_at: Option<tokio::time::Instant> = None;
     let mut settle = Settle::new(wait.stable_polls);
     let mut tries = 0;
+    let mut burndown = Burndown::default();
     loop {
         if let Some(e) = events {
             e.check()?;
         }
-        let (running, queued) = explained(events, node.gauges().await).await?;
+        let g = explained(events, node.gauges().await).await?;
+        let (running, queued) = (g.running, g.queued);
         let splits = explained(events, node.splits(index_id).await).await?;
+        burndown.observe(
+            tokio::time::Instant::now(),
+            immature(&splits).1,
+            g.merged_bytes,
+        );
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let settled = settle.observe(running == 0 && queued == 0, &ids);
         wait.report.merges(MergeProgress {
@@ -695,18 +261,14 @@ async fn poll_until_sealed(
         });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
-            tracing::info!(
-                index = index_id,
+            log_wait(
+                index_id,
                 step,
-                splits = splits.len(),
-                merges_running = running,
-                merges_queued = queued,
-                elapsed_secs = start.elapsed().as_secs(),
-                disk_free_mb = work_dir
-                    .and_then(progress::disk_free)
-                    .map(|b| b / (1024 * 1024)),
-                wal_disk_free_mb = progress::wal_disk_free().map(|b| b / (1024 * 1024)),
-                "release merges"
+                start.elapsed(),
+                &g,
+                &splits,
+                &burndown,
+                work_dir,
             );
         }
         match closed_at {
@@ -892,45 +454,329 @@ impl Drop for CloseOnDrop {
     }
 }
 
-/// The merged index holds every document, in no more splits than the
-/// merge policy leaves at its split target.
-fn check(
+/// Stops the writer node and starts it again on the same data, for
+/// [`seal_restarting`].
+#[async_trait::async_trait]
+pub trait Restart: Send + Sync {
+    async fn restart(&self) -> anyhow::Result<()>;
+}
+
+/// The merge factor of ingest v1's final merges: any two splits of a
+/// partition below the split target merge, so at most one is left in each.
+pub const FINAL_MERGE_FACTOR: u64 = 2;
+
+/// `config` with its merge policy's `merge_factor` set to `factor` (and its
+/// `max_merge_factor` at least that).
+pub fn with_merge_factor(config: &Value, factor: u64) -> anyhow::Result<Value> {
+    let mut out = config.clone();
+    let policy = out["indexing_settings"]["merge_policy"]
+        .as_object_mut()
+        .context("the index config has no indexing_settings.merge_policy")?;
+    let kind = policy.get("type").and_then(Value::as_str).unwrap_or("");
+    if !matches!(kind, "stable_log" | "limit_merge") {
+        bail!("final merges need the stable_log merge policy, not `{kind}`");
+    }
+    policy.insert("merge_factor".into(), factor.into());
+    let max = policy
+        .get("max_merge_factor")
+        .and_then(Value::as_u64)
+        .unwrap_or(factor);
+    policy.insert("max_merge_factor".into(), max.max(factor).into());
+    Ok(out)
+}
+
+/// `config` with the template's merge factor back, when a release that
+/// stopped during its final merges left [`FINAL_MERGE_FACTOR`] in it
+/// ([`seal_restarting`] puts the config back, but that request can fail
+/// too); `None` when it has the template's already. Any other factor is
+/// refused: nothing this code writes sets one.
+pub fn template_merge_factor(config: &Value) -> anyhow::Result<Option<Value>> {
+    let want =
+        template_setting("merge_factor").context("the index template has no merge_factor")?;
+    let have = config["indexing_settings"]["merge_policy"]["merge_factor"].as_u64();
+    if have == Some(want) {
+        return Ok(None);
+    }
+    if have != Some(FINAL_MERGE_FACTOR) {
+        bail!(
+            "the index's merge_factor is {have:?}: neither the template's {want} nor the final \
+             merges' {FINAL_MERGE_FACTOR}"
+        );
+    }
+    with_merge_factor(config, want).map(Some)
+}
+
+/// [`seal`] for an index written through ingest v1, whose source can't be
+/// disabled to run its final merges (Quickwit manages it): settle, give the
+/// index a merge factor of [`FINAL_MERGE_FACTOR`], restart the writer (only
+/// a new merge pipeline takes a new policy), wait for the index's new merge
+/// pipeline to start with it, settle again, put the config back and check.
+/// The splits left are below `merge_factor` in every partition, so a later
+/// writer's merge pipeline has nothing to merge either way. A release that
+/// fails or times out after changing the config puts it back first, and
+/// says whether that worked; one cancelled outright tries from a task of its
+/// own ([`RestoreOnDrop`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn seal_restarting(
+    node: &Node<'_>,
+    writer: &dyn Restart,
     index_id: &str,
     expected: u64,
     split_target: u64,
-    splits: &[Split],
+    events: &NodeEvents,
+    wait: &MergeWait,
+    work_dir: Option<&Path>,
 ) -> anyhow::Result<IndexLayout> {
-    let layout = IndexLayout::of(index_id, splits);
-    if layout.docs != expected {
-        bail!(
-            "after merging, `{index_id}` holds {} documents in {} splits, expected {expected}",
-            layout.docs,
-            layout.splits
+    let start = tokio::time::Instant::now();
+    let deadline = start + wait.timeout;
+    let guard = RestoreOnDrop::new(node, index_id);
+    let sealing = async {
+        let ev = Some(events);
+        let splits = settled(
+            node, index_id, ev, wait, "settle", start, deadline, work_dir,
+        )
+        .await?;
+        events.check_v1(index_id)?;
+        if expected == 0 && splits.is_empty() {
+            return check(index_id, expected, split_target, &splits);
+        }
+        let original = explained(ev, node.index_config(index_id).await).await?;
+        let finals = with_merge_factor(&original, FINAL_MERGE_FACTOR)?;
+        // Before the request: one whose answer is lost may still apply.
+        guard.arm(&original);
+        explained(ev, node.update_index(index_id, &finals).await).await?;
+        let (before, _) = events.v1_spawns(index_id);
+        tracing::info!(
+            index = index_id,
+            splits = splits.len(),
+            merge_factor = FINAL_MERGE_FACTOR,
+            "merges settled; restarting the writer for the final merges"
         );
-    }
-    let mut partitions: BTreeMap<u64, u64> = BTreeMap::new();
-    for s in splits {
-        *partitions.entry(s.partition_id).or_default() += s.docs;
-    }
-    let ceiling = max_partitioned_splits(partitions.values().copied(), split_target);
-    if layout.splits > ceiling {
-        let across = match partitions.len() {
-            0 | 1 => String::new(),
-            n => format!(" in {n} partitions"),
+        writer.restart().await?;
+        let until = deadline.min(tokio::time::Instant::now() + wait.finalize_stall);
+        loop {
+            events.check()?;
+            events.check_v1(index_id)?;
+            match events.v1_spawns(index_id) {
+                (n, Some(line)) if n > before && merges_with_factor(&line, FINAL_MERGE_FACTOR) => {
+                    break
+                }
+                (n, Some(line)) if n > before => bail!(
+                    "the restarted writer merges `{index_id}` without the final merge factor; not \
+                     publishing a half-merged index. Its line: {}",
+                    excerpt(&line)
+                ),
+                _ => {}
+            }
+            if tokio::time::Instant::now() + wait.poll > until {
+                bail!(
+                    "the restarted writer started no merge pipeline for `{index_id}`; not \
+                     publishing a half-merged index"
+                );
+            }
+            tokio::time::sleep(wait.poll).await;
+        }
+        let splits = settled(
+            node, index_id, ev, wait, "finalize", start, deadline, work_dir,
+        )
+        .await?;
+        events.check_v1(index_id)?;
+        explained(ev, node.update_index(index_id, &original).await).await?;
+        guard.disarm();
+        check(index_id, expected, split_target, &splits)
+    };
+    let result = match tokio::time::timeout(wait.timeout + wait.poll, sealing).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "merges into `{index_id}` did not finish within {} s (a request to the writer was \
+             still waiting); not publishing",
+            wait.timeout.as_secs()
+        )),
+    };
+    let Err(e) = result else { return result };
+    // The guard stays armed until the request is done: a release cancelled
+    // during it still puts the config back from the guard's own task.
+    let Some(original) = guard.pending() else {
+        return Err(e);
+    };
+    let restored =
+        match tokio::time::timeout(RESTORE_TIMEOUT, node.update_index(index_id, &original)).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!(
+                "the writer did not answer within {} s",
+                RESTORE_TIMEOUT.as_secs()
+            )),
         };
-        bail!(
-            "merging left `{index_id}` in {} splits; its merge policy leaves at most {ceiling} \
-             for {expected} documents{across}. Not publishing a half-merged index",
-            layout.splits
-        );
+    guard.disarm();
+    match restored {
+        Ok(()) => Err(anyhow::anyhow!(
+            "{e:#}; `{index_id}`'s merge policy was put back"
+        )),
+        Err(r) => Err(anyhow::anyhow!(
+            "{e:#}; `{index_id}` keeps merge_factor {FINAL_MERGE_FACTOR} in the metastore: putting its \
+             merge policy back failed ({r:#}). Prune the failed index, or PUT its config back \
+             (docs/operations/rebuild-and-index-storage.md, \"Duplicate-safe ingest\")"
+        )),
     }
-    Ok(layout)
+}
+
+/// How long putting an index's merge policy back may take.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The config [`seal_restarting`] changed, to put back if it doesn't: from
+/// `seal_restarting` itself on an error or a timeout, and from a task of its
+/// own if the release is cancelled (dropped) while it is armed.
+struct RestoreOnDrop {
+    http: reqwest::Client,
+    base: String,
+    index_id: String,
+    original: std::sync::Mutex<Option<Value>>,
+}
+
+impl RestoreOnDrop {
+    fn new(node: &Node<'_>, index_id: &str) -> Self {
+        Self {
+            http: node.http.clone(),
+            base: node.base.to_owned(),
+            index_id: index_id.to_owned(),
+            original: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Value>> {
+        self.original.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn arm(&self, original: &Value) {
+        *self.slot() = Some(original.clone());
+    }
+
+    /// The config to put back, if it still has to be.
+    fn pending(&self) -> Option<Value> {
+        self.slot().clone()
+    }
+
+    fn disarm(&self) -> Option<Value> {
+        self.slot().take()
+    }
+}
+
+impl Drop for RestoreOnDrop {
+    fn drop(&mut self) {
+        let Some(original) = self.disarm() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                index = %self.index_id,
+                "could not put back the merge policy of a cancelled release's index (no runtime)"
+            );
+            return;
+        };
+        let (http, base, index_id) = (
+            self.http.clone(),
+            std::mem::take(&mut self.base),
+            std::mem::take(&mut self.index_id),
+        );
+        rt.spawn(async move {
+            let node = Node {
+                http: &http,
+                base: &base,
+            };
+            match tokio::time::timeout(RESTORE_TIMEOUT, node.update_index(&index_id, &original))
+                .await
+            {
+                Ok(Ok(())) => {
+                    tracing::info!(index = %index_id, "put back the merge policy of a cancelled release's index")
+                }
+                Ok(Err(e)) => tracing::warn!(
+                    index = %index_id,
+                    "could not put back the merge policy of a cancelled release's index: {e:#}"
+                ),
+                Err(_) => tracing::warn!(
+                    index = %index_id,
+                    "could not put back the merge policy of a cancelled release's index: the \
+                     writer did not answer"
+                ),
+            }
+        });
+    }
+}
+
+/// Whether a "spawning merge pipeline" line's policy has `factor`:
+/// `stable_log` prints `{ min_level_num_docs: .., merge_factor: 2, ..`,
+/// `limit_merge` prints `{ merge_factor: 2, max_merge_factor: ..`.
+fn merges_with_factor(line: &str, factor: u64) -> bool {
+    line.contains(&format!(" merge_factor: {factor},"))
+}
+
+/// Poll until `index_id`'s merges have settled ([`Settle`]), reporting
+/// `step`; its splits then.
+#[allow(clippy::too_many_arguments)]
+async fn settled(
+    node: &Node<'_>,
+    index_id: &str,
+    events: Option<&NodeEvents>,
+    wait: &MergeWait,
+    step: &str,
+    start: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    work_dir: Option<&Path>,
+) -> anyhow::Result<Vec<Split>> {
+    let mut settle = Settle::new(wait.stable_polls);
+    let mut last_log: Option<tokio::time::Instant> = None;
+    let mut burndown = Burndown::default();
+    loop {
+        if let Some(e) = events {
+            e.check()?;
+        }
+        let g = explained(events, node.gauges().await).await?;
+        let (running, queued) = (g.running, g.queued);
+        let splits = explained(events, node.splits(index_id).await).await?;
+        burndown.observe(
+            tokio::time::Instant::now(),
+            immature(&splits).1,
+            g.merged_bytes,
+        );
+        let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
+        let done = settle.observe(running == 0 && queued == 0, &ids);
+        wait.report.merges(MergeProgress {
+            step: step.to_owned(),
+            splits: splits.len() as u64,
+            merges_running: running,
+            merges_queued: queued,
+        });
+        if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
+            last_log = Some(tokio::time::Instant::now());
+            log_wait(
+                index_id,
+                step,
+                start.elapsed(),
+                &g,
+                &splits,
+                &burndown,
+                work_dir,
+            );
+        }
+        if done {
+            return Ok(splits);
+        }
+        if tokio::time::Instant::now() + wait.poll > deadline {
+            bail!(
+                "merges into `{index_id}` did not finish within {} s ({step}: {} splits, {running} \
+                 merges running, {queued} queued); not publishing",
+                wait.timeout.as_secs(),
+                splits.len()
+            );
+        }
+        tokio::time::sleep(wait.poll).await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -954,29 +800,6 @@ mod tests {
         assert_eq!(max_splits(23_800_000, 120_000), 198 + 7);
     }
 
-    #[test]
-    fn reads_the_merge_gauges() {
-        let metrics = "# HELP quickwit_indexing_ongoing_merge_operations Number of ongoing merge operations\n\
-                       # TYPE quickwit_indexing_ongoing_merge_operations gauge\n\
-                       quickwit_indexing_ongoing_merge_operations 1\n\
-                       quickwit_indexing_pending_merge_operations 3\n\
-                       quickwit_indexing_pending_merge_bytes 12345\n";
-        assert_eq!(merge_gauges(metrics), (1, 3));
-        assert_eq!(
-            merge_gauges(
-                "quickwit_indexing_pending_merge_operations 2\nquickwit_indexing_ongoing_merge_operations 0.0\n"
-            ),
-            (0, 2)
-        );
-        // A labelled series isn't the total; before the first merge there
-        // are no gauges at all.
-        assert_eq!(
-            merge_gauges("quickwit_indexing_ongoing_merge_operations{x=\"y\"} 2\n"),
-            (0, 0)
-        );
-        assert_eq!(merge_gauges(""), (0, 0));
-    }
-
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }
@@ -997,294 +820,50 @@ mod tests {
     }
 
     #[test]
-    fn watches_the_writer_output() {
-        let e = NodeEvents::default();
-        e.observe("2026-09-29T09:09:18Z  WARN quickwit_config: peer seeds are empty");
-        assert!(e.check().is_ok());
-        assert_eq!(
-            e.final_merges("pages-delta-20261008-1"),
-            FinalMerges::Pending
-        );
-
-        e.observe(
-            "2026-10-02T06:59:13Z  INFO quickwit_indexing::actors::merge_pipeline: merge pipeline \
-             completed successfully index_uid=pages-delta-20261008-1:01M3XP9DEKWZK8TW8TXB27ZM7Y \
-             source_id=_ingest-source generation=1",
-        );
-        // The ingest API v1 source's pipeline is another one.
-        e.observe(
-            "2026-10-02T06:59:13Z  INFO quickwit_indexing::actors::merge_pipeline: merge pipeline \
-             completed successfully index_uid=pages-base-20261001-1:01M3XP9DEKWZK8TW8TXB27ZM7Y \
-             source_id=_ingest-api-source generation=1",
-        );
-        assert_eq!(e.final_merges("pages-delta-20261008-1"), FinalMerges::Done);
-        assert_eq!(
-            e.final_merges("pages-base-20261001-1"),
-            FinalMerges::Pending
-        );
-        assert!(e.check().is_ok());
-
-        e.observe(
-            "2026-09-29T09:27:26Z ERROR quickwit_actors::spawn_builder: actor-exit \
-             exit_status=Failure(No space left on device (os error 28) at path \"/work/quickwit/qwdata/indexing\")",
-        );
-        let err = e.check().unwrap_err().to_string();
-        assert!(err.contains("ran out of disk"), "{err}");
-        assert!(err.contains("os error 28"), "{err}");
-    }
-
-    /// The writer's lines from CI run 37088490670 (issue #84): the final
-    /// merge's upload failed, and Quickwit left the pipeline stopped.
-    #[test]
-    fn follows_a_merge_pipeline_through_failures_and_restarts() {
-        let id = "pages-delta-20261015-1";
-        let e = NodeEvents::default();
-        let spawned = "2026-10-03T02:06:57.809Z  INFO spawn_merge_pipeline{index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q generation=0}: \
-                       quickwit_indexing::actors::merge_pipeline: spawning merge pipeline \
-                       index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q source_id=_ingest-source root_dir=/tmp/x";
-        let stopping = "2026-10-03T02:07:21.807Z  INFO quickwit_indexing::actors::indexing_service: shutting down \
-                        orphan merge pipeline index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q source_id=_ingest-source";
-        let failed = "2026-10-03T02:07:22.836Z ERROR quickwit_indexing::actors::merge_pipeline: merge pipeline failed \
-                      index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q source_id=_ingest-source generation=1 \
-                      healthy_actors=[] failed_or_unhealthy_actors=[\"MergePublisher-young-tVo8\"]";
-        let completed = "2026-10-03T02:09:19.983Z  INFO quickwit_indexing::actors::merge_pipeline: merge pipeline \
-                         completed successfully index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q \
-                         source_id=_ingest-source generation=1";
-        e.observe(spawned);
-        assert_eq!(
-            (e.final_merges(id), e.spawns(id)),
-            (FinalMerges::Pending, 1)
-        );
-        // A failure while it runs: Quickwit restarts it after a heartbeat.
-        e.observe(failed);
-        assert_eq!(e.final_merges(id), FinalMerges::Pending);
-        e.observe(spawned);
-        assert_eq!(
-            (e.final_merges(id), e.spawns(id)),
-            (FinalMerges::Pending, 2)
-        );
-        e.observe(stopping);
-        assert_eq!(e.final_merges(id), FinalMerges::Running);
-        // A failure once it was told to stop: nothing restarts it.
-        e.observe(failed);
-        match e.final_merges(id) {
-            FinalMerges::Stopped(line) => assert!(line.contains("MergePublisher"), "{line}"),
-            other => panic!("{other:?}"),
-        }
-        // Told to stop while it waited to be restarted: the same.
-        let e2 = NodeEvents::default();
-        e2.observe(spawned);
-        e2.observe(failed);
-        e2.observe(stopping);
-        assert!(matches!(e2.final_merges(id), FinalMerges::Stopped(_)));
-        // A new pipeline starts over; "failed" is not a failed merge.
-        e.observe(spawned);
-        assert_eq!(
-            (e.final_merges(id), e.spawns(id)),
-            (FinalMerges::Pending, 3)
-        );
-        e.observe(stopping);
-        e.observe(completed);
-        assert_eq!(e.final_merges(id), FinalMerges::Done);
-        assert!(e.check().is_ok());
-        // Another source's pipeline is not this one.
-        e.observe(&spawned.replace("_ingest-source", "_ingest-api-source"));
-        assert_eq!(e.spawns(id), 3);
-    }
-
-    #[test]
-    fn a_failed_merge_stops_the_release() {
-        let e = NodeEvents::default();
-        e.observe(
-            "2026-09-29T14:03:59Z ERROR merge{merge_split_id=01M3PQ9H}:merge_executor: \
-             quickwit_indexing::actors::merge_executor: failed to merge splits task=Merge(…)",
-        );
-        let err = e.check().unwrap_err().to_string();
-        assert!(err.contains("half-merged"), "{err}");
-    }
-
-    #[test]
-    fn layout_and_checks() {
-        let splits = vec![
-            Split {
-                id: "a".into(),
-                docs: 1_000_000,
-                bytes: 23_000_000_000,
-                footer_bytes: Some(3_500_000),
-                partition_id: 0,
-                decades: vec![],
+    fn final_merges_lower_only_the_merge_factor() {
+        // As Quickwit 0.9.1 gives it (`GET /api/v1/indexes/{id}`).
+        let config = serde_json::json!({
+            "index_id": "i",
+            "indexing_settings": {
+                "split_num_docs_target": 60000,
+                "merge_policy": {"type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12,
+                                 "max_merge_ops": 4, "max_finalize_merge_operations": 5,
+                                 "maturation_period": "7days"},
             },
-            Split {
-                id: "b".into(),
-                docs: 40_000,
-                bytes: 920_000_000,
-                footer_bytes: Some(92_377),
-                partition_id: 0,
-                decades: vec![],
-            },
-        ];
-        let l = check("idx", 1_040_000, T, &splits).unwrap();
+        });
+        let finals = with_merge_factor(&config, FINAL_MERGE_FACTOR).unwrap();
+        let mut expected = config.clone();
+        expected["indexing_settings"]["merge_policy"]["merge_factor"] = 2.into();
+        assert_eq!(finals, expected);
+        // A max below the factor is raised to it.
+        let mut low = config.clone();
+        low["indexing_settings"]["merge_policy"]["max_merge_factor"] = 1.into();
         assert_eq!(
-            l,
-            IndexLayout {
-                index_id: "idx".into(),
-                splits: 2,
-                docs: 1_040_000,
-                bytes: 23_920_000_000,
-                smallest_split_docs: 40_000,
-                largest_split_docs: 1_000_000,
-                footer_bytes: Some(3_592_377),
-                largest_footer_bytes: Some(3_500_000),
-                splits_by_decade: BTreeMap::new(),
-            }
+            with_merge_factor(&low, 2).unwrap()["indexing_settings"]["merge_policy"]
+                ["max_merge_factor"],
+            2
         );
-        // In the log line and the manifest.
-        assert_eq!(
-            serde_json::to_value(&l).unwrap(),
-            serde_json::json!({
-                "index_id": "idx", "splits": 2, "docs": 1_040_000, "bytes": 23_920_000_000_u64,
-                "smallest_split_docs": 40_000, "largest_split_docs": 1_000_000,
-                "footer_bytes": 3_592_377, "largest_footer_bytes": 3_500_000,
-            })
-        );
-        // A split that doesn't give its footer: no footer total, rather than
-        // one too small. The manifest leaves the fields out.
-        let mut unknown = splits.clone();
-        unknown[1].footer_bytes = None;
-        let l = IndexLayout::of("idx", &unknown);
-        assert_eq!((l.footer_bytes, l.largest_footer_bytes), (None, None));
-        let v = serde_json::to_value(&l).unwrap();
-        assert!(v.get("footer_bytes").is_none() && v.get("largest_footer_bytes").is_none());
-        let empty = IndexLayout::of("empty", &[]);
-        assert_eq!(
-            (empty.footer_bytes, empty.largest_footer_bytes),
-            (Some(0), Some(0))
-        );
-        let err = check("idx", 1_040_001, T, &splits).unwrap_err().to_string();
-        assert!(err.contains("expected 1040001"), "{err}");
-
-        let many: Vec<Split> = (0..20)
-            .map(|i| Split {
-                id: format!("s{i:02}"),
-                docs: 7_000,
-                bytes: 1,
-                footer_bytes: None,
-                partition_id: 0,
-                decades: vec![],
-            })
-            .collect();
-        let err = check("idx", 140_000, T, &many).unwrap_err().to_string();
-        assert!(err.contains("at most 11"), "{err}");
-        assert_eq!(IndexLayout::of("empty", &[]).splits, 0);
-        // An index is held to the target it was created with (`--split-docs`):
-        // 12 splits of 35,000 pages are mature at 30,000, so they pass, but at
-        // 120,000 they should still have merged, so they fail.
-        let mid: Vec<Split> = (0..12)
-            .map(|i| Split {
-                docs: 35_000,
-                ..many[i].clone()
-            })
-            .collect();
-        assert!(check("idx", 420_000, T, &mid).is_ok());
-        let err = check("idx", 420_000, 120_000, &mid)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("at most 10"), "{err}");
-
-        // Partitioned by decade (05 §5.5.5): each partition merges on its
-        // own, so each may keep its own small splits.
-        let decades: Vec<Split> = (0..20)
-            .map(|i| Split {
-                partition_id: 100 + i / 5,
-                decades: vec![1860 + 10 * (i / 5) as u16],
-                ..many[i as usize].clone()
-            })
-            .collect();
-        let l = check("idx", 140_000, T, &decades).unwrap();
-        assert_eq!(
-            l.splits_by_decade,
-            BTreeMap::from([(1860, 5), (1870, 5), (1880, 5), (1890, 5)])
-        );
-        assert_eq!(
-            serde_json::to_value(&l).unwrap()["splits_by_decade"],
-            serde_json::json!({"1860": 5, "1870": 5, "1880": 5, "1890": 5})
-        );
-        // 4 partitions of 35,000 pages: at most 4 × (1 + 5 + 2).
-        assert_eq!(max_partitioned_splits([35_000; 4], T), 32);
-        assert_eq!(max_partitioned_splits([140_000], T), max_splits(140_000, T));
-        let mut crowded = decades.clone();
-        for s in &mut crowded {
-            s.partition_id = 7;
-        }
-        let err = check("idx", 140_000, T, &crowded).unwrap_err().to_string();
-        assert!(
-            err.contains("at most 11") && !err.contains("partitions"),
-            "{err}"
-        );
-        let tiny: Vec<Split> = (0..40)
-            .map(|i| Split {
-                docs: 1,
-                partition_id: i / 20,
-                ..decades[0].clone()
-            })
-            .collect();
-        let err = check("idx", 40, T, &tiny).unwrap_err().to_string();
-        assert!(
-            err.contains("at most 14") && err.contains("in 2 partitions"),
-            "{err}"
-        );
-        // A split with several decades (a tagged delta) or none: no count.
-        let mut mixed = decades.clone();
-        mixed[0].decades = vec![1860, 1870];
-        assert!(IndexLayout::of("idx", &mixed).splits_by_decade.is_empty());
-        // A tagged delta whose splits each hold one decade isn't partitioned.
-        let tagged: Vec<Split> = decades
-            .iter()
-            .map(|s| Split {
-                partition_id: 0,
-                ..s.clone()
-            })
-            .collect();
-        assert!(IndexLayout::of("idx", &tagged).splits_by_decade.is_empty());
+        let mut other = config.clone();
+        other["indexing_settings"]["merge_policy"] = serde_json::json!({"type": "no_merge"});
+        assert!(with_merge_factor(&other, 2).is_err());
+        assert!(with_merge_factor(&serde_json::json!({}), 2).is_err());
     }
 
     #[test]
-    fn parses_a_split_list() {
-        let v = serde_json::json!({"offset": 0, "size": 1, "splits": [{
-            "split_state": "Published", "split_id": "01M3XPHH", "num_docs": 40000,
-            "footer_offsets": {"start": 919982920, "end": 920075297}, "num_merge_ops": 1,
-        }]});
-        let tagged = serde_json::json!({"splits": [{
-            "split_id": "t", "num_docs": 1, "partition_id": 3264326757911759461_u64,
-            "tags": ["decade!", "decade:1900", "decade:1890", "lccn:x"],
-        }]});
-        let t = &parse_splits(&tagged).unwrap()[0];
-        assert_eq!(
-            (t.partition_id, t.decades.clone()),
-            (3264326757911759461, vec![1890, 1900])
-        );
-        assert_eq!(
-            parse_splits(&v).unwrap(),
-            vec![Split {
-                id: "01M3XPHH".into(),
-                docs: 40000,
-                bytes: 920_075_297,
-                footer_bytes: Some(92_377),
-                partition_id: 0,
-                decades: vec![],
-            }]
-        );
-        assert!(parse_splits(&serde_json::json!({"message": "index `x` not found"})).is_err());
-        // Without offsets, or with ones that make no sense: no footer size.
-        let v = serde_json::json!({"splits": [
-            {"split_id": "a", "num_docs": 1},
-            {"split_id": "b", "num_docs": 1, "footer_offsets": {"end": 10}},
-            {"split_id": "c", "num_docs": 1, "footer_offsets": {"start": 11, "end": 10}},
-        ]});
-        assert!(parse_splits(&v)
-            .unwrap()
-            .iter()
-            .all(|s| s.footer_bytes.is_none()));
+    fn a_final_merge_factor_left_behind_goes_back_to_the_templates() {
+        let config = serde_json::json!({
+            "index_id": "i",
+            "indexing_settings": {
+                "merge_policy": {"type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12},
+            },
+        });
+        assert_eq!(template_merge_factor(&config).unwrap(), None);
+        let left = with_merge_factor(&config, FINAL_MERGE_FACTOR).unwrap();
+        assert_eq!(template_merge_factor(&left).unwrap(), Some(config.clone()));
+        let mut odd = config.clone();
+        odd["indexing_settings"]["merge_policy"]["merge_factor"] = 7.into();
+        let err = template_merge_factor(&odd).unwrap_err().to_string();
+        assert!(err.contains("Some(7)"), "{err}");
     }
 
     /// A fake writer node: merges run for a few polls, then the planner
@@ -1356,6 +935,212 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (format!("http://{addr}"), fake)
+    }
+
+    /// A settled writer node for `seal_restarting`: its config has a
+    /// `limit_merge` policy with factor 10; every PUT of it is recorded,
+    /// and those after the first fail with `fail_restore`; the second takes 3 s
+    /// with `slow_restore`.
+    async fn config_node(
+        fail_restore: bool,
+        slow_restore: bool,
+    ) -> (String, Arc<Mutex<Vec<Value>>>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        let puts: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let p = puts.clone();
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                get(|| async {
+                    "quickwit_indexing_ongoing_merge_operations 0\n\
+                     quickwit_indexing_pending_merge_operations 0\n"
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async {
+                    axum::Json(serde_json::json!({"splits": [
+                        {"split_id": "a", "num_docs": 10, "footer_offsets": {"end": 100}},
+                        {"split_id": "b", "num_docs": 10, "footer_offsets": {"end": 100}},
+                    ]}))
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}",
+                get(|| async {
+                    axum::Json(serde_json::json!({"index_config": {
+                        "index_id": "idx",
+                        "indexing_settings": {"merge_policy": {
+                            "type": "limit_merge", "merge_factor": 10, "max_merge_factor": 12
+                        }}
+                    }}))
+                })
+                .put(move |axum::Json(body): axum::Json<Value>| async move {
+                    let n = {
+                        let mut puts = p.lock().unwrap();
+                        puts.push(body);
+                        puts.len()
+                    };
+                    if slow_restore && n == 2 {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                    if fail_restore && n > 1 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), puts)
+    }
+
+    /// A writer whose restart fails, or "succeeds" without a merge pipeline.
+    struct FakeRestart(bool);
+
+    #[async_trait::async_trait]
+    impl Restart for FakeRestart {
+        async fn restart(&self) -> anyhow::Result<()> {
+            if self.0 {
+                Ok(())
+            } else {
+                bail!("the writer did not stop")
+            }
+        }
+    }
+
+    fn factors(puts: &Mutex<Vec<Value>>) -> Vec<u64> {
+        puts.lock()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                c["indexing_settings"]["merge_policy"]["merge_factor"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    async fn seal_with(restarts: bool, fail_restore: bool) -> (String, Vec<u64>) {
+        let (base, puts) = config_node(fail_restore, false).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let err = seal_restarting(
+            &node,
+            &FakeRestart(restarts),
+            "idx",
+            20,
+            T,
+            &events,
+            &quick(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        (format!("{err:#}"), factors(&puts))
+    }
+
+    #[tokio::test]
+    async fn a_failed_restart_puts_the_merge_policy_back() {
+        let (err, puts) = seal_with(false, false).await;
+        assert!(err.contains("the writer did not stop"), "{err}");
+        assert!(err.contains("merge policy was put back"), "{err}");
+        assert_eq!(puts, [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    #[tokio::test]
+    async fn a_restart_without_final_merges_puts_the_merge_policy_back() {
+        let (err, puts) = seal_with(true, false).await;
+        assert!(err.contains("started no merge pipeline"), "{err}");
+        assert!(err.contains("merge policy was put back"), "{err}");
+        assert_eq!(puts, [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    #[tokio::test]
+    async fn a_merge_policy_that_cant_be_put_back_is_reported() {
+        let (err, puts) = seal_with(false, true).await;
+        assert!(err.contains("the writer did not stop"), "{err}");
+        assert!(
+            err.contains("keeps merge_factor 2 in the metastore"),
+            "{err}"
+        );
+        assert!(err.contains("500"), "{err}");
+        assert_eq!(puts, [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    /// A release cancelled after the change puts the config back from a
+    /// task of its own.
+    #[tokio::test]
+    async fn a_cancelled_release_puts_the_merge_policy_back() {
+        struct Hang;
+        #[async_trait::async_trait]
+        impl Restart for Hang {
+            async fn restart(&self) -> anyhow::Result<()> {
+                std::future::pending().await
+            }
+        }
+        let (base, puts) = config_node(false, false).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let wait = quick();
+        let sealing = seal_restarting(&node, &Hang, "idx", 20, T, &events, &wait, None);
+        assert!(tokio::time::timeout(Duration::from_millis(500), sealing)
+            .await
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while factors(&puts).len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the config was put back");
+        assert_eq!(factors(&puts), [FINAL_MERGE_FACTOR, 10]);
+    }
+
+    /// A release cancelled while it puts the config back after an error
+    /// still has the guard's task put it back.
+    #[tokio::test]
+    async fn a_release_cancelled_during_the_restore_still_puts_the_merge_policy_back() {
+        let (base, puts) = config_node(false, true).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let events = NodeEvents::default();
+        let wait = quick();
+        let sealing = seal_restarting(
+            &node,
+            &FakeRestart(false),
+            "idx",
+            20,
+            T,
+            &events,
+            &wait,
+            None,
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(500), sealing)
+            .await
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while factors(&puts).len() < 3 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the guard put the config back");
+        assert_eq!(factors(&puts), [FINAL_MERGE_FACTOR, 10, 10]);
     }
 
     fn quick() -> MergeWait {
@@ -1472,32 +1257,6 @@ mod tests {
             .to_string();
         assert!(err.contains("ran out of disk"), "{err}");
         assert!(fake.closed_at.lock().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn a_writer_that_dies_is_named_instead_of_the_failed_request() {
-        let events = NodeEvents::default();
-        let refused = anyhow::anyhow!("error sending request: Connection refused");
-        // Not exited (yet): the request's own error, after the grace period.
-        let err = events
-            .explain(anyhow::anyhow!("timed out"), Duration::from_millis(50))
-            .await;
-        assert_eq!(format!("{err:#}"), "timed out");
-
-        events.writer_exited("the Quickwit writer was killed by signal 9 (SIGKILL)");
-        // Only the first exit counts.
-        events.writer_exited("later");
-        let err = format!("{:#}", events.explain(refused, Duration::ZERO).await);
-        assert!(
-            err.starts_with("the Quickwit writer was killed by signal 9 (SIGKILL): "),
-            "{err}"
-        );
-        assert!(err.contains("Connection refused"), "{err}");
-        let err = events.check().unwrap_err().to_string();
-        assert!(
-            err.contains("signal 9") && err.contains("not publishing"),
-            "{err}"
-        );
     }
 
     #[tokio::test]

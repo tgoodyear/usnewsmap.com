@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 
 TEMPLATES = {
-    "usnm_ocr": ["usnm_ocr_in", "usnm_ocr_out"],
+    "usnm_ocr": ["usnm_ocr_in", "usnm_ocr_out", "usnm_ocr_bundle_in", "usnm_ocr_bundle_out"],
     # The JP2 against IIIF JPEG assessment (#456): same worker image, same job.toml.
     "usnm_assess": ["usnm_assess_in", "usnm_assess_crash_in", "usnm_assess_out"],
     # The gold check (#462): same worker image. `usnm-boinc gold submit` writes the input
@@ -35,6 +35,9 @@ TEMPLATES = {
 QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",
     "nvidia_cuda_8b": "usnm_qwen_8b_in",
+    "intel_vulkan_8b": "usnm_qwen_8b_in",
+    "nvidia_vulkan_8b": "usnm_qwen_8b_in",
+    "amd_vulkan_8b": "usnm_qwen_8b_in",
     "nvidia_cuda_2b": "usnm_qwen_2b_in",
     "mt": "usnm_qwen_2b_in",
 }
@@ -49,6 +52,7 @@ JOB_TOML = {
     ("usnm_ndlocr", "docker"): "ocr/boinc/ndlocr-lite/job.toml",
     ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
+    ("usnm_surya", "docker_intel_vulkan"): "ocr/boinc/surya/job-intel.toml",
     ("usnm_quality", "docker"): "ocr/boinc/job.toml",
     ("usnm_qwen", "docker_mt_2b"): "ocr/boinc/qwen/job-cpu.toml",
     ("usnm_qwen", "docker_nvidia_cuda_8b"): "ocr/boinc/qwen/job-gpu.toml",
@@ -70,8 +74,12 @@ NATIVE_PLAN_CLASSES = {
     ("usnm_qwen", "apple_gpu_8b"): ("arm64-apple-darwin",),
     ("usnm_qwen", "nvidia_cuda_8b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
     ("usnm_qwen", "nvidia_cuda_2b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
+    # Intel GPUs through llama.cpp Vulkan (#786); llama.lock pins only x86_64 Vulkan builds.
+    ("usnm_qwen", "intel_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
+    ("usnm_qwen", "nvidia_vulkan_8b"): ("x86_64-pc-linux-gnu",),
+    ("usnm_qwen", "amd_vulkan_8b"): ("x86_64-pc-linux-gnu", "windows_x86_64"),
 }
-GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"})
+GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"})
 NATIVE_API_VERSION = "8.3.0"
 LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 
@@ -228,6 +236,10 @@ def install(
             present_extras = {logical for logical, _ in parsed_extras}
             required_server = "llama-server.exe" if platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
+            if plan_class == "amd_vulkan_8b":
+                required_extras += ("usnm-amd-device-map.exe" if platform == "windows_x86_64" else "usnm-amd-device-map",)
+                required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if platform == "windows_x86_64"
+                                    else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
             if platform == "windows_x86_64":
                 required_extras += ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
                 if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):
@@ -235,6 +247,12 @@ def install(
                         "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
                         "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
                         "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
+                    )
+                if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b"):
+                    # vulkan-1.dll, the Vulkan loader, comes with the GPU driver.
+                    required_extras += (
+                        "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
+                        "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
                     )
             missing_extras = [name for name in required_extras if name not in present_extras]
             if missing_extras:
@@ -256,7 +274,7 @@ def install(
         ET.SubElement(main_file, "main_program")
         ET.SubElement(main_file, "copy_file")
         staged_files = [target / main_name]
-        executable_extras = {"llama-server", "llama-server.exe"}
+        executable_extras = {"llama-server", "llama-server.exe", "usnm-amd-device-map", "usnm-amd-device-map.exe"}
         for logical, src in parsed_extras:
             phys = f"{suffix}_{logical}"
             shutil.copyfile(src, target / phys)
@@ -321,7 +339,7 @@ def main() -> None:
             crypt_prog=args.crypt_prog,
         )
     )
-    print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see docs/boinc.md.")
+    print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see docs/boinc/server-and-apps.md.")
 
 
 if __name__ == "__main__":

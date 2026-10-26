@@ -100,9 +100,10 @@ def init_project():
 def start_apache(database_failure=False):
     config = ET.parse(PROJECT / "config.xml")
     logdir = Path(config.findtext("./config/log_dir"))
-    logdir.mkdir(exist_ok=True)
-    shutil.chown(logdir, user="boincadm", group="boincadm")
-    logdir.chmod(0o775)
+    for directory in {logdir, PROJECT / logdir.name}:
+        directory.mkdir(exist_ok=True)
+        shutil.chown(directory, user="boincadm", group="boincadm")
+        directory.chmod(0o775)
     for folder in ("apache/run", "apache/lock", "apache/log", "apache/sessions", "php"):
         (ROOT / folder).mkdir(parents=True, exist_ok=True)
     (ROOT / "apache/lock").chmod(0o1777)
@@ -138,7 +139,9 @@ def start_apache(database_failure=False):
         except (OSError, ET.ParseError):
             time.sleep(0.5)
     else:
-        raise RuntimeError("Apache project config readiness timed out")
+        logs = "\n".join(p.read_text(errors="replace")[-2000:]
+                         for p in (ROOT / "apache.log", ROOT / "apache/log/error.log") if p.exists())
+        raise RuntimeError("Apache project config readiness timed out: " + logs)
 
 
 def secure_keys():
@@ -334,6 +337,54 @@ def stop_services():
     PROCESSES.clear()
 
 
+def rehearse_code_migration():
+    global PROJECT
+    original = PROJECT
+    copied = ROOT / "migration-copy"
+    shutil.copytree(original, copied, symlinks=True)
+    run("chown", "-R", "--no-dereference", "boincadm:boincadm", str(copied))
+    for name in ("stop", "status"):
+        link = copied / "bin" / name
+        if link.is_symlink():
+            link.unlink()
+            link.symlink_to(copied / "bin/start")
+    try:
+        PROJECT = copied
+        # Simulate stale copied libraries without replacing their connection implementation.
+        stale = copied / "py/Boinc/db_base.py"
+        stale.write_bytes(stale.read_bytes() + b"\n# copied-project stale version fixture\n")
+        binary = copied / "bin/transitioner"
+        binary.write_bytes(binary.read_bytes() + b"\nstale copied binary fixture\n")
+        before = {str(p.relative_to(copied)): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for tree in ("bin", "cgi-bin", "py", "html/inc")
+                  for p in (copied / tree).rglob("*") if p.is_file() and not p.is_symlink() and p.suffix != ".pyc" and "__pycache__" not in p.parts}
+        state = {name: hashlib.sha256((copied / name).read_bytes()).hexdigest()
+                 for name in ("config.xml", "project.xml", "plan_class_spec.xml")}
+        backup = ROOT / "migration-code-backup"
+        helper = str(TEMPLATES / "refresh-project-code.py")
+        run("python3", helper, "apply", "--project", str(copied), "--backup", str(backup), "--ack-server-stopped")
+        copied_consumers("migration-copied-consumers", True)
+        start_services()
+        web()
+        connections()
+        stop_services()
+        manifest = json.loads((backup / "manifest.json").read_text())
+        assert all(hashlib.sha256((copied / row["path"]).read_bytes()).hexdigest() == row["after"]
+                   for row in manifest["files"] if "after" in row)
+        run("python3", helper, "rollback", "--project", str(copied), "--backup", str(backup), "--ack-server-stopped")
+        assert all(hashlib.sha256((copied / rel).read_bytes()).hexdigest() == value for rel, value in before.items())
+        assert all(hashlib.sha256((copied / name).read_bytes()).hexdigest() == value for name, value in state.items())
+        copied_consumers("rollback-copied-consumers", True)
+        start_services()
+        web()
+        connections()
+        stop_services()
+        emit("copied-project-code-migration-rollback", inventoried=len(manifest["files"]), unchanged_state=len(state))
+    finally:
+        stop_services()
+        PROJECT = original
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", required=True, choices=("init", "restart"))
@@ -348,6 +399,7 @@ def main():
     try:
         if args.phase == "init":
             init_project()
+            rehearse_code_migration()
             hashes = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in (PROJECT / "html/inc/db.inc", PROJECT / "html/inc/db_conn.inc",
                                 PROJECT / "py/Boinc/db_base.py", PROJECT / "bin/feeder")}

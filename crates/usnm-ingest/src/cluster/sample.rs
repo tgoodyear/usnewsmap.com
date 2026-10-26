@@ -5,7 +5,7 @@
 //!
 //! **Which pages.** A page is in the sample when the first 8 bytes of
 //! SHA-256 of its `doc_id`, read as a big-endian integer, modulo 10,000, are
-//! below `pct × 100`: the OCR audit's rule (ja-ocr/quality.py `sampled`)
+//! below `pct × 100`: the OCR audit's rule (ocr/ja-ocr/quality.py `sampled`)
 //! with SHA-256 for its BLAKE2b, which the Rust side has no crate for. The
 //! same pages come out every run, and a 1% sample is a 1% sample of every
 //! title, year and batch.
@@ -267,7 +267,7 @@ async fn sample_batch(s: Arc<Shared>, b: RunBatch) -> anyhow::Result<BatchSample
             .catalog
             .title(&row.key.lccn)
             .with_context(|| format!("title `{}` is missing from the catalog", row.key.lccn))?;
-        let place = s.catalog.place(&title.place_id).context("place")?;
+        let place = s.catalog.place_on(title, row.key.date).context("place")?;
         // No `decade` field: the cluster's indexes take the template as
         // it is (`load::index_config`, `sink::INDEX_TEMPLATE`), as do sets.
         let doc = page_doc(

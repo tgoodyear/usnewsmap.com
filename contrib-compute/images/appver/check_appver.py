@@ -142,6 +142,10 @@ def check(
             }
             required_server = "llama-server.exe" if resolved_platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
+            if version_dir.name.endswith("__amd_vulkan_8b"):
+                required_extras += ("usnm-amd-device-map.exe" if resolved_platform == "windows_x86_64" else "usnm-amd-device-map",)
+                required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if resolved_platform == "windows_x86_64"
+                                    else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
             missing_extras = [name for name in required_extras if name not in present_logicals]
             if missing_extras:
                 raise Refused(

@@ -1,0 +1,11 @@
+# The persistent response cache (#955), installed by install.sh as
+# /etc/tmpfiles.d/usnm-serving.conf. In Azure a lifecycle rule deletes
+# cache entries 14 days after they're written; here
+# systemd-tmpfiles-clean.timer does, once a day. The age counts from the
+# last write only (m for files, M for directories): by default tmpfiles
+# also counts the last read, so an entry read often would never go.
+# Entries are rebuilt on demand, so losing one costs only a slower search.
+# Each color has a directory of its own (usnm-api@.service says why), made
+# here, owned by the API image's user.
+d /srv/usnm-serving/cache/blue 0750 65532 65532 mM:14d
+d /srv/usnm-serving/cache/green 0750 65532 65532 mM:14d

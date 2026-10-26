@@ -81,6 +81,65 @@ CI runs this exact disposable matrix in its own bounded job when BOINC changes.
 `python3 -m unittest scripts/boinc/test_db_tls_fixture.py` tests evidence
 fail-closed behavior; it is not a substitute for the Docker integration run.
 
+The checked-in patch stays image-specific because it hardcodes our CA and MariaDB
+Connector/C API. Offer the fail-closed connection behavior and connector tests
+upstream once generalized to configurable CA paths and supported client libraries;
+do not submit Azure-specific paths as an upstream BOINC default.
+
+## MySQL 8.4 connector parity
+
+```sh
+scripts/boinc/check-mysql84-db-tls.sh
+```
+
+This separate CI job reuses the same pinned MySQL 8.4 image as the existing SQL
+query tests, plus the actual patched Bookworm BOINC consumers above. No production
+source patch or replacement connector is substituted. It requires five nonempty
+session ciphers for a trusted synthetic CA, five TLS-related hostname rejections,
+five wrong-CA rejections, five encrypted recoveries, and five encrypted sessions
+after restarting the same persisted database. An unpatched plaintext control must
+fail with MySQL error **3159**, not an unrelated authentication or network error.
+The observer checks `VERSION()` is 8.4 and `@@require_secure_transport` is 1 before
+each application phase. The normal `caching_sha2_password` runtime account also
+checks connector compatibility with MySQL's default authentication plugin.
+
+Both database and client containers are network-disabled (clients share the
+DB's loopback namespace), with no published ports, host files or Docker socket
+mounts. The server runs as fixture-only root without capabilities or privilege
+escalation on a read-only root, with one CPU, 768 MiB and 128 processes. Clients
+are bounded to one CPU, 256 MiB and 32 processes. Unique disposable volumes hold
+only synthetic keys and the test database and are removed by the exit trap;
+image/build caches remain. Database initialization bypasses the official
+entrypoint so no random admin password is emitted. Root has no TCP grant; the
+observer uses the same known-good synthetic runtime account as the consumers.
+The TLS-disabled-peer rejection remains covered by the MariaDB matrix.
+
+This is **not** the Azure MySQL certificate chain, a full MySQL project lifecycle,
+or a copied-project migration/rollback test. `requireSecureTransport` in the
+BOINC root template and MySQL module deliberately defaults to **false**; `true`
+selects ON only after the remaining gates below. The normal provisioner forwards
+the committed environment setting of the same name, defaulting to false when
+absent. The first #464 activation was rolled back immediately after a public
+PHP HTTP 500, despite successful CLI cipher and plaintext-rejection checks.
+The operator restored OFF, copied code and the prior app image; the initial
+HTTP failure's cause was not established. Do not label it a fixed product bug.
+The bounded retry passed public pages and RPC but was rolled back after a later
+runtime verification failed. The maintainer
+shelved #464 on 2026-10-18: production and main explicitly remain OFF. Keep the
+migration tooling, do not deploy or diagnose further without renewed approval.
+A future separately reviewed activation requires a
+stronger web gate: actual public Apache/mysqlnd connections observed through
+existing privileged `performance_schema` access must all have non-empty ciphers,
+with repeated config, apps and status requests succeeding. CLI PHP alone is
+insufficient. The isolated migrated Azure Files project must also pass real
+Apache/PHP requests. On any activation failure restore OFF immediately, capture
+credential-free Apache error classifications before replacing the replica, then
+use the tested code-only/image rollback. The module/legacy default stays false.
+Any future activation needs a reviewed, persisted configuration path and the
+#529 lock/claim protocol, followed by the normal main-triggered release workflow
+and live daemon/scheduler/PHP/bridge and TLS-policy checks. Do not manually toggle
+production or dispatch a branch release to bypass those requirements.
+
 ## Full project on an existing server image
 
 With an already reviewed, pulled immutable server image:
@@ -163,8 +222,8 @@ entrypoint.
 ## Remaining release gates
 
 The fixtures verify local MariaDB TLS, project creation, PHP, CGI, four daemons
-and persistent restart. Remaining gates are Azure MySQL 8.4 and rotating
-certificate-chain acceptance, a public remote dev service, authenticated task
+and persistent restart, plus MySQL 8.4 connector parity. Remaining gates are the
+actual Azure MySQL 8.4 rotating certificate chain and full-project acceptance, a public remote dev service, authenticated task
 dispatch through validation and assimilation, and the bridge's extra validators.
 Starting an empty-queue validator does not test returned results.
 
@@ -380,3 +439,120 @@ report and preserve any queued results rather than claiming none were assigned.
 Resume only this owned project and restore the recorded computation modes when
 the bounded workload, CPU and memory comparison permits real work. Do not apply
 this empty-client operational hold blindly to a client running other projects.
+
+## Production drift reconciliation (2026-10-18, #464)
+
+The source of the live lifecycle server/bridge (`9323a0d2…` / `b8fb643e…`)
+was `09987e4732d631292031a4b82b82be8a194b72a7`, outside main. Its quality
+metrics are now reconciled into main without importing unrelated resource-limit,
+threading or alignment changes;
+this does not adopt the separately proposed damage router (#777).
+The additive web image `508a9256…` adds only the already-merged
+`contrib-compute/boinc/html/user/work_summary.php`. Optional `images.web`
+preserves this web/daemon binding independently of lifecycle `server`/`bridge`.
+A normal image build replaces an existing web override with the new bridge image,
+which includes that endpoint and the reconciled metrics. Existing main bundle and
+upload limits, linear-space alignment and single-threaded execution are unchanged. Thus the override cannot
+silently strand production on the old additive image after a rebuild.
+
+The existing production bridge default is `BRIDGE_STEP=iris-bundle-collect`,
+`IRIS_CAMPAIGN=overproof-100-v12`; root Bicep preserves these values and the actual
+200-GiB project-share quota. Signed app-version and worker pins are not changed.
+The independently operated quality job is **not managed by this root stack**.
+Its observed configuration is 2 CPU / 4 GiB, 86400-second timeout, zero retries,
+manual parallelism/completion count 1, live lifecycle bridge image, and the
+managed-identity-fetched `quality/v1-wave9/run_wave9.py` runner. Its runtime shard
+settings are NUM_SHARDS=8, BUNDLE_SIZE=200, MAX_IN_FLIGHT_BUNDLES=45,
+MIN_FREE_GB=35.0. Its storage credentials remain private, never committed here.
+Provisioning this stack neither starts nor adopts that job. An active quality
+execution and its template must remain unchanged; record its deferred image
+update in #529 and reconcile it separately after that execution ends naturally.
+
+Per maintainer policy #856, do not impose a global all-idle gate for a scoped
+server/TLS rollout. Take the #529 claim and controller lease; take the per-job
+start lease and verify that job has no nonterminal execution before updating its
+template. Defer only busy job templates, not the entire rollout. Complete copied
+project backup/migration/rollback and every-consumer TLS gates still apply;
+stock tools/upgrade also invokes database upgrade, so never run it blindly on
+production or mistake an image rollout for migration of copied files.
+
+Normal provisioning registers applications with an execution-only override of the
+complete bridge template, protected by the existing per-job start lease. Only that
+execution receives `BRIDGE_STEP=register-apps`; persisted Iris defaults, secret
+references, resources, and project mounts remain unchanged. Legacy quality results
+that lack the added image measurements export null, not fabricated numeric zero.
+
+## Mixed-schema collector rollout gate
+
+**Do not deploy the reconciled collector until its assessment-database consumer
+supports mixed old and new campaign schemas.** The additional page metrics add
+Parquet columns. `read_parquet(..., union_by_name=true)` within each campaign does
+not make a positional `UNION ALL` across campaigns compatible: missing columns
+must be filled with null by a name-based union across campaign queries as well.
+
+The compatibility change and regression belong to the assessment-database owner
+in PR #777, not this reconciliation. Before collector rollout, require a merged
+fix for both page and crop campaign unions in
+`scripts/data/build-quality-assessment-db.py` and a passing regression consolidating
+old and new campaign files, with the older campaign's new measurements null.
+Record the merged commit and test evidence in the #464/#529 rollout receipt.
+Image builds may proceed, but neither the collector nor TLS activation may be
+released while this compatibility gate is unmet. This is a code compatibility
+gate, not a global all-idle requirement; #856 resource-specific deferrals still
+apply to all later production operations.
+
+## Code-only persisted-project migration and rollback
+
+`/usr/local/lib/usnm-boinc/refresh-project-code.py` inventories every installed
+file in `bin`, `cgi-bin`, `py`, and `html/inc` before writing anything. It maps
+installed files to the immutable image source, rejects unknown/ambiguous files
+and escaping links, preserves generated project paths and validator links, and
+backs up changed code with hashes, modes and ownership. It does not run upstream
+`tools/upgrade` (which also invokes schema upgrade), touch the database, copy
+credentials, or restore queues, applications, uploads or scientific state.
+
+Under the #529 claim and documented controller lease, stop only the server app
+revisions during the short shared-code replacement (never stop a job execution).
+Keep every active job template unchanged. Through a complete-template,
+execution-only lifecycle-job override using the reviewed bridge image (built from the reviewed
+server image, so validator link targets and the migration helper are both present), run:
+
+```sh
+python3 /usr/local/lib/usnm-boinc/refresh-project-code.py inventory --project /project/usnmocr
+python3 /usr/local/lib/usnm-boinc/refresh-project-code.py apply --project /project/usnmocr --backup /project/tls-code-backup-UNIQUE --ack-server-stopped
+```
+
+The acknowledgement records an operator prerequisite, not automatic proof that
+other containers stopped. Verify all server revisions are inactive before it.
+Never restore an entire project/database while jobs are active. A failed write
+attempt rolls back already changed code; reconcile any failed rollback before
+restarting. For a failed acceptance, first persistently restore TLS enforcement
+OFF if it was enabled, stop server revisions, then run the same reviewed helper
+with `rollback` and the same project/backup arguments and restore prior app/job
+images (excluding busy job templates). The helper refuses concurrent code drift
+or corrupt backup hashes. Start the prior app revision and verify baseline.
+
+The full server-image CI fixture now copies its synthetic project, marks a copied
+Python module and transitioner binary stale, applies the helper, verifies all
+mapped hashes plus real copied Python/PHP, web/CGI and four daemon TLS sessions,
+then rolls back, verifies every original code hash and unchanged configuration,
+and repeats those real consumers. This is a copied-project code rehearsal,
+not a production rehearsal, production schema migration, or proof of Azure Files
+rename semantics; repeat safely on a production project copy before live apply.
+
+### Revision 69 scheduler settings adoption
+
+The maintainer adopted revision 69's live scheduler settings on 2026-10-18:
+`next_rpc_delay=3600` and its plan-policy template, sourced from PR #777
+(`3bad37f5`). The template SHA-256 is
+`c8ec0b9be5aded0f62204669bbe3b5855df04de8227d343d1b33718dc7b6083b`.
+The native `mt` and `apple_gpu_8b` minimum client version is 8.2.11; existing
+closed GPU workunit bounds remain closed. This adoption imports no router,
+collector, assessment database, or other unmerged #777 work. The collector gate
+above remains in force.
+
+Production writers must use the documented exchange-account
+`boinc-handoff/scheduler/controller.lock` lease. The nonstandard
+`boinc-locks/prod-controller.lock` is not a replacement: respect an active lease
+there as a live owner, wait briefly, but never acquire or break it. Continue with
+the #529 claim, documented controller lease and per-job guards under #856.

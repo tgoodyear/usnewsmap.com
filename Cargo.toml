@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/usnm-alto",
     "crates/usnm-boinc",
+    "crates/usnm-congress",
     "crates/usnm-core",
     "crates/usnm-search",
     "crates/usnm-store",
@@ -11,6 +12,7 @@ members = [
     "crates/usnm-ocr-adapter",
     "crates/usnm-ocr-contract",
     "crates/usnm-ocr-dash",
+    "crates/usnm-ocr-local",
     "crates/usnm-ocr-quality",
     "crates/usnm-ocr-route",
     "crates/usnm-ocr-survey",
@@ -30,8 +32,10 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 
 [workspace.dependencies]
 usnm-alto = { path = "crates/usnm-alto" }
+usnm-congress = { path = "crates/usnm-congress" }
 usnm-core = { path = "crates/usnm-core" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract", default-features = false }
+usnm-ocr-local = { path = "crates/usnm-ocr-local" }
 usnm-ocr-route = { path = "crates/usnm-ocr-route" }
 usnm-ocr-quality = { path = "crates/usnm-ocr-quality" }
 usnm-ocr-survey = { path = "crates/usnm-ocr-survey" }
@@ -68,7 +72,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 md-5 = "0.11"
 # The bounded ALTO reader (usnm-alto): streaming, no DTD processing.
 quick-xml = "0.42"
-parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
+# `snap`: Hugging Face's Parquet files (Newspaper Navigator, `usnm-ingest pictures`) are Snappy-compressed.
+parquet = { version = "60", default-features = false, features = ["arrow", "snap", "zstd"] }
 moka = { version = "0.12", features = ["future"] }
 # Telemetry to Application Insights (usnm-telemetry). The opentelemetry crates move together;
 # opentelemetry-application-insights 0.46 (opentelemetry 0.33) needs Rust 1.95.
@@ -79,7 +84,11 @@ opentelemetry-http = { version = "0.33", default-features = false }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 # JSON Schemas of the OCR engine contract (usnm-ocr-contract, 13 §13.4.8).
 schemars = "1"
+rustc-hash = "2"
+rskafka = { version = "0.6", default-features = false, features = ["compression-zstd"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -88,6 +97,9 @@ tempfile = "3"
 thiserror = "2"
 toml = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+# The OCR work queues in PostgreSQL + pgmq (#967): TLS through rustls with ring, as reqwest uses.
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-serde_json-1"] }
+tokio-postgres-rustls = "0.14"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["compression-gzip", "cors", "fs", "set-header", "timeout", "trace"] }
 tracing = "0.1"

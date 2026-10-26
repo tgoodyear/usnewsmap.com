@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 usnm-core.workspace = true
 usnm-ocr-adapter = { path = "../usnm-ocr-adapter" }
 usnm-ocr-contract = { workspace = true, default-features = true }
@@ -33,11 +34,14 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 md-5.workspace = true
+reqwest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
+rustix = { workspace = true, features = ["event"] }
+tokio = { workspace = true, features = ["test-util"] }
 axum.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker", features = ["standin"] }
 

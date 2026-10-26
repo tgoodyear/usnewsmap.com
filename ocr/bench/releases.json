@@ -96,6 +96,52 @@
         }
       },
       "tag": "ocr-bench-v1.0.0"
+    },
+    {
+      "archive": {
+        "bytes": 9397760,
+        "name": "usnm-ocr-bench-v1.1.0.tar",
+        "sha256": "0a015eb4085af36b015566f1311411d12aef802d461442bd8c3e963bff932923"
+      },
+      "content_digest": "329c73b5fbaf56b91cd5cd5b1b0cdf131e15ec43391ac9e459e4a423a88eb01e",
+      "inputs_sha256": "776676a5f3f6494f5e7804ec92707bfa8b26106f07c611bbaac3585403426512",
+      "manifest_sha256": "181973248f895d2539e235c7cf97745a60901632e0316012d3de1b63d05867ff",
+      "release": "v1.1.0",
+      "samples": 52,
+      "spec_sha256": "5ff94e9a71c1e5933b8c4c07fdec28f239ce81d4bb4e675310e963f560204198",
+      "subsets": {
+        "multilingual/all-52": {
+          "count": 52,
+          "digest": "40c64a2fd23bdd07758ae8a464a01243eca13527ae357d6023310b8519c56f7f",
+          "pages": 18
+        },
+        "newseye-bnf/all-24": {
+          "count": 24,
+          "digest": "ed7dca57e8f16ecef29e41b74d8fd2e60a37a75d1ecc0cebef84b2560b61d859",
+          "pages": 8
+        },
+        "newseye-bnf/smoke-10": {
+          "count": 10,
+          "digest": "f8c839ad5f5be4c2fcd9f2086ffdb045c9995715dcce8af626849625b924c85a",
+          "pages": 6
+        },
+        "newseye-nlf-fi/all-18": {
+          "count": 18,
+          "digest": "13b88b98a065e86e17976e4d7282e9a9a38aa579b43093f3a71ae2ca0272e573",
+          "pages": 6
+        },
+        "newseye-nlf-fi/smoke-10": {
+          "count": 10,
+          "digest": "0ee6b9d440e624df03872c28d94afe7294e2108008ee825a098927874431c049",
+          "pages": 6
+        },
+        "newseye-nlf-sv/all-10": {
+          "count": 10,
+          "digest": "a7e0110963b6d1a2da121ef4f86f862eabde3525f99d620640d4a197443d0a43",
+          "pages": 4
+        }
+      },
+      "tag": "ocr-bench-v1.1.0"
     }
   ]
 }

@@ -10,6 +10,24 @@
 //! the issue, its METS or the page isn't there, and only then does the
 //! caller go to the item API.
 //!
+//! **LoC's bucket** ([`bucket`], off unless [`LocConfig::bucket`] names
+//! it): LoC's own S3 copy of the batches. When it is on, the bag manifest
+//! and each issue METS are asked of it first, for the batches it holds, and
+//! [`LocClient::bucket_jp2`] gives a page's JP2 from it. Each is checked as
+//! LoC's would be; the bucket is paced and held on its own, never in LoC's
+//! pacers or budget, and anything it can't serve (a private batch, a
+//! missing file, a mismatch, a hold) goes to LoC as before. The bucket's
+//! keys don't name the awardee, so a manifest from it is kept under the
+//! storage URL the batch's name gives as a guess ([`Bag::guessed`], the
+//! `url.guessed` file beside the manifest, not `url`), used only while the
+//! bucket is on: without it, the batch is looked up on LoC as if nothing
+//! were on disk. A METS or JP2 LoC serves under a guessed URL, matching
+//! the bag's md5, confirms it: the guess is kept as checked. When LoC
+//! answers 404 for a file under a guessed URL, Chronicling America's
+//! redirect is asked where the batch is (as for a manifest LoC doesn't
+//! have at the guessed path), and the batch's URL is moved there and kept
+//! as checked before anything goes to the item API.
+//!
 //! **The item API route** (the worker's, and the fetcher's fallback): for
 //! each issue, one request to loc.gov's item JSON
 //! (`https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json`) gives every
@@ -62,6 +80,18 @@ use usnm_core::ids::PageKey;
 use crate::batch::{self, BagIndex, Md5Sum};
 use crate::telemetry::Metrics;
 
+pub mod bucket;
+pub mod global;
+pub mod mirror;
+mod pacer;
+mod types;
+
+pub use pacer::Pacer;
+pub use types::{
+    iiif_base, image_url, issue_id, page_images, FetchError, ImageSize, LocConfig, Scan,
+    ScanFormat, Server, IIIF_ROOT, MAX_IMAGE_BYTES, STORAGE_SERVICE_ROOT,
+};
+
 pub const USER_AGENT: &str = concat!(
     "usnewsmap-ocr-worker/",
     env!("CARGO_PKG_VERSION"),
@@ -70,8 +100,6 @@ pub const USER_AGENT: &str = concat!(
 
 /// The largest item JSON read.
 const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
-/// The largest scan read (full-size JPEGs and JP2s are a few MB).
-pub const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 /// The largest batch manifest read (a 10,000-page batch's is about 3 MB).
 const MAX_BAG_BYTES: usize = 128 * 1024 * 1024;
 /// The largest issue METS read (about 16 KB; a signed one 55 KB).
@@ -91,279 +119,15 @@ pub const ITEM_ERROR_WINDOW: Duration = Duration::from_secs(30 * 60);
 /// not the items: the next one holds the server.
 pub const ITEM_ERROR_TITLES: usize = 3;
 
-/// Where IIIF bases point.
-pub const IIIF_ROOT: &str = "https://tile.loc.gov/image-services/iiif/";
-/// The storage service, under which every batch's files are.
-pub const STORAGE_SERVICE_ROOT: &str = "https://tile.loc.gov/storage-services/service/";
-
-/// A minimum gap between requests, shared by every task holding it. Each
-/// caller reserves the next free slot, so N concurrent callers are spaced
-/// `gap` apart, not sent together.
-#[derive(Debug)]
-pub struct Pacer {
-    gap: Duration,
-    next: Mutex<Option<Instant>>,
-    /// Set by [`Pacer::hold`]: no request before this.
-    held: Mutex<Option<Instant>>,
-}
-
-impl Pacer {
-    pub fn new(gap: Duration) -> Self {
-        Self {
-            gap,
-            next: Mutex::new(None),
-            held: Mutex::new(None),
-        }
-    }
-
-    fn reserve(&self) -> Instant {
-        let mut next = self.next.lock().expect("pacer lock");
-        let now = Instant::now();
-        let at = next.map_or(now, |n| n.max(now));
-        *next = Some(at + self.gap);
-        at
-    }
-
-    /// Wait for this caller's slot. A caller already waiting when a hold
-    /// is set checks it on waking and takes a new slot after it.
-    pub async fn wait(&self) {
-        loop {
-            tokio::time::sleep_until(self.reserve()).await;
-            let held = *self.held.lock().expect("pacer lock");
-            if held.is_none_or(|h| h <= Instant::now()) {
-                return;
-            }
-        }
-    }
-
-    /// Until when callers are held, if a hold is still running.
-    pub fn held_until(&self) -> Option<Instant> {
-        let held = *self.held.lock().expect("pacer lock");
-        held.filter(|h| *h > Instant::now())
-    }
-
-    /// Hold every caller for at least `d` from now (the server said to wait).
-    pub fn hold(&self, d: Duration) {
-        let until = Instant::now() + d;
-        let mut held = self.held.lock().expect("pacer lock");
-        *held = Some(held.map_or(until, |h| h.max(until)));
-        let mut next = self.next.lock().expect("pacer lock");
-        *next = Some(next.map_or(until, |n| n.max(until)));
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum FetchError {
-    /// The page or issue isn't there, or LoC refused the request: retrying won't help.
-    #[error("{0}")]
-    Permanent(String),
-    #[error("{0}")]
-    Transient(String),
-    /// loc.gov answered 503 at once for this item while it served others
-    /// (the module notes): the item is broken on LoC's side. Nothing was
-    /// held; ask again later, not now.
-    #[error("{0}")]
-    Item(String),
-}
-
-impl FetchError {
-    fn cloned(&self) -> Self {
-        match self {
-            Self::Permanent(m) => Self::Permanent(m.clone()),
-            Self::Transient(m) => Self::Transient(m.clone()),
-            Self::Item(m) => Self::Item(m.clone()),
-        }
-    }
-}
-
-/// The size asked of LoC's IIIF image server: the full scan, or scaled
-/// to a percentage of it (IIIF's `pct:n` size).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageSize {
-    Full,
-    Pct(u8),
-}
-
-impl ImageSize {
-    /// The IIIF size parameter.
-    pub fn iiif(self) -> String {
-        match self {
-            Self::Full => "full".into(),
-            Self::Pct(p) => format!("pct:{p}"),
-        }
-    }
-}
-
-impl std::fmt::Display for ImageSize {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Full => f.write_str("full"),
-            Self::Pct(p) => write!(f, "scaled:{p}"),
-        }
-    }
-}
-
-impl std::str::FromStr for ImageSize {
-    type Err = String;
-    /// `full`, or `scaled:<1-99>`.
-    fn from_str(s: &str) -> Result<Self, String> {
-        if s == "full" {
-            return Ok(Self::Full);
-        }
-        s.strip_prefix("scaled:")
-            .and_then(|p| p.parse::<u8>().ok())
-            .filter(|p| (1..100).contains(p))
-            .map(Self::Pct)
-            .ok_or_else(|| format!("{s:?} isn't `full` or `scaled:<1-99>`"))
-    }
-}
-
-/// What a scan's bytes are: LoC's IIIF JPEG, or the batch's original JP2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScanFormat {
-    #[default]
-    Jpeg,
-    Jp2,
-}
-
-impl ScanFormat {
-    /// The file extension.
-    pub fn ext(self) -> &'static str {
-        match self {
-            Self::Jpeg => "jpg",
-            Self::Jp2 => "jp2",
-        }
-    }
-
-    /// The name in sidecars: `jpeg` or `jp2`.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Jpeg => "jpeg",
-            Self::Jp2 => "jp2",
-        }
-    }
-
-    pub fn from_name(s: &str) -> Option<Self> {
-        match s {
-            "jpeg" => Some(Self::Jpeg),
-            "jp2" => Some(Self::Jp2),
-            _ => None,
-        }
-    }
-
-    pub fn content_type(self) -> &'static str {
-        match self {
-            Self::Jpeg => "image/jpeg",
-            Self::Jp2 => "image/jp2",
-        }
-    }
-}
-
-/// Which of LoC's servers a request goes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Server {
-    /// www.loc.gov's JSON API.
-    Api,
-    /// tile.loc.gov's IIIF image server.
-    Tile,
-    /// tile.loc.gov's storage service (batch files).
-    Storage,
-}
-
-impl Server {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Api => "api",
-            Self::Tile => "tile",
-            Self::Storage => "storage",
-        }
-    }
-}
-
-/// A page's JPEG on the IIIF server, from its service base.
-pub fn image_url(iiif_base: &str, size: ImageSize) -> String {
-    format!("{iiif_base}/full/{}/0/default.jpg", size.iiif())
-}
-
-/// What's fetched for a page.
-#[derive(Debug)]
-pub struct Scan {
-    /// The page's IIIF service base: its id, whatever the bytes are.
-    pub iiif_base: String,
-    /// The URL the bytes came from, on tile.loc.gov: the IIIF JPEG, or the
-    /// JP2 on the storage service.
-    pub url: String,
-    pub format: ScanFormat,
-    pub bytes: Bytes,
-    /// For a JP2, the md5 the batch's bag manifest lists, which the bytes
-    /// were checked against.
-    pub md5: Option<String>,
-    /// How long the image request took (sent to last byte); zero from the cache.
-    pub download: Duration,
-    /// Read from the prefetch cache, not fetched.
-    pub from_cache: bool,
-    /// A buffer-set scan's URL on the scan server, to delete once the
-    /// page's output is uploaded.
-    pub evict: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LocConfig {
-    /// Between loc.gov API requests: 5 s, www.loc.gov's `Crawl-Delay`.
-    pub api_gap: Duration,
-    pub tile_gap: Duration,
-    /// Between storage-service requests (batch manifests, METS, JP2s).
-    pub storage_gap: Duration,
-    /// The storage service gets a pacer of its own. Otherwise it shares the
-    /// image server's, at the longer of the two gaps, and a hold on either
-    /// holds both.
-    pub storage_own_budget: bool,
-    pub attempts: u32,
-    /// The wait after a failed attempt, times the attempt number.
-    pub backoff: Duration,
-    /// `https://www.loc.gov` (a test server in tests).
-    pub api_root: String,
-    /// Where IIIF bases point (`https://tile.loc.gov/image-services/iiif/`).
-    pub iiif_root: String,
-    /// NDNP's batches on the storage service
-    /// (`https://tile.loc.gov/storage-services/service/ndnp/`).
-    pub storage_root: String,
-    /// Chronicling America's batch directories, which redirect to the
-    /// storage service (`https://chroniclingamerica.loc.gov/data/batches/`).
-    pub batches_root: String,
-    /// Where batch manifests and issue METS are kept, so each is fetched
-    /// once. None: memory only.
-    pub batch_cache: Option<PathBuf>,
-    /// On a fast, bare 503, ask another item to tell an item error from a
-    /// server problem. Off for callers that must send nothing after a 5xx.
-    pub item_probes: bool,
-    /// Treat an answer that is not the file asked for as a block: a 2xx
-    /// HTML page (a bot challenge such as Cloudflare's "Just a moment...")
-    /// or a body that can't be read holds the server and fails at once,
-    /// with no retry. Enabled by the worker, prefetch and BOINC staging;
-    /// none of their LoC routes expects HTML.
-    pub html_is_block: bool,
-}
-
-impl Default for LocConfig {
-    fn default() -> Self {
-        Self {
-            api_gap: Duration::from_millis(5000),
-            tile_gap: Duration::from_millis(1000),
-            storage_gap: Duration::from_millis(1000),
-            storage_own_budget: false,
-            attempts: 5,
-            backoff: Duration::from_secs(60),
-            api_root: "https://www.loc.gov".into(),
-            iiif_root: IIIF_ROOT.into(),
-            storage_root: format!("{STORAGE_SERVICE_ROOT}ndnp/"),
-            batches_root: "https://chroniclingamerica.loc.gov/data/batches/".into(),
-            batch_cache: None,
-            item_probes: true,
-            html_is_block: false,
-        }
-    }
-}
+/// Beside a batch's kept manifest: its directory on the storage service, as
+/// LoC served the manifest there or Chronicling America's redirect named it.
+const URL_FILE: &str = "url";
+/// Beside a manifest from LoC's bucket instead: only the guess the batch's
+/// name gives ([`Bag::guessed`]).
+const GUESSED_URL_FILE: &str = "url.guessed";
+/// A guess LoC's checked URL later replaced: the batch's earlier sidecars,
+/// fetched under the guess, name it.
+const WRONG_URL_FILE: &str = "url.wrong";
 
 type Pages = Arc<BTreeMap<u16, String>>;
 
@@ -374,6 +138,10 @@ pub struct Bag {
     pub dir: String,
     /// The batch's directory on the storage service, ending in `/`.
     pub url: String,
+    /// Whether `url` is only the guess the batch's name gives
+    /// (`<aw>/batch_<dir>/`), under which a manifest from LoC's bucket was
+    /// kept, with nothing from LoC to confirm it yet.
+    pub guessed: bool,
     pub index: BagIndex,
 }
 
@@ -424,12 +192,23 @@ pub struct LocClient {
     api: Pacer,
     tile: Arc<Pacer>,
     storage: Arc<Pacer>,
+    /// The host's budget (#962), also held and slowed by LoC's push-backs.
+    global: Option<Arc<global::GlobalPacer>>,
     items: moka::future::Cache<String, Pages>,
     /// By batch directory; `None` for a batch LoC doesn't have.
     bags: moka::future::Cache<String, Option<Arc<Bag>>>,
     /// By `<batch dir>/<lccn>/<issue dir>`; `None` for an issue whose METS
     /// isn't there.
     mets: moka::future::Cache<String, Option<Pages>>,
+    /// LoC's bucket, when configured.
+    bucket: Option<bucket::Bucket>,
+    /// By batch directory: where Chronicling America's redirect put a
+    /// batch whose URL was a guess ([`LocClient::relocate`]); `None` where
+    /// it named nowhere on the storage service.
+    located: moka::future::Cache<String, Option<String>>,
+    /// Batches whose guessed URL is being kept as checked right now
+    /// ([`LocClient::confirm`]).
+    confirming: Mutex<std::collections::HashSet<String>>,
     health: Mutex<ApiHealth>,
     storage_health: Mutex<ApiHealth>,
     metrics: Metrics,
@@ -441,46 +220,6 @@ impl std::fmt::Debug for LocClient {
             .field("cfg", &self.cfg)
             .finish_non_exhaustive()
     }
-}
-
-/// The IIIF service base for a JP2 URL on LoC's storage service, as
-/// `jaocr.py iiif_base` builds it.
-pub fn iiif_base(iiif_root: &str, jp2_url: &str) -> Option<String> {
-    let path = jp2_url
-        .split_once("/storage-services/service/")?
-        .1
-        .strip_suffix(".jp2")?;
-    if path.is_empty()
-        || !path
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'.'))
-        || path.contains("..")
-    {
-        return None;
-    }
-    Some(format!("{iiif_root}service:{}", path.replace('/', ":")))
-}
-
-/// seq → IIIF base from loc.gov's issue JSON. `resources[0].files` is in
-/// page (seq) order, which isn't the order of the image file names.
-pub fn page_images(iiif_root: &str, item: &Value) -> BTreeMap<u16, String> {
-    let files = item["resources"][0]["files"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let mut out = BTreeMap::new();
-    for (i, page) in files.iter().enumerate() {
-        let Ok(seq) = u16::try_from(i + 1) else { break };
-        let jp2 = page.as_array().and_then(|fs| {
-            fs.iter()
-                .find(|f| f["mimetype"] == "image/jp2")
-                .and_then(|f| f["url"].as_str())
-        });
-        if let Some(base) = jp2.and_then(|u| iiif_base(iiif_root, u)) {
-            out.insert(seq, base);
-        }
-    }
-    out
 }
 
 /// A `Retry-After` value (seconds or an HTTP date), capped at an hour, and
@@ -505,6 +244,28 @@ async fn write_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
     let part = PathBuf::from(part);
     tokio::fs::write(&part, body).await?;
     tokio::fs::rename(&part, path).await
+}
+
+/// Keep `url` as the checked URL of the batch kept in `dir`, in place of
+/// any guess. A guess that was right goes; a wrong one is kept as
+/// `url.wrong`, the record of which sidecars name it.
+async fn write_checked_url(dir: &Path, url: &str) -> std::io::Result<()> {
+    write_file(&dir.join(URL_FILE), url.as_bytes()).await?;
+    let guessed = dir.join(GUESSED_URL_FILE);
+    match tokio::fs::read_to_string(&guessed).await {
+        Ok(g) if g.trim() != url => {
+            tracing::warn!(
+                dir = %dir.display(),
+                guess = g.trim(),
+                url,
+                "a batch's guessed URL was wrong: the sidecars fetched under it name the guess"
+            );
+            tokio::fs::rename(&guessed, dir.join(WRONG_URL_FILE)).await
+        }
+        Ok(_) => tokio::fs::remove_file(&guessed).await,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 impl LocClient {
@@ -533,17 +294,25 @@ impl LocClient {
                 }
             }))
             .build()?;
+        let global = cfg
+            .global_pacer
+            .clone()
+            .map(|p| Arc::new(global::GlobalPacer::new(p)));
         let (tile, storage) = if cfg.storage_own_budget {
             (
-                Arc::new(Pacer::new(cfg.tile_gap)),
-                Arc::new(Pacer::new(cfg.storage_gap)),
+                Arc::new(Pacer::with_global(cfg.tile_gap, global.clone())),
+                Arc::new(Pacer::with_global(cfg.storage_gap, global.clone())),
             )
         } else {
-            let shared = Arc::new(Pacer::new(cfg.tile_gap.max(cfg.storage_gap)));
+            let shared = Arc::new(Pacer::with_global(
+                cfg.tile_gap.max(cfg.storage_gap),
+                global.clone(),
+            ));
             (Arc::clone(&shared), shared)
         };
         Ok(Self {
-            api: Pacer::new(cfg.api_gap),
+            api: Pacer::with_global(cfg.api_gap, global.clone()),
+            global,
             tile,
             storage,
             items: moka::future::Cache::builder()
@@ -558,13 +327,57 @@ impl LocClient {
                 .max_capacity(4096)
                 .time_to_live(Duration::from_secs(3600))
                 .build(),
+            located: moka::future::Cache::builder()
+                .max_capacity(4096)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            confirming: Mutex::new(std::collections::HashSet::new()),
             health: Mutex::new(ApiHealth::default()),
             storage_health: Mutex::new(ApiHealth::default()),
+            bucket: cfg.bucket.clone().map(bucket::Bucket::new).transpose()?,
             cfg,
             http,
             http_here,
             metrics: Metrics::global(),
         })
+    }
+
+    /// LoC pushed back with a 429, a 403 or a challenge page: hold the
+    /// host's whole budget for `d`, and drop it to the slow rate for good
+    /// (the maintainer's rule of 24 October 2026: 45 a minute, 10 if LoC
+    /// objects). A 503 or an unreadable body holds only its server.
+    fn push_back(&self, status: StatusCode, challenged: bool, d: Duration) {
+        if let Some(g) = &self.global {
+            if challenged
+                || matches!(
+                    status,
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                )
+            {
+                g.hold(d);
+                g.slow_down(&format!(
+                    "HTTP {}{}",
+                    status.as_u16(),
+                    if challenged { " (challenge page)" } else { "" }
+                ));
+            }
+        }
+    }
+
+    /// The main client follows same-host redirects on its own; each hop it
+    /// followed is another LoC request, so it is charged to the global budget
+    /// after the fact (the next slots move on).
+    fn charged(
+        &self,
+        res: reqwest::Result<reqwest::Response>,
+        asked: &str,
+    ) -> reqwest::Result<reqwest::Response> {
+        if let (Ok(r), Some(g)) = (&res, &self.global) {
+            if r.url().as_str() != asked {
+                g.charge(1);
+            }
+        }
+        res
     }
 
     fn pacer(&self, server: Server) -> &Pacer {
@@ -668,7 +481,7 @@ impl LocClient {
     /// One paced request for the known-good item, outside the caches.
     async fn probe(&self, server: Server, url: &str) -> Result<(), ProbeFailure> {
         self.pacer(server).wait().await;
-        match self.http.get(url).send().await {
+        match self.charged(self.http.get(url).send().await, url) {
             Ok(resp) if self.cfg.html_is_block && html_page(&resp).is_some() => {
                 self.block_hold(server, resp.status(), "html_challenge", retry_after(&resp));
                 Err(ProbeFailure::Blocked(FetchError::Transient(format!(
@@ -704,6 +517,16 @@ impl LocClient {
                     server = server.name(),
                     "the known-good item failed too"
                 );
+                // A 429 or 403 here is LoC pushing back, as on any request.
+                if matches!(
+                    resp.status(),
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
+                ) {
+                    let d = retry_after(&resp)
+                        .map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+                    self.pacer(server).hold(d);
+                    self.push_back(resp.status(), false, d);
+                }
                 Err(ProbeFailure::Failed(retry_after(&resp).map(|(d, _)| d)))
             }
             Err(e) => {
@@ -748,8 +571,11 @@ impl LocClient {
         reason: &'static str,
         asked: Option<(Duration, bool)>,
     ) {
-        self.pacer(server)
-            .hold(asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff)));
+        let d = asked.map_or(self.cfg.backoff, |(d, _)| d.max(self.cfg.backoff));
+        self.pacer(server).hold(d);
+        if reason == "html_challenge" {
+            self.push_back(status, true, d);
+        }
         self.metrics.loc_slowdowns.add(
             1,
             &[
@@ -782,7 +608,7 @@ impl LocClient {
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
-            match self.http.get(url).send().await {
+            match self.charged(self.http.get(url).send().await, url) {
                 Ok(resp) if resp.status().is_success() => {
                     if self.cfg.html_is_block {
                         if let Some(why) = html_page(&resp) {
@@ -876,6 +702,11 @@ impl LocClient {
                         let d = checked.map_or(d, |c| c.min(MAX_RETRY_AFTER).max(d));
                         // Everyone waits, not just this request.
                         pacer.hold(d);
+                        self.push_back(
+                            status,
+                            self.cfg.html_is_block && challenge(&resp).is_some(),
+                            d,
+                        );
                         self.metrics.loc_slowdowns.add(
                             1,
                             &[
@@ -1003,16 +834,7 @@ impl LocClient {
     pub async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
         let url = image_url(&base, size);
         let got = self.get(&url, Server::Tile, MAX_IMAGE_BYTES, None).await?;
-        Ok(Scan {
-            iiif_base: base,
-            url,
-            format: ScanFormat::Jpeg,
-            bytes: got.body,
-            md5: None,
-            download: got.took,
-            from_cache: false,
-            evict: None,
-        })
+        Ok(jpeg(base, url, got))
     }
 
     /// Where the batch's files go in the disk cache.
@@ -1074,6 +896,7 @@ impl LocClient {
                 let d = retry_after(&resp).map_or(wait, |(r, _)| r.max(wait));
                 self.storage.hold(d);
                 let why = self.cfg.html_is_block.then(|| challenge(&resp)).flatten();
+                self.push_back(status, why.is_some(), d);
                 self.metrics.loc_slowdowns.add(
                     1,
                     &[
@@ -1156,6 +979,16 @@ impl LocClient {
         ) else {
             return;
         };
+        // Only from the batch's checked URL: a JP2 fetched under a guess
+        // (its manifest came from LoC's bucket), right or wrong, may name a
+        // METS LoC doesn't have there.
+        let kept = cache.join(bdir);
+        match std::fs::read_to_string(kept.join(URL_FILE)) {
+            Ok(u) if !jp2_url.starts_with(u.trim()) => return,
+            Ok(_) => {}
+            Err(_) if kept.join(GUESSED_URL_FILE).is_file() => return,
+            Err(_) => {}
+        }
         for name in [format!("{issue}.xml"), format!("{issue}_1.xml")] {
             if cache
                 .join(bdir)
@@ -1170,33 +1003,64 @@ impl LocClient {
         }
     }
 
+    /// A batch URL kept in `path`, if it is one under the storage root.
+    async fn url_on_disk(&self, path: &Path) -> Option<String> {
+        let url = tokio::fs::read_to_string(path).await.ok()?;
+        let url = url.trim();
+        (url.starts_with(&self.cfg.storage_root) && url.ends_with('/')).then(|| url.to_owned())
+    }
+
     async fn load_bag(&self, dir: &str) -> Result<Option<Arc<Bag>>, FetchError> {
         let cache = self.cache_dir(dir);
+        // A checked URL on disk, if there is one.
+        let mut checked = None;
         if let Some(c) = &cache {
-            let text = tokio::fs::read_to_string(c.join("manifest-md5.txt")).await;
-            let url = tokio::fs::read_to_string(c.join("url")).await;
-            if let (Ok(text), Ok(url)) = (text, url) {
-                let url = url.trim().to_owned();
-                if url.starts_with(&self.cfg.storage_root) && url.ends_with('/') {
+            checked = self.url_on_disk(&c.join(URL_FILE)).await;
+            // A guess is used only while LoC's bucket is: without it, the
+            // batch is looked up on LoC as if nothing were on disk.
+            let guessed = match (&checked, &self.bucket) {
+                (None, Some(_)) => self.url_on_disk(&c.join(GUESSED_URL_FILE)).await,
+                _ => None,
+            };
+            let url = checked
+                .clone()
+                .map(|u| (u, false))
+                .or(guessed.map(|u| (u, true)));
+            if let Some((url, guessed)) = url {
+                if let Ok(text) = tokio::fs::read_to_string(c.join("manifest-md5.txt")).await {
                     return Ok(Some(Arc::new(Bag {
                         dir: dir.to_owned(),
                         url,
+                        guessed,
                         index: BagIndex::parse(&text),
                     })));
                 }
             }
         }
         let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
-        let mut found = self
-            .fetch(
-                &format!("{guess}manifest-md5.txt"),
-                Server::Storage,
-                MAX_BAG_BYTES,
-                None,
-                true,
-            )
-            .await?
-            .map(|g| (guess.clone(), g));
+        // LoC's bucket first, for a batch it holds: the same file. Its keys
+        // don't name the awardee, so unless a checked URL is on disk, the
+        // batch's URL on LoC is only the guess its name gives, and is kept
+        // as one.
+        let mut found = match &self.bucket {
+            Some(b) => b.manifest(dir).await.map(|body| match &checked {
+                Some(url) => (url.clone(), body, bucket::NAME, false),
+                None => (guess.clone(), body, bucket::NAME, true),
+            }),
+            None => None,
+        };
+        if found.is_none() {
+            found = self
+                .fetch(
+                    &format!("{guess}manifest-md5.txt"),
+                    Server::Storage,
+                    MAX_BAG_BYTES,
+                    None,
+                    true,
+                )
+                .await?
+                .map(|g| (guess.clone(), g.body, Server::Storage.name(), false));
+        }
         if found.is_none() {
             // Chronicling America knows where the batch is: follow it, but
             // only onto the storage service.
@@ -1210,7 +1074,7 @@ impl LocClient {
                         found = self
                             .fetch(&to, Server::Storage, MAX_BAG_BYTES, None, true)
                             .await?
-                            .map(|g| (u.to_owned(), g));
+                            .map(|g| (u.to_owned(), g.body, Server::Storage.name(), false));
                     }
                     None => {
                         tracing::warn!(
@@ -1222,18 +1086,20 @@ impl LocClient {
                 }
             }
         }
-        let Some((url, got)) = found else {
+        let Some((url, body, from, guessed)) = found else {
             tracing::warn!(
                 batch = dir,
                 "LoC has no manifest for this batch; its pages go through the item API"
             );
             return Ok(None);
         };
-        let text = String::from_utf8_lossy(&got.body).into_owned();
+        let text = String::from_utf8_lossy(&body).into_owned();
         let index = BagIndex::parse(&text);
         tracing::info!(
             batch = dir,
             url,
+            url_guessed = guessed,
+            from,
             issues = index.issues(),
             jp2s = index.jp2s,
             conflicts = index.conflicts,
@@ -1242,7 +1108,11 @@ impl LocClient {
         if let Some(c) = &cache {
             let w = async {
                 write_file(&c.join("manifest-md5.txt"), text.as_bytes()).await?;
-                write_file(&c.join("url"), url.as_bytes()).await
+                if guessed {
+                    write_file(&c.join(GUESSED_URL_FILE), url.as_bytes()).await
+                } else {
+                    write_checked_url(c, &url).await
+                }
             };
             if let Err(e) = w.await {
                 tracing::warn!(batch = dir, error = %e, "can't keep the batch manifest on disk");
@@ -1251,8 +1121,164 @@ impl LocClient {
         Ok(Some(Arc::new(Bag {
             dir: dir.to_owned(),
             url,
+            guessed,
             index,
         })))
+    }
+
+    /// Where batch `bag` is, when its URL is only a guess and LoC answered
+    /// 404 for a file under it: Chronicling America's redirect
+    /// ([`Self::locate`], one paced request, as for a manifest LoC doesn't
+    /// have at the guessed path), asked once per batch at a time and
+    /// remembered for an hour. Its answer becomes the batch's checked URL,
+    /// on disk and in memory. `Some` only when the batch is elsewhere; when
+    /// the redirect confirms the guess, or names nowhere on the storage
+    /// service, the 404 stands.
+    async fn relocate(&self, bag: &Bag) -> Result<Option<Arc<Bag>>, FetchError> {
+        if !bag.guessed {
+            return Ok(None);
+        }
+        // Done already, for a caller that still has the guess.
+        if let Some(Some(now)) = self.bags.get(&bag.dir).await {
+            if !now.guessed {
+                return Ok((now.url != bag.url).then_some(now));
+            }
+        }
+        let dir = bag.dir.as_str();
+        let to = self
+            .located
+            .try_get_with(dir.to_owned(), async {
+                let via = format!("{}{dir}/manifest-md5.txt", self.cfg.batches_root);
+                let to = self.locate(&via).await?.and_then(|to| {
+                    to.strip_suffix("manifest-md5.txt")
+                        .filter(|u| u.starts_with(&self.cfg.storage_root))
+                        .map(str::to_owned)
+                });
+                if to.is_none() {
+                    tracing::warn!(
+                        batch = dir,
+                        url = bag.url,
+                        "LoC answered 404 under the guessed URL of a batch whose manifest came from LoC's bucket, and Chronicling America names no other place on the storage service; keeping the guess"
+                    );
+                }
+                Ok(to)
+            })
+            .await
+            .map_err(|e: Arc<FetchError>| e.cloned())?;
+        let Some(url) = to else {
+            return Ok(None);
+        };
+        let moved = url != bag.url;
+        if moved {
+            tracing::warn!(
+                batch = dir,
+                guessed = bag.url,
+                url,
+                "a batch whose manifest came from LoC's bucket isn't where its name says: moved to where Chronicling America's redirect says (pages of it already fetched keep the guessed URL in their sidecars)"
+            );
+        } else {
+            tracing::info!(
+                batch = dir,
+                url,
+                "Chronicling America confirms a batch's guessed URL"
+            );
+        }
+        if let Some(c) = self.cache_dir(dir) {
+            if let Err(e) = write_checked_url(&c, &url).await {
+                tracing::warn!(batch = dir, error = %e, "can't keep the batch's URL on disk");
+            }
+        }
+        let checked = Arc::new(Bag {
+            dir: bag.dir.clone(),
+            url,
+            guessed: false,
+            index: bag.index.clone(),
+        });
+        self.bags
+            .insert(bag.dir.clone(), Some(Arc::clone(&checked)))
+            .await;
+        Ok(moved.then_some(checked))
+    }
+
+    /// Keep batch `dir`'s guessed URL `url` as checked: LoC served one of
+    /// its files there, matching the bag's md5 (a METS in
+    /// [`Self::issue_frames`], a JP2 in [`Self::scan_resolved`]), as it
+    /// would the manifest. Only while the bag in memory is still that
+    /// guess, and once for the batch's pages in flight at once.
+    async fn confirm(&self, dir: &str, url: &str) {
+        let Some(Some(bag)) = self.bags.get(dir).await else {
+            return;
+        };
+        if !bag.guessed || bag.url != url {
+            return;
+        }
+        if !self.confirming.lock().unwrap().insert(dir.to_owned()) {
+            return;
+        }
+        tracing::info!(
+            batch = dir,
+            url,
+            "LoC serves a batch's files under its guessed URL; keeping it as checked"
+        );
+        if let Some(c) = self.cache_dir(dir) {
+            if let Err(e) = write_checked_url(&c, url).await {
+                tracing::warn!(batch = dir, error = %e, "can't keep the batch's URL on disk");
+            }
+        }
+        self.bags
+            .insert(
+                dir.to_owned(),
+                Some(Arc::new(Bag {
+                    dir: dir.to_owned(),
+                    url: url.to_owned(),
+                    guessed: false,
+                    index: bag.index.clone(),
+                })),
+            )
+            .await;
+        self.confirming.lock().unwrap().remove(dir);
+    }
+
+    /// `page` where its batch is, when it was placed under its batch's
+    /// guessed URL, LoC answered 404 for it there, and the batch is
+    /// elsewhere ([`Self::relocate`]). Only with LoC's bucket, the one
+    /// source of guesses.
+    async fn moved(&self, page: &BatchPage) -> Result<Option<BatchPage>, FetchError> {
+        if self.bucket.is_none() {
+            return Ok(None);
+        }
+        let Some((dir, _)) = bucket::key(&self.cfg.storage_root, &page.url) else {
+            return Ok(None);
+        };
+        let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
+        let Some(rest) = page.url.strip_prefix(&guess) else {
+            return Ok(None);
+        };
+        let Some(bag) = self
+            .bags
+            .try_get_with(dir.to_owned(), async { self.load_bag(dir).await })
+            .await
+            .map_err(|e: Arc<FetchError>| e.cloned())?
+        else {
+            return Ok(None);
+        };
+        let to = if bag.guessed {
+            self.relocate(&bag).await?
+        } else {
+            // Moved already, after this page was placed under the guess.
+            (bag.url != guess).then_some(bag)
+        };
+        let Some(to) = to else {
+            return Ok(None);
+        };
+        let url = format!("{}{rest}", to.url);
+        Ok(
+            iiif_base(&self.cfg.iiif_root, &url).map(|iiif_base| BatchPage {
+                url,
+                iiif_base,
+                md5: page.md5,
+            }),
+        )
     }
 
     /// seq → frame for an issue of `bag`, from its METS (checked against
@@ -1275,8 +1301,11 @@ impl LocClient {
             .cache_dir(&bag.dir)
             .map(|c| c.join("mets").join(lccn).join(&name));
         let url = batch::file_url(&bag.url, lccn, &files.reel, dir, &name);
+        // Its path in the bag, for LoC's bucket.
+        let rel = batch::file_url("", lccn, &files.reel, dir, &name);
         self.mets
             .try_get_with(key, async {
+                let mut url = url;
                 let mut body = None;
                 if let Some(p) = &disk {
                     if let Ok(b) = tokio::fs::read(p).await {
@@ -1288,26 +1317,64 @@ impl LocClient {
                 let body = match body {
                     Some(b) => b,
                     None => {
-                        let Some(got) = self
-                            .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
-                            .await?
-                        else {
-                            tracing::warn!(url, "the issue's METS isn't there");
-                            return Ok(None);
+                        // LoC's bucket first, checked against the bag's md5
+                        // the same way.
+                        let from_bucket = match &self.bucket {
+                            Some(b) => b.mets(&bag.dir, &rel, &md5).await,
+                            None => None,
                         };
-                        if batch::md5(&got.body) != md5 {
-                            return Err(FetchError::Transient(format!(
-                                "{url}: md5 {} isn't the bag's {}",
-                                batch::md5_hex(&got.body),
-                                batch::hex(&md5)
-                            )));
-                        }
+                        let body = match from_bucket {
+                            Some(b) => b,
+                            None => {
+                                let mut got = self
+                                    .fetch(&url, Server::Storage, MAX_METS_BYTES, Some(lccn), true)
+                                    .await?;
+                                let under_bag_url = got.is_some();
+                                // Not under a guessed URL: the batch may
+                                // be elsewhere.
+                                if got.is_none() {
+                                    if let Some(moved) = self.relocate(bag).await? {
+                                        url = batch::file_url(
+                                            &moved.url,
+                                            lccn,
+                                            &files.reel,
+                                            dir,
+                                            &name,
+                                        );
+                                        got = self
+                                            .fetch(
+                                                &url,
+                                                Server::Storage,
+                                                MAX_METS_BYTES,
+                                                Some(lccn),
+                                                true,
+                                            )
+                                            .await?;
+                                    }
+                                }
+                                let Some(got) = got else {
+                                    tracing::warn!(url, "the issue's METS isn't there");
+                                    return Ok(None);
+                                };
+                                if batch::md5(&got.body) != md5 {
+                                    return Err(FetchError::Transient(format!(
+                                        "{url}: md5 {} isn't the bag's {}",
+                                        batch::md5_hex(&got.body),
+                                        batch::hex(&md5)
+                                    )));
+                                }
+                                if under_bag_url && bag.guessed {
+                                    self.confirm(&bag.dir, &bag.url).await;
+                                }
+                                got.body
+                            }
+                        };
                         if let Some(p) = &disk {
-                            if let Err(e) = write_file(p, &got.body).await {
+                            if let Err(e) = write_file(p, &body).await {
                                 tracing::warn!(url, error = %e, "can't keep the METS on disk");
                             }
                         }
-                        got.body
+                        body
                     }
                 };
                 match batch::mets_pages(&body) {
@@ -1337,13 +1404,19 @@ impl LocClient {
         batch: &str,
         version: u16,
     ) -> Result<Option<BatchPage>, FetchError> {
-        let Some(bag) = self.bag(batch, version).await? else {
+        let Some(mut bag) = self.bag(batch, version).await? else {
             return Ok(None);
         };
         let dir = batch::issue_dir(key.date, key.edition);
         let Some(frames) = self.issue_frames(&bag, &key.lccn, &dir).await? else {
             return Ok(None);
         };
+        // Its METS may have shown a guessed URL to be wrong.
+        if bag.guessed {
+            if let Some(Some(now)) = self.bags.get(&bag.dir).await {
+                bag = now;
+            }
+        }
         let Some(files) = bag.index.issue(&key.lccn, &dir) else {
             return Ok(None);
         };
@@ -1370,9 +1443,33 @@ impl LocClient {
         }))
     }
 
-    /// The page `resolve` found: the JP2, checked against the bag's md5, at
-    /// full size; the IIIF JPEG of its base when scaled. `None` if the JP2
-    /// answers 404 though the bag lists it.
+    /// The page's JP2 from LoC's bucket, when it is configured and holds
+    /// the page's batch, matching the bag's md5, with LoC's URL and IIIF
+    /// base, and where the bytes came from. `None` sends the caller on, to
+    /// a mirror or [`Self::scan_resolved`]. Only a full-size scan is a JP2.
+    pub async fn bucket_jp2(&self, page: &BatchPage) -> Option<(Scan, mirror::Hit)> {
+        self.bucket
+            .as_ref()?
+            .jp2(page, &self.cfg.storage_root)
+            .await
+    }
+
+    /// Whether LoC's bucket is configured.
+    pub fn has_bucket(&self) -> bool {
+        self.bucket.is_some()
+    }
+
+    /// LoC's bucket's counts and hold, when it is configured.
+    pub fn bucket_status(&self) -> Option<bucket::BucketStatus> {
+        self.bucket.as_ref().map(bucket::Bucket::status)
+    }
+
+    /// The page `resolve` found: the JP2 from LoC's storage service, checked
+    /// against the bag's md5, at full size; the IIIF JPEG of its base when
+    /// scaled. `None` if the JP2 answers 404 though the bag lists it. A
+    /// page placed under a guessed URL ([`Bag::guessed`]) that answers 404
+    /// is asked again where Chronicling America says its batch is, and the
+    /// scan carries that URL and IIIF base.
     pub async fn scan_resolved(
         &self,
         key: &PageKey,
@@ -1380,20 +1477,48 @@ impl LocClient {
         size: ImageSize,
     ) -> Result<Option<Scan>, FetchError> {
         if let ImageSize::Pct(_) = size {
-            return self.iiif_scan(page.iiif_base.clone(), size).await.map(Some);
+            if self.bucket.is_none() {
+                return self.iiif_scan(page.iiif_base.clone(), size).await.map(Some);
+            }
+            // With LoC's bucket, the base may be under a guessed URL.
+            let url = image_url(&page.iiif_base, size);
+            if let Some(got) = self
+                .fetch(&url, Server::Tile, MAX_IMAGE_BYTES, None, true)
+                .await?
+            {
+                return Ok(Some(jpeg(page.iiif_base.clone(), url, got)));
+            }
+            return match self.moved(page).await? {
+                Some(p) => self.iiif_scan(p.iiif_base, size).await.map(Some),
+                None => Err(FetchError::Permanent(format!(
+                    "{url} returned HTTP 404 or 410"
+                ))),
+            };
         }
-        let Some(got) = self
-            .fetch(
-                &page.url,
+        let jp2 = |url: String| async move {
+            self.fetch(
+                &url,
                 Server::Storage,
                 MAX_IMAGE_BYTES,
                 Some(&key.lccn),
                 true,
             )
-            .await?
-        else {
-            tracing::warn!(url = page.url, "a JP2 the bag lists isn't there");
-            return Ok(None);
+            .await
+        };
+        let (page, got, first) = match jp2(page.url.clone()).await? {
+            Some(got) => (page.clone(), got, true),
+            None => {
+                let moved = self.moved(page).await?;
+                let got = match &moved {
+                    Some(p) => jp2(p.url.clone()).await?,
+                    None => None,
+                };
+                let (Some(p), Some(got)) = (moved, got) else {
+                    tracing::warn!(url = page.url, "a JP2 the bag lists isn't there");
+                    return Ok(None);
+                };
+                (p, got, false)
+            }
         };
         let md5 = batch::md5(&got.body);
         if md5 != page.md5 {
@@ -1403,6 +1528,15 @@ impl LocClient {
                 batch::hex(&md5),
                 batch::hex(&page.md5)
             )));
+        }
+        // Served where the bag put it: if that is a guess, it was right.
+        if first && self.bucket.is_some() {
+            if let Some((dir, _)) = bucket::key(&self.cfg.storage_root, &page.url) {
+                let guess = batch::storage_batch_url(&self.cfg.storage_root, dir);
+                if page.url.starts_with(&guess) {
+                    self.confirm(dir, &guess).await;
+                }
+            }
         }
         Ok(Some(Scan {
             iiif_base: page.iiif_base.clone(),
@@ -1414,6 +1548,20 @@ impl LocClient {
             from_cache: false,
             evict: None,
         }))
+    }
+}
+
+/// The IIIF JPEG at `url` of the page with IIIF base `base`.
+fn jpeg(base: String, url: String, got: Got) -> Scan {
+    Scan {
+        iiif_base: base,
+        url,
+        format: ScanFormat::Jpeg,
+        bytes: got.body,
+        md5: None,
+        download: got.took,
+        from_cache: false,
+        evict: None,
     }
 }
 
@@ -1458,14 +1606,17 @@ fn challenge(resp: &reqwest::Response) -> Option<String> {
         .then(|| "an HTML page from Cloudflare".into())
 }
 
-/// `<lccn>/<date>/ed-<n>`, an issue as loc.gov's item URLs name it.
-pub fn issue_id(key: &PageKey) -> String {
-    format!(
-        "{}/{}/ed-{}",
-        key.lccn,
-        key.date.format("%Y-%m-%d"),
-        key.edition
-    )
+/// An error and its causes, for a log line: reqwest's own message
+/// ("error sending request") says nothing of why.
+pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
 }
 
 pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Result<Bytes, String> {
@@ -1476,7 +1627,7 @@ pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Res
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| e.without_url().to_string())?
+        .map_err(|e| error_chain(&e.without_url()))?
     {
         if body.len() + chunk.len() > max {
             return Err(format!("response over {max} bytes"));
@@ -1487,1467 +1638,4 @@ pub(crate) async fn read_limited(mut resp: reqwest::Response, max: usize) -> Res
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[tokio::test(start_paused = true)]
-    async fn the_pacer_spaces_concurrent_callers() {
-        let pacer = Arc::new(Pacer::new(Duration::from_millis(3500)));
-        let t0 = Instant::now();
-        let mut tasks = Vec::new();
-        for _ in 0..4 {
-            let p = pacer.clone();
-            tasks.push(tokio::spawn(async move {
-                p.wait().await;
-                Instant::now() - t0
-            }));
-        }
-        let mut at: Vec<Duration> = Vec::new();
-        for t in tasks {
-            at.push(t.await.unwrap());
-        }
-        at.sort();
-        assert_eq!(
-            at,
-            [0, 3500, 7000, 10500].map(Duration::from_millis).to_vec()
-        );
-        // A caller already waiting when a hold is set waits it out too.
-        let p = pacer.clone();
-        let t2 = Instant::now();
-        let waiting = tokio::spawn(async move {
-            p.wait().await;
-            Instant::now()
-        });
-        tokio::task::yield_now().await;
-        pacer.hold(Duration::from_secs(30));
-        assert!(waiting.await.unwrap() - t2 >= Duration::from_secs(30));
-        // Told to hold: the next caller waits it out.
-        pacer.hold(Duration::from_secs(60));
-        let t1 = Instant::now();
-        pacer.wait().await;
-        assert_eq!(Instant::now() - t1, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn builds_iiif_bases_from_the_item_json() {
-        let item = serde_json::json!({"resources": [{"files": [
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0365.jp2"},
-             {"mimetype": "text/xml", "url": "https://tile.loc.gov/x.xml"}],
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/nbu/nbu_gage_ver01/data/sn83045462/00271743700/1890050301/0364.jp2"}],
-            [{"mimetype": "text/xml", "url": "https://tile.loc.gov/y.xml"}]
-        ]}]});
-        let pages = page_images("https://tile.loc.gov/image-services/iiif/", &item);
-        assert_eq!(pages.len(), 2);
-        assert_eq!(
-            pages[&1],
-            "https://tile.loc.gov/image-services/iiif/service:ndnp:nbu:nbu_gage_ver01:data:sn83045462:00271743700:1890050301:0365"
-        );
-        assert!(pages[&2].ends_with(":0364"));
-        assert_eq!(iiif_base("r/", "https://elsewhere/x.jp2"), None);
-        assert_eq!(
-            iiif_base(
-                "r/",
-                "https://tile.loc.gov/storage-services/service/a/../b.jp2"
-            ),
-            None
-        );
-    }
-
-    /// A stand-in loc.gov: one issue (two pages), counting item requests;
-    /// the first image request is answered 429 with Retry-After, the
-    /// second 408.
-    async fn fake_loc(items: Arc<AtomicU32>, images: Arc<AtomicU32>) -> String {
-        use axum::http::StatusCode as S;
-        use axum::response::IntoResponse;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let root = format!("http://{}", listener.local_addr().unwrap());
-        let jp2 = |n: &str| {
-            format!("https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/sn1/1/1890050301/{n}.jp2")
-        };
-        let item = serde_json::json!({"resources": [{"files": [
-            [{"mimetype": "image/jp2", "url": jp2("0001")}],
-            [{"mimetype": "image/jp2", "url": jp2("0002")}],
-        ]}]});
-        let app = axum::Router::new()
-            .route(
-                "/item/sn1/1890-05-03/ed-1/",
-                axum::routing::get(move |headers: axum::http::HeaderMap| {
-                    let item = item.clone();
-                    let items = items.clone();
-                    async move {
-                        assert!(headers["user-agent"]
-                            .to_str()
-                            .unwrap()
-                            .starts_with("usnewsmap-ocr-worker/"));
-                        items.fetch_add(1, Ordering::SeqCst);
-                        axum::Json(item)
-                    }
-                }),
-            )
-            .route(
-                "/iiif/{service}/full/full/0/default.jpg",
-                axum::routing::get(move || {
-                    let images = images.clone();
-                    async move {
-                        match images.fetch_add(1, Ordering::SeqCst) {
-                            0 => (S::TOO_MANY_REQUESTS, [("retry-after", "2")]).into_response(),
-                            1 => S::REQUEST_TIMEOUT.into_response(),
-                            _ => b"jpeg".to_vec().into_response(),
-                        }
-                    }
-                }),
-            );
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        root
-    }
-
-    #[tokio::test]
-    async fn one_item_request_per_issue_and_retry_after_is_honoured() {
-        let (items, images) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
-        let root = fake_loc(items.clone(), images.clone()).await;
-        let loc = LocClient::new(LocConfig {
-            api_gap: Duration::from_millis(10),
-            tile_gap: Duration::from_millis(10),
-            attempts: 3,
-            backoff: Duration::from_millis(10),
-            api_root: root.clone(),
-            iiif_root: format!("{root}/iiif/"),
-            ..LocConfig::default()
-        })
-        .unwrap();
-        let t0 = std::time::Instant::now();
-        let p1: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
-        let p2: PageKey = "sn1/1890-05-03/ed-1/seq-2".parse().unwrap();
-        let s1 = loc.scan(&p1).await.unwrap();
-        assert!(
-            t0.elapsed() >= Duration::from_secs(2),
-            "waited out Retry-After"
-        );
-        // The 408 was retried, not taken as permanent.
-        assert_eq!(&s1.bytes[..], b"jpeg");
-        assert_eq!(images.load(Ordering::SeqCst), 3);
-        assert!(s1
-            .iiif_base
-            .ends_with("service:ndnp:x:batch_x:data:sn1:1:1890050301:0001"));
-        loc.scan(&p2).await.unwrap();
-        assert_eq!(items.load(Ordering::SeqCst), 1);
-        let p3: PageKey = "sn1/1890-05-03/ed-1/seq-3".parse().unwrap();
-        assert!(matches!(loc.scan(&p3).await, Err(FetchError::Permanent(_))));
-        // An issue loc.gov doesn't have: permanent, and asked once.
-        let other: PageKey = "sn1/1890-05-04/ed-1/seq-1".parse().unwrap();
-        assert!(matches!(
-            loc.scan(&other).await,
-            Err(FetchError::Permanent(_))
-        ));
-        assert!(matches!(
-            loc.scan(&other).await,
-            Err(FetchError::Permanent(_))
-        ));
-    }
-
-    /// A stand-in loc.gov whose image server answers its first request
-    /// with 403, and whose API refuses one issue with 404; counts both.
-    async fn blocking_loc(images: Arc<AtomicU32>, refused: Arc<AtomicU32>) -> String {
-        use axum::http::StatusCode as S;
-        use axum::response::IntoResponse;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let root = format!("http://{}", listener.local_addr().unwrap());
-        let item = serde_json::json!({"resources": [{"files": [
-            [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/sn1/1/1890050301/0001.jp2"}],
-        ]}]});
-        let app = axum::Router::new()
-            .route(
-                "/item/sn1/1890-05-03/ed-1/",
-                axum::routing::get(move || {
-                    let item = item.clone();
-                    async move { axum::Json(item) }
-                }),
-            )
-            .route(
-                "/item/sn1/1890-05-04/ed-1/",
-                axum::routing::get(move || {
-                    let refused = refused.clone();
-                    async move {
-                        refused.fetch_add(1, Ordering::SeqCst);
-                        S::NOT_FOUND
-                    }
-                }),
-            )
-            .route(
-                "/iiif/{service}/full/full/0/default.jpg",
-                axum::routing::get(move || {
-                    let images = images.clone();
-                    async move {
-                        match images.fetch_add(1, Ordering::SeqCst) {
-                            0 => S::FORBIDDEN.into_response(),
-                            _ => b"jpeg".to_vec().into_response(),
-                        }
-                    }
-                }),
-            );
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        root
-    }
-
-    #[tokio::test]
-    async fn a_403_holds_the_server_and_an_issue_refusal_isnt_cached() {
-        let (images, refused) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
-        let root = blocking_loc(images.clone(), refused.clone()).await;
-        let loc = LocClient::new(LocConfig {
-            api_gap: Duration::from_millis(10),
-            tile_gap: Duration::from_millis(10),
-            attempts: 3,
-            backoff: Duration::from_millis(300),
-            api_root: root.clone(),
-            iiif_root: format!("{root}/iiif/"),
-            ..LocConfig::default()
-        })
-        .unwrap();
-        assert_eq!(loc.held_until(), None);
-        let t0 = std::time::Instant::now();
-        let p1: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
-        // The 403 held the image server and was retried: not permanent.
-        let s1 = loc.scan(&p1).await.unwrap();
-        assert_eq!(&s1.bytes[..], b"jpeg");
-        assert_eq!(images.load(Ordering::SeqCst), 2);
-        assert!(t0.elapsed() >= Duration::from_millis(300), "held");
-        // A 4xx on an issue fails the page, and is asked again next time.
-        let other: PageKey = "sn1/1890-05-04/ed-1/seq-1".parse().unwrap();
-        for _ in 0..2 {
-            assert!(matches!(
-                loc.scan(&other).await,
-                Err(FetchError::Permanent(_))
-            ));
-        }
-        assert_eq!(refused.load(Ordering::SeqCst), 2);
-    }
-
-    /// How the stand-in answers an item.
-    #[derive(Clone, Copy)]
-    enum Answer {
-        Ok,
-        /// 503 at once, no Retry-After: a broken item.
-        Bare503,
-        /// 503 with `Retry-After: n`: a hold.
-        RetryAfter(u32),
-        /// 503 after 2.5 s, no Retry-After.
-        Slow503,
-        Too429,
-        /// 503 at once with a `Retry-After` that can't be read.
-        BadRetryAfter,
-    }
-
-    /// A stand-in loc.gov answering `/item/<lccn>/<date>/ed-1/` as
-    /// `answers` says (keyed by `<lccn>/<date>`, anything else 404), and
-    /// counting requests per item.
-    async fn items_loc(
-        answers: Vec<(&'static str, Answer)>,
-    ) -> (String, Arc<Mutex<BTreeMap<String, u32>>>) {
-        use axum::http::StatusCode as S;
-        use axum::response::IntoResponse;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let root = format!("http://{}", listener.local_addr().unwrap());
-        let answers: Arc<BTreeMap<String, Answer>> = Arc::new(
-            answers
-                .into_iter()
-                .map(|(k, a)| (k.to_owned(), a))
-                .collect(),
-        );
-        let hits: Arc<Mutex<BTreeMap<String, u32>>> = Arc::default();
-        let h = hits.clone();
-        let app = axum::Router::new().route(
-            "/item/{lccn}/{date}/{ed}/",
-            axum::routing::get(
-                move |axum::extract::Path((lccn, date, _ed)): axum::extract::Path<(
-                    String,
-                    String,
-                    String,
-                )>| {
-                    let answers = answers.clone();
-                    let hits = h.clone();
-                    async move {
-                        let k = format!("{lccn}/{date}");
-                        *hits.lock().unwrap().entry(k.clone()).or_default() += 1;
-                        match answers.get(&k) {
-                            None => S::NOT_FOUND.into_response(),
-                            Some(Answer::Ok) => axum::Json(serde_json::json!({"resources": [{"files": [
-                                [{"mimetype": "image/jp2", "url": "https://tile.loc.gov/storage-services/service/ndnp/x/batch_x/data/sn1/1/1890050301/0001.jp2"}],
-                            ]}]}))
-                            .into_response(),
-                            Some(Answer::Bare503) => S::SERVICE_UNAVAILABLE.into_response(),
-                            Some(Answer::RetryAfter(n)) => {
-                                (S::SERVICE_UNAVAILABLE, [("retry-after", n.to_string())])
-                                    .into_response()
-                            }
-                            Some(Answer::Slow503) => {
-                                tokio::time::sleep(Duration::from_millis(2500)).await;
-                                S::SERVICE_UNAVAILABLE.into_response()
-                            }
-                            Some(Answer::Too429) => S::TOO_MANY_REQUESTS.into_response(),
-                            Some(Answer::BadRetryAfter) => {
-                                (S::SERVICE_UNAVAILABLE, [("retry-after", "soon")]).into_response()
-                            }
-                        }
-                    }
-                },
-            ),
-        );
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (root, hits)
-    }
-
-    fn items_client(root: &str, attempts: u32) -> LocClient {
-        LocClient::new(LocConfig {
-            api_gap: Duration::from_millis(10),
-            tile_gap: Duration::from_millis(10),
-            attempts,
-            backoff: Duration::from_millis(400),
-            api_root: root.to_owned(),
-            iiif_root: format!("{root}/iiif/"),
-            ..LocConfig::default()
-        })
-        .unwrap()
-    }
-
-    fn page(lccn: &str, date: &str) -> PageKey {
-        format!("{lccn}/{date}/ed-1/seq-1").parse().unwrap()
-    }
-
-    /// Ask for `key`'s issue only (no image).
-    async fn item(loc: &LocClient, key: &PageKey) -> Result<Pages, FetchError> {
-        loc.issue_pages(key).await
-    }
-
-    #[tokio::test]
-    async fn an_instant_503_for_one_item_while_others_answer_is_an_item_error() {
-        let (root, hits) = items_loc(vec![
-            ("sn1/1904-07-29", Answer::Ok),
-            ("sn1/1904-07-30", Answer::Bare503),
-            ("sn1/1904-07-31", Answer::Bare503),
-        ])
-        .await;
-        let loc = items_client(&root, 3);
-        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
-        let t0 = std::time::Instant::now();
-        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
-        // Nothing held and no retries.
-        assert_eq!(loc.held_until(), None);
-        assert!(t0.elapsed() < Duration::from_millis(400));
-        assert_eq!(hits.lock().unwrap()["sn1/1904-07-30"], 1);
-        // The title's next broken item: an item answered within the
-        // minute, so no check is needed.
-        let e = item(&loc, &page("sn1", "1904-07-31")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
-        assert_eq!(hits.lock().unwrap()["sn1/1904-07-29"], 1);
-        assert_eq!(loc.held_until(), None);
-    }
-
-    #[tokio::test]
-    async fn real_holds_still_hold() {
-        let (root, hits) = items_loc(vec![
-            ("sn1/1904-07-29", Answer::Ok),
-            ("sn2/1904-07-30", Answer::RetryAfter(1)),
-            ("sn3/1904-07-30", Answer::Too429),
-            ("sn4/1904-07-30", Answer::Slow503),
-            ("sn5/1904-07-30", Answer::BadRetryAfter),
-        ])
-        .await;
-        let loc = items_client(&root, 1);
-        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
-        // A 503 with Retry-After is a hold, though another item answered.
-        let e = item(&loc, &page("sn2", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
-        // A 429 is a hold.
-        let e = item(&loc, &page("sn3", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        // A slow 503 is a hold.
-        let e = item(&loc, &page("sn4", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-        assert_eq!(hits.lock().unwrap()["sn4/1904-07-30"], 1);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
-        // A Retry-After that can't be read is still a hold.
-        let e = item(&loc, &page("sn5", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-    }
-
-    #[tokio::test]
-    async fn with_nothing_known_good_an_instant_503_holds() {
-        let (root, _) = items_loc(vec![("sn1/1904-07-30", Answer::Bare503)]).await;
-        let loc = items_client(&root, 1);
-        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-    }
-
-    #[tokio::test]
-    async fn an_old_known_good_item_is_asked_again_first() {
-        let (root, hits) = items_loc(vec![
-            ("sn1/1904-07-29", Answer::Ok),
-            ("sn1/1904-07-30", Answer::Bare503),
-            ("sn9/1904-07-29", Answer::Bare503),
-            ("sn9/1904-07-30", Answer::Bare503),
-        ])
-        .await;
-        // From an earlier run: checked with one request, which answers.
-        let loc = items_client(&root, 1);
-        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
-        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
-        assert_eq!(hits.lock().unwrap()["sn1/1904-07-29"], 1);
-        assert_eq!(loc.held_until(), None);
-        // A known-good item that fails too: a hold.
-        let loc = items_client(&root, 1);
-        loc.set_known_good(loc.item_url(&page("sn9", "1904-07-29")));
-        let e = item(&loc, &page("sn9", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-    }
-
-    /// With item probes off, a fast bare 503 sends nothing more: the known
-    /// good item isn't asked again, and the error is a hold.
-    #[tokio::test]
-    async fn without_item_probes_a_503_asks_nothing_more() {
-        let (root, hits) = items_loc(vec![
-            ("sn1/1904-07-29", Answer::Ok),
-            ("sn1/1904-07-30", Answer::Bare503),
-        ])
-        .await;
-        let loc = LocClient::new(LocConfig {
-            api_gap: Duration::from_millis(10),
-            tile_gap: Duration::from_millis(10),
-            attempts: 1,
-            backoff: Duration::from_millis(400),
-            api_root: root.clone(),
-            iiif_root: format!("{root}/iiif/"),
-            item_probes: false,
-            ..LocConfig::default()
-        })
-        .unwrap();
-        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
-        let e = item(&loc, &page("sn1", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(!hits.lock().unwrap().contains_key("sn1/1904-07-29"));
-    }
-
-    #[tokio::test]
-    async fn item_errors_across_titles_become_a_hold() {
-        let (root, _) = items_loc(vec![
-            ("sn1/1904-07-29", Answer::Ok),
-            ("sn2/1904-07-30", Answer::Bare503),
-            ("sn3/1904-07-30", Answer::Bare503),
-            ("sn4/1904-07-30", Answer::Bare503),
-        ])
-        .await;
-        let loc = items_client(&root, 1);
-        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
-        for t in ["sn2", "sn3"] {
-            let e = item(&loc, &page(t, "1904-07-30")).await.unwrap_err();
-            assert!(matches!(e, FetchError::Item(_)), "{t}: {e:?}");
-        }
-        assert_eq!(loc.held_until(), None);
-        // A third title inside the window: loc.gov, not the items.
-        let e = item(&loc, &page("sn4", "1904-07-30")).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-    }
-
-    #[tokio::test]
-    async fn concurrent_item_errors_after_a_restart_still_count_titles() {
-        let (root, _) = items_loc(vec![
-            ("sn1/1904-07-29", Answer::Ok),
-            ("sn2/1904-07-30", Answer::Bare503),
-            ("sn3/1904-07-30", Answer::Bare503),
-            ("sn4/1904-07-30", Answer::Bare503),
-            ("sn5/1904-07-30", Answer::Bare503),
-        ])
-        .await;
-        let loc = Arc::new(items_client(&root, 1));
-        // Known good from an earlier run: each caller checks it first.
-        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
-        let mut tasks = Vec::new();
-        for t in ["sn2", "sn3", "sn4", "sn5"] {
-            let loc = loc.clone();
-            tasks.push(tokio::spawn(async move {
-                matches!(
-                    item(&loc, &page(t, "1904-07-30")).await,
-                    Err(FetchError::Item(_))
-                )
-            }));
-        }
-        let mut items = 0;
-        for t in tasks {
-            items += usize::from(t.await.unwrap());
-        }
-        assert_eq!(items, ITEM_ERROR_TITLES - 1);
-        assert!(loc.held_until().is_some());
-    }
-
-    #[test]
-    fn parses_image_sizes() {
-        assert_eq!("full".parse(), Ok(ImageSize::Full));
-        assert_eq!("scaled:50".parse(), Ok(ImageSize::Pct(50)));
-        for bad in ["scaled:0", "scaled:100", "scaled:", "half", "pct:50"] {
-            assert!(bad.parse::<ImageSize>().is_err(), "{bad}");
-        }
-        assert_eq!(ImageSize::Pct(50).to_string(), "scaled:50");
-        assert_eq!(
-            image_url(
-                "https://tile.loc.gov/image-services/iiif/service:a:b",
-                ImageSize::Pct(50)
-            ),
-            "https://tile.loc.gov/image-services/iiif/service:a:b/full/pct:50/0/default.jpg"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_pacer_reports_its_hold() {
-        let pacer = Pacer::new(Duration::from_millis(10));
-        assert_eq!(pacer.held_until(), None);
-        pacer.hold(Duration::from_secs(3600));
-        let until = pacer.held_until().unwrap();
-        assert_eq!(until - Instant::now(), Duration::from_secs(3600));
-        tokio::time::sleep(Duration::from_secs(3601)).await;
-        assert_eq!(pacer.held_until(), None);
-    }
-
-    use crate::standin::{Page, Scripted, StandIn};
-
-    const BATCH: &str = "/storage-services/service/ndnp/xx/batch_xx_test_ver01/";
-
-    /// A client of `s` whose storage requests are `gap` apart.
-    fn batch_client(s: &StandIn, gap: Duration, cache: Option<PathBuf>, own: bool) -> LocClient {
-        LocClient::new(LocConfig {
-            api_gap: Duration::from_millis(10),
-            tile_gap: Duration::from_millis(10),
-            storage_gap: gap,
-            storage_own_budget: own,
-            attempts: 3,
-            backoff: Duration::from_millis(10),
-            api_root: s.root.clone(),
-            iiif_root: s.iiif_root(),
-            storage_root: s.storage_root(),
-            batches_root: s.batches_root(),
-            batch_cache: cache,
-            item_probes: true,
-            html_is_block: false,
-        })
-        .unwrap()
-    }
-
-    /// The compatibility opt-out still works; production callers enable
-    /// the flag and hold at once.
-    #[tokio::test]
-    async fn an_html_answer_is_a_hold_only_when_asked() {
-        let s = StandIn::start().await;
-        let path = format!("{BATCH}data/sn1/0001A/1890050301/0001.xml");
-        let url = format!("{}{path}", s.root);
-        s.put(&path, b"<alto/>".to_vec());
-        s.script(&path, Scripted::Challenge(200));
-        let worker = batch_client(&s, Duration::from_millis(10), None, false);
-        let body = worker
-            .storage_file(&url, "sn1", 1 << 20)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("Just a moment"));
-        s.script(&path, Scripted::Challenge(200));
-        let staging = LocClient::new(LocConfig {
-            html_is_block: true,
-            attempts: 1,
-            ..worker.cfg.clone()
-        })
-        .unwrap();
-        let e = staging
-            .storage_file(&url, "sn1", 1 << 20)
-            .await
-            .unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
-        assert!(staging.held_until().is_some());
-    }
-
-    #[tokio::test]
-    async fn challenges_hold_each_route_without_retry_or_cache() {
-        let s = StandIn::start().await;
-        for (server, path) in [
-            (Server::Api, "/item/sn1/1890-05-03/ed-1/"),
-            (Server::Tile, "/iiif/page/full/full/0/default.jpg"),
-            (Server::Storage, "/scan.jp2"),
-        ] {
-            let loc = LocClient::new(LocConfig {
-                html_is_block: true,
-                backoff: Duration::from_millis(50),
-                ..batch_client(&s, Duration::ZERO, None, true).cfg
-            })
-            .unwrap();
-            s.script(path, Scripted::Challenge(200));
-            let url = format!("{}{path}", s.root);
-            let error = loc
-                .get(&url, server, MAX_IMAGE_BYTES, None)
-                .await
-                .unwrap_err();
-            assert!(matches!(error, FetchError::Transient(_)), "{error}");
-            assert!(
-                error.to_string().contains("Cloudflare challenge"),
-                "{error}"
-            );
-            assert_eq!(s.hits(path), 1, "a challenge must not be retried");
-            assert!(loc.pacer(server).held_until().is_some());
-            if server == Server::Storage {
-                assert!(loc.tile.held_until().is_none(), "independent budgets");
-            }
-        }
-
-        let loc = LocClient::new(LocConfig {
-            html_is_block: true,
-            ..batch_client(&s, Duration::ZERO, None, false).cfg
-        })
-        .unwrap();
-        let path = "/item/sn1/1890-05-03/ed-1/";
-        s.script(path, Scripted::Challenge(200));
-        let error = loc.issue_pages(&key(1)).await.unwrap_err();
-        assert!(
-            error.to_string().contains("Cloudflare challenge"),
-            "{error}"
-        );
-        assert!(loc.items.get(&issue_id(&key(1))).await.is_none());
-        let path = "/scan.jp2";
-        s.script(path, Scripted::Challenge(200));
-        loc.get(&format!("{}{path}", s.root), Server::Storage, 1024, None)
-            .await
-            .unwrap_err();
-        assert!(loc.tile.held_until().is_some(), "shared image/storage hold");
-    }
-
-    #[tokio::test]
-    async fn a_challenge_probe_is_not_a_healthy_item() {
-        let s = StandIn::start().await;
-        let path = "/item/sn1/1890-05-03/ed-1/";
-        let loc = LocClient::new(LocConfig {
-            html_is_block: true,
-            ..batch_client(&s, Duration::ZERO, None, false).cfg
-        })
-        .unwrap();
-        s.script(path, Scripted::Challenge(200));
-        assert!(matches!(
-            loc.probe(Server::Api, &format!("{}{path}", s.root)).await,
-            Err(ProbeFailure::Blocked(_))
-        ));
-        assert!(loc.health.lock().unwrap().last_ok.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_challenge_probe_stops_the_original_fetch_and_names_the_block() {
-        for status in [200, 403] {
-            let s = StandIn::start().await;
-            let loc = LocClient::new(LocConfig {
-                html_is_block: true,
-                backoff: Duration::from_millis(100),
-                ..batch_client(&s, Duration::ZERO, None, false).cfg
-            })
-            .unwrap();
-            loc.set_known_good(format!("{}/good", s.root));
-            s.script("/item", Scripted::Status(503));
-            s.script("/good", Scripted::Challenge(status));
-            let error = loc
-                .get(&format!("{}/item", s.root), Server::Api, 1024, Some("sn2"))
-                .await
-                .unwrap_err();
-            assert!(matches!(error, FetchError::Transient(_)), "{error}");
-            assert!(error.to_string().contains("known-good item"), "{error}");
-            assert!(
-                error.to_string().contains("Cloudflare challenge"),
-                "{error}"
-            );
-            assert_eq!(s.hits("/item"), 1, "do not retry after a probe challenge");
-            assert_eq!(s.hits("/good"), 1);
-            assert!(loc.api.held_until().is_some());
-            assert!(loc.health.lock().unwrap().item_errors.is_empty());
-        }
-    }
-
-    #[tokio::test]
-    async fn a_503_challenge_cannot_be_an_item_error_after_a_healthy_item() {
-        let s = StandIn::start().await;
-        let loc = LocClient::new(LocConfig {
-            html_is_block: true,
-            attempts: 1,
-            backoff: Duration::from_millis(100),
-            ..batch_client(&s, Duration::ZERO, None, false).cfg
-        })
-        .unwrap();
-        s.put("/good", b"{}".to_vec());
-        loc.get(&format!("{}/good", s.root), Server::Api, 1024, Some("sn1"))
-            .await
-            .unwrap();
-        s.script("/item", Scripted::Challenge(503));
-        let error = loc
-            .get(&format!("{}/item", s.root), Server::Api, 1024, Some("sn2"))
-            .await
-            .unwrap_err();
-        assert!(matches!(error, FetchError::Transient(_)), "{error}");
-        assert!(
-            error.to_string().contains("Cloudflare challenge"),
-            "{error}"
-        );
-        assert!(loc.api.held_until().is_some());
-        assert!(loc.health.lock().unwrap().item_errors.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_forbidden_challenge_names_the_block_and_holds() {
-        let s = StandIn::start().await;
-        for server in [Server::Api, Server::Tile, Server::Storage] {
-            let loc = LocClient::new(LocConfig {
-                html_is_block: true,
-                attempts: 1,
-                backoff: Duration::from_millis(50),
-                ..batch_client(&s, Duration::ZERO, None, false).cfg
-            })
-            .unwrap();
-            s.script("/blocked", Scripted::Challenge(403));
-            let error = loc
-                .get(&format!("{}/blocked", s.root), server, 1024, None)
-                .await
-                .unwrap_err();
-            assert!(matches!(error, FetchError::Transient(_)), "{error}");
-            assert!(error.to_string().contains("HTTP 403"), "{error}");
-            assert!(
-                error.to_string().contains("Cloudflare challenge"),
-                "{error}"
-            );
-            assert!(loc.pacer(server).held_until().is_some());
-        }
-    }
-
-    #[tokio::test]
-    async fn challenge_holds_are_counted_with_distinct_reasons() {
-        use opentelemetry::metrics::MeterProvider;
-        use opentelemetry_sdk::metrics::{
-            data::{AggregatedMetrics, MetricData},
-            InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
-        };
-        let exporter = InMemoryMetricExporter::default();
-        let provider = SdkMeterProvider::builder()
-            .with_reader(PeriodicReader::builder(exporter.clone()).build())
-            .build();
-        let s = StandIn::start().await;
-        let mut loc = LocClient::new(LocConfig {
-            html_is_block: true,
-            attempts: 1,
-            ..batch_client(&s, Duration::ZERO, None, true).cfg
-        })
-        .unwrap();
-        loc.metrics = Metrics::new(&provider.meter("loc-test"));
-        for (path, response) in [
-            ("/html", Scripted::Challenge(200)),
-            ("/forbidden", Scripted::Challenge(403)),
-            ("/busy", Scripted::Status(429)),
-        ] {
-            s.script(path, response);
-            loc.get(&format!("{}{path}", s.root), Server::Api, 1024, None)
-                .await
-                .unwrap_err();
-        }
-        loc.block_hold(Server::Tile, StatusCode::OK, "unreadable_body", None);
-        loc.set_known_good(format!("{}/good", s.root));
-        s.script("/probe-item", Scripted::Status(503));
-        s.script("/good", Scripted::ChallengeRetryAfter(403, 7200));
-        let error = loc
-            .get(
-                &format!("{}/probe-item", s.root),
-                Server::Api,
-                1024,
-                Some("sn2"),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("Cloudflare challenge"),
-            "{error}"
-        );
-        assert_eq!(s.hits("/probe-item"), 1);
-        let remaining = loc.api.held_until().unwrap() - Instant::now();
-        assert!(remaining > Duration::from_secs(3599), "{remaining:?}");
-        assert!(remaining <= MAX_RETRY_AFTER, "{remaining:?}");
-        provider.force_flush().unwrap();
-        let mut reasons = Vec::new();
-        let mut capped_probe = false;
-        for resource in exporter.get_finished_metrics().unwrap() {
-            for scope in resource.scope_metrics() {
-                for metric in scope.metrics().filter(|m| m.name() == "ocr.loc_slowdowns") {
-                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
-                        panic!("slowdowns must remain a counter");
-                    };
-                    for point in sum.data_points() {
-                        assert_eq!(point.value(), 1);
-                        let attrs: Vec<_> = point.attributes().cloned().collect();
-                        if attrs.contains(&KeyValue::new("capped", true)) {
-                            assert!(attrs.contains(&KeyValue::new("retry_after", true)));
-                            assert!(attrs.contains(&KeyValue::new("status", 403_i64)));
-                            assert!(attrs.contains(&KeyValue::new("server", "api")));
-                            assert!(attrs.contains(&KeyValue::new("reason", "html_challenge")));
-                            capped_probe = true;
-                        }
-                        reasons.extend(
-                            point
-                                .attributes()
-                                .filter(|a| a.key.as_str() == "reason")
-                                .map(|a| a.value.to_string()),
-                        );
-                    }
-                }
-            }
-        }
-        reasons.sort();
-        assert!(
-            capped_probe,
-            "the probe must preserve capped Retry-After metrics"
-        );
-        assert_eq!(
-            reasons,
-            [
-                "html_challenge",
-                "html_challenge",
-                "html_challenge",
-                "http_status",
-                "unreadable_body"
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_body_holds_without_retry() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/scan.jp2", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            while !request.ends_with(b"\r\n\r\n") {
-                request.push(socket.read_u8().await.unwrap());
-                assert!(request.len() < 4096);
-            }
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
-                .await
-                .unwrap();
-            socket.shutdown().await.unwrap();
-        });
-        let loc = LocClient::new(LocConfig {
-            html_is_block: true,
-            attempts: 3,
-            backoff: Duration::from_millis(100),
-            ..LocConfig::default()
-        })
-        .unwrap();
-        let error = loc.get(&url, Server::Tile, 1024, None).await.unwrap_err();
-        assert!(matches!(error, FetchError::Transient(_)), "{error}");
-        assert!(
-            error.to_string().contains("body could not be read"),
-            "{error}"
-        );
-        assert!(error.to_string().contains("challenge"), "{error}");
-        assert!(!error.to_string().contains("giving up"), "{error}");
-        assert!(loc.tile.held_until().is_some());
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn html_content_types_and_header_only_challenges_are_blocks() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let root = format!("http://{}", listener.local_addr().unwrap());
-        let app = axum::Router::new()
-            .route(
-                "/html",
-                axum::routing::get(|| async {
-                    ([("content-type", "Text/HTML; charset=utf-8")], "<html/>")
-                }),
-            )
-            .route(
-                "/xhtml",
-                axum::routing::get(|| async {
-                    ([("content-type", "application/xhtml+xml")], "<html/>")
-                }),
-            )
-            .route(
-                "/header",
-                axum::routing::get(|| async { ([("cf-mitigated", "challenge")], "blocked") }),
-            )
-            .route(
-                "/xml",
-                axum::routing::get(|| async { ([("content-type", "application/xml")], "<mets/>") }),
-            )
-            .route(
-                "/json",
-                axum::routing::get(|| async { ([("content-type", "application/json")], "{}") }),
-            )
-            .route(
-                "/text",
-                axum::routing::get(|| async { ([("content-type", "text/plain")], "manifest") }),
-            )
-            .route(
-                "/image",
-                axum::routing::get(|| async { ([("content-type", "image/jpeg")], "jpeg") }),
-            );
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        for path in ["html", "xhtml", "header", "xml", "json", "text", "image"] {
-            let loc = LocClient::new(LocConfig {
-                html_is_block: true,
-                ..LocConfig::default()
-            })
-            .unwrap();
-            let got = loc
-                .get(&format!("{root}/{path}"), Server::Tile, 1024, None)
-                .await;
-            if matches!(path, "html" | "xhtml" | "header") {
-                assert!(
-                    matches!(got, Err(FetchError::Transient(_))),
-                    "{path}: {got:?}"
-                );
-                assert!(loc.held_until().is_some(), "{path}");
-            } else {
-                assert!(got.is_ok(), "{path}: {got:?}");
-                assert!(loc.held_until().is_none(), "{path}");
-            }
-        }
-        server.abort();
-    }
-
-    /// The batch lookup through Chronicling America: for staging, a
-    /// challenge page or a 5xx is a hold, not an absent batch.
-    #[tokio::test]
-    async fn the_batch_lookup_holds_on_a_challenge_or_server_error_when_asked() {
-        let s = StandIn::start().await;
-        let via = "/data/batches/zz_none_ver01/manifest-md5.txt";
-        let worker = batch_client(&s, Duration::from_millis(10), None, false);
-        let staging = |s: &StandIn| {
-            LocClient::new(LocConfig {
-                html_is_block: true,
-                attempts: 1,
-                ..batch_client(s, Duration::from_millis(10), None, false)
-                    .cfg
-                    .clone()
-            })
-            .unwrap()
-        };
-        s.script(via, Scripted::Status(500));
-        assert!(worker.bag("zz_none", 1).await.unwrap().is_none());
-        s.script(via, Scripted::Status(500));
-        let e = staging(&s).bag("zz_none", 1).await.unwrap_err();
-        assert!(e.to_string().contains("HTTP 500"), "{e}");
-        s.script(via, Scripted::Challenge(200));
-        let e = staging(&s).bag("zz_none", 1).await.unwrap_err();
-        assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
-        // A plain 404 is still an absent batch.
-        assert!(staging(&s).bag("zz_none", 1).await.unwrap().is_none());
-    }
-
-    /// One issue of sn1 (1890-05-03, ed. 1) in batch `xx_test_ver01`,
-    /// whose pages' frames aren't in seq order.
-    fn one_issue(s: &StandIn) {
-        s.add_issue(
-            BATCH,
-            "sn1",
-            "0001A",
-            "1890050301",
-            &[
-                Page {
-                    seq: 1,
-                    frame: "0101",
-                    jp2: b"jp2 page one",
-                },
-                Page {
-                    seq: 2,
-                    frame: "0099",
-                    jp2: b"jp2 page two",
-                },
-            ],
-        );
-    }
-
-    fn key(seq: u16) -> PageKey {
-        format!("sn1/1890-05-03/ed-1/seq-{seq}").parse().unwrap()
-    }
-
-    #[tokio::test]
-    async fn resolves_through_the_batch_and_checks_the_md5() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        let cache = tempfile::tempdir().unwrap();
-        let loc = batch_client(
-            &s,
-            Duration::from_millis(10),
-            Some(cache.path().into()),
-            false,
-        );
-        let p2 = loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
-        assert!(p2
-            .url
-            .ends_with(&format!("{BATCH}data/sn1/0001A/1890050301/0099.jp2")));
-        assert_eq!(
-            p2.iiif_base,
-            format!(
-                "{}service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0099",
-                s.iiif_root()
-            )
-        );
-        let scan = loc
-            .scan_resolved(&key(2), &p2, ImageSize::Full)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(&scan.bytes[..], b"jp2 page two");
-        assert_eq!(scan.format, ScanFormat::Jp2);
-        assert_eq!(scan.url, p2.url);
-        assert_eq!(
-            scan.md5.as_deref(),
-            Some(batch::md5_hex(b"jp2 page two").as_str())
-        );
-        // One manifest and one METS for the issue's two pages.
-        let p1 = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        assert!(p1.url.ends_with("/0101.jp2"));
-        assert_eq!(
-            (s.hits("manifest-md5.txt"), s.hits("1890050301.xml")),
-            (1, 1)
-        );
-        // Nothing LoC doesn't list: no seq 3, no such issue, no such batch.
-        assert_eq!(loc.resolve(&key(3), "xx_test", 1).await.unwrap(), None);
-        let other: PageKey = "sn1/1890-05-04/ed-1/seq-1".parse().unwrap();
-        assert_eq!(loc.resolve(&other, "xx_test", 1).await.unwrap(), None);
-        assert_eq!(loc.resolve(&key(1), "xx_none", 1).await.unwrap(), None);
-        assert_eq!(loc.resolve(&key(1), "Bad-Batch", 1).await.unwrap(), None);
-        // A JP2 whose bytes aren't the bag's: transient, never used.
-        s.put(
-            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
-            b"changed".to_vec(),
-        );
-        let e = loc
-            .scan_resolved(&key(1), &p1, ImageSize::Full)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(e, FetchError::Transient(ref m) if m.contains("md5")),
-            "{e:?}"
-        );
-        // A JP2 the bag lists that answers 404: None, for the item API.
-        s.put(
-            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
-            Vec::new(),
-        );
-        s.script(
-            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
-            Scripted::Status(404),
-        );
-        assert!(loc
-            .scan_resolved(&key(1), &p1, ImageSize::Full)
-            .await
-            .unwrap()
-            .is_none());
-        // A scaled scan is the IIIF JPEG of the same base.
-        s.put(
-            "/iiif/service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0099/full/pct:50/0/default.jpg",
-            b"half".to_vec(),
-        );
-        let half = loc
-            .scan_resolved(&key(2), &p2, ImageSize::Pct(50))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            (&half.bytes[..], half.format),
-            (&b"half"[..], ScanFormat::Jpeg)
-        );
-
-        // A new process with the same cache asks LoC for neither again.
-        let loc = batch_client(
-            &s,
-            Duration::from_millis(10),
-            Some(cache.path().into()),
-            false,
-        );
-        assert_eq!(
-            loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap(),
-            p2
-        );
-        assert_eq!(
-            (
-                s.hits(&format!("{BATCH}manifest-md5.txt")),
-                s.hits("1890050301.xml")
-            ),
-            (1, 1)
-        );
-        assert!(cache.path().join("xx_test_ver01/manifest-md5.txt").exists());
-        assert!(cache
-            .path()
-            .join("xx_test_ver01/mets/sn1/1890050301.xml")
-            .exists());
-        // A METS on disk that isn't the bag's is fetched again.
-        std::fs::write(
-            cache.path().join("xx_test_ver01/mets/sn1/1890050301.xml"),
-            b"x",
-        )
-        .unwrap();
-        let loc = batch_client(
-            &s,
-            Duration::from_millis(10),
-            Some(cache.path().into()),
-            false,
-        );
-        loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
-        assert_eq!(s.hits("1890050301.xml"), 2);
-    }
-
-    #[tokio::test]
-    async fn follows_chronicling_americas_redirect_onto_the_storage_service_only() {
-        let s = StandIn::start().await;
-        // The batch isn't under its name's first word.
-        let elsewhere = "/storage-services/service/ndnp/yy/batch_xx_test_ver01/";
-        s.add_issue(
-            elsewhere,
-            "sn1",
-            "0001A",
-            "1890050301",
-            &[Page {
-                seq: 1,
-                frame: "0001",
-                jp2: b"jp2",
-            }],
-        );
-        s.redirect(
-            "/data/batches/xx_test_ver01/manifest-md5.txt",
-            &format!("{elsewhere}manifest-md5.txt"),
-        );
-        let loc = batch_client(&s, Duration::from_millis(10), None, false);
-        let p = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        assert!(p.url.contains("/ndnp/yy/batch_xx_test_ver01/data/"));
-        // A redirect off the storage service isn't followed at all.
-        s.put("/other/manifest-md5.txt", "x".to_owned());
-        s.redirect(
-            "/data/batches/xx_off_ver01/manifest-md5.txt",
-            "/other/manifest-md5.txt",
-        );
-        assert_eq!(loc.resolve(&key(1), "xx_off", 1).await.unwrap(), None);
-        assert_eq!(s.hits("/other/manifest-md5.txt"), 0);
-    }
-
-    #[tokio::test]
-    async fn the_storage_pacer_spaces_requests_and_honours_holds() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        let jp2 = format!("{BATCH}data/sn1/0001A/1890050301/0099.jp2");
-        s.script(&jp2, Scripted::RetryAfter(503, 1));
-        let loc = batch_client(&s, Duration::from_millis(200), None, false);
-        let t0 = std::time::Instant::now();
-        let p = loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
-        let scan = loc
-            .scan_resolved(&key(2), &p, ImageSize::Full)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(&scan.bytes[..], b"jp2 page two");
-        assert!(
-            t0.elapsed() >= Duration::from_secs(1),
-            "waited out Retry-After"
-        );
-        let mut t: Vec<std::time::Instant> = ["manifest-md5.txt", ".xml", ".jp2"]
-            .iter()
-            .flat_map(|x| s.times(x))
-            .collect();
-        t.sort();
-        // manifest, METS, JP2 (503), JP2: each at least the gap apart, the
-        // last after the hold.
-        assert_eq!(t.len(), 4);
-        for w in t.windows(2) {
-            assert!(
-                w[1] - w[0] >= Duration::from_millis(150),
-                "{:?}",
-                w[1] - w[0]
-            );
-        }
-        assert!(t[3] - t[2] >= Duration::from_secs(1));
-    }
-
-    #[tokio::test]
-    async fn a_storage_hold_holds_the_image_server_unless_it_has_its_own_budget() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        let manifest = format!("{BATCH}manifest-md5.txt");
-        for own in [false, true] {
-            s.script(&manifest, Scripted::RetryAfter(429, 3600));
-            let loc = batch_client(&s, Duration::from_millis(10), None, own);
-            let r = tokio::time::timeout(
-                Duration::from_millis(500),
-                loc.resolve(&key(1), "xx_test", 1),
-            )
-            .await;
-            assert!(r.is_err(), "still held");
-            assert!(loc.storage.held_until().is_some());
-            assert_eq!(loc.tile.held_until().is_some(), !own, "own budget: {own}");
-            assert!(loc.held_until().is_some());
-        }
-    }
-
-    #[tokio::test]
-    async fn a_403_on_the_storage_service_holds_and_isnt_sent_round_the_api() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        let jp2 = format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2");
-        for _ in 0..3 {
-            s.script(&jp2, Scripted::Status(403));
-        }
-        let loc = batch_client(&s, Duration::from_millis(10), None, false);
-        let p = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        let e = loc
-            .scan_resolved(&key(1), &p, ImageSize::Full)
-            .await
-            .unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(loc.held_until().is_some());
-        assert_eq!(s.hits("/item/sn1/1890-05-03/ed-1/"), 0);
-    }
-
-    #[tokio::test]
-    async fn a_fast_bare_503_for_one_issue_on_the_storage_service_is_an_item_error() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        s.add_issue(
-            BATCH,
-            "sn2",
-            "0002A",
-            "1890050301",
-            &[Page {
-                seq: 1,
-                frame: "0001",
-                jp2: b"x",
-            }],
-        );
-        let loc = batch_client(&s, Duration::from_millis(10), None, false);
-        // sn1's METS answers; sn2's answers 503 at once, twice: the
-        // first holds, the second is an item error.
-        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        for _ in 0..2 {
-            s.script(
-                &format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml"),
-                Scripted::Status(503),
-            );
-        }
-        let sn2: PageKey = "sn2/1890-05-03/ed-1/seq-1".parse().unwrap();
-        let e = loc.resolve(&sn2, "xx_test", 1).await.unwrap_err();
-        assert!(matches!(e, FetchError::Item(_)), "{e:?}");
-        assert_eq!(
-            s.hits(&format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml")),
-            2
-        );
-        // Only the first one's 10 ms hold.
-        assert_eq!(loc.held_until(), None);
-        // A single 503 for a file that answers next time is only a hold.
-        s.script(
-            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
-            Scripted::Status(503),
-        );
-        let p1 = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        loc.scan_resolved(&key(1), &p1, ImageSize::Full)
-            .await
-            .unwrap()
-            .unwrap();
-        // A slow 503 is a hold.
-        s.script(
-            &format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml"),
-            Scripted::Slow(503, Duration::from_millis(2500)),
-        );
-        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
-        cfg.attempts = 1;
-        cfg.backoff = Duration::from_secs(5);
-        let slow = LocClient::new(cfg).unwrap();
-        slow.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        let e = slow.resolve(&sn2, "xx_test", 1).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-        assert!(slow.held_until().is_some());
-        // A manifest's 503 always holds, however fast.
-        s.script(&format!("{BATCH}manifest-md5.txt"), Scripted::Status(503));
-        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
-        cfg.backoff = Duration::from_secs(5);
-        let loc = LocClient::new(cfg).unwrap();
-        let r = tokio::time::timeout(
-            Duration::from_millis(300),
-            loc.resolve(&key(1), "xx_test", 1),
-        )
-        .await;
-        assert!(r.is_err(), "held");
-        assert!(loc.held_until().is_some());
-    }
-
-    #[tokio::test]
-    async fn a_jp2_never_becomes_the_known_good_item() {
-        let s = StandIn::start().await;
-        let big = vec![7u8; PROBE_MAX_BYTES + 1];
-        s.add_issue(
-            BATCH,
-            "sn1",
-            "0001A",
-            "1890050301",
-            &[Page {
-                seq: 1,
-                frame: "0001",
-                jp2: &big,
-            }],
-        );
-        let cache = tempfile::tempdir().unwrap();
-        let loc = batch_client(
-            &s,
-            Duration::from_millis(10),
-            Some(cache.path().into()),
-            false,
-        );
-        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        // A new process: the METS comes from the disk cache, so the only
-        // storage answer it gets is the JP2.
-        let loc = batch_client(
-            &s,
-            Duration::from_millis(10),
-            Some(cache.path().into()),
-            false,
-        );
-        let p = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        loc.scan_resolved(&key(1), &p, ImageSize::Full)
-            .await
-            .unwrap()
-            .unwrap();
-        let h = loc.storage_health.lock().unwrap();
-        assert!(h.last_ok.is_some());
-        assert_eq!(h.known_good, None);
-    }
-
-    #[tokio::test]
-    async fn the_storage_known_good_seed_is_a_mets_on_disk() {
-        let s = StandIn::start().await;
-        let cache = tempfile::tempdir().unwrap();
-        let loc = batch_client(
-            &s,
-            Duration::from_millis(10),
-            Some(cache.path().into()),
-            false,
-        );
-        let jp2 = format!(
-            "{}xx/batch_xx_test_ver01/data/sn1/0001A/1890050301/0001.jp2",
-            s.storage_root()
-        );
-        // Nothing on disk: no seed.
-        loc.seed_storage_known_good(&jp2);
-        assert_eq!(loc.storage_health.lock().unwrap().known_good, None);
-        // Only the signed METS is kept: that one.
-        let mets = cache.path().join("xx_test_ver01/mets/sn1");
-        std::fs::create_dir_all(&mets).unwrap();
-        std::fs::write(mets.join("1890050301_1.xml"), b"x").unwrap();
-        loc.seed_storage_known_good(&jp2);
-        assert_eq!(
-            loc.storage_health.lock().unwrap().known_good.as_deref(),
-            Some(jp2.replace("0001.jp2", "1890050301_1.xml").as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn only_two_bare_503s_in_a_row_on_storage_make_an_item_error() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        s.add_issue(
-            BATCH,
-            "sn2",
-            "0002A",
-            "1890050301",
-            &[Page {
-                seq: 1,
-                frame: "0001",
-                jp2: b"x",
-            }],
-        );
-        let mets2 = format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml");
-        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
-        cfg.attempts = 2;
-        let loc = LocClient::new(cfg).unwrap();
-        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        // A 503 with Retry-After, then a bare one: the bare one is the
-        // first of its kind, so it holds; the request gives up transient.
-        s.script(&mets2, Scripted::RetryAfter(503, 1));
-        s.script(&mets2, Scripted::Status(503));
-        let sn2: PageKey = "sn2/1890-05-03/ed-1/seq-1".parse().unwrap();
-        let e = loc.resolve(&sn2, "xx_test", 1).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-    }
-
-    #[tokio::test]
-    async fn a_mets_that_doesnt_parse_fails_rather_than_going_round() {
-        let s = StandIn::start().await;
-        let mets = s.add_issue(
-            BATCH,
-            "sn1",
-            "0001A",
-            "1890050301",
-            &[Page {
-                seq: 1,
-                frame: "0001",
-                jp2: b"x",
-            }],
-        );
-        // A broken METS with the bag's md5 for it.
-        let broken = b"<mets><dmdSec".to_vec();
-        s.put(&mets, broken.clone());
-        s.put(
-            &format!("{BATCH}manifest-md5.txt"),
-            format!(
-                "{}  data/sn1/0001A/1890050301/1890050301.xml\n{}  data/sn1/0001A/1890050301/0001.jp2\n",
-                batch::md5_hex(&broken),
-                batch::md5_hex(b"x")
-            ),
-        );
-        let loc = batch_client(&s, Duration::from_millis(10), None, false);
-        let e = loc.resolve(&key(1), "xx_test", 1).await.unwrap_err();
-        assert!(
-            matches!(e, FetchError::Transient(ref m) if m.contains("METS")),
-            "{e:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn another_failure_between_bare_503s_clears_the_first() {
-        let s = StandIn::start().await;
-        one_issue(&s);
-        s.add_issue(
-            BATCH,
-            "sn2",
-            "0002A",
-            "1890050301",
-            &[Page {
-                seq: 1,
-                frame: "0001",
-                jp2: b"x",
-            }],
-        );
-        let mets2 = format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml");
-        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
-        cfg.attempts = 3;
-        let loc = LocClient::new(cfg).unwrap();
-        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        for a in [
-            Scripted::Status(503),
-            Scripted::Status(500),
-            Scripted::Status(503),
-        ] {
-            s.script(&mets2, a);
-        }
-        let sn2: PageKey = "sn2/1890-05-03/ed-1/seq-1".parse().unwrap();
-        let e = loc.resolve(&sn2, "xx_test", 1).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
-    }
-}
+mod tests;

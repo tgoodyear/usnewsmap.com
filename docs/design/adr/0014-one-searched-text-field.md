@@ -3,6 +3,7 @@
 - **Status:** Accepted (built behind a setting; the full rebuild that turns it on waits for #283's measurements)
 - **Date:** 2026-10
 - **Amends:** 05 §5.5.4 (American Stories' text in fields of its own)
+- **Amended by:** the [October 2026 amendment](#amendment-october-2026-locs-original-text-beside-our-ocrs-925) below (a third text in layout 3)
 
 ## Context
 
@@ -36,3 +37,30 @@ Two more facts shaped the design. Quickwit 0.9.1's `remove_long` filter in our `
 - **The site loses the page-count note** about pages only American Stories' text matches; each hit keeps its badge.
 - **American Stories' text can't be switched off at query time** on such a version. Rolling `current.json` back to a version with a field per text, or a full rebuild without `--american-stories`, switches it off. A release without `--american-stories` on such a version builds a full base.
 - **CI checks both layouts**: the parity tests load the fixture indexes a second time with the new mapping and run every query, filter and bucket against the reference on both.
+
+## Amendment, October 2026: LoC's original text beside our OCR's (#925)
+
+**Context.** With `--ocr-local` (12 §12.5 Step 9, #296) rule v1 gives a page our OCR's text in place of LoC's where it prefers it, and LoC's text is then in no field. In `pages-v20261022-1` that is 19,762 pages (19,374 of them frak2021) of 23.7 million. Where our text has a line of the next column inside a sentence, a phrase that LoC's text has whole finds nothing on that page (#925). Fixing the reading order of our OCR's own text is separate work that stays open on #925. Its to-do starts with comparing the block order in our ALTO with LoC's.
+
+**Decision.** Keep both texts (decided 24 October 2026, #925, its option 1).
+
+- **Layout 3** (`text_layout: 3`, `TextLayout::SingleWithLoc`) is layout 2 with a third text. On a page our OCR replaced LoC's text on, `text` is ours and `text_all` holds ours, then American Stories' if the page has it, then LoC's original text, each after a gap of 32 positions, with the pairs made per text. `text_loc` stores LoC's text, not indexed. A page is one document, so it counts once. The mapping gains `text_loc` in layout 3 only.
+- **Which pages.** Those rule v1 replaced (`local_text` in the release) whose LoC text has a word the index keeps. The pages our Japanese OCR's Latin text replaced (#203) are not among them: that text is used where it has more words than LoC's, and LoC's text there stays out. The tally, `ocr_local.json` and `ocr_local_pages.bin` are unchanged.
+- **Layout 2 is untouched.** Its documents, its mapping and its deltas are as they were, and the API still serves it. A delta follows the published layout, so a version published in layout 2 takes layout-2 deltas until the next full rebuild. `--single-text-field` means the latest one-field layout, so the next full rebuild with it builds layout 3. The API refuses a layout it doesn't know, so the API that knows layout 3 has to be serving before a version in it is published.
+- **Hits say which text matched.** `matched_in` can list `loc_original` beside `loc` (the page's own text, ours on these pages) and `american_stories`, and `snippet_source` can be `loc_original`, when the query marks nothing in the page's own text or American Stories'. The site marks a page found only in LoC's original text with a "Library of Congress OCR" badge.
+- **Only a full rebuild adds it.** Nothing in a published version changes.
+
+**Alternatives.**
+
+| Option                                                      | Why not                                                                                                                                                        |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Edit layout 2 to carry the third text                       | Published layout-2 indexes and their deltas would no longer match what the code writes, and an API from before the change would read a layout it can't explain |
+| Fix the reading order first and replace only agreeing pages | Waits on the reading-order fix, which is still open; until it lands, phrases stay broken on the replaced pages (#925's option 2)                               |
+
+**Consequences.**
+
+- **About 19.8 thousand pages of 23.7 million** gain a third text, so the index grows by LoC's words and stored text for those pages only.
+- **Every hit that LoC's text gave comes back**, and so do matches on its garbled words, as before the replacement.
+- **A search that matches only LoC's text** lists the page with the snippet from that text, so a reader can tell it from a match in ours.
+- **`total.american_stories_only` stays absent** on one-field versions, as for layout 2.
+- **CI checks layout 3** on the fixtures loaded a third time with `text_loc` on some pages, against the reference on every query, and the pipeline tests build it with `--ocr-local`.

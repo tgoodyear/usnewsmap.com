@@ -197,12 +197,13 @@ impl Reader for Tesseract {
         };
         let status = loop {
             match child.try_wait() {
-                Ok(Some(s)) => break s,
-                Ok(None) if Instant::now() >= deadline => {
+                // Descendants may hold the pipes after the parent exits.
+                Ok(Some(s)) if out.is_finished() && err.is_finished() => break s,
+                Ok(_) if Instant::now() >= deadline => {
                     stop(&mut child);
                     return Err(ReadError::Timeout);
                 }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Ok(_) => std::thread::sleep(Duration::from_millis(20)),
                 Err(e) => {
                     stop(&mut child);
                     return Err(failed(format!("waiting for tesseract: {e}")));

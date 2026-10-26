@@ -1,6 +1,6 @@
 //! Hand staged units to stock `create_work`, two results per unit, with the
 //! assessment's write-ahead markers (`submitting`, then `submitted`).
-use super::{units, APP, JOB_FILE, PAGE_FILE};
+use super::{unit_dirs, units, APP, JOB_FILE, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::path::PathBuf;
@@ -12,6 +12,10 @@ pub struct Options {
     pub root: PathBuf,
     pub project: PathBuf,
     pub max_units: usize,
+    /// Single-replica, exact-host probe only; ordinary campaigns remain quorum two.
+    pub target_host: Option<u64>,
+    /// NVIDIA-only probe: signed version 1.3, with its 8 GiB container bound.
+    pub gpu_probe: bool,
 }
 
 #[derive(Debug, Default)]
@@ -29,8 +33,20 @@ pub const FPOPS_BOUND: &str = "2e16";
 /// can be sent to either version, so this must admit the CPU version's
 /// measured peak even though the GPU container itself is capped at 8 GiB.
 pub const MEMORY_BOUND: &str = "12884901888";
+/// A crop unit (#968) reads one line's box in `whole` mode: the model
+/// still loads, but the read is seconds, so the bounds are a page's
+/// divided by about a hundred, and the result is wanted within a day.
+pub const CROP_FPOPS_EST: &str = "1e12";
+pub const CROP_FPOPS_BOUND: &str = "2e14";
+/// 8 GiB: the weights and llama-server's context, without a page's tiles.
+pub const CROP_MEMORY_BOUND: &str = "8589934592";
+pub const CROP_DELAY_BOUND: &str = "86400";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
+    work_args(job, None, false)
+}
+
+fn work_args(job: &Job, target_host: Option<u64>, gpu_probe: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "--appname",
         APP,
@@ -64,6 +80,40 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if job.crop.is_some() {
+        for (flag, value) in [
+            ("--rsc_fpops_est", CROP_FPOPS_EST),
+            ("--rsc_fpops_bound", CROP_FPOPS_BOUND),
+            ("--rsc_memory_bound", CROP_MEMORY_BOUND),
+            ("--delay_bound", CROP_DELAY_BOUND),
+        ] {
+            let index = args.iter().position(|arg| arg == flag).unwrap();
+            args[index + 1] = value.into();
+        }
+    }
+    if let Some(host) = target_host {
+        for (flag, value) in [
+            ("--min_quorum", "1"),
+            ("--target_nresults", "1"),
+            ("--max_error_results", "1"),
+            ("--max_total_results", "1"),
+            ("--max_success_results", "1"),
+        ] {
+            let index = args.iter().position(|arg| arg == flag).unwrap();
+            args[index + 1] = value.into();
+        }
+        let index = args.iter().position(|arg| arg == "--wu_name").unwrap();
+        args[index + 1] = format!("{}_host{host}", job.workunit());
+        args.extend(["--target_host".into(), host.to_string()]);
+    }
+    if gpu_probe {
+        let index = args
+            .iter()
+            .position(|arg| arg == "--rsc_memory_bound")
+            .unwrap();
+        args[index + 1] = "8589934592".into();
+        args.extend(["--app_version_num".into(), "103".into()]);
+    }
     args.extend(physical_names(job).into_iter().map(|(p, _)| p));
     args
 }
@@ -78,15 +128,65 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    ensure!(
+        !opts.gpu_probe || opts.target_host.is_some(),
+        "GPU probe requires an exact target host"
+    );
     let project = opts.project.canonicalize()?;
+    if let Some(host) = opts.target_host {
+        ensure!(host > 0, "target host must be positive");
+        ensure!(
+            (1..=30).contains(&opts.max_units),
+            "targeted probe is limited to 30 units"
+        );
+        let config = std::fs::read_to_string(project.join("config.xml"))?;
+        ensure!(
+            crate::gold::submit::assignment_enabled(&config)?,
+            "exact-host probe requires enable_assignment=1"
+        );
+    }
+    super::stage::verify_benchmark(&opts.root)?;
     let dir = units(&opts.root);
-    let mut names: Vec<_> = std::fs::read_dir(&dir)
-        .with_context(|| format!("reading {dir:?}"))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().join(JOB_FILE).exists())
-        .map(|e| e.path())
-        .collect();
-    names.sort();
+    ensure!(dir.is_dir(), "reading {dir:?}: no units");
+    // Both layouts: campaigns staged before ADR-0026 keep `units/<id>`.
+    let names = unit_dirs(&opts.root)?;
+    // This lock serializes the whole campaign, not just this invocation's result count.
+    let lock = opts.root.join(".submit-lock");
+    std::fs::create_dir(&lock).context("campaign is locked; inspect before recovery")?;
+    let outcome = submit_units(opts, &project, names).await;
+    std::fs::remove_dir(lock)?;
+    outcome
+}
+
+async fn submit_units(
+    opts: &Options,
+    project: &std::path::Path,
+    names: Vec<PathBuf>,
+) -> anyhow::Result<Summary> {
+    if opts.target_host.is_some() {
+        ensure!(
+            names.len() <= 30,
+            "targeted probe campaign exceeds 30 units"
+        );
+        let policy = serde_json::to_vec(&(opts.target_host, opts.gpu_probe))?;
+        let path = opts.root.join("target-host.json");
+        if path.exists() {
+            ensure!(std::fs::read(&path)? == policy, "campaign target changed");
+        } else {
+            ensure!(
+                !names
+                    .iter()
+                    .any(|u| u.join("submitted").exists() || u.join("submitting").exists()),
+                "cannot retarget an existing campaign"
+            );
+            atomic(&path, &policy)?;
+        }
+    } else {
+        ensure!(
+            !opts.root.join("target-host.json").exists(),
+            "targeted campaign cannot become untargeted"
+        );
+    }
     let mut summary = Summary::default();
     for unit in names {
         if summary.submitted >= opts.max_units {
@@ -108,15 +208,18 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             "staged page changed for {}",
             job.doc_id
         );
-        atomic(&unit.join("submitting"), job.workunit().as_bytes())?;
+        let work_name = opts
+            .target_host
+            .map_or_else(|| job.workunit(), |h| format!("{}_host{h}", job.workunit()));
+        atomic(&unit.join("submitting"), work_name.as_bytes())?;
         for (physical, file) in physical_names(&job) {
             let limit = if file == JOB_FILE { MAX_JSON } else { MAX_SCAN };
-            crate::assess::submit::stage_file(&project, &physical, &read(&unit.join(file), limit)?)
+            crate::assess::submit::stage_file(project, &physical, &read(&unit.join(file), limit)?)
                 .await?;
         }
         let status = Command::new(project.join("bin/create_work"))
-            .current_dir(&project)
-            .args(create_work_args(&job))
+            .current_dir(project)
+            .args(work_args(&job, opts.target_host, opts.gpu_probe))
             .status()
             .await?;
         ensure!(
@@ -134,6 +237,49 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exact_host_probe_has_one_result_and_no_fallback() {
+        let job = super::super::work::tests::job();
+        let args = work_args(&job, Some(10), true);
+        for flag in ["--min_quorum", "--target_nresults", "--max_total_results"] {
+            let index = args.iter().position(|a| a == flag).unwrap();
+            assert_eq!(args[index + 1], "1");
+        }
+        let index = args.iter().position(|a| a == "--target_host").unwrap();
+        assert_eq!(args[index + 1], "10");
+        let index = args.iter().position(|a| a == "--rsc_memory_bound").unwrap();
+        assert_eq!(args[index + 1], "8589934592");
+        let index = args.iter().position(|a| a == "--app_version_num").unwrap();
+        assert_eq!(args[index + 1], "103");
+        assert!(!create_work_args(&job).contains(&"--target_host".into()));
+    }
+
+    #[test]
+    fn a_crop_unit_asks_for_less_and_sooner() {
+        let mut j = super::super::work::tests::job();
+        j.crop = Some(usnm_ocr_contract::surya::CropRef {
+            id: "c01".into(),
+            rect: [10, 20, 500, 60],
+            stratum: "wc-low/top".into(),
+        });
+        j.input.url = format!("{}#xywh=10,20,490,40", j.input.url);
+        j.gpu_modes = vec![usnm_ocr_contract::surya::InputMode::Whole];
+        j.cpu_modes = j.gpu_modes.clone();
+        j.id = j.identity().unwrap();
+        j.validate().unwrap();
+        let args = create_work_args(&j);
+        for (flag, want) in [
+            ("--rsc_fpops_est", CROP_FPOPS_EST),
+            ("--rsc_fpops_bound", CROP_FPOPS_BOUND),
+            ("--rsc_memory_bound", CROP_MEMORY_BOUND),
+            ("--delay_bound", CROP_DELAY_BOUND),
+            ("--min_quorum", "2"),
+        ] {
+            let index = args.iter().position(|a| a == flag).unwrap();
+            assert_eq!(args[index + 1], want, "{flag}");
+        }
+    }
+
     #[test]
     fn two_inputs_in_template_order() {
         let j = super::super::work::tests::job();

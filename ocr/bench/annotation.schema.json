@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OCR benchmark sample annotation extension v1",
+  "description": "Annotation fields on schema-2 samples; raw code-point span ordering and bounds are additionally checked by Rust. Other sample fields are intentionally permitted.",
+  "type": "object",
+  "properties": {
+    "damage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "const": "unannotated"
+            },
+            "observations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "labels",
+            "severity",
+            "evidence"
+          ],
+          "properties": {
+            "status": {
+              "const": "reviewed"
+            },
+            "labels": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "bleed-through",
+                  "faded-ink",
+                  "blur",
+                  "stain",
+                  "tear",
+                  "occlusion",
+                  "warping",
+                  "clipping"
+                ]
+              }
+            },
+            "severity": {
+              "enum": [
+                "none",
+                "mild",
+                "moderate",
+                "severe"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "if": {
+            "properties": {
+              "severity": {
+                "const": "none"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "labels": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "labels": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "transcription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "evidence",
+        "reviewed_by",
+        "illegible_spans"
+      ],
+      "properties": {
+        "policy": {
+          "const": "diplomatic-v1"
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewed_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "illegible_spans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start",
+              "end",
+              "reason"
+            ],
+            "properties": {
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

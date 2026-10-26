@@ -1,0 +1,9 @@
+[Unit]
+Description=usnewsmap text agreement into usnm_quality, hourly (#962)
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=1h
+
+[Install]
+WantedBy=timers.target

@@ -28,6 +28,8 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 
 The [technical notes](../notes/README.md) are dated write-ups of the work, with its measurements; they record what was true at the time, while these documents describe how the system stands now.
 
+Documents 15 and 16, the on-prem cold-storage plan and the `tank` disk replacement and scan staging plan, were dated plans and are now notes: [2026-10-18 Moving cold storage on-prem](../notes/2026-10-18-onprem-cold-storage.md) and [2026-10-19 `tank` replacement and scan access](../notes/2026-10-19-tank-replacement-and-scan-access.md). [ADR-0022](adr/0022-onprem-cold-storage.md) and [ADR-0023](adr/0023-onprem-scan-access.md) record their decisions.
+
 ## Executive summary
 
 **What failed before.** The legacy system was a Python 2 / Flask API in front of a self-managed Solr cluster on university-internal hosts. It kept per-user session state in MongoDB and needed hand-run Python scripts to ingest data. Every part depended on one institution's servers and on individual people. When that support went away, nothing could keep it running. It also showed only a **random sample of 500 hits per request**, so the map was a sample rather than a full count. See [01](01-background-and-legacy-analysis.md).

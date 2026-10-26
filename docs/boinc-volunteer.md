@@ -2,7 +2,7 @@
 
 Run OCR and quality checks on historical newspapers with BOINC on Linux, macOS or Windows. Tasks process page images, extracted text or word crops. The project checks returned outputs before using them in search or quality audits.
 
-Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md) and [boinc-quality.md](boinc-quality.md).
+Status: a pilot for trusted friends. The project server is up and work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc/README.md](boinc/README.md) and [boinc-quality.md](boinc-quality.md).
 
 ## Why volunteer?
 
@@ -38,13 +38,13 @@ work finishes. Local computing preferences affect other BOINC projects too.
 This pilot may have no work or supported app for your device. You can install
 BOINC and register or attach later. Start with the
 [Linux quick start](boinc-linux.md), [Windows quick start](boinc-windows.md),
-[macOS setup](#12-macos-arm64-apple-darwin-apple-silicon-and-x86_64-apple-darwin-intel)
+[macOS quick start](boinc-macos.md)
 or the [Linux reference](#11-linux-x86_64-pc-linux-gnu-and-aarch64-unknown-linux-gnu),
 then review [resources, network and privacy](#4-resources-network-and-privacy).
 
 ## Single-Script Onboarding (One Script per Platform)
 
-Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/usnewsmap/`):
+Every platform has a single onboarding script that validates prerequisites, configures BOINC preferences (`leave_apps_in_memory=1`, RAM/CPU limits), and attaches or updates the project (`https://boinc.usnewsmap.com/`):
 
 | Platform                          | Onboarding Script                                          | Preview (Read-Only)                                                                                   | Apply & Attach                                                                              |
 | --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -57,6 +57,7 @@ Every platform has a single onboarding script that validates prerequisites, conf
 
 To amortize BOINC scheduler/upload overhead and keep `llama-server` model weights warm in RAM/VRAM, workunits support multi-page bundles with atomic slot-level checkpointing:
 
+- **`usnm_ocr` (container CPU)**: one page per workunit by default. A plan can bundle up to 32 pages of one queue (10 for bulk, priority pages alone; [boinc-ocr-bundles.md](boinc-ocr-bundles.md)). After each page, its outputs and `ocr_checkpoint.json` are saved in the slot directory and `fraction_done` is updated, so a restarted task resumes at the next page. A page that fails is returned as failed and requeued alone; the rest of the bundle still counts.
 - **`usnm_quality` (native CPU)**: bundles **32–50 pages per workunit** (~1–2 minutes of CPU work, ~45–70 MiB download). Each completed page is atomically checkpointed to `quality_checkpoint.json` in the slot directory with `fraction_done` updated after every page; if BOINC suspends or restarts the client, execution resumes at the next uncompleted page.
 - **`usnm_qwen` (native Metal / CUDA GPU or CPU)**: bundles **3–4 pages per workunit** on CPU (`2B Q8_0`, `k_crops = 6`, 18–24 crops/WU) and **15–20 pages per workunit** on GPU (`8B Q4_K_M` or `2B Q8_0`, 90–120 crops/WU), amortizing the 2–5 s GGUF model load across the bundle. Each completed crop is atomically checkpointed to `qwen_checkpoint.json` with `fraction_done` updated after every crop.
 
@@ -71,7 +72,8 @@ Choose the section below for your operating system (`Linux`, `macOS`, or `Window
 
 ### 1.1 Linux (`x86_64-pc-linux-gnu` and `aarch64-unknown-linux-gnu`)
 
-Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknown-linux-gnu` (64-bit ARM, `UNVERIFIED` on live volunteer hosts).
+The short version is the [Linux quick start](boinc-linux.md); this section is
+the full reference. Linux supports both `x86_64-pc-linux-gnu` (AMD/Intel 64-bit) and `aarch64-unknown-linux-gnu` (64-bit ARM, `UNVERIFIED` on live volunteer hosts).
 
 #### Native CPU app (`usnm_quality`)
 
@@ -199,7 +201,8 @@ option; this helper and its rootless guarantees apply to Podman only.
 
 ### 1.2 macOS (`arm64-apple-darwin` Apple Silicon and `x86_64-apple-darwin` Intel)
 
-Install the official **recommended stable** universal macOS BOINC client
+The short version is the [macOS quick start](boinc-macos.md); this section is
+the full reference. Install the official **recommended stable** universal macOS BOINC client
 (currently **8.2.11**) from [BOINC's Mac downloads](https://boinc.berkeley.edu/download_all.php?platform=mac).
 Do not install a development client just to volunteer. Upstream 8.2.12 and
 8.2.13 are Linux hotfix releases, not Mac container prerequisites; stable
@@ -216,7 +219,7 @@ After installing BOINC Manager and launching it once so `/Library/Application Su
 python3 scripts/boinc/setup_mac_volunteer.py
 
 # 2. Apply preferences and attach (or update if already attached):
-python3 scripts/boinc/setup_mac_volunteer.py --apply --account-key <YOUR_ACCOUNT_KEY>
+python3 scripts/boinc/setup_mac_volunteer.py --apply --authenticator <YOUR_ACCOUNT_KEY>
 ```
 
 #### Native CPU app (`usnm_quality`)
@@ -512,16 +515,16 @@ To view your task history, log in to the project website with the same account a
 
 ## 3. What you will run
 
-Work goes out in explicit cohorts of 1 to 100 pages that the project selects by hand ([boinc.md](boinc.md#boundaries)), so it's normal to see no tasks for a while. Container apps pull a pinned OCI worker image named in the app version; native apps (`usnm_quality` and `usnm_qwen`) run directly on the host without a container runtime.
+Work goes out in explicit cohorts of 1 to 100 pages that the project selects by hand ([boinc/boundaries-and-monitoring.md](boinc/boundaries-and-monitoring.md#boundaries)), so it's normal to see no tasks for a while. Container apps pull a pinned OCI worker image named in the app version; native apps (`usnm_quality` and `usnm_qwen`) run directly on the host without a container runtime.
 
-| App            | Runtime                                                                                                                  | What a task does                                                                                                                             | Downloads                                                                                              | Returns                                                                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `usnm_ocr`     | Container (`docker`)                                                                                                     | OCR of one newspaper page with Tesseract 5.5.0 and the project's model lock                                                                  | the page image and a job file, from the project server                                                 | the page's text (`text.txt`), its layout as ALTO XML (`layout.xml`) and `result.json` (checksums, engine, time) |
-| `usnm_assess`  | Container (`docker`)                                                                                                     | reads one page twice, as JP2 and as JPEG, to compare the two formats ([boinc-assessment.md](boinc-assessment.md)); two hosts get each page   | the JP2, the JPEG (OCR units) and a job file, from the project server                                  | both texts and `result.json` (outcome, exit code, time, memory per format)                                      |
-| `usnm_gold`    | Container (`docker`)                                                                                                     | scores your engine on public hand-transcribed text ([gold check](boinc.md#gold-check))                                                       | see below                                                                                              | `gold-result.json`: counts only                                                                                 |
-| `usnm_surya`   | Container (`docker_mt`, `docker_nvidia_cuda`)                                                                            | OCR of one newspaper page with Surya 2 ([boinc-surya.md](boinc-surya.md))                                                                    | the page image and `surya.json`, from the project server                                               | `text.txt`, `lines.json`, `result.json` and `diag.txt`                                                          |
-| `usnm_quality` | Native CPU (all 5 platforms) or Container (`docker`)                                                                     | estimates per-page OCR accuracy, completeness, findability and scan features across existing readings ([boinc-quality.md](boinc-quality.md)) | `page.jpg`, `loc.xml`, `texts.json`, sticky `places.txt` and `quality.json`                            | `result.json`, `confusions.json` and `diag.txt`                                                                 |
-| `usnm_qwen`    | Native (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`) or Container (`docker_mt_2b`, `docker_nvidia_cuda_8b`) | transcribes deterministic word crops with Qwen3-VL via `llama-server` ([boinc-quality.md](boinc-quality.md))                                 | `page.jpg`, `qwen.json`, and (native only) sticky `<sticky/><no_delete/>` GGUF model + projector files | `readings.json`, `result.json` and `diag.txt`                                                                   |
+| App            | Runtime                                                                                                                  | What a task does                                                                                                                                            | Downloads                                                                                              | Returns                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `usnm_ocr`     | Container (`docker`)                                                                                                     | OCR of one newspaper page with Tesseract 5.5.0 and the project's model lock                                                                                 | the page image and a job file, from the project server                                                 | the page's text (`text.txt`), its layout as ALTO XML (`layout.xml`) and `result.json` (checksums, engine, time) |
+| `usnm_assess`  | Container (`docker`)                                                                                                     | reads one page twice, as JP2 and as JPEG, to compare the two formats ([boinc-assessment.md](notes/2026-10-16-boinc-assessment.md)); two hosts get each page | the JP2, the JPEG (OCR units) and a job file, from the project server                                  | both texts and `result.json` (outcome, exit code, time, memory per format)                                      |
+| `usnm_gold`    | Container (`docker`)                                                                                                     | scores your engine on public hand-transcribed text ([gold check](boinc/gold-check.md#gold-check))                                                           | see below                                                                                              | `gold-result.json`: counts only                                                                                 |
+| `usnm_surya`   | Container (`docker_mt`, `docker_nvidia_cuda`)                                                                            | OCR of one newspaper page with Surya 2 ([boinc-surya.md](boinc-surya.md))                                                                                   | the page image and `surya.json`, from the project server                                               | `text.txt`, `lines.json`, `result.json` and `diag.txt`                                                          |
+| `usnm_quality` | Native CPU (all 5 platforms) or Container (`docker`)                                                                     | estimates per-page OCR accuracy, completeness, findability and scan features across existing readings ([boinc-quality.md](boinc-quality.md))                | `page.jpg`, `loc.xml`, `texts.json`, sticky `places.txt` and `quality.json`                            | `result.json`, `confusions.json` and `diag.txt`                                                                 |
+| `usnm_qwen`    | Native (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`) or Container (`docker_mt_2b`, `docker_nvidia_cuda_8b`) | transcribes deterministic word crops with Qwen3-VL via `llama-server` ([boinc-quality.md](boinc-quality.md))                                                | `page.jpg`, `qwen.json`, and (native only) sticky `<sticky/><no_delete/>` GGUF model + projector files | `readings.json`, `result.json` and `diag.txt`                                                                   |
 
 The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO and Parquet and goes through the same import and release as the project's own OCR nodes.
 
@@ -530,11 +533,23 @@ The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO a
 - `bundle.tar`, 9.6 MB, from the project server: crops and transcriptions the licences allow us to share, with their licence files.
 - The BLN600 zip, 68 MB, and 18 page images, served by the BOINC project from its verified mirror. Your client checks each file and keeps it as a sticky input.
 
-The input template marks all of these `<sticky/>` and `<no_delete/>` (written by `usnm-boinc gold submit`). On 14 October 2026, production hosts returned multiple valid Gold tasks, but no client transfer log was retained to confirm that a later task reused each file without downloading it again; see the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
+The input template marks all of these `<sticky/>` and `<no_delete/>` (written by `usnm-boinc gold submit`). On 14 October 2026, production hosts returned multiple valid Gold tasks, but no client transfer log was retained to confirm that a later task reused each file without downloading it again; see the [live acceptance record](boinc/gold-check.md#live-acceptance-record-and-remaining-checks). By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
 
 `gold-result.json` holds, per crop: reference characters, character edits, reference words, word edits, the model profile and the time; then a summary per source, the crops it skipped and why, the engine version, the bundle version and manifest checksum, the job id and your BOINC host id. It holds no page text and no transcription. Counts are enough to compare engines across hosts, and the licences (BLN600's No-Derivatives terms in particular) rule out sending anything else. Crops in a language the worker image has no model for are listed as skipped.
 
-**How gold results will be used.** The OCR app's validator accepts any well-formed result. It doesn't compare text between hosts yet ([boinc.md](boinc.md#connect-a-stock-boinc-project)). A gold result shows how a host's engine does on known text, and the plan is to use it to decide whether to trust that host's OCR. That is a tracked follow-up and is not built yet.
+**How gold results are used.** The OCR app's stock validator accepts any
+well-formed result; it does not establish text agreement. The central
+[host-trust collector](boinc/gold-check.md#host-trust-for-usnm_ocr) gates production OCR
+publication on a calibrated Gold policy for the host's exact worker image,
+source language, model profile, PSM and DPI. Unsupported jobs are held in
+quarantine rather than inheriting another language's calibration. Main's v5
+policy also binds reports to native BOINC host/result identities and server
+timestamps, and accounts for attributable terminal client errors. Source
+implementation is not rollout: the recorded English-only v4 pilot does not
+establish v5 live acceptance or authorize other languages. Automatic first-Gold
+and independent-host spot-check commands exist, but their scheduling and live
+acceptance remain operator-controlled (#468). This is a quality signal for
+trusted volunteers, not identity verification or malicious-host protection.
 
 ## 4. Resources, network and privacy
 
@@ -568,8 +583,8 @@ Success: a task moves from downloading to running to uploaded, and the event log
 - **Client will not start.** Read `journalctl -u boinc-client.service`. A slot or SELinux error needs the slots-only label; missing limits need a working user systemd session, cgroup v2 and writable delegated cgroups. Re-run the setup preview and fix its diagnostic. Do not disable the preflight to accept work.
 - **Tasks fail at once.** Check the event log for a runtime or slot error. A hello-world check alone is insufficient; the startup preflight exercises the real task limits and mount.
 - **Upload fails.** An upload error is not a completed acceptance test even if the scheduler receives a completion report. Preserve a local result when diagnosing, stop requesting new tasks, and report the upload-server message to the project operator.
-- **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc.md](boinc.md#allocation-and-recovery)). If every task fails, detach and report it.
-- **Gold downloads fail.** Make sure your network allows the BOINC project's download server. The 14 October production reports predate the project mirror and only establish that publisher-sourced inputs passed the worker's hash checks; they do not establish mirror or sticky-cache acceptance. See the [live acceptance record](boinc.md#live-acceptance-record-and-remaining-checks).
+- **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc/allocation-and-recovery.md](boinc/allocation-and-recovery.md#allocation-and-recovery)). If every task fails, detach and report it.
+- **Gold downloads fail.** Make sure your network allows the BOINC project's download server. The 14 October production reports predate the project mirror and only establish that publisher-sourced inputs passed the worker's hash checks; they do not establish mirror or sticky-cache acceptance. See the [live acceptance record](boinc/gold-check.md#live-acceptance-record-and-remaining-checks).
 
 ## Detach
 

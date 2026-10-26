@@ -1,0 +1,9 @@
+[Unit]
+Description=usnewsmap usnm_quality page summary refresh, every 6 hours (#962)
+
+[Timer]
+OnBootSec=30min
+OnUnitInactiveSec=6h
+
+[Install]
+WantedBy=timers.target

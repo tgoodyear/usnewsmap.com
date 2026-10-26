@@ -1,0 +1,147 @@
+{
+  "format": "usnm-qwen-native-backend-pair-v1",
+  "scope": "Vulkan on NVIDIA RTX 2060 SUPER, not Intel hardware; offline native benchmark, not production BOINC quorum or image acceptance",
+  "date_utc": "2026-10-18",
+  "analysis_source_commit": "a576d3dd9886ad5f4fcbd2830696a4fc88c7d912",
+  "release": "v1.0.0",
+  "content_digest": "c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800",
+  "subset": "legacy/overproof-en-100",
+  "subset_digest": "e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2060 SUPER",
+    "physical_vram_mib": 8192,
+    "driver": "610.57.04",
+    "location": "pve-big CT214 usnm-rtx-compute"
+  },
+  "models": [
+    {
+      "file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+      "url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/f982a07559d4a2f6c8744d840bf6fccab30eea96/Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+      "sha256": "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2"
+    },
+    {
+      "file": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+      "url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/f982a07559d4a2f6c8744d840bf6fccab30eea96/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+      "sha256": "c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd"
+    }
+  ],
+  "native_app": {
+    "deployed_version": "1.6",
+    "binary_sha256": "a25da41a10f266e5c2d02206bf9f0e40b54d476609f85d70a72e4e11792d0efe",
+    "same_binary_for_both_backends": true
+  },
+  "native_engine": {
+    "image": "sha256:a25da41a10f266e5c2d02206bf9f0e40b54d476609f85d70a72e4e11792d0efe",
+    "llama": "sha256:c53dfc3d84bd755fabf041ae48416d24a8396b25a8cf7ff7da34da5f2bb2b4c3",
+    "weights": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
+    "models": [
+      {
+        "file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+        "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+        "min_gpu_mb": 7000,
+        "name": "qwen3-vl-8b-q4km"
+      }
+    ]
+  },
+  "native_engine_identity_note": "image is deployed native executable SHA; llama is native llama.lock digest (release-level identity shared by backends), not equality of backend binaries. Both executable/build receipts must be retained separately. No output/manifest metadata will be rewritten for comparison.",
+  "native_image_field_note": "This native-only benchmark uses the native executable SHA in engine.image, not an OCI registry image digest; do not treat it as a production image-validator receipt.",
+  "llama": {
+    "tag": "b8799",
+    "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd",
+    "vulkan": {
+      "archive_url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-vulkan-x64.tar.gz",
+      "archive_sha256": "d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309",
+      "server_sha256": "49bc20c43fc405ecf1d0f55f672c31440a14c4d496e84e5211b6728774a13721",
+      "plan_class": "nvidia_vulkan_8b",
+      "icd_existing_in_ct": "/usr/share/vulkan/icd.d/nvidia_icd.json",
+      "icd_sha256": "5d0a0cd95951433c9ae3699932765c88ad5060288ebefeebd6c55ab945ef4be1"
+    },
+    "cuda": {
+      "source_archive_url": "https://api.github.com/repos/ggml-org/llama.cpp/tarball/e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd",
+      "source_archive_sha256": "b3c085856b92102de2aa1e15e1d008aaf48bad69166f2736620eed60e39cd272",
+      "server_sha256": "bc71c7bdb8c910a42dc0af68ac2060627b6287d856d367f9d97ec91e0e370a96",
+      "backend_sha256": "87425a169f3acca7d96d1dd9232056ddeeeac60369f8b9d5bc687ecc4541e3da",
+      "plan_class": "nvidia_cuda_8b",
+      "build_banner": "b0-unknown",
+      "build_banner_note": "Source archive has no Git metadata and build container has no Git; source identity is the pinned tag commit and archive SHA above, not the uninformative build banner.",
+      "build_container_manifest": "sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43",
+      "build_container_config": "sha256:154bd2b08b4ccf152598c633958f4da7426d27a160d877fd8ccecb266285e35a",
+      "compiler": "GCC 13.3.0, CUDA 12.8.1 / nvcc 12.8.93, CMake 3.31.6",
+      "cuda_architecture": 75,
+      "build_script_in_raw_archive": "native/provenance/build-cuda.sh"
+    }
+  },
+  "params": {
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 42,
+    "context": 4096,
+    "parallel": 1,
+    "gpu_layers": 99,
+    "threads": 2,
+    "max_tokens_per_1000px2": 4,
+    "prompt_version": 1
+  },
+  "inference": {
+    "execution": "native inside CT214 with two CPU threads; no new cgroup constraints or GPU/runtime settings",
+    "order": "CUDA, interrupted/discarded Vulkan, 15-minute shared-task yield, fresh full Vulkan",
+    "caches": "No shared or private shader/filesystem cache was cleared. No cold-disk or cold-shader-cache claim.",
+    "source_build_excluded_from_inference_timings": true,
+    "cuda_time_utc": {
+      "start": "2026-10-18T21:28:46.599232Z",
+      "end": "2026-10-18T21:33:39.884914Z"
+    },
+    "vulkan_time_utc": {
+      "start": "2026-10-18T21:56:34.357966+00:00",
+      "end": "2026-10-18T22:03:37.511817+00:00"
+    },
+    "discarded_pass_note": "First Vulkan pass yielded to a newly executing unrelated CPU quality BOINC task after 75 complete readings. Its own worker was terminated and server shut down; GPU idle verified at 21:40:43 UTC. Published Vulkan scores/timing use a new uninterrupted 100-crop pass only."
+  },
+  "comparison": {
+    "implementation": "usnm-boinc qwen compare, the implementation invoked by usnm_qwen_compare; raw manifests/readings/diagnostics are validated first",
+    "comparator_sha256": "6ad006fb8cd749df95dd3b9780628e316f717b8b0bd3cadb99dcff7a45dce8ac",
+    "scorer_sha256": "67019575bc54f3ba5079c9113048416bfe0b31a502244dd1e5172dd1f8fb1d2b",
+    "existing_probe_floor": 0.5,
+    "additional_fixed_benchmark_floor": 0.95,
+    "manifest_filenames": "Byte-identical result.json copies named cuda_JOB_result / vulkan_JOB_result satisfy the validator upload-name logging policy. No job/engine/result metadata was rewritten. Copies are retained in native/validator-upload-names in the raw archive.",
+    "exact_match_semantics": "Exact equality of normal worker clean_reading output strings; whitespace-equal additionally collapses Unicode whitespace runs and trims ends.",
+    "cer_delta_convention": "Vulkan minus CUDA, per crop, percentage points; aggregate CER is edit-weighted, not the mean crop CER.",
+    "preread_plan_sha256": "2de5e688fe0c9c1aca820d0c7acecb81d19a61c9df1caad20182a2baee82e7da"
+  },
+  "validation": {
+    "qwen_contract_tests": "3 passed, 0 failed",
+    "frozen_pilot_parity": "549 / 27795 = 1.9751753912574204% legacy-ws-v1",
+    "complete_readings_each": 100,
+    "default_comparator_slots_pass": 4,
+    "strict_comparator_slots_pass": 4
+  },
+  "energy_estimate": {
+    "electricity_usd_per_kwh": 0.15,
+    "crops_per_page": 12,
+    "method": "Mean sampled reported GPU-board watts times completed-pass wall seconds / 100 crops, scaled to 12000 crops; excludes host draw, build/setup and discarded/yielded attempt. Not wall-meter power."
+  },
+  "cleanup": {
+    "at": "2026-10-18T22:06:22.646876+00:00",
+    "removed_only": "/srv/usnm-pair-786",
+    "gpu": "0, 0",
+    "gpu_processes": "",
+    "boinc_tasks": "======== Tasks ========",
+    "preserved_processes": "PID COMMAND         COMMAND\n    359 podman pause    podman\n  18622 podman pause    podman\n  21669 boinc           /opt/usnm-boinc-client/bin/boinc",
+    "disk": "Filesystem              Size  Used Avail Use% Mounted on\ntank/subvol-214-disk-0  100G   34G   67G  34% /",
+    "private_workspace_absent": true
+  },
+  "coordination_links": [
+    "https://github.com/tgoodyear/usnewsmap.com/issues/794#issuecomment-6253476517",
+    "https://github.com/tgoodyear/usnewsmap.com/issues/794#issuecomment-6253659588",
+    "https://github.com/tgoodyear/usnewsmap.com/issues/794#issuecomment-6254216411",
+    "https://github.com/tgoodyear/usnewsmap.com/issues/794#issuecomment-6254937287",
+    "https://github.com/tgoodyear/usnewsmap.com/issues/794#issuecomment-6255481143",
+    "https://github.com/tgoodyear/usnewsmap.com/issues/794#issuecomment-6255731210"
+  ],
+  "limitations": [
+    "This does not validate Intel Iris Xe or Arc hardware, cross-vendor agreement, production image b11610, independent-host quorum, Windows CUDA, or operator rollout.",
+    "The historical #849 CUDA production-image result (2.137% legacy CER) is not this source-built native b8799 pair.",
+    "The native CUDA build is source-pinned for this experiment; Linux CUDA is not a prebuilt asset in llama.lock.",
+    "Native engine identities were staged once before either pass. The common lock digest denotes the native source release family, not identical backend executable bytes."
+  ]
+}

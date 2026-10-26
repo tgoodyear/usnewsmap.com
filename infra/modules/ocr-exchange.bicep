@@ -21,10 +21,18 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
+@description('Principals given the node writer role on `ocr-out` for the fetched-scans list (#1056): the scan fetcher\'s Arc machine identity, which runs `usnm-ocr-worker publish-fetched` after each fetch. Service principals; empty grants none.')
+param fetchedPublisherIds array = []
+@description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
+param onPremGroupId string = ''
+@description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296, and the on-prem BOINC host\'s Arc machine identity, #967), all service principals: Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
+param handoffQueueIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
+@description('Whether id-usnm-ingest exists (main.bicep ingestIdentityOn); false leaves out its grants here.')
+param ingest bool = true
 @description('The node writer role\'s name, before its scope (infra/naming.bicep).')
 param nodeWriterRoleLabel string
 
@@ -53,7 +61,7 @@ var outputContainer = 'ocr-out'
 // 8), with a reason record each. No node role; ocr-sync replays them after
 // a fix (--from-quarantine).
 var quarantineContainer = 'ocr-quarantine'
-// The BOINC hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache): the scan fetcher's
+// The BOINC hand-off (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
 // scans and manifests, the hand-off job's dispatch root, the bridge's spool and trust list.
 var handoffContainer = 'boinc-handoff'
 
@@ -84,7 +92,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
       ]
       // The BOINC subnet is in another region and group, through its Global endpoint (the
       // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
-      // scripts/provision-boinc.sh goes first.
+      // scripts/boinc/provision-boinc.sh goes first.
       virtualNetworkRules: concat(
         [{ id: subnetId, action: 'Allow' }],
         empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]
@@ -170,6 +178,34 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/scans/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+            }
+          }
+        }
+        // A queue claim (its message's pop receipt) is useless once the message's hide of at most
+        // four days has run out.
+        {
+          name: 'expire-boinc-handoff-claims'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/claims/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+            }
+          }
+        }
+        // The quality wave's page JPEG cache (scripts/ocr-node/quality-jpeg-cache.py, #850) is
+        // derived from the scan masters: a page is useful only until the wave's runner has bundled
+        // it, and a missing one costs a reconversion from the master. Without a rule it grows with
+        // the archive (#915).
+        {
+          name: 'expire-boinc-handoff-quality-jpeg'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/quality-jpeg/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
             }
@@ -285,6 +321,48 @@ resource nodeOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (n
   }
 }
 
+// The scan fetcher publishes its fetched-scans list to ocr-out (#1056, `ocr-out/fetched/`):
+// the node writer role (list, read, create; no delete) on ocr-out alone, as the nodes have.
+resource fetchedPublishers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for p in fetchedPublisherIds: {
+    scope: output
+    name: guid(output.id, p, 'usnm-ocr-node-writer')
+    properties: {
+      principalId: p
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
+    }
+  }
+]
+
+// BOINC takes pages off the work queues beside the nodes (#296, docs/boinc-batch-scheduler.md):
+// the hand-off job's identity and the on-prem BOINC host's (#967) get the nodes' queue roles,
+// Message Processor to take and delete a message and Message Sender to put one back. Per
+// queue, so nothing else in the account.
+resource handoffQueueTake 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (p, i) in flatten(map(handoffQueueIds, id => map(range(0, length(workQueues)), j => { id: id, queue: j }))): {
+    scope: queues[p.queue]
+    name: guid(queues[p.queue].id, p.id, queueMessageProcessor)
+    properties: {
+      principalId: p.id
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageProcessor)
+    }
+  }
+]
+
+resource handoffQueuePut 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (p, i) in flatten(map(handoffQueueIds, id => map(range(0, length(workQueues)), j => { id: id, queue: j }))): {
+    scope: queues[p.queue]
+    name: guid(queues[p.queue].id, p.id, queueMessageSender)
+    properties: {
+      principalId: p.id
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
+    }
+  }
+]
+
 // The hand-off writers: list, read and create in boinc-handoff, no delete (the node writer
 // role, as on ocr-out). Each assignment's name comes from the scope, the principal and the role.
 resource handoffWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
@@ -299,6 +377,17 @@ resource handoffWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
+// The same role for the on-prem hosts' group: a group's assignment needs principalType Group.
+resource handoffOnPremWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(onPremGroupId)) {
+  scope: handoff
+  name: guid(handoff.id, onPremGroupId, 'usnm-ocr-node-writer')
+  properties: {
+    principalId: onPremGroupId
+    principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', nodeWriter.name)
+  }
+}
+
 // The ingest identity: ocr-enqueue and the seeder add pages to the queues,
 // and ocr-sync drains the dead letters (reads and deletes them), so Queue
 // Data Contributor on the account. The seeder and the status file read each
@@ -307,7 +396,7 @@ resource handoffWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 // role's actions. Blob Data Contributor on ocr-out, not
 // Reader: ocr-sync deletes each part once it is in curated or quarantine.
 // And on ocr-quarantine, which only ocr-sync writes.
-resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (ingest) {
   scope: account
   name: guid(account.id, ingestPrincipalId, queueDataContributor)
   properties: {
@@ -317,7 +406,7 @@ resource ingestQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (ingest) {
   scope: output
   name: guid(output.id, ingestPrincipalId, blobContributor)
   properties: {
@@ -327,7 +416,7 @@ resource ingestOutput 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource ingestQuarantine 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource ingestQuarantine 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (ingest) {
   scope: quarantine
   name: guid(quarantine.id, ingestPrincipalId, blobContributor)
   properties: {

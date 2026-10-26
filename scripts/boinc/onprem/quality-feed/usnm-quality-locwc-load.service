@@ -1,0 +1,20 @@
+# Loads LoC's own word confidence per page (#962) into usnm_quality as quality_loader, in the
+# batch container CT215: every loc-alto-stats Parquet file under the read-only /srv/locstats
+# (pve-big's tank/locstats over NFS, written by usnm-loc-alto-stats in CT211), skipping the
+# files already loaded.
+[Unit]
+Description=usnewsmap LoC word confidence into usnm_quality (#962)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/locstats
+ConditionPathExists=/etc/usnm/quality-db/dsn
+
+[Service]
+Type=oneshot
+Environment=LC_ALL=C.UTF-8
+ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/load.py locwc \
+  --dsn "$(cat /etc/usnm/quality-db/dsn)" --dir /srv/locstats \
+  --state /var/lib/usnm-quality-feed/locwc-loaded.tsv'
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h

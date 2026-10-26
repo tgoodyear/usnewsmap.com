@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use usnm_ocr_survey::{bench, bundle, score};
+use usnm_ocr_survey::{bench, bundle, qwen_bench, score};
 
 #[derive(Parser)]
 #[command(
@@ -110,12 +110,49 @@ enum Commands {
         subset: String,
         #[arg(long)]
         outputs: PathBuf,
-        /// legacy-ws-v1 (the Iris pilot's whitespace-collapsed CER) or raw-v1.
+        /// legacy-ws-v1 (whitespace-collapsed CER), raw-v1, or opt-in raw-masked-v1.
         #[arg(long, default_value = "legacy-ws-v1")]
         rule: String,
         /// Write the per-sample report here; stdout gets the totals.
         #[arg(long)]
         report: Option<PathBuf>,
+    },
+    /// Writes usnm_qwen slots (qwen.json, bundled page.jpg, weights.lock) for a benchmark subset,
+    /// so a host can read the exact crops with the production app outside BOINC (#787).
+    QwenBenchStage {
+        /// A verified release directory.
+        #[arg(long)]
+        release: PathBuf,
+        #[arg(long)]
+        subset: String,
+        /// JSON Engine (image, llama and weights digests) with exactly one model.
+        #[arg(long)]
+        engine: PathBuf,
+        /// ocr/boinc/qwen/weights.lock, copied into each slot.
+        #[arg(long)]
+        weights_lock: PathBuf,
+        #[arg(long, default_value_t = 25)]
+        pages_per_slot: usize,
+        #[arg(long, default_value_t = 14400)]
+        timeout_secs: u32,
+        /// The plan class written to each slot's init_data.xml (e.g. intel_vulkan_8b); the app
+        /// picks its device from it.
+        #[arg(long)]
+        plan_class: String,
+        /// The gpu_type for init_data.xml (e.g. intel_gpu, NVIDIA); omit for CPU classes.
+        #[arg(long)]
+        gpu_type: Option<String>,
+        /// A new directory for the slots.
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Reads the slots' readings into bench-score outputs (JSONL) and prints a timing summary.
+    QwenBenchCollect {
+        #[arg(long)]
+        root: PathBuf,
+        /// Where the outputs JSONL is written.
+        #[arg(long)]
+        outputs: PathBuf,
     },
     /// Downloads the original files a bundle refers to into a cache, checking each sha256.
     BundleStage {
@@ -289,6 +326,40 @@ async fn main() -> anyhow::Result<()> {
             let mut totals = r;
             totals.as_object_mut().map(|o| o.remove("rows"));
             println!("{}", serde_json::to_string_pretty(&totals)?);
+        }
+        Commands::QwenBenchStage {
+            release,
+            subset,
+            engine,
+            weights_lock,
+            pages_per_slot,
+            timeout_secs,
+            plan_class,
+            gpu_type,
+            root,
+        } => {
+            let engine = serde_json::from_slice(&std::fs::read(&engine)?)
+                .context("parsing the engine JSON")?;
+            let s = qwen_bench::stage(&qwen_bench::StageOptions {
+                release,
+                subset,
+                engine,
+                weights_lock,
+                pages_per_slot,
+                timeout_secs,
+                plan_class,
+                gpu_type,
+                root,
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({"samples": s.crops.len(), "slots": s.slots.keys().collect::<Vec<_>>()})
+            );
+        }
+        Commands::QwenBenchCollect { root, outputs } => {
+            let (text, summary) = qwen_bench::collect(&root)?;
+            std::fs::write(&outputs, text)?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Commands::BundleStage {
             bundle: dir,

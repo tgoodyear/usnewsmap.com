@@ -5,7 +5,7 @@
 // principals, certificate and account resource ids, the repository's ids,
 // the VNet's address space). None is a credential (ADR-0009: there are
 // none); they are configuration that stays out of the public repository.
-// scripts/provision.sh reads them with the operator's az sign-in and passes
+// scripts/azure/provision.sh reads them with the operator's az sign-in and passes
 // them to infra/main.bicepparam through the environment, like the committed
 // settings; the template never reads or writes one.
 //

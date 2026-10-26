@@ -25,7 +25,7 @@
 //! The English words are at least as frequent in English as in each other
 //! Latin-script language of the corpus, by wordfreq, folded as the index
 //! folds a page; the shared words are English words another such language
-//! uses up to 10 times as often (`scripts/build-english-words.py` builds
+//! uses up to 10 times as often (`scripts/data/build-english-words.py` builds
 //! both). So a search the rule calls English finds mostly English pages,
 //! and a word German, Spanish, French or Italian pages use as much
 //! ("november", "influenza") leaves the baseline at every page. The rule
@@ -38,11 +38,12 @@ use std::sync::OnceLock;
 use crate::query::{is_japanese, Node};
 
 /// Folded words that make a query English, sorted, one per line.
-pub const ENGLISH_WORDS: &str = include_str!("../data/english-words.txt");
+pub const ENGLISH_WORDS: &str = include_str!(concat!(env!("OUT_DIR"), "/data/english-words.txt"));
 
 /// Folded English words that other languages use as much, up to 10 times as
 /// often: allowed beside an English word, never enough alone.
-pub const SHARED_WORDS: &str = include_str!("../data/english-shared-words.txt");
+pub const SHARED_WORDS: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/data/english-shared-words.txt"));
 
 /// Why the baseline counts the pages it does (06 §6.3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

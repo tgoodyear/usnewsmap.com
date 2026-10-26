@@ -8,6 +8,7 @@ use axum::extract::{OriginalUri, Path, State};
 use axum::http::Uri;
 use axum::response::Response;
 use chrono::NaiveDate;
+use schemars::JsonSchema;
 use serde::Serialize;
 use usnm_core::params::RawParams;
 
@@ -16,13 +17,13 @@ use crate::error::ApiError;
 use crate::refdata::{RefData, Title};
 use crate::{version, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct TitlesResponse {
     index_version: String,
     titles: Vec<TitleOut>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct TitleResponse {
     index_version: String,
     #[serde(flatten)]
@@ -30,15 +31,34 @@ struct TitleResponse {
     links: Links,
 }
 
+/// The schema of `/v1/titles`' response, for `/v1/openapi.json`.
+pub(crate) fn titles_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<TitlesResponse>()
+}
+
+/// The schema of `/v1/titles/{lccn}`'s response, for `/v1/openapi.json`.
+pub(crate) fn title_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<TitleResponse>()
+}
+
 /// One newspaper: its catalog record joined with its place and its pages.
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "Title")]
 struct TitleOut {
     lccn: String,
     title: String,
+    /// The title's place: where most of its pages were published. For a
+    /// paper that moved, `place_periods` has the places of its pages by
+    /// date.
     place_id: String,
     /// The place's name, as `/v1/places` has it.
     place: Option<String>,
     state: String,
+    /// A paper that moved: its places by the dates of its pages, oldest
+    /// first. Each page is in the place of the period its date falls in.
+    /// Left out for a paper in one place.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    place_periods: Vec<PlacePeriodOut>,
     /// Years of publication in LoC's record: the paper's whole run.
     first_year: Option<u16>,
     last_year: Option<u16>,
@@ -51,7 +71,24 @@ struct TitleOut {
     languages: Vec<String>,
 }
 
-#[derive(Serialize)]
+/// A place a paper was in for part of its run.
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "TitlePlacePeriod")]
+struct PlacePeriodOut {
+    place_id: String,
+    /// The place's name, as `/v1/places` has it; `null` if the snapshot lacks
+    /// the place, as for the title's own.
+    place: Option<String>,
+    /// The place's state; `null` if the snapshot lacks the place.
+    state: Option<String>,
+    /// The first and last days of the pages in the place, both included;
+    /// `null` for no start (the first place) or no end (the last).
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "TitleLinks")]
 struct Links {
     /// The newspaper's page at the Library of Congress, where its issues can
     /// be browsed by date.
@@ -66,6 +103,20 @@ fn title_out(rd: &RefData, t: &Title) -> TitleOut {
         place_id: t.place_id.clone(),
         place: rd.place(&t.place_id).map(|p| p.name.clone()),
         state: t.state.clone(),
+        place_periods: t
+            .place_periods
+            .iter()
+            .map(|p| {
+                let place = rd.place(&p.place_id);
+                PlacePeriodOut {
+                    place_id: p.place_id.clone(),
+                    place: place.map(|p| p.name.clone()),
+                    state: place.map(|p| p.state.clone()),
+                    from: p.from,
+                    to: p.to,
+                }
+            })
+            .collect(),
         first_year: t.first_year,
         last_year: t.last_year,
         pages: rd
@@ -89,7 +140,7 @@ pub async fn titles(
 
 async fn titles_in(state: &Arc<AppState>, ctx: Ctx, uri: &Uri) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["v"])?;
+    raw.reject_only(super::VERSION_KEYS)?;
     let job = Job::reference("titles", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
@@ -129,7 +180,7 @@ pub async fn title(
         return Err(ApiError::NotFound(format!("unknown title `{lccn}`")));
     }
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["v"])?;
+    raw.reject_only(super::VERSION_KEYS)?;
     let job = Job::reference("titles", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();

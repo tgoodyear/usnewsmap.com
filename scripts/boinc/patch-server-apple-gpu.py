@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch BOINC's sched/plan_class_spec.cpp so both eligibility and resource dispatch accept apple / apple_gpu."""
+"""Patch BOINC GPU plan classes, batch isolation, and workunit-aware app selection."""
 from __future__ import annotations
 
 import argparse
@@ -60,6 +60,19 @@ BATCH_CHECK_PATCHED = """\
         }
     }"""
 
+VERSION_CACHE_ORIGINAL = "    while (bavi != g_wreq->best_app_versions.end()) {"
+VERSION_CACHE_PATCHED = """\
+    // A version (including NULL) chosen for another WU may have different ID/batch eligibility.
+    while (!wu_restricted_plan_class && bavi != g_wreq->best_app_versions.end()) {"""
+
+
+def patch_version_source(text: str) -> str:
+    count = text.count(VERSION_CACHE_ORIGINAL)
+    if count != 1:
+        raise ValueError(f"expected exactly 1 app-version cache loop, found {count}")
+    return text.replace(VERSION_CACHE_ORIGINAL, VERSION_CACHE_PATCHED, 1)
+
+
 def patch_source(text: str) -> str:
     for label, target, replacement in (
         ("eligibility", ELIGIBILITY_ORIGINAL, ELIGIBILITY_PATCHED),
@@ -85,8 +98,14 @@ patch = patch_file
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--version-source", type=Path, required=True)
     args = parser.parse_args()
-    patch_file(args.source)
+    updates = {
+        args.source: patch_source(args.source.read_text()),
+        args.version_source: patch_version_source(args.version_source.read_text()),
+    }
+    for path, text in updates.items():
+        path.write_text(text)
 
 
 if __name__ == "__main__":

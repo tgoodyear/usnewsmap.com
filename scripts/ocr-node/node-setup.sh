@@ -7,25 +7,21 @@
 #     [--tags K=V,K=V] [--identity-key-store default|tpm] [--scratch-size SIZE] \
 #     [--reboot-day Mon|Tue|Wed|Thu|Fri|Sat|Sun] [--force-unsupported] < credentials
 #
-# Reads up to five lines from stdin. The first three are the onboarding
+# Reads up to three lines from stdin. They are the onboarding
 # service principal: tenant id, app id, secret. onboard.sh makes that
 # principal for the run, with only Azure Connected Machine Onboarding on the
 # group, and deletes it after. The secret never goes on a command line or to
 # persistent disk: it waits in a 0600 file under /run (tmpfs) while
 # `azcmagent connect --config` reads it, and is deleted straight after. A
-# node that's already connected needs none (three empty lines). The next two
-# are, on RHEL, the Red Hat organization id and activation key, which
-# onboard.sh reads from the nodes' Key Vault; they stay in this script's
-# memory, never on disk. RHEL is registered first, before anything is
-# installed, since its repositories need it; a registered node needs neither.
+# node that's already connected needs none.
 #
-# On RHEL, registers with Red Hat (skipped if registered) and enables
-# BaseOS, AppStream and CodeReady Builder (for EPEL).
+# RHEL must already be registered with BaseOS, AppStream and CodeReady
+# Builder enabled by the host's infrastructure operator.
 # Keeps the journal on disk; installs python3, podman, chrony, cron and
 # rsyslog, and htop, iftop and screen from EPEL; turns on dnf-automatic,
 # which installs every update daily and never reboots, and a weekly reboot
 # window (usnm-ocr-reboot.timer, 04:00 US Eastern on --reboot-day) that
-# reboots only when an update needs it, after stopping the worker;
+# reboots only when an update needs it, after stopping what it runs;
 # creates the `usnm` system user; sets up the engine runtime of ADR-0016
 # (13 §13.3): the engine account `usnmeng` with lingering, subordinate ids
 # and cgroup delegation, its Podman API socket at
@@ -35,19 +31,14 @@
 # agent and, BEFORE it connects, locks it down: no extension but the Azure
 # Monitor Linux Agent (it stops if any other is installed), no guest
 # configuration, no incoming connections;
-# connects; installs the worker's systemd unit (usnm-ocr-worker.service,
-# copied beside this script) disabled, and its settings in
-# /etc/usnm/ocr-worker.env (the exchange account's URLs, the node id and
-# the connection string of the nodes' own Application Insights component,
-# usnm-ocr-appi-<env>, which isn't a secret: with local auth off, ingestion
-# needs an Entra token too) unless install-worker.sh has written them; and
-# checks that `usnm` can get a token from the agent. The unit starts only
-# once scripts/ocr-node/install-worker.sh has put the worker binary in
-# /usr/local/bin. onboard.sh installs the monitoring
+# connects; disables a direct queue worker unit (usnm-ocr-worker.service)
+# left by an earlier install, since local OCR runs through BOINC only
+# (#966) and installs no worker unit or settings; and checks that `usnm`
+# can get a token from the agent. onboard.sh installs the monitoring
 # agent itself, from Azure, after this. Safe to run again, on a connected
-# node too: it applies the lockdown and the unit as they are now.
+# node too: it applies the lockdown as it is now.
 #
-# The node mounts nothing from pve-big: the worker reads prefetched scans
+# The node mounts nothing from the hypervisor: the worker reads prefetched scans
 # from the scan server over HTTP (#368, ADR-0015 decision 9). A mount at
 # /srv/ocr-data left by an earlier version of this script is removed.
 #
@@ -87,24 +78,22 @@ for pair in SUBSCRIPTION:subscription GROUP:resource-group LOCATION:location NAM
   var=${pair%%:*}
   [ -n "${!var}" ] || { echo "error: missing --${pair#*:}" >&2; usage; }
 done
-# The Arc name is also the worker's --node-id: 1 to 32 letters, digits or
-# hyphens.
-[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens (the worker's --node-id)"
+# The Arc name: 1 to 32 letters, digits or hyphens.
+[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens"
 [[ $EXCHANGE =~ ^[a-z0-9]{3,24}$ ]] || die "--exchange-account: a storage account name"
-# Goes into a systemd environment file in double quotes: keys, GUIDs and
-# URLs only, no quotes, backslashes, dollars or spaces.
+# --exchange-account and --app-insights were the retired worker's settings
+# (#966); they are still checked so onboard.sh's call stays valid. Keys,
+# GUIDs and URLs only, no quotes, backslashes, dollars or spaces.
 conn_re='^[A-Za-z0-9=;:/._-]+$'
 [[ -z $CONN || $CONN =~ $conn_re ]] || die "--app-insights doesn't look like an Application Insights connection string"
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
 
 # The credentials first, before anything else can read stdin.
-TENANT="" SP_ID="" SP_SECRET="" RH_ORG="" RH_KEY=""
+TENANT="" SP_ID="" SP_SECRET=""
 if [ ! -t 0 ]; then
   IFS= read -r TENANT || true
   IFS= read -r SP_ID || true
   IFS= read -r SP_SECRET || true
-  IFS= read -r RH_ORG || true
-  IFS= read -r RH_KEY || true
 fi
 if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
   uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -114,13 +103,6 @@ if [ -n "$TENANT$SP_ID$SP_SECRET" ]; then
   [[ -n $SP_SECRET && $SP_SECRET =~ ^[[:graph:]]+$ && $SP_SECRET != *[\\\"]* ]] ||
     die "the third line on stdin isn't a client secret"
 fi
-# Both or neither. They go to subscription-manager as separate arguments,
-# never through a shell, so only printable characters are checked for.
-if [ -n "$RH_ORG$RH_KEY" ]; then
-  [[ $RH_ORG =~ ^[[:graph:]]+$ ]] || die "the fourth line on stdin isn't a Red Hat organization id"
-  [[ $RH_KEY =~ ^[[:graph:]]+$ ]] || die "the fifth line on stdin isn't a Red Hat activation key"
-fi
-
 step "Checking the OS"
 # Read os-release in a subshell: sourcing it here would overwrite NAME (the
 # Arc machine name) with the distro's NAME, as happened on node 1 (#296).
@@ -141,59 +123,18 @@ echo "${PRETTY_NAME:-unknown}, $(uname -m), $(nproc) CPUs"
 # CPU type hides them, and speed measurements are then wrong (#296).
 grep -qw avx2 /proc/cpuinfo || echo "warning: no AVX2: on Proxmox, set the VM's CPU type to host"
 
-step "Red Hat registration"
-# RHEL's repositories (and so dnf below) need the system registered. With
-# an activation key, subscription-manager takes the organization id and key
-# as arguments, so for the few seconds it runs they're in its entry in the
-# process list, readable by local users; on a new node that's root and the
-# admin account (which has sudo), since the usnm user doesn't exist yet. A
-# registered node is skipped, so a re-run never needs them.
-if [ "$OS_ID" != rhel ]; then
-  echo "not RHEL; nothing to register"
-else
+step "Checking host prerequisites"
+if [ "$OS_ID" = rhel ]; then
   command -v subscription-manager > /dev/null || die "RHEL without subscription-manager"
-  if subscription-manager identity > /dev/null 2>&1; then
-    echo "already registered with Red Hat"
-  else
-    [ -n "$RH_KEY" ] ||
-      die "RHEL isn't registered and no Red Hat organization id and activation key came on stdin" \
-        "(onboard.sh reads rhel-org-id and rhel-activation-key from the nodes' Key Vault)"
-    subscription-manager register --org "$RH_ORG" --activationkey "$RH_KEY"
-  fi
-  # Enabling an enabled repository changes nothing. CodeReady Builder is
-  # for EPEL, below.
-  arch=$(uname -m)
-  subscription-manager repos --enable "rhel-10-for-$arch-baseos-rpms" \
-    --enable "rhel-10-for-$arch-appstream-rpms" --enable "codeready-builder-for-rhel-10-$arch-rpms"
-fi
-RH_ORG="" RH_KEY=""
-
-step "Red Hat Lightspeed (insights-client)"
-# A registered RHEL node also reports to Red Hat Lightspeed (Insights) for
-# its advisories, vulnerabilities and compliance (the maintainer's request,
-# 12 October 2026). insights-client uses the RHSM registration above, so it
-# needs no credentials of its own, and enables its own daily upload timer.
-# A node already registered with Insights is left alone.
-if [ "$OS_ID" != rhel ]; then
-  echo "not RHEL; no insights-client"
-else
-  dnf install -y insights-client
-  if insights-client --status > /dev/null 2>&1; then
-    echo "already registered with Red Hat Lightspeed"
-  else
-    insights-client --register
-  fi
-  # Either way, make sure the daily upload runs: offboard.sh disables it,
-  # and a re-run of this script should leave a registered node reporting.
-  systemctl enable --now insights-client.timer
+  subscription-manager identity > /dev/null ||
+    die "RHEL isn't registered; ask the infrastructure operator to prepare this host before application onboarding"
 fi
 
 step "Installing packages"
 # No OCR engine here. EL9's AppStream has only Tesseract 4.1.1 (with 4.1.0
 # language data) and EPEL 9 has no Tesseract at all; the engines the survey
 # compares arrive as pinned container images run with podman.
-# install-worker.sh loads the worker's Tesseract image. This installs what the agents, the worker and
-# the containers need, all from the distribution's own repositories. The
+# This installs what the agents and the containers need, all from the distribution's own repositories. The
 # Azure Monitor Agent reads syslog through rsyslog and needs python3 and
 # which; Microsoft also lists initscripts, which RHEL 10 may not ship. The
 # Connected Machine agent schedules its automatic upgrades with cron.
@@ -556,7 +497,7 @@ else
   # Microsoft.HybridCompute/HybridComputePreview feature is registered, which
   # needs Microsoft's approval; onboard.sh asks for tpm only then. The key
   # store is chosen at connect; changing it later means reconnecting, which
-  # makes a new machine and identity. proxmox-create-vm.sh gives VMs a vTPM 2.0.
+  # makes a new machine and identity. Provision a vTPM separately if needed.
   if [ "$KEY_STORE" = tpm ]; then
     [ -c /dev/tpmrm0 ] || die "--identity-key-store tpm, but this node has no TPM (/dev/tpmrm0)"
     connect_args+=(--identity-key-store tpm)
@@ -603,21 +544,9 @@ step "The engine runtime (ADR-0016)"
 # at /run/usnm-ocr/scratch, owned by usnm: memory used by files on a tmpfs
 # is charged to the cgroup of the process that writes them, so an
 # engine's output counts against its own memory limit and can't fill the
-# disk. scripts/ocr-node/engine-spike.sh checks all of it.
+# disk.
 SOCK=/run/usnm-ocr/podman.sock
 SCRATCH=/run/usnm-ocr/scratch
-unitfile=/etc/systemd/system/usnm-ocr-worker.service
-# A worker unit from before this owned /run/usnm-ocr as its runtime
-# directory and removed it on every stop. It couldn't run an engine
-# anyway; it's stopped here and started again with the new unit below.
-was_active=false
-if grep -qx 'RuntimeDirectory=usnm-ocr' "$unitfile" 2> /dev/null; then
-  if systemctl is-active --quiet usnm-ocr-worker.service; then
-    systemctl stop usnm-ocr-worker.service
-    was_active=true
-    echo "stopped usnm-ocr-worker.service (its old unit owns /run/usnm-ocr)"
-  fi
-fi
 getent group usnmocr > /dev/null || { groupadd --system usnmocr; echo "created group usnmocr"; }
 if id usnmeng > /dev/null 2>&1; then
   echo "usnmeng exists"
@@ -783,78 +712,44 @@ if [ -d "$OCR_DATA_DIR" ] || mountpoint -q "$OCR_DATA_DIR" 2> /dev/null; then
   ! mountpoint -q "$OCR_DATA_DIR" 2> /dev/null || die "$OCR_DATA_DIR is still mounted"
 fi
 
-step "The worker's settings and unit"
-# /etc/usnm/ocr-worker.env holds the worker's settings as environment
-# variables: the exchange account's URLs, the node id, the pages in flight
-# (one per CPU; the worker gives Tesseract one thread per page) and the
-# nodes' Application Insights connection string (--app-insights;
-# onboard.sh passes OCR_NODE_APPINSIGHTS). scripts/ocr-node/install-worker.sh
-# owns it once it has run (it adds the LoC gaps for the number of nodes
-# and the Tesseract image), so this writes it only if install-worker.sh
-# hasn't. Local changes go in /etc/usnm/ocr-worker.local.env, read after
-# it and never touched here (RUST_LOG, say). It is root's, readable by
-# the usnm group: nothing in it is a secret.
-install -d -o root -g root -m 0755 /etc/usnm
-envfile=/etc/usnm/ocr-worker.env
-want_env=$(cat <<ENV
-# Written by scripts/ocr-node/node-setup.sh until install-worker.sh runs;
-# local changes go in /etc/usnm/ocr-worker.local.env.
-USNM_OCR_QUEUE_URL=https://$EXCHANGE.queue.core.windows.net
-USNM_OCR_OUT_URL=https://$EXCHANGE.blob.core.windows.net/ocr-out
-USNM_OCR_NODE_ID=$NAME
-USNM_OCR_CONCURRENCY=$(nproc)
-APPLICATIONINSIGHTS_CONNECTION_STRING="$CONN"
-ENV
-)
-[ -n "$CONN" ] || echo "warning: no --app-insights; the worker will log to the journal only"
-
-# The unit (scripts/ocr-node/usnm-ocr-worker.service, which onboard.sh
-# copies beside this script). ConditionFileIsExecutable keeps it from
-# starting, enabled or not, until the worker binary is installed;
-# install-worker.sh --enable enables it.
-unit_src="$(dirname "$0")/usnm-ocr-worker.service"
-[ -r "$unit_src" ] || die "no $unit_src; onboard.sh copies it beside node-setup.sh"
-want_unit=$(cat "$unit_src")
-changed=false
-# Writes $2 to $1 (owner root, group $3, mode $4) if it differs; a new file
-# is put in place with one rename.
-put_file() {
-  if [ "$(cat "$1" 2> /dev/null)" = "$2" ] && [ "$(stat -c %G:%a "$1")" = "$3:$4" ]; then
-    echo "$1: unchanged"
-    return 0
-  fi
-  local tmp
-  tmp=$(mktemp "$1.XXXXXX")
-  printf '%s\n' "$2" > "$tmp"
-  chown "root:$3" "$tmp"
-  chmod "$4" "$tmp"
-  mv -f "$tmp" "$1"
-  echo "$1: written"
-  changed=true
-}
-if grep -q '^# Written by scripts/ocr-node/install-worker.sh' "$envfile" 2> /dev/null; then
-  echo "$envfile: written by install-worker.sh; left as it is"
-else
-  put_file "$envfile" "$want_env" usnm 640
+step "No direct queue worker"
+# Local OCR runs through BOINC only (#966): the direct queue worker's unit
+# and installers are retired, and this installs neither the unit nor
+# /etc/usnm/ocr-worker.env. What an earlier install left is taken out so
+# nothing can start the worker again:
+# - under the maintenance lock that the old nightly update and the reboot
+#   window hold, so neither is half-way through when this runs (it waits
+#   as long as they wait for each other, 30 minutes);
+# - the old nightly update's timer, service and scripts go first, so it
+#   can't restart the worker afterwards;
+# - the worker is stopped (in-flight pages get its grace period; anything
+#   abandoned reappears on the queue) and disabled, and its unit file is
+#   deleted, so neither boot nor an explicit start can run it;
+# - its line in the reboot window's resume list is dropped, keeping the
+#   other units listed there.
+# Its binary and settings files are left for offboard.sh.
+mkdir -p /run/lock
+exec 8> /run/lock/usnm-ocr-maintenance.lock
+flock -w 1800 8 || die "a worker update or the reboot window still holds /run/lock/usnm-ocr-maintenance.lock after 30 minutes; run this again later"
+systemctl disable --now usnm-ocr-update.timer 2> /dev/null || true
+systemctl stop usnm-ocr-update.service 2> /dev/null || true
+rm -f /etc/systemd/system/usnm-ocr-update.timer /etc/systemd/system/usnm-ocr-update.service \
+  /usr/local/sbin/usnm-ocr-update-worker /usr/local/libexec/usnm-ocr/install-worker-node.sh
+rmdir /usr/local/libexec/usnm-ocr 2> /dev/null || true
+if [ "$(systemctl show --property=LoadState --value usnm-ocr-worker.service 2> /dev/null)" = loaded ]; then
+  systemctl disable --now usnm-ocr-worker.service
+  echo "usnm-ocr-worker.service: disabled and stopped (retired, #966)"
 fi
-put_file "$unitfile" "$want_unit" root 644
+rm -f /etc/systemd/system/usnm-ocr-worker.service
 systemctl daemon-reload
-# A running worker picks the changes up with a restart; its in-flight pages
-# get the grace period and otherwise reappear later.
-if [ "$changed" = true ] && systemctl is-active --quiet usnm-ocr-worker.service; then
-  systemctl restart usnm-ocr-worker.service
-  echo "restarted usnm-ocr-worker.service"
-elif [ "$was_active" = true ]; then
-  systemctl start usnm-ocr-worker.service
-  echo "started usnm-ocr-worker.service again"
+echo "usnm-ocr-worker.service: not installed"
+resume_list=/var/lib/usnm-ocr-reboot/resume
+if [ -f "$resume_list" ] && grep -qx 'usnm-ocr-worker.service' "$resume_list"; then
+  sed -i '/^usnm-ocr-worker\.service$/d' "$resume_list"
+  [ -s "$resume_list" ] || rm -f "$resume_list"
+  echo "$resume_list: usnm-ocr-worker.service dropped"
 fi
-if [ -x /usr/local/bin/usnm-ocr-worker ]; then
-  echo "usnm-ocr-worker.service: $(systemctl is-enabled usnm-ocr-worker.service 2> /dev/null || true)," \
-    "$(systemctl is-active usnm-ocr-worker.service 2> /dev/null || true)"
-else
-  echo "usnm-ocr-worker.service: waiting for /usr/local/bin/usnm-ocr-worker" \
-    "(scripts/ocr-node/install-worker.sh; $(systemctl is-enabled usnm-ocr-worker.service 2> /dev/null || true))"
-fi
+exec 8>&-
 
 step "Checking that usnm can get a token"
 # The agent's challenge flow, as usnm: the first request is refused with a

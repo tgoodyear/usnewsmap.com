@@ -100,11 +100,19 @@ SQL
 # - make_project made only cache/00..80 of the 256 the pages hash into (seen 2026-10-13);
 # - the stock project.inc names the project "REPLACE WITH PROJECT NAME";
 # - plan_class_spec.xml was copied once by init, so a changed template (the 9.0 client
-#   minimum, 2026-10-14) never reached the share.
+#   minimum, 2026-10-14) never reached the share;
+# - bin/feeder was copied once by make_project, so a scheduler patch it links (the Intel GPU
+#   resource type, #736) never reached it. The daemons start after this, from the new copy.
 project_tree() {
   local i inc="$PROJ/html/project/project.inc" cache_inc="$PROJ/html/project/cache_parameters.inc"
   python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"
-  cp "$TEMPLATES/plan_class_spec.xml" "$PROJ/plan_class_spec.xml"
+  # The previous revision's feeder holds bin/feeder open until it stops, and the SMB share
+  # refuses to replace an open file; failing here would stop the new revision from ever
+  # starting (2026-10-18). Keep the old feeder; the next start after the old revision is gone
+  # replaces it.
+  python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/feeder" --target "$PROJ/bin/feeder" ||
+    echo "usnm-boinc: warning: bin/feeder is in use by another revision; keeping the old feeder until the next start" >&2
+  python3 "$TEMPLATES/refresh-plan-policy.py" --source "$TEMPLATES/plan_class_spec.xml" --target "$PROJ/plan_class_spec.xml"
   for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
   sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
     -e 's|"REPLACE WITH COPYRIGHT HOLDER"|"Trevor Goodyear"|' "$inc"

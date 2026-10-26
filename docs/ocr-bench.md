@@ -6,6 +6,10 @@ because everyone uses the same bytes. Each release is a GitHub release of this r
 tagged `ocr-bench-<version>`. It has a content digest to cite and named subsets that resolve to
 the same files ([#738](https://github.com/tgoodyear/usnewsmap.com/issues/738)).
 
+Candidate licensing, model-availability and bounded local CPU findings are recorded in [the 2026-10-18 feasibility note](notes/2026-10-18-ocr-bench-candidate-feasibility.md).
+
+The pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native result archives under `ocr/bench/results/` are not tracked: they are the `bench-assets` set of `scripts/ops/data-assets.sh`, fetched with `scripts/ops/data-assets.sh --fetch --set bench-assets` and published by the `publish data assets` workflow ([reports/README.md](reports/README.md), "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
+
 ## Fetch a release
 
 ```sh
@@ -48,6 +52,13 @@ Each sample in the manifest records:
 
 Each subset records its members, sample and source-page counts, how it was made, and a digest:
 the sha256 of one line per member, `id image-sha256 reference-sha256`, in id order.
+
+## Annotation and source admission
+
+The [transcription, illegibility-mask and damage policy](ocr-bench-annotation-policy.md)
+defines new reviewed annotations, Unicode offsets and real versus unknown damage.
+The [source audit and measured coverage](notes/2026-10-18-ocr-bench-source-audit.md)
+separates admissible public GT from candidates and unmet tier targets.
 
 ## Release v1.0.0
 
@@ -103,6 +114,25 @@ Candidate sources for the missing languages are reviewed in
 [docs/ocr-gold-set.md](ocr-gold-set.md). They include the NewsEye French, Finnish and Swedish
 sets, the Austrian newspapers and NZZ. Each new language or label comes as a new release.
 
+## Release v1.1.0: additional public multilingual tracks
+
+v1.1.0 adds 52 CC BY 4.0 NewsEye validation-region image/GT pairs from 18
+source pages: French 24 (8 pages), Finnish 18 (6), Swedish 10 (4). It does not
+repeat or replace the 1,000 v1.0.0 samples. Sources, licences, exact counts,
+selection and unmet targets are in the [source audit](notes/2026-10-18-ocr-bench-source-audit.md).
+
+```sh
+scripts/ocr-bench/fetch --version v1.1.0 --verify --subset multilingual/all-52
+```
+
+Content digest: `329c73b5fbaf56b91cd5cd5b1b0cdf131e15ec43391ac9e459e4a423a88eb01e`.
+Archive SHA-256: `0a015eb4085af36b015566f1311411d12aef802d461442bd8c3e963bff932923`.
+See `releases.json` for all six subset digests. Principal language labels are
+inherited from the publisher; damage and language-mix status are **unannotated**.
+This is a multilingual pool, not verified mixed-language samples, reviewed
+damage strata, full pages, or per-language standard/extended tiers. Source
+conventions are preserved, with no new diplomatic re-transcription claimed.
+
 ## Scoring
 
 ```sh
@@ -126,8 +156,18 @@ An output for an id outside the subset is an error.
 | `legacy-ws-v1` | The Iris pilot's rule. Whitespace runs collapse to one space and the ends are trimmed, as in Python's `" ".join(s.split())`. Then character (code point) edit distance. Case and punctuation count. |
 | `raw-v1`       | Character edit distance with no normalization.                                                                                                                                                      |
 
+`raw-masked-v1` is an opt-in ambiguity-aware lower-bound score using frozen
+reference-side illegibility spans; [the policy](ocr-bench-annotation-policy.md)
+defines alignment and denominators. Always report `raw-v1` alongside it. It does
+not change either historical rule or any published release.
+
 These are character-level rules. Word error rates depend on how a script is tokenized, so they
 are left out until there is a definition for each script.
+
+The separately versioned [extended evaluation measures v1](ocr-evaluation-measures-v1.md) add
+historical-fidelity adjudications, paired page scoring, full-page region coverage/reading order,
+truncation accounting and fixed search-relevance metrics. They consume generic reference/output
+pairs and do not change this legacy scorer or any benchmark release.
 
 ## How a release is built
 
@@ -152,5 +192,120 @@ stay valid for the bytes they were measured on.
 To add a release:
 
 1. Write `ocr/bench/<version>/spec.json` and `inputs.sha256`, and stage the inputs tar.
+   A recipe may set an HTTPS `inputs_url` for a public immutable GitHub release
+   asset; absent this, the original input host is used. The committed inventory
+   still pins every input byte. Published release recipes must never change.
 2. Open a pull request. The check job prints the release's `releases.json` entry.
 3. Review the entry, commit it and merge.
+
+## LoC published baselines
+
+Legacy and refreshed LoC OCR are **separate pinned baselines**, not human
+references. The [18 October inventory](notes/2026-10-18-loc-refreshed-baselines.md)
+records current coverage, the original benchmark's coverage gap and unresolved
+rights/history checks. Neither code release dates nor matching title names prove
+which OCR artifact or scan a page uses.
+
+Save the public guide HTML and fetch the benchmark with `--verify` above, then:
+
+```sh
+python3 scripts/ocr-bench/loc_inventory.py \
+  --coverage-html improved-text.html --benchmark RELEASE/manifest.json \
+  --retrieved-at 2026-10-18 --out inventory.json \
+  --summary-out inventory-summary.json
+```
+
+Optionally add `--repair-pages repair-pages.jsonl`; its explicit export schema and
+the measured manifest checksum are in the note. The full output contains
+per-sample statuses and title/language/decade repair strata. The compact summary
+omits these rows but preserves coverage, denominators and hashes. Candidate
+title/year ranges and batch-base matches are **not confirmed page coverage**.
+`not-listed-in-guide` is not proof of global absence; `outside-ndnp` distinguishes
+non-LoC sources.
+
+Use only the official public bulk endpoints, respecting the published request
+budget (10 bulk requests per 10 minutes per IP), `Retry-After`, and access blocks.
+Do not run parallel collection-wide retrievals or work around HTTP 403. The
+sample can be retrieved as two bounded requests (metadata, then archive):
+
+```sh
+curl --fail --max-filesize 10000 --output metadata.json \
+  https://chroniclingamerica.loc.gov/data/ocr/metadata/fu_eleven_ver02.tar.bz2.json
+sleep 61
+curl --fail --max-filesize 60000000 --output sample.tar.bz2 \
+  https://chroniclingamerica.loc.gov/data/ocr/fu_eleven_ver02.tar.bz2
+python3 scripts/ocr-bench/loc_archive.py \
+  --archive sample.tar.bz2 --metadata metadata.json --retrieved-at 2026-10-18 \
+  --out artifacts.json --summary-out artifacts-summary.json
+```
+
+Coordinate pacing with other users of the same IP. These commands do not retry
+failed requests. Pin metadata SHA-256 as well as its archive SHA-256; the sample's
+measured values are in the note. `loc_archive.py` checks archive bytes and page
+count against metadata, bounds uncompressed content, never extracts paths and
+records each ALTO/text hash, canonical page ID, coordinate units and embedded
+software versions. An optional `--repair-pages` joins the actual archive page IDs
+against the same repair export. It does **not** prove source-image registration.
+All output paths are create-only.
+
+### Registered crop adapter
+
+`loc_align.py` emits the existing scorer's `{"id","text"}` JSONL plus a
+checksummed alignment report. Choose `--baseline loc-legacy-v1` or
+`--baseline loc-refreshed-v1` and a **new output directory for each artifact set**.
+Keep historical baseline files and scores untouched.
+
+For each available sample, supply one JSONL binding with the following fields:
+
+```json
+{
+  "id": "SAMPLE-ID",
+  "source_page_url": "EXACT-BENCHMARK-PAGE-URL",
+  "source_image": "/local/full-resolution-page.jpg",
+  "source_image_sha256": "EXACT-BENCHMARK-SOURCE-PAGE-HASH",
+  "alto": "/local/pinned-page.alto.xml",
+  "alto_sha256": "PINNED-ALTO-HASH",
+  "scale": 0.25,
+  "artifact_url": "PUBLIC-ARTIFACT-URL",
+  "retrieved_at": "ISO-RETRIEVAL-DATE",
+  "version_evidence": "Actual embedded version or explicit unknown; not latest software tag",
+  "registration_evidence": "Evidence of same scan, orientation, no translation or deskew, and scale"
+}
+```
+
+The example scale is **not a default**. Registration is an operator-reviewed
+input, not something the adapter proves from a URL. Do not create a binding from
+title/year overlap alone. The adapter verifies source-image bytes against the
+benchmark's original full-page hash, crop/reference hashes, actual JPEG
+dimensions, unresized crop geometry, supported ALTO units, explicit isotropic
+scale and page extent agreement within one pixel. Rotated, offset, deskewed or
+otherwise uncertain pairs require a separately validated registration policy;
+omit their bindings here and retain the missing status.
+
+Policy `loc-word-centres-xml-order-v1` reuses the survey ALTO helper, but supplies
+the scale explicitly after validating all word/line coordinates. It selects
+Strings whose centres are inside the exact crop, keeps XML line/word order,
+counts intersecting boundary lines and excludes HYP elements. It never guesses
+DPI, silently drops malformed coordinates or substitutes whole-page text for
+a crop. This is a crop transcription adapter, **not whole-page reading-order
+evaluation**. OCR inference cost is `unknown`, not zero.
+
+```sh
+python3 scripts/ocr-bench/loc_align.py \
+  --release RELEASE --subset SUBSET --baseline loc-refreshed-v1 \
+  --bindings refreshed-bindings.jsonl --out-dir refreshed-aligned &&
+usnm-ocr-survey bench-score \
+  --release RELEASE --subset SUBSET --outputs refreshed-aligned/outputs.jsonl \
+  --rule legacy-ws-v1 --report refreshed-ws.json &&
+usnm-ocr-survey bench-score \
+  --release RELEASE --subset SUBSET --outputs refreshed-aligned/outputs.jsonl \
+  --rule raw-v1 --report refreshed-raw.json
+```
+
+Inspect `alignment.json` **before either score**. Every selected sample has an
+aligned, missing or error status. Missing bindings stay in the denominator;
+alignment errors also produce a nonzero exit, rather than a success-shaped
+fallback. Do not rank engines on different successful subsets. Use a common
+verified paired subset and report all missing outputs and errors alongside it.
+WER remains unavailable until the shared benchmark defines its tokenization
+policy; no second scorer is introduced here.

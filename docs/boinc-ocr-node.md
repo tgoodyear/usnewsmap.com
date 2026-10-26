@@ -1,7 +1,11 @@
 # Optional BOINC alongside the OCR worker
 
-Issue #472 is **not production acceptance**. The queue worker remains the
-production path. Do not run provisioning, builds, or pilot work on production
+**The direct queue worker is retired** (#966): local OCR runs through BOINC
+only, and no node runs `usnm-ocr-worker.service`. This page is kept for the
+client setup and the retirement steps below; see the [BOINC pages](boinc/README.md)
+for the current path.
+
+Issue #472 is **not production acceptance**. Do not run provisioning, builds, or pilot work on production
 until an independently reviewed dev plan and comparable pages/hour baseline
 show spare CPU, RAM, IO and disk capacity. A hard cap limits damage; it cannot
 prove zero throughput impact.
@@ -78,7 +82,7 @@ ordinary per-container limits and pause and slot checks still run.
    tolerance afterwards.
 2. Use the dev BOINC server (ADR-0019), reserve a tiny explicit cohort for this
    host, start the optional client manually, and attach only to that dev project.
-   Do not enable public production assignment or replace the queue worker.
+   Do not enable public production assignment.
 3. Verify kernel aggregate quotas for both BOINC and its actual container
    cgroups, rootless ownership and storage, SELinux enforcing, and suspend and
    resume.
@@ -104,14 +108,14 @@ enablement are deliberately deferred until this plan is validated.
 ## Retire an OCR node to BOINC only
 
 Sharing a node measurably slowed the queue worker: on node 4 one capped gold
-task dropped it from 44 to 28 pages/hour. When a node should instead give all
-its time to BOINC, retire its worker and switch the dedicated UID to the
-dedicated-node profile:
+task dropped it from 44 to 28 pages/hour. Every node has since retired its
+worker (#966). On a node that still has the unit, retire it and switch the
+dedicated UID to the dedicated-node profile:
 
 ```sh
 # 1. Drain and retire the queue worker (in-flight pages get their grace period;
-#    anything abandoned reappears on the queue). The nightly update skips a
-#    disabled worker and the reboot window only restarts what it stopped.
+#    anything abandoned reappears on the queue). The reboot window only
+#    restarts what it stopped.
 sudo systemctl disable --now usnm-ocr-worker.service
 # 2. Let queued BOINC work finish and report (No new tasks), then:
 python3 scripts/boinc/setup_volunteer.py --service usnm-boinc-canary.service --dedicated-node
@@ -129,6 +133,5 @@ the 6 GiB qwen units, which 80% did not), and is enabled at boot. Every start's
 preflight refuses an enabled or running OCR worker and a slice without its
 memory, swap or task limits. Accounts and attachments are kept.
 
-To return the node to OCR, stop and disable BOINC, rerun `--ocr-node --apply`
-(which restores the capped slice), and re-enable the worker with
-`scripts/ocr-node/install-worker.sh --enable`.
+There is no way back to the direct worker: its unit and installers are removed,
+and local OCR runs through BOINC only.

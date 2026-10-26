@@ -385,7 +385,7 @@ By paper:
 **Where it stands (7 October 2026).**
 
 - **Read:** 11,018 of the 11,058 target pages. Of the other 40, 14 have no image at LoC; the job writes an issue only when every page in it is read, so pages that share an issue with them are held back too.
-- **Searchable:** the live version `pages-v20261006-2` has a Japanese index of 10,305 pages (`/v1/meta`). The release read 10,414 OCR'd pages when it started; why 109 fewer are in the index is unchecked. The pages read after that go out with the next release.
+- **Searchable:** the live version `pages-v20261006-2` has a Japanese index of 10,305 pages (`/v1/meta`). The release selected 10,414 OCR'd pages when it started. [The complete historical input reconciliation](data/issue-324/README.md) identifies the 109 excluded page IDs: 107 had short OCR text (2–19 characters), and 2 had empty text. The build intentionally indexed only pages with OK OCR status and present text; its 10,305 eligible inputs match the recorded index count. The pages read after that go out with the next release.
 - **Search:** a query in Japanese script searches only these pages, one character per token, with old character forms matched to modern ones (戰 finds 戦). 日本 finds 6,269 pages in 21 titles and 真珠湾 443.
 
 ## Hawaiian
@@ -421,7 +421,7 @@ For all five the status is unknown. The next step is a look at a few pages of ea
 4. **Page-level language** where it differs from the title's first language: about 3% of pages, in another language or mixed. In single-language titles the audit found almost no pages (0.03%) in another language. Languages without a word list keep their title language.
 5. **Undetermined pages** in the Swedish, Hungarian, Croatian and Romanian titles: find out why so many of their pages can't be placed (19% to 44% by language, 83% in *America*).
 6. **The worst English batches:** count how many of their pages American Stories covers before planning a re-OCR.
-7. **Japanese:** the hand checks of the sites we could not search, a comparison with CHNC's *Colorado Times*, a Japanese reader's review, and the 109 pages missing from the index (see Open questions).
+7. **Japanese:** the hand checks of the sites we could not search, a comparison with CHNC's *Colorado Times*, a Japanese reader's review, and improving the OCR of the [109 short/empty pages intentionally excluded from the historical index](data/issue-324/README.md).
 8. **Indigenous languages:** a look at a few pages of each title, Cherokee first.
 
 # Caveats
@@ -495,7 +495,7 @@ The selections use the **first-listed catalog language**, matching the report's 
 1. **Japanese text at the sites we could not search,** checked by hand in a browser: search 日本 within *Topaz Times* on Utah Digital Newspapers, *Granada Pioneer* on CHNC, *Heart Mountain Sentinel* on Wyoming Newspapers (and see whether it has the Japanese edition), ASU's Japanese *Poston Chronicle*, and one Densho camp paper.
 2. **A quality comparison with CHNC** on the same *Colorado Times* 1945 pages.
 3. **A Japanese reader's review** of the reference crops and a sample of our OCR.
-4. **The Japanese index count:** the release read 10,414 pages, and the index has 10,305.
+4. **Resolved — Japanese index count:** all 109 excluded IDs are [identified](data/issue-324/excluded-pages.csv): 107 short and 2 empty OCR results fail the historical index eligibility rule. The [complete input reconstruction](data/issue-324/README.md) reproduces 10,414 selected and 10,305 eligible pages; no index-filter defect or rebuild is indicated.
 5. **Typefaces of the damaged German pages:** how many are Fraktur, and how much a Fraktur model recovers.
 6. **Hand-check the mixed-language detections.** The title attribution is resolved above; the detector's page-language assignments have not been manually verified, particularly the 55-word *St. Paul Tidende* page.
 
@@ -504,7 +504,7 @@ Former question 7 (American Stories' 1925 coverage) is answered in the English s
 # Sources
 
 - Index contents: the usnewsmap.com API on 7 October 2026, all on `pages-v20261006-2`: `/v1/meta` (index version, pages, titles and `languages`), `/v1/places` (places per language), and `/v1/aggregate` and `/v1/hits` with `lang` (example counts and title names). Search analyzer: `infra/quickwit/pages-index.yaml` and design document 05 §5.
-- OCR quality audit: `ja-ocr/quality.py` (metric v2) in the usnewsmap.com repository, run on index version `pages-v20261003-1` at 10% on 7 October 2026 (code at commit `480f8e4`) and at 2% on 6 October 2026 (before the Yiddish, Hawaiian and Cyrillic Serbian word lists were added). Its table rows are in `data/ocr-quality-v2-10pct.jsonl` and `data/ocr-quality-v2-2pct.jsonl` next to this report. Word lists: [wordfreq](https://github.com/rspeer/wordfreq); for Yiddish, Yiddish Wikipedia and Wikisource (CC BY-SA 4.0); for Hawaiian, the [Hawaiian Corpus Project](https://github.com/dohliam/hawaiian-corpus) (CC0); see `ja-ocr/wordlists/README.md`.
+- OCR quality audit: `ocr/ja-ocr/quality.py` (metric v2) in the usnewsmap.com repository, run on index version `pages-v20261003-1` at 10% on 7 October 2026 (code at commit `480f8e4`) and at 2% on 6 October 2026 (before the Yiddish, Hawaiian and Cyrillic Serbian word lists were added). Its table rows are in `data/ocr-quality-v2-10pct.jsonl` and `data/ocr-quality-v2-2pct.jsonl` next to this report. Word lists: [wordfreq](https://github.com/rspeer/wordfreq); for Yiddish, Yiddish Wikipedia and Wikisource (CC BY-SA 4.0); for Hawaiian, the [Hawaiian Corpus Project](https://github.com/dohliam/hawaiian-corpus) (CC0); see `ocr/ja-ocr/wordlists/README.md`.
 - American Stories: Dell and others, [American Stories: A Large-Scale Structured Text Dataset of Historical U.S. Newspapers](https://arxiv.org/abs/2308.12477) (2023), and the [dataset](https://huggingface.co/datasets/dell-research-harvard/AmericanStories) (CC BY 4.0); usnewsmap.com [#205](https://github.com/tgoodyear/usnewsmap.com/issues/205) (the 1865 and 1925 measurement, 7 October 2026) and [#218](https://github.com/tgoodyear/usnewsmap.com/issues/218) (the plan, the precision check and the rebuild estimate), with pull requests #220, #222 and #226.
 - Fraktur plan: Tesseract's trained models ([tessdata_best](https://github.com/tesseract-ocr/tessdata_best): `deu_latf`, `deu`); the [OCR-D](https://ocr-d.de/) project.
 - Cherokee: Georgia Historic Newspapers, title and issue pages for the [*Cherokee Phoenix*](https://gahistoricnewspapers.galileo.usg.edu/lccn/sn83020866/) and the [*Cherokee Phoenix, and Indians' Advocate*](https://gahistoricnewspapers.galileo.usg.edu/lccn/sn83020874/), and its [robots.txt](https://gahistoricnewspapers.galileo.usg.edu/robots.txt), 7 October 2026; usnewsmap.com [#223](https://github.com/tgoodyear/usnewsmap.com/issues/223) and [#224](https://github.com/tgoodyear/usnewsmap.com/pull/224).

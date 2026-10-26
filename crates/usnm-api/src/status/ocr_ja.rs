@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use usnm_store::ObjectStore;
 
@@ -16,7 +17,8 @@ pub const PATH: &str = "status/ocr-ja.json";
 /// plus the time one issue takes).
 const RUNNING_WITHIN: i64 = 15;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[schemars(rename = "OcrJaCount")]
 pub struct Count {
     pub pages: u64,
     pub issues: u64,
@@ -36,7 +38,7 @@ pub struct Progress {
 }
 
 /// The status section.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct OcrJa {
     /// The job wrote its progress recently and has pages left.
     pub running: bool,

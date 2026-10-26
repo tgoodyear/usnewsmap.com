@@ -48,6 +48,7 @@ import { useSkewModel } from "./engine/useSkew";
 import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
 import { congressFeature } from "./lib/congress";
+import { SampleResults, topPlace } from "./components/SampleResults";
 import { prepareStates, stateTotals, stateBreaks } from "./engine/states";
 import { StatesLegend, StatesTable } from "./components/StatesPanel";
 
@@ -134,6 +135,7 @@ export function App() {
   });
 
   const data = agg.data;
+  const samplePlace = data && !agg.isPlaceholderData ? topPlace(data.places) : null;
   const stillComputing = agg.isFetching && computing?.key === aggKey;
   const ahead = stillComputing ? computing.ahead : null;
   const waitNote = !stillComputing
@@ -931,6 +933,15 @@ export function App() {
                   {view.tab === "map" && webgl && legend}
                   {sidePanel}
                 </div>
+              )}
+              {samplePlace && (
+                <SampleResults
+                  params={params}
+                  version={data.index_version}
+                  placeId={samplePlace}
+                  placeName={placeName(samplePlace)}
+                  synthetic={data.synthetic}
+                />
               )}
             </>
           )}

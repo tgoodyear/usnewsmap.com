@@ -1,7 +1,7 @@
 //! Adds `text_cg` (05 §5.5.3) to index documents: JSON lines on stdin, each
 //! with a `text`, to stdout with `text_cg` computed as the release does, and
 //! `text_as_cg` for those with American Stories' `text_as` (05 §5.5.4).
-//! scripts/quickwit-fixtures.sh loads the fixture indexes through it.
+//! scripts/dev/quickwit-fixtures.sh loads the fixture indexes through it.
 //!
 //! `add_text_cg [--common-grams-version N]`: the pairs at `common_grams`
 //! version `N`, by default the latest (`usnm_core::common_grams::VERSION`).

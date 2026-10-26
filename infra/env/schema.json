@@ -16,7 +16,7 @@
     },
     "AZURE_LOCATION": {
       "x-usnm-visibility": "local",
-      "description": "Local: in the environment's local settings file. The region, which scripts/bootstrap.sh sets (see its --move).",
+      "description": "Local: in the environment's local settings file. The region, which scripts/azure/bootstrap.sh sets (see its --move).",
       "not": {}
     },
     "USNM_ALERT_EMAILS": {
@@ -74,11 +74,31 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_BOINC_CONTROLLER_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BOINC_HANDOFF_RUNNER (CT 211) run the BOINC batch controller (#866): Reader on the subscription and a role that updates and starts the hand-off and bridge jobs.",
+      "type": "boolean"
+    },
+    "USNM_BOINC_SERVER_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "The BOINC server runs on-prem (#942): skip the scan fetcher's reader grant on the BOINC Log Analytics workspace, which the on-prem server mode removes. Match \"server\" in contrib-compute/infra/boinc/env/<env>.json.",
+      "type": "boolean"
+    },
     "USNM_BOINC_HANDOFF_IMAGE": {
       "x-usnm-visibility": "public",
       "description": "The BOINC hand-off job's image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json. Empty or unset: no hand-off job.",
       "type": "string",
       "pattern": "^$|^[a-z0-9]+\\.azurecr\\.io/usnm-boinc-bridge@sha256:[0-9a-f]{64}$"
+    },
+    "USNM_BOINC_HANDOFF_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BOINC_ONPREM_HOST run usnm-boinc claim and collect on-prem (#967 phase 3), with the hand-off job's grants: Cosmos ops, the ledger writer on curated, reader on reference, the node writer role on ocr-out, and Message Processor and Sender on the work queues. Pair it with USNM_COSMOS_ONPREM_ACCESS.",
+      "type": "boolean"
+    },
+    "USNM_BOINC_ONPREM_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem BOINC host's own Arc machine identity's object id (usnm-boinc-arcs-<env>), with USNM_BOINC_HANDOFF_ONPREM.",
+      "not": {}
     },
     "USNM_BOINC_HANDOFF_RUNNER": {
       "x-usnm-visibility": "private",
@@ -115,6 +135,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_COSMOS_ONPREM_ACCESS": {
+      "x-usnm-visibility": "public",
+      "description": "Open Cosmos DB to USNM_OCR_NODE_IPS (#967): public network access behind an IP firewall that allows those addresses only; the private endpoint stays and local auth stays off. No effect without USNM_OCR_NODE_IPS.",
+      "type": "boolean"
+    },
     "USNM_DEDICATED_PROFILE": {
       "x-usnm-visibility": "public",
       "type": "boolean"
@@ -123,9 +148,13 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_DNS_ZONE_HOSTED": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
     "USNM_EXPERIMENT": {
       "x-usnm-visibility": "local",
-      "description": "Local: in the environment's local settings file. dev's current experiment (an issue number), which scripts/stand-up.sh sets and scripts/teardown.sh clears.",
+      "description": "Local: in the environment's local settings file. dev's current experiment (an issue number), which scripts/azure/stand-up.sh sets and scripts/azure/teardown.sh clears.",
       "not": {}
     },
     "USNM_EXPERIMENT_STARTED": {
@@ -144,7 +173,7 @@
     },
     "USNM_IMAGE_TAG": {
       "x-usnm-visibility": "local",
-      "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
+      "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/azure/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
       "not": {}
     },
     "USNM_INDEX_STORAGE": {
@@ -183,6 +212,11 @@
     },
     "USNM_JA_OCR_JOB": {
       "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_JA_OCR_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Run the Japanese OCR on-prem (#917): grants for the on-prem hosts' group and the data lake open to the node IPs. Pair with USNM_JA_OCR_JOB false.",
       "type": "boolean"
     },
     "USNM_JA_OCR_REPLICAS": {
@@ -234,9 +268,54 @@
       "description": "Private: scan-host Arc principal granted only archive writer access.",
       "not": {}
     },
+    "USNM_SCAN_FETCH_PUBLISH_FETCHED": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BOINC_HANDOFF_RUNNER (the scan fetcher, pve-big CT 211) publish its fetched-scans list (#1056): the node writer role on ocr-out (list, read, create; no delete), for usnm-ocr-worker publish-fetched.",
+      "type": "boolean"
+    },
+    "USNM_OCR_DAMAGE_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_OCR_DAMAGE_RUNNER (an on-prem host's own Arc machine identity, pve-laptop CT 215) write the OCR damage tables (#296, usnm-ingest ocr-damage): create new blobs under curated/audit/damage/ only, with no read, overwrite or delete. It reads curated and reference through the on-prem hosts' group, so pair it with USNM_JA_OCR_ONPREM.",
+      "type": "boolean"
+    },
+    "USNM_OCR_SYNC_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Run the OCR pickup (usnm-ingest ocr-sync, ocr-seed, ocr-enqueue, ocr-requeue) on-prem as USNM_BATCH_HOST, pve-laptop CT 215 (#917): the lake role on curated (writes under ocr-local/ only), reference (status/ocr-local.json only) and ocr-requests, the exchange role on ocr-out and ocr-quarantine, its queue roles, Cosmos ops, Monitoring Metrics Publisher and AcrPull. Needs USNM_OCR_NODES; pair with USNM_OCR_SYNC_CRON manual.",
+      "type": "boolean"
+    },
+    "USNM_INGEST_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BATCH_HOST (pve-laptop CT 215) run usnm-ingest import-staged-run --current (#917): Cosmos Data Contributor on index_runs beside USNM_OCR_SYNC_ONPREM's ops. Needs USNM_OCR_SYNC_ONPREM.",
+      "type": "boolean"
+    },
+    "USNM_BACKFILL_ONPREM": {
+      "x-usnm-visibility": "public",
+      "description": "Let USNM_BATCH_HOST run backfill curation (usnm-ingest curate --enqueue, enqueue; #917): create under curated/pages/, Cosmos Data Contributor on batches and issues. Needs USNM_OCR_SYNC_ONPREM. Off until a backfill is needed.",
+      "type": "boolean"
+    },
+    "USNM_OCR_SYNC_ALERTS": {
+      "x-usnm-visibility": "public",
+      "description": "Alert on the on-prem OCR pickup (#1139): a failed ocr-sync run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours (usnm-ocrs-failed-alert-<env>, usnm-ocrs-stale-alert-<env>, usnm-ocrs-backlog-alert-<env>), from the metrics it sends to the environment's Application Insights. With USNM_OCR_SYNC_ONPREM and alert emails.",
+      "type": "boolean"
+    },
+    "USNM_BATCH_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The object id of the batch container's own Arc machine identity (usnm-batch-arcs-<env>, pve-laptop CT 215), with USNM_OCR_SYNC_ONPREM.",
+      "not": {}
+    },
+    "USNM_OCR_DAMAGE_RUNNER": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The OCR damage tables' writer's object id (an on-prem host's own Arc machine identity, usnm-batch-arcs-<env>), with USNM_OCR_DAMAGE_ONPREM.",
+      "not": {}
+    },
     "USNM_OCR_NODE_GROUP": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The OCR nodes' Entra group's object id.",
+      "not": {}
+    },
+    "USNM_ONPREM_GROUP": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The object id of usnm-onprem-grp-<env>, every on-prem host's Arc identity (scripts/ocr-node/group.sh --kind onprem); it gets the roles any host needs for local work.",
       "not": {}
     },
     "USNM_OCR_NODE_IPS": {
@@ -299,6 +378,24 @@
     "USNM_OCR_USERS": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. Entra principals given access to Document Intelligence.",
+      "not": {}
+    },
+    "USNM_ONPREM_RELEASE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_ONPREM_RELEASE_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem release container's Arc machine identity's object id (usnm-release-arcs-<env>).",
+      "not": {}
+    },
+    "USNM_ONPREM_SERVING": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_ONPREM_SERVING_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The on-prem serving container's Arc machine identity's object id (#955).",
       "not": {}
     },
     "USNM_PAGE_LANGUAGE": {
@@ -379,6 +476,15 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_SEARCH_LOG_COPY": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
+    "USNM_SEARCH_LOG_COPY_HOST": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the settings store, under the environment's label. The search log copy host's Arc machine identity's object id (#1097).",
+      "not": {}
+    },
     "USNM_SEARCH_LOG_READERS": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. Entra principals that may read the search log.",
@@ -422,6 +528,12 @@
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The VNet's address space, an RFC 1918 block (no private addresses in the repository, #399).",
       "not": {}
+    },
+    "USNM_WRITER_INGEST": {
+      "x-usnm-visibility": "public",
+      "description": "The Quickwit writer's ingest API: v2 (Quickwit's default, at least once) or v1 (each accepted page once; the release restarts the writer for its final merges). docs/operations/rebuild-and-index-storage.md, \"Duplicate-safe ingest\" (#283).",
+      "type": "string",
+      "pattern": "^v[12]$"
     },
     "USNM_WWW_CERT_ID": {
       "x-usnm-visibility": "private",

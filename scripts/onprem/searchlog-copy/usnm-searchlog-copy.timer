@@ -1,0 +1,18 @@
+# Daily, after the API has written the previous UTC day's file (an hour after
+# the day ends, checked hourly: ADR-0012), so by 02:30 UTC it is almost always
+# there; one written later is copied the next day, inside the 24 hours the copy
+# is allowed to lag. UTC is named, so the host's time zone does not matter.
+# Persistent: a host that was down at 02:30 copies when it is back. A run that
+# fails to bring a day file across leaves it for the next day's run, which fails
+# the unit only if the day file is still missing then.
+# Not enabled by anything in this repository: README.md here.
+[Unit]
+Description=usnewsmap search log copy to tank, daily
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

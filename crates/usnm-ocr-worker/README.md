@@ -2,6 +2,8 @@
 
 The on-prem OCR worker for [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). It runs on a local machine, takes one page at a time from a queue, fetches the page's scan from the Library of Congress, reads it with Tesseract, and writes ALTO and an overlay Parquet part to the exchange storage account. It keeps no LoC text and doesn't decide whether its text replaces LoC's. A cloud job checks the parts, and the release decides.
 
+No node runs `run` as a queue worker any more: local OCR runs through BOINC only (#966). The systemd unit and the installers that ran it on the nodes are retired. The crate stays: `usnm-boinc` reads pages with its engine code (`usnm_ocr_worker::engine`), the scan archive and fetch hosts use its other commands, and the LAN dashboard depends on it. See the [BOINC pages](../../docs/boinc/README.md).
+
 ## Commands
 
 All flags are named.
@@ -127,7 +129,7 @@ status and observations separately, especially failures with no complete record.
 
 ## Prefetching scans
 
-`prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (`scripts/ocr-node/scanfetch-ct.sh`, 12 §12.2.4).
+`prefetch` fetches the scans a manifest lists (`usnm-ingest ocr-prefetch-manifest`, #368) onto local disk with the same LoC client and pacing as `run`, so a node's engines can read them later without asking LoC again. It runs in the scan-fetch container on pve-big (12 §12.2.4; deployment is managed outside this repository).
 
 ```sh
 # Fetch every page, German before the 1920s first, stopping at 2.5 TB on disk.
@@ -159,7 +161,7 @@ A run writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl`
 
 `--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (5000, www.loc.gov's `Crawl-Delay`) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--scan-cache-url` names the scan server to ask before LoC (see Prefetching scans), `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin` or `--tesseract-image` (with `--podman-bin`, and `--podman-url` with `--scratch-dir`, `--engine-memory-mib` (1536), `--engine-cpus` (1) and `--engine-pids` (64)), `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600, or `USNM_OCR_PAGE_TIMEOUT_SECS`).
 
-These `run` flags can also come from the environment, which is how the node's unit sets them (`/etc/usnm/ocr-worker.env`, written by `scripts/ocr-node/install-worker.sh`): `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_SCAN_CACHE_URL`, `USNM_OCR_VISIBILITY_SECS`, and for the engine `USNM_OCR_TESSERACT_IMAGE`, `USNM_OCR_PODMAN_URL`, `USNM_OCR_SCRATCH_DIR`, `USNM_OCR_ENGINE_MEMORY_MIB`, `USNM_OCR_ENGINE_CPUS` and `USNM_OCR_ENGINE_PIDS` (the unit sets the socket and the scratch directory). A flag on the command line wins. `--shutdown-grace-secs` and `--once` are command-line only: the unit's `TimeoutStopSec` is set for the default grace.
+These `run` flags can also come from the environment (the retired node unit read them from `/etc/usnm/ocr-worker.env`): `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_SCAN_CACHE_URL`, `USNM_OCR_VISIBILITY_SECS`, and for the engine `USNM_OCR_TESSERACT_IMAGE`, `USNM_OCR_PODMAN_URL`, `USNM_OCR_SCRATCH_DIR`, `USNM_OCR_ENGINE_MEMORY_MIB`, `USNM_OCR_ENGINE_CPUS` and `USNM_OCR_ENGINE_PIDS` A flag on the command line wins. `--shutdown-grace-secs` and `--once` are command-line only.
 
 ## Queues
 
@@ -170,7 +172,7 @@ There are three Azure Storage Queues: `ocr-priority`, `ocr-bulk` and `ocr-deadle
 - A temporary failure (LoC or storage errors, a Tesseract crash or timeout, or a language with no model on this node, which another node may have) leaves the message, which reappears when its time runs out. The worker asks the engine whether it can read the page's language before it fetches the scan, so a page with no model here costs loc.gov nothing.
 - While loc.gov holds this node's requests for more than half a new page's budget (80% of `--visibility-secs`), the worker takes no messages: a page taken then would mostly wait in the pacer, and could be abandoned and spend one of its 5 receives.
 - The output uploads are cut off at the same 80% mark, so a node never writes a page after its message may have gone to another node. A cut between the two uploads leaves an ALTO without its part, which does no harm because parts are only read with their ALTO.
-- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period plus the telemetry flush (up to 30 s). The node's unit (`scripts/ocr-node/usnm-ocr-worker.service`) keeps the default 60 s grace, sets `TimeoutStopSec=120` and `KillMode=mixed`, so only the worker gets the SIGTERM and Tesseract keeps running through the grace period.
+- On SIGTERM the worker stops taking messages and gives in-flight pages the grace period. Pages still unfinished after that are abandoned and reappear when their time runs out. The systemd unit's `TimeoutStopSec` should be longer than the grace period plus the telemetry flush (up to 30 s). With `KillMode=mixed` only the worker gets the SIGTERM, and Tesseract keeps running through the grace period.
 
 The REST calls use API version 2023-11-03 and an Entra bearer token for `https://storage.azure.com/`. No keys or SAS tokens are used.
 
@@ -190,7 +192,7 @@ In directory mode, each queue is a directory with `ready/` and `leased/` subdire
 
 ## Fetching scans
 
-Without the scan cache, the worker fetches scans the way `ja-ocr/jaocr.py` does. It makes one request per issue to `https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json` and caches the result (256 issues, one hour). The page's JP2 URL gives its IIIF service on `tile.loc.gov`, and the scan is `<service>/full/full/0/default.jpg`. The API and image gaps are shared by every page in flight on the node. With two nodes, double both so the pair stays at the Japanese job's rate. A 429, a 503 or a 403 (how a block looks) holds every request to that server for its `Retry-After`, or for 60 s times the attempt number if that is longer or none came, at most an hour. A longer `Retry-After` is cut to the hour and counted with `capped`, which a log alert on the nodes' workspace watches. A 408 is retried like a 5xx; other 4xx answers are permanent. Only an issue's answer is cached: a 4xx on its item JSON fails that page and is asked again for the next one. The User-Agent is `usnewsmap-ocr-worker/<version> (+https://usnewsmap.com)`. The scan is held in memory and in a temporary directory that is removed after the page is done.
+Without the scan cache, the worker fetches scans the way `ocr/ja-ocr/jaocr.py` does. It makes one request per issue to `https://www.loc.gov/item/{lccn}/{date}/ed-{n}/?fo=json` and caches the result (256 issues, one hour). The page's JP2 URL gives its IIIF service on `tile.loc.gov`, and the scan is `<service>/full/full/0/default.jpg`. The API and image gaps are shared by every page in flight on the node. With two nodes, double both so the pair stays at the Japanese job's rate. A 429, a 503 or a 403 (how a block looks) holds every request to that server for its `Retry-After`, or for 60 s times the attempt number if that is longer or none came, at most an hour. A longer `Retry-After` is cut to the hour and counted with `capped`, which a log alert on the nodes' workspace watches. A 408 is retried like a 5xx; other 4xx answers are permanent. Only an issue's answer is cached: a 4xx on its item JSON fails that page and is asked again for the next one. The User-Agent is `usnewsmap-ocr-worker/<version> (+https://usnewsmap.com)`. The scan is held in memory and in a temporary directory that is removed after the page is done.
 
 ## Tesseract
 
@@ -225,13 +227,13 @@ Tesseract runs with `--psm 3 --dpi 300` and the `txt` and `alto` configs, so one
 Each page writes two objects to `--out-url`:
 
 1. `alto/<doc_id>.<node>.<UTC stamp>.xml`: the stored ALTO (13 §13.8.2), written first. The worker parses Tesseract's ALTO and writes ALTO 3.1 in pixels of the scan from the parsed values (`usnm-alto`), with `fileName` set to the scan's URL, the scan's sha256 (and a JP2's bag md5) in `fileIdentifier`, and the `ocr_engine` tag, granularity and dpi in `processingStepSettings`. Nothing of Tesseract's XML is copied but the words. A Tesseract ALTO that doesn't parse fails the page as transient `convert`.
-2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its text is derived from the stored ALTO in reading order and normalized (`normalize_ocr`), so the text and the ALTO hold the same words. Its columns and types are the ones `ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
+2. `pages/<lccn>_<date>_ed-<n>.<node>.<UTC stamp>.parquet`: an overlay part with one row, with the same stamp as its ALTO. Its text is derived from the stored ALTO in reading order and normalized (`normalize_ocr_for`), so the text and the ALTO hold the same words. Its columns and types are the ones `ocr/ja-ocr/jaocr.py write_part` writes (`usnm_overlay::schema`), zstd-compressed, and the release's overlay reader (`usnm_ingest::ocr_ja::read_part`) reads it.
 
 Values specific to this worker:
 
 - `ocr_source` is `usnm-tesseract`, named after the engine as the Japanese job's `usnm-ndlocr-lite` is. The node appears in the part name.
 - `loc_text` is the queue reason (`bulk` or `user`). The worker never sees LoC's text, so it can't say how that text failed. These values never match `missing`, so a release won't count the page as one curation never had.
-- `text` is normalized with `usnm_core::text::normalize_ocr`, as LoC's text is at curation (04 §4.5). `text_status`, `text_chars` and `text_sha256` are computed from the normalized text.
+- `text` is normalized as LoC's text is at curation (04 §4.5), with `usnm_core::text::normalize_ocr_for`: a word broken at a line end is rejoined whether the engine printed `-`, `⸗`, `¬` or `‐`, and for a German page or a Fraktur model (`frak2021`, `deu_latf`) also an em dash before a lowercase letter (`Hyphenation::for_page`, #1065). `text_status`, `text_chars` and `text_sha256` are computed from the normalized text.
 - `image_url` is the IIIF service base, as in the Japanese overlay.
 
 Both writes are create-only, and the names are unique per node and moment: the nodes' role on `ocr-out` can create blobs but not replace or delete them. Each page gets its own part, so a node writes many small files. The cloud copy-in job should merge them into larger parts as it copies them to `curated/ocr-local/pages/`.
@@ -266,11 +268,11 @@ With `--status-listen 0.0.0.0:8381` (`USNM_OCR_STATUS_LISTEN`) and `--status-all
 - The status also carries the queues as the worker last saw them (it looks once a minute): each queue's approximate length (Get Queue Metadata) and up to 20 dead letters at the front of `ocr-deadletter` (Peek Messages), shown as their page, cause, kind, error, receive count, node and time. It takes and deletes nothing, and needs Storage Queue Data Reader on the queues.
 - `GET /journal?from=<offset>`: `--status-journal` (`USNM_OCR_STATUS_JOURNAL`) from a byte offset, whole lines only, at most 1 MiB. Each line is one finished page: doc_id, language, engine tag, queue, reason, times, outcome, scan source, whether its output was uploaded, and a failure's kind. The file is appended to across restarts.
 
-The status server runs apart from the OCR loop: if it can't bind, fails or panics, it is logged, counted and started again after 5 s, doubling to 5 minutes. A page is tracked per attempt (its message id and pop receipt), so a redelivered message running beside an earlier attempt doesn't overwrite it. Neither endpoint holds page text. `scripts/ocr-node/install-worker.sh --status-allow <address>` writes the settings, and the node's nftables drops the port from anyone else.
+The status server runs apart from the OCR loop: if it can't bind, fails or panics, it is logged, counted and started again after 5 s, doubling to 5 minutes. A page is tracked per attempt (its message id and pop receipt), so a redelivered message running beside an earlier attempt doesn't overwrite it. Neither endpoint holds page text.
 
 ## Building for AlmaLinux 9
 
-CI builds the worker on AlmaLinux 9 (`ocr-worker-el9` in `.github/workflows/ci.yml`), fails if it needs a glibc symbol newer than EL9's 2.34, runs it on AlmaLinux 10, and reads a rendered line through the Tesseract image with `check-engine`. On `main` it publishes the binary and the image as an attested GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`, which `scripts/ocr-node/install-worker.sh` verifies and installs ([operations](../../docs/operations.md#on-prem-ocr-nodes)). The binary uses rustls and has no OpenSSL dependency. To build one by hand, use an EL9 container, not a newer distribution:
+CI builds the worker on AlmaLinux 9 (`ocr-worker-el9` in `.github/workflows/ci.yml`), fails if it needs a glibc symbol newer than EL9's 2.34, runs it on AlmaLinux 10, and reads a rendered line through the Tesseract image with `check-engine`. On `main` it publishes the binary and the image as an attested GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`, which hosts verify with `gh attestation verify` before installing (the scan archive host: [operations](../../docs/operations/onprem-ocr.md#the-scan-archive-442)). The binary uses rustls and has no OpenSSL dependency. To build one by hand, use an EL9 container, not a newer distribution:
 
 ```sh
 podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
@@ -284,7 +286,7 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 
 ## Optional BOINC batch pool
 
-The [BOINC pilot](../../docs/boinc.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
+The [BOINC pilot](../../docs/boinc/README.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
 
 ## Engine catalog and production licences
 

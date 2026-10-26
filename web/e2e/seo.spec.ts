@@ -75,6 +75,28 @@ test("the static description is in the HTML before the app runs", async ({ reque
   expect(html).toContain('href="https://goodyeartechnical.com/"');
 });
 
+test("curated searches expose top-city results and homepage links without JavaScript", async ({ browser }) => {
+  test.skip(!withApi, "the API renders the search preview");
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${process.env.PW_BASE_URL}/`);
+    const home = page.getByRole("navigation", { name: "Common newspaper searches" });
+    await expect(home.getByRole("link", { name: '"cross of gold"', exact: true })).toHaveAttribute(
+      "href",
+      "/search/%22cross%20of%20gold%22",
+    );
+    await home.getByRole("link", { name: '"cross of gold"', exact: true }).click();
+    const samples = page.getByRole("region", { name: "Sample results" });
+    await expect(samples).toContainText("has the most hits");
+    await expect(samples.locator("ol > li")).toHaveCount(10);
+    await expect(samples).toContainText("cross of gold");
+    await expect(samples).toContainText("1896-07-18");
+  } finally {
+    await context.close();
+  }
+});
+
 test("an unknown path shows the not-found page", async ({ page }) => {
   const res = await page.goto("/does-not-exist");
   // vite preview answers every path with the shell and a 200.
@@ -141,9 +163,19 @@ test("llms.txt is plain text that describes the site and the API", async ({ requ
   expect(body).toMatch(/^# US News Map\n/);
   expect(body).toMatch(/^> /m);
   expect(body).toContain("https://api.usnewsmap.com/v1");
-  for (const route of ["meta", "aggregate", "hits", "places", "coverage", "status"]) {
+  for (const route of ["meta", "aggregate", "hits", "places", "coverage", "status", "openapi.json"]) {
     expect(body).toContain(`/v1/${route}`);
   }
+});
+
+test("the API's OpenAPI document is served on the site's origin too", async ({ request }) => {
+  const res = await request.get("/v1/openapi.json");
+  expect(res.status()).toBe(200);
+  expect(res.headers()["content-type"]).toMatch(/^application\/json/);
+  const doc = await res.json();
+  expect(doc.openapi).toBe("3.1.0");
+  expect(doc.servers.map((s: { url: string }) => s.url)).toContain(SITE);
+  expect(Object.keys(doc.paths)).toContain("/v1/aggregate");
 });
 
 test("sitemap.xml lists the home page, privacy and curated base searches", async ({ request }) => {

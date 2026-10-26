@@ -3,13 +3,15 @@
 # binary, the LAN dashboard's binary (12 §12.2.5), the Tesseract image the
 # worker runs (an OCI archive and its image id) and SHA256SUMS, as
 # `ocr-worker-<yyyymmdd>-<sha7>`. The ocr-worker-release job attests every
-# file first; scripts/ocr-node/install-worker.sh verifies them. A release
-# that exists already (a re-run) is left as it is.
+# file first; hosts verify them before installing (the scan archive host
+# with scripts/ocr-node/install-archive-host.sh). No node runs the binary as
+# a queue worker any more (#966). A release that exists already (a re-run)
+# is left as it is.
 #   scripts/ci/ocr-worker-release.sh --dist DIR
 #
 # Needs GH_TOKEN with contents: write, GITHUB_REPOSITORY and GITHUB_SHA.
 set -euo pipefail
-usage() { sed -n '8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 DIST=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,15 +50,15 @@ fi
 image=$(cat "$DIST/usnm-ocr-tesseract.image-id")
 notes=$(mktemp)
 cat > "$notes" <<NOTES
-The on-prem OCR worker (#296) for AlmaLinux 9 and RHEL 10 (x86_64, glibc 2.34 or later), built from $GITHUB_SHA.
+The OCR worker binary (#296) for AlmaLinux 9 and RHEL 10 (x86_64, glibc 2.34 or later), built from $GITHUB_SHA.
 
 - \`usnm-ocr-worker\`: the worker binary.
-- \`usnm-ocrdash\`: the LAN dashboard (\`scripts/ocr-node/ocrdash-ct.sh --install\`).
+- \`usnm-ocrdash\`: the dashboard executable; deploy it using your infrastructure tooling.
 - \`usnm-ocr-tesseract.oci.tar.gz\`: the Tesseract image it runs (\`ocr/engines/tesseract/\`), image id \`$image\`.
 - \`usnm-ocr-tesseract.image-id\`: that id.
 - \`SHA256SUMS\`: the sha256 of each file.
 
-Each file has a build provenance attestation. Install with \`scripts/ocr-node/install-worker.sh --release $tag\`, which verifies them.
+Each file has a build provenance attestation; verify it with \`gh attestation verify\` before installing. No node runs the binary as a direct queue worker: local OCR runs through BOINC only (#966).
 NOTES
 args=()
 for f in $files; do args+=("$DIST/$f"); done

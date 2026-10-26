@@ -34,6 +34,19 @@ const STYLE = {
 };
 
 test.beforeEach(async ({ page }) => {
+  await page.route("https://boinc.usnewsmap.com/work_summary.php", (route) =>
+    route.fulfill({
+      headers: { "access-control-allow-origin": "*" },
+      json: {
+        schema: 1,
+        updated_at: new Date().toISOString(),
+        apps: [
+          { name: "usnm_qwen", ready: 469, in_progress: 2, validated: 17 },
+          { name: "usnm_gold", ready: 0, in_progress: 9, validated: 3 },
+        ],
+      },
+    }),
+  );
   await page.route("https://tiles.openfreemap.org/**", (route) =>
     route.request().url().includes("/styles/") ? route.fulfill({ json: STYLE }) : route.fulfill({ status: 404 }),
   );
@@ -63,7 +76,7 @@ async function expectAccessible(page: Page) {
 }
 
 /** The home page's example cards. */
-const exampleCards = (page: Page) => page.locator("ul.examples button.example");
+const exampleCards = (page: Page) => page.locator("ul.examples a.example");
 
 /** The button under the examples that adds more of them. */
 const showMore = (page: Page) => page.getByRole("button", { name: "Show more examples" });
@@ -112,6 +125,9 @@ test("path searches survive reload and history when only the query changes", asy
   await expect(page.locator(".summary")).toContainText("6 places");
   await page.reload();
   await expect(page.getByRole("button", { name: "Table", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const samples = page.getByRole("region", { name: "Sample results" });
+  await expect(samples).toContainText("Fixture City B");
+  await expect(samples.locator("li.hit")).toHaveCount(10);
   await page.getByRole("searchbox").fill("gold");
   await page.getByRole("searchbox").press("Enter");
   await expect(page).toHaveURL(/\/search\/gold(?:\?|$)/);
@@ -339,21 +355,31 @@ test("the dataset details show the published version without the pipeline state"
     "What's in the index",
     "The datasets",
     "Pages we read ourselves",
+    "Volunteer computing with BOINC",
     "Languages",
     "Places",
     "In progress",
     "Versions",
     "Technical details",
   ]);
-  await expect(page.getByText(/^The site searches 1,872 newspaper pages from 6 newspapers/)).toBeVisible();
+  await expect(page.getByText(/^The site covers 1,872 newspaper pages from 6 newspapers/)).toBeVisible();
   await expect(page.getByRole("img", { name: "Pages by decade: all 1,872 are from the 1890s." })).toBeVisible();
   // The fixtures search the Library of Congress text alone.
   await expect(page.getByText("Not yet: the search index the site uses now doesn't have its text.")).toBeVisible();
+  await expect(page.getByText("469 ready to send", { exact: true })).toBeVisible();
+  await expect(page.getByText("11 in progress", { exact: true })).toBeVisible();
+  await expect(page.getByText("20 completed and validated", { exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "BOINC tasks by application" })).toBeVisible();
+  const sourceDetails = page.getByRole("region", { name: "The datasets", exact: true }).locator("details").first();
+  await expect(sourceDetails).not.toHaveAttribute("open", "");
+  await sourceDetails.locator("summary").click();
+  await expect(sourceDetails.getByText("Rights", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   // CI's API serves the fixtures with no Cosmos: the reference sections
   // work and the pipeline sections say so.
   await expect(page.getByRole("heading", { level: 3, name: "Right now" })).toBeVisible();
   await expect(page.getByText("What the pipeline is doing right now isn't available on this server.")).toBeVisible();
-  await expect(page.getByRole("heading", { level: 3, name: "Searchable now: 1,872 pages" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "In the published version: 1,872 pages" })).toBeVisible();
   await expect(
     page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem"),
   ).toHaveCount(4);
@@ -390,6 +416,8 @@ test("the dataset details say what the pipeline is doing right now", async ({ pa
   const iso = (min: number) => new Date(now + min * 60_000).toISOString();
   const doc = {
     ...base,
+    // The version's batches; with the 2,115 it leaves out, 2,997 processed.
+    published: { ...base.published, batches: 882 },
     pipeline: { available: true, read_at: iso(0) },
     activity: {
       available: true,
@@ -483,7 +511,10 @@ test("the dataset details say what the pipeline is doing right now", async ({ pa
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { level: 3, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" }),
+    page.getByRole("heading", {
+      level: 3,
+      name: "In the published version: 1,872 pages, from 882 of 2,997 downloaded batches (29%)",
+    }),
   ).toBeVisible();
 
   // Four steps; the current one is marked, and its state is in words.

@@ -21,6 +21,7 @@ futures.workspace = true
 governor.workspace = true
 moka.workspace = true
 opentelemetry.workspace = true
+schemars = { workspace = true, features = ["chrono04"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -37,7 +38,7 @@ async-trait.workspace = true
 flate2.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "test-util"] }
 tower.workspace = true
 tracing-subscriber.workspace = true
 

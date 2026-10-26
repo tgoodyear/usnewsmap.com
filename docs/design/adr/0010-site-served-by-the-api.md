@@ -4,6 +4,7 @@
 - **Date:** 2026-09
 - **Amends:** ADR-0006, decision 1 (Static Web Apps Free hosted the SPA)
 - **Resolves:** the open exception in ADR-0009 (the Static Web App's deployment token)
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (Cloudflare is the edge in front of the one origin, with no Static Web App and no Workers Static Assets or Pages)
 
 ## Context
 

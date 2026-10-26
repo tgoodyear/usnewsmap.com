@@ -2,8 +2,8 @@
 # (#289, 05 §5.5.8): for each word list, its 100 most frequent words of 2
 # letters or more, most frequent first, then for Danish and Norwegian their
 # "aa" spellings. One line per list: the list's code, the script of its
-# words, then the words. Built by scripts/build-page-language-words.py from
-# ja-ocr/damage_v2.py's models; don't edit by hand.
+# words, then the words. Built by scripts/data/build-page-language-words.py from
+# ocr/ja-ocr/damage_v2.py's models; don't edit by hand.
 #
 # Licence: this file is data, not code, and is shared under the Creative
 # Commons Attribution-ShareAlike 4.0 licence
@@ -13,9 +13,9 @@
 #   as the Google Books Ngram Viewer asks), the Leeds Internet Corpus,
 #   Wikipedia, ParaCrawl, OPUS OpenSubtitles 2018, the SUBTLEX lists and
 #   other web and news text (crates/usnm-core/data/README.md lists them);
-# - the Yiddish list (yi) of ja-ocr/wordlists/, derived from Yiddish
+# - the Yiddish list (yi) of ocr/ja-ocr/wordlists/, derived from Yiddish
 #   Wikipedia and Wikisource (CC BY-SA 4.0, Wikimedia contributors);
-# - the Hawaiian list (haw) of ja-ocr/wordlists/, from the Hawaiian Corpus
+# - the Hawaiian list (haw) of ocr/ja-ocr/wordlists/, from the Hawaiian Corpus
 #   Project's frequency list (CC0).
 ar arabic في من على أن لا إلى ما عن هذا مع التي كل هذه أو هو كان الذي ذلك بعد الله لم بين ان كانت يا حتى قبل قد هي إن كما أي أيضا حيث أنه اليوم خلال عليه غير وهو بعض تم علي إذا فى له مثل محمد هناك يوم لك أكثر عام لي ولا ثم بن يمكن الناس به ولكن أنت الى شيء لكن وفي قال ومن فيه فيها منذ إلا الذين العالم يكون أحد عندما فقط وقد الآن بها لو عدد بشكل أخرى تلك هنا ليس هل عند كنت العام انا لها أنا بأن تكون كيف عبد المتحدة
 bg cyrillic на да от за се не си че по ще са това като ми но до го много най има му ако към може съм ти ли само няма след през аз които при ви или как какво той ни трябва всички който във което те един още така със време когато този българия тази ги вече която години една малко нещо преди ме повече сега без беше защото им тези тя бъде всичко добре защо година едно софия все хора ден както между също тук всеки става мен него път там сме някой толкова част кой човек други над

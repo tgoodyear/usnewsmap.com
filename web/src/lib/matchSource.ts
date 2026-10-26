@@ -1,7 +1,9 @@
 import type { HitItem } from "../api/types";
 
-// Which OCR a search matched (#218). The API says so only for a version
-// that searches American Stories' text too; without it these say nothing.
+// Which OCR a search matched (#218, #925). The API says so only for a version
+// that searches American Stories' text too, or keeps the Library of Congress's
+// text beside ours on the pages our OCR replaced it on; without either these
+// say nothing.
 
 /** The badge on a page that matched only in American Stories' text. */
 export const AMERICAN_STORIES_BADGE = "American Stories OCR";
@@ -21,6 +23,31 @@ export function americanStoriesNote(h: Pick<HitItem, "matched_in" | "snippet_sou
   return (
     "The Library of Congress text for this page doesn't contain the match. " +
     "It was found in American Stories (Dell et al. 2023), a second machine reading of Chronicling America's scans. " +
+    `${snippet} The page image at the Library of Congress shows what was printed.`
+  );
+}
+
+/** The badge on a page that matched in the Library of Congress's text, not in ours. */
+export const LOC_ORIGINAL_BADGE = "Library of Congress OCR";
+
+/**
+ * Why a page carries the Library of Congress badge, or null when it doesn't:
+ * the page's own text is our OCR, which replaced the Library of Congress text,
+ * and the search matched in the Library of Congress text and not in ours. The
+ * snippet's source decides the second sentence.
+ */
+export function locOriginalNote(h: Pick<HitItem, "matched_in" | "snippet_source">): string | null {
+  const m = h.matched_in;
+  if (!m || !m.includes("loc_original") || m.includes("loc")) return null;
+  const snippet =
+    h.snippet_source === "loc_original"
+      ? "The snippet comes from that text."
+      : h.snippet_source === "american_stories"
+        ? "The snippet comes from American Stories' text."
+        : "The snippet comes from our OCR text, which matches only part of the search.";
+  return (
+    "Our OCR text for this page doesn't contain the match. " +
+    "It was found in the Library of Congress OCR text of the page, which the search keeps beside ours. " +
     `${snippet} The page image at the Library of Congress shows what was printed.`
   );
 }

@@ -4,7 +4,7 @@ https://github.com/ndl-lab/ndlocr-lite
 Commit: 636d1cfeb1331f89f4048f416e49e23a09a714b5
 Licence: Creative Commons Attribution 4.0 International; see LICENSE.
 The engine source and model bytes are unmodified. The US News Map Rust adapter
-converts its XML to ALTO and normalizes its text, as ja-ocr/jaocr.py does.
+converts its XML to ALTO and normalizes its text, as ocr/ja-ocr/jaocr.py does.
 Upstream dependency notices are retained in /opt/ndlocr-lite/LICENCE_DEPENDENCEIES.
 
 Built with DINOv3. The layout model derives from DINOv3 (Meta), whose

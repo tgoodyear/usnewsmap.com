@@ -1,4 +1,4 @@
-import type { Activity, Now, Status } from "../api/types";
+import type { Activity, IndexRun, Now, Status } from "../api/types";
 import { count, relative, span } from "./format";
 
 // Times are in the visitor's own time zone, with the zone named.
@@ -85,12 +85,19 @@ export interface NowLine {
 const SLOW_DOWN = "because loc.gov asked us to slow down";
 
 /**
- * When the version the site searches went live: its own run's publish time.
- * Without that run, the pipeline's last publish, but only when nothing says
- * it belongs to another version: `last_published_at` is the latest publish
- * of any run, and a new run is marked published just before `ops/current`
- * names it. Last, the version's own `published_at` (versions published
- * before 5 October 2026 carry their run's start there).
+ * When the build of the version the site searches finished: its own run's
+ * `published_at`. Without that run, the pipeline's last publish, but only
+ * when nothing says it belongs to another version: `last_published_at` is
+ * the latest publish of any run, and a new run is marked published just
+ * before `ops/current` names it. Last, the version's own `published_at`
+ * (versions published before 5 October 2026 carry their run's start there).
+ *
+ * That time is when the build finished, not when the version was published
+ * or the site started searching it. An ordinary release is marked published
+ * as soon as its build finishes; a staged release (an on-prem full rebuild,
+ * #283) is marked when it is staged, hours before its indexes are copied and
+ * the site switches to it, and `current.json` keeps that time. So the page
+ * says when the build finished.
  */
 export function lastUpdate(s: Status): string {
   const i = s.indexing;
@@ -107,8 +114,8 @@ export function lastUpdate(s: Status): string {
 
 /**
  * A newer version the pipeline has published that the API doesn't serve yet
- * (it checks every few minutes, then warms the version up): when it was
- * published, else null. A version that differs but isn't newer (a pipeline
+ * (it checks every few minutes, then warms the version up): when its build
+ * finished, else null. A version that differs but isn't newer (a pipeline
  * reading older than the API's switch) is not one.
  */
 export function pendingUpdate(s: Status): string | null {
@@ -125,7 +132,7 @@ export function pendingUpdate(s: Status): string | null {
 function pendingNote(s: Status): string | null {
   const at = pendingUpdate(s);
   if (at === null) return null;
-  return `A new update was published on ${localDate(at)}, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.`;
+  return `A new version, whose build finished ${localDate(at)}, is published, and the site switches to it in a few minutes. Until then, the numbers on this page are from the version it still searches.`;
 }
 
 /**
@@ -138,7 +145,10 @@ export function rightNow(s: Status, now: number): NowLine {
   if (!a || !a.available) {
     return {
       text: "What the pipeline is doing right now isn't available on this server.",
-      notes: [...(pending ? [pending] : []), `The site searches the update published ${localDate(lastUpdate(s))}.`],
+      notes: [
+        ...(pending ? [pending] : []),
+        `The site searches the version whose build finished ${localDate(lastUpdate(s))}.`,
+      ],
     };
   }
   const notes: string[] = pending ? [pending] : [];
@@ -219,7 +229,7 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
     case "listing":
       return { text: "Checking the Library of Congress for new batches." };
     case "idle": {
-      let text = `Idle: the last update went live on ${localDate(lastUpdate(s))}.`;
+      let text = `Idle: the site searches the version whose build finished ${localDate(lastUpdate(s))}.`;
       text += a.next_run ? ` The next scheduled run is ${localDate(a.next_run)}.` : " No run is scheduled.";
       return { text };
     }
@@ -352,44 +362,116 @@ export function steps(s: Status, now: number): Step[] {
     key: "live",
     title: "Live",
     explain: "The site searches the last published version of the index. Each update adds the pages step 3 indexed.",
-    detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, live since ${localDate(lastUpdate(s))}`,
+    detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, in the version whose build finished ${localDate(lastUpdate(s))}`,
     state: doing === "publishing" ? "active" : t?.unpublished_batches === 0 || !t ? "done" : "waiting",
   };
   return [download, titles, index, live];
 }
 
 /**
- * "Searchable now": published pages against every processed page. The share
- * compares downloaded copies on both sides: the backfill counts every copy of
- * a page that ships in two batches, and the published version left out
- * `duplicate_pages` such copies, so those are added back to its pages.
+ * The headline: the published version's pages, and how many of the
+ * downloaded batches are in it. The share counts batches on both sides
+ * because pages don't compare: the version's pages also hold the Japanese
+ * pages LoC shipped without OCR text, which curation doesn't count
+ * (`backfill.pages`) and the release adds with our OCR, and leave out copies
+ * of a page that ships in two batches, so they can come to more than the
+ * downloaded pages.
+ *
+ * The batches are the version's own (`published.batches`) of those plus the
+ * processed batches it leaves out (`unpublished_batches`). A batch LoC
+ * reissues keeps its curated version while it is downloaded again, so it
+ * stays in one of the two, while `backfill.by_status.curated` leaves it out
+ * until it is processed again. Without the titles pipeline, the version's
+ * batches of the curated ones.
  */
 export function headline(s: Status): {
   text: string;
   sub: string;
   share: number | null;
+  /** Batches in the version of the processed ones, for the bar. */
+  progress: { done: number; total: number } | null;
 } {
   const p = s.published;
   const duplicates = p.duplicate_pages ?? 0;
-  const copies = p.pages + duplicates;
-  const total = s.backfill.available ? s.backfill.pages : 0;
   const years = `${p.bounds.from.slice(0, 4)} to ${p.bounds.to.slice(0, 4)}`;
   const sub =
     `From ${count(p.titles)} ${p.titles === 1 ? "newspaper" : "newspapers"}, dated ${years}.` +
     (duplicates > 0
-      ? ` ${count(duplicates)} of the downloaded pages ${duplicates === 1 ? "is a copy" : "are copies"} of pages in another batch, searchable once.`
+      ? ` ${count(duplicates)} of the downloaded pages ${duplicates === 1 ? "is a copy" : "are copies"} of pages in another batch, counted once.`
       : "");
-  if (total > 0 && total >= copies) {
+  const text = `In the published version: ${count(p.pages)} pages`;
+  const t = s.titles.pipeline.available ? s.titles.pipeline : null;
+  const done = p.batches;
+  const total =
+    done !== null && t && t.unpublished_batches !== null
+      ? done + t.unpublished_batches
+      : s.backfill.available
+        ? s.backfill.by_status.curated
+        : 0;
+  if (total > 0 && done !== null && done >= 0 && done <= total) {
     return {
-      text:
-        duplicates > 0
-          ? `Searchable now: ${count(p.pages)} pages, from ${count(copies)} of ${count(total)} downloaded pages (${pct(copies, total)})`
-          : `Searchable now: ${count(p.pages)} of ${count(total)} downloaded pages (${pct(p.pages, total)})`,
+      text: `${text}, from ${count(done)} of ${count(total)} downloaded batches (${pct(done, total)})`,
       sub,
-      share: copies / total,
+      share: done / total,
+      progress: { done, total },
     };
   }
-  return { text: `Searchable now: ${count(p.pages)} pages`, sub, share: null };
+  return { text, sub, share: null, progress: null };
+}
+
+/**
+ * A note on the pipeline's own record of the current version
+ * (`indexing.current_version`, its `ops/current`) when it isn't the version
+ * the site searches; null when they agree. A newer version on its way is
+ * one thing; otherwise the record is behind: a staged release (#283)
+ * leaves it as it was until the next ordinary release repairs it.
+ */
+export function pipelineVersionNote(s: Status): string | null {
+  const i = s.indexing;
+  const served = s.published.index_version;
+  if (!i.available || !i.current_version || i.current_version === served) return null;
+  if (pendingUpdate(s) !== null) return "published; the site switches to it in a few minutes";
+  return `not the version the site searches, ${served}`;
+}
+
+/**
+ * When an index run ended: its `published_at` (when its build finished),
+ * else its start plus its duration; null while it runs.
+ */
+function runEnded(r: IndexRun): string | null {
+  if (r.published_at) return r.published_at;
+  if (r.duration_secs === null) return null;
+  return new Date(Date.parse(r.started_at) + r.duration_secs * 1000).toISOString();
+}
+
+/**
+ * The newest index run that ended after the last reported run
+ * (`activity.last`), else null. `activity.last` is the ingest job's own
+ * report of its last run, or, when the job has none, the newest index run
+ * (`crates/usnm-api/src/status/activity.rs`). A release run elsewhere, such
+ * as an on-prem full rebuild (#283), isn't in the job's report, while
+ * `indexing.runs` lists every run. A failed or stopped run may have no end
+ * time (`/v1/status` derives `duration_secs` from `published_at` only): it
+ * counts by its start, with `ended` false, so a later failure isn't hidden
+ * behind an older successful build.
+ */
+export function laterIndexRun(s: Status): { run: IndexRun; at: string; ended: boolean } | null {
+  const i = s.indexing;
+  const last = s.activity?.available ? s.activity.last : null;
+  if (!i.available || !last) return null;
+  let newest: { run: IndexRun; at: string; ended: boolean } | null = null;
+  for (const run of i.runs) {
+    const ended_at = runEnded(run);
+    const terminal = run.status === "failed" || run.status === "stopped";
+    const seen = ended_at
+      ? { run, at: ended_at, ended: true }
+      : terminal
+        ? { run, at: run.started_at, ended: false }
+        : null;
+    if (seen && (!newest || Date.parse(seen.at) > Date.parse(newest.at))) newest = seen;
+  }
+  if (!newest || newest.run.index_version === last.index_version) return null;
+  return Date.parse(newest.at) > Date.parse(last.ended_at) ? newest : null;
 }
 
 export interface OcrLine {
@@ -402,17 +484,19 @@ export interface OcrLine {
 }
 
 /**
- * "OCR experiments": our own text recognition of the Japanese pages LoC has
- * no text for (`ocr_ja`, #139). Not a pipeline step; `null` when this server
- * has nothing to say about it (no report and no Japanese index).
+ * Our own text recognition of the Japanese pages LoC has no usable text for
+ * (`ocr_ja`, #139). Not a pipeline step; `null` when this server has nothing
+ * to say about it (no report and no Japanese index). `ocr_ja` is the report
+ * of the job that made the first pass; our OCR now runs through BOINC, which
+ * doesn't write it.
  */
-export function ocrExperiment(s: Status, now: number): OcrLine | null {
+export function japaneseOcr(s: Status, now: number): OcrLine | null {
   const o = s.ocr_ja?.available ? s.ocr_ja : null;
   const ja = s.published.ja;
   if (!o && !ja) return null;
   const searchable = ja
     ? `${count(ja.pages)} ${ja.pages === 1 ? "page is" : "pages are"} searchable now.`
-    : "They become searchable with the next update.";
+    : "Processed text becomes searchable only after acceptance and an index update.";
   if (!o)
     return {
       text: "Japanese pages we read ourselves are in the search.",
@@ -446,7 +530,7 @@ export function ocrExperiment(s: Status, now: number): OcrLine | null {
     };
   }
   return {
-    text: `Stopped at ${count(done)} of ${count(total)} Japanese pages (${pct(done, total)}). The job last reported ${relative(o.updated_at, now)}.`,
+    text: `The first pass read ${count(done)} of ${count(total)} Japanese pages (${pct(done, total)}) and last reported ${relative(o.updated_at, now)}. Any further OCR runs through BOINC, below.`,
     progress,
     searchable,
   };
@@ -477,7 +561,12 @@ export function ocrAudit(s: Status, now: number): AuditLine | null {
   const progress = total > 0 ? { done, total, label: `${count(done)} of ${count(total)} batches checked` } : undefined;
   if (q.finished_at && q.summary) {
     const a = q.summary.agreement;
-    const text = `Checked ${count(q.pages_sampled)} pages, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.`;
+    const served = s.published.index_version;
+    const text =
+      `Checked ${count(q.pages_sampled)} pages of ${q.version}, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.` +
+      (q.version !== served
+        ? ` The site now searches ${served}, so pages added or changed after ${q.version} weren't checked.`
+        : "");
     // Each share is null when no page of its kind had text: leave its clause out.
     if (a.differs_share === null) return { text };
     const multi =

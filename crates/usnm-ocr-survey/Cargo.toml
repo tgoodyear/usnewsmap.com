@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+usnm-core.workspace = true
+usnm-ocr-contract.workspace = true
 usnm-ocr-quality.workspace = true
 anyhow.workspace = true
 clap.workspace = true

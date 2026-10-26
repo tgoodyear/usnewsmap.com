@@ -1,7 +1,7 @@
 """Polite fetches from loc.gov and tile.loc.gov for the engine survey (#296).
 
 loc.gov's API is paced API_GAP seconds per request and the image server
-TILE_GAP seconds, as the Japanese job does (ja-ocr/jaocr.py). A 429 waits
+TILE_GAP seconds, as the Japanese job does (ocr/ja-ocr/jaocr.py). A 429 waits
 for its Retry-After (or a minute, longer on each try). A 403 stops the run:
 it is usually a challenge page, and the survey does not work around one.
 """
@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ja-ocr"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ocr", "ja-ocr"))
 
 from jaocr import Pacer, iiif_base, page_altos, page_images  # noqa: E402,F401
 

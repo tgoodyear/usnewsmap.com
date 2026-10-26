@@ -10,6 +10,10 @@ inputs:
   tag:
     description: The local tag to give the image
     required: true
+  variant:
+    description: "cuda (default) or vulkan (#842)"
+    required: false
+    default: "cuda"
 runs:
   using: composite
   steps:
@@ -25,17 +29,26 @@ runs:
       env:
         IMAGE: ${{ inputs.image }}
         SHA: ${{ inputs.tag }}
+        VARIANT: ${{ inputs.variant }}
       shell: bash
       run: |
+        # The pins are in engine.lock, one KEY=value per line named as the Containerfile's build arguments.
+        pins=()
+        while IFS= read -r pin; do pins+=(--build-arg "$pin"); done < <(grep -E '^[A-Z][A-Z_]*=' ocr/boinc/surya/engine.lock)
+        [[ ${#pins[@]} -gt 0 ]] || { echo "::error::no pins in ocr/boinc/surya/engine.lock"; exit 1; }
         docker build -f ocr/boinc/surya/Containerfile \
+          "${pins[@]}" \
+          --build-arg "LLAMA_VARIANT=$VARIANT" \
           --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
           --label "org.opencontainers.image.revision=$SHA" \
-          --label "org.opencontainers.image.description=usnewsmap BOINC Surya 2 worker (surya-ocr, llama.cpp, usnm-boinc)" \
+          --label "org.opencontainers.image.description=usnewsmap BOINC Surya 2 worker ($VARIANT, surya-ocr, llama.cpp, usnm-boinc)" \
           -t "$IMAGE:$SHA" .
         docker image ls "$IMAGE"
         # Podman refuses images with a healthcheck where no systemd user session exists.
         hc=$(docker image inspect --format '{{json .Config.Healthcheck}}' "$IMAGE:$SHA")
         [[ $hc == null || $hc == '{"Test":["NONE"]}' ]] || { echo "::error::image declares a healthcheck: $hc"; exit 1; }
+        backend=$(docker run --rm --entrypoint printenv "$IMAGE:$SHA" USNM_SURYA_BACKEND)
+        [[ $backend == "$VARIANT" ]] || { echo "::error::expected USNM_SURYA_BACKEND=$VARIANT, got $backend"; exit 1; }
     # Without a GPU: the diagnostics, the Python probe and a unit that is refused (no job)
     # must still write all five outputs.
     - name: The image runs a unit and always returns its outputs

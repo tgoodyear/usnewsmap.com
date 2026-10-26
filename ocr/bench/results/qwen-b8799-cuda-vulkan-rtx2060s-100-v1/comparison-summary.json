@@ -1,0 +1,171 @@
+{
+  "samples": 100,
+  "exact_matches": 92,
+  "whitespace_equal": 95,
+  "word_bag_dice": {
+    "min": 0.9791666666666666,
+    "p05": 1.0,
+    "p50": 1.0,
+    "mean": 0.9997916666666666,
+    "below_0_95": 0,
+    "below_probe_floor_0_5": 0
+  },
+  "comparator_verdicts": [
+    {
+      "job_id": "1fc6689539ecff212d71b5d6672608e0b3a9ad6ff9f9ebd3e3c61f990c6beb30",
+      "min_dice": 0.5,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "1fc6689539ecff212d71b5d6672608e0b3a9ad6ff9f9ebd3e3c61f990c6beb30",
+      "min_dice": 0.95,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "428db60e4d77af9b02fc83cfd47e3d5a85fcc72d90ec90f4c534424d05708b51",
+      "min_dice": 0.5,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "428db60e4d77af9b02fc83cfd47e3d5a85fcc72d90ec90f4c534424d05708b51",
+      "min_dice": 0.95,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "43f64fac2f60884966a746d5a504fd4728e4eb98db6e4eb45617db97c2e93f61",
+      "min_dice": 0.5,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "43f64fac2f60884966a746d5a504fd4728e4eb98db6e4eb45617db97c2e93f61",
+      "min_dice": 0.95,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "55f88fbd4330142b94b859fe098e17a6ee7cc37804c49070339cc182938fb5c5",
+      "min_dice": 0.5,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "job_id": "55f88fbd4330142b94b859fe098e17a6ee7cc37804c49070339cc182938fb5c5",
+      "min_dice": 0.95,
+      "exit_code": 0,
+      "stderr": ""
+    }
+  ],
+  "backend": {
+    "cuda": {
+      "scores": {
+        "legacy-ws-v1": {
+          "cer": 0.022558014031300595,
+          "cer_missing_as_empty": 0.022558014031300595,
+          "edits": 627,
+          "missing": 0,
+          "missing_chars": 0,
+          "reference_chars": 27795,
+          "samples": 100,
+          "scored": 100
+        },
+        "raw-v1": {
+          "cer": 0.024896564130239253,
+          "cer_missing_as_empty": 0.024896564130239253,
+          "edits": 692,
+          "missing": 0,
+          "missing_chars": 0,
+          "reference_chars": 27795,
+          "samples": 100,
+          "scored": 100
+        }
+      },
+      "elapsed_s": 293.28565369900025,
+      "mean_wall_s_per_crop": 2.9328565369900024,
+      "load_ms": [
+        21048,
+        2744,
+        2658,
+        2702
+      ],
+      "first_read_ms": [
+        2076,
+        1711,
+        1783,
+        1630
+      ],
+      "warm_read_ms": {
+        "p50": 1518,
+        "p95": 1874,
+        "max": 1940
+      },
+      "telemetry": {
+        "samples": 281,
+        "gpu_peak_mib": 7013.0,
+        "rss_peak_kib": 5422112,
+        "gpu_utilization_mean_pct": 50.98220640569395,
+        "gpu_utilization_peak_pct": 97.0,
+        "board_power_mean_w": 103.57903914590747,
+        "board_power_peak_w": 209.05
+      },
+      "estimated_usd_per_1000_pages_board_only": 0.15189123102710905
+    },
+    "vulkan": {
+      "scores": {
+        "legacy-ws-v1": {
+          "cer": 0.022414103255981293,
+          "cer_missing_as_empty": 0.022414103255981293,
+          "edits": 623,
+          "missing": 0,
+          "missing_chars": 0,
+          "reference_chars": 27795,
+          "samples": 100,
+          "scored": 100
+        },
+        "raw-v1": {
+          "cer": 0.024464831804281346,
+          "cer_missing_as_empty": 0.024464831804281346,
+          "edits": 680,
+          "missing": 0,
+          "missing_chars": 0,
+          "reference_chars": 27795,
+          "samples": 100,
+          "scored": 100
+        }
+      },
+      "elapsed_s": 423.15382655699796,
+      "mean_wall_s_per_crop": 4.23153826556998,
+      "load_ms": [
+        4908,
+        4892,
+        4732,
+        4604
+      ],
+      "first_read_ms": [
+        34476,
+        34630,
+        34732,
+        35585
+      ],
+      "warm_read_ms": {
+        "p50": 1685,
+        "p95": 2047,
+        "max": 2167
+      },
+      "telemetry": {
+        "samples": 405,
+        "gpu_peak_mib": 6490.0,
+        "rss_peak_kib": 5565620,
+        "gpu_utilization_mean_pct": 39.31111111111111,
+        "gpu_utilization_peak_pct": 97.0,
+        "board_power_mean_w": 83.59743209876544,
+        "board_power_peak_w": 185.89
+      },
+      "estimated_usd_per_1000_pages_board_only": 0.17687286641465702
+    }
+  }
+}

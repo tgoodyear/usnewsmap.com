@@ -3,9 +3,10 @@ name = "usnm-core"
 version = "0.1.0"
 description = "US News Map domain types: page keys, time buckets, query language, canonical parameters"
 edition.workspace = true
-# The code is MIT. The word lists under data/ are data exported from
-# wordfreq 3.1.1 (CC BY-SA 4.0, with Google Books Ngram terms), except
-# data/damage-words/haw.txt (CC0) and yi.txt (CC BY-SA 4.0), and
+# The code is MIT. The word lists under data/ (zstd-compressed as .txt.zst,
+# except data/page-language-words.txt) are data exported from wordfreq 3.1.1
+# (CC BY-SA 4.0, with Google Books Ngram terms), except
+# data/damage-words/haw.txt.zst (CC0) and yi.txt.zst (CC BY-SA 4.0), and
 # data/page-language-words.txt, derived from all three (CC BY-SA 4.0):
 # data/README.md.
 license = "MIT AND CC-BY-SA-4.0 AND CC0-1.0"
@@ -16,8 +17,11 @@ caseless.workspace = true
 chrono.workspace = true
 form_urlencoded.workspace = true
 httpdate.workspace = true
+rustc-hash.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
+sha2.workspace = true
 thiserror.workspace = true
 unicode-general-category.workspace = true
 unicode-normalization.workspace = true
@@ -27,9 +31,11 @@ unicode-normalization.workspace = true
 # default, so the API binary doesn't embed the lists.
 damage = ["dep:serde_json"]
 
+[build-dependencies]
+zstd.workspace = true
+
 [dev-dependencies]
 serde_json.workspace = true
-sha2.workspace = true
 zstd.workspace = true
 
 [lints]

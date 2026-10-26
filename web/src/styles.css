@@ -534,13 +534,20 @@ select {
 }
 .example {
   width: 100%;
-  height: 100%;
+  flex: 1;
+  color: inherit;
+  text-decoration: none;
   text-align: left;
   padding: 16px;
   cursor: pointer;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.examples > li {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -562,6 +569,7 @@ select {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
 }
 .results > .notice {
   flex: none;

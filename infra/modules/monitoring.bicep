@@ -151,8 +151,18 @@ resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!emp
 
 output workspaceId string = workspace.id
 output workspaceName string = workspace.name
-// The workspace's id in the Log Analytics query API (scripts/logs.sh).
+// The workspace's id in the Log Analytics query API (scripts/azure/logs.sh).
 output workspaceCustomerId string = workspace.properties.customerId
+output logAnalyticsQueryHost string = '${location}.api.loganalytics.io'
+output logAnalyticsQueryHosts array = union([
+  '${location}.api.loganalytics.io'
+], [
+  'westus.api.loganalytics.io'
+  'eastus.api.loganalytics.io'
+  'northcentralus.api.loganalytics.io'
+  'westcentralus.api.loganalytics.io'
+  'api.loganalytics.io'
+])
 output appInsightsName string = appInsights.name
 output appInsightsId string = appInsights.id
 // The ingestion endpoint and instrumentation key, not a credential: with

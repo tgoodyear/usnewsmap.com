@@ -1,0 +1,9 @@
+[Unit]
+Description=usnewsmap full image pass manifests, every 2 hours (#962)
+
+[Timer]
+OnBootSec=30min
+OnUnitInactiveSec=2h
+
+[Install]
+WantedBy=timers.target

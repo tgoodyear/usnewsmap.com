@@ -30,7 +30,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
 use usnm_core::ids::PageKey;
 use usnm_core::text::TextStatus;
 use usnm_core::time::day_number;
@@ -40,13 +39,10 @@ use crate::curated::read_part;
 use crate::state::{RunBatch, State};
 use crate::worker::Counts;
 
-/// A copy of a page that searches must not see: the document with this id
-/// from this batch. Written to the snapshot's `duplicates.json`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Hidden {
-    pub doc_id: String,
-    pub batch: String,
-}
+/// A copy of a page that searches must not see (the snapshot's
+/// `duplicates.json`). The row type lives beside the file's name, in
+/// `usnm-state`, for the local OCR seeder and the prefetch manifest.
+pub use usnm_state::state::Hidden;
 
 /// Which copy of each duplicated page a version keeps.
 #[derive(Debug, Default)]
@@ -89,6 +85,21 @@ impl Plan {
     /// Pages with text in `batch` that the release won't index.
     pub fn skipped_docs(&self, batch: &str) -> u64 {
         self.skipped_docs.get(batch).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+impl Plan {
+    /// A plan that keeps the named batch's copy of each page given (with
+    /// LoC's text), and the one copy of every other page.
+    pub fn keeping<'a>(pages: impl IntoIterator<Item = (PageKey, &'a str)>) -> Self {
+        Self {
+            keep: pages
+                .into_iter()
+                .map(|(k, b)| (k, (b.to_owned(), true)))
+                .collect(),
+            ..Self::default()
+        }
     }
 }
 

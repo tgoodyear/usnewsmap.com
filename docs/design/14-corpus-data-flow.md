@@ -35,7 +35,7 @@ Bulk bytes stay in Blob, Azure Files, ZFS or the existing package registry.
 MySQL and Cosmos are not file inventories. A successful process exit is not
 evidence of validation, import or inclusion in a released search index.
 
-BOINC project downloads are Azure-hosted, but container images come from GHCR.
+BOINC project downloads are served from the on-prem BOINC host (they were Azure-hosted until 21 October 2026), and container images come from GHCR.
 Legacy gold inputs may still reference upstream sources. Mirror readiness must
 be established for each artifact and campaign, not inferred from a deployment.
 
@@ -194,9 +194,9 @@ The catalog and observer use Python's standard library. Evidence ingestion and
 query serving are separate commands:
 
 ```bash
-python3 scripts/data_catalog.py --db catalog.sqlite ingest --batch evidence.jsonl
-python3 scripts/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
-python3 scripts/data_catalog.py --db catalog.sqlite serve --host 127.0.0.1 --port 8764
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest --batch evidence.jsonl
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite serve --host 127.0.0.1 --port 8764
 ```
 
 Retain the imported evidence files: rebuilding means replaying them into a new
@@ -206,10 +206,12 @@ only loopback queries; use an administrative SSH tunnel rather than opening a
 public port.
 
 `data_flow_observer.py` joins the catalog snapshot to local OCR and public BOINC
-counters. Its optional five-minute timer writes
-`/var/lib/usnm-data-flow/pipeline.json`; the dashboard reads that file and serves
-`/api/pipeline.json`. A fresh aggregate refresh does not refresh old page
-observations. The timer does not ingest page records or allocate work.
+counters. `usnm-data-flow-observer.timer` (in `scripts/ocr-node/`) runs it every
+five minutes and writes `/var/lib/usnm-data-flow/pipeline.json`; the dashboard
+reads that file and serves `/api/pipeline.json`. Nothing else refreshes the file,
+so a host installed without the timer shows a stale panel. A fresh aggregate
+refresh does not refresh old page observations. The timer does not ingest page
+records or allocate work.
 
 The existing Cold-tier scan archive is a separate recovery copy, not the public
 BOINC input mirror. Its documented complete verification at
@@ -251,10 +253,10 @@ Copy completed `*.json` captures through the administrative path, retaining the
 originals. Import each with a new evidence filename and stable batch/source IDs:
 
 ```bash
-python3 scripts/data_catalog.py --db catalog.sqlite ingest-worker \
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-worker \
   --input capture.json --evidence-out run-001.jsonl \
   --batch-id run-001 --source worker-node3
-python3 scripts/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite snapshot --out catalog.json
 ```
 
 The adapter accepts captures up to 64 KiB; larger captures fail explicitly even
@@ -270,7 +272,92 @@ integration, stop its query service and restore the saved `aggregate-only.conf`
 to the observer's service drop-in directory, then reload systemd and rerun the
 observer. This does not stop OCR or BOINC work.
 
-Corpus-wide inventory, automatic worker transport/retention, BOINC and
-`ocr-file` capture, and authoritative validation/import/index exporters remain
-separate rollout steps. Do not enable an uncalibrated corpus-wide job merely
-because the control plane is online.
+Corpus-wide inventory, BOINC and `ocr-file` capture, and authoritative
+validation/import/index exporters remain separate rollout steps. Do not enable
+an uncalibrated corpus-wide job merely because the control plane is online.
+
+## Retired worker evidence transport
+
+The direct OCR worker is retired (#966, #1053) and local OCR runs through BOINC
+only, so no host writes run-metadata captures any more. The SSH receiver that
+collected them (`worker_evidence_sync.py`, `usnm-worker-evidence-sync.service`
+and its timer) and its tests are removed from the repository; the history keeps
+them. `data_catalog.py ingest-worker` still imports a single capture by hand.
+
+A catalog host that still runs the receiver should retire it. Once the worker's
+host is gone, the unit fails on every tick and `systemctl is-system-running`
+reports `degraded`. Run these as root, in this order:
+
+```bash
+systemctl disable --now usnm-worker-evidence-sync.timer
+systemctl stop usnm-worker-evidence-sync.service
+systemctl reset-failed usnm-worker-evidence-sync.service
+```
+
+Stopping the timer keeps it from starting another tick, but does not stop a tick
+it already started. That tick can fail after `reset-failed` and leave the host
+degraded again, and would fail the same way on a file removed under it, so stop
+the service before clearing its failed state and before removing anything.
+
+Then remove the two unit files, `/etc/usnm/worker-evidence-sync.env`,
+`worker_evidence_sync.py` from `/usr/local/lib/usnm-data-flow`, and the receiver's
+key pair, `known_hosts` and `sync.lock` under `/var/lib/usnm-data-flow/worker-sync`,
+and run `systemctl daemon-reload`. Keep
+`worker-sync/retained/`: its captures and derived JSONL (source
+`worker-node3-live`) are what the catalog is rebuilt from, by replaying them with
+`ingest --batch`.
+
+The receiver was the only scheduled writer of `catalog.json`, so without it the
+snapshot stops changing while the observer keeps joining it. The observer
+therefore adds a `catalog-frozen` issue when the snapshot's `generated_at` or its
+newest evidence (`observed_at`) is more than three days old;
+`--catalog-max-age-days` changes the limit, and the issue text gives both ages.
+The counts stay in the snapshot as history and the observer run still succeeds,
+so a frozen catalog does not fail its unit.
+
+Regenerating the snapshot with
+`data_catalog.py --db catalog.sqlite snapshot --out catalog.json` moves only
+`generated_at`. The flag stays until new evidence moves `observed_at`. BOINC
+results are not cataloged until an adapter for them exists under
+[#704](https://github.com/tgoodyear/usnewsmap.com/issues/704). To stop joining the
+catalog, drop `--catalog-snapshot` from the observer's unit. A unit that
+regenerates the snapshot needs more than the observer unit's 10% CPU quota: at
+112,640 inventory rows the snapshot took about 0.35 seconds unthrottled, missed its
+two-second query deadline under a 10% quota, and the scheduled run succeeded under
+a 50% quota.
+
+Snapshot counters remain partial. The observer joins explicit catalog
+acceptance, import and index observations with their original source timestamps
+and does not infer those stages from successful execution. A one-page import
+proof is one observed import, not the total imported corpus. Unconnected stages
+remain unknown.
+
+## Release selection and search provenance
+
+Committed `ocr-sync` import records (`ocr-local/import/<run>.json`) prove
+structural import into `ocr-local` (`stage="imported"`), never release
+acceptance or search publication. Export committed imports, authoritative
+release decisions (`accepted`, `rejected`, `revoked`, `unchanged_baseline`) and
+public `/v1/hits` verification receipts as independent evidence batches:
+
+```bash
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-import \
+  --input import.json --evidence-out import-001.jsonl \
+  --batch-id import-001 --source ocr-sync-import
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-release \
+  --input release-decisions.json --evidence-out release-001.jsonl \
+  --batch-id release-001 --source release-builder
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-search \
+  --input hits.json --evidence-out search-001.jsonl \
+  --batch-id search-001 --source public-hits-check \
+  --page-id loc:<doc_id> --verified-at 2026-10-18T12:00:00Z --run-id <run_id>
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite trace --page-id loc:<doc_id>
+```
+
+`trace` (and `GET /trace?page_id=loc%3A<doc_id>`) reconciles a page across
+`artifact`, `execution`, `imported`, `release_decision` and `search_provenance`
+while keeping `accepted` and `published` explicitly `false` until authoritative
+release selection and published `/v1/hits` replacement provenance are observed.
+When `/v1/hits` returns a page without replacement `ocr` metadata, `ingest-search`
+records `decision="unchanged_baseline"` and `selected_source="loc"` with a
+checksummed `search_receipt` and no raw OCR text.

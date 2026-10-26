@@ -40,7 +40,7 @@ punctuation and line breaks are not retained in these short concordances.
 Full OCR was pulled into a local cache, not committed; the source part and
 text hash let an authorized reader retrieve and check it.
 
-The scorer is `ja-ocr/damage_v2.py`, with wordfreq 3.1.1. Its hash is in
+The scorer is `ocr/ja-ocr/damage_v2.py`, with wordfreq 3.1.1. Its hash is in
 `provenance.json`. On **all 80 pages**, the detected language, decision and
 rounded damage rate reproduce the original audit. Flag occurrences also
 reconcile to `detect().damage.near`. The Cyrillic path excludes the other

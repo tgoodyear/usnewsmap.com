@@ -94,7 +94,7 @@ versioning or soft delete. During migration a parallel internal searcher
 reads it while the old searcher serves the lake. A staged reference pointer
 and the separately gated API-reader switch preserve the serving version
 until cutover ([ADR-0021](adr/0021-separate-index-storage.md),
-[operations](../operations.md#index-storage-cutover)). Curated data and
+[operations](../operations/rebuild-and-index-storage.md#index-storage-cutover)). Curated data and
 reference snapshots remain in the protected lake.
 
 ## 3.4 Key runtime flows

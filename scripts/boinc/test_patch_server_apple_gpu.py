@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import shutil
 import subprocess
+import sys
 
 spec = importlib.util.spec_from_file_location(
     "patch_server_apple_gpu",
@@ -63,6 +64,77 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
 
 
 class PatchServerAppleGpuTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
+    def test_workunit_restrictions_do_not_reuse_cached_null_or_other_batch(self):
+        source = r"""
+#define assert(value) do { if (!(value)) return __LINE__; } while (false)
+bool wu_restricted_plan_class = false;
+struct { struct { int end() { return 1; } } best_app_versions; } request;
+auto* g_wreq = &request;
+int cached_version = 0;
+int choose_version(int batch, int id = 16900) {
+    int bavi = 0;
+CACHE
+        return cached_version;
+    }
+    return batch == 8 && id >= 16899 && id <= 16908 ? 47 : 0;
+}
+int main() {
+    // Preserve memoization for ordinary unrestricted app selection.
+    cached_version = 36;
+    assert(choose_version(18) == 36);
+    wu_restricted_plan_class = true;
+    // A closed Docker job must not cache NULL for later native jobs.
+    cached_version = 0;
+    assert(choose_version(18) == 0);
+    assert(choose_version(8) == 47);
+    // Nor can a cached compatible payload escape its batch or ID window.
+    cached_version = 47;
+    assert(choose_version(18) == 0);
+    assert(choose_version(8, 16898) == 0);
+    assert(choose_version(8, 16909) == 0);
+    cached_version = 36;
+    assert(choose_version(8) == 47);
+}
+"""
+        with tempfile.TemporaryDirectory() as d:
+            binary = str(Path(d) / "version-cache")
+            for patched in (False, True):
+                loop = module.VERSION_CACHE_ORIGINAL
+                if patched:
+                    loop = module.patch_version_source(loop)
+                subprocess.run(
+                    ["c++", "-std=c++17", "-x", "c++", "-", "-o", binary],
+                    input=source.replace("CACHE", loop), text=True,
+                    check=True, capture_output=True,
+                )
+                result = subprocess.run([binary], check=False)
+                self.assertEqual(result.returncode == 0, patched)
+
+    def test_version_cache_patch_fails_closed_on_source_drift_or_reapplication(self):
+        for source in ("", module.VERSION_CACHE_ORIGINAL * 2, module.VERSION_CACHE_PATCHED):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, "expected exactly 1"):
+                    module.patch_version_source(source)
+
+    def test_cli_validates_both_sources_before_writing(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan_class_spec.cpp"
+            version = Path(d) / "sched_version.cpp"
+            plan.write_text(SNIPPET)
+            version.write_text("source drift")
+            command = [
+                sys.executable, str(Path(module.__file__)),
+                "--source", str(plan), "--version-source", str(version),
+            ]
+            failed = subprocess.run(command, capture_output=True, text=True, check=False)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(plan.read_text(), SNIPPET)
+            version.write_text(module.VERSION_CACHE_ORIGINAL)
+            subprocess.run(command, capture_output=True, text=True, check=True)
+            self.assertIn(module.BATCH_CHECK_PATCHED, plan.read_text())
+            self.assertEqual(version.read_text(), module.VERSION_CACHE_PATCHED)
+
     @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
     def test_model_batches_are_exclusive_in_executable_scheduler_gate(self):
         source = r"""

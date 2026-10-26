@@ -1,5 +1,5 @@
 //! CPU NDLOCR-Lite behind `usnm-ocr-engine/1`. The unmodified upstream CLI
-//! loads the models per page, just as `ja-ocr/jaocr.py` does.
+//! loads the models per page, just as `ocr/ja-ocr/jaocr.py` does.
 mod alto;
 pub use alto::{ndlocr_to_alto, Geometry};
 

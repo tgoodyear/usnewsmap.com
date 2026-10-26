@@ -2,7 +2,7 @@
 """Host-9-only multi-crop (v2 bundle) re-run of an already-prepared Iris evaluation campaign (#736).
 
 Groups the crops of a prepared 100-crop campaign (iris-campaign.py prepare) into bundles for app
-version 1.1 so the bundle worker can be compared with the accepted 1.0 per-crop results on the same
+version 1.2 (bundles plus the persistent compile cache) so the bundle worker can be compared with the accepted 1.0 per-crop results on the same
 images. Evaluation only: never production OCR publication, never the gated 20,000-page set.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,39 +24,36 @@ spec.loader.exec_module(base)
 import bundle as b  # noqa: E402  (path set up by iris-campaign)
 import contract as c  # noqa: E402
 
-BATCH = 105
-VERSION_NUM = 110
+# The patched scheduler (scripts/boinc/patch-server-apple-gpu.py) sends docker_intel_opencl_4b work
+# only from batch 104, so bundles share the pilot's batch. Their names carry a suffix so they never
+# collide with a v1 workunit or with the unsendable batch-105 units of the first submission.
+BATCH = 104
+SUFFIX = f"b{BATCH}"
+VERSION_NUM = 102  # publish-appver.sh: 100 * major + minor (1.2: persistent compile cache)
 DEFAULT_SIZE = 16
 
 
-def prepare(source: Path, out: Path, image: str, size: int):
+def build(items, out: Path, image: str, size: int):
+    """items: dicts with crop_id, doc_id, width, height, page (JPEG bytes), reference, v1_id."""
     if not base.IMAGE.fullmatch(image):
         raise ValueError("expected immutable public worker image digest")
     if not 1 <= size <= b.MAX_CROPS:
         raise ValueError(f"bundle size must be 1..{b.MAX_CROPS}")
-    origin = base.load_campaign(source)
-    rows = origin["jobs"]
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".iris-bundle-", dir=out.parent) as temp:
         staged = Path(temp) / "campaign"
         (staged / "units").mkdir(parents=True)
         bundles = []
-        for start in range(0, len(rows), size):
-            group = rows[start:start + size]
-            crops = []
-            for row in group:
-                v1 = json.loads((source / "units" / row["id"] / "iris.json").read_text())
-                crops.append({"crop_id": v1["crop_id"], "doc_id": v1["doc_id"], "width": v1["box"][2],
-                              "height": v1["box"][3],
-                              "page": (source / "units" / row["id"] / "page.jpg").read_bytes()})
-            job, pack = b.make_bundle(crops=crops, worker_image=image, host_id=base.HOST_ID)
+        for start in range(0, len(items), size):
+            group = items[start:start + size]
+            job, pack = b.make_bundle(crops=group, worker_image=image, host_id=base.HOST_ID)
             unit = staged / "units" / job["id"]
             unit.mkdir()
             data = b.encode_bundle_job(job)
             base.durable(unit / "iris.json", data)
             base.durable(unit / "pages.pack", pack)
             bundles.append({"id": job["id"], "job_sha256": base.sha(data), "pack_sha256": job["pack_sha256"],
-                            "crops": [{"crop_id": r["crop_id"], "v1_id": r["id"], "reference": r["reference"]}
+                            "crops": [{"crop_id": r["crop_id"], "v1_id": r.get("v1_id"), "reference": r["reference"]}
                                       for r in group]})
         manifest = {"v": 2, "app": base.APP, "host_id": base.HOST_ID, "batch": BATCH, "worker_image": image,
                     "evaluation_only": True, "bundle_size": size, "bundles": bundles}
@@ -63,7 +61,56 @@ def prepare(source: Path, out: Path, image: str, size: int):
         if out.exists():
             raise FileExistsError("campaign already exists; inspect instead of overwriting")
         staged.rename(out)
-    return {"bundles": len(bundles), "crops": len(rows), "bundle_size": size, "campaign": str(out)}
+    return {"bundles": len(bundles), "crops": len(items), "bundle_size": size, "campaign": str(out)}
+
+
+def prepare(source: Path, out: Path, image: str, size: int):
+    """Regroup the crops of a prepared iris-campaign.py campaign."""
+    origin = base.load_campaign(source)
+    items = []
+    for row in origin["jobs"]:
+        v1 = json.loads((source / "units" / row["id"] / "iris.json").read_text())
+        items.append({"crop_id": v1["crop_id"], "doc_id": v1["doc_id"], "width": v1["box"][2], "height": v1["box"][3],
+                      "page": (source / "units" / row["id"] / "page.jpg").read_bytes(),
+                      "reference": row["reference"], "v1_id": row["id"]})
+    return build(items, out, image, size)
+
+
+def stage(url: str, sha256: str, subset: str, out: Path, image: str, size: int):
+    """Download the pinned OCR benchmark release (docs/ocr-bench.md), check it, and bundle one subset."""
+    import io
+    import tarfile
+    import urllib.request
+    if not url.startswith("https://github.com/tgoodyear/usnewsmap.com/releases/download/"):
+        raise ValueError("the benchmark archive must come from this repository's releases")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("--archive-sha256 must be 64 hex characters")
+    with urllib.request.urlopen(url, timeout=300) as response:
+        blob = response.read(256 * 1024 * 1024 + 1)
+    if len(blob) > 256 * 1024 * 1024 or base.sha(blob) != sha256:
+        raise ValueError("benchmark archive checksum mismatch")
+    files = {}
+    with tarfile.open(fileobj=io.BytesIO(blob)) as archive:
+        for member in archive.getmembers():
+            parts = Path(member.name).parts
+            if member.isreg() and len(parts) >= 2 and ".." not in parts and not member.name.startswith("/"):
+                files["/".join(parts[1:])] = member
+        manifest = json.loads(archive.extractfile(files["manifest.json"]).read())
+        members = manifest["subsets"][subset]["members"]
+        samples = {row["id"]: row for row in manifest["samples"]}
+        items = []
+        for crop_id in members:
+            row = samples[crop_id]
+            page = archive.extractfile(files[row["image"]["path"]]).read()
+            if base.sha(page) != row["image"]["sha256"]:
+                raise ValueError(f"{crop_id}: image checksum mismatch")
+            reference = archive.extractfile(files[row["reference"]["path"]]).read().decode("utf-8")
+            if base.sha(reference.encode("utf-8")) != row["reference"]["sha256"]:
+                raise ValueError(f"{crop_id}: reference checksum mismatch")
+            items.append({"crop_id": crop_id, "doc_id": row["provenance"]["page_id"], "width": row["image_width"],
+                          "height": row["image_height"], "page": page, "reference": reference,
+                          "v1_id": (row.get("legacy") or {}).get("job_id")})
+    return build(items, out, image, size)
 
 
 def load(root: Path):
@@ -87,14 +134,18 @@ def create_work_args(identity: str, crops: int):
     if not base.IDENTITY.fullmatch(identity):
         raise ValueError("invalid workunit identity")
     return [
-        "--appname", base.APP, "--wu_name", f"usnm_iris_{identity}", "--app_version_num", str(VERSION_NUM),
+        "--appname", base.APP, "--wu_name", wu_name(identity), "--app_version_num", str(VERSION_NUM),
         "--wu_template", "templates/usnm_iris_bundle_in", "--result_template", "templates/usnm_iris_bundle_out",
         "--target_host", str(base.HOST_ID), "--batch", str(BATCH),
         "--min_quorum", "1", "--target_nresults", "1", "--max_error_results", "1", "--max_total_results", "1",
         "--max_success_results", "1", "--rsc_fpops_est", str(crops * 10 ** 12), "--rsc_fpops_bound", "1e17",
         "--rsc_memory_bound", "9663676416", "--rsc_disk_bound", "17179869184", "--delay_bound", "259200",
-        f"iris_{identity}_pack", f"iris_{identity}_job",
+        f"iris_{identity}_pack_{SUFFIX}", f"iris_{identity}_job_{SUFFIX}",
     ]
+
+
+def wu_name(identity: str):
+    return f"usnm_iris_{identity}_{SUFFIX}"
 
 
 def submit(root: Path, project: Path, apply: bool = False):
@@ -130,7 +181,8 @@ def submit(root: Path, project: Path, apply: bool = False):
             else:
                 base.durable(registered, job_data)
                 registered.chmod(0o664)
-            for filename, physical in (("pages.pack", f"iris_{identity}_pack"), ("iris.json", f"iris_{identity}_job")):
+            for filename, physical in (("pages.pack", f"iris_{identity}_pack_{SUFFIX}"),
+                                       ("iris.json", f"iris_{identity}_job_{SUFFIX}")):
                 output = subprocess.run([str(project / "bin/dir_hier_path"), physical], cwd=project, check=True,
                                         capture_output=True, text=True).stdout.strip()
                 target = Path(output)
@@ -145,7 +197,7 @@ def submit(root: Path, project: Path, apply: bool = False):
                 else:
                     base.durable(target, raw)
                     target.chmod(0o664)
-            base.durable(unit / "submitting", base.encoded({"workunit": f"usnm_iris_{identity}", "host_id": base.HOST_ID}))
+            base.durable(unit / "submitting", base.encoded({"workunit": wu_name(identity), "host_id": base.HOST_ID}))
             subprocess.run([str(project / "bin/create_work"), *create_work_args(identity, len(row["crops"]))],
                            cwd=project, check=True)
             (unit / "submitting").rename(unit / "submitted")
@@ -155,13 +207,39 @@ def submit(root: Path, project: Path, apply: bool = False):
     return {"submitted": submitted, "previously_submitted": skipped, "host_id": base.HOST_ID}
 
 
+STRANDED = re.compile(r"usnm_iris_[0-9a-f]{64}")
+
+
+def cancel_stranded(root: Path, project: Path, apply: bool = False):
+    """Cancel the workunits of a batch-105 campaign: the scheduler can never send them."""
+    campaign = json.loads((root / "campaign.json").read_text())
+    if campaign.get("v") != 2 or campaign.get("batch") != 105 or campaign.get("host_id") != base.HOST_ID:
+        raise ValueError("only the stranded batch-105 bundle campaign can be cancelled")
+    project = project.resolve(strict=True)
+    names = []
+    for row in campaign["bundles"]:
+        unit = root / "units" / row["id"]
+        if (unit / "cancelled").exists() or not (unit / "submitted").exists():
+            continue
+        name = json.loads((unit / "submitted").read_text())["workunit"]
+        if not STRANDED.fullmatch(name) or name != f"usnm_iris_{row['id']}":
+            raise ValueError(f"{row['id']}: unexpected workunit name")
+        names.append((unit, name))
+    if not apply:
+        return {"dry_run": True, "workunits": [name for _, name in names]}
+    for unit, name in names:
+        subprocess.run([str(project / "bin/cancel_jobs"), "--name", name], cwd=project, check=True)
+        base.durable(unit / "cancelled", base.encoded({"workunit": name}))
+    return {"cancelled": len(names)}
+
+
 def collect(root: Path, seen: Path, v1_seen: Path | None = None):
     """Per-crop CER against the references; with --v1-seen also the text difference from the 1.0 result."""
     campaign = load(root)
     v1_text = {}
     for path in sorted(v1_seen.glob("*.json")) if v1_seen else []:
         result = json.loads(path.read_text())
-        if result.get("status") == "ok":
+        if result.get("v") == 1 and result.get("status") == "ok":
             v1_text[result["id"]] = result["text"]
     ids = {row["id"]: row for row in campaign["bundles"]}
     returned = {}
@@ -209,15 +287,26 @@ def collect(root: Path, seen: Path, v1_seen: Path | None = None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    stage = commands.add_parser("prepare")
-    stage.add_argument("--source", type=Path, required=True, help="a prepared iris-campaign.py campaign")
-    stage.add_argument("--out", type=Path, required=True)
-    stage.add_argument("--worker-image", required=True)
-    stage.add_argument("--bundle-size", type=int, default=DEFAULT_SIZE)
+    stage_cmd = commands.add_parser("prepare")
+    stage_cmd.add_argument("--source", type=Path, required=True, help="a prepared iris-campaign.py campaign")
+    stage_cmd.add_argument("--out", type=Path, required=True)
+    stage_cmd.add_argument("--worker-image", required=True)
+    stage_cmd.add_argument("--bundle-size", type=int, default=DEFAULT_SIZE)
+    release = commands.add_parser("stage")
+    release.add_argument("--archive-url", required=True)
+    release.add_argument("--archive-sha256", required=True)
+    release.add_argument("--subset", required=True)
+    release.add_argument("--out", type=Path, required=True)
+    release.add_argument("--worker-image", required=True)
+    release.add_argument("--bundle-size", type=int, default=DEFAULT_SIZE)
     send = commands.add_parser("submit")
     send.add_argument("--root", type=Path, required=True)
     send.add_argument("--project", type=Path, required=True)
     send.add_argument("--apply", action="store_true")
+    stranded = commands.add_parser("cancel-stranded")
+    stranded.add_argument("--root", type=Path, required=True)
+    stranded.add_argument("--project", type=Path, required=True)
+    stranded.add_argument("--apply", action="store_true")
     inspect = commands.add_parser("collect")
     inspect.add_argument("--root", type=Path, required=True)
     inspect.add_argument("--seen", type=Path, required=True)
@@ -225,8 +314,13 @@ def main():
     args = parser.parse_args()
     if args.command == "prepare":
         result = prepare(args.source, args.out, args.worker_image, args.bundle_size)
+    elif args.command == "stage":
+        result = stage(args.archive_url, args.archive_sha256, args.subset, args.out, args.worker_image,
+                       args.bundle_size)
     elif args.command == "submit":
         result = submit(args.root, args.project, args.apply)
+    elif args.command == "cancel-stranded":
+        result = cancel_stranded(args.root, args.project, args.apply)
     else:
         result = collect(args.root, args.seen, args.v1_seen)
     print(json.dumps(result, indent=2))

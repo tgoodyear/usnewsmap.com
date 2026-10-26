@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use usnm_ocr_contract::boinc;
 use usnm_store::ObjectStore;
 
+pub mod cli;
+
 /// Where the dispatch root lives in the container.
 pub const DISPATCH: &str = "dispatch";
 /// The largest object `get` copies (a scan at its limit).
@@ -134,11 +136,51 @@ pub enum Pulled {
 /// hand-off root `root`. A job the server already has must be the same job; one past
 /// reservation is left as it is, so a repeated run submits nothing.
 pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Result<Pulled> {
+    pull_with(store, root, id, None).await
+}
+
+/// The staged copy of a job's scan in `scans` (`keep/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`,
+/// as the controller's push puts it on the BOINC host, #1116), if one is there and is the page
+/// the job was exported with (size and sha256).
+fn staged_page(scans: &Path, job: &boinc::Job) -> anyhow::Result<Option<Vec<u8>>> {
+    let key = job.message.key()?;
+    for ext in ["jp2", "jpg"] {
+        let path = scans.join(format!(
+            "keep/{}/{}/{}/{}/{}.{ext}",
+            job.message.batch, key.lccn, key.date, key.edition, key.seq
+        ));
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() != job.scan.bytes {
+            continue;
+        }
+        let bytes = read(&path, boinc::MAX_SCAN)?;
+        if boinc::sha256(&bytes) == job.scan.sha256 {
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
+}
+
+/// [`pull`], taking the page from `scans` (the scans the controller pushed to the BOINC host)
+/// when it holds the job's page, and only otherwise from the container: an export on the
+/// BOINC host leaves the page out of the container, so it never travels through Azure.
+pub async fn pull_with(
+    store: &dyn ObjectStore,
+    root: &Path,
+    id: &str,
+    scans: Option<&Path>,
+) -> anyhow::Result<Pulled> {
     let target = dir(root, id)?;
     let _lock = Lock::take(root)?;
     let src = join(DISPATCH, &format!("jobs/{id}"));
     let mut got = Vec::new();
     for (name, max) in JOB_FILES {
+        if name == "page" {
+            got.push((name, Vec::new()));
+            continue;
+        }
         let bytes = store
             .get(&format!("{src}/{name}"))
             .await?
@@ -146,22 +188,18 @@ pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Res
         ensure!(bytes.len() <= max, "{src}/{name} is over its size limit");
         got.push((name, bytes));
     }
+    let request: boinc::Job = serde_json::from_slice(&got[1].1)?;
     let incoming: crate::Record = serde_json::from_slice(&got[2].1)?;
     incoming.job.validate()?;
     ensure!(
         incoming.job.id == id && incoming.job.identity()? == id,
         "the container's record is not job {id}"
     );
-    let request: boinc::Job = serde_json::from_slice(&got[1].1)?;
     ensure!(
         request == incoming.job,
         "the container's request and record differ"
     );
-    let page = &got[0].1;
-    ensure!(
-        page.len() as u64 == request.scan.bytes && boinc::sha256(page) == request.scan.sha256,
-        "the container's page is not the one exported (size or sha256 differ)"
-    );
+    // The journals first: a job the server has past reservation needs no page at all.
     if target.join("record.json").exists() {
         let old = load(root, id)?;
         ensure!(
@@ -172,6 +210,36 @@ pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Res
             return Ok(Pulled::Already(old.stage));
         }
     }
+    let is_page = |bytes: &[u8]| {
+        bytes.len() as u64 == request.scan.bytes && boinc::sha256(bytes) == request.scan.sha256
+    };
+    // The page: the staged scan, else the copy the server already holds for this job (a
+    // retry after the staged scan was pruned), else the container's.
+    let mut page = match scans {
+        Some(dir) => staged_page(dir, &request)?,
+        None => None,
+    };
+    if page.is_none() && target.join("page").is_file() {
+        page = Some(read(&target.join("page"), boinc::MAX_SCAN)?).filter(|b| is_page(b));
+    }
+    let page = match page {
+        Some(bytes) => bytes,
+        None => {
+            let bytes = store
+                .get(&format!("{src}/page"))
+                .await?
+                .with_context(|| format!("{src}/page is not in the hand-off container"))?;
+            ensure!(
+                bytes.len() <= boinc::MAX_SCAN,
+                "{src}/page is over its size limit"
+            );
+            bytes
+        }
+    };
+    ensure!(
+        is_page(&page),
+        "the container's page is not the one exported (size or sha256 differ)"
+    );
     // Only a reservation that export completed can be submitted: a prepared entry's ledger
     // reservation may have been refused.
     ensure!(
@@ -181,7 +249,13 @@ pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Res
     );
     let mut record = incoming;
     record.error = None;
-    crate::atomic(&target.join("page"), page)?;
+    // A page taken out of an OCR bundle (#1059) stays marked, so it is only submitted alone.
+    if target.join("record.json").exists() {
+        let old = load(root, id)?;
+        record.unbundled = old.unbundled;
+        record.error = old.error;
+    }
+    crate::atomic(&target.join("page"), &page)?;
     crate::atomic(&target.join("request.json"), &got[1].1)?;
     crate::save(root, &record)?;
     Ok(Pulled::Reserved)
@@ -198,30 +272,90 @@ pub fn spool_names(workunit: &str) -> [(String, usize); 5] {
     ]
 }
 
+/// The marker `spool-out` leaves for a page that failed in its OCR bundle and went back to
+/// `reserved` on the server (#1059): the hand-off `collect` has nothing to do for it.
+pub const REQUEUED: &str = "requeued";
+
+/// What `put_spool` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spooled {
+    /// It wrote this many spool files.
+    Files(usize),
+    /// The page failed in its bundle and was put back to `reserved` on the server, to be
+    /// submitted alone; it wrote the `requeued` marker.
+    Requeued(String),
+}
+
 /// Server side: writes job `id`'s spool files from `spool` to `spool/<id>/`, the canonical
 /// result's host id (when known) to `spool/<id>/host_id`, and `trust` (when given) to
-/// `gold/trust.json`. Returns how many spool files it wrote.
+/// `gold/trust.json`. With the server's hand-off `root`, a page submitted in an OCR bundle
+/// (#1059) gets its own share of the bundle's result, under the names a single-page unit's
+/// would have; or, if it failed in the bundle, it is requeued.
 pub async fn put_spool(
     store: &dyn ObjectStore,
+    root: Option<&Path>,
     spool: &Path,
     id: &str,
     host_id: Option<u64>,
     trust: Option<&Path>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Spooled> {
     ensure!(boinc::is_sha256(id), "invalid job id");
+    let bundled = match root {
+        // A job with no server journal here was never bundled.
+        Some(root) if dir(root, id)?.join("record.json").exists() => {
+            load(root, id)?.bundle.is_some()
+        }
+        Some(_) => false,
+        None => false,
+    };
     let mut n = 0;
-    for (name, max) in spool_names(&format!("usnm_{id}")) {
-        let path = spool.join(&name);
-        if path.exists() {
-            let bytes = read(&path, max).with_context(|| path.display().to_string())?;
-            store
-                .put(
-                    &format!("spool/{id}/{name}"),
-                    bytes,
-                    "application/octet-stream",
-                )
-                .await?;
-            n += 1;
+    if let (true, Some(root)) = (bundled, root) {
+        use usnm_ocr_contract::boinc::bundle::PageOutput;
+        match crate::bundle::spool::split(root, spool, id)? {
+            PageOutput::Ok { result, text, alto } => {
+                let wu = format!("usnm_{id}");
+                for (name, bytes) in [
+                    (format!("{wu}__file_result.json"), result),
+                    (format!("{wu}__file_text.txt"), text),
+                    (format!("{wu}__file_layout.xml"), alto),
+                ] {
+                    store
+                        .put(
+                            &format!("spool/{id}/{name}"),
+                            bytes,
+                            "application/octet-stream",
+                        )
+                        .await?;
+                    n += 1;
+                }
+            }
+            PageOutput::Failed(why) => {
+                let bundle = crate::bundle::spool::requeue(root, id, &why)?;
+                let note = format!("{bundle}\n{why}\n");
+                store
+                    .put(
+                        &format!("spool/{id}/{REQUEUED}"),
+                        note.into_bytes(),
+                        "text/plain",
+                    )
+                    .await?;
+                return Ok(Spooled::Requeued(why));
+            }
+        }
+    } else {
+        for (name, max) in spool_names(&format!("usnm_{id}")) {
+            let path = spool.join(&name);
+            if path.exists() {
+                let bytes = read(&path, max).with_context(|| path.display().to_string())?;
+                store
+                    .put(
+                        &format!("spool/{id}/{name}"),
+                        bytes,
+                        "application/octet-stream",
+                    )
+                    .await?;
+                n += 1;
+            }
         }
     }
     ensure!(
@@ -244,16 +378,23 @@ pub async fn put_spool(
             .put("gold/trust.json", read(t, MAX_TRUST)?, "application/json")
             .await?;
     }
-    Ok(n)
+    Ok(Spooled::Files(n))
+}
+
+/// What the hand-off container holds for one job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spool {
+    /// Its spool files (now in `spool`) and the host id the server recorded, if any.
+    Files(Option<u64>),
+    /// Only the `requeued` marker: the page failed in its OCR bundle and goes to BOINC again
+    /// alone, so there is nothing to collect yet.
+    Requeued,
 }
 
 /// Hand-off job side: copies job `id`'s spool into `spool` (only the job's own spool names)
-/// and returns the host id the server recorded, if any.
-pub async fn get_spool(
-    store: &dyn ObjectStore,
-    id: &str,
-    spool: &Path,
-) -> anyhow::Result<Option<u64>> {
+/// and returns the host id the server recorded, if any. Spool files win over a `requeued`
+/// marker: a requeued page's own result arrives later under the same prefix.
+pub async fn get_spool(store: &dyn ObjectStore, id: &str, spool: &Path) -> anyhow::Result<Spool> {
     ensure!(boinc::is_sha256(id), "invalid job id");
     let mut n = 0;
     for (name, max) in spool_names(&format!("usnm_{id}")) {
@@ -263,15 +404,18 @@ pub async fn get_spool(
             n += 1;
         }
     }
+    if n == 0 && store.exists(&format!("spool/{id}/{REQUEUED}")).await? {
+        return Ok(Spool::Requeued);
+    }
     ensure!(n > 0, "no spool for job {id} in the hand-off container");
     match store.get(&format!("spool/{id}/host_id")).await? {
-        Some(b) => Ok(Some(
+        Some(b) => Ok(Spool::Files(Some(
             std::str::from_utf8(&b)?
                 .trim()
                 .parse()
                 .context("bad host_id")?,
-        )),
-        None => Ok(None),
+        ))),
+        None => Ok(Spool::Files(None)),
     }
 }
 

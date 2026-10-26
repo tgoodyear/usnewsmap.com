@@ -273,15 +273,17 @@ impl Moves {
                         continue;
                     }
                     for (date, pages) in dates {
-                        let day = day_number(
-                            date.parse()
-                                .with_context(|| format!("a moved page's date `{date}`"))?,
-                        );
+                        let page_date: chrono::NaiveDate = date
+                            .parse()
+                            .with_context(|| format!("a moved page's date `{date}`"))?;
+                        let day = day_number(page_date);
+                        // The place the page is counted in on its date.
+                        let place_id = title.place_id_on(page_date);
                         let n = pages.len() as u32;
                         if let Some(from) = &from {
                             let count = out
                                 .get_mut(from)
-                                .and_then(|places| places.get_mut(&title.place_id))
+                                .and_then(|places| places.get_mut(place_id))
                                 .and_then(|days| days.get_mut(&day))
                                 .filter(|c| **c >= n);
                             let Some(count) = count else {
@@ -295,7 +297,7 @@ impl Moves {
                         if !to.is_empty() {
                             *out.entry(to.clone())
                                 .or_default()
-                                .entry(title.place_id.clone())
+                                .entry(place_id.to_owned())
                                 .or_default()
                                 .entry(day)
                                 .or_default() += n;
@@ -541,5 +543,71 @@ mod tests {
             .record(&annotated("b1", "1890-01-02", 2, &["ger", "eng"], GERMAN))
             .unwrap();
         assert!(too_many.apply(&by_language, &catalog).is_err());
+    }
+
+    /// sn12345678 is in p2 up to 1890-01-01 and in p1 from 1890-01-02.
+    fn moved_catalog() -> Catalog {
+        let place = |id: &str, ordinal: u32| {
+            serde_json::from_value::<crate::catalog::Place>(json!({
+                "id": id, "ordinal": ordinal, "name": id, "state": "Ohio",
+                "lat": 39.1, "lon": -84.5, "precision": "city",
+            }))
+            .unwrap()
+        };
+        let title: Title = serde_json::from_value(json!({
+            "lccn": "sn12345678", "name": "x", "ordinal": 1, "place_id": "p1", "state": "Ohio",
+            "languages": ["ger", "eng"],
+            "place_periods": [
+                {"place_id": "p2", "to": "1890-01-01"},
+                {"place_id": "p1", "from": "1890-01-02"},
+            ],
+        }))
+        .unwrap();
+        Catalog::new(vec![title], vec![place("p1", 0), place("p2", 1)]).unwrap()
+    }
+
+    #[test]
+    fn a_moved_page_leaves_and_joins_the_sets_of_the_place_of_its_date() {
+        let catalog = moved_catalog();
+        let day = |d: &str| day_number(d.parse().unwrap());
+        let both = vec!["eng".to_owned(), "ger".to_owned()];
+        // The title-language counts: two pages on each of the two days, in
+        // the place each day is in.
+        let by_language = BTreeMap::from([(
+            both.clone(),
+            BTreeMap::from([
+                ("p1".to_owned(), BTreeMap::from([(day("1890-01-02"), 2)])),
+                ("p2".to_owned(), BTreeMap::from([(day("1890-01-01"), 2)])),
+            ]),
+        )]);
+        let mut m = Moves::new();
+        for d in [
+            annotated("b1", "1890-01-01", 1, &["ger", "eng"], GERMAN),
+            annotated("b1", "1890-01-02", 1, &["ger", "eng"], GERMAN),
+        ] {
+            m.record(&d).unwrap();
+        }
+        let got = m.apply(&by_language, &catalog).unwrap();
+        let german = vec!["ger".to_owned()];
+        assert_eq!(
+            got[&both],
+            BTreeMap::from([
+                ("p1".to_owned(), BTreeMap::from([(day("1890-01-02"), 1)])),
+                ("p2".to_owned(), BTreeMap::from([(day("1890-01-01"), 1)])),
+            ])
+        );
+        assert_eq!(
+            got[&german],
+            BTreeMap::from([
+                ("p1".to_owned(), BTreeMap::from([(day("1890-01-02"), 1)])),
+                ("p2".to_owned(), BTreeMap::from([(day("1890-01-01"), 1)])),
+            ])
+        );
+        // The counts of the title's one place can't hold a page of the other.
+        let wrong = BTreeMap::from([(
+            both,
+            BTreeMap::from([("p1".to_owned(), BTreeMap::from([(day("1890-01-01"), 2)]))]),
+        )]);
+        assert!(m.apply(&wrong, &catalog).is_err());
     }
 }
