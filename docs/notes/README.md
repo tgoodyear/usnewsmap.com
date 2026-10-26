@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                         |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| 2026-10-25 | [Decade pruning: production acceptance](2026-10-25-decade-pruning-acceptance.md)                                | indexing, operations | `pages-v20261022-1`, live Azure searcher and bounded API benchmarks |
 | 2026-10-19 | [`tank` disk replacement options and scan staging](2026-10-19-tank-replacement-and-scan-access.md)              | operations           | Read-only `pve-big` pool and SMART inventory; design only           |
 | 2026-10-18 | [Moving cold storage on-prem: plan](2026-10-18-onprem-cold-storage.md)                                          | operations           | Azure storage inventory of 18 October; read-only on-prem inventory  |
 | 2026-10-18 | [OCR benchmark candidate feasibility (EffOCR, CHURRO, Calamari)](2026-10-18-ocr-bench-candidate-feasibility.md) | ocr                  | `ocr-bench-v1.0.0` smoke subsets, local CPU                         |

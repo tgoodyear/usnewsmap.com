@@ -478,6 +478,24 @@ A searcher restart reports `cached = 0` and counts every attempted search in `co
 
 **Measuring cold searches under load.** `scripts/ops/load-cold-searches.py [--base-url URL] [--levels 1,2,4,10]` runs ten searches from the benchmark classes (05 §5.8) at each concurrency level, waiting out `202`s and `503 busy` as the web app does. Each pass moves the searches' end dates, so the API's caches can't answer them; Quickwit's own caches warm after the first pass, which it reports apart. Per level it prints throughput and its speedup over concurrency 1, the median and slowest time to a result, the mean backend time, and the `202`s, queue places and busy answers seen. The speedup says what limits a cold search: if it keeps growing with the slots (`USNM_COMPUTE_CONCURRENCY`), the searcher mostly waits on Blob reads and more slots would help; if it stops near 2, the searcher's two vCPUs are the limit. Run it against staging, or against production once at a quiet hour; it sends the same requests as a burst of real visitors would.
 
+**Post-rebuild acceptance (25 October 2026, #123).** On
+`pages-v20261022-1`, the main index has 393 decade-partitioned splits and
+23,740,914 documents. A bounded run at concurrency 1 on the live
+3.75-vCPU / 7.5-GiB searcher completed all 20 load-script searches
+without failures, 202s, busy responses or rate limits: initial/next
+pass medians were 1.20 / 1.35 s, throughput 0.581 / 0.572 searches/s.
+The three monthly benchmark searches took 1.09–4.05 s on their first
+request and 0.12–0.16 s on repeat. No caches were cleared or services
+restarted; these are not cold-start measurements or a controlled
+comparison with the older runs below. The [acceptance note](../notes/2026-10-25-decade-pruning-acceptance.md)
+records the layout, method, individual timings and cache limitations.
+On the serving searcher, identical 1918 `influenza` day-range queries
+returned 58,353 hits with and without the decade tag, while successful
+targeted-split counter deltas fell from 393 to 88 (77.6% fewer).
+Root/leaf counters advanced exactly once per query and stayed stable
+in adjacent idle checks. This establishes request-time pruning for
+that case; the ordered pair is not a controlled latency comparison.
+
 **First run (production, 2026-10-05, index `pages-v20261003-1`, 23.7M pages, searcher 2 vCPU / 4 GiB):**
 
 | Searches at once  | Searches/s | Speedup | Median s | Slowest s | Mean backend s | Failed |
