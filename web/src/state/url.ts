@@ -1,10 +1,11 @@
 // The URL is the source of truth for the view (07 §7.5): every state is a
 // permalink, and only non-default values are written.
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { SearchParams } from "../api/client";
 import type { BucketUnit, HitSort, Mode } from "../api/types";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
+import { queryForPath, searchPath, TITLES } from "../route";
 
 export type Layer = "points" | "heat" | "states";
 /**
@@ -214,6 +215,22 @@ export function serializeView(v: ViewState): string {
   return out ? `?${out}` : "";
 }
 
+export function parseViewUrl(url: string): ViewState {
+  const origin = "https://usnewsmap.com";
+  const { pathname, search } = new URL(url.startsWith("/") ? `${origin}${url}` : url, origin);
+  const view = parseView(search);
+  return { ...view, q: queryForPath(pathname) ?? view.q };
+}
+
+/** Search text belongs in the path; optional filters remain query parameters. */
+export function viewUrl(v: ViewState): string {
+  const path = searchPath(v.q);
+  const params = new URLSearchParams(serializeView(v));
+  if (path !== "/") params.delete("q");
+  const search = params.toString();
+  return `${path}${search ? `?${search}` : ""}`;
+}
+
 /** The search a view asks the API for (the rest of the view is display state). */
 export function searchParams(v: ViewState): SearchParams {
   return {
@@ -238,18 +255,25 @@ function subscribe(cb: () => void): () => void {
   return () => window.removeEventListener("popstate", cb);
 }
 
-const getSearch = () => window.location.search;
+const getUrl = () => window.location.pathname + window.location.search;
 
 /**
  * The view state and a setter. `push` adds a history entry (new searches);
  * everything else (scrubbing, panning) replaces the current one.
  */
 export function useView(): [ViewState, (patch: Partial<ViewState>, push?: boolean) => void] {
-  const search = useSyncExternalStore(subscribe, getSearch, getSearch);
-  const view = parseView(search);
+  const url = useSyncExternalStore(subscribe, getUrl, getUrl);
+  const view = parseViewUrl(url);
+  useEffect(() => {
+    document.title = view.q ? `${view.q} · US News Map` : TITLES.search;
+    const canonical = `https://usnewsmap.com${searchPath(view.q)}`;
+    document.querySelector('link[rel="canonical"]')?.setAttribute("href", canonical);
+    document.querySelector('meta[property="og:url"]')?.setAttribute("content", canonical);
+    document.querySelector('meta[property="og:title"]')?.setAttribute("content", document.title);
+  }, [view.q]);
   const set = useCallback((patch: Partial<ViewState>, push = false) => {
-    const next = { ...parseView(window.location.search), ...patch };
-    const url = `${window.location.pathname}${serializeView(next)}`;
+    const next = { ...parseViewUrl(getUrl()), ...patch };
+    const url = viewUrl(next);
     if (push) window.history.pushState(null, "", url);
     else window.history.replaceState(null, "", url);
     window.dispatchEvent(new PopStateEvent("popstate"));

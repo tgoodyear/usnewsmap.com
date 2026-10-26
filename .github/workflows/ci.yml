@@ -1002,12 +1002,30 @@ jobs:
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: scripts/ci/roll-api.sh
-      # Tell search engines about the sitemap's pages once the new revision
-      # serves them. The script only warns, so a problem never fails the deploy.
+      - name: Restore the last successful IndexNow submission
+        if: steps.head.outputs.current == 'true' && env.APP != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/indexnow/sitemap.sha256
+          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: indexnow-v1-${{ matrix.environment }}-
+      # Submit every live sitemap URL only when the URL set changes. Record
+      # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
+        id: indexnow
         if: steps.head.outputs.current == 'true' && env.APP != ''
         continue-on-error: true
+        env:
+          INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
         run: scripts/ci/indexnow.sh
+      - name: Save the successful IndexNow submission
+        if: steps.indexnow.outputs.submitted == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/indexnow/sitemap.sha256
+          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
       # A build provenance attestation for the API image, for an origin that
       # checks it before it runs the image (#955), as hosts check the OCR
       # worker release's. Its subject is the

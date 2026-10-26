@@ -16,6 +16,8 @@ describe("pageFor", () => {
     expect(pageFor("/credits/")).toBe("credits");
     expect(pageFor("/privacy")).toBe("privacy");
     expect(pageFor("/privacy/")).toBe("privacy");
+    expect(pageFor("/search/gold")).toBe("search");
+    expect(pageFor("/search/%22cross%20of%20gold%22/")).toBe("search");
   });
 
   it("finds nothing anywhere else", () => {
@@ -25,7 +27,10 @@ describe("pageFor", () => {
       "/status/x",
       "/datasets/x",
       "/dataset",
-      "/search/gold",
+      "/search/",
+      "/search/gold/extra",
+      "/search/%FF",
+      "/search/%",
       "/privacy/x",
       "/credits/x",
     ]) {
