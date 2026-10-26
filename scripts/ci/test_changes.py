@@ -171,6 +171,14 @@ class Quickwit(unittest.TestCase):
         self.change = lambda: self.touch("crates/usnm-core/src/lib.rs")
         self.assertTrue(self.quickwit())
 
+    def test_an_api_integration_test_does_not_run_quickwit(self):
+        self.change = lambda: self.touch("crates/usnm-api/tests/api/serving.rs")
+        self.assertFalse(self.quickwit())
+
+    def test_a_quickwit_target_test_runs_it(self):
+        self.change = lambda: self.touch("crates/usnm-search/tests/quickwit_parity.rs")
+        self.assertTrue(self.quickwit())
+
     def test_a_boinc_only_change_runs_no_image_or_e2e(self):
         self.change = lambda: self.touch("crates/usnm-boinc/src/lib.rs")
         o = self.outputs()
