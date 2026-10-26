@@ -4,7 +4,7 @@
 # (images/base, built only when it changes); this layer adds our scripts and templates.
 #
 #   docker build -f contrib-compute/images/server/Containerfile \
-#     --build-arg BASE_IMAGE=REGISTRY/usnm-boinc-base:<tag> contrib-compute
+#     --build-arg BASE_IMAGE=REGISTRY/usnm-boinc-base:<tag> .
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 # Debian security updates at build time (#969): the image this builds on is pinned, so its
@@ -27,16 +27,20 @@ RUN echo "security refresh $SECURITY_REFRESH" \
  && apache_version="$(dpkg-query -W -f='${Version}' apache2)" \
  && if ! dpkg --compare-versions "$apache_version" ge "$APACHE_FLOOR"; then \
       echo "apache2 $apache_version is older than $APACHE_FLOOR" >&2; exit 1; fi
-COPY images/server/lib.sh images/server/secrets.sh images/server/entrypoint.sh images/server/work-volume.py images/server/apache-project.conf.template \
-     images/server/supervisord.conf images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
-COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
-COPY images/server/gold-mirror-config.py /usr/local/lib/usnm-boinc/
-COPY images/server/batch-inventory.py /usr/local/lib/usnm-boinc/
-COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
-COPY boinc/gold-engine-platforms.json /usr/local/lib/usnm-boinc/
+COPY contrib-compute/images/server/lib.sh contrib-compute/images/server/secrets.sh contrib-compute/images/server/entrypoint.sh \
+     contrib-compute/images/server/work-volume.py contrib-compute/images/server/apache-project.conf.template \
+     contrib-compute/images/server/supervisord.conf contrib-compute/images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
+COPY contrib-compute/images/server/bridge-job.sh /usr/local/bin/bridge-job
+COPY contrib-compute/images/server/gold-mirror-config.py /usr/local/lib/usnm-boinc/
+COPY contrib-compute/images/server/batch-inventory.py /usr/local/lib/usnm-boinc/
+COPY contrib-compute/boinc/config.xml.template contrib-compute/boinc/project.xml contrib-compute/boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
+COPY contrib-compute/boinc/gold-engine-platforms.json /usr/local/lib/usnm-boinc/
+COPY web/public/.well-known /usr/local/lib/usnm-boinc/well-known
 # Project web pages (about.php, the front-page description), installed by entrypoint.sh --serve
-COPY boinc/html /usr/local/lib/usnm-boinc/html
-COPY images/server/prepare-prefs.py images/server/refresh-scheduler.py images/server/refresh-plan-policy.py images/server/refresh-project-code.py /usr/local/lib/usnm-boinc/
+COPY contrib-compute/boinc/html /usr/local/lib/usnm-boinc/html
+COPY contrib-compute/images/server/prepare-prefs.py contrib-compute/images/server/refresh-scheduler.py \
+     contrib-compute/images/server/refresh-plan-policy.py contrib-compute/images/server/refresh-project-code.py \
+     /usr/local/lib/usnm-boinc/
 RUN python3 /usr/local/lib/usnm-boinc/prepare-prefs.py
 # Debian's default site sets its own DocumentRoot, which would serve its page at /.
 RUN a2dissite -q 000-default \

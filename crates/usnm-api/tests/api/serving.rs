@@ -404,6 +404,32 @@ async fn serves_the_site_alongside_the_api() {
         "public, max-age=3600"
     );
 
+    let well_known = site_dir_of(&s).join(".well-known");
+    std::fs::create_dir_all(&well_known).unwrap();
+    let public = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/public/.well-known");
+    for name in [
+        "security.txt",
+        "trust.txt",
+        "gpc.json",
+        "assetlinks.json",
+        "dnt-policy.txt",
+    ] {
+        std::fs::copy(public.join(name), well_known.join(name)).unwrap();
+        let (status, h, body) = get_site(&s, &format!("/.well-known/{name}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert!(!body.is_empty(), "{name}");
+        let media_type = if name.ends_with(".json") {
+            "application/json"
+        } else {
+            "text/plain"
+        };
+        assert!(
+            header_str(&h, header::CONTENT_TYPE).starts_with(media_type),
+            "{name}: {}",
+            header_str(&h, header::CONTENT_TYPE)
+        );
+    }
+
     // A file path with a trailing slash is a missing file, not an app route.
     let (status, h, body) = get_site(&s, "/favicon.svg/", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
