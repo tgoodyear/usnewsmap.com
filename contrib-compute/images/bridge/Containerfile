@@ -75,6 +75,7 @@ COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-surve
      scripts/ocr-survey/altotext.py scripts/ocr-survey/transcription.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
 COPY ocr/ja-ocr/jaocr.py ocr/ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ocr/ja-ocr/
 COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
+COPY fixtures/ocr-gold/bundle-v2.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v2.lock.json
 COPY fixtures/ocr-gold/selections/ /usr/local/lib/usnm-boinc/gold/selections/
 COPY contrib-compute/images/bridge/gold-bundle.sh /usr/local/lib/usnm-boinc/gold-bundle.sh
 # The hand-off job (#469): the same image, run in the main environment with this command.

@@ -332,7 +332,8 @@ jobs:
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/transcription.py --help > /dev/null &&
             test -s /usr/local/lib/usnm-boinc/gold/selections/transcription-audited-20261015.json &&
             cd /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey && python3 -c "import gold, crops, altotext, locfetch, transcription" &&
-            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json'
+            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json &&
+            test -s /usr/local/lib/usnm-boinc/gold/bundle-v2.lock.json'
 
   # The page-language detector on text of known language (05 §5.5.8): behind
   # #[ignore], so the rust job doesn't run it.
