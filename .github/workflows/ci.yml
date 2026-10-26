@@ -304,7 +304,7 @@ jobs:
       - name: The server image builds on the base
         run: |
           docker buildx build --builder default --load -t usnm-boinc-server:check \
-            -f contrib-compute/images/server/Containerfile --build-arg BASE_IMAGE=usnm-boinc-base:check contrib-compute
+            -f contrib-compute/images/server/Containerfile --build-arg BASE_IMAGE=usnm-boinc-base:check .
       - name: The server image has the stock tools and daemons
         run: scripts/ci/check-boinc-server-image.sh --image usnm-boinc-server:check
       - name: Record the image id
@@ -327,12 +327,13 @@ jobs:
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
           # The gold-bundle step's tools (docs/boinc/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
-            bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"11.3.0\", PIL.__version__" &&
+            bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"13.0.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/transcription.py --help > /dev/null &&
             test -s /usr/local/lib/usnm-boinc/gold/selections/transcription-audited-20261015.json &&
             cd /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey && python3 -c "import gold, crops, altotext, locfetch, transcription" &&
-            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json'
+            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json &&
+            test -s /usr/local/lib/usnm-boinc/gold/bundle-v2.lock.json'
 
   # The page-language detector on text of known language (05 §5.5.8): behind
   # #[ignore], so the rust job doesn't run it.
@@ -709,7 +710,7 @@ jobs:
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
-          python3 -m pip install --quiet --break-system-packages pillow==11.3.0
+          python3 -m pip install --quiet --break-system-packages pillow==13.0.0
           python3 -m unittest -v scripts/ocr-survey/test_gold.py
           python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py -v
       - name: The Rust scorer's golden files match gold.py (#457)
@@ -718,7 +719,7 @@ jobs:
       - name: The OCR node scripts pass their image tests and shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
-          python3 -m pip install --quiet --break-system-packages pillow==11.3.0
+          python3 -m pip install --quiet --break-system-packages pillow==13.0.0
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
           shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
@@ -1001,12 +1002,30 @@ jobs:
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: scripts/ci/roll-api.sh
-      # Tell search engines about the sitemap's pages once the new revision
-      # serves them. The script only warns, so a problem never fails the deploy.
+      - name: Restore the last successful IndexNow submission
+        if: steps.head.outputs.current == 'true' && env.APP != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/indexnow/sitemap.sha256
+          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: indexnow-v1-${{ matrix.environment }}-
+      # Submit every live sitemap URL only when the URL set changes. Record
+      # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
+        id: indexnow
         if: steps.head.outputs.current == 'true' && env.APP != ''
         continue-on-error: true
+        env:
+          INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
         run: scripts/ci/indexnow.sh
+      - name: Save the successful IndexNow submission
+        if: steps.indexnow.outputs.submitted == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/indexnow/sitemap.sha256
+          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
       # A build provenance attestation for the API image, for an origin that
       # checks it before it runs the image (#955), as hosts check the OCR
       # worker release's. Its subject is the

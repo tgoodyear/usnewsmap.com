@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import examples from "../src/examples.json" with { type: "json" };
+import { searchPath } from "../src/route";
 
 // SEO smoke tests: the head that search engines and link previews read, the
 // page structure once the app renders, and what the API sends crawlers.
@@ -71,6 +73,28 @@ test("the static description is in the HTML before the app runs", async ({ reque
   const html = await (await request.get("/")).text();
   expect(html).toContain("Chronicling America");
   expect(html).toContain('href="https://goodyeartechnical.com/"');
+});
+
+test("curated searches expose top-city results and homepage links without JavaScript", async ({ browser }) => {
+  test.skip(!withApi, "the API renders the search preview");
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${process.env.PW_BASE_URL}/`);
+    const home = page.getByRole("navigation", { name: "Common newspaper searches" });
+    await expect(home.getByRole("link", { name: '"cross of gold"', exact: true })).toHaveAttribute(
+      "href",
+      "/search/%22cross%20of%20gold%22",
+    );
+    await home.getByRole("link", { name: '"cross of gold"', exact: true }).click();
+    const samples = page.getByRole("region", { name: "Sample results" });
+    await expect(samples).toContainText("has the most hits");
+    await expect(samples.locator("ol > li")).toHaveCount(10);
+    await expect(samples).toContainText("cross of gold");
+    await expect(samples).toContainText("1896-07-18");
+  } finally {
+    await context.close();
+  }
 });
 
 test("an unknown path shows the not-found page", async ({ page }) => {
@@ -154,12 +178,24 @@ test("the API's OpenAPI document is served on the site's origin too", async ({ r
   expect(Object.keys(doc.paths)).toContain("/v1/aggregate");
 });
 
-test("sitemap.xml lists the home page and the privacy page", async ({ request }) => {
+test("sitemap.xml lists the home page, privacy and curated base searches", async ({ request }) => {
   const res = await request.get("/sitemap.xml");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/xml/);
   const locs = [...(await res.text()).matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  expect(locs).toEqual([`${SITE}/`, `${SITE}/privacy`]);
+  expect(locs).toEqual([
+    `${SITE}/`,
+    `${SITE}/privacy`,
+    ...[...new Set(examples.map(({ view }) => searchPath(view.q)))].map((path) => `${SITE}${path}`),
+  ]);
+  if (withApi) {
+    for (const loc of locs) {
+      const page = await request.get(loc!.replace(SITE, ""));
+      expect(page.status(), loc).toBe(200);
+      expect(page.headers()["x-robots-tag"], loc).toBeUndefined();
+      expect(await page.text(), loc).toContain(`<link rel="canonical" href="${loc}" />`);
+    }
+  }
 });
 
 test("the privacy page renders, with links to it from the other pages", async ({ page }) => {
@@ -209,13 +245,19 @@ test.describe("what the API tells crawlers", () => {
   });
 
   test("search permalinks and the dataset details are noindex; the home page is not", async ({ request }) => {
-    for (const url of ["/?q=x", "/datasets"]) {
+    for (const url of ["/search/x", "/search/whigs?tab=table", "/datasets"]) {
       const res = await request.get(url);
       expect(res.status(), url).toBe(200);
       expect(res.headers()["x-robots-tag"], url).toBe("noindex");
     }
     const home = await request.get("/");
     expect(home.headers()["x-robots-tag"]).toBeUndefined();
+  });
+
+  test("legacy searches redirect without losing filters", async ({ request }) => {
+    const res = await request.get("/?q=%22cross+of+gold%22&tab=table", { maxRedirects: 0 });
+    expect(res.status()).toBe(301);
+    expect(res.headers()["location"]).toBe("/search/%22cross%20of%20gold%22?tab=table");
   });
 
   test("the privacy page is indexable and names itself in the head", async ({ request }) => {

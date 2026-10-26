@@ -12,16 +12,7 @@ const PAGE: usize = 1000;
 /// `(running, queued)` merge operations, from the node's Prometheus metrics.
 /// Quickwit registers the gauges with the first merge, so a missing one is 0.
 pub fn merge_gauges(metrics: &str) -> (u64, u64) {
-    let gauge = |name: &str| {
-        metrics
-            .lines()
-            .find_map(|line| {
-                let value = line.strip_prefix(name)?.strip_prefix(' ')?;
-                let v: f64 = value.trim().parse().ok()?;
-                (v >= 0.0).then_some(v as u64)
-            })
-            .unwrap_or(0)
-    };
+    let gauge = |name: &str| series(metrics, name).unwrap_or(0);
     (
         gauge("quickwit_indexing_ongoing_merge_operations"),
         gauge("quickwit_indexing_pending_merge_operations"),
@@ -37,7 +28,7 @@ fn series(metrics: &str, name: &str) -> Option<u64> {
     metrics.lines().find_map(|line| {
         let v: f64 = line
             .strip_prefix(name)?
-            .strip_prefix(' ')?
+            .strip_prefix([' ', '\t'])?
             .trim()
             .parse()
             .ok()?;
@@ -351,6 +342,29 @@ mod tests {
                        quickwit_write_bytes{component=\"merger\"} 1048576\n";
         assert_eq!(series(written, MERGER_WRITE_SERIES), Some(1 << 20));
         assert_eq!(series("", MERGER_WRITE_SERIES), None);
+    }
+
+    #[test]
+    fn merge_metrics_accept_tabs_without_matching_other_series() {
+        let metrics = "quickwit_indexing_ongoing_merge_operations_extra 99\n\
+                       quickwit_indexing_ongoing_merge_operations{x=\"y\"} 88\n\
+                       quickwit_indexing_ongoing_merge_operations\t2\n\
+                       quickwit_indexing_pending_merge_operations \t 3\n\
+                       quickwit_indexing_pending_merge_bytes\t12345\n\
+                       quickwit_write_bytes{component=\"merger\"}\t1048576\n";
+        assert_eq!(merge_gauges(metrics), (2, 3));
+        assert_eq!(
+            series(metrics, "quickwit_indexing_pending_merge_bytes"),
+            Some(12345)
+        );
+        assert_eq!(series(metrics, MERGER_WRITE_SERIES), Some(1 << 20));
+        assert_eq!(
+            series(
+                "quickwit_indexing_pending_merge_bytes123\n",
+                "quickwit_indexing_pending_merge_bytes"
+            ),
+            None
+        );
     }
 
     /// The splits a stopped writer left staged are the ones created before

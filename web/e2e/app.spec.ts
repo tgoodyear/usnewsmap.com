@@ -76,7 +76,7 @@ async function expectAccessible(page: Page) {
 }
 
 /** The home page's example cards. */
-const exampleCards = (page: Page) => page.locator("ul.examples button.example");
+const exampleCards = (page: Page) => page.locator("ul.examples a.example");
 
 /** The button under the examples that adds more of them. */
 const showMore = (page: Page) => page.getByRole("button", { name: "Show more examples" });
@@ -110,13 +110,45 @@ test("the home page shows three examples, and adds more on request", async ({ pa
   // A card runs its search.
   const title = (await cards.first().locator("strong").textContent()) ?? "";
   await cards.first().click();
-  await expect(page).toHaveURL(/[?&]q=/);
+  await expect(page).toHaveURL(/\/search\//);
   // The search ran (most examples match nothing in the fixtures, which still shows a summary).
   await expect(page.locator(".summary")).toContainText("pages");
   // Back returns to the same cards.
   await page.goBack();
   await expect(cards).toHaveCount(13);
   await expect(cards.first()).toContainText(title);
+});
+
+test("example clicks reset inherited filters to match their link URLs", async ({ page }) => {
+  await page.goto("/?source=congress&state=CA&mode=any&tab=table");
+  const card = exampleCards(page).first();
+  await expect(card).toBeVisible();
+  const href = await card.getAttribute("href");
+  expect(href).not.toContain("source=");
+  expect(href).not.toContain("state=");
+  expect(href).not.toContain("mode=");
+  await card.click();
+  await expect(page).toHaveURL(new URL(href!, page.url()).href);
+});
+
+test("path searches survive reload and history when only the query changes", async ({ page }) => {
+  await page.goto("/search/%22cross%20of%20gold%22?tab=table");
+  await expect(page.getByRole("searchbox")).toHaveValue('"cross of gold"');
+  await expect(page.locator(".summary")).toContainText("6 places");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Table", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const samples = page.getByRole("region", { name: "Sample results" });
+  await expect(samples).toContainText("Fixture City B");
+  await expect(samples.locator("li.hit")).toHaveCount(10);
+  await page.getByRole("searchbox").fill("gold");
+  await page.getByRole("searchbox").press("Enter");
+  await expect(page).toHaveURL(/\/search\/gold(?:\?|$)/);
+  await expect(page).toHaveTitle("gold · US News Map");
+  await page.goBack();
+  await expect(page.getByRole("searchbox")).toHaveValue('"cross of gold"');
+  await expect(page.locator(".summary")).toContainText("6 places");
+  await page.goForward();
+  await expect(page.getByRole("searchbox")).toHaveValue("gold");
 });
 
 test("example search maps, plays, drills down and keeps a permalink", async ({ page }) => {
@@ -126,7 +158,7 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   await expectAccessible(page);
 
   await (await findExample(page, /Cross of Gold, 1896/)).click();
-  await expect(page).toHaveURL(/q=%22cross\+of\+gold%22/);
+  await expect(page).toHaveURL(/\/search\/%22cross%20of%20gold%22/);
   await expect(page.locator(".summary")).toContainText("6 places");
 
   // Keyboard playback: Home goes to the first week, where nothing has matched yet.
@@ -564,7 +596,7 @@ test("the dataset details list published pages by state and by language", async 
 });
 
 test("About opens from the footer and keeps the search", async ({ page }) => {
-  await page.goto("/?q=gold");
+  await page.goto("/search/gold");
   const dialog = page.getByRole("dialog", { name: "About US News Map" });
   // About is only in the footer, not the header.
   await expect(page.getByRole("banner").getByRole("button", { name: "About" })).toHaveCount(0);
@@ -611,7 +643,7 @@ test("About opens from the footer and keeps the search", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(open).toBeFocused();
-  await expect(page).toHaveURL(/\?q=gold/);
+  await expect(page).toHaveURL(/\/search\/gold/);
 
   await open.click();
   await expect(dialog).toBeVisible();

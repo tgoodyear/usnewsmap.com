@@ -68,13 +68,17 @@ class GoldBundle(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, tar_sha=None, manifest=None, lock_body=None, **env):
+    def run_script(self, tar_sha=None, manifest=None, lock_body=None, version="1",
+                   campaign="v1-tess550", from_lock=False, source_cache=None, **env):
         e = {**os.environ, "STUB_LOG": str(self.log), "STUB_TAR_BODY": self.body,
              "STUB_MANIFEST": self.manifest, "STUB_LOCK_BODY": lock_body or self.lock.read_text(), **env}
-        return subprocess.run([str(SCRIPT), "--share", str(self.share), "--campaign", "v1-tess550",
+        sums = [] if from_lock else ["--tar-sha256", tar_sha or self.tar_sha,
+                                    "--manifest-sha256", manifest or self.manifest]
+        cache = ["--source-cache", str(source_cache)] if source_cache else []
+        return subprocess.run([str(SCRIPT), "--share", str(self.share), "--campaign", campaign,
                                "--gold-py", str(self.root / "gold.py"), "--survey", str(self.root / "survey"),
-                               "--lock", str(self.lock), "--tar-sha256", tar_sha or self.tar_sha,
-                               "--manifest-sha256", manifest or self.manifest],
+                               "--version", version,
+                               "--lock", str(self.lock), *sums, *cache],
                               env=e, capture_output=True, text=True)
 
     def dest(self):
@@ -153,12 +157,61 @@ class GoldBundle(unittest.TestCase):
         self.assertEqual(self.run_script().returncode, 0)
         self.assertFalse((self.share / "gold" / ".build-v1.lock").exists())
 
-    def test_defaults_are_the_committed_lock(self):
-        lock = json.loads((ROOT / "fixtures/ocr-gold/bundle-v1.lock.json").read_text())
-        text = SCRIPT.read_text()
-        self.assertIn(f"TAR_SHA={lock['tar_sha256']}", text)
-        self.assertIn(f"MANIFEST_SHA={lock['manifest_sha256']}", text)
-        self.assertEqual(lock["seed"], 457)
+    def test_v2_is_isolated_from_v1(self):
+        self.lock.write_text('{"bundle_version": 2}\n')
+        old = self.share / "gold/v1-tess550/bundle.tar"
+        old.parent.mkdir(parents=True)
+        old.write_text("immutable v1")
+        result = self.run_script(version="2")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("exists with another sha256", result.stderr)
+        self.assertEqual(old.read_text(), "immutable v1")
+        result = self.run_script(version="2", campaign="v2-tess550")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("survey bundle-build --version 2", "\n".join(self.calls()))
+        self.assertTrue((self.share / "gold/build-v2/bundle-v2.lock.json").exists())
+        self.assertEqual(old.read_text(), "immutable v1")
+        self.assertEqual((self.share / "gold/v2-tess550/bundle.tar").read_text(), self.body)
+
+    def test_v2_respects_the_legacy_build_lock(self):
+        self.lock.write_text('{"bundle_version": 2}\n')
+        (self.share / "gold/.build-v1.lock").mkdir(parents=True)
+        result = self.run_script(version="2", campaign="v2-tess550")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("holds", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_refuses_a_lock_for_another_version(self):
+        result = self.run_script(version="2")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("lock does not match --version", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_offline_cache_never_fetches(self):
+        cache = self.root / "sources"
+        for ds in ("bln600", "overproof-ca", "newseye-bnf", "newseye-nlf-fi", "newseye-nlf-sv", "nzz"):
+            (cache / ds).mkdir(parents=True)
+        result = self.run_script(source_cache=cache)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any("public-fetch" in call for call in self.calls()))
+        self.assertEqual(len([call for call in self.calls() if "public-convert" in call]), 6)
+        self.assertEqual(set(cache.rglob("*")), set(cache.iterdir()))
+
+    def test_incomplete_offline_cache_fails_without_fetching(self):
+        cache = self.root / "sources"
+        cache.mkdir()
+        result = self.run_script(source_cache=cache)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("source cache is missing bln600", result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.dest().exists())
+
+    def test_expected_hashes_come_from_the_selected_lock(self):
+        self.lock.write_text(json.dumps({"bundle_version": 1, "tar_sha256": self.tar_sha,
+                                         "manifest_sha256": self.manifest}))
+        result = self.run_script(from_lock=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.dest().read_text(), self.body)
 
 
 if __name__ == "__main__":

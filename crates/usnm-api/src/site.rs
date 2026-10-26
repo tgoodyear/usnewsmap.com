@@ -16,8 +16,8 @@
 //!   every load so a release shows up at once. The app's pages carry an
 //!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
 //!   costs a `304`.
-//! - Search permalinks (`/?q=…`) and `/datasets` carry `X-Robots-Tag: noindex`,
-//!   so crawlers that don't run the app see it too.
+//! - Legacy search links redirect to `/search/<query>`. Curated base searches
+//!   are indexable; other searches and filter variants carry `noindex`.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
 
 use std::path::PathBuf;
@@ -31,6 +31,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use sha2::{Digest, Sha256};
 use tower_http::services::ServeDir;
+
+use crate::error::ApiError;
+use crate::AppState;
 
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
@@ -64,13 +67,15 @@ const NAME_MAX: usize = 255;
 const NAME_LIMIT: usize = NAME_MAX - ".br".len();
 
 /// The site as a service for the API router's fallback.
-pub fn router(dir: PathBuf) -> Router {
+pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     let index = dir.join("index.html");
     let spa = {
         let index = index.clone();
+        let state = state.clone();
         move |req: Request| {
             let index = index.clone();
-            async move { app_route(req, index).await }
+            let state = state.clone();
+            async move { app_route(req, index, state).await }
         }
     };
     let files = ServeDir::new(dir)
@@ -81,16 +86,34 @@ pub fn router(dir: PathBuf) -> Router {
     // suffix) can't name one of ours, and `ServeDir` answers the filesystem's
     // "file name too long" with a 500, so such paths skip it and are answered
     // like any other path with no file.
-    let long_names = move |req: Request, next: Next| {
+    let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
+        let state = state.clone();
         async move {
-            if req
-                .uri()
-                .path()
-                .split('/')
-                .any(|s| decoded_len(s) > NAME_LIMIT)
+            if let Some(location) = matches!(*req.method(), Method::GET | Method::HEAD)
+                .then(|| search_redirect(req.uri()))
+                .flatten()
             {
-                app_route(req, index).await
+                return match HeaderValue::from_str(&location) {
+                    Ok(location) => (
+                        StatusCode::MOVED_PERMANENTLY,
+                        [(header::LOCATION, location)],
+                    )
+                        .into_response(),
+                    Err(_) => (StatusCode::BAD_REQUEST, "bad request").into_response(),
+                };
+            }
+            // Search terms can contain dots, encoded slashes or long segments;
+            // they are routes, never files in the static directory.
+            if search_query(req.uri().path()).is_some()
+                || matches!(req.uri().path(), "/" | "/index.html")
+                || req
+                    .uri()
+                    .path()
+                    .split('/')
+                    .any(|s| decoded_len(s) > NAME_LIMIT)
+            {
+                app_route(req, index, state).await
             } else {
                 next.run(req).await
             }
@@ -98,7 +121,7 @@ pub fn router(dir: PathBuf) -> Router {
     };
     Router::new()
         .fallback_service(files)
-        .layer(middleware::from_fn(long_names))
+        .layer(middleware::from_fn(app_paths))
         .layer(middleware::from_fn(cache_control))
         .layer(middleware::from_fn(robots_tag))
 }
@@ -124,11 +147,79 @@ fn decoded_len(segment: &str) -> usize {
 /// `ServeDir` serves directly; since tower-http 0.7 it no longer serves a
 /// file at a path with a trailing slash, so `/index.html/` comes here.
 fn is_app_page(path: &str) -> bool {
-    matches!(
-        path.trim_end_matches('/'),
-        "" | "/datasets" | "/privacy" | "/credits" | "/index.html"
-    )
+    search_query(path).is_some()
+        || matches!(
+            path.trim_end_matches('/'),
+            "" | "/datasets" | "/privacy" | "/credits" | "/index.html"
+        )
 }
+
+fn search_path(q: &str) -> String {
+    let encoded: String = form_urlencoded::byte_serialize(q.as_bytes()).collect();
+    format!("/search/{}", encoded.replace('+', "%20"))
+}
+
+fn search_query(path: &str) -> Option<String> {
+    let segment = path.strip_prefix("/search/")?;
+    let segment = segment.strip_suffix('/').unwrap_or(segment);
+    if segment.is_empty() || segment.contains('/') {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut chars = segment.bytes();
+    while let Some(b) = chars.next() {
+        bytes.push(if b == b'%' {
+            let hi = char::from(chars.next()?).to_digit(16)?;
+            let lo = char::from(chars.next()?).to_digit(16)?;
+            u8::try_from(hi * 16 + lo).ok()?
+        } else {
+            b
+        });
+    }
+    let q = String::from_utf8(bytes).ok()?;
+    (q.encode_utf16().count() <= 256 && q != "." && q != "..").then_some(q)
+}
+
+fn search_redirect(uri: &Uri) -> Option<String> {
+    let mut params: Vec<_> = form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()).collect();
+    let q = match uri.path().trim_end_matches('/') {
+        "" | "/index.html" => params.iter().find(|(k, _)| k == "q")?.1.to_string(),
+        _ => search_query(uri.path())?,
+    };
+    if q.is_empty() || q == "." || q == ".." || q.encode_utf16().count() > 256 {
+        return None;
+    }
+    params.retain(|(k, _)| k != "q");
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(params)
+        .finish();
+    let path = search_path(&q);
+    let target = if query.is_empty() {
+        path
+    } else {
+        format!("{path}?{query}")
+    };
+    (uri.path_and_query()?.as_str() != target).then_some(target)
+}
+
+static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
+    std::sync::LazyLock::new(|| {
+        #[derive(serde::Deserialize)]
+        struct Example {
+            view: Query,
+        }
+        #[derive(serde::Deserialize)]
+        struct Query {
+            q: String,
+        }
+        let examples: Vec<Example> =
+            serde_json::from_str(include_str!("../../../web/src/examples.json"))
+                .expect("valid curated examples");
+        examples
+            .into_iter()
+            .map(|e| search_path(&e.view.q))
+            .collect()
+    });
 
 /// The dataset details page's path before it was renamed (#294).
 const OLD_DATASETS_PATH: &str = "/status";
@@ -141,37 +232,215 @@ fn datasets_redirect(uri: &Uri) -> Option<String> {
     })
 }
 
-/// Indexable static pages name themselves in the head, not the home page.
+/// Indexable pages name themselves in the head, even without JavaScript.
 fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
-    let (page, title) = match path.trim_end_matches('/') {
-        "/privacy" => ("privacy", "Privacy"),
-        "/credits" => ("credits", "OCR credits"),
-        _ => return index,
+    let query = search_query(path);
+    let (title, canonical) = if path.trim_end_matches('/') == "/privacy" {
+        ("Privacy · US News Map".to_owned(), "/privacy".to_owned())
+    } else if path.trim_end_matches('/') == "/credits" {
+        (
+            "OCR credits · US News Map".to_owned(),
+            "/credits".to_owned(),
+        )
+    } else if let Some(q) = &query {
+        (format!("{q} · US News Map"), search_path(q))
+    } else {
+        return index;
     };
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    };
+    let title = escape(&title);
+    let canonical = format!("https://usnewsmap.com{canonical}");
     let Ok(html) = String::from_utf8(index) else {
         return Vec::new();
     };
-    html.replacen(
-        "<title>US News Map</title>",
-        &format!("<title>{title} · US News Map</title>"),
-        1,
+    let mut html = html
+        .replacen(
+            "<title>US News Map</title>",
+            &format!("<title>{title}</title>"),
+            1,
+        )
+        .replacen(
+            r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
+            &format!(r#"<link rel="canonical" href="{canonical}" />"#),
+            1,
+        )
+        .replacen(
+            r#"<meta property="og:url" content="https://usnewsmap.com/" />"#,
+            &format!(r#"<meta property="og:url" content="{canonical}" />"#),
+            1,
+        )
+        .replacen(
+            r#"<meta property="og:title" content="US News Map" />"#,
+            &format!(r#"<meta property="og:title" content="{title}" />"#),
+            1,
+        );
+    if let Some(q) = query {
+        html = html.replacen(
+            r#"<main class="empty">"#,
+            &format!(
+                r#"<main class="empty"><h1>Newspaper results for {}</h1>"#,
+                escape(&q)
+            ),
+            1,
+        );
+    }
+    html.into_bytes()
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn insert_content(body: Vec<u8>, content: &str) -> Vec<u8> {
+    // The built shell is UTF-8. Preserve its bytes if an invalid file is deployed.
+    match String::from_utf8(body) {
+        Ok(html) => html
+            .replacen("</main>", &format!("{content}</main>"), 1)
+            .into_bytes(),
+        Err(error) => {
+            tracing::error!("site index is not UTF-8");
+            error.into_bytes()
+        }
+    }
+}
+
+fn curated_links() -> String {
+    let mut paths: Vec<_> = CURATED_SEARCHES.iter().collect();
+    paths.sort();
+    let links: String = paths
+        .into_iter()
+        .map(|path| {
+            let q = search_query(path).expect("curated search path");
+            format!(r#"<li><a href="{path}">{}</a></li>"#, escape_html(&q))
+        })
+        .collect();
+    format!("<nav aria-label=\"Common newspaper searches\"><h2>Common searches</h2><ul>{links}</ul></nav>")
+}
+
+fn preview_query(q: &str) -> String {
+    let mut params = form_urlencoded::Serializer::new(String::new());
+    params.append_pair("q", q);
+    if usnm_core::query::is_plain(q) {
+        params.append_pair("mode", "phrase");
+    }
+    params.finish()
+}
+
+async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
+    use crate::routes::{cached_body, with_timeout, Job};
+    use crate::version::Pinning;
+    use usnm_core::ids::PageKey;
+    use usnm_core::params::RawParams;
+    use usnm_core::time::date_from_day;
+    use usnm_search::HitsQuery;
+
+    let snap = state.snapshot.load_full();
+    let raw = preview_query(q);
+    let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
+    let canonical = search.canonical();
+    let version = snap.refdata.version().to_owned();
+    let key = snap
+        .refdata
+        .search_key("site-preview-v4", &canonical, &search.query);
+    let st = state.clone();
+    let compute = async move {
+        let rd = &snap.refdata;
+        let indexes = rd.index_set_for_request(&search)?;
+        let summary = with_timeout(
+            &st,
+            st.config.compute_cap,
+            snap.backend.summary(
+                &indexes,
+                &search.query,
+                &search.filters,
+                &search.bucket_spec(),
+            ),
+        )
+        .await?;
+        let top = summary.places.iter().max_by(|a, b| {
+            a.hits
+                .cmp(&b.hits)
+                .then_with(|| b.place_id.cmp(&a.place_id))
+        });
+        let Some(top) = top else {
+            return Ok("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned());
+        };
+        let place = rd
+            .place(&top.place_id)
+            .map(|p| format!("{}, {}", p.name, p.state))
+            .unwrap_or_else(|| top.place_id.clone());
+        let page = HitsQuery {
+            place_id: Some(top.place_id.clone()),
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let result = with_timeout(
+            &st,
+            st.config.compute_cap,
+            snap.backend
+                .hits(&indexes, &search.query, &search.filters, &page),
+        )
+        .await?;
+        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        for hit in result.hits {
+            let title = rd
+                .titles
+                .get(&hit.lccn)
+                .map_or(hit.lccn.as_str(), |title| title.name.as_str());
+            let date = date_from_day(hit.day);
+            let label = format!("{} — {date}, page {}", escape_html(title), hit.seq);
+            let citation = match (!rd.current.synthetic)
+                .then(|| PageKey::from_doc_id(&hit.doc_id).ok())
+                .flatten()
+                .map(|key| key.viewer_url(None))
+            {
+                Some(url) => format!(r#"<a href="{}">{label}</a>"#, escape_html(&url)),
+                None => label,
+            };
+            html.push_str(&format!("<li><p>{citation}</p>"));
+            for snippet in hit.snippets {
+                // Backend snippets already escape text; only highlight tags are markup.
+                html.push_str(&format!(
+                    "<p>{}</p>",
+                    snippet.replace("<mark>", "").replace("</mark>", "")
+                ));
+            }
+            html.push_str("</li>");
+        }
+        html.push_str(
+            "</ol><p>The interactive map and full results require JavaScript.</p></section>",
+        );
+        Ok::<_, ApiError>(html)
+    };
+    let (_, body) = cached_body(
+        state,
+        Job::search("site-preview", false, state.config.compute_cap),
+        key,
+        &Pinning::Unversioned,
+        &version,
+        "/search",
+        &canonical,
+        compute,
     )
-    .replacen(
-        r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
-        &format!(r#"<link rel="canonical" href="https://usnewsmap.com/{page}" />"#),
-        1,
-    )
-    .replacen(
-        r#"<meta property="og:url" content="https://usnewsmap.com/" />"#,
-        &format!(r#"<meta property="og:url" content="https://usnewsmap.com/{page}" />"#),
-        1,
-    )
-    .into_bytes()
+    .await?;
+    let body = body.ok_or(ApiError::Busy)?;
+    serde_json::from_slice(&body)
+        .map_err(|error| ApiError::Backend(format!("invalid search preview cache: {error}")))
 }
 
 /// A path with no file behind it: `index.html` for app routes (404 unless
 /// the app has a page there), else a plain 404.
-async fn app_route(req: Request, index: PathBuf) -> Response {
+async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Response {
     let path = req.uri().path();
     // The last segment ignoring a trailing slash, so `/favicon.svg/` is a
     // missing file (a plain 404), not an app route.
@@ -205,13 +474,29 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
     } else {
         StatusCode::NOT_FOUND
     };
-    let body = match tokio::fs::read(&index).await {
+    let mut body = match tokio::fs::read(&index).await {
         Ok(body) => shell_for(path, body),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
     };
+    if status == StatusCode::OK {
+        if let Some(q) = search_query(path) {
+            // Only bounded, curated base searches add backend work on a page load.
+            if !noindex(req.uri()) {
+                match search_preview(&state, &q).await {
+                    Ok(preview) => body = insert_content(body, &preview),
+                    Err(error) => {
+                        tracing::warn!("search page preview unavailable");
+                        return error.into_response();
+                    }
+                }
+            }
+        } else if matches!(path, "/" | "/index.html") {
+            body = insert_content(body, &curated_links());
+        }
+    }
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -318,10 +603,13 @@ async fn cache_control(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Pages that shouldn't appear in search results: search permalinks
-/// (`/?q=…`), which are endless variations on the home page, and the
-/// dataset details page, which changes often (and its old path, `/status`).
+/// Only curated, unfiltered searches are indexable. Dataset details and
+/// legacy search links also keep their noindex policy.
 fn noindex(uri: &Uri) -> bool {
+    if let Some(q) = search_query(uri.path()) {
+        return !CURATED_SEARCHES.contains(&search_path(&q))
+            || uri.query().is_some_and(|q| !q.is_empty());
+    }
     match uri.path().trim_end_matches('/') {
         "/datasets" | OLD_DATASETS_PATH => true,
         "" | "/index.html" => uri
@@ -377,6 +665,30 @@ pub async fn www_redirect(State(host): State<Arc<str>>, req: Request, next: Next
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previews_match_the_default_interactive_search_mode() {
+        use usnm_core::params::RawParams;
+
+        for (q, expected) in [
+            ("Spanish influenza", r#""spanish influenza""#),
+            ("gold OR silver", "gold OR silver"),
+            (r#""cross of gold""#, r#""cross of gold""#),
+            ("copperhead*", "copperhead*"),
+        ] {
+            let raw = RawParams::parse(&preview_query(q)).unwrap();
+            let query = usnm_core::query::build(
+                raw.get("q").unwrap(),
+                raw.get("mode")
+                    .map(|mode| usnm_core::query::Mode::parse(mode).unwrap()),
+                0,
+                0,
+                usnm_core::text::Analyzer::default(),
+            )
+            .unwrap();
+            assert_eq!(query.to_string(), expected, "{q}");
+        }
+    }
 
     #[test]
     fn connect_src_allows_only_the_api_basemap_and_boinc() {
@@ -453,11 +765,17 @@ mod tests {
             "/credits/",
             "/index.html",
             "/index.html/",
+            "/search/gold",
+            "/search/%22cross%20of%20gold%22/",
+            "/search/a%2Fb",
         ] {
             assert!(is_app_page(path), "{path}");
         }
         for path in [
-            "/search/gold",
+            "/search/",
+            "/search/gold/extra",
+            "/search/%FF",
+            "/search/%",
             "/statuses",
             "/does-not-exist",
             "/status",
@@ -508,6 +826,8 @@ mod tests {
             "/datasets/?x=1",
             "/status",
             "/status/?x=1",
+            "/search/whigs?tab=table",
+            "/search/not-a-curated-search",
         ];
         for uri in yes {
             assert!(noindex(&uri.parse().unwrap()), "{uri}");
@@ -521,10 +841,47 @@ mod tests {
             "/privacy?utm_source=x",
             "/favicon.svg",
             "/search?q=gold",
+            "/search/whigs",
         ];
         for uri in no {
             assert!(!noindex(&uri.parse().unwrap()), "{uri}");
         }
+    }
+
+    #[test]
+    fn search_paths_preserve_syntax_and_legacy_filters() {
+        for q in ["gold", "\"cross of gold\"", "a/b + c? & # = %", "日本"] {
+            assert_eq!(search_query(&search_path(q)).as_deref(), Some(q));
+        }
+        let to = |uri: &str| search_redirect(&uri.parse().unwrap());
+        assert_eq!(
+            to("/?q=%22cross+of+gold%22&from=1896-06-01&tab=table").as_deref(),
+            Some("/search/%22cross%20of%20gold%22?from=1896-06-01&tab=table")
+        );
+        assert_eq!(to("/index.html/?q=a%2Bb").as_deref(), Some("/search/a%2Bb"));
+        assert_eq!(to("/search/gold?q=silver").as_deref(), Some("/search/gold"));
+        assert_eq!(to("/search/gold/").as_deref(), Some("/search/gold"));
+        for uri in [
+            "/search/gold",
+            "/?q=",
+            "/?q=.",
+            "/privacy?q=gold",
+            "/v1/hits?q=gold",
+        ] {
+            assert_eq!(to(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn search_metadata_is_specific_and_html_escaped() {
+        let index = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        let html = String::from_utf8(shell_for(&search_path("<b> & \"gold\""), index)).unwrap();
+        assert!(html.contains("<title>&lt;b&gt; &amp; &quot;gold&quot; · US News Map</title>"));
+        assert!(html.contains("https://usnewsmap.com/search/%3Cb%3E%20%26%20%22gold%22"));
+        assert!(html.contains("<h1>Newspaper results for &lt;b&gt; &amp; &quot;gold&quot;</h1>"));
     }
 
     #[test]

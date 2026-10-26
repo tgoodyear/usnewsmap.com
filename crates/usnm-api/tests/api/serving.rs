@@ -15,7 +15,7 @@ use usnm_search::memory::MemoryBackend;
 use usnm_store::LocalStore;
 
 use crate::common::{
-    config, fixture_backend, get, header_str, persisted_files, refdata, state_with,
+    config, fixture_backend, get, header_str, load_docs, persisted_files, refdata, state_with,
 };
 
 #[tokio::test]
@@ -291,7 +291,15 @@ async fn serves_the_site_alongside_the_api() {
 
     // The app's pages get the shell too, so a reload keeps working. The file
     // itself is served with or without a trailing slash (web/src/route.ts).
-    for uri in ["/datasets", "/datasets/", "/index.html", "/index.html/"] {
+    for uri in [
+        "/datasets",
+        "/datasets/",
+        "/index.html",
+        "/index.html/",
+        "/search/gold",
+        "/search/U.S.",
+        "/search/a%2Fb",
+    ] {
         let (status, h, body) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(body.contains("id=root"), "{uri}");
@@ -316,7 +324,7 @@ async fn serves_the_site_alongside_the_api() {
     let long = format!("/{}", "a".repeat(300));
     let long_nested = format!("/assets/{}/x", "b".repeat(256));
     for uri in [
-        "/search/gold",
+        "/search/gold/extra",
         "/does-not-exist",
         "/statuses",
         long.as_str(),
@@ -403,6 +411,32 @@ async fn serves_the_site_alongside_the_api() {
         header_str(&h, header::CACHE_CONTROL),
         "public, max-age=3600"
     );
+
+    let well_known = site_dir_of(&s).join(".well-known");
+    std::fs::create_dir_all(&well_known).unwrap();
+    let public = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/public/.well-known");
+    for name in [
+        "security.txt",
+        "trust.txt",
+        "gpc.json",
+        "assetlinks.json",
+        "dnt-policy.txt",
+    ] {
+        std::fs::copy(public.join(name), well_known.join(name)).unwrap();
+        let (status, h, body) = get_site(&s, &format!("/.well-known/{name}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert!(!body.is_empty(), "{name}");
+        let media_type = if name.ends_with(".json") {
+            "application/json"
+        } else {
+            "text/plain"
+        };
+        assert!(
+            header_str(&h, header::CONTENT_TYPE).starts_with(media_type),
+            "{name}: {}",
+            header_str(&h, header::CONTENT_TYPE)
+        );
+    }
 
     // A file path with a trailing slash is a missing file, not an app route.
     let (status, h, body) = get_site(&s, "/favicon.svg/", None).await;
@@ -616,8 +650,8 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     ));
     let robots = header::HeaderName::from_static("x-robots-tag");
     for uri in [
-        "/?q=x",
-        "/?q=%22cross+of+gold%22&from=1896-06-01",
+        "/search/x",
+        "/search/%22cross%20of%20gold%22?from=1896-06-01",
         "/datasets",
     ] {
         let (status, h, _) = get_site(&s, uri, None).await;
@@ -628,11 +662,111 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     let (status, h, _) = get_site(&s, "/status", None).await;
     assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
     assert_eq!(header_str(&h, robots.clone()), "noindex");
-    for uri in ["/", "/?t=1896-07-01", "/favicon.svg"] {
+    for uri in ["/", "/?t=1896-07-01", "/favicon.svg", "/search/whigs"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "", "{uri}");
     }
+}
+
+#[tokio::test]
+async fn legacy_searches_redirect_and_curated_results_render_without_javascript() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("search-routes"));
+    std::fs::write(
+        cfg.site_dir.as_ref().unwrap().join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    for (uri, location) in [
+        (
+            "/?q=%22cross+of+gold%22&tab=table",
+            "/search/%22cross%20of%20gold%22?tab=table",
+        ),
+        ("/index.html?q=gold", "/search/gold"),
+        ("/search/whigs/", "/search/whigs"),
+    ] {
+        let (status, headers, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{uri}");
+        assert_eq!(header_str(&headers, header::LOCATION), location);
+    }
+    let uri = "/search/%22cross%20of%20gold%22";
+    let (status, headers, body) = get_site(&s, uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
+    assert!(body.contains("<title>&quot;cross of gold&quot; · US News Map</title>"));
+    assert!(body.contains(
+        r#"<link rel="canonical" href="https://usnewsmap.com/search/%22cross%20of%20gold%22" />"#
+    ));
+    assert!(body.contains("matching newspaper pages"));
+    assert!(body.contains("1896-07-18"), "{body}");
+    assert!(
+        body.contains("Fixture City B (New York area), NY has the most hits (42 pages)"),
+        "{body}"
+    );
+    assert!(body.contains("cross of gold"), "{body}");
+    assert!(body.contains("<ol><li>"), "{body}");
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), status);
+    assert_eq!(
+        header_str(resp.headers(), header::CONTENT_LENGTH),
+        body.len().to_string()
+    );
+    assert!(resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .is_empty());
+    let (_, _, home) = get_site(&s, "/", None).await;
+    assert!(home.contains(r#"<nav aria-label="Common newspaper searches">"#));
+    assert!(home.contains(r#"<a href="/search/whigs">whigs</a>"#));
+}
+
+#[tokio::test]
+async fn search_previews_preserve_escaped_snippet_text_without_double_escaping() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("search-snippet-entities"));
+    std::fs::write(
+        cfg.site_dir.as_ref().unwrap().join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    let mut doc = load_docs("pages-base-fixture").remove(0);
+    doc.text = "Reader's & Co. <archive>. cross of gold.".to_owned();
+    let mut backend = MemoryBackend::new();
+    backend.add_index("pages-base-fixture", vec![doc]);
+    backend.add_index("pages-delta-fixture-1", vec![]);
+    let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
+    let (status, _, body) = get_site(&s, "/search/%22cross%20of%20gold%22", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("Reader&#39;s &amp; Co. &lt;archive&gt;"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("&amp;#39;") && !body.contains("&amp;lt;"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("<archive>") && !body.contains("<mark>"),
+        "{body}"
+    );
 }
 
 async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::response::Response {

@@ -52,7 +52,9 @@ The slow layers are reused when their inputs have not changed:
   `.dockerignore`, toolchain (when present), and its Containerfile.
 
 When either key changes, only that layer is rebuilt. The server image is then built on the base
-digest, and the bridge on the server and bridge-bin digests. Each image is pinned in settings by
+digest using the repository root as its context, and the bridge on the server and bridge-bin
+digests. The shared context lets the server image copy `.well-known` files from `web/public`,
+which is the single source also used by the API image. Each image is pinned in settings by
 the registry-reported digest, not the local image ID. The shared registry is the app's existing
 ACR; the BOINC stack grants its runtime and secrets-job identities `AcrPull` there. It has no
 anonymous pull or registry admin access.

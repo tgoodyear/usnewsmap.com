@@ -35,5 +35,10 @@ asset=$(curl -fsS "$base/" | grep -o '/assets/index-[^"]*\.js' | head -n 1)
 curl -fsS -D - -o /dev/null -H 'accept-encoding: br' "$base$asset" | grep -qi '^content-encoding: br'
 curl -fsS -D - -o /dev/null "$base/robots.txt" | grep -qi '^content-type: text/plain'
 curl -fsS "$base/sitemap.xml" | grep -q '<loc>https://usnewsmap.com/</loc>'
+curl -fsS "$base/.well-known/security.txt" | grep -q '^Contact: https://github.com/'
+curl -fsS "$base/.well-known/trust.txt" | grep -q '^owner = Trevor Goodyear$'
+curl -fsS "$base/.well-known/gpc.json" | grep -q '"gpc": true'
+curl -fsS "$base/.well-known/assetlinks.json" | grep -qx '\[\]'
+curl -fsS "$base/.well-known/dnt-policy.txt" | grep -q 'Global Privacy Control'
 test "$(curl -sS -o /dev/null -w '%{http_code}' "$base/does-not-exist")" = 404
 echo "api image serves /v1 and the site ($asset)"

@@ -6,10 +6,9 @@
 #   # commit the settings file through a pull request, then:
 #   scripts/boinc/provision-boinc.sh --env prod
 #
-# Nothing is built on this machine: az acr build uploads the source (contrib-compute/ for the
-# server; the repository for the bridge, which compiles crates/usnm-boinc) and the registry
-# builds and pushes it. Images are tagged with the commit and pinned by digest. The worker
-# image volunteers pull is not built here: it is a public GHCR package, published by
+# Nothing is built on this machine: az acr build uploads the repository and the registry builds
+# and pushes it. Images are tagged with the commit and pinned by digest. The worker image
+# volunteers pull is not built here: it is a public GHCR package, published by
 # .github/workflows/boinc-worker.yml (ADR-0019, addendum).
 #
 # It builds the committed HEAD: it refuses while the working tree has uncommitted changes, so
@@ -51,7 +50,7 @@ if $WHAT_IF; then
   cat << PLAN
 would build, in registry $registry (ACR Tasks; nothing is built here):
   usnm-boinc-base, usnm-boinc-bridge-bin   only when their key (a hash of their inputs) is new
-  $server:$sha    from contrib-compute/images/server/Containerfile, on the base image
+  $server:$sha    from contrib-compute/images/server/Containerfile, on the base image (repo context)
   $bridge:$sha    from contrib-compute/images/bridge/Containerfile, the server image plus the binary
 and write both digests to $BOINC_SETTINGS (images.server, images.bridge).
 PLAN
@@ -108,7 +107,7 @@ bin_image="$registry.azurecr.io/usnm-boinc-bridge-bin@$(digest usnm-boinc-bridge
 
 echo "building usnm-boinc-server:$sha in $registry"
 acr_build_verified baz_build "$registry" "usnm-boinc-server:$sha" 1800 --platform linux/amd64 \
-  --build-arg "BASE_IMAGE=$base_image" --file contrib-compute/images/server/Containerfile contrib-compute ||
+  --build-arg "BASE_IMAGE=$base_image" --file contrib-compute/images/server/Containerfile . ||
   die "the server image build failed"
 server_image="$server@$(digest usnm-boinc-server "$sha")"
 echo "server image $server_image"

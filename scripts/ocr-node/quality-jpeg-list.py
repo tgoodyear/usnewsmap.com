@@ -32,7 +32,7 @@ its tier 2 then and may still be pending. The queues are deduplicated. That
 converts some pages another shard has passed, but none a shard still needs
 is left out. --start-after s=k does the same by index (k is the index
 of the batch it is in now). Shards not named start at their first batch.
---done drops pages already in the converter's done.txt. Needs duckdb.
+--done drops pages already in the converter's recipe-specific ledger. Needs duckdb.
 """
 
 import argparse
