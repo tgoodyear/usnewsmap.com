@@ -82,8 +82,8 @@ def main(argv=None):
         proc = subprocess.run([sys.executable, "-m", "unittest", "-v", rel], cwd=ROOT, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(proc.stdout, end="", flush=True)
-        ran = re.search(r"^Ran (\d+) tests? in", proc.stdout, re.M)
-        count = int(ran.group(1)) if ran else 0
+        summaries = re.findall(r"^Ran (\d+) tests? in", proc.stdout, re.M)
+        count = int(summaries[-1]) if summaries else 0
         timings.append({"file": rel, "seconds": round(time.monotonic() - started, 3),
                         "tests": count, "exitcode": proc.returncode})
         total += count

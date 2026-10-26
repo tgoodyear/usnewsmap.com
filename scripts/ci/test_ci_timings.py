@@ -50,6 +50,17 @@ class Shards(unittest.TestCase):
             self.assertEqual(runner.main(["--timings", str(path)]), 1)
             self.assertEqual(json.loads(path.read_text())[0]["exitcode"], 1)
 
+    def test_nested_unittest_output_uses_the_module_summary(self):
+        import json
+        for count, status in [(4, 0), (0, 1)]:
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(runner, "selected", return_value=([("scripts/test_x.py", None)], [])), \
+                    patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, f"Ran 2 tests in 0.1s\nOK\nRan {count} tests in 0.2s\nOK\n")):
+                path = Path(directory) / "timings.json"
+                self.assertEqual(runner.main(["--timings", str(path)]), status)
+                self.assertEqual(json.loads(path.read_text())[0]["tests"], count)
+
 
 class RustTimings(unittest.TestCase):
     def test_ansi_and_failed_binaries_are_reported_without_reusing_old_name(self):
