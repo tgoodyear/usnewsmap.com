@@ -11,6 +11,13 @@ This is a native application, not Docker/Podman, ROCm or a CUDA fallback. Neithe
 the NVIDIA CUDA Qwen containers nor the Surya CUDA images support AMD through this
 change. The existing Intel/NVIDIA measurements are not AMD acceptance evidence.
 
+Signed Linux **1.9 / 109** (app version 61) and Windows **1.10 / 110**
+(app version 62) were published on 26 October 2026 with the later bounded failure
+diagnostics and Windows embedded-lock fix. The earlier 1.7/1.8 versions remain
+intact; admission and validation policy are unchanged. See the
+[release receipt](notes/2026-10-26-boinc-gpu-release.md).
+This is not a successful RX 9070 XT execution or a resolved startup-failure claim.
+
 ## Automatic scheduling and optional qualification
 
 The production admission mode is automatic: an attached host with a
