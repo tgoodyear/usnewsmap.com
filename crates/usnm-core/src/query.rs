@@ -232,7 +232,8 @@ pub fn parse_with(input: &str, analyzer: Analyzer) -> Result<Node, QueryError> {
     Ok(node)
 }
 
-fn is_plain(q: &str) -> bool {
+/// Whether a query is a plain word list that accepts a search mode.
+pub fn is_plain(q: &str) -> bool {
     !q.chars()
         .any(|c| matches!(c, '"' | '(' | ')' | '~' | '*' | ':'))
         && !q

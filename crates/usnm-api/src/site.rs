@@ -327,6 +327,15 @@ fn curated_links() -> String {
     format!("<nav aria-label=\"Common newspaper searches\"><h2>Common searches</h2><ul>{links}</ul></nav>")
 }
 
+fn preview_query(q: &str) -> String {
+    let mut params = form_urlencoded::Serializer::new(String::new());
+    params.append_pair("q", q);
+    if usnm_core::query::is_plain(q) {
+        params.append_pair("mode", "phrase");
+    }
+    params.finish()
+}
+
 async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
     use crate::routes::{cached_body, with_timeout, Job};
     use crate::version::Pinning;
@@ -336,15 +345,13 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
     use usnm_search::HitsQuery;
 
     let snap = state.snapshot.load_full();
-    let raw = form_urlencoded::Serializer::new(String::new())
-        .append_pair("q", q)
-        .finish();
+    let raw = preview_query(q);
     let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
     let canonical = search.canonical();
     let version = snap.refdata.version().to_owned();
     let key = snap
         .refdata
-        .search_key("site-preview-v2", &canonical, &search.query);
+        .search_key("site-preview-v3", &canonical, &search.query);
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
@@ -657,6 +664,30 @@ pub async fn www_redirect(State(host): State<Arc<str>>, req: Request, next: Next
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previews_match_the_default_interactive_search_mode() {
+        use usnm_core::params::RawParams;
+
+        for (q, expected) in [
+            ("Spanish influenza", r#""spanish influenza""#),
+            ("gold OR silver", "gold OR silver"),
+            (r#""cross of gold""#, r#""cross of gold""#),
+            ("copperhead*", "copperhead*"),
+        ] {
+            let raw = RawParams::parse(&preview_query(q)).unwrap();
+            let query = usnm_core::query::build(
+                raw.get("q").unwrap(),
+                raw.get("mode")
+                    .map(|mode| usnm_core::query::Mode::parse(mode).unwrap()),
+                0,
+                0,
+                usnm_core::text::Analyzer::default(),
+            )
+            .unwrap();
+            assert_eq!(query.to_string(), expected, "{q}");
+        }
+    }
 
     #[test]
     fn connect_src_allows_only_the_api_basemap_and_boinc() {
