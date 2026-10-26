@@ -20,13 +20,8 @@ key=$(find web/public -maxdepth 1 -type f -name '*.txt' -exec basename {} .txt \
 [ -n "$key" ] || skip "no key file (web/public/<32 hex digits>.txt)"
 [ "$(cat "web/public/$key.txt")" = "$key" ] || skip "web/public/$key.txt does not hold its key"
 
-urls=()
-while IFS= read -r url; do
-  [ -z "$url" ] || urls+=("$url")
-done < <(grep -o '<loc>[^<]*</loc>' web/public/sitemap.xml 2> /dev/null |
-  sed -e 's/<loc>//' -e 's/<\/loc>//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-[ "${#urls[@]}" -gt 0 ] || skip "web/public/sitemap.xml has no <loc> entries"
-[[ ${urls[0]} =~ ^https://([^/]+)/ ]] || skip "sitemap URL ${urls[0]} is not an absolute https URL"
+sitemap_url=$(sed -n 's/^Sitemap: //p' web/public/robots.txt)
+[[ $sitemap_url =~ ^https://([^/]+)/sitemap\.xml$ ]] || skip "robots.txt must name an absolute https sitemap URL"
 host=${BASH_REMATCH[1]}
 
 if ! names=$(az containerapp hostname list -n "$APP" -g "$RG" --query "[].name" -o tsv 2>&1); then
@@ -36,6 +31,19 @@ grep -Fqx "$host" <<< "$names" || skip "$APP does not answer on $host"
 live=$(curl -fsS --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "https://$host/$key.txt") ||
   skip "https://$host/$key.txt could not be fetched"
 [ "$live" = "$key" ] || skip "https://$host/$key.txt does not hold the key"
+
+# Read the deployed build's generated sitemap, not a stale source-tree list.
+sitemap=$(curl -fsS --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
+  skip "$sitemap_url could not be fetched"
+urls=()
+while IFS= read -r url; do
+  [ -z "$url" ] || urls+=("$url")
+done < <(grep -o '<loc>[^<]*</loc>' <<< "$sitemap" |
+  sed -e 's/<loc>//' -e 's/<\/loc>//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+[ "${#urls[@]}" -gt 0 ] || skip "$sitemap_url has no <loc> entries"
+for url in "${urls[@]}"; do
+  [[ $url == "https://$host/"* ]] || skip "sitemap URL $url is not on $host"
+done
 
 # IndexNow takes at most 10,000 URLs per request.
 batch=10000

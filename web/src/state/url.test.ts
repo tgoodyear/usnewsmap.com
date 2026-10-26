@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./url";
+import { act, renderHook } from "@testing-library/react";
+import { DEFAULTS, isIsoDate, parseView, parseViewUrl, searchParams, serializeView, useView, viewUrl } from "./url";
 
 describe("view URL", () => {
   it("round-trips States without changing search parameters or old layer defaults", () => {
@@ -10,6 +11,40 @@ describe("view URL", () => {
     expect(parseView("?layer=unknown").layer).toBe("points");
     expect(parseView("?layer=heat").layer).toBe("heat");
     expect(parseView("").layer).toBe("points");
+  });
+
+  it("moves search syntax into a reversible path without losing filters", () => {
+    for (const q of ['"cross of gold"', "a/b + c? & # = %", "日本", ".", "..", ""]) {
+      const view = { ...DEFAULTS, q, from: "1896-01-01", tab: "table" as const };
+      expect(parseViewUrl(viewUrl(view))).toEqual(view);
+    }
+    expect(viewUrl({ ...DEFAULTS, q: "gold" })).toBe("/search/gold");
+    expect(parseViewUrl("/search/gold?q=silver&lang=ger")).toMatchObject({ q: "gold", lang: ["ger"] });
+    expect(parseViewUrl("/?q=gold&lang=ger")).toEqual(parseViewUrl("/search/gold?lang=ger"));
+  });
+
+  it("tracks path changes, restores history and builds result links from the current search", () => {
+    window.history.replaceState(null, "", "/search/gold?lang=ger");
+    const { result, unmount } = renderHook(() => useView());
+    expect(result.current[0]).toMatchObject({ q: "gold", lang: ["ger"] });
+    act(() => result.current[1]({ q: "silver" }, true));
+    expect(window.location.pathname).toBe("/search/silver");
+    expect(window.location.search).toBe("?lang=ger");
+    expect(result.current[0].q).toBe("silver");
+    expect(document.title).toBe("silver · US News Map");
+    act(() => {
+      window.history.replaceState(null, "", "/search/gold?lang=ger");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(result.current[0].q).toBe("gold");
+    act(() => result.current[1]({ place: "P00001" }));
+    expect(window.location.pathname).toBe("/search/gold");
+    expect(window.location.search).toContain("place=P00001");
+    act(() => result.current[1]({ q: "" }));
+    expect(window.location.pathname).toBe("/");
+    expect(result.current[0].q).toBe("");
+    unmount();
+    window.history.replaceState(null, "", "/");
   });
   it("round-trips and writes only non-defaults", () => {
     const v = parseView(

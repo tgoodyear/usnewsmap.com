@@ -8,7 +8,7 @@ import { EXAMPLE_ORDER } from "./examples";
 import { Examples } from "./components/Examples";
 import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
-import { searchParams, serializeView, useView, type ViewState } from "./state/url";
+import { searchParams, viewUrl, useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
 import { Searching } from "./components/Searching";
 import { Timeline } from "./components/Timeline";
@@ -804,9 +804,7 @@ export function App() {
                   first={data.total.first}
                   last={data.total.last ?? null}
                   placeName={placeName}
-                  hrefFor={(hit, sort) =>
-                    `${window.location.pathname}${serializeView({ ...view, place: hit.place_id, sort })}`
-                  }
+                  hrefFor={(hit, sort) => viewUrl({ ...view, place: hit.place_id, sort })}
                   onOpen={(hit, sort) => setView({ place: hit.place_id, sort })}
                 />
               )}

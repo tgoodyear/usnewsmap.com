@@ -2575,7 +2575,15 @@ async fn serves_the_site_alongside_the_api() {
 
     // The app's pages get the shell too, so a reload keeps working. The file
     // itself is served with or without a trailing slash (web/src/route.ts).
-    for uri in ["/datasets", "/datasets/", "/index.html", "/index.html/"] {
+    for uri in [
+        "/datasets",
+        "/datasets/",
+        "/index.html",
+        "/index.html/",
+        "/search/gold",
+        "/search/U.S.",
+        "/search/a%2Fb",
+    ] {
         let (status, h, body) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(body.contains("id=root"), "{uri}");
@@ -2600,7 +2608,7 @@ async fn serves_the_site_alongside_the_api() {
     let long = format!("/{}", "a".repeat(300));
     let long_nested = format!("/assets/{}/x", "b".repeat(256));
     for uri in [
-        "/search/gold",
+        "/search/gold/extra",
         "/does-not-exist",
         "/statuses",
         long.as_str(),
@@ -2765,8 +2773,8 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     ));
     let robots = header::HeaderName::from_static("x-robots-tag");
     for uri in [
-        "/?q=x",
-        "/?q=%22cross+of+gold%22&from=1896-06-01",
+        "/search/x",
+        "/search/%22cross%20of%20gold%22?from=1896-06-01",
         "/datasets",
     ] {
         let (status, h, _) = get_site(&s, uri, None).await;
@@ -2777,11 +2785,67 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     let (status, h, _) = get_site(&s, "/status", None).await;
     assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
     assert_eq!(header_str(&h, robots.clone()), "noindex");
-    for uri in ["/", "/?t=1896-07-01", "/favicon.svg"] {
+    for uri in ["/", "/?t=1896-07-01", "/favicon.svg", "/search/whigs"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "", "{uri}");
     }
+}
+
+#[tokio::test]
+async fn legacy_searches_redirect_and_search_heads_match_get() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("search-routes"));
+    std::fs::write(
+        cfg.site_dir.as_ref().unwrap().join("index.html"),
+        include_str!("../../../web/index.html"),
+    )
+    .unwrap();
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    for (uri, location) in [
+        (
+            "/?q=%22cross+of+gold%22&tab=table",
+            "/search/%22cross%20of%20gold%22?tab=table",
+        ),
+        ("/index.html?q=gold", "/search/gold"),
+        ("/search/whigs/", "/search/whigs"),
+    ] {
+        let (status, headers, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{uri}");
+        assert_eq!(header_str(&headers, header::LOCATION), location);
+    }
+    let uri = "/search/whigs";
+    let (status, headers, body) = get_site(&s, uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
+    assert!(body.contains("<title>whigs · US News Map</title>"));
+    assert!(body.contains(r#"<link rel="canonical" href="https://usnewsmap.com/search/whigs" />"#));
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), status);
+    assert_eq!(
+        header_str(resp.headers(), header::CONTENT_LENGTH),
+        body.len().to_string()
+    );
+    assert!(resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .is_empty());
 }
 
 async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::response::Response {
