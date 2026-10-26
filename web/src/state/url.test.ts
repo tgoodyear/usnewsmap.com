@@ -3,6 +3,13 @@ import { act, renderHook } from "@testing-library/react";
 import { DEFAULTS, isIsoDate, parseView, parseViewUrl, searchParams, serializeView, useView, viewUrl } from "./url";
 
 describe("view URL", () => {
+  it("treats repeated leading slashes as paths, not URL authorities", () => {
+    expect(parseViewUrl("//")).toEqual(DEFAULTS);
+    expect(parseViewUrl("///?q=gold&lang=ger")).toEqual(parseView("?q=gold&lang=ger"));
+    expect(parseViewUrl("//search/gold")).toEqual(DEFAULTS);
+    expect(parseViewUrl("https://usnewsmap.com/search/gold?lang=ger")).toEqual(parseView("?q=gold&lang=ger"));
+  });
+
   it("round-trips States without changing search parameters or old layer defaults", () => {
     const v = parseView("?q=gold&layer=states");
     expect(v.layer).toBe("states");

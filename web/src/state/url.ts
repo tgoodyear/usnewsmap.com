@@ -216,7 +216,8 @@ export function serializeView(v: ViewState): string {
 }
 
 export function parseViewUrl(url: string): ViewState {
-  const { pathname, search } = new URL(url, "https://usnewsmap.com");
+  const origin = "https://usnewsmap.com";
+  const { pathname, search } = new URL(url.startsWith("/") ? `${origin}${url}` : url, origin);
   const view = parseView(search);
   return { ...view, q: queryForPath(pathname) ?? view.q };
 }
