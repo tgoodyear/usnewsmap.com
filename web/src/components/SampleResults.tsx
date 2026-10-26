@@ -33,7 +33,7 @@ export function SampleResults({
   const query = useInfiniteQuery(placeHitsQuery(params, version, placeId, "oldest"));
   const first = query.data?.pages[0];
   return (
-    <section aria-label="Sample results">
+    <section aria-label="Sample results" className="visually-hidden">
       <h2>Sample results</h2>
       <p>{placeName} has the most hits. Showing up to 10 earliest results from this city.</p>
       {query.isPending && <p role="status">Loading sample results…</p>}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pageFor } from "./route";
+import { pageFor, queryForPath, searchPath } from "./route";
 
 describe("pageFor", () => {
   it("knows the app's pages, with or without a trailing slash", () => {
@@ -36,5 +36,26 @@ describe("pageFor", () => {
     ]) {
       expect(pageFor(path)).toBe("not-found");
     }
+  });
+});
+
+describe("readable search paths", () => {
+  it("slugs plain exact phrases, dropping quotes and case", () => {
+    expect(searchPath('"Fifteenth Amendment"')).toBe("/search/fifteenth-amendment");
+    expect(searchPath("Know-Nothing")).toBe("/search/know-nothing");
+    expect(searchPath("gold")).toBe("/search/gold");
+  });
+
+  it("keeps the encoded form where syntax or the mode matters", () => {
+    expect(searchPath("gold OR silver")).toBe("/search/gold%20OR%20silver");
+    expect(searchPath("-gold")).toBe("/search/-gold");
+    expect(searchPath('"cross of gold"', "all")).toBe("/search/%22cross%20of%20gold%22");
+    expect(searchPath("copperhead*")).toBe("/search/copperhead*");
+  });
+
+  it("reads slugs and legacy paths back to a query", () => {
+    expect(queryForPath("/search/fifteenth-amendment")).toBe("fifteenth amendment");
+    expect(queryForPath("/search/%22cross%20of%20gold%22")).toBe('"cross of gold"');
+    expect(queryForPath("/search/Know-Nothing")).toBe("Know-Nothing");
   });
 });

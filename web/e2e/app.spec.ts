@@ -158,7 +158,7 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   await expectAccessible(page);
 
   await (await findExample(page, /Cross of Gold, 1896/)).click();
-  await expect(page).toHaveURL(/\/search\/%22cross%20of%20gold%22/);
+  await expect(page).toHaveURL(/\/search\/cross-of-gold/);
   await expect(page.locator(".summary")).toContainText("6 places");
 
   // Keyboard playback: Home goes to the first week, where nothing has matched yet.

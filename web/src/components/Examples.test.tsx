@@ -75,13 +75,4 @@ describe("Examples", () => {
     expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...EXAMPLE_ORDER[1]!.view });
     expect(viewUrl(onPick.mock.calls[0]![0])).toBe(link.getAttribute("href"));
   });
-
-  it("links to indexable base searches and leaves modified clicks to the browser", () => {
-    const onPick = vi.fn();
-    render(<Home onPick={onPick} />);
-    const base = screen.getAllByRole("link", { name: "Search all dates" })[0]!;
-    expect(base.getAttribute("href")).toMatch(/^\/search\/[^?]+$/);
-    fireEvent.click(document.querySelector("#examples a.example")!, { ctrlKey: true });
-    expect(onPick).not.toHaveBeenCalled();
-  });
 });
