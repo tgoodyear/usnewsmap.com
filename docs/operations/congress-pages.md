@@ -106,6 +106,7 @@ The Annals of Congress and Register of Debates have no complete permitted script
    ```
 
    Check the JSON report and logs, and sample text/OCR, dates, chamber, page citations, and provenance from representative volumes in each series. The command writes curated attempts only; it does not publish an index.
+
 3. **Publish only after QA.** `USNM_CONGRESS_MANUAL` defaults to false. After confirming rights, coverage, OCR, dates, citations, and provenance, set both `USNM_CONGRESS` and `USNM_CONGRESS_MANUAL` and provision. The next release adds Annals and Register to the Congress index set. Check `congress.json`, `congress/baselines.json`, `current.json`, and source-filtered searches. Clearing the manual flag and provisioning removes those series from a later release.
 
 ### Damage scores for the Serial Set
