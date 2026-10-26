@@ -451,6 +451,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
             ja_latin: true,
             ocr_local: true,
             congress: false,
+            congress_manual: false,
             ..e.releaser(day, full)
         };
         let root = e.root.clone();
@@ -612,6 +613,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         ja_latin: true,
         ocr_local: true,
         congress: false,
+        congress_manual: false,
         single_text_field: true,
         ..e.releaser(7, true)
     };

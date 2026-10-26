@@ -340,6 +340,16 @@ pub fn starts_appendix(lines: &[String]) -> bool {
 /// that line is a number alone or a running head (`28 THE CONGRESSIONAL
 /// GLOBE December 15`). `None` when neither says.
 pub fn printed_page(label: Option<&str>, lines: &[String]) -> Option<String> {
+    printed_page_with_running_heads(label, lines, &["GLOBE"])
+}
+
+/// Like [`printed_page`], allowing a source's running-head titles to identify
+/// page numbers when its IIIF label doesn't provide one.
+pub fn printed_page_with_running_heads(
+    label: Option<&str>,
+    lines: &[String],
+    running_heads: &[&str],
+) -> Option<String> {
     if let Some(l) = label.map(str::trim) {
         let roman = !l.is_empty() && l.chars().all(|c| "IVXLCivxlc".contains(c)) && l.len() <= 8;
         if (!l.is_empty() && l.len() <= 5 && l.chars().all(|c| c.is_ascii_digit())) || roman {
@@ -349,16 +359,16 @@ pub fn printed_page(label: Option<&str>, lines: &[String]) -> Option<String> {
     let first = lines.iter().find(|l| !l.is_empty())?;
     let tokens: Vec<&str> = first.split_whitespace().map(clean).collect();
     let number = |t: &str| !t.is_empty() && t.len() <= 4 && t.chars().all(|c| c.is_ascii_digit());
+    let upper = first.to_uppercase();
+    let is_running_head = running_heads.iter().any(|head| upper.contains(head));
     match tokens.as_slice() {
         [n] if number(n) => Some((*n).to_owned()),
-        [n, next, ..] if number(n) && !number(next) && next.len() > 1 => first
-            .to_uppercase()
-            .contains("GLOBE")
-            .then(|| (*n).to_owned()),
-        [.., prev, n] if number(n) && !number(prev) && prev.len() > 1 => first
-            .to_uppercase()
-            .contains("GLOBE")
-            .then(|| (*n).to_owned()),
+        [n, next, ..] if number(n) && !number(next) && next.len() > 1 && is_running_head => {
+            Some((*n).to_owned())
+        }
+        [.., prev, n] if number(n) && !number(prev) && prev.len() > 1 && is_running_head => {
+            Some((*n).to_owned())
+        }
         _ => None,
     }
 }
@@ -562,6 +572,43 @@ mod tests {
         assert_eq!(printed_page(None, &l("mtmimmM mm 485")), None);
         assert_eq!(
             printed_page(Some("No Page # [Sequence: 1]"), &l("aya ____")),
+            None
+        );
+    }
+
+    #[test]
+    fn printed_pages_from_annals_and_register_running_heads() {
+        let l = |s: &str| vec![s.to_owned()];
+        assert_eq!(
+            printed_page_with_running_heads(
+                None,
+                &l("28 HISTORY OF CONGRESS."),
+                &["HISTORY OF CONGRESS"]
+            ),
+            Some("28".into())
+        );
+        assert_eq!(
+            printed_page_with_running_heads(
+                None,
+                &l("28 DEBATES IN CONGRESS."),
+                &["DEBATES IN CONGRESS"]
+            ),
+            Some("28".into())
+        );
+        assert_eq!(
+            printed_page_with_running_heads(
+                None,
+                &l("HISTORY OF CONGRESS 29"),
+                &["HISTORY OF CONGRESS"]
+            ),
+            Some("29".into())
+        );
+        assert_eq!(
+            printed_page_with_running_heads(
+                None,
+                &l("28 unrelated heading"),
+                &["HISTORY OF CONGRESS", "DEBATES IN CONGRESS"]
+            ),
             None
         );
     }

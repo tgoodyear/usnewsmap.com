@@ -3390,6 +3390,8 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "clap",
+ "futures",
  "parquet",
  "quick-xml",
  "reqwest",

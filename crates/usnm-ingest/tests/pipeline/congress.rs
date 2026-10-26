@@ -415,6 +415,7 @@ async fn congress_pages_are_indexed_in_a_quickwit_writer_node() {
         .unwrap();
     let r = Release {
         congress: true,
+        congress_manual: false,
         ..e.releaser(1, false)
     };
     let mut sink = QuickwitSink::new(&node.url, &root)

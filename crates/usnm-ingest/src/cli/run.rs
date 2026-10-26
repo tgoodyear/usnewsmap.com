@@ -38,6 +38,9 @@ pub(crate) struct RunArgs {
     /// As for `release`.
     #[arg(long, env = "USNM_CONGRESS")]
     congress: bool,
+    /// Include manually acquired Annals and Register after operator QA.
+    #[arg(long, env = "USNM_CONGRESS_MANUAL", requires = "congress")]
+    congress_manual: bool,
     /// As for `release`.
     #[arg(long)]
     partition_decade: bool,
@@ -83,6 +86,7 @@ pub(crate) async fn run_command(
         ja_latin,
         ocr_local,
         congress,
+        congress_manual,
         partition_decade,
         single_text_field,
         page_language,
@@ -132,6 +136,7 @@ pub(crate) async fn run_command(
         *ja_latin,
         *ocr_local,
         *congress,
+        *congress_manual,
         *partition_decade,
         *single_text_field,
         *page_language,
@@ -235,5 +240,35 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn manual_congress_run_requires_the_congress_index() {
+        let base = [
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "run",
+            "--index-dir",
+            "x",
+        ];
+        let mut without_congress = base.to_vec();
+        without_congress.push("--congress-manual");
+        assert!(Cli::try_parse_from(without_congress).is_err());
+
+        let mut enabled = base.to_vec();
+        enabled.extend(["--congress", "--congress-manual"]);
+        let cli = Cli::try_parse_from(enabled).unwrap();
+        let Command::Run(RunArgs {
+            congress,
+            congress_manual,
+            ..
+        }) = cli.command
+        else {
+            panic!("not a run");
+        };
+        assert!(congress && congress_manual);
     }
 }

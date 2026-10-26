@@ -65,6 +65,7 @@ enum Command {
     OcrRequeue(ocr::OcrRequeueArgs),
     CongressGlobe(congress::CongressGlobeArgs),
     CongressSerialset(congress::CongressSerialsetArgs),
+    CongressManual(congress::CongressManualArgs),
     CongressDamage(congress::CongressDamageArgs),
     SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
     Pictures(pictures::PicturesArgs),
@@ -146,6 +147,7 @@ impl Command {
             Command::OcrRequeue { .. } => "ocr-requeue",
             Command::CongressGlobe { .. } => "congress-globe",
             Command::CongressSerialset { .. } => "congress-serialset",
+            Command::CongressManual { .. } => "congress-manual",
             Command::CongressDamage { .. } => "congress-damage",
             Command::SearchlogCopy { .. } => "searchlog-copy",
             Command::Pictures { .. } => "pictures",
@@ -183,6 +185,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrRequeue { .. }
         | Command::CongressGlobe { .. }
         | Command::CongressSerialset { .. }
+        | Command::CongressManual { .. }
         | Command::CongressDamage { .. }
         | Command::SearchlogCopy { .. }
         | Command::Pictures { .. } => None,
@@ -267,6 +270,9 @@ async fn command(
         }
         Command::CongressSerialset(args) => {
             congress::congress_serialset_command(cli, state, start, args).await
+        }
+        Command::CongressManual(args) => {
+            congress::congress_manual_command(cli, state, start, args).await
         }
         Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
         Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,

@@ -97,6 +97,8 @@ param jaLatin bool = false
 param ocrLocal bool = false
 @description('Give each release the Congress pages curated under curated/congress/ (#229): their own index set, rebuilt when they change.')
 param congress bool = false
+@description('Include manually downloaded Annals and Register pages in Congress releases; off by default.')
+param congressManual bool = false
 @description('Deploy the Congress fetch job, `congressJobName` (#229): manual, one replica of `usnm-ingest congress-globe`.')
 param congressJob bool = false
 @description('The Congress fetch job\'s name (with congressJob), usnm-cong-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
@@ -303,6 +305,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             jaLatin ? ['--ja-latin'] : [],
             ocrLocal ? ['--ocr-local'] : [],
             congress ? ['--congress'] : [],
+            congressManual ? ['--congress-manual'] : [],
             partitionDecade ? ['--partition-decade'] : [],
             singleTextField ? ['--single-text-field'] : [],
             pageLanguage ? ['--page-language'] : [],

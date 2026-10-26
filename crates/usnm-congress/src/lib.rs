@@ -13,12 +13,15 @@
 //!   `current.json` block.
 //! - [`serialset`]: the Serial Set from GovInfo's sitemaps, MODS and PDFs,
 //!   the second source (`usnm-ingest congress-serialset`).
+//! - [`manual`]: Annals and Register PDFs downloaded in a browser and OCRed
+//!   locally (`usnm-ingest congress-manual`); it makes no source-site requests.
 //! - [`fetch`]: the paced HTTP client, raw-store cache and lock both
 //!   fetches share.
 
 pub mod curated;
 pub mod fetch;
 pub mod globe;
+pub mod manual;
 pub mod parse;
 pub mod release;
 pub mod serialset;

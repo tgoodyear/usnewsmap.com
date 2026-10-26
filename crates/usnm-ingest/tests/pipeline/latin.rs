@@ -679,6 +679,7 @@ async fn our_latin_text_follows_the_decade_layout() {
         ja_latin: true,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         ..e.releaser(day, full)
     };
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));

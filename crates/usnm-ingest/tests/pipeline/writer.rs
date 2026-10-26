@@ -63,6 +63,7 @@ async fn releases_into_a_quickwit_writer_node() {
             ja_latin: false,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
