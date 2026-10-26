@@ -1,5 +1,5 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api, ApiError, sameSearch, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
@@ -15,7 +15,7 @@ import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
 import { PaperPages, type PaperSort } from "./components/PaperPages";
-import { usePrefetchPlaceHits } from "./components/placeHits";
+import { placeHitsQuery, usePrefetchPlaceHits } from "./components/placeHits";
 import { PlaceTable } from "./components/PlaceTable";
 import { NewspaperTable, paperRows } from "./components/NewspaperTable";
 import { paperFilterNames } from "./components/NewspaperFilter";
@@ -127,6 +127,10 @@ export function App() {
         : undefined,
   });
   const baselineRef = agg.data?.cube.baseline_ref ?? null;
+  const selectedPlace = useInfiniteQuery({
+    ...placeHitsQuery(params, version, view.place, view.sort),
+    enabled: !!version && !!view.place && !!agg.data,
+  });
   const coverage = useQuery({
     queryKey: ["coverage", baselineRef],
     queryFn: ({ signal }) => api.coverage(baselineRef!, version, signal),
@@ -677,6 +681,7 @@ export function App() {
       ) : (
         <main
           className={agg.isFetching ? "results results--loading" : "results"}
+          data-share-error={!!view.place && selectedPlace.isError}
           data-share-ready={
             !!data &&
             !!places.data &&
@@ -686,6 +691,7 @@ export function App() {
             !problem &&
             !placesFailed &&
             !coverageFailed &&
+            (!view.place || (selectedPlace.isSuccess && !selectedPlace.isFetching)) &&
             !skewNotice &&
             (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket")
           }

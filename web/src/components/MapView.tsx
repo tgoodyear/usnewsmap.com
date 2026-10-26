@@ -190,7 +190,7 @@ export default function MapView(props: Props) {
     });
     m.on("render", () => {
       if (latest.current.layer === "states" && latest.current.norm === "raw") {
-        element.dataset.overlayReady = String(nativeStates.current?.hasDrawn() ?? false);
+        element.dataset.overlayReady = String(nativeStates.current?.isReady() ?? false);
       }
     });
     if (STYLE_URL === "none") reveal();

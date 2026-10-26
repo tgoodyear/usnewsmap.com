@@ -49,7 +49,11 @@ try {
   const response = await page.goto(target.href, { waitUntil: "domcontentloaded" });
   if (!response?.ok()) throw new Error("Screenshot page failed to load");
   if (target.pathname.startsWith("/search/") || target.searchParams.get("q")?.trim()) {
-    await page.locator('[data-share-ready="true"]').waitFor();
+    const results = page.locator('[data-share-ready="true"], [data-share-error="true"]');
+    await results.waitFor();
+    if ((await results.getAttribute("data-share-error")) === "true") {
+      throw new Error("Selected-place results failed to load");
+    }
     await page.locator('[data-testid="map"], .tables, .notice:has-text("No pages match.")').first().waitFor();
     if (target.searchParams.get("tab") !== "table" && (await page.locator(".tables").count())) {
       throw new Error("WebGL map is unavailable");

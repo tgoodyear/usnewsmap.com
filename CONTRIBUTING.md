@@ -64,3 +64,11 @@ seed regeneration, memory budgets and bounded smoke runs.
 ## Pull requests
 
 Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds. [What CI runs](docs/development.md#what-ci-runs) lists each job, when it runs, which ones the repository requires, and the local commands that match.
+
+Request GitHub Copilot Review on every pull request in this repository. Count completed Copilot overview reviews as review rounds, not individual thread comments, and use the latest overview for the current changes:
+
+- **Green / Approved:** allow merge only when CI is passing.
+- **Yellow / Changes recommended:** address the concerns with at least one new commit. Reply to the review threads and resolve them once their issues are fixed. Request another Copilot review if fewer than three rounds have completed. A final yellow review does not allow merge, even after three rounds.
+- **Blue / Needs a closer look:** address applicable concerns with at least one new commit. Request another Copilot review if a commit was pushed and fewer than three rounds have completed. After at least three rounds, a final blue review allows merge only when CI is passing.
+
+Do not merge while a required re-review or CI is pending. Allowing merge under this policy is not by itself a request to merge a pull request.

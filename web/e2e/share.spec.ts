@@ -20,3 +20,43 @@ test("search previews are rendered PNGs of the linked view and cached", async ({
   expect(filtered.status()).toBe(200);
   expect(await filtered.body()).not.toEqual(png);
 });
+
+test("selected-place screenshots wait for page results and reject failed panels", async ({ page, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app");
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/v1/hits?**", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&place=P00001");
+  await expect(page.locator(".summary")).toContainText("places");
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "false");
+  release();
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "true");
+  await expect(page.locator(".hits .hit").first()).toBeVisible();
+  await page.unroute("**/v1/hits?**");
+  await page.route("**/v1/hits?**", (route) =>
+    route.fulfill({
+      status: 400,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ type: "about:blank", title: "Page results unavailable", status: 400 }),
+    }),
+  );
+  await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&place=P00002");
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-error", "true", { timeout: 15_000 });
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "false");
+});
+
+test("native states preview accepts a fully rendered ocean viewport", async ({ request, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
+  test.setTimeout(45_000);
+  const image = await request.get(
+    "/share-image.png?page=%2F&q=cross+of+gold&from=1896-01-01&to=1896-12-31&layer=states&z=12&c=0,0",
+    { timeout: 40_000 },
+  );
+  expect(image.status()).toBe(200);
+  expect(image.headers()["content-type"]).toBe("image/png");
+});

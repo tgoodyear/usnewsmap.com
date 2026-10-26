@@ -60,6 +60,7 @@ vi.mock("./StatesMapLayer", () => ({
     update = vi.fn();
     destroy = vi.fn();
     hasDrawn = () => false;
+    isReady = () => true;
     constructor(
       _map: unknown,
       public data: unknown,

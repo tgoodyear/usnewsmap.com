@@ -38,10 +38,10 @@ struct Card {
     image: String,
 }
 
-fn clean(value: &str) -> String {
+fn clean(value: &str, limit: usize) -> String {
     value
         .chars()
-        .take(256)
+        .take(limit)
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
@@ -76,7 +76,9 @@ impl Card {
         }
         for (key, value) in form_urlencoded::parse(query.as_bytes()) {
             if VIEW_KEYS.contains(&key.as_ref()) && !params.iter().any(|(k, _)| k == &key) {
-                params.push((key.into_owned(), clean(&value)));
+                // The UI accepts 60 LCCNs of up to 16 characters each.
+                let limit = if key == "lccn" { 60 * 17 - 1 } else { 256 };
+                params.push((key.into_owned(), clean(&value, limit)));
             }
         }
         let get = |key: &str| {
@@ -432,6 +434,27 @@ mod tests {
         assert!(!html.contains("<script>&"));
         // Search permalinks retain the homepage's SEO canonical.
         assert!(html.contains(r#"rel="canonical" href="https://usnewsmap.com/""#));
+    }
+
+    #[test]
+    fn full_newspaper_filter_survives_metadata_and_image_urls() {
+        let lccns = (0..60)
+            .map(|i| format!("sn{i:014}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("lccn", &lccns)
+            .finish();
+        let card = Card::new("/search/gold", &query).unwrap();
+        for url in [&card.url, &card.image] {
+            let query = url.split_once('?').unwrap().1;
+            let filter = form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == "lccn")
+                .unwrap()
+                .1
+                .into_owned();
+            assert_eq!(filter, lccns);
+        }
     }
 
     #[test]
