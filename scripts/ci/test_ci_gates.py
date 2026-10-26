@@ -44,3 +44,8 @@ class Gates(unittest.TestCase):
             for step in re.split(r"(?m)^      - ", job(name))[1:]:
                 if "| tee " in step:
                     self.assertIn("shell: bash", step)
+
+    def test_script_shards_install_the_pinned_arm_contract_compiler(self):
+        scripts = job("script-tests")
+        self.assertLess(scripts.index("run: scripts/ci/install-bicep.sh"),
+                        scripts.index("run: scripts/ci/run-unit-tests.py"))

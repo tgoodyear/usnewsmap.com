@@ -733,7 +733,7 @@ jobs:
     name: infra configuration checks
     # Also the shared-key scan and the named-arguments check (#277), so every
     # change but documentation runs them. The Bicep, naming, workbook and
-    # script-test steps run when something they read changed (`infra`), which
+    # script-test jobs run when something they read changed (`infra`), which
     # a change confined to src/ and tests/ of the LAN dashboard crate doesn't.
     # The OCR gold steps follow `ocr_gold`.
     needs: changes
@@ -827,7 +827,7 @@ jobs:
   script-tests:
     name: script tests (${{ matrix.shard }})
     needs: changes
-    if: needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.infra == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -837,6 +837,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install pinned Bicep for ARM contract tests
+        run: scripts/ci/install-bicep.sh
       - name: Every selected script module runs in exactly one isolated shard
         env:
           SHARD: ${{ matrix.shard }}

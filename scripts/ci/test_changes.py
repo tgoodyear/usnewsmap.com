@@ -635,6 +635,15 @@ class BuildInputs(unittest.TestCase):
         self.assertIn(marker, ci)
         self.assertEqual(self.select((path, ci.replace(marker, marker + "      # touched\n"))), {"edge"})
 
+    def test_an_edit_inside_a_script_shard_also_enables_its_required_gate(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "      - name: Every selected script module runs in exactly one isolated shard\n"
+        self.assertIn(marker, ci)
+        self.assertEqual(self.select((path, ci.replace(marker, marker + "        # touched\n"))),
+                         {"code", "infra"})
+
     def test_a_broken_cargo_runs_everything_that_builds_a_crate(self):
         on = self.select("crates/usnm-ocr-dash/src/html.rs", env=self.stub_tool("cargo"))
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
