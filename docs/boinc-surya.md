@@ -177,7 +177,11 @@ SURYA_ENGINE_LLAMA=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002
 SURYA_ENGINE_WEIGHTS=sha256:557aca6f56e5844007dbb04fe69a638f40e8d55823e89de07a1d4906c291b701
 ```
 
-Do not take the pins from a `surya-vulkan-*` image: its llama image differs, and no Vulkan app version is published.
+Do not take the pins from a `surya-vulkan-*` image for this CUDA campaign: its
+llama image differs. Intel Vulkan **1.6 / 106** (app version 60) was separately
+published on 26 October, but its dispatch gate remains closed pending a correctly
+pinned bounded Xe probe. Publication is not Intel hardware acceptance; see the
+[release receipt](notes/2026-10-26-boinc-gpu-release.md).
 
 The steps, with `wave1` as the Surya campaign:
 
