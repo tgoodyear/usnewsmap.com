@@ -1,5 +1,5 @@
 //! The fixture indexes with page languages (05 §5.5.8, #289), for
-//! scripts/quickwit-fixtures.sh and the parity test:
+//! scripts/dev/quickwit-fixtures.sh and the parity test:
 //!
 //! - `page_language_fixture --template`: the index template on stdin, with
 //!   the `page_language` and `page_language_set` fields, as a release

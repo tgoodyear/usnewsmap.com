@@ -28,6 +28,9 @@ use usnm_state::state::State;
 use usnm_store::ObjectStore;
 
 pub mod assess;
+pub mod bundle;
+pub mod claim;
+pub mod cli;
 pub mod gold;
 pub mod handoff;
 pub mod host_trust;
@@ -134,7 +137,7 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn atomic_with_permissions(
+pub(crate) fn atomic_with_permissions(
     path: &Path,
     bytes: &[u8],
     permissions: Option<std::fs::Permissions>,
@@ -217,10 +220,67 @@ pub struct Record {
     /// Fixed once, so interrupted publishing uses the same native object paths.
     pub stamp: String,
     pub error: Option<String>,
+    /// For a job that came off the work queues (`claim`): the ledger row the
+    /// queue message was written with, which the result is imported against.
+    /// An explicit cohort has none, and `queued` makes its row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger: Option<LedgerRow>,
+    /// The OCR bundle (#1059) this page was submitted in, on the BOINC server's copy of the
+    /// record only: its workunit is the bundle's, `usnm_ocrb_<bundle>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
+    /// The bundle this page failed in and was taken out of, to be submitted alone. Such a page
+    /// never goes into another bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unbundled: Option<String>,
+}
+/// A native ledger row as a claim carries it (`ledger::Queued` with its
+/// times as RFC 3339 text).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LedgerRow {
+    pub batch_version: u16,
+    pub reason: String,
+    pub language: String,
+    pub plan: String,
+    pub attempt: u32,
+    pub request_day: Option<String>,
+    pub queued_at: String,
+}
+impl LedgerRow {
+    pub fn from_queued(q: &Queued) -> Self {
+        Self {
+            batch_version: q.batch_version,
+            reason: q.reason.clone(),
+            language: q.language.clone(),
+            plan: q.plan.clone(),
+            attempt: q.attempt,
+            request_day: q.request_day.map(|d| d.to_string()),
+            queued_at: q
+                .queued_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        }
+    }
+    pub fn to_queued(&self, doc_id: &str, batch: &str) -> anyhow::Result<Queued> {
+        Ok(Queued {
+            doc_id: doc_id.into(),
+            batch: batch.into(),
+            batch_version: self.batch_version,
+            reason: self.reason.clone(),
+            language: self.language.clone(),
+            plan: self.plan.clone(),
+            attempt: self.attempt,
+            request_day: self.request_day.as_deref().map(str::parse).transpose()?,
+            queued_at: DateTime::parse_from_rfc3339(&self.queued_at)?.with_timezone(&Utc),
+        })
+    }
 }
 impl Record {
     pub fn queued(&self) -> anyhow::Result<Queued> {
         let key = self.job.message.key()?;
+        if let Some(row) = &self.ledger {
+            return row.to_queued(&key.doc_id(), &self.job.message.batch);
+        }
         Ok(Queued {
             doc_id: key.doc_id(),
             batch: self.job.message.batch.clone(),
@@ -233,6 +293,13 @@ impl Record {
             queued_at: DateTime::parse_from_rfc3339(&self.job.message.queued_at)?
                 .with_timezone(&Utc),
         })
+    }
+    /// The BOINC workunit this page runs in: its own, or its bundle's.
+    pub fn workunit(&self) -> String {
+        match &self.bundle {
+            Some(bundle) => usnm_ocr_contract::boinc::bundle::workunit(bundle),
+            None => self.job.workunit(),
+        }
     }
     pub fn paths(&self) -> anyhow::Result<(String, String)> {
         let key = self.job.message.key()?;
@@ -329,6 +396,42 @@ fn cached(scans: &Path, row: &ManifestRow) -> anyhow::Result<(Vec<u8>, prefetch:
     }
     bail!("selected page has no full-resolution cached scan")
 }
+/// The rows `export` builds queue-fed jobs from: one per selected page, from its claim file,
+/// with the claims by doc id. The scan is then found and checked against its sidecar (doc id,
+/// batch, batch version, checksum) as a manifest page's is.
+fn claimed_rows(
+    dir: &Path,
+    batch: &str,
+    selected: &BTreeSet<String>,
+) -> anyhow::Result<(Vec<ManifestRow>, BTreeMap<String, claim::Claim>)> {
+    let mut claims = BTreeMap::new();
+    let rows = selected
+        .iter()
+        .map(|page| {
+            let key: PageKey = page.parse()?;
+            let claim = claim::read_local(dir, &key.doc_id())?;
+            let message = claim.message()?;
+            ensure!(
+                message.page == *page
+                    && message.batch == batch
+                    && message.language == claim.ledger.language,
+                "the claim for {} is not this page and batch's queue message and ledger row",
+                key.doc_id()
+            );
+            let row = ManifestRow::new(
+                &key,
+                &message.batch,
+                claim.ledger.batch_version,
+                Some(message.language.clone()),
+                "claim",
+                message.score.unwrap_or(0.0),
+            );
+            claims.insert(key.doc_id(), claim);
+            Ok(row)
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok((rows, claims))
+}
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
     pub manifest: PathBuf,
@@ -339,6 +442,20 @@ pub struct ExportOptions {
     pub plan: String,
     pub image: String,
     pub timeout_secs: u32,
+    /// A directory of `claim` files, one per selected page
+    /// (`<doc_id>.json`): the pages came off the work queues, so each job
+    /// carries its queue message and ledger row instead of a new one.
+    pub claims: Option<PathBuf>,
+}
+/// The Tesseract models the worker image holds, from the model lock.
+pub fn installed_models() -> BTreeSet<String> {
+    engine::MODELS_LOCK
+        .lines()
+        .filter(|s| !s.starts_with('#'))
+        .filter_map(|s| s.split_whitespace().next())
+        .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
+        .map(str::to_owned)
+        .collect()
 }
 /// Export a small, explicitly allocated cohort and register native requests.
 pub async fn export(
@@ -361,6 +478,19 @@ pub async fn export(
         "invalid base batch"
     );
     let _lock = Lock::take(&opts.root)?;
+    // A page this plan journaled already keeps the deadline it was exported with, so a resumed
+    // export builds the same job, whatever --timeout-secs is now (#1159).
+    let mut kept_timeouts: BTreeMap<String, u32> = BTreeMap::new();
+    if let Ok(entries) = std::fs::read_dir(opts.root.join("jobs")) {
+        for entry in entries.flatten() {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(old) = load(&opts.root, &id) {
+                if old.plan == opts.plan {
+                    kept_timeouts.insert(old.job.message.page.clone(), old.job.engine.timeout_secs);
+                }
+            }
+        }
+    }
     let selected: BTreeSet<String> = String::from_utf8(read(&opts.pages, 64 * 1024)?)?
         .lines()
         .map(str::trim)
@@ -379,10 +509,19 @@ pub async fn export(
         .iter()
         .map(|page| page.parse::<PageKey>().map(|key| key.doc_id()))
         .collect::<Result<_, _>>()?;
-    let rows = usnm_ocr_contract::prefetch::decode_where(
-        bytes::Bytes::from(read(&opts.manifest, 128 << 20)?),
-        |row| row.batch == opts.batch && selected_docs.contains(&row.doc_id),
-    )?;
+    // A queue-fed page comes from its claim: a user-requested page is in no prefetch
+    // manifest (#1055), and its claim already holds the batch version the ledger row and
+    // the published snapshot agreed on. A cohort page comes from the manifest.
+    let (rows, mut claims) = if let Some(dir) = &opts.claims {
+        let (rows, claims) = claimed_rows(dir, &opts.batch, &selected)?;
+        (rows, Some(claims))
+    } else {
+        let rows = usnm_ocr_contract::prefetch::decode_where(
+            bytes::Bytes::from(read(&opts.manifest, 128 << 20)?),
+            |row| row.batch == opts.batch && selected_docs.contains(&row.doc_id),
+        )?;
+        (rows, None)
+    };
     let mut chosen = BTreeMap::new();
     for row in rows {
         if row.batch == opts.batch && selected.contains(&row.key()?.to_string()) {
@@ -394,33 +533,47 @@ pub async fn export(
     }
     ensure!(
         chosen.len() == selected.len(),
-        "selected pages missing from manifest/batch"
+        "{}",
+        if claims.is_some() {
+            "selected pages missing from their claims/batch"
+        } else {
+            "selected pages missing from manifest/batch"
+        }
     );
-    let installed = engine::MODELS_LOCK
-        .lines()
-        .filter(|s| !s.starts_with('#'))
-        .filter_map(|s| s.split_whitespace().next())
-        .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
-        .map(str::to_owned)
-        .collect();
+    let installed = installed_models();
     let snapshot = ocr_local::boinc::Snapshot::load(state, reference).await?;
     let mut records = Vec::new();
     for (page, row) in chosen {
+        let timeout_secs = kept_timeouts
+            .get(&page)
+            .copied()
+            .unwrap_or(opts.timeout_secs);
         let (scan, side) = cached(&opts.scans, &row)?;
         let title_languages = snapshot
             .titles
             .get(&row.lccn)
             .context("selected title is not published")?;
-        let language = ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
-            .context("page has no mapped detected or title language")?;
-        let selected = engine::route(&language, &installed)
-            .context("selected engine/profile unavailable on this Tesseract node")?;
-        let profile = selected.profile;
         let now = Utc::now();
-        let mut job = Job {
-            v: boinc::VERSION,
-            id: String::new(),
-            message: OcrMessage {
+        // A queued page keeps its queue message and ledger row; a cohort page
+        // gets a bulk message of its own now.
+        let (message, ledger_row) = if let Some(claims) = claims.as_mut() {
+            let claim = claims
+                .remove(&row.doc_id)
+                .context("no claim for a selected page")?;
+            let message = claim.message()?;
+            ensure!(
+                message.page == page
+                    && message.batch == row.batch
+                    && claim.ledger.batch_version == row.batch_version,
+                "the claim for {} is not the manifest's page or batch version",
+                row.doc_id
+            );
+            (message, Some(claim.ledger))
+        } else {
+            let language =
+                ocr_local::enqueue::message_language(row.lang.as_deref(), title_languages)
+                    .context("page has no mapped detected or title language")?;
+            let message = OcrMessage {
                 v: 1,
                 page,
                 batch: row.batch.clone(),
@@ -428,7 +581,16 @@ pub async fn export(
                 reason: Reason::Bulk,
                 score: Some(row.damage_rate),
                 queued_at: now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-            },
+            };
+            (message, None)
+        };
+        let selected = engine::route(&message.language, &installed)
+            .context("selected engine/profile unavailable on this Tesseract node")?;
+        let profile = selected.profile;
+        let mut job = Job {
+            v: boinc::VERSION,
+            id: String::new(),
+            message,
             batch_version: row.batch_version,
             scan: boinc::Scan {
                 url: side.loc_url,
@@ -447,7 +609,7 @@ pub async fn export(
                     .to_string(),
                 psm: 3,
                 dpi: 300,
-                timeout_secs: opts.timeout_secs,
+                timeout_secs,
             },
         };
         job.id = job.identity()?;
@@ -472,6 +634,9 @@ pub async fn export(
                 stage: Stage::Prepared,
                 stamp: now.format("%Y%m%dT%H%M%S%6fZ").to_string(),
                 error: None,
+                ledger: ledger_row,
+                bundle: None,
+                unbundled: None,
             };
             save(&opts.root, &record)?;
             record
@@ -487,11 +652,17 @@ pub async fn export(
             .iter()
             .map(|r| r.queued())
             .collect::<anyhow::Result<Vec<_>>>()?;
-        // Deterministic cohort name from full IDs; request times remain in the
-        // persisted records. A retry can contain already-written reservations.
-        let ids: Vec<_> = pending.iter().map(|r| &r.job.id).collect();
-        let run = format!("boinc-{}", boinc::sha256(&serde_json::to_vec(&ids)?));
-        ocr_local::boinc::reserve(state, curated, &snapshot, &rows, &run).await?;
+        if opts.claims.is_some() {
+            // Their rows are in the ledger already: check, don't write.
+            ocr_local::boinc::adopt(state, curated, &snapshot, &rows).await?;
+        } else {
+            // Deterministic cohort name from full IDs; request times remain in
+            // the persisted records. A retry can contain already-written
+            // reservations.
+            let ids: Vec<_> = pending.iter().map(|r| &r.job.id).collect();
+            let run = format!("boinc-{}", boinc::sha256(&serde_json::to_vec(&ids)?));
+            ocr_local::boinc::reserve(state, curated, &snapshot, &rows, &run).await?;
+        }
         for record in &mut records {
             if record.stage == Stage::Prepared {
                 record.stage = Stage::Reserved;
@@ -501,6 +672,24 @@ pub async fn export(
     }
     let ids = records.into_iter().map(|r| r.job.id).collect();
     Ok(ids)
+}
+
+/// A returned result's `text.txt` as a job's page is stored: normalized for the
+/// job's engine and language (`Hyphenation::for_page`), so a word broken at a
+/// line end is rejoined after `-`, `⸗`, `¬` or `‐` on any page, and after an
+/// em dash `—` only on a German page or one read with a Fraktur model, and
+/// then only before a lowercase letter (#1065). `import` stores this text,
+/// and the spot check compares two hosts' answers as this text, so a pair
+/// agrees exactly when what would be stored agrees.
+pub(crate) fn normalized_text(job: &Job, text: &[u8]) -> anyhow::Result<String> {
+    let hyphenation = usnm_core::text::Hyphenation::for_page(
+        &job.engine_tag()?.to_string(),
+        &job.message.language,
+    );
+    Ok(usnm_core::text::normalize_ocr_for(
+        std::str::from_utf8(text)?,
+        hyphenation,
+    ))
 }
 
 /// Publish a validated result using fixed names. No source scans are deleted.
@@ -547,7 +736,7 @@ pub async fn import(
     checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
     let key = record.job.message.key()?;
     let raw_text = text.clone();
-    let text = usnm_core::text::normalize_ocr(std::str::from_utf8(&text)?);
+    let text = normalized_text(&record.job, &text)?;
     let raw_alto = alto.clone();
     let alto = engine::set_alto_source(
         std::str::from_utf8(&alto)?,
@@ -577,6 +766,17 @@ pub async fn import(
         .is_some_and(|o| o.outcome == ledger::IMPORTED && o.source == part_name)
     {
         record.stage = Stage::Published;
+        save(root, &record)?;
+        return Ok(());
+    }
+    if record.ledger.is_some()
+        && ledger.outstanding(&key.doc_id()).is_none()
+        && ledger.imported(&key.doc_id())
+    {
+        // A queue-fed job shares its reservation with the nodes: its claim lapsed, and a
+        // node imported the page first. That answer stands; this one is not published.
+        record.stage = Stage::Published;
+        record.error = Some("superseded: another producer imported this page".into());
         save(root, &record)?;
         return Ok(());
     }
@@ -623,6 +823,62 @@ async fn put_same(
     Ok(())
 }
 
+/// Why a workunit failed for good, from the assimilator's `_error` marker (its error mask, as
+/// `0x<hex>`; none means `_no_output_files`), with the page deadline the job gave, so a dead
+/// letter says what happened (#1159).
+pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
+    let mask = marker
+        .and_then(|b| std::str::from_utf8(b).ok())
+        // The stock assimilator appends: the last mask written is the workunit's.
+        .and_then(|s| s.lines().map(str::trim).rfind(|l| !l.is_empty()))
+        .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+    let Some(mask) = mask else {
+        return format!("BOINC workunit returned no output files (page deadline {timeout_secs} s)");
+    };
+    let names: Vec<&str> = [
+        (0x1, "couldn't send a result"),
+        (0x2, "too many error results"),
+        (0x4, "too many success results"),
+        (0x8, "too many total results"),
+        (0x10, "cancelled"),
+        (0x20, "no canonical result"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| mask & bit != 0)
+    .map(|(_, name)| name)
+    .collect();
+    format!(
+        "BOINC workunit failed for good: error mask {mask:#x} ({}); page deadline {timeout_secs} s",
+        if names.is_empty() {
+            "unknown".to_owned()
+        } else {
+            names.join(", ")
+        }
+    )
+}
+
+#[cfg(test)]
+mod terminal_reason_tests {
+    #[test]
+    fn names_the_mask_and_the_deadline() {
+        assert_eq!(
+            super::terminal_reason(Some(b"0x2\n"), 1800),
+            "BOINC workunit failed for good: error mask 0x2 (too many error results); page deadline 1800 s"
+        );
+        assert_eq!(
+            super::terminal_reason(Some(b"0x22"), 600),
+            "BOINC workunit failed for good: error mask 0x22 (too many error results, no canonical result); page deadline 600 s"
+        );
+        assert_eq!(
+            super::terminal_reason(None, 600),
+            "BOINC workunit returned no output files (page deadline 600 s)"
+        );
+        assert!(super::terminal_reason(Some(b"0x2"), 1800).len() <= 200);
+        // Assimilated twice: the marker holds the mask twice.
+        assert!(super::terminal_reason(Some(b"0x2\n0x2\n"), 600).contains("error mask 0x2 "));
+    }
+}
+
 /// Match stock batch_collect_assimilator's canonical output names.
 pub async fn collect(
     root: &Path,
@@ -631,18 +887,18 @@ pub async fn collect(
     curated: &dyn ObjectStore,
     out: &dyn ObjectStore,
 ) -> anyhow::Result<()> {
-    let workunit = load(root, id)?.job.workunit();
-    if spool.join(format!("{workunit}_error")).exists()
-        || spool.join(format!("{workunit}_no_output_files")).exists()
-    {
+    let job = load(root, id)?.job;
+    let workunit = job.workunit();
+    let error_marker = spool.join(format!("{workunit}_error"));
+    if error_marker.exists() || spool.join(format!("{workunit}_no_output_files")).exists() {
         let _lock = Lock::take(root)?;
         let mut record = load(root, id)?;
         ensure!(record.stage != Stage::Published, "already published");
         record.stage = Stage::Failed;
-        record.error = Some(
-            "BOINC terminal execution failure; inspect server logs and allocate a retry explicitly"
-                .into(),
-        );
+        record.error = Some(terminal_reason(
+            std::fs::read(&error_marker).ok().as_deref(),
+            job.engine.timeout_secs,
+        ));
         save(root, &record)?;
         bail!("BOINC terminal failure");
     }

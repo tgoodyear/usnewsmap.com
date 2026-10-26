@@ -17,6 +17,7 @@ tempfile.workspace = true
 unicode-normalization.workspace = true
 unicode-general-category.workspace = true
 usnm-alto.workspace = true
+usnm-core.workspace = true
 usnm-ocr-route.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 anyhow.workspace = true

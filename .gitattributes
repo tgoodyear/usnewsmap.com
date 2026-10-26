@@ -1,3 +1,9 @@
 ocr/bench/serialset-pilot/source/alto/*.xml whitespace=cr-at-eol
-
 fixtures/congress/lcg/manual/annals/*.pdf binary
+# The native Qwen app embeds these byte for byte (include_bytes!) and compares them with the
+# copies shipped beside it, so every checkout, Windows CI included, must keep LF.
+ocr/boinc/qwen/*.lock text eol=lf
+ocr/boinc/qwen/*.json text eol=lf
+# The Surya image's pins: usnm-boinc compiles one in (include_str!) and a build passes each line to
+# `docker build --build-arg`, where a carriage return would be part of the value.
+ocr/boinc/surya/engine.lock text eol=lf

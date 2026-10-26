@@ -82,6 +82,7 @@ var functionWords = [
   'ocrs'
   'pipeline'
   'qw'
+  'release'
   'scans'
   'scratch'
   'search'
@@ -148,6 +149,7 @@ var nameTypes = {
   backfillReplicaSilentAlert: 'alert'
   backfillStalledAlert: 'alert'
   boincBridgeIdentity: 'id'
+  boincControllerRole: 'role'
   boincHandoffIdentity: 'id'
   boincHandoffJob: 'caj'
   boincLedgerRole: 'role'
@@ -174,6 +176,10 @@ var nameTypes = {
   ingestJobFailedAlert: 'alert'
   ingestNotProgressingAlert: 'alert'
   jaocrJob: 'caj'
+  jaocrWriterRole: 'role'
+  ocrDamageWriterRole: 'role'
+  ocrSyncLakeRole: 'role'
+  ocrSyncExchangeRole: 'role'
   jaoneJob: 'caj'
   logCapAlert: 'alert'
   ocrAppInsights: 'appi'
@@ -185,6 +191,8 @@ var nameTypes = {
   ocrNodeWriterRole: 'role'
   ocrNodesWorkbookTitle: 'title'
   ocrSyncBacklogAlert: 'alert'
+  ocrSyncFailedAlert: 'alert'
+  ocrSyncStaleAlert: 'alert'
   ocrSyncJob: 'caj'
   ocrVault: 'kv'
   ocrWorkspace: 'log'
@@ -207,6 +215,7 @@ var nameTypes = {
   searcherApp: 'ca'
   serialSetJob: 'caj'
   serialSetWriterRole: 'role'
+  releaseWriterRole: 'role'
   siteUnavailableAlert: 'alert'
   siteWebtest: 'webtest'
   stateEndpoint: 'pep'
@@ -250,6 +259,7 @@ type Names = {
   backfillStalledAlert: string
   @description('The BOINC stack\'s app and bridge identity (contrib-compute/infra/boinc/main.bicep names it the same way).')
   boincBridgeIdentity: string
+  boincControllerRole: string
   boincHandoffIdentity: string
   @description('A Container Apps job name is under 32 characters.')
   boincHandoffJob: string
@@ -278,6 +288,10 @@ type Names = {
   ingestJobFailedAlert: string
   ingestNotProgressingAlert: string
   jaocrJob: string
+  jaocrWriterRole: string
+  ocrDamageWriterRole: string
+  ocrSyncLakeRole: string
+  ocrSyncExchangeRole: string
   jaoneJob: string
   logCapAlert: string
   ocrAppInsights: string
@@ -289,6 +303,8 @@ type Names = {
   ocrNodeWriterRole: string
   ocrNodesWorkbookTitle: string
   ocrSyncBacklogAlert: string
+  ocrSyncFailedAlert: string
+  ocrSyncStaleAlert: string
   ocrSyncJob: string
   ocrVault: string
   ocrWorkspace: string
@@ -312,6 +328,7 @@ type Names = {
   searcherApp: string
   serialSetJob: string
   serialSetWriterRole: string
+  releaseWriterRole: string
   siteUnavailableAlert: string
   siteWebtest: string
   stateEndpoint: string
@@ -336,14 +353,15 @@ func names(env string, sfx string, pinned bool) Names => {
   apiServerErrorsAlert: usnmName('api-server-errors', 'alert', env)
   apiWorkbookTitle: 'usnm API (${env})'
   appInsights: pinned ? 'appi-usnm-${env}' : usnmName('core', 'appi', env)
-  archiveEndpoint: pinned ? 'pe-usnm-archive-blob' : usnmName('archive-blob', 'pep', env)
-  archiveEndpointNic: pinned ? '' : usnmName('archive-blob', 'nic', env)
+  archiveEndpoint: usnmName('archive-blob', 'pep', env)
+  archiveEndpointNic: usnmName('archive-blob', 'nic', env)
   archiveWriterRole: usnmName('archive-writer', 'role', env)
   archiveWriterRoleScopeEnv: ''
   backfillJob: pinned ? 'caj-usnm-backfill-${env}' : usnmName('backfill', 'caj', env)
   backfillReplicaSilentAlert: usnmName('backfill-replica-silent', 'alert', env)
   backfillStalledAlert: usnmName('backfill-stalled', 'alert', env)
   boincBridgeIdentity: usnmName('boinc', 'id', env)
+  boincControllerRole: usnmName('boinc-controller', 'role', env)
   boincHandoffIdentity: usnmName('boinc-handoff', 'id', env)
   boincHandoffJob: usnmName('boinc-handoff', 'caj', env)
   boincLedgerRole: usnmName('boinc-ledger', 'role', env)
@@ -370,6 +388,10 @@ func names(env string, sfx string, pinned bool) Names => {
   ingestJobFailedAlert: usnmName('ingest-job-failed', 'alert', env)
   ingestNotProgressingAlert: usnmName('ingest-not-progressing', 'alert', env)
   jaocrJob: pinned ? 'caj-usnm-jaocr-${env}' : usnmName('jaocr', 'caj', env)
+  jaocrWriterRole: usnmName('jaocr-writer', 'role', env)
+  ocrDamageWriterRole: usnmName('ocr-damage-writer', 'role', env)
+  ocrSyncLakeRole: usnmName('ocr-sync-lake', 'role', env)
+  ocrSyncExchangeRole: usnmName('ocr-sync-exchange', 'role', env)
   jaoneJob: pinned ? 'caj-usnm-jaone-${env}' : usnmName('jaone', 'caj', env)
   logCapAlert: usnmName('core-log-cap', 'alert', env)
   ocrAppInsights: usnmName('ocr', 'appi', env)
@@ -382,6 +404,8 @@ func names(env string, sfx string, pinned bool) Names => {
   ocrNodesWorkbookTitle: 'usnm OCR nodes (${env})'
   // 'ocrs', not 'ocrsync', the pickup job's first name (#386, ADR-0017).
   ocrSyncBacklogAlert: usnmName('ocrs-backlog', 'alert', env)
+  ocrSyncFailedAlert: usnmName('ocrs-failed', 'alert', env)
+  ocrSyncStaleAlert: usnmName('ocrs-stale', 'alert', env)
   ocrSyncJob: usnmName('ocrs', 'caj', env)
   ocrVault: usnmCompactName('ocr', 'kv', env, sfx)
   ocrWorkspace: usnmName('ocr', 'log', env)
@@ -406,6 +430,7 @@ func names(env string, sfx string, pinned bool) Names => {
   searcherApp: usnmName('search', 'ca', env)
   serialSetJob: usnmName('sset', 'caj', env)
   serialSetWriterRole: usnmName('sset-writer', 'role', env)
+  releaseWriterRole: usnmName('release-writer', 'role', env)
   siteUnavailableAlert: usnmName('site-unavailable', 'alert', env)
   siteWebtest: usnmName('site', 'webtest', env)
   stateEndpoint: pinned ? 'pe-usnm-cosmos' : usnmName('state-sql', 'pep', env)

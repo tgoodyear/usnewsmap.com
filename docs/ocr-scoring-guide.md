@@ -8,7 +8,7 @@ Scoring uses `usnm-ocr-survey score`, the Rust scorer in `crates/usnm-ocr-survey
 
 ## Prerequisites
 
-- **A checkout of this repository.** `gold.py` imports `locfetch.py`, `crops.py` and `altotext.py` beside it, and `locfetch.py` imports `ja-ocr/jaocr.py`, so run it from the checkout rather than copying the script out.
+- **A checkout of this repository.** `gold.py` imports `locfetch.py`, `crops.py` and `altotext.py` beside it, and `locfetch.py` imports `ocr/ja-ocr/jaocr.py`, so run it from the checkout rather than copying the script out.
 - **Python 3.9 or later.** The scripts use only the standard library apart from Pillow, and the newest feature in `gold.py` is `str.removesuffix` (3.9). It was run here on 3.14; 3.9 itself is UNVERIFIED.
 - **A Rust toolchain** (`cargo`), for the scorer. The version is pinned in `rust-toolchain.toml`.
 - **Pillow**, for `public-convert`, which opens the page images and cuts the crops (`pip install Pillow`). `validate` and `score` don't need it.
@@ -230,7 +230,7 @@ BLN600 crops run up to 7,000 characters. Scoring all 600 against Gale's OCR took
 
 **Comparing engines.** Compare engines with each other on the same crops: the same dataset, the same `public-convert` flags and seed, and the same `crops.jsonl`. Check that `crops` and `ref_chars` match between the engines' rows. If one engine has fewer crops, it skipped some or your file lacks rows, and its CER covers different text. The easiest way to keep them comparable is one `score` run with a `--hyp` per engine.
 
-**Accuracy and agreement are different numbers.** `gold.py agree` compares engines with each other on this project's own 60 crops, which have no transcription. That number is agreement, not accuracy: two engines can agree and both be wrong. The public sets give accuracy against a human transcription. Report them in separate tables with those labels, and never put a public-set CER and an agreement figure in the same column. The `pub-` prefix on every public group keeps the rows apart.
+**Accuracy and agreement are different numbers.** `gold.py agree` compares engines with each other on this project's own 60 crops, which have no transcription yet (the 40 Czech, Serbian, Polish and Russian crops are out for transcription: [ocr-gold-set.md](ocr-gold-set.md#selection)). That number is agreement, not accuracy: two engines can agree and both be wrong. The public sets give accuracy against a human transcription. Report them in separate tables with those labels, and never put a public-set CER and an agreement figure in the same column. The `pub-` prefix on every public group keeps the rows apart.
 
 **Sample size.** The NewsEye validation sets gave 24 (French), 18 (Finnish) and 10 (Swedish) crops in the real runs. Small sets swing with a few crops; quote `crops` and `ref_chars` with every CER.
 

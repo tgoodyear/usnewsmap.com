@@ -3,6 +3,7 @@
 - **Status:** Accepted, opt-in for the #283 rebuild
 - **Date:** 2026-10-15
 - **Amends:** ADR-0002 (index storage), 08 §8.1
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the separate index account, its endpoint and the Azure serving apps are deleted at on-prem serving's Phase 4 and provisioned again in a disaster recovery, where `publish-staged --restore` copies the index back)
 
 ## Context
 
@@ -60,5 +61,26 @@ stack cleanup, never a rollback mechanism. The old empty container and
 roles can be removed separately after retirement. The defaults and shared
 searcher YAML stay unchanged, so merge alone moves no production data.
 
-See [operations](../../operations.md#index-storage-cutover) for the exact
+See [operations](../../operations/rebuild-and-index-storage.md#index-storage-cutover) for the exact
 rebuild, cutover, rollback and account-specific prune procedure.
+
+## Amendment, October 2026: staged builds from on-prem (#283, #917)
+
+A full rebuild can be built on the on-prem release container instead of
+the ingest job: the Quickwit writer works on the container's own disk
+(`file://` metastore and index root) and `usnm-ingest publish-staged` then
+copies the staged version in. It copies each index's published splits,
+then its `metastore.json` with `index_uri` pointed at `azure://qw-index`,
+then adds the index to `qw-index/manifest.json`, then the lake snapshot and
+`index-storage-pending.json`. Splits and metastores are create-only, and a
+rerun skips objects already there with the same size. It never writes
+`current.json`: promotion and the reader switch are unchanged.
+
+For the copy, the index account opens to the node IPs (`USNM_ONPREM_RELEASE`
+with `USNM_INDEX_STORAGE`, `USNM_OCR_NODE_IPS`). Its firewall then denies
+everything else, Entra ID stays the only authentication, the private
+endpoint stays and the searchers keep using it. The public-network policy
+exempts the account by resource id only while it is open. Turn the setting
+off after the copy to close the account again. The release container's own
+Arc identity holds the grants (`modules/onprem-release.bicep`); the on-prem
+hosts' group does not, because only the release writes the serving index.

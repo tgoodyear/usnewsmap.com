@@ -5,6 +5,10 @@ ocr_group_name() {
   printf 'usnm-ocr-nodes-grp-%s\n' "$1"
 }
 
+onprem_group_name() {
+  printf 'usnm-onprem-grp-%s\n' "$1"
+}
+
 legacy_ocr_group_name() {
   printf 'usnm-ocr-nodes-%s\n' "$1"
 }

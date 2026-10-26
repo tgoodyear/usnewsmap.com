@@ -1,4 +1,4 @@
-//! Fixtures are produced by the production `ja-ocr/alto.py` converter.
+//! Fixtures are produced by the production `ocr/ja-ocr/alto.py` converter.
 use usnm_ocr_adapter::ndlocr::{self, Geometry, COMMIT};
 
 const XML: &[u8] = include_bytes!("fixtures/ndlocr/page.xml");

@@ -295,6 +295,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                     readers: &readers,
                     crops: &qwen_job.crops,
                     readings: Some(&readings),
+                    surya: None,
                 });
                 let mut text = String::new();
                 for row in &rows {

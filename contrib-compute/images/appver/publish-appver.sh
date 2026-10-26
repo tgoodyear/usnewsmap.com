@@ -19,7 +19,7 @@ case "$APPVER_KIND" in
   container)
     APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS:-docker}
     case "$APPVER_APP:$APPVER_PLAN_CLASS" in
-      usnm_ndlocr:docker|usnm_ocr:docker|usnm_assess:docker|usnm_gold:docker|usnm_quality:docker|usnm_surya:docker_mt|usnm_surya:docker_nvidia_cuda|usnm_qwen:docker_mt_2b|usnm_qwen:docker_nvidia_cuda_8b|usnm_qwen_train:docker_nvidia_train|usnm_iris:docker_intel_opencl_4b) ;;
+      usnm_ndlocr:docker|usnm_ocr:docker|usnm_assess:docker|usnm_gold:docker|usnm_quality:docker|usnm_surya:docker_mt|usnm_surya:docker_nvidia_cuda|usnm_surya:docker_intel_vulkan|usnm_qwen:docker_mt_2b|usnm_qwen:docker_nvidia_cuda_8b|usnm_qwen_train:docker_nvidia_train|usnm_iris:docker_intel_opencl_4b) ;;
       *) fail "unsupported container app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
     [ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || [ "$APPVER_PLAN_CLASS" = docker ] || fail "$APPVER_PLATFORM supports only plan class docker"
@@ -28,11 +28,11 @@ case "$APPVER_KIND" in
   native)
     APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS-}
     case "$APPVER_APP:$APPVER_PLAN_CLASS" in
-      usnm_quality:|usnm_qwen:mt|usnm_qwen:apple_gpu_8b|usnm_qwen:nvidia_cuda_8b|usnm_qwen:nvidia_cuda_2b|usnm_qwen:intel_vulkan_8b|usnm_qwen:nvidia_vulkan_8b) ;;
+      usnm_quality:|usnm_qwen:mt|usnm_qwen:apple_gpu_8b|usnm_qwen:nvidia_cuda_8b|usnm_qwen:nvidia_cuda_2b|usnm_qwen:intel_vulkan_8b|usnm_qwen:nvidia_vulkan_8b|usnm_qwen:amd_vulkan_8b) ;;
       *) fail "unsupported native app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
     case "$APPVER_PLAN_CLASS:$APPVER_PLATFORM" in
-      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu) ;;
+      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
       *) fail "native plan class $APPVER_PLAN_CLASS is not supported on $APPVER_PLATFORM" ;;
     esac
     if [ -n "$APPVER_PLAN_CLASS" ]; then
@@ -68,6 +68,16 @@ if ! mkdir "$lock" 2> /dev/null; then
   fi
 fi
 registration=""
+private_directory() {
+  python3 - "$1" "$2" <<'PYDIR'
+from pathlib import Path
+import sys
+import uuid
+path = Path(sys.argv[1]) / (sys.argv[2] + uuid.uuid4().hex)
+path.mkdir(mode=0o700)
+print(path)
+PYDIR
+}
 cleanup() {
   [ -z "$registration" ] || rm -rf "$registration"
   rmdir "$lock"
@@ -94,7 +104,7 @@ if [ -e "$dst" ]; then
   log "$dst is already on the share and identical"
 else
   mkdir -p "$version_dir"
-  stage=$(mktemp -d "$version_dir/.$subdir.XXXXXX")
+  stage=$(private_directory "$version_dir" ".$subdir.")
   cp -r "$source_dir/." "$stage/"
   chmod 0755 "$stage"
   mv "$stage" "$dst" || { rm -rf "$stage"; fail "can't move the version into $dst"; }
@@ -105,10 +115,12 @@ for t in "$src"/templates/*; do
   if [ -e "$PROJ/templates/$n" ] && cmp -s "$t" "$PROJ/templates/$n"; then
     continue
   fi
-  tmp_tpl=$(mktemp "$PROJ/templates/.$n.XXXXXX")
+  template_stage=$(private_directory "$PROJ/templates" ".$n.")
+  tmp_tpl="$template_stage/template"
   cp "$t" "$tmp_tpl"
   chmod 0644 "$tmp_tpl"
   mv -f "$tmp_tpl" "$PROJ/templates/$n" || { rm -f "$tmp_tpl"; fail "can't install templates/$n"; }
+  rmdir "$template_stage"
   log "installed templates/$n"
 done
 case "${APPVER_REUSE_PROJECT:-0}" in
@@ -146,7 +158,15 @@ PYCONFIG
 esac
 # Stock update_versions has no app selector and can abort on an unrelated version's
 # immutable files. Keep its code and signed payloads unchanged, but isolate its apps tree.
-registration=$(mktemp -d)
+# Azure Files forces shared directory modes; executable PHP must stay on tmpfs.
+registration=$(private_directory "$SECRETS" "appver-registration.")
+python3 - "$registration" <<'PYPRIVATE'
+import os
+import sys
+info = os.stat(sys.argv[1], follow_symlinks=False)
+if info.st_mode & 0o777 != 0o700 or info.st_uid != os.geteuid():
+    raise PermissionError("registration storage must enforce private owner-only permissions")
+PYPRIVATE
 mkdir -p "$registration/html" "$registration/apps/$APPVER_APP/$APPVER_VERSION"
 cp -LR "$PROJ/html/inc" "$registration/html/inc"
 if [ "${APPVER_REUSE_PROJECT:-0}" = 1 ]; then
@@ -170,17 +190,17 @@ $plan = $kind === "native" ? (getenv("APPVER_PLAN_CLASS") ?: "") : (getenv("APPV
 if (!preg_match('/^usnm_[a-z_]+$/D', $name)
     || !preg_match('/^[1-9][0-9]*\.[0-9]+$/D', $version)
     || !in_array($platformName, ["x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"], true)
-    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "docker_mt_2b", "docker_nvidia_cuda_8b", "docker_nvidia_train", "docker_intel_opencl_4b", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b"], true)) {
+    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "docker_intel_vulkan", "docker_mt_2b", "docker_nvidia_cuda_8b", "docker_nvidia_train", "docker_intel_opencl_4b", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"], true)) {
     fwrite(STDERR, "Invalid app-version verification inputs\n"); exit(1);
 }
 $allowed = $kind === "container"
     ? ["usnm_ndlocr:docker", "usnm_ocr:docker", "usnm_assess:docker", "usnm_gold:docker", "usnm_quality:docker",
-       "usnm_surya:docker_mt", "usnm_surya:docker_nvidia_cuda",
+       "usnm_surya:docker_mt", "usnm_surya:docker_nvidia_cuda", "usnm_surya:docker_intel_vulkan", "usnm_surya:intel_vulkan_8b",
        "usnm_qwen:docker_mt_2b", "usnm_qwen:docker_nvidia_cuda_8b", "usnm_qwen_train:docker_nvidia_train",
        "usnm_iris:docker_intel_opencl_4b"]
     : ($kind === "native"
         ? ["usnm_quality:", "usnm_qwen:mt", "usnm_qwen:apple_gpu_8b",
-           "usnm_qwen:nvidia_cuda_8b", "usnm_qwen:nvidia_cuda_2b", "usnm_qwen:intel_vulkan_8b", "usnm_qwen:nvidia_vulkan_8b"] : []);
+           "usnm_qwen:nvidia_cuda_8b", "usnm_qwen:nvidia_cuda_2b", "usnm_qwen:intel_vulkan_8b", "usnm_qwen:nvidia_vulkan_8b", "usnm_qwen:amd_vulkan_8b"] : []);
 if (!in_array("$name:$plan", $allowed, true)
     || ($kind === "container" && $platformName !== "x86_64-pc-linux-gnu" && $plan !== "docker")) {
     fwrite(STDERR, "Unsupported app/plan class for verification\n"); exit(1);
@@ -200,6 +220,11 @@ echo "Verified $name $version $platformName $plan (app_version ".$versions[0]->i
 PHP
 )
 touch "$PROJ/reread_db"
-chown -R boincadm:boincadm "$dst" "$PROJ/templates" "$PROJ/download" 2> /dev/null ||
+ownership_paths=("$dst" "$PROJ/templates")
+# Scoped publication must not walk the unrelated live download tree on Azure Files.
+if [ "${APPVER_REUSE_PROJECT:-0}" = 0 ]; then
+  ownership_paths+=("$PROJ/download")
+fi
+chown -R boincadm:boincadm "${ownership_paths[@]}" 2> /dev/null ||
   log "chown on the share failed (UNVERIFIED semantics, design.md 2.3)"
 log "published $APPVER_APP $APPVER_VERSION"

@@ -95,7 +95,8 @@ def eligible(probe, profile, release, url):
     gpu = profile['gpu']
     plan = release['plan_class']
     required = ('nvidia' if any(x in plan for x in ('nvidia', 'cuda')) else
-                'intel' if any(x in plan for x in ('intel', 'vulkan')) else
+                'amd' if plan == 'amd_vulkan_8b' else
+                'intel' if 'intel' in plan else
                 'apple' if 'apple_gpu' in plan else 'none')
     if gpu != required or (gpu != 'none' and gpu not in probe['gpus']):
         raise AcceptanceError('fixture/client GPU does not match plan class')
@@ -217,7 +218,7 @@ class Runner:
             provision_dir = ROOT / ('.boinc-provision-' + self.run_id)
             provision_dir.mkdir(mode=0o700)
             self.provision_dir = provision_dir
-            self.call([str(ROOT / 'scripts/boinc-test-client.sh'), '--env', self.args.env,
+            self.call([str(ROOT / 'scripts/boinc/boinc-test-client.sh'), '--env', self.args.env,
                        '--create', '--sku', self.config['client']['sku'],
                        '--resource-suffix', self.run_id, '--authenticator-file', str(self.auth_path),
                        '--work-dir', str(self.provision_dir)])

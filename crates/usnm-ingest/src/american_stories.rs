@@ -1,6 +1,6 @@
 //! American Stories' text for our pages (#218, 04 §4.9, 05 §5.5.4).
 //!
-//! `jaocr.py american-stories-write` (ja-ocr/american_stories_write.py)
+//! `jaocr.py american-stories-write` (ocr/ja-ocr/american_stories_write.py)
 //! writes one row per page to the curated store,
 //! `american-stories/pages/<lccn>/<year>-<nnn>.parquet`, keyed by our
 //! `doc_id`, and marks each year it has finished with
@@ -20,17 +20,21 @@
 //! before.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use anyhow::Context;
 use arrow_array::{Array, Date32Array, LargeStringArray, StringArray};
+use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Datelike;
+use futures::stream::{self, StreamExt};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use usnm_core::text::normalize_ocr;
 use usnm_core::time::{date_from_day, day_number};
+use usnm_state::state::RunBatch;
 use usnm_store::ObjectStore;
 
 use crate::curated::from_unix_days;
@@ -95,10 +99,10 @@ impl Source {
             .sum()
     }
 
-    /// The texts of one batch's pages: the rows of the batch's titles on the
-    /// days `counts` (the batch's `counts.json`) has pages for.
-    pub async fn load(&self, store: &dyn ObjectStore, counts: &Counts) -> anyhow::Result<Batch> {
-        let mut out = Batch::default();
+    /// The parts [`Source::load`] reads for a batch's `counts`, in the order
+    /// a serial read takes them.
+    pub fn wanted(&self, counts: &Counts) -> Vec<String> {
+        let mut wanted: Vec<String> = Vec::new();
         for (lccn, days) in counts {
             let Some(by_year) = self.parts.get(lccn) else {
                 continue;
@@ -109,41 +113,88 @@ impl Source {
                 .filter_map(|y| by_year.get(y))
                 .flat_map(|paths| paths.iter())
             {
-                let bytes = store
-                    .get(path)
-                    .await?
-                    .with_context(|| format!("American Stories part `{path}` vanished"))?;
-                out.parts.push(PartRef {
-                    path: path.clone(),
-                    sha256: hex(&Sha256::digest(&bytes)),
-                    bytes: bytes.len(),
-                });
-                read_part(Bytes::from(bytes), |row| {
-                    let wanted = counts
-                        .get(row.lccn)
-                        .is_some_and(|d| d.contains_key(&day_number(row.date)));
-                    if !wanted {
-                        return;
-                    }
-                    let text = normalize_ocr(row.text);
-                    if text.is_empty() {
-                        out.empty += 1;
-                        return;
-                    }
-                    // A page is in one part; should it be in two, the first
-                    // (by path) is kept, so every release takes the same one.
-                    if let std::collections::hash_map::Entry::Vacant(e) =
-                        out.texts.entry(row.doc_id.to_owned())
-                    {
-                        out.text_bytes += text.len() as u64;
-                        e.insert(text);
-                    }
-                })
-                .with_context(|| path.clone())?;
+                wanted.push(path.clone());
+            }
+        }
+        wanted
+    }
+
+    /// The texts of one batch's pages: the rows of the batch's titles on the
+    /// days `counts` (the batch's `counts.json`) has pages for. Up to
+    /// [`LOAD_PARTS`] parts are read and decoded at once, each on a blocking
+    /// thread, and merged in path order, so the result is the same as
+    /// reading them one by one.
+    pub async fn load(&self, store: &dyn ObjectStore, counts: &Counts) -> anyhow::Result<Batch> {
+        let wanted = self.wanted(counts);
+        let counts = Arc::new(counts.clone());
+        let mut parts = stream::iter(wanted)
+            .map(|path| {
+                let counts = Arc::clone(&counts);
+                async move {
+                    let bytes = store
+                        .get(&path)
+                        .await?
+                        .with_context(|| format!("American Stories part `{path}` vanished"))?;
+                    tokio::task::spawn_blocking(move || read_wanted(path, bytes, &counts))
+                        .await
+                        .context("decoding an American Stories part")?
+                }
+            })
+            .buffered(LOAD_PARTS);
+        let mut out = Batch::default();
+        while let Some(part) = parts.next().await {
+            let part = part?;
+            out.parts.push(part.part);
+            out.empty += part.empty;
+            for (doc_id, text) in part.texts {
+                // A page is in one part; should it be in two, the first
+                // (by path) is kept, so every release takes the same one.
+                if let std::collections::hash_map::Entry::Vacant(e) = out.texts.entry(doc_id) {
+                    out.text_bytes += text.len() as u64;
+                    e.insert(text);
+                }
             }
         }
         Ok(out)
     }
+}
+
+/// American Stories parts read and decoded at once by [`Source::load`].
+pub const LOAD_PARTS: usize = 8;
+
+/// One part's texts for the wanted days, in row order.
+struct PartTexts {
+    part: PartRef,
+    texts: Vec<(String, String)>,
+    empty: u64,
+}
+
+/// Decode one part (CPU work, on a blocking thread): its non-empty texts
+/// of the titles and days `counts` has pages for, and how many were empty.
+fn read_wanted(path: String, bytes: Vec<u8>, counts: &Counts) -> anyhow::Result<PartTexts> {
+    let part = PartRef {
+        sha256: hex(&Sha256::digest(&bytes)),
+        bytes: bytes.len(),
+        path,
+    };
+    let mut texts = Vec::new();
+    let mut empty = 0u64;
+    read_part(Bytes::from(bytes), |row| {
+        let wanted = counts
+            .get(row.lccn)
+            .is_some_and(|d| d.contains_key(&day_number(row.date)));
+        if !wanted {
+            return;
+        }
+        let text = normalize_ocr(row.text);
+        if text.is_empty() {
+            empty += 1;
+        } else {
+            texts.push((row.doc_id.to_owned(), text));
+        }
+    })
+    .with_context(|| part.path.clone())?;
+    Ok(PartTexts { part, texts, empty })
 }
 
 /// The years the writer has finished (those with a marker).
@@ -332,6 +383,33 @@ impl Record {
             "docs": self.docs,
             "only_american_stories": self.only,
         })
+    }
+}
+
+/// American Stories' texts for the local OCR seeder's `skip_american_stories`
+/// (`usnm_ocr_local::seed::AmericanStories`): a title's pages in one batch,
+/// read as a release reads them. The listing of finished years is read on
+/// first use and kept for the run.
+#[derive(Debug, Default)]
+pub struct SeedTexts {
+    source: tokio::sync::OnceCell<Source>,
+}
+
+#[async_trait]
+impl usnm_ocr_local::seed::AmericanStories for SeedTexts {
+    async fn texts(
+        &self,
+        curated: &dyn ObjectStore,
+        batch: &RunBatch,
+        lccn: &str,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        let source = self
+            .source
+            .get_or_try_init(|| Source::list(curated))
+            .await?;
+        let mut counts = crate::dedup::load_counts(curated, batch).await?;
+        counts.retain(|l, _| l == lccn);
+        Ok(source.load(curated, &counts).await?.texts)
     }
 }
 

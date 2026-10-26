@@ -1,4 +1,4 @@
-// Experimental Quickwit search cluster (#238, #239; docs/operations.md,
+// Experimental Quickwit search cluster (#238, #239; docs/operations/environments-and-deploys.md,
 // "Search cluster experiment"). Deployed only with `searchCluster` on; with
 // it off main.bicep skips this module, and the stack deletes what it made.
 //
@@ -35,7 +35,7 @@
 // Both identities pull the ingest image (AcrPull): it has Quickwit and the
 // `usnm-qwcluster` binary.
 //
-// Version comparison (#251; docs/operations.md, "Quickwit version
+// Version comparison (#251; docs/operations/environments-and-deploys.md, "Quickwit version
 // comparison"): with `compareImages`, one standalone searcher per image,
 // `usnm-qw-cmp-{i}-ca-{env}`, each the API sidecar's shape (searcher and metastore,
 // polling the file-backed metastore in `qw-cluster`), with a cluster id of
@@ -44,7 +44,7 @@
 // on `qw-cluster` (as the sidecar has on `qw-index`): neither can change
 // them. Load the indexes first, then set `nodes` to 0 so nothing writes
 // while they search. An image is an ingest image built on another Quickwit
-// (Dockerfile.ingest's QUICKWIT_IMAGE); the node wrapper writes the
+// (docker/Dockerfile.ingest's QUICKWIT_IMAGE); the node wrapper writes the
 // pre-0.9 searcher config when `quickwit --version` is below 0.9.
 //
 // Threads: every node and comparison searcher runs one main-runtime and one
@@ -361,7 +361,7 @@ resource clusterWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 var localDedicated = localMode == 'cache' || localMode == 'copy'
 var localOn = !empty(localMode) && (!localDedicated || !empty(localProfile)) && (localMode != 'nfs' || !empty(localNfsStorage))
 var nfsMount = '/mnt/qwsearch'
-// The node's user (Dockerfile.ingest) owns this directory on the share.
+// The node's user (docker/Dockerfile.ingest) owns this directory on the share.
 var nfsDir = '${nfsMount}/usnm'
 var localCopyFrom = '${storageBlobEndpoint}${clusterContainer}'
 var localModeArgs = localMode == 'cache'

@@ -98,7 +98,7 @@ class PipelineTests(unittest.TestCase):
             if argv[0] == "remote":
                 return "https://github.com/tgoodyear/usnewsmap.com.git"
             if argv[0] == "ls-tree":
-                return "\n".join((self.p.settings, "scripts/provision-boinc.sh", "scripts/build-boinc-images.sh", "scripts/boinc-app-release.sh"))
+                return "\n".join((self.p.settings, "scripts/boinc/provision-boinc.sh", "scripts/boinc/build-boinc-images.sh", "scripts/boinc/boinc-app-release.sh"))
             return ""
         with patch.object(self.p, "git", side_effect=git), patch.object(self.p, "main", return_value="main"), patch.object(self.p, "phase") as action:
             with self.assertRaisesRegex(pipeline.PipelineError, "#807/#548"):
@@ -109,6 +109,50 @@ class PipelineTests(unittest.TestCase):
         with patch.object(self.p, "git", return_value=" M dirty"):
             with self.assertRaisesRegex(pipeline.PipelineError, "clean source"):
                 self.p.preflight()
+
+    def test_unsupported_server_fails_before_acceptance_or_lifecycle_mutation(self):
+        files = (self.p.settings, "scripts/boinc/provision-boinc.sh",
+                 "scripts/boinc/build-boinc-images.sh", "scripts/boinc/boinc-app-release.sh",
+                 "scripts/boinc/acceptance.py")
+        for server in ("onprem", "unknown", None):
+            for dry_run in (False, True):
+                with self.subTest(server=server, dry_run=dry_run):
+                    self.args.dry_run = dry_run
+                    value = {**settings(), "server": server}
+                    def git(*argv, **_):
+                        if argv[0] == "remote":
+                            return "https://github.com/tgoodyear/usnewsmap.com.git"
+                        if argv[0] == "ls-tree":
+                            return "\n".join(files)
+                        if argv[0] == "show":
+                            return json.dumps(value)
+                        return ""
+                    with patch.object(self.p, "git", side_effect=git), patch.object(self.p, "main", return_value="main"), patch.object(self.p, "acceptance") as acceptance, patch.object(self.p, "phase") as action:
+                        with self.assertRaisesRegex(pipeline.PipelineError, "only Azure-hosted"):
+                            self.p.execute()
+                    acceptance.assert_not_called()
+                    action.assert_not_called()
+                    self.assertFalse(self.p.path.exists())
+
+    def test_azure_server_and_legacy_default_keep_offline_preflight(self):
+        files = (self.p.settings, "scripts/boinc/provision-boinc.sh",
+                 "scripts/boinc/build-boinc-images.sh", "scripts/boinc/boinc-app-release.sh",
+                 "scripts/boinc/acceptance.py")
+        self.args.dry_run = True
+        for extra in ({}, {"server": "azure"}):
+            with self.subTest(extra=extra):
+                def git(*argv, **_):
+                    if argv[0] == "remote":
+                        return "https://github.com/tgoodyear/usnewsmap.com.git"
+                    if argv[0] == "ls-tree":
+                        return "\n".join(files)
+                    if argv[0] == "show":
+                        return json.dumps({**settings(), **extra})
+                    return ""
+                with patch.object(self.p, "git", side_effect=git), patch.object(self.p, "main", return_value="main"), patch.object(self.p, "acceptance") as acceptance, patch.object(self.p, "phase") as action:
+                    self.assertTrue(self.p.execute()["dry_run"])
+                acceptance.assert_called_once_with(pipeline.ROOT, dry_run=True)
+                action.assert_not_called()
 
     def test_entire_pipeline_resumes_and_never_repeats_completed_phases(self):
         actions = []
@@ -408,7 +452,7 @@ if keys:
     settings.write_text(json.dumps(value))
 """
         for name in ("provision-boinc.sh", "build-boinc-images.sh", "boinc-app-release.sh"):
-            script = scripts / name
+            script = scripts / "boinc" / name
             script.write_text(fake)
             script.chmod(0o755)
         (scripts / "boinc/acceptance.py").write_text("""import json

@@ -7,6 +7,26 @@
 #     --build-arg BASE_IMAGE=REGISTRY/usnm-boinc-base:<tag> contrib-compute
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+# Debian security updates at build time (#969): the image this builds on is pinned, so its
+# packages are frozen at whatever it was built with. A new SECURITY_REFRESH (a date) makes a
+# cached build run this layer again. PHP_FLOOR and APACHE_FLOOR are the oldest php8.2 and
+# apache2 the image may ship: DLA-4848-1 (CVE-2026-109618, CVE-2026-109619, 21 October 2026)
+# and DSA-6323-1 (CVE-2026-49975, 6 June 2026). The build fails below either; raise it after
+# the next PHP or Apache advisory, here, in the other Containerfiles and in
+# scripts/boinc/onprem/usnm-image-security-check.service.
+ARG SECURITY_REFRESH=2026-10-21
+ARG PHP_FLOOR=8.2.35-1~deb12u1
+ARG APACHE_FLOOR=2.4.67-1~deb12u3
+RUN echo "security refresh $SECURITY_REFRESH" \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confold upgrade \
+ && rm -rf /var/lib/apt/lists/* \
+ && php_version="$(dpkg-query -W -f='${Version}' php8.2-common)" \
+ && if ! dpkg --compare-versions "$php_version" ge "$PHP_FLOOR"; then \
+      echo "php8.2-common $php_version is older than $PHP_FLOOR" >&2; exit 1; fi \
+ && apache_version="$(dpkg-query -W -f='${Version}' apache2)" \
+ && if ! dpkg --compare-versions "$apache_version" ge "$APACHE_FLOOR"; then \
+      echo "apache2 $apache_version is older than $APACHE_FLOOR" >&2; exit 1; fi
 COPY images/server/lib.sh images/server/secrets.sh images/server/entrypoint.sh images/server/work-volume.py images/server/apache-project.conf.template \
      images/server/supervisord.conf images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
 COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
@@ -16,7 +36,7 @@ COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/
 COPY boinc/gold-engine-platforms.json /usr/local/lib/usnm-boinc/
 # Project web pages (about.php, the front-page description), installed by entrypoint.sh --serve
 COPY boinc/html /usr/local/lib/usnm-boinc/html
-COPY images/server/prepare-prefs.py images/server/refresh-scheduler.py images/server/refresh-plan-policy.py /usr/local/lib/usnm-boinc/
+COPY images/server/prepare-prefs.py images/server/refresh-scheduler.py images/server/refresh-plan-policy.py images/server/refresh-project-code.py /usr/local/lib/usnm-boinc/
 RUN python3 /usr/local/lib/usnm-boinc/prepare-prefs.py
 # Debian's default site sets its own DocumentRoot, which would serve its page at /.
 RUN a2dissite -q 000-default \

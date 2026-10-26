@@ -9,12 +9,16 @@ pub mod archive;
 /// LoC's batch directories: a page's JP2 from the bag manifest and the
 /// issue METS (#368).
 pub mod batch;
+/// Chronicling America's bulk OCR archives (#962).
+pub mod bulk;
 /// Scans read from the prefetch cache over HTTP before LoC (#368).
 pub mod cache;
 /// Engines behind the engine contract: long-lived instances (#307).
 pub mod contract;
 pub mod engine;
 pub mod loc;
+/// LoC's word confidence per page from the bulk OCR archives (#962).
+pub mod loc_alto;
 /// Fetching scans ahead of the workers (#368).
 pub mod prefetch;
 /// The page's `run_id` and runs record (13 §13.8, #307).

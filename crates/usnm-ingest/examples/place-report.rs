@@ -141,6 +141,7 @@ fn main() -> anyhow::Result<()> {
                 place_id: l.id.clone(),
                 state: l.state.clone(),
                 languages: vec![],
+                place_periods: vec![],
                 extra: BTreeMap::new(),
             });
         }

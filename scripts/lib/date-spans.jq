@@ -1,5 +1,5 @@
 # The share of searches by date span and by decade partitions touched (#123),
-# for scripts/searches.sh. Input: the array of search-log records
+# for scripts/azure/searches.sh. Input: the array of search-log records
 # (crates/usnm-api/src/searchlog.rs). `--arg by span` counts by date span,
 # `--arg by decades` by partitions touched. Output: tab-separated rows of
 # aggregates only: no query text ever reaches it.

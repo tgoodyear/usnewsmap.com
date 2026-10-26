@@ -1,5 +1,5 @@
 name: ci
-# scripts/bootstrap.sh finds the run it dispatched by its correlation id.
+# scripts/azure/bootstrap.sh finds the run it dispatched by its correlation id.
 run-name: ${{ inputs.correlation != '' && format('ci ({0})', inputs.correlation) || github.event_name == 'pull_request' && github.event.pull_request.title || github.event_name == 'push' && github.event.head_commit.message || 'ci' }}
 
 on:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       correlation:
-        description: "Identifies this run (set by scripts/bootstrap.sh)"
+        description: "Identifies this run (set by scripts/azure/bootstrap.sh)"
         required: false
         default: ""
       scope:
@@ -26,6 +26,9 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # What each job checks, when it runs, how long it takes and which ones a pull request
+  # needs green: docs/development.md, "What CI runs".
+  #
   # What a change touches (scripts/ci/changes.sh): jobs it can't affect are
   # skipped, so an infra-only fix doesn't wait on Rust, web and image builds.
   changes:
@@ -43,10 +46,13 @@ jobs:
       provision: ${{ steps.f.outputs.provision }}
       markdown: ${{ steps.f.outputs.markdown }}
       ocr_worker: ${{ steps.f.outputs.ocr_worker }}
+      ocr_dash: ${{ steps.f.outputs.ocr_dash }}
+      infra: ${{ steps.f.outputs.infra }}
       page_language: ${{ steps.f.outputs.page_language }}
       contrib: ${{ steps.f.outputs.contrib }}
       ocr_gold: ${{ steps.f.outputs.ocr_gold }}
       boinc_pages: ${{ steps.f.outputs.boinc_pages }}
+      edge: ${{ steps.f.outputs.edge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,11 +73,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -85,6 +89,32 @@ jobs:
       # the workspace turns on yet (12 §12.5 Step 4).
       - run: cargo clippy -p usnm-core --all-targets --features damage --locked -- -D warnings
       - run: cargo test -p usnm-core --features damage --locked
+
+  # The OCR work queues in PostgreSQL + pgmq (#967): usnm-store's PgmqQueue against a real
+  # database set up like the queue container (TLS 1.3, client certificates, setup.sql, the
+  # role checks in test_roles.sql). USNM_TEST_PGMQ_REQUIRED fails the test if the fixture is missing.
+  queue:
+    name: queue (PostgreSQL + pgmq, live)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - name: Start the queue fixture
+        run: |
+          location=$(scripts/onprem/queue/ci-fixture.sh --workdir "$RUNNER_TEMP/queue")
+          echo "USNM_TEST_PGMQ=$location" >> "$GITHUB_ENV"
+      - name: usnm-store's live queue test
+        env:
+          USNM_TEST_PGMQ_REQUIRED: '1'
+        run: cargo test -p usnm-store --locked pgmq
+      # The OCR-quality results database (#962) on the same image: schema, roles, the
+      # loader's upserts and the ranking queries.
+      - name: usnm_quality schema and roles
+        run: scripts/onprem/quality/ci-check.sh
 
   # The hosting for the stock BOINC server (ADR-0019): shell scripts, XML
   # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc, whose changes also run this job.
@@ -134,28 +164,30 @@ jobs:
         run: python3 -m unittest -v boinc/test_config.py
       - name: The daemon runner keeps bin/start's pid directory off the share
         run: python3 -m unittest -v images/server/test_boinc_daemons.py
+      - name: The Arc token path sends its key only to a loopback endpoint
+        run: python3 -m unittest -v images/server/test_lib_kv_token.py
+      - name: Key Vault reads retry transient failures (#958)
+        run: python3 -m unittest -v images/server/test_lib_kv_retry.py
+      - name: The server images take Debian's security updates (#969)
+        run: python3 -m unittest -v images/server/test_security_updates.py
       - name: The work-volume export and workbook queries pass
         run: python3 -m unittest -v images/server/test_work_volume.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
-      - name: The bounded volunteer batch scheduler tests pass
+      - name: The bounded volunteer batch inventory tests pass
         working-directory: .
-        run: python3 -m unittest -v scripts/boinc/test_batch_scheduler.py contrib-compute/images/server/test_batch_inventory.py
+        run: python3 -m unittest -v contrib-compute/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: Install scheduler gate test headers
         run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
+      # The other scripts/boinc tests run in the infra job (scripts/ci/run-unit-tests.py), which
+      # every contrib change also triggers. The gold-routing test is left out of that run: it
+      # compiles C++ against the header installed above.
       - name: The app version checks' tests pass
         working-directory: .
         run: |
-          python3 -m unittest -v scripts/boinc/test_install.py
-          python3 -m unittest -v scripts/boinc/test_iris_campaign.py scripts/boinc/test_iris_worker.py scripts/boinc/test_iris_cache.py scripts/boinc/test_iris_stage_pages.py
-          python3 -m unittest -v scripts/boinc/test_volunteer.py scripts/boinc/test_qwen_disk.py scripts/boinc/test_qwen_canary.py scripts/boinc/test_hold_legacy_qwen.py
-          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_prepare_node.py scripts/boinc/test_client_account.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_db_tls.py
-          python3 -m unittest -v scripts/boinc/test_patch_server_intel_proc_type.py
           python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
@@ -264,14 +296,11 @@ jobs:
           [ -z "$bad" ] || { echo "::error::base image without a digest:"; echo "$bad"; exit 1; }
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The base (BOINC from source) is the slow layer: cached across runs.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
           file: contrib-compute/images/base/Containerfile
-          tags: usnm-boinc-base:check
-          load: true
-          cache-from: type=gha,scope=boinc-base
-          cache-to: type=gha,scope=boinc-base,mode=max
+          tag: usnm-boinc-base:check
+          cache-scope: boinc-base
       - name: The server image builds on the base
         run: |
           docker buildx build --builder default --load -t usnm-boinc-server:check \
@@ -283,7 +312,7 @@ jobs:
       - name: The actual server installs and restarts a full private TLS-required project
         timeout-minutes: 15
         run: |
-          python3 -m unittest -v scripts/boinc/test_full_db_tls.py
+          python3 -m unittest -v scripts/boinc/test_full_db_tls.py contrib-compute/images/server/test_refresh_project_code.py
           shellcheck -x -S warning scripts/boinc/check-full-db-tls.sh
           scripts/boinc/check-full-db-tls.sh --local-server-image usnm-boinc-server:check
       # crates/usnm-boinc arrives with PR #441; until then there is no bridge binary to build.
@@ -296,14 +325,15 @@ jobs:
             -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
             --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
-          # The gold-bundle step's tools (docs/boinc.md#build-the-gold-bundle).
+          # The gold-bundle step's tools (docs/boinc/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
-            bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"11.3.0\", PIL.__version__" &&
+            bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"13.0.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/transcription.py --help > /dev/null &&
             test -s /usr/local/lib/usnm-boinc/gold/selections/transcription-audited-20261015.json &&
             cd /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey && python3 -c "import gold, crops, altotext, locfetch, transcription" &&
-            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json'
+            test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json &&
+            test -s /usr/local/lib/usnm-boinc/gold/bundle-v2.lock.json'
 
   # The page-language detector on text of known language (05 §5.5.8): behind
   # #[ignore], so the rust job doesn't run it.
@@ -316,11 +346,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
+
+  # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
+  # run offline on Node's own test runner with no dependencies, and shellcheck of its deploy
+  # script. No package.json and no npm cache, so it does not use setup-node-web.
+  edge:
+    name: edge (fallback worker tests)
+    needs: changes
+    if: needs.changes.outputs.edge == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: node --test edge/fallback-worker/*.test.mjs
+      - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
 
   quickwit:
     name: quickwit (parity, ingest release)
@@ -338,14 +383,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
-        run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
+        run: echo "QUICKWIT_URL=$(scripts/dev/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
       # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
       # with the environment the official Quickwit image sets (the ingest image
@@ -384,14 +426,14 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ops"
           "$RUNNER_TEMP/ops/bin/pip" install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
       - name: Every snapshot matches ops/version-snapshots/schema.json
-        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-version-snapshots.py'
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/ops/check-version-snapshots.py'
       - name: ops/index-history.json matches ops/index-history.schema.json, keys sorted
-        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-index-history.py'
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/ops/check-index-history.py'
       - name: The checkers' and searches.sh date-span tests pass
         run: >-
           "$RUNNER_TEMP/ops/bin/python" -m unittest -v
-          scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
-          scripts/test_date_spans.py
+          scripts/ops/test_check_version_snapshots.py scripts/ops/test_check_index_history.py
+          scripts/azure/test_date_spans.py
 
   image:
     name: container image builds
@@ -413,45 +455,37 @@ jobs:
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
-          tags: usnewsmap-api:check
-          load: true
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
+          file: docker/Dockerfile.api
+          tag: usnewsmap-api:check
+          cache-scope: api
       - name: The API image serves the API and the site
         run: scripts/ci/check-api-image.sh --image usnewsmap-api:check
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
-          file: Dockerfile.ingest
-          tags: usnm-ingest-check
-          load: true
-          cache-from: type=gha,scope=ingest
-          cache-to: type=gha,scope=ingest,mode=max
+          file: docker/Dockerfile.ingest
+          tag: usnm-ingest-check
+          cache-scope: ingest
       - name: The ingest image runs
         run: scripts/ci/check-ingest-image.sh --image usnm-ingest-check
-      # PR builds have no registry, so Dockerfile.ingest's default base is
+      # PR builds have no registry, so docker/Dockerfile.ingest's default base is
       # upstream's image; it must be the one infra/quickwit-image.json pins.
-      - name: Dockerfile.ingest's default Quickwit is the pinned upstream image
+      - name: docker/Dockerfile.ingest's default Quickwit is the pinned upstream image
         run: |
           want=$(jq -r '.upstream | "\(.image):\(.tag)@\(.digest)"' infra/quickwit-image.json)
-          grep -qxF "ARG QUICKWIT_IMAGE=$want" Dockerfile.ingest ||
-            { echo "::error::Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+          grep -qxF "ARG QUICKWIT_IMAGE=$want" docker/Dockerfile.ingest ||
+            { echo "::error::docker/Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
+      - uses: ./.github/actions/build-check-image
         with:
-          context: .
-          file: Dockerfile.ja-ocr
-          tags: usnm-ja-ocr-check
-          load: true
-          cache-from: type=gha,scope=ja-ocr
-          cache-to: type=gha,scope=ja-ocr,mode=max
+          file: docker/Dockerfile.ja-ocr
+          tag: usnm-ja-ocr-check
+          cache-scope: ja-ocr
       # The whole checkout, read-only: test_page_language_parity.py checks
       # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
         run: |
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ocr/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
         run: scripts/ci/check-ja-ocr-image.sh --image usnm-ja-ocr-check
@@ -461,8 +495,13 @@ jobs:
   ocr-worker-el9:
     name: ocr worker (EL9 build, glibc)
     needs: changes
-    if: needs.changes.outputs.ocr_worker == 'true'
+    if: needs.changes.outputs.ocr_worker == 'true' || needs.changes.outputs.ocr_dash == 'true'
     runs-on: ubuntu-latest
+    env:
+      # A pull request that changes only the dashboard builds only the
+      # dashboard. A pull request that changes the worker, and every run that
+      # is not a pull request, builds both, as the release carries both.
+      BUILD_WORKER: ${{ needs.changes.outputs.ocr_worker == 'true' || github.event_name != 'pull_request' }}
     container:
       image: mirror.gcr.io/library/almalinux:9@sha256:9819dc675b67b595c2b59e42be7763fca1a8bb217fa5944e04daa22e9a64db16
     steps:
@@ -471,22 +510,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: el9
+          cache-key: el9
       # --version prints the commit (USNM_GIT_SHA at build time).
       # The LAN dashboard (usnm-ocrdash, 12 §12.2.5) ships in the same
       # release; its container on pve-big is Debian 12 (glibc 2.36).
-      - run: cargo build --release --locked -p usnm-ocr-worker -p usnm-ocr-dash
+      - name: Build
+        run: |
+          packages=(-p usnm-ocr-dash)
+          if [ "$BUILD_WORKER" = true ]; then packages+=(-p usnm-ocr-worker); fi
+          cargo build --release --locked "${packages[@]}"
         env:
           USNM_GIT_SHA: ${{ github.sha }}
       - name: No glibc symbol newer than EL9's 2.34
         run: |
           mkdir -p dist
-          for name in usnm-ocr-worker usnm-ocrdash; do
+          names=(usnm-ocrdash)
+          if [ "$BUILD_WORKER" = true ]; then names+=(usnm-ocr-worker); fi
+          for name in "${names[@]}"; do
             bin=target/release/$name
             newest=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)
             echo "$name: newest glibc symbol version: $newest"
@@ -512,7 +554,11 @@ jobs:
   ocr-worker-check:
     name: ocr worker (RHEL 10, Tesseract image)
     needs: [changes, ocr-worker-el9]
-    if: needs.changes.outputs.ocr_worker == 'true'
+    # The release is built from this job's artifact, so a dashboard change on
+    # main runs it too; a pull request that changes only the dashboard doesn't.
+    if: >-
+      needs.changes.outputs.ocr_worker == 'true'
+      || (needs.changes.outputs.ocr_dash == 'true' && github.event_name != 'pull_request')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -555,14 +601,17 @@ jobs:
             dist/usnm-ocr-tesseract.image-id
           if-no-files-found: error
 
-  # On main: a GitHub release of the worker and its Tesseract image, with a
-  # build provenance attestation, which scripts/ocr-node/install-worker.sh
-  # checks with `gh attestation verify` before it installs anything.
+  # On main: a GitHub release of the worker binary, the LAN dashboard and
+  # the Tesseract image, with a build provenance attestation, which hosts
+  # check with `gh attestation verify` before they install anything. No node
+  # runs the binary as a queue worker (#966: local OCR runs through BOINC
+  # only); the scan archive host (scripts/ocr-node/install-archive-host.sh),
+  # the scan fetcher and the dashboard install from it.
   ocr-worker-release:
     name: ocr worker release
     needs: [changes, rust, ocr-worker-el9, ocr-worker-check]
     if: >-
-      always() && needs.changes.outputs.ocr_worker == 'true'
+      always() && (needs.changes.outputs.ocr_worker == 'true' || needs.changes.outputs.ocr_dash == 'true')
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
       && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -573,13 +622,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      # A slower run for an older commit doesn't publish after a newer one.
+      # A slower run for an older commit doesn't publish after a newer one: only
+      # the commit main points at publishes, or an older one when none of main's
+      # newer commits change the worker or the dashboard build (their runs
+      # publish no release).
       - name: Is this still the head of main?
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/ci/head-of-main.sh
+        run: scripts/ci/head-of-main.sh --unless-changed ocr_worker,ocr_dash
       - if: steps.head.outputs.current == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -620,7 +673,10 @@ jobs:
   infra:
     name: infra (bicep lint, build)
     # Also the shared-key scan and the named-arguments check (#277), so every
-    # change but documentation runs them.
+    # change but documentation runs them. The Bicep, naming, workbook and
+    # script-test steps run when something they read changed (`infra`), which
+    # a change confined to src/ and tests/ of the LAN dashboard crate doesn't.
+    # The OCR gold steps follow `ocr_gold`.
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -629,58 +685,55 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Bicep
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/install-bicep.sh
       - name: Lint (any warning fails)
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/lint-bicep.sh
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
       - name: Scripts and CLIs take named arguments, not positional ones (#277)
-        run: |
-          scripts/ci/no-positional-args.py
-          python3 -m unittest -v scripts/ci/test_no_positional_args.py
-      - name: changes.sh runs the Quickwit job only for what its tests build
-        run: python3 -m unittest -v scripts/ci/test_changes.py
-      - name: The bounded local corpus catalog's tests pass
-        run: python3 -m unittest -v scripts/test_data_catalog.py scripts/test_scan_cache_inventory.py scripts/test_worker_evidence_sync.py
-      - name: Read-only corpus flow observations preserve scope and freshness
-        run: python3 -m unittest -v scripts/test_data_flow_observer.py
-      - name: Pinned model downloads retry TLS failures without bypassing verification
-        run: python3 -m unittest -v scripts/ci/test_model_download.py
+        run: scripts/ci/no-positional-args.py
+      # The Surya image's pins live in ocr/boinc/surya/engine.lock and the NDLOCR-Lite commit in its
+      # models.lock; this checks the places that can't read them (the Containerfiles, the adapter's
+      # COMMIT, the engine catalog). Its unit test runs with the others below.
+      - name: Engine pins written in more than one place agree
+        if: needs.changes.outputs.infra == 'true'
+        run: scripts/ci/check-engine-pins.py
+      # Every scripts/**/test_*.py (changes.sh, the corpus catalog, model downloads, the
+      # environment and BOINC scripts against stub tools, the checkers, ...). A new test file
+      # runs without being listed here. The files it leaves out (Pillow, the ops venv, their own
+      # workflow) and why are in scripts/ci/run-unit-tests.py; each runs in a step of its own.
+      - name: The script unit tests pass (every scripts/**/test_*.py)
+        if: needs.changes.outputs.infra == 'true'
+        run: scripts/ci/run-unit-tests.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
-          python3 -m pip install --quiet --break-system-packages pillow==11.3.0
+          python3 -m pip install --quiet --break-system-packages pillow==13.0.0
           python3 -m unittest -v scripts/ocr-survey/test_gold.py
           python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py -v
       - name: The Rust scorer's golden files match gold.py (#457)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
-      - name: The OCR nodes' nightly update picks the right release (#471)
+      - name: The OCR node scripts pass their image tests and shellcheck
+        if: needs.changes.outputs.infra == 'true'
         run: |
-          python3 -m unittest -v scripts/ocr-node/test_update_worker.py
-          python3 -m unittest -v scripts/ocr-node/test_check_scan_archive.py
-          python3 -m unittest -v scripts/ocr-node/test_grant_archive_uploader.py
-          python3 -m unittest -v scripts/ocr-node/test_install_archive_host.py
-          shellcheck -x -S warning scripts/ocr-node/update-worker.sh scripts/ocr-node/install-worker-node.sh \
-            scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
+          python3 -m pip install --quiet --break-system-packages pillow==13.0.0
+          python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
+          python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
+          shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
             scripts/ocr-node/install-archive-host.sh
-      - name: The search cluster report's tests pass
-        run: python3 -m unittest -v scripts/test_qwcluster_report.py
-      # Against a stub az: the dev experiment marker, the guard-rail budget's
-      # parameters, the settings location and scripts/dev-status.sh (#275).
-      - name: The environment scripts' tests pass
-        run: python3 -m unittest -v scripts/test_env_scripts.py scripts/test_rename_guard.py scripts/test_resource_names.py
-      # Against a stub az: the BOINC bridge starter keeps the job's own settings
-      # and share, and starts it without an override.
-      - name: The BOINC scripts' tests pass
+      - name: The BOINC scripts pass shellcheck
+        if: needs.changes.outputs.infra == 'true'
         run: |
-          python3 -m unittest -v scripts/test_boinc_scripts.py scripts/test_boinc_provision.py
-          python3 -m unittest -v scripts/boinc/test_acceptance.py
-          shellcheck -x -S warning scripts/start-boinc-bridge.sh scripts/provision-boinc.sh scripts/boinc-app-release.sh
+          shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh \
+            scripts/boinc/onprem/image-security-check.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/lib/env_settings.py --check
       # Resource names (ADR-0017): names() in infra/naming.bicep against the
       # rules, infra/names/exceptions.json (which only shrinks against the
@@ -691,6 +744,7 @@ jobs:
       # base check-names.py can't read (--require-base), so the shrink check
       # never drops out quietly.
       - name: Resource names follow ADR-0017 and prod's are unchanged
+        if: needs.changes.outputs.infra == 'true'
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
@@ -700,19 +754,20 @@ jobs:
             sleep $((try * 5))
           done
           scripts/ci/check-names.py --require-base --base "refs/remotes/origin/$BASE_REF"
-          python3 -m unittest -v scripts/ci/test_check_names.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder
+        if: needs.changes.outputs.infra == 'true'
         run: |
           scripts/ci/check-workbooks.py
           scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
-          python3 -m unittest -v scripts/ci/test_check_workbooks.py
       - name: Build every Bicep template
+        if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/build-bicep.sh
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults). The VNet block has no
       # default; this sample is from RFC 5737's documentation range.
-      - run: bicep build-params infra/main.bicepparam --stdout > /dev/null
+      - if: needs.changes.outputs.infra == 'true'
+        run: bicep build-params infra/main.bicepparam --stdout > /dev/null
         env:
           AZURE_ENV_NAME: dev
           USNM_VNET_ADDRESS_PREFIX: 192.0.2.0/24
@@ -729,11 +784,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run lint
@@ -757,11 +808,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm run format:check
 
@@ -774,15 +821,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-node-web
       # The API's build overlaps the site's; start-api-fixtures.sh runs cargo
       # build again, which waits for this one and fails the same way if it did.
       - name: Build the API in the background
@@ -836,7 +876,7 @@ jobs:
           ENVS: ${{ vars.USNM_DEPLOY_ENVIRONMENTS || '[]' }}
         run: |
           envs=$(jq -r '.[]' <<< "$ENVS")
-          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/provision.sh for each environment: ${envs//$'\n'/, }."
+          msg="This merge changes the Azure stack or an environment's settings (infra/), which a deploy doesn't apply. Run scripts/azure/provision.sh for each environment: ${envs//$'\n'/, }."
           echo "::warning title=Stack change not deployed::$msg"
           {
             echo "### Stack change not deployed"
@@ -844,7 +884,7 @@ jobs:
             echo "This merge changes \`infra/\` beyond what a deploy applies. From an up-to-date \`main\`, run:"
             echo
             echo '```sh'
-            for e in $envs; do echo "scripts/provision.sh --env $e"; done
+            for e in $envs; do echo "scripts/azure/provision.sh --env $e"; done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -854,8 +894,8 @@ jobs:
     # environment's private registry (08 §8.6) and roll its API onto this
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
-    # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
+    # Environment holds its own variables, written by scripts/azure/bootstrap.sh.
+    needs: [changes, rust, queue, page-language-samples, quickwit, fixtures, ops, image, infra, web, markdown, web-e2e, private-addresses]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-
@@ -869,10 +909,14 @@ jobs:
         environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
-    # id-token: the Azure sign-in below uses OIDC, so no secret is stored.
+    # id-token: the Azure sign-in below uses OIDC, so no secret is stored;
+    # the API image's attestation step needs it too, for its Sigstore
+    # signing certificate. attestations: that attestation is stored on the
+    # repository.
     permissions:
       contents: read
       id-token: write
+      attestations: write
     concurrency:
       group: deploy-${{ matrix.environment }}
       cancel-in-progress: false
@@ -883,14 +927,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      # Only the commit main points at publishes: a slower run for an older
-      # commit must not replace newer images.
+      # A slower run for an older commit must not replace newer images: only
+      # the commit main points at publishes, or an older one when none of
+      # main's newer commits change the images (their runs publish nothing).
       - name: Is this still the head of main?
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/ci/head-of-main.sh
+        run: scripts/ci/head-of-main.sh --unless-changed image
       - if: steps.head.outputs.current == 'true'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
@@ -916,9 +962,11 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
       - if: steps.head.outputs.current == 'true'
+        id: api
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          file: docker/Dockerfile.api
           push: true
           cache-from: type=gha,scope=api
           tags: |
@@ -928,7 +976,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.ingest
+          file: docker/Dockerfile.ingest
           push: true
           cache-from: type=gha,scope=ingest
           build-args: |
@@ -941,7 +989,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.ja-ocr
+          file: docker/Dockerfile.ja-ocr
           push: true
           cache-from: type=gha,scope=ja-ocr
           tags: |
@@ -960,3 +1008,15 @@ jobs:
         if: steps.head.outputs.current == 'true' && env.APP != ''
         continue-on-error: true
         run: scripts/ci/indexnow.sh
+      # A build provenance attestation for the API image, for an origin that
+      # checks it before it runs the image (#955), as hosts check the OCR
+      # worker release's. Its subject is the
+      # digest the push returned, the one `usnewsmap-api:<sha>` names. Last,
+      # so a failure here doesn't hold back the rollout or IndexNow, but
+      # still fails the deployment.
+      - name: Attest the API image
+        if: steps.head.outputs.current == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.ACR }}/usnewsmap-api
+          subject-digest: ${{ steps.api.outputs.digest }}

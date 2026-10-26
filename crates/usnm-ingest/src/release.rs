@@ -24,19 +24,22 @@
 //! are never rewritten: a failed run leaves an unpublished index for the
 //! janitor, and the retry builds a new one.
 
+mod document;
+mod lease;
+mod parts;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
 use tracing::Instrument;
 use usnm_core::text::{Analyzer, TextStatus};
 use usnm_core::text_layout::TextLayout;
-use usnm_core::time::{date_from_day, day_number, ym_number};
+use usnm_core::time::{date_from_day, day_number};
 use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
@@ -44,15 +47,16 @@ use crate::american_stories;
 use crate::build_info;
 use crate::catalog::{Catalog, Place, Title};
 use crate::congress;
-use crate::curated::{read_part, CuratedRow};
+use crate::curated::read_part;
 use crate::decade_order::DecadeOrder;
 use crate::dedup::{self, Plan};
+use crate::finish::{self, Resume};
 use crate::merges::IndexLayout;
 use crate::ocr_ja;
 use crate::ocr_local;
 use crate::page_language::{self as page_lang, Moves};
 use crate::progress::{self, Progress};
-use crate::sink::{Decades, IndexSink, MainLayout};
+use crate::sink::{Decades, IndexSink, MainLayout, SinkStats};
 use crate::source::hex;
 use crate::state::{
     Curated, IndexRun, JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, RunBatch, RunStatus,
@@ -61,6 +65,14 @@ use crate::state::{
 };
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
+
+pub use document::{main_doc, page_doc, DocFormat, SideTexts};
+pub use lease::{lock_writer, unlock_writer, WriterLease};
+
+use lease::LEASE_TTL;
+use parts::{
+    build_part_blocking, prefetch_batch, PartContext, PartDocs, Prefetch, Prefetched, RestParts,
+};
 
 pub struct Release {
     pub state: State,
@@ -108,9 +120,13 @@ pub struct Release {
     /// Search a full base's texts in one field (05 §5.5.7, #283): `text_all`
     /// and `text_all_cg` hold LoC's and American Stories' words with a gap
     /// between them, `text` and `text_as` are stored only, and
-    /// `current.json` says so (`text_layout`). Only a full base takes it: a
-    /// delta follows the published version, whatever this says. Off: the
-    /// documents, the index config and `current.json` are as before.
+    /// `current.json` says so (`text_layout`). The layout is the latest one
+    /// field ([`TextLayout::LATEST`]): since #925, on a page our own OCR
+    /// replaced LoC's text on (`ocr_local`), LoC's text is a third text of
+    /// `text_all`, after another gap, and stored in `text_loc`. Only a full
+    /// base takes it: a delta follows the published version, whatever this
+    /// says. Off: the documents, the index config and `current.json` are as
+    /// before.
     pub single_text_field: bool,
     /// Give a full base's pages their own languages, found from their
     /// words (05 §5.5.8, #289): `page_language` and `page_language_set` on
@@ -265,97 +281,6 @@ pub struct Published {
     pub pages: u64,
 }
 
-/// How a release writes its main-index documents. Every main index of a
-/// version is written the same way: a delta as the indexes it adds to were.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DocFormat {
-    /// The page's decade partition too (05 §5.5.5).
-    pub decade: bool,
-    /// The analyzer that folds the common-word pairs (05 §5.5.3, #168), and
-    /// the words of `text_all`.
-    pub analyzer: Analyzer,
-    /// Which fields the texts are searched in (05 §5.5.7).
-    pub text: TextLayout,
-}
-
-/// One engine document for a curated page (05 §5.5), with American
-/// Stories' text when it has some (05 §5.5.4). A page LoC has no usable
-/// text for is a document only with American Stories' text; its `text` is
-/// then empty.
-pub fn page_doc(
-    row: &CuratedRow,
-    title: &Title,
-    place: &Place,
-    text_as: Option<&str>,
-    format: DocFormat,
-) -> Value {
-    main_doc(
-        &row.key,
-        &row.batch,
-        row.text.as_deref().unwrap_or_default(),
-        title,
-        place,
-        text_as,
-        format,
-    )
-}
-
-/// A main-index document for page `k` of `batch` with `text` as its text:
-/// [`page_doc`]'s, and the Latin-script text of our Japanese OCR on a page
-/// LoC ships without text (`ocr_ja::latin_doc`).
-pub fn main_doc(
-    k: &usnm_core::ids::PageKey,
-    batch: &str,
-    text: &str,
-    title: &Title,
-    place: &Place,
-    text_as: Option<&str>,
-    format: DocFormat,
-) -> Value {
-    let mut doc = json!({
-        "doc_id": k.doc_id(),
-        "day": day_number(k.date),
-        "ym": ym_number(k.date),
-        "year": k.date.year(),
-        "place_id": place.id,
-        "place_shard": place.ordinal % 8,
-        "lccn": k.lccn,
-        "state": title.state,
-        "language": title.languages,
-        "front_page": k.seq == 1,
-        "edition": k.edition,
-        "seq": k.seq,
-        // Hits order within a day: title, then edition, then page.
-        "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
-        "date": k.date.to_string(),
-        "batch": batch,
-        "text": text,
-    });
-    match format.text {
-        TextLayout::Separate => {
-            doc["text_cg"] = usnm_core::common_grams::index_text(text, format.analyzer).into();
-            if let Some(t) = text_as {
-                doc["text_as_cg"] = usnm_core::common_grams::index_text(t, format.analyzer).into();
-            }
-        }
-        // One searched field for both texts; `text` and `text_as` are
-        // stored for snippets (05 §5.5.7).
-        TextLayout::Single => {
-            let (words, pairs) =
-                usnm_core::text_layout::index_fields(text, text_as, format.analyzer);
-            doc[usnm_core::text_layout::FIELD] = words.into();
-            doc[usnm_core::text_layout::PAIRS_FIELD] = pairs.into();
-        }
-    }
-    if let Some(t) = text_as {
-        doc["text_as"] = t.into();
-    }
-    if format.decade {
-        doc["decade"] = usnm_core::decade::of_date(k.date).into();
-    }
-    doc
-}
-
 /// The pages of our OCR the snapshot accounts for (#139, #203).
 struct Latin<'a> {
     /// Of the overlay's pages that curation never had, and of the pages the
@@ -397,79 +322,69 @@ struct PublishedPointer {
     congress: Option<Value>,
 }
 
-/// How long the writer lock lasts without renewal, and how often it's renewed.
-const LEASE_TTL: Duration = Duration::minutes(30);
-const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
-/// A held writer lock, renewed in the background until it is released.
-/// If a renewal fails, the release stops at its next checkpoint and never
-/// publishes (08 §8.4.1).
-pub struct WriterLease {
-    lost: Arc<AtomicBool>,
-    renewer: tokio::task::JoinHandle<()>,
+/// The live pointer, `current.json`: the version it names and the pointer
+/// itself, or `None` when there is none.
+pub async fn live_pointer(reference: &dyn ObjectStore) -> anyhow::Result<Option<(String, Value)>> {
+    let Some(bytes) = reference.get("current.json").await? else {
+        return Ok(None);
+    };
+    let pointer: Value = serde_json::from_slice(&bytes).context("current.json")?;
+    let version = pointer["index_version"]
+        .as_str()
+        .context("current.json has no index_version")?
+        .to_owned();
+    Ok(Some((version, pointer)))
 }
 
-impl WriterLease {
-    /// Fails once a renewal has failed: the holder may no longer hold the
-    /// lock, so it must stop before its next write.
-    pub fn check(&self) -> anyhow::Result<()> {
-        if self.lost.load(Ordering::SeqCst) {
-            bail!("the writer lock could not be renewed; stopping without publishing");
-        }
-        Ok(())
-    }
+/// What [`record_current_version`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentVersion {
+    /// The version `ops/current` names now.
+    pub version: String,
+    /// The one it named before: the same when nothing changed.
+    pub previous: Option<String>,
+}
 
-    /// Resolves once a renewal has failed. Long waits (the merges, up to
-    /// 4 hours by default) race against it, so a writer that may no longer hold the
-    /// lock stops within a second instead of at its next checkpoint, long
-    /// before the lock expires and another writer could take it.
-    pub(crate) async fn lost(&self) {
-        while !self.lost.load(Ordering::SeqCst) {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-    }
-
-    /// A lease with no lock behind it, lost once `lost` is set.
-    #[cfg(test)]
-    pub(crate) fn for_test(lost: Arc<AtomicBool>) -> Self {
-        Self {
-            lost,
-            renewer: tokio::spawn(async {}),
-        }
+impl CurrentVersion {
+    pub fn changed(&self) -> bool {
+        self.previous.as_deref() != Some(self.version.as_str())
     }
 }
 
-impl Drop for WriterLease {
-    fn drop(&mut self) {
-        self.renewer.abort();
+/// Make the pipeline state's `ops/current` name `live`, the version
+/// `current.json` names, if it names another. `run` must be that version's
+/// run, recorded as published: `ops/current` follows the live pointer and
+/// is never ahead of it. A release does this before it builds, after a
+/// publish that wasn't recorded or a staged one that was promoted
+/// (`published_run`), and `import-staged-run --current` does it after a
+/// promotion. `/v1/status` and the BOINC export read `ops/current`.
+pub async fn record_current_version(
+    state: &State,
+    live: &str,
+    run: &IndexRun,
+) -> anyhow::Result<CurrentVersion> {
+    if run.index_version != live {
+        bail!(
+            "current.json names `{live}`, not `{}`: promote it first; `ops/current` never names \
+             a version ahead of the live pointer",
+            run.index_version
+        );
     }
-}
-
-/// Take the writer lock as `owner` and keep renewing it until
-/// [`unlock_writer`]. Whatever changes the indexes Quickwit holds takes it
-/// first: a release, and `prune` (`crate::prune`), so neither runs beside
-/// the other.
-pub async fn lock_writer(state: &State, owner: &str) -> anyhow::Result<WriterLease> {
-    state.lock(WRITER_LOCK, owner, LEASE_TTL).await?;
-    let lost = Arc::new(AtomicBool::new(false));
-    let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
-    let renewer = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(LEASE_RENEW).await;
-            if let Err(e) = state.lock(WRITER_LOCK, &owner, LEASE_TTL).await {
-                tracing::error!(error = %format!("{e:#}"), "writer lock renewal failed");
-                flag.store(true, Ordering::SeqCst);
-                break;
-            }
-        }
-    });
-    Ok(WriterLease { lost, renewer })
-}
-
-/// Stop renewing `lease` and release the writer lock `owner` holds.
-pub async fn unlock_writer(state: &State, owner: &str, lease: WriterLease) -> anyhow::Result<()> {
-    drop(lease);
-    state.unlock(WRITER_LOCK, owner).await
+    if run.status != RunStatus::Published {
+        bail!(
+            "`{live}`'s run is {:?}, not published: the next release records an interrupted \
+             publish",
+            run.status
+        );
+    }
+    let previous = state.current_version().await?;
+    if previous.as_deref() != Some(live) {
+        state.set_current_version(live).await?;
+    }
+    Ok(CurrentVersion {
+        version: live.to_owned(),
+        previous,
+    })
 }
 
 impl Release {
@@ -518,6 +433,32 @@ impl Release {
         lease: &WriterLease,
         report: &Reporter,
     ) -> anyhow::Result<Option<Published>> {
+        self.run_spanned(sink, lease, report, None).await
+    }
+
+    /// Finish the release `resume` took up: one whose main index passed its
+    /// exact count before it stopped (`crate::finish`). This release's
+    /// settings must be that run's. `sink` runs a writer on the run's
+    /// Quickwit data; the caller holds the writer lock, as for
+    /// [`Release::run_held`]. The version it publishes is the one the run
+    /// would have.
+    pub async fn finish(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+        report: &Reporter,
+        resume: &Resume,
+    ) -> anyhow::Result<Option<Published>> {
+        self.run_spanned(sink, lease, report, Some(resume)).await
+    }
+
+    async fn run_spanned(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+        report: &Reporter,
+        resume: Option<&Resume>,
+    ) -> anyhow::Result<Option<Published>> {
         let span = tracing::info_span!(
             "release",
             otel.kind = "consumer",
@@ -529,7 +470,7 @@ impl Release {
             otel.status_description = Empty,
         );
         let result = self
-            .run_in_span(sink, lease, &span, report)
+            .run_in_span(sink, lease, &span, report, resume)
             .instrument(span.clone())
             .await;
         if let Err(e) = &result {
@@ -545,8 +486,29 @@ impl Release {
         lease: &WriterLease,
         span: &tracing::Span,
         report: &Reporter,
+        resume: Option<&Resume>,
     ) -> anyhow::Result<Option<Published>> {
         self.confirm(lease).await?;
+        // A finish refuses before it plans: the run's index must hold every
+        // document the run sent, and the indexes the tail builds mustn't
+        // exist yet (`crate::finish`).
+        if let Some(r) = resume {
+            let index = &r.run.new_index;
+            let held = sink.published_docs(index).await?;
+            r.check_count(index, held)?;
+            tracing::info!(index = %index, docs = held, "the run's main index holds the documents it recorded sending");
+            for id in [
+                ocr_ja::index_id(&r.run.index_version),
+                congress::index_id(&r.run.index_version),
+            ] {
+                if sink.has_index(&id).await? {
+                    bail!(
+                        "`{id}` exists already: the run stopped after it started building it. \
+                         Delete that index and finish again"
+                    );
+                }
+            }
+        }
         let current = Catalog::load(self.reference.as_ref()).await?;
         let (previous, pointer) = match self.published_run().await? {
             Some((run, pointer)) => (Some(run), Some(pointer)),
@@ -639,7 +601,9 @@ impl Release {
         // its own: a release without it rebuilds them all.
         let dropping_stories = !self.american_stories
             && previous_as.is_some()
-            && published_layout == Some(Some(TextLayout::Single));
+            && published_layout
+                .flatten()
+                .is_some_and(TextLayout::searches_one_field);
         if dropping_stories {
             tracing::info!(
                 "the published version searches American Stories' text in one field with \
@@ -727,7 +691,7 @@ impl Release {
                     titles = n,
                     first = ?moved.iter().take(10).collect::<Vec<_>>(),
                     "{n} published titles' place changes wait for the next full release \
-                     (USNM_INGEST_FULL, run on the E4 profile: docs/operations.md, Full rebuild)"
+                     (USNM_INGEST_FULL, run on the E4 profile: docs/operations/rebuild-and-index-storage.md, Full rebuild)"
                 );
             }
             let catalog = Catalog::carried_forward(&published_catalog, &current)?;
@@ -765,6 +729,18 @@ impl Release {
                 skipped = overlay.skipped,
                 "Japanese OCR overlay"
             );
+        }
+        if let Some(r) = resume {
+            r.log.check_planned(
+                finish::OVERLAY_LINE,
+                (!overlay.parts.is_empty()).then(|| {
+                    json!({
+                        "parts": overlay.parts.len(),
+                        "pages": overlay.pages.len(),
+                        "skipped": overlay.skipped,
+                    })
+                }),
+            )?;
         }
         // Of the pages of our OCR that curation never had, and of the pages
         // a main index of the version holds with our OCR's Latin text
@@ -1061,6 +1037,18 @@ impl Release {
         } else {
             None
         };
+        if let Some(r) = resume {
+            r.log.check_planned(
+                finish::OCR_LOCAL_LINE,
+                local.as_ref().map(|l| {
+                    json!({
+                        "parts": l.listing.parts(),
+                        "titles": l.listing.titles(),
+                        "revocations": l.revoked.len(),
+                    })
+                }),
+            )?;
+        }
 
         // American Stories' text, listed once: the parts of the years the
         // writer has finished. With the setting on and nothing written yet,
@@ -1076,12 +1064,49 @@ impl Release {
                 unfinished_parts = source.unfinished_parts,
                 "American Stories' text"
             );
-            Some(source)
+            // Shared with the task that loads the next batch's text ahead.
+            Some(Arc::new(source))
         } else {
             None
         };
 
-        let (version, index_id) = self.next_names(full).await?;
+        if let Some(r) = resume {
+            r.log.check_planned(
+                finish::STORIES_LINE,
+                stories.as_ref().map(|s| {
+                    json!({
+                        "years": s.years.len(),
+                        "first": s.years.first(),
+                        "last": s.years.last(),
+                        "parts": s.parts(),
+                        "unfinished_parts": s.unfinished_parts,
+                    })
+                }),
+            )?;
+            if overlay_only {
+                bail!(
+                    "{} built no main index: there is nothing to finish",
+                    r.run.index_version
+                );
+            }
+            // The catalog the finish plans with must be the one the index's
+            // documents were written from.
+            match sink
+                .title_fields(&r.run.new_index, &catalog.period_cuts())
+                .await?
+            {
+                Some(held) => finish::check_titles(&catalog, &r.run.new_index, &held)?,
+                None => tracing::warn!(
+                    "this sink can't say what the index's documents carry from the catalog; not \
+                     checked"
+                ),
+            }
+        }
+        // A finish takes the run's names; `next_names` would skip them.
+        let (version, index_id) = match resume {
+            Some(r) => r.names(full)?,
+            None => self.next_names(full).await?,
+        };
         // An overlay-only release adds no main index: the run's new index is
         // the Japanese one, or with no Japanese pages to index, the Congress
         // one. A release that only removes the Congress set writes none, and
@@ -1140,14 +1165,31 @@ impl Release {
             failed_at: None,
             build: Some(build_info::summary(&built)),
         };
-        if !self.state.create_run(&run).await? {
-            bail!("index run `{version}` already exists");
-        }
-        let (_, mut etag) = self.state.run(&version).await?.context("run vanished")?;
+        let mut etag = match resume {
+            None => {
+                if !self.state.create_run(&run).await? {
+                    bail!("index run `{version}` already exists");
+                }
+                self.state.run(&version).await?.context("run vanished")?.1
+            }
+            // The run as the plan comes to it, building again from when it
+            // started; checked against its record first.
+            Some(r) => {
+                r.check_run(&run)?;
+                run.started_at = r.run.started_at;
+                self.state.update_run(&run, &r.etag).await?
+            }
+        };
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, split_docs, "building index");
+        // A finish's line is its own: the run's "building index" is what
+        // its log is read from (`finish::RunLog`).
+        if resume.is_some() {
+            tracing::info!(%version, index = %new_index, full, batches = scope.len(), "finishing index");
+        } else {
+            tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, text_layout = text_layout.version(), page_language, split_docs, "building index");
+        }
 
         report.version(&version);
         report.step(Step::Indexing).await;
@@ -1177,12 +1219,13 @@ impl Release {
                     analyzer,
                     moves.as_mut(),
                     report,
+                    resume,
                 )
                 .await?
             };
             let added_latin = (latin_new.len() + replaced.len()) as u64;
             latin_after.pages.extend(replaced);
-            let stories_record = stories.as_ref().zip(stories_record.as_ref());
+            let stories_record = stories.as_deref().zip(stories_record.as_ref());
             // The pages the version holds with our OCR's text.
             let local_files = self
                 .ocr_local_files(
@@ -1242,6 +1285,7 @@ impl Release {
                     congress_out.as_ref(),
                     &build_info::record(&built),
                     analyzer,
+                    resume.is_some(),
                 )
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds, ja, added, congress_out))
@@ -1377,14 +1421,18 @@ impl Release {
         if self.stage_index_storage {
             return Ok(None);
         }
-        let Some(bytes) = self.reference.get("current.json").await? else {
+        let Some((version, pointer)) = live_pointer(self.reference.as_ref()).await? else {
             return Ok(None);
         };
-        let pointer: Value = serde_json::from_slice(&bytes).context("current.json")?;
-        let version = pointer["index_version"]
-            .as_str()
-            .context("current.json has no index_version")?;
-        let (mut run, etag) = self.state.run(version).await?.with_context(|| {
+        let version = version.as_str();
+        // A version built on-prem has its run in its snapshot (onprem.rs).
+        let (mut run, etag) = crate::onprem::import_staged_run(
+            &self.state,
+            self.reference.as_ref(),
+            version,
+        )
+        .await?
+        .with_context(|| {
             format!("current.json names `{version}`, which has no index run in the pipeline state")
         })?;
         if run.status != RunStatus::Published {
@@ -1399,8 +1447,13 @@ impl Release {
             run.published_at = pointer_at.or(run.published_at).or_else(|| Some(Utc::now()));
             self.state.update_run(&run, &etag).await?;
         }
-        if self.state.current_version().await?.as_deref() != Some(version) {
-            self.state.set_current_version(version).await?;
+        let current = record_current_version(&self.state, version, &run).await?;
+        if current.changed() {
+            tracing::warn!(
+                version,
+                previous = current.previous.as_deref().unwrap_or(""),
+                "ops/current repaired from current.json"
+            );
         }
         let feature = |key: &str| pointer[key].as_u64().and_then(|v| u32::try_from(v).ok());
         let published = PublishedPointer {
@@ -1463,16 +1516,18 @@ impl Release {
     fn text_layout(&self, full: bool, published: Option<TextLayout>) -> TextLayout {
         if full {
             return if self.single_text_field {
-                TextLayout::Single
+                TextLayout::LATEST
             } else {
                 TextLayout::Separate
             };
         }
         let layout = published.unwrap_or_default();
-        if self.single_text_field && layout == TextLayout::Separate {
+        if self.single_text_field && layout != TextLayout::LATEST {
             tracing::info!(
-                "the published version searches a field per text: --single-text-field \
-                 takes effect at the next full release"
+                from = layout.version(),
+                to = TextLayout::LATEST.version(),
+                "the published version's text fields are laid out differently from what \
+                 --single-text-field builds: it takes effect at the next full release"
             );
         }
         layout
@@ -1654,7 +1709,7 @@ impl Release {
         scope: &[RunBatch],
         catalog: &Catalog,
         dedup: &Plan,
-        stories: Option<&american_stories::Source>,
+        stories: Option<&Arc<american_stories::Source>>,
         latin: &[(&ocr_ja::JaPage, String)],
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
@@ -1663,12 +1718,17 @@ impl Release {
         analyzer: Analyzer,
         mut moves: Option<&mut Moves>,
         report: &Reporter,
+        resume: Option<&Resume>,
     ) -> anyhow::Result<(
         u64,
         Option<american_stories::Record>,
         Vec<(String, JaLatinPage)>,
         (ocr_local::replace::Tally, LocalReplaced),
     )> {
+        // A finish replays the build: every document is made as the release
+        // makes it, and none is sent; the stopped release's index takes
+        // them in its place (`crate::finish`).
+        let replay = resume.is_some();
         // Every title must resolve before anything is written.
         let mut missing = BTreeSet::new();
         for b in scope {
@@ -1681,7 +1741,11 @@ impl Release {
         if !missing.is_empty() {
             bail!("titles missing from the catalog: {missing:?}");
         }
-        sink.create(index_id, layout).await?;
+        if replay {
+            sink.attach(index_id, layout).await?;
+        } else {
+            sink.create(index_id, layout).await?;
+        }
         let format = DocFormat {
             decade: layout.decades.on(),
             analyzer,
@@ -1690,13 +1754,18 @@ impl Release {
         // A partitioned base's pages go out a decade at a time, through
         // files on the writer's scratch disk (`crate::decade_order`).
         let mut order = match layout.decades {
-            Decades::Partitioned => {
+            Decades::Partitioned if !replay => {
                 let work = sink
                     .stats()
                     .work_dir
                     .clone()
                     .unwrap_or_else(std::env::temp_dir);
-                Some(DecadeOrder::new(&work, layout.split_target())?)
+                Some(DecadeOrder::new(
+                    &work,
+                    layout.split_target(),
+                    sink.line_sender().await?,
+                    Some(lease.lost_flag()),
+                )?)
             }
             _ => None,
         };
@@ -1712,14 +1781,24 @@ impl Release {
                     .saturating_sub(dedup.skipped_docs(&b.batch))
             })
             .sum();
-        let progress = Progress::new(sink.stats(), expected);
+        // A replay counts what it makes on counters of its own, and leaves
+        // the stopped run's last progress (what it sent) as it is until the
+        // index is sealed.
+        let replayed =
+            replay.then(|| Arc::new(SinkStats::replaying(sink.stats().work_dir.clone())));
+        let progress = Progress::new(replayed.clone().unwrap_or_else(|| sink.stats()), expected);
         progress.snapshot().log(None);
-        progress::report(&self.state, version, &progress.snapshot()).await;
+        if !replay {
+            progress::report(&self.state, version, &progress.snapshot()).await;
+        }
         let _ticker = progress.every(progress::INTERVAL);
         // The same counts for the status page, in their own `ops` item: the
         // run item's ETag stays the release's alone.
-        let _reporter =
-            progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned());
+        let _reporter = (!replay).then(|| {
+            progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned())
+        });
+        // The replay's documents by decade, for the index's own count.
+        let mut by_decade = finish::DecadeDocs::new();
         let mut docs = 0u64;
         let mut record = stories.map(|_| american_stories::Record::default());
         // The pages given our Latin text in place of LoC's (#203).
@@ -1727,7 +1806,27 @@ impl Release {
         // Our OCR from `ocr-local` weighed and given in place of LoC's (Step 9).
         let mut local_tally = ocr_local::replace::Tally::default();
         let mut local_replaced: LocalReplaced = Vec::new();
-        for b in scope {
+        // The next batch's American Stories text and curated parts download
+        // while this one is built (they're the release's network reads); one
+        // batch ahead, so two batches' downloads are held at most.
+        let fetch_ahead = |b: &RunBatch| {
+            Prefetch(tokio::spawn(prefetch_batch(
+                Arc::clone(&self.curated),
+                stories.cloned(),
+                b.clone(),
+            )))
+        };
+        let mut ahead = scope.first().map(fetch_ahead);
+        for (i, b) in scope.iter().enumerate() {
+            let current = ahead.take().context("no prefetch for the batch")?;
+            ahead = scope.get(i + 1).map(fetch_ahead);
+            let t_fetch = std::time::Instant::now();
+            lease.check()?;
+            let Prefetched {
+                stories: loaded_stories,
+                parts,
+            } = current.join().await?;
+            let mut fetch_secs = t_fetch.elapsed().as_secs_f64();
             // This batch's titles' readings of ours, dropped after the batch.
             let mine = match local {
                 Some(l)
@@ -1750,17 +1849,31 @@ impl Release {
                         parts = loaded.parts.len(),
                         "our OCR for the batch's titles"
                     );
+                    if let Some(r) = resume {
+                        r.log.check_built(
+                            finish::BATCH_OCR_LOCAL_LINE,
+                            Some(&b.batch),
+                            Some(json!({
+                                "pages": loaded.pages.len(),
+                                "revoked": loaded.revoked.len(),
+                                "parts": loaded.parts.len(),
+                            })),
+                        )?;
+                    }
                     local_tally.add_parts(&loaded.parts);
                     loaded
                 }
-                _ => ocr_local::replace::Loaded::default(),
+                _ => {
+                    if let Some(r) = resume {
+                        r.log
+                            .check_built(finish::BATCH_OCR_LOCAL_LINE, Some(&b.batch), None)?;
+                    }
+                    ocr_local::replace::Loaded::default()
+                }
             };
             // This batch's American Stories texts, dropped after the batch.
-            let texts = match stories {
-                Some(source) => {
-                    lease.check()?;
-                    let counts = dedup::load_counts(self.curated.as_ref(), b).await?;
-                    let loaded = source.load(self.curated.as_ref(), &counts).await?;
+            let texts = match loaded_stories {
+                Some(loaded) => {
                     tracing::info!(
                         batch = %b.batch,
                         pages = loaded.texts.len(),
@@ -1769,6 +1882,18 @@ impl Release {
                         empty = loaded.empty,
                         "American Stories' text for the batch"
                     );
+                    if let Some(r) = resume {
+                        r.log.check_built(
+                            finish::BATCH_STORIES_LINE,
+                            Some(&b.batch),
+                            Some(json!({
+                                "pages": loaded.texts.len(),
+                                "text_mb": loaded.text_bytes / (1024 * 1024),
+                                "parts": loaded.parts.len(),
+                                "empty": loaded.empty,
+                            })),
+                        )?;
+                    }
                     if let Some(r) = record.as_mut() {
                         r.add(&loaded);
                     }
@@ -1776,123 +1901,112 @@ impl Release {
                 }
                 None => HashMap::new(),
             };
-            for path in &b.curated.parts {
+            // The batch's parts, a few downloading ahead, each turned into
+            // documents on several threads and sent before the next is
+            // built: the documents and everything recorded about them come
+            // out in part order, as when one thread read them, and only one
+            // part's documents are held at a time.
+            let ctx = PartContext {
+                batch: b,
+                dedup,
+                texts: &texts,
+                latin_curated,
+                latin_owned,
+                catalog,
+                mine: &mine,
+                local,
+                format,
+                page_language: moves.is_some(),
+            };
+            let (mut build_secs, mut lang_secs, mut add_secs) = (0f64, 0f64, 0f64);
+            let wait_before = order.as_ref().map_or(0.0, |o| o.queue_wait_secs());
+            // The parts past the prefetch's limit, downloading a few at once
+            // from the start of this batch, in order (`RestParts`).
+            let deferred: Vec<String> = parts
+                .iter()
+                .filter(|(_, b)| b.is_none())
+                .map(|(p, _)| p.clone())
+                .collect();
+            let mut rest = (!deferred.is_empty())
+                .then(|| RestParts::start(Arc::clone(&self.curated), deferred));
+            for (path, bytes) in parts {
                 lease.check()?;
-                let bytes = self
-                    .curated
-                    .get(path)
-                    .await?
-                    .with_context(|| format!("curated part `{path}` is missing"))?;
-                let mut part_docs = Vec::new();
-                let (mut with_as, mut only_as, mut without_locs) = (0u64, 0u64, 0u64);
-                read_part(bytes.into(), true, |row| {
-                    if !dedup.keeps(&row.key, &b.batch) {
-                        return Ok(());
-                    }
-                    let doc_id = row.key.doc_id();
-                    let text_as = if texts.is_empty() {
-                        None
-                    } else {
-                        texts.get(&doc_id).map(String::as_str)
-                    };
-                    // Our reading of the page, where it reads more words, on
-                    // the copy the version keeps (whichever batch's copy we read).
-                    let ours = latin_curated
-                        .get(&doc_id)
-                        .filter(|(_, t)| ocr_ja::better_than_locs(t, row.text.as_deref()));
-                    let ok = row.status == TextStatus::Ok;
-                    let title = catalog.title(&row.key.lccn).context("title")?;
-                    // Our own OCR of the page, where rule v1 prefers it to
-                    // LoC's text (Step 9). The Japanese overlay wins.
-                    let mut local_text: Option<&str> = None;
-                    if let Some(c) = mine.pages.get(&doc_id) {
-                        if let (Some(l), None) = (local, ours) {
-                            if l.ja.contains(&doc_id) {
-                                local_tally.keep("japanese_ocr");
-                            } else {
-                                let langs: Vec<&str> =
-                                    title.languages.iter().map(String::as_str).collect();
-                                let (scores, _, verdict) =
-                                    ocr_local::rule::judge(&c.text, row.text.as_deref(), &langs);
-                                local_tally.weighed(c, &scores, verdict);
-                                if verdict.is_ok() {
-                                    local_text = Some(c.text.as_str());
-                                    local_replaced.push((
-                                        doc_id.clone(),
-                                        c.engine(),
-                                        b.batch.clone(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            local_tally.keep("japanese_ocr");
+                let bytes = match bytes {
+                    Some(bytes) => bytes,
+                    None => {
+                        let t = std::time::Instant::now();
+                        let (got, bytes) = rest
+                            .as_mut()
+                            .context("no download for the batch's remaining parts")?
+                            .next()
+                            .await?;
+                        if got != path {
+                            bail!("curated part `{got}` came in place of `{path}`");
                         }
-                    } else if mine.revoked.contains(&doc_id) {
-                        local_tally.keep("revoked");
+                        fetch_secs += t.elapsed().as_secs_f64();
+                        // The lock may have gone while the part downloaded.
+                        lease.check()?;
+                        bytes
                     }
-                    if !ok && text_as.is_none() && ours.is_none() && local_text.is_none() {
-                        return Ok(());
-                    }
-                    // A copy without LoC's text of a page whose document is
-                    // ours (an earlier index's, or a page LoC's archive had
-                    // no text for in another batch): ours stays the page's.
-                    if !ok
-                        && latin_owned
-                            .get(&doc_id)
-                            .is_some_and(|ours| *ours != b.batch)
-                    {
-                        return Ok(());
-                    }
-                    with_as += u64::from(text_as.is_some());
-                    only_as += u64::from(!ok && ours.is_none() && local_text.is_none());
-                    without_locs += u64::from(!ok);
-                    let place = catalog.place(&title.place_id).context("place")?;
-                    part_docs.push(match ours {
-                        Some((p, text)) => {
-                            replaced.push((
-                                doc_id,
-                                JaLatinPage {
-                                    // The document's batch, which hidden copies name.
-                                    batch: b.batch.clone(),
-                                    loc_text: p.loc_text.clone(),
-                                    ocr_source: p.ocr_source.clone(),
-                                    ocr_engine: p.ocr_engine.clone(),
-                                },
-                            ));
-                            main_doc(&row.key, &row.batch, text, title, place, text_as, format)
-                        }
-                        None => match local_text {
-                            Some(text) => {
-                                main_doc(&row.key, &row.batch, text, title, place, text_as, format)
-                            }
-                            None => page_doc(&row, title, place, text_as, format),
-                        },
-                    });
-                    Ok(())
-                })
-                .with_context(|| path.clone())?;
-                // Each page's own languages (05 §5.5.8), on a few threads,
-                // and the pages that move to another set than their title's.
+                };
+                let t_build = std::time::Instant::now();
+                let part = build_part_blocking(&ctx, &path, &bytes)?;
+                drop(bytes);
+                build_secs += t_build.elapsed().as_secs_f64();
+                let PartDocs {
+                    docs: part_docs,
+                    lines: part_lines,
+                    replaced: part_replaced,
+                    tally,
+                    local_replaced: part_local,
+                    with_as,
+                    only_as,
+                    without_locs,
+                } = part;
+                replaced.extend(part_replaced);
+                local_tally.merge(tally);
+                local_replaced.extend(part_local);
+                // The pages that move to another set than their title's
+                // (05 §5.5.8); their own languages were found as they were built.
+                let t_lang = std::time::Instant::now();
                 if let Some(m) = moves.as_deref_mut() {
-                    page_lang::annotate(&mut part_docs);
                     for d in &part_docs {
                         m.record(d)?;
                     }
                 }
+                lang_secs += t_lang.elapsed().as_secs_f64();
                 // Pages LoC has no usable text for are documents with another's.
                 progress.add_expected(without_locs);
                 if let Some(r) = record.as_mut() {
                     r.docs += with_as;
                     r.only += only_as;
                 }
-                for d in &part_docs {
-                    match order.as_mut() {
-                        Some(o) => o.add(sink, d).await?,
-                        None => sink.add(d).await?,
+                let t_add = std::time::Instant::now();
+                if let Some(stats) = &replayed {
+                    let bytes: usize = part_lines.iter().map(|l| l.len() + 1).sum();
+                    stats.replayed(part_docs.len() as u64, bytes as u64);
+                    count_decades(&mut by_decade, &part_docs);
+                } else {
+                    for (d, line) in part_docs.iter().zip(part_lines) {
+                        match order.as_mut() {
+                            Some(o) => o.add_line(sink, d, line).await?,
+                            None => sink.add_line(&line).await?,
+                        }
                     }
                 }
+                add_secs += t_add.elapsed().as_secs_f64();
                 docs += part_docs.len() as u64;
             }
+            // Where the batch's time went, to find what bounds a release.
+            tracing::info!(
+                batch = %b.batch,
+                fetch_secs = (fetch_secs * 10.0).round() / 10.0,
+                build_secs = (build_secs * 10.0).round() / 10.0,
+                lang_secs = (lang_secs * 10.0).round() / 10.0,
+                add_secs = (add_secs * 10.0).round() / 10.0,
+                queue_wait_secs = ((order.as_ref().map_or(0.0, |o| o.queue_wait_secs()) - wait_before) * 10.0).round() / 10.0,
+                "batch timing"
+            );
             progress.snapshot().log(Some(&b.batch));
         }
         if let Some(r) = &record {
@@ -1909,13 +2023,18 @@ impl Release {
             for (p, text) in latin {
                 lease.check()?;
                 let title = catalog.title(&p.key.lccn).context("title")?;
-                let place = catalog.place(&title.place_id).context("place")?;
+                let place = catalog.place_on(title, p.key.date).context("place")?;
                 // With the version's decade field, and a decade at a time
                 // in a partitioned base, like LoC's pages.
                 let mut d = ocr_ja::latin_doc(p, text, title, place, format);
                 if let Some(m) = moves.as_deref_mut() {
                     page_lang::annotate_one(&mut d);
                     m.record(&d)?;
+                }
+                if let Some(stats) = &replayed {
+                    stats.replayed(1, 0);
+                    count_decades(&mut by_decade, std::slice::from_ref(&d));
+                    continue;
                 }
                 match order.as_mut() {
                     Some(o) => o.add(sink, &d).await?,
@@ -1943,11 +2062,57 @@ impl Release {
             );
         }
         drop(order);
+        // The replay has made what the run sent: the same numbers as the
+        // run's lines, the same count, and decade by decade what the index
+        // holds.
+        if let Some(r) = resume {
+            r.log.check_built(
+                finish::STORIES_INDEXED_LINE,
+                None,
+                record
+                    .as_ref()
+                    .map(|r| json!({"docs_with_text": r.docs, "only_american_stories": r.only})),
+            )?;
+            r.log.check_built(
+                finish::LATIN_INDEXED_LINE,
+                None,
+                (!latin.is_empty() || !replaced.is_empty())
+                    .then(|| json!({"missing": latin.len(), "in_place_of_locs": replaced.len()})),
+            )?;
+            r.log.check_built(
+                finish::DECADES_SENT_LINE,
+                None,
+                (layout.decades == Decades::Partitioned).then(|| json!({"pages": docs})),
+            )?;
+            let held = sink.published_docs(index_id).await?;
+            if docs != held {
+                bail!("the replay made {docs} documents; `{index_id}` holds {held}: not finishing");
+            }
+            r.check_count(index_id, docs)?;
+            tracing::info!(
+                index = index_id,
+                docs,
+                decades = ?by_decade,
+                "the replay made the documents the run sent"
+            );
+        }
         // The last commit and the merge wait, given up as soon as the lock is.
         report.step(Step::Merging).await;
         tokio::select! {
             r = sink.finish(docs) => r?,
             () = lease.lost() => lease.check()?,
+        }
+        // Decade by decade too, once the index is sealed and its split list
+        // stays as it is.
+        if replay && format.decade {
+            if let Some(held) = sink.decade_docs(index_id).await? {
+                if held != by_decade {
+                    bail!(
+                        "`{index_id}` holds {held:?} documents by decade; the replay made \
+                         {by_decade:?}: not finishing"
+                    );
+                }
+            }
         }
         if local.is_some() {
             tracing::info!(
@@ -2214,7 +2379,7 @@ impl Release {
         let mut docs = Vec::new();
         for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
-            let place = catalog.place(&title.place_id).context("place")?;
+            let place = catalog.place_on(title, p.key.date).context("place")?;
             let mut doc = ocr_ja::ja_doc(p, title, place, analyzer);
             if let Some(by_page) = &by_page {
                 Moves::annotate_as_counted(&mut doc, title, by_page);
@@ -2262,6 +2427,7 @@ impl Release {
         congress: Option<&CongressOut>,
         build: &Value,
         analyzer: Analyzer,
+        finishing: bool,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -2278,26 +2444,29 @@ impl Release {
                 let title = catalog
                     .title(&lccn)
                     .with_context(|| format!("title `{lccn}` is missing from the catalog"))?;
-                let series = baselines.entry(title.place_id.clone()).or_default();
-                let mut language_series = language_set(title).map(|set| {
-                    by_language
-                        .entry(set)
-                        .or_default()
-                        .entry(title.place_id.clone())
-                        .or_default()
-                });
                 let total = title_pages.entry(lccn.clone()).or_default();
-                for (day, pages) in days {
-                    if pages > 0 {
-                        title_days.add(&lccn, day);
+                // A title that moved has its days in more than one place.
+                for (place_id, days) in by_place(title, days) {
+                    let series = baselines.entry(place_id.to_owned()).or_default();
+                    let mut language_series = language_set(title).map(|set| {
+                        by_language
+                            .entry(set)
+                            .or_default()
+                            .entry(place_id.to_owned())
+                            .or_default()
+                    });
+                    for (day, pages) in days {
+                        if pages > 0 {
+                            title_days.add(&lccn, day);
+                        }
+                        *series.entry(day).or_default() += pages;
+                        if let Some(s) = language_series.as_mut() {
+                            *s.entry(day).or_default() += pages;
+                        }
+                        *total += u64::from(pages);
+                        first = first.min(day);
+                        last = last.max(day);
                     }
-                    *series.entry(day).or_default() += pages;
-                    if let Some(s) = language_series.as_mut() {
-                        *s.entry(day).or_default() += pages;
-                    }
-                    *total += u64::from(pages);
-                    first = first.min(day);
-                    last = last.max(day);
                 }
             }
         }
@@ -2306,8 +2475,9 @@ impl Release {
         }
         for (lccn, day, extra) in dedup.excess() {
             let title = catalog.title(lccn).context("title")?;
+            let place_id = title.place_id_on(date_from_day(day));
             let pages = baselines
-                .get_mut(&title.place_id)
+                .get_mut(place_id)
                 .and_then(|s| s.get_mut(&day))
                 .context("a duplicated page outside the baselines")?;
             *pages -= extra;
@@ -2315,7 +2485,7 @@ impl Release {
             if let Some(set) = language_set(title) {
                 *by_language
                     .get_mut(&set)
-                    .and_then(|places| places.get_mut(&title.place_id))
+                    .and_then(|places| places.get_mut(place_id))
                     .and_then(|s| s.get_mut(&day))
                     .context("a duplicated page outside the language baselines")? -= extra;
             }
@@ -2332,8 +2502,9 @@ impl Release {
         }) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let day = day_number(p.key.date);
+            let place_id = title.place_id_on(p.key.date);
             *baselines
-                .entry(title.place_id.clone())
+                .entry(place_id.to_owned())
                 .or_default()
                 .entry(day)
                 .or_default() += 1;
@@ -2343,7 +2514,7 @@ impl Release {
                 *by_language
                     .entry(set)
                     .or_default()
-                    .entry(title.place_id.clone())
+                    .entry(place_id.to_owned())
                     .or_default()
                     .entry(day)
                     .or_default() += 1;
@@ -2358,7 +2529,8 @@ impl Release {
             .iter()
             .filter(|t| title_pages.contains_key(&t.lccn))
             .collect();
-        let place_ids: BTreeSet<&str> = titles.iter().map(|t| t.place_id.as_str()).collect();
+        // A title that moved has each of its places in the snapshot.
+        let place_ids: BTreeSet<&str> = titles.iter().flat_map(|t| t.place_ids()).collect();
         let places: Vec<&Place> = catalog
             .places
             .iter()
@@ -2518,7 +2690,8 @@ impl Release {
                 "sha256": hex(&Sha256::digest(&body)),
                 "bytes": body.len(),
             }));
-            self.put_new(&format!("{version}/{name}"), body).await?;
+            self.put_new(&format!("{version}/{name}"), body, finishing)
+                .await?;
         }
         let mut manifest = json!({
             "index_version": version,
@@ -2557,6 +2730,7 @@ impl Release {
         self.put_new(
             &format!("{version}/manifest.json"),
             serde_json::to_vec_pretty(&manifest)?,
+            finishing,
         )
         .await?;
         Ok(((date_from_day(first), date_from_day(last)), added))
@@ -2710,17 +2884,36 @@ impl Release {
         }
     }
 
-    async fn put_new(&self, path: &str, body: Vec<u8>) -> anyhow::Result<()> {
+    /// Write a snapshot file, create-only. A finish (`finishing`) takes one
+    /// a stopped run wrote already when it has the same bytes.
+    async fn put_new(&self, path: &str, body: Vec<u8>, finishing: bool) -> anyhow::Result<()> {
         // Every snapshot file is JSON but `ocr_local_pages.bin`.
         let content_type = if path.ends_with(".bin") {
             "application/octet-stream"
         } else {
             "application/json"
         };
+        let same = finishing.then(|| body.clone());
         if !self.reference.put_new(path, body, content_type).await? {
+            if same.is_some() && self.reference.get(path).await? == same {
+                tracing::info!(
+                    path,
+                    "the stopped run wrote this snapshot file already, the same"
+                );
+                return Ok(());
+            }
             bail!("`{path}` already exists; reference snapshots are immutable");
         }
         Ok(())
+    }
+}
+
+/// Count `docs` by their `decade` field (05 §5.5.5), those that have one.
+fn count_decades(by: &mut finish::DecadeDocs, docs: &[Value]) {
+    for d in docs {
+        if let Some(decade) = d["decade"].as_u64().and_then(|d| u16::try_from(d).ok()) {
+            *by.entry(decade).or_default() += 1;
+        }
     }
 }
 
@@ -2776,6 +2969,21 @@ impl TitleDays {
     }
 }
 
+/// A title's days with pages, split by the place the pages of each day are
+/// in (`Title::place_id_on`): one place, its own, unless the title moved.
+fn by_place(title: &Title, days: BTreeMap<u32, u32>) -> Vec<(&str, BTreeMap<u32, u32>)> {
+    if title.place_periods.is_empty() {
+        return vec![(title.place_id.as_str(), days)];
+    }
+    let mut by: BTreeMap<&str, BTreeMap<u32, u32>> = BTreeMap::new();
+    for (day, pages) in days {
+        by.entry(title.place_id_on(date_from_day(day)))
+            .or_default()
+            .insert(day, pages);
+    }
+    by.into_iter().collect()
+}
+
 /// The languages a title lists, sorted and without repeats; `None` when it
 /// lists none (no language filter matches its pages).
 fn language_set(title: &Title) -> Option<Vec<String>> {
@@ -2800,6 +3008,8 @@ fn language_baselines(by_language: page_lang::BySet) -> LanguageBaselines {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
 
     #[test]
@@ -2811,6 +3021,7 @@ mod tests {
             place_id: "P1".into(),
             state: "IL".into(),
             languages: vec!["ger".into(), "eng".into(), "ger".into(), String::new()],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         };
         assert_eq!(
@@ -2819,6 +3030,128 @@ mod tests {
         );
         t.languages = vec![];
         assert_eq!(language_set(&t), None);
+    }
+
+    /// sn1 was in P1 (Maine) up to 1833-11-13 and is in P2 (New Hampshire).
+    fn moved() -> (Title, Catalog) {
+        let place = |id: &str, ordinal, state: &str| Place {
+            id: id.into(),
+            ordinal,
+            name: id.into(),
+            state: state.into(),
+            lat: 43.0,
+            lon: -71.0,
+            precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
+        };
+        let title: Title = serde_json::from_value(json!({
+            "lccn": "sn1", "name": "sn1", "ordinal": 1, "place_id": "P2", "state": "NH",
+            "languages": ["eng"],
+            "place_periods": [
+                {"place_id": "P1", "to": "1833-11-13"},
+                {"place_id": "P2", "from": "1833-11-14"},
+            ],
+        }))
+        .unwrap();
+        let catalog = Catalog::new(
+            vec![title.clone()],
+            vec![place("P1", 3, "ME"), place("P2", 4, "NH")],
+        )
+        .unwrap();
+        (title, catalog)
+    }
+
+    #[test]
+    fn a_titles_days_are_split_by_the_place_they_are_in() {
+        let (title, _) = moved();
+        let day = |d: &str| day_number(d.parse().unwrap());
+        let days = BTreeMap::from([
+            (day("1828-05-14"), 4),
+            (day("1833-11-13"), 8),
+            (day("1833-11-14"), 5),
+            (day("1857-04-01"), 2),
+        ]);
+        let got = by_place(&title, days.clone());
+        assert_eq!(
+            got,
+            [
+                (
+                    "P1",
+                    BTreeMap::from([(day("1828-05-14"), 4), (day("1833-11-13"), 8)])
+                ),
+                (
+                    "P2",
+                    BTreeMap::from([(day("1833-11-14"), 5), (day("1857-04-01"), 2)])
+                ),
+            ]
+        );
+        // A title in one place has its days there, as they are.
+        let mut one = title;
+        one.place_periods.clear();
+        assert_eq!(by_place(&one, days.clone()), [("P2", days)]);
+    }
+
+    #[test]
+    fn a_pages_document_has_the_place_and_state_of_its_date() {
+        let (title, catalog) = moved();
+        let format = DocFormat {
+            decade: false,
+            analyzer: Analyzer::LATEST,
+            text: TextLayout::Separate,
+        };
+        let doc = |date: &str| {
+            let key = usnm_core::ids::PageKey::new("sn1", date.parse().unwrap(), 1, 2).unwrap();
+            let place = catalog.place_on(&title, key.date).unwrap();
+            let main = main_doc(
+                &key,
+                "b",
+                "the text",
+                &title,
+                place,
+                SideTexts::default(),
+                format,
+            );
+            let ja_page = ocr_ja::JaPage::for_test(key, "b", "empty", "日本語");
+            let ja = ocr_ja::ja_doc(&ja_page, &title, place, Analyzer::LATEST);
+            (main, ja)
+        };
+        for (date, id, shard, state) in [
+            ("1828-05-14", "P1", 3, "ME"),
+            ("1833-11-13", "P1", 3, "ME"),
+            ("1833-11-14", "P2", 4, "NH"),
+            ("1857-04-01", "P2", 4, "NH"),
+        ] {
+            let (main, ja) = doc(date);
+            for d in [main, ja] {
+                assert_eq!(
+                    (
+                        d["place_id"].as_str(),
+                        d["place_shard"].as_u64(),
+                        d["state"].as_str()
+                    ),
+                    (Some(id), Some(shard), Some(state)),
+                    "{date}"
+                );
+                // Only the place and state: the sort key is the title's.
+                assert_eq!(d["sort_key"].as_u64().unwrap() >> 32, 1);
+            }
+        }
+        // A title in one place is in its own state, as before.
+        let mut one = title.clone();
+        one.place_periods.clear();
+        let key = usnm_core::ids::PageKey::new("sn1", "1828-05-14".parse().unwrap(), 1, 2).unwrap();
+        let place = catalog.place("P1").unwrap();
+        let d = main_doc(
+            &key,
+            "b",
+            "the text",
+            &one,
+            place,
+            SideTexts::default(),
+            format,
+        );
+        assert_eq!(d["state"], "NH");
     }
 
     #[test]
@@ -2861,17 +3194,14 @@ mod tests {
     #[tokio::test]
     async fn a_lost_lease_stops_sending_the_held_pages() {
         let dir = tempfile::tempdir().unwrap();
-        let mut order = DecadeOrder::new(dir.path(), 1000).unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 1000, None, None).unwrap();
         let mut sink = Stuck;
         order
             .add(&mut sink, &json!({"doc_id": "a", "decade": 1890}))
             .await
             .unwrap();
         let lost = Arc::new(AtomicBool::new(false));
-        let lease = WriterLease {
-            lost: lost.clone(),
-            renewer: tokio::spawn(async {}),
-        };
+        let lease = WriterLease::for_test(lost.clone());
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             lost.store(true, Ordering::SeqCst);
@@ -2885,24 +3215,5 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("could not be renewed"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn a_lost_lease_ends_a_wait() {
-        let lost = Arc::new(AtomicBool::new(false));
-        let lease = WriterLease {
-            lost: lost.clone(),
-            renewer: tokio::spawn(async {}),
-        };
-        let flag = lost.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            flag.store(true, Ordering::SeqCst);
-        });
-        let r: anyhow::Result<()> = tokio::select! {
-            () = std::future::pending::<()>() => Ok(()),
-            () = lease.lost() => lease.check(),
-        };
-        assert!(r.unwrap_err().to_string().contains("could not be renewed"));
     }
 }

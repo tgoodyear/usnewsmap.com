@@ -5,51 +5,54 @@
 //! directly with the workspace's `reqwest` client rather than pulling in the
 //! Azure SDK.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_MATCH, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode, Url};
 
 use crate::credential::Credential;
+use crate::retry::{retryable, retryable_write, retrying, Retry};
 use crate::{validate_path, ByteStream, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 /// Bytes per block of a streamed upload (`put_stream`): 50,000 blocks of
 /// 8 MiB allow 390 GiB, and the largest batch archive is 3.8 GB.
 pub const BLOCK_BYTES: usize = 8 * 1024 * 1024;
 
-/// How long one streamed read or block may take: a whole archive is read
-/// in one response.
+/// How long one streamed read may take: a whole archive is read in one
+/// response.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
 
-/// A prefix for one upload's block ids: Azure stages blocks by blob and id,
-/// so two uploads to the same blob at once must not share ids, or a commit
-/// could mix their blocks. Uploads can come from any worker in any
-/// environment (the archival account is shared), so the tag is random:
-/// hashes keyed by `RandomState` (seeded from the OS's randomness, so
-/// different on every host and process) over the time, process and a
-/// counter.
-fn upload_tag() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u64(nanos);
-    h.write_u32(std::process::id());
-    h.write_u64(SEQ.fetch_add(1, Ordering::Relaxed));
-    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
-    h2.write_u64(h.finish());
-    format!("{:016x}{:016x}", h.finish(), h2.finish())
-}
+/// One Put Block may take [`BLOCK_TIMEOUT_FLOOR`] plus its bytes at
+/// [`BLOCK_MIN_RATE`]: 2 min 38 s for an 8 MiB block. A connection that
+/// hangs fails within that and the block is sent again, where one timeout
+/// for every request would have to allow for a whole archive.
+const BLOCK_TIMEOUT_FLOOR: Duration = Duration::from_secs(30);
+/// Bytes per second: far below any uplink a large upload could finish on.
+const BLOCK_MIN_RATE: u64 = 64 * 1024;
 
-/// The `n`th block's id in upload `tag`: the same length for every block, base64.
-fn block_id(tag: &str, n: usize) -> String {
+/// The `n`th block's id: the first 16 bytes of the block's SHA-256 in hex,
+/// then `n`, base64. Azure stages blocks by blob and id, so an id names its
+/// bytes: a block an interrupted upload left staged is used again only if
+/// it holds what would be sent, and two uploads to one blob at once share
+/// an id only for the same bytes at the same place, so a commit can't mix
+/// their blocks. 40 bytes before base64, the length of the random-tag ids
+/// earlier uploads used: one blob's ids must all have one length, and such
+/// an upload may have left blocks behind.
+fn block_id(block: &[u8], n: usize) -> String {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(format!("{tag}{n:08}"))
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    let digest = Sha256::digest(block);
+    let mut id = String::with_capacity(40);
+    for b in &digest[..16] {
+        let _ = write!(id, "{b:02x}");
+    }
+    let _ = write!(id, "{n:08}");
+    base64::engine::general_purpose::STANDARD.encode(id)
 }
 
 /// The Put Block List body committing `ids` in order.
@@ -81,6 +84,48 @@ pub struct BlobStore {
     base: String,
     credential: Arc<Credential>,
     http: reqwest::Client,
+    tuning: Tuning,
+    /// Commits whose outcome is unknown (their last try failed in a way
+    /// that may pass, so it may have gone through), by path: the block ids
+    /// each sent. A later upload of the same ids to the path that finds the
+    /// blob there takes it as that commit.
+    unsure: std::sync::Mutex<HashMap<String, Vec<String>>>,
+}
+
+/// A blob's blocks as Get Block List gives them: ids and sizes, in order.
+#[derive(Debug, Default)]
+struct BlockLists {
+    committed: Vec<(String, u64)>,
+    uncommitted: Vec<(String, u64)>,
+}
+
+/// Tries, timeouts and the block size; the tests shorten them.
+#[derive(Debug, Clone, Copy)]
+struct Tuning {
+    /// A whole-object GET ([`ObjectStore::get`]).
+    get: Retry,
+    /// Each request of a streamed upload: Get Block List, Put Block, Put
+    /// Block List.
+    write: Retry,
+    block_bytes: usize,
+    block_timeout_floor: Duration,
+    block_min_rate: u64,
+}
+
+impl Tuning {
+    const STANDARD: Tuning = Tuning {
+        get: Retry::STANDARD,
+        write: Retry::STANDARD,
+        block_bytes: BLOCK_BYTES,
+        block_timeout_floor: BLOCK_TIMEOUT_FLOOR,
+        block_min_rate: BLOCK_MIN_RATE,
+    };
+
+    /// How long a Put Block of `bytes` may take.
+    fn block_timeout(&self, bytes: usize) -> Duration {
+        self.block_timeout_floor
+            + Duration::from_secs_f64(bytes as f64 / self.block_min_rate.max(1) as f64)
+    }
 }
 
 impl std::fmt::Debug for BlobStore {
@@ -139,6 +184,8 @@ impl BlobStore {
             base,
             credential,
             http,
+            tuning: Tuning::STANDARD,
+            unsure: std::sync::Mutex::default(),
         })
     }
 
@@ -218,31 +265,274 @@ fn quoted(etag: &str) -> String {
 }
 
 fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
-    // Strip the URL: the error's own text is enough and paths are logged separately.
-    StoreError::Io(format!("{op} `{path}`: {}", e.without_url()))
+    // Strip the URL: the error's own text is enough and paths are logged
+    // separately. reqwest's text is only its kind ("error sending
+    // request"), so the causes follow: a reset, a timeout, a body cut short.
+    let e = e.without_url();
+    let mut text = if e.is_timeout() {
+        format!("{e} (timed out)")
+    } else {
+        e.to_string()
+    };
+    let mut cause = std::error::Error::source(&e);
+    while let Some(c) = cause {
+        text.push_str(": ");
+        text.push_str(&c.to_string());
+        cause = c.source();
+    }
+    StoreError::Io(format!("{op} `{path}`: {text}"))
 }
 
 impl BlobStore {
-    async fn put_block(&self, path: &str, id: &str, body: Vec<u8>) -> Result<(), StoreError> {
+    /// [`ObjectStore::get`], tried as `retry` says.
+    async fn get_retrying(&self, path: &str, retry: Retry) -> Result<Option<Vec<u8>>, StoreError> {
+        retrying("get", path, retry, retryable, |_| self.get_once(path)).await
+    }
+
+    /// One try of [`ObjectStore::get`].
+    async fn get_once(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let resp = self
-            .request(Method::PUT, path)
+            .request(Method::GET, path)
             .await?
-            .query(&[("comp", "block"), ("blockid", id)])
-            .header(CONTENT_LENGTH, body.len())
-            .timeout(STREAM_TIMEOUT)
-            .body(body)
             .send()
             .await
-            .map_err(|e| transport("put block", path, e))?;
+            .map_err(|e| transport("get", path, e))?;
         match resp.status() {
-            StatusCode::CREATED => Ok(()),
-            s => Err(StoreError::Http {
-                op: "put block",
-                path: path.into(),
-                status: s.as_u16(),
-            }),
+            StatusCode::NOT_FOUND => return Ok(None),
+            s if !s.is_success() => {
+                return Err(StoreError::Http {
+                    op: "get",
+                    path: path.into(),
+                    status: s.as_u16(),
+                })
+            }
+            _ => {}
         }
+        if resp.content_length().is_some_and(|n| n > MAX_OBJECT_BYTES) {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        // Stream, so a response without an honest Content-Length still stops
+        // at the limit instead of being buffered whole.
+        let mut resp = resp;
+        let mut body = Vec::with_capacity(
+            resp.content_length()
+                .map_or(0, |n| usize::try_from(n).unwrap_or(0)),
+        );
+        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
+            if (body.len() + chunk.len()) as u64 > MAX_OBJECT_BYTES {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
     }
+
+    /// Put Block, sent again after a failure that may pass: staging a block
+    /// again under its id replaces it with the same bytes. Each try has a
+    /// timeout sized to the block ([`Tuning::block_timeout`]).
+    async fn put_block(&self, path: &str, id: &str, body: Bytes) -> Result<(), StoreError> {
+        let timeout = self.tuning.block_timeout(body.len());
+        retrying(
+            "put block",
+            path,
+            self.tuning.write,
+            retryable_write,
+            |_| {
+                let body = body.clone();
+                async move {
+                    let resp = self
+                        .request(Method::PUT, path)
+                        .await?
+                        .query(&[("comp", "block"), ("blockid", id)])
+                        .header(CONTENT_LENGTH, body.len())
+                        .timeout(timeout)
+                        .body(body)
+                        .send()
+                        .await
+                        .map_err(|e| transport("put block", path, e))?;
+                    match resp.status() {
+                        StatusCode::CREATED => Ok(()),
+                        s => Err(StoreError::Http {
+                            op: "put block",
+                            path: path.into(),
+                            status: s.as_u16(),
+                        }),
+                    }
+                }
+            },
+        )
+        .await
+    }
+
+    /// Get Block List (`blocklisttype=all`): `path`'s committed and
+    /// uncommitted blocks. Empty when there is no such blob.
+    async fn block_lists(&self, path: &str) -> Result<BlockLists, StoreError> {
+        retrying(
+            "get block list",
+            path,
+            self.tuning.write,
+            retryable_write,
+            |_| async move {
+                let resp = self
+                    .request(Method::GET, path)
+                    .await?
+                    .query(&[("comp", "blocklist"), ("blocklisttype", "all")])
+                    .send()
+                    .await
+                    .map_err(|e| transport("get block list", path, e))?;
+                match resp.status() {
+                    StatusCode::NOT_FOUND => return Ok(BlockLists::default()),
+                    s if !s.is_success() => {
+                        return Err(StoreError::Http {
+                            op: "get block list",
+                            path: path.into(),
+                            status: s.as_u16(),
+                        })
+                    }
+                    _ => {}
+                }
+                let xml = resp
+                    .text()
+                    .await
+                    .map_err(|e| transport("get block list", path, e))?;
+                let section = |name: &str| -> Vec<(String, u64)> {
+                    xml_elements(&xml, name)
+                        .into_iter()
+                        .flat_map(|s| xml_elements(s, "Block"))
+                        .filter_map(|b| {
+                            let id = xml_values(b, "Name").next()?;
+                            let size = xml_values(b, "Size").next()?.trim().parse().ok()?;
+                            Some((id, size))
+                        })
+                        .collect()
+                };
+                Ok(BlockLists {
+                    committed: section("CommittedBlocks"),
+                    uncommitted: section("UncommittedBlocks"),
+                })
+            },
+        )
+        .await
+    }
+
+    /// Put Block List committing `ids`, create-only (`If-None-Match: *`),
+    /// sent again after a failure that may pass. When a later try, or an
+    /// upload of the same ids after one whose commit is [`BlobStore::unsure`],
+    /// finds the blob already there, that commit may have gone through with
+    /// only its answer lost: the blob is this upload's if its committed
+    /// blocks are `ids`, which name their bytes ([`block_id`]). Never for an
+    /// empty upload: a blob written whole (Put Blob) lists no blocks either.
+    async fn put_block_list(
+        &self,
+        path: &str,
+        ids: &[String],
+        content_type: &str,
+        tier: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = Bytes::from(block_list(ids));
+        let earlier = self
+            .unsure
+            .lock()
+            .unwrap()
+            .get(path)
+            .is_some_and(|sent| sent.as_slice() == ids);
+        let result = retrying(
+            "put block list",
+            path,
+            self.tuning.write,
+            retryable_write,
+            |attempt| {
+                let body = body.clone();
+                async move {
+                    let mut req = self
+                        .request(Method::PUT, path)
+                        .await?
+                        .query(&[("comp", "blocklist")])
+                        .header(IF_NONE_MATCH, "*")
+                        .header("x-ms-blob-content-type", content_type)
+                        .header(CONTENT_TYPE, "application/xml");
+                    if let Some(t) = tier {
+                        req = req.header("x-ms-access-tier", t);
+                    }
+                    let resp = req
+                        .body(body)
+                        .send()
+                        .await
+                        .map_err(|e| transport("put block list", path, e))?;
+                    match (resp.status(), error_code(&resp)) {
+                        (StatusCode::CREATED, _) => Ok(()),
+                        (StatusCode::CONFLICT, "BlobAlreadyExists")
+                        | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => {
+                            if !ids.is_empty() && (attempt > 1 || earlier) {
+                                let committed = self.block_lists(path).await?.committed;
+                                if committed.len() == ids.len()
+                                    && committed.iter().zip(ids).all(|((c, _), id)| c == id)
+                                {
+                                    tracing::warn!(
+                                        path,
+                                        attempt,
+                                        "an earlier commit went through; its answer was lost"
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                            Err(StoreError::AlreadyExists(path.into()))
+                        }
+                        (s, _) => Err(StoreError::Http {
+                            op: "put block list",
+                            path: path.into(),
+                            status: s.as_u16(),
+                        }),
+                    }
+                }
+            },
+        )
+        .await;
+        let mut unsure = self.unsure.lock().unwrap();
+        match &result {
+            Err(e) if retryable_write(e) => {
+                unsure.insert(path.to_owned(), ids.to_vec());
+            }
+            _ => {
+                unsure.remove(path);
+            }
+        }
+        result
+    }
+
+    /// Stage the next block of the upload `up` to `path`, unless `held`
+    /// (the blocks Azure holds for the path already) has it.
+    async fn stage(
+        &self,
+        path: &str,
+        block: Vec<u8>,
+        held: &HashMap<String, u64>,
+        up: &mut Staging,
+    ) -> Result<(), StoreError> {
+        let n = up.ids.len();
+        // Hashing 8 MiB takes milliseconds: off the async threads.
+        let (id, block) = tokio::task::spawn_blocking(move || (block_id(&block, n), block))
+            .await
+            .map_err(|e| StoreError::Io(format!("hashing a block of `{path}`: {e}")))?;
+        let len = block.len() as u64;
+        if held.get(&id) == Some(&len) {
+            up.kept += 1;
+            up.kept_bytes += len;
+        } else {
+            self.put_block(path, &id, Bytes::from(block)).await?;
+        }
+        up.ids.push(id);
+        Ok(())
+    }
+}
+
+/// A streamed upload's blocks so far, and how many of them Azure held
+/// already.
+#[derive(Default)]
+struct Staging {
+    ids: Vec<String>,
+    kept: usize,
+    kept_bytes: u64,
 }
 
 #[async_trait]
@@ -278,6 +568,13 @@ impl ObjectStore for BlobStore {
     /// tier and `If-None-Match: *`: blocks stay invisible (and are discarded
     /// within a week) unless the list is committed, and the commit fails if
     /// a blob is already there, leaving that blob as it was.
+    ///
+    /// Each request is sent again after a failure that may pass
+    /// ([`Retry::STANDARD`]), and a Put Block's timeout is sized to the
+    /// block. An upload to a path that an interrupted one left blocks at
+    /// (in this process or another), or that one committed with its answer
+    /// lost, sends only the blocks Azure doesn't hold already: their ids
+    /// name their bytes ([`block_id`]).
     async fn put_stream(
         &self,
         path: &str,
@@ -287,99 +584,62 @@ impl ObjectStore for BlobStore {
         commit: tokio::sync::oneshot::Receiver<bool>,
     ) -> Result<u64, StoreError> {
         validate_path(path)?;
-        let tag = upload_tag();
-        let mut ids = Vec::new();
-        let mut buf: Vec<u8> = Vec::with_capacity(BLOCK_BYTES);
+        let block_bytes = self.tuning.block_bytes;
+        // Only an upload sent before can be resumed, so a failed listing
+        // costs nothing but the blocks being sent again. Committed blocks
+        // count too: if the blob is there, the create-only commit fails
+        // anyway, unless it is this process's own commit whose answer was
+        // lost ([`BlobStore::unsure`]), which then isn't sent twice.
+        let held: HashMap<String, u64> = match self.block_lists(path).await {
+            Ok(l) => l.committed.into_iter().chain(l.uncommitted).collect(),
+            Err(e) => {
+                tracing::warn!(path, error = %e, "blocks not listed; sending every block");
+                HashMap::new()
+            }
+        };
+        let mut up = Staging::default();
+        let mut buf: Vec<u8> = Vec::with_capacity(block_bytes);
         let mut total = 0u64;
         while let Some(c) = chunks.recv().await {
             total += c.len() as u64;
             let mut rest = &c[..];
             while !rest.is_empty() {
-                let take = (BLOCK_BYTES - buf.len()).min(rest.len());
+                let take = (block_bytes - buf.len()).min(rest.len());
                 buf.extend_from_slice(&rest[..take]);
                 rest = &rest[take..];
-                if buf.len() == BLOCK_BYTES {
-                    let id = block_id(&tag, ids.len());
-                    let body = std::mem::replace(&mut buf, Vec::with_capacity(BLOCK_BYTES));
-                    self.put_block(path, &id, body).await?;
-                    ids.push(id);
+                if buf.len() == block_bytes {
+                    let block = std::mem::replace(&mut buf, Vec::with_capacity(block_bytes));
+                    self.stage(path, block, &held, &mut up).await?;
                 }
             }
         }
         if !buf.is_empty() {
-            let id = block_id(&tag, ids.len());
-            self.put_block(path, &id, buf).await?;
-            ids.push(id);
+            self.stage(path, buf, &held, &mut up).await?;
+        }
+        if up.kept > 0 {
+            tracing::info!(
+                path,
+                blocks = up.kept,
+                of = up.ids.len(),
+                mb = up.kept_bytes / 1_000_000,
+                "upload resumed: blocks Azure held already were not sent again"
+            );
         }
         if commit.await != Ok(true) {
             return Err(StoreError::Io(format!(
                 "`{path}`: upload abandoned; its blocks were not committed"
             )));
         }
-        let mut req = self
-            .request(Method::PUT, path)
-            .await?
-            .query(&[("comp", "blocklist")])
-            .header(IF_NONE_MATCH, "*")
-            .header("x-ms-blob-content-type", content_type)
-            .header(CONTENT_TYPE, "application/xml");
-        if let Some(t) = tier {
-            req = req.header("x-ms-access-tier", t);
-        }
-        let resp = req
-            .body(block_list(&ids))
-            .send()
-            .await
-            .map_err(|e| transport("put block list", path, e))?;
-        match (resp.status(), error_code(&resp)) {
-            (StatusCode::CREATED, _) => Ok(total),
-            (StatusCode::CONFLICT, "BlobAlreadyExists")
-            | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => {
-                Err(StoreError::AlreadyExists(path.into()))
-            }
-            (s, _) => Err(StoreError::Http {
-                op: "put block list",
-                path: path.into(),
-                status: s.as_u16(),
-            }),
-        }
+        self.put_block_list(path, &up.ids, content_type, tier)
+            .await?;
+        Ok(total)
     }
 
+    /// A whole object, read again when a try fails on the way (a dropped
+    /// connection or a body cut short, a timeout, 408, 429 or a 5xx): GET
+    /// changes nothing, so another try is always safe. [`Retry::STANDARD`].
     async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        let resp = self
-            .request(Method::GET, path)
-            .await?
-            .send()
-            .await
-            .map_err(|e| transport("get", path, e))?;
-        match resp.status() {
-            StatusCode::NOT_FOUND => return Ok(None),
-            s if !s.is_success() => {
-                return Err(StoreError::Http {
-                    op: "get",
-                    path: path.into(),
-                    status: s.as_u16(),
-                })
-            }
-            _ => {}
-        }
-        if resp.content_length().is_some_and(|n| n > MAX_OBJECT_BYTES) {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        // Stream, so a response without an honest Content-Length still stops
-        // at the limit instead of being buffered whole.
-        let mut resp = resp;
-        let mut body = Vec::with_capacity(
-            resp.content_length()
-                .map_or(0, |n| usize::try_from(n).unwrap_or(0)),
-        );
-        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
-            if (body.len() + chunk.len()) as u64 > MAX_OBJECT_BYTES {
-                return Err(StoreError::TooLarge(path.into()));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(Some(body))
+        self.get_retrying(path, self.tuning.get).await
     }
 
     async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError> {
@@ -640,12 +900,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uploads_never_share_block_ids() {
-        let (a, b) = (upload_tag(), upload_tag());
-        assert_ne!(a, b);
-        assert_ne!(block_id(&a, 0), block_id(&b, 0));
-        // Every id of an upload has the same length, as Azure requires.
-        assert_eq!(block_id(&a, 0).len(), block_id(&a, 49_999).len());
+    fn block_ids_name_their_bytes_and_place() {
+        let id = block_id(b"abc", 0);
+        assert_eq!(id, block_id(b"abc", 0));
+        assert_ne!(id, block_id(b"abd", 0));
+        assert_ne!(id, block_id(b"abc", 1));
+        // Every id has one length, as Azure requires, and the length of the
+        // random-tag ids earlier uploads may have left staged.
+        use base64::Engine;
+        let raw = |id: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(id)
+                .unwrap()
+                .len()
+        };
+        assert_eq!(raw(&id), 40);
+        assert_eq!(raw(&block_id(&[7u8; BLOCK_BYTES], 49_999)), 40);
+    }
+
+    #[test]
+    fn block_timeouts_scale_with_the_block() {
+        let t = Tuning::STANDARD;
+        assert_eq!(t.block_timeout(0), Duration::from_secs(30));
+        assert_eq!(t.block_timeout(BLOCK_BYTES), Duration::from_secs(30 + 128));
+        assert!(t.block_timeout(BLOCK_BYTES) < Duration::from_secs(300));
     }
     use crate::credential::StaticToken;
 
@@ -746,6 +1024,440 @@ mod tests {
     }
 
     use axum::response::IntoResponse;
+
+    /// A server that answers each connection with the next of `replies`
+    /// (raw HTTP/1.1, then closes), repeating the last, and counts them.
+    async fn scripted(replies: Vec<&'static str>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let n = Arc::new(AtomicUsize::new(0));
+        let count = n.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let i = count.fetch_add(1, Ordering::SeqCst);
+                let reply = replies[i.min(replies.len() - 1)];
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(reply.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/c"), n)
+    }
+
+    const CUT_SHORT: &str = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhel";
+    const BUSY: &str =
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const DENIED: &str = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const WHOLE: &str =
+        "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world";
+
+    #[tokio::test]
+    async fn get_tries_again_after_a_cut_body_or_a_busy_server() {
+        use std::sync::atomic::Ordering;
+        let (url, n) = scripted(vec![CUT_SHORT, BUSY, WHOLE]).await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let got = store.get("pages/a.parquet").await.unwrap().unwrap();
+        assert_eq!(got, b"hello world");
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn get_gives_up_on_a_refusal_and_after_its_tries() {
+        use std::sync::atomic::Ordering;
+        let (url, n) = scripted(vec![DENIED]).await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let err = store.get("pages/a.parquet").await.unwrap_err();
+        assert!(matches!(err, StoreError::Http { status: 403, .. }), "{err}");
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        let (url, n) = scripted(vec![CUT_SHORT]).await;
+        let store = BlobStore::new(&url, cred()).unwrap();
+        let err = store
+            .get_retrying("pages/a.parquet", FAST)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Io(_)), "{err}");
+        assert_eq!(n.load(Ordering::SeqCst), 4);
+        // The text says what went wrong, not only "error decoding response body".
+        assert!(err.to_string().contains("get `pages/a.parquet`: "), "{err}");
+    }
+
+    /// Four tries, a millisecond or two apart.
+    const FAST: Retry = Retry {
+        tries: 4,
+        first_wait: Duration::from_millis(1),
+        max_wait: Duration::from_millis(2),
+    };
+
+    /// What the upload server does with one request.
+    #[derive(Clone, Debug)]
+    enum Act {
+        Reply(String),
+        /// Close the connection without an answer.
+        Drop,
+        /// Hold the connection open without an answer.
+        Hang,
+    }
+
+    fn reply(raw: &str) -> Act {
+        Act::Reply(raw.to_owned())
+    }
+
+    fn xml(body: &str) -> Act {
+        Act::Reply(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+    }
+
+    const CREATED: &str = "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const EXISTS: &str = "HTTP/1.1 409 Conflict\r\nx-ms-error-code: BlobAlreadyExists\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const NO_BLOB: &str = "HTTP/1.1 404 Not Found\r\nx-ms-error-code: BlobNotFound\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    /// One request the upload server saw: its kind (`all` for Get Block
+    /// List, `block`, `commit`), its block id and its body.
+    type Seen = Arc<std::sync::Mutex<Vec<(String, String, Vec<u8>)>>>;
+
+    /// A server that reads each request whole, then acts as `script` says
+    /// for its kind: the next act of that kind's list, repeating the last.
+    /// A kind without a list is answered 404 (no such blob) for a Get Block
+    /// List and 201 otherwise.
+    async fn upload_server(script: Vec<(&'static str, Vec<Act>)>) -> (String, Seen) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let script: HashMap<&'static str, Vec<Act>> = script.into_iter().collect();
+        let script = Arc::new(script);
+        let counts = Arc::new(std::sync::Mutex::new(HashMap::<String, usize>::new()));
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let (script, counts, log) = (script.clone(), counts.clone(), log.clone());
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = vec![0u8; 64 * 1024];
+                    let head_end = loop {
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break i + 4;
+                        }
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse().ok())?
+                        })
+                        .unwrap_or(0);
+                    while buf.len() < head_end + length {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let mut line = head.split_whitespace();
+                    let method = line.next().unwrap_or("").to_owned();
+                    let target = line.next().unwrap_or("").to_owned();
+                    let url = Url::parse(&format!("http://h{target}")).unwrap();
+                    let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
+                    let kind = match (method.as_str(), q.get("comp").map(String::as_str)) {
+                        ("GET", Some("blocklist")) => q["blocklisttype"].clone(),
+                        ("PUT", Some("block")) => "block".into(),
+                        ("PUT", Some("blocklist")) => "commit".into(),
+                        _ => format!("{method} {target}"),
+                    };
+                    let id = q.get("blockid").cloned().unwrap_or_default();
+                    log.lock().unwrap().push((
+                        kind.clone(),
+                        id,
+                        buf[head_end..head_end + length].to_vec(),
+                    ));
+                    let act = {
+                        let mut counts = counts.lock().unwrap();
+                        let i = counts.entry(kind.clone()).or_default();
+                        let act = match script.get(kind.as_str()) {
+                            Some(acts) => acts[(*i).min(acts.len() - 1)].clone(),
+                            None if method == "GET" => reply(NO_BLOB),
+                            None => reply(CREATED),
+                        };
+                        *i += 1;
+                        act
+                    };
+                    match act {
+                        Act::Reply(raw) => {
+                            let _ = sock.write_all(raw.as_bytes()).await;
+                            let _ = sock.shutdown().await;
+                        }
+                        Act::Drop => drop(sock),
+                        Act::Hang => {
+                            tokio::time::sleep(Duration::from_secs(120)).await;
+                            drop(sock);
+                        }
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/c"), seen)
+    }
+
+    /// A store against `url` with 1 KiB blocks, [`FAST`] tries and a
+    /// half-second block timeout.
+    fn quick_store(url: &str) -> BlobStore {
+        let mut s = BlobStore::new(url, cred()).unwrap();
+        s.tuning = Tuning {
+            get: FAST,
+            write: FAST,
+            block_bytes: 1024,
+            block_timeout_floor: Duration::from_millis(500),
+            block_min_rate: u64::MAX,
+        };
+        s
+    }
+
+    /// 2.5 blocks of [`quick_store`]'s size.
+    fn upload_data() -> Vec<u8> {
+        (0..2560).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Stream `data` into `store` at `path` in uneven chunks and commit it.
+    async fn upload(store: &BlobStore, path: &str, data: &[u8]) -> Result<u64, StoreError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let (done, commit) = tokio::sync::oneshot::channel();
+        let feed = async move {
+            for c in data.chunks(700) {
+                if tx.send(Bytes::copy_from_slice(c)).await.is_err() {
+                    return; // the upload failed
+                }
+            }
+            drop(tx);
+            let _ = done.send(true);
+        };
+        let (put, ()) = tokio::join!(
+            store.put_stream(path, "application/octet-stream", None, rx, commit),
+            feed
+        );
+        put
+    }
+
+    fn kinds(seen: &Seen) -> Vec<String> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .map(|(k, _, _)| k.clone())
+            .collect()
+    }
+
+    /// The ids a commit listed, and the bytes of the blocks sent under them,
+    /// in order.
+    fn committed(seen: &Seen) -> (Vec<String>, Vec<u8>) {
+        let seen = seen.lock().unwrap();
+        let (_, _, list) = seen.iter().rev().find(|(k, _, _)| k == "commit").unwrap();
+        let ids: Vec<String> = xml_values(&String::from_utf8_lossy(list), "Latest").collect();
+        let mut bytes = Vec::new();
+        for id in &ids {
+            if let Some((_, _, b)) = seen.iter().rev().find(|(k, i, _)| k == "block" && i == id) {
+                bytes.extend_from_slice(b);
+            }
+        }
+        (ids, bytes)
+    }
+
+    #[tokio::test]
+    async fn a_busy_or_dropped_block_is_sent_again() {
+        let busy = reply(BUSY);
+        let ok = reply(CREATED);
+        let (url, seen) =
+            upload_server(vec![("block", vec![ok.clone(), busy, Act::Drop, ok])]).await;
+        let store = quick_store(&url);
+        let data = upload_data();
+        assert_eq!(upload(&store, "qw/i/s.split", &data).await.unwrap(), 2560);
+        assert_eq!(
+            kinds(&seen),
+            ["all", "block", "block", "block", "block", "block", "commit"]
+        );
+        let (ids, bytes) = committed(&seen);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(bytes, data);
+    }
+
+    #[tokio::test]
+    async fn a_refused_block_fails_at_once() {
+        let (url, seen) = upload_server(vec![("block", vec![reply(DENIED)])]).await;
+        let store = quick_store(&url);
+        let err = upload(&store, "qw/i/s.split", &upload_data())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Http { status: 403, .. }), "{err}");
+        assert_eq!(kinds(&seen), ["all", "block"]);
+    }
+
+    #[tokio::test]
+    async fn a_hung_block_times_out_and_is_sent_again() {
+        let (url, seen) = upload_server(vec![("block", vec![Act::Hang, reply(CREATED)])]).await;
+        let store = quick_store(&url);
+        let started = std::time::Instant::now();
+        let data = upload_data();
+        assert_eq!(upload(&store, "qw/i/s.split", &data).await.unwrap(), 2560);
+        assert!(started.elapsed() < Duration::from_secs(30));
+        assert_eq!(
+            kinds(&seen),
+            ["all", "block", "block", "block", "block", "commit"]
+        );
+        assert_eq!(committed(&seen).1, data);
+    }
+
+    #[tokio::test]
+    async fn blocks_an_earlier_try_staged_are_not_sent_again() {
+        let data = upload_data();
+        let (a, b) = (block_id(&data[..1024], 0), block_id(&data[1024..2048], 1));
+        // The second block with other bytes, and a block of another upload.
+        let other = block_id(&[0u8; 1024], 1);
+        let listing = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?><BlockList><CommittedBlocks />\
+             <UncommittedBlocks><Block><Name>{a}</Name><Size>1024</Size></Block>\
+             <Block><Name>{other}</Name><Size>1024</Size></Block>\
+             <Block><Name>{b}</Name><Size>1000</Size></Block></UncommittedBlocks></BlockList>"
+        );
+        let (url, seen) = upload_server(vec![("all", vec![xml(&listing)])]).await;
+        let store = quick_store(&url);
+        assert_eq!(upload(&store, "qw/i/s.split", &data).await.unwrap(), 2560);
+        // Only the first block was there with its bytes and size.
+        assert_eq!(kinds(&seen), ["all", "block", "block", "commit"]);
+        let (ids, _) = committed(&seen);
+        assert_eq!(ids[0], a);
+        assert_eq!(ids[1], b);
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_commit_whose_answer_was_lost_is_recognised() {
+        let data = upload_data();
+        let ids: Vec<String> = data
+            .chunks(1024)
+            .enumerate()
+            .map(|(n, c)| block_id(c, n))
+            .collect();
+        let listing = |ids: &[String]| {
+            let blocks: String = ids
+                .iter()
+                .map(|id| format!("<Block><Name>{id}</Name><Size>1024</Size></Block>"))
+                .collect();
+            format!("<BlockList><CommittedBlocks>{blocks}</CommittedBlocks><UncommittedBlocks /></BlockList>")
+        };
+        let (url, seen) = upload_server(vec![
+            ("commit", vec![Act::Drop, reply(EXISTS)]),
+            ("all", vec![reply(NO_BLOB), xml(&listing(&ids))]),
+        ])
+        .await;
+        let store = quick_store(&url);
+        assert_eq!(upload(&store, "qw/i/s.split", &data).await.unwrap(), 2560);
+        assert_eq!(kinds(&seen)[4..], ["commit", "commit", "all"]);
+
+        // Another upload's blob is there: create-only, so that stays.
+        let (url, _) = upload_server(vec![
+            ("commit", vec![Act::Drop, reply(EXISTS)]),
+            ("all", vec![reply(NO_BLOB), xml(&listing(&ids[..2]))]),
+        ])
+        .await;
+        let err = upload(&quick_store(&url), "qw/i/s.split", &data)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+
+        // On a first try a conflict is someone else's blob, and isn't checked.
+        let (url, seen) = upload_server(vec![("commit", vec![reply(EXISTS)])]).await;
+        let err = upload(&quick_store(&url), "qw/i/s.split", &data)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+        assert_eq!(kinds(&seen).iter().filter(|k| *k == "all").count(), 1);
+
+        // An empty upload lists no blocks, and neither does a blob written
+        // whole: it never takes a blob that is there as its own.
+        let (url, _) = upload_server(vec![
+            ("commit", vec![Act::Drop, reply(EXISTS)]),
+            (
+                "all",
+                vec![xml(
+                    "<BlockList><CommittedBlocks /><UncommittedBlocks /></BlockList>",
+                )],
+            ),
+        ])
+        .await;
+        let err = upload(&quick_store(&url), "qw/i/s.split", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+    }
+
+    /// A commit whose answer was lost and whose other tries all failed: the
+    /// next upload of the same bytes (a publish's next round for the split)
+    /// sends no block again and takes the blob as its own. Another process,
+    /// which sent no such commit, still finds it already there.
+    #[tokio::test]
+    async fn a_commit_lost_on_its_last_try_is_found_by_the_next_upload() {
+        let data = upload_data();
+        let ids: Vec<String> = data
+            .chunks(1024)
+            .enumerate()
+            .map(|(n, c)| block_id(c, n))
+            .collect();
+        let blocks: String = ids
+            .iter()
+            .zip([1024, 1024, 512])
+            .map(|(id, n)| format!("<Block><Name>{id}</Name><Size>{n}</Size></Block>"))
+            .collect();
+        let committed =
+            format!("<BlockList><CommittedBlocks>{blocks}</CommittedBlocks><UncommittedBlocks /></BlockList>");
+        let lost = vec![Act::Drop; FAST.tries as usize];
+        let (url, seen) = upload_server(vec![
+            ("commit", [lost, vec![reply(EXISTS)]].concat()),
+            ("all", vec![reply(NO_BLOB), xml(&committed)]),
+        ])
+        .await;
+        let store = quick_store(&url);
+        let err = upload(&store, "qw/i/s.split", &data).await.unwrap_err();
+        assert!(matches!(err, StoreError::Io(_)), "{err}");
+        assert_eq!(upload(&store, "qw/i/s.split", &data).await.unwrap(), 2560);
+        let k = kinds(&seen);
+        assert_eq!(k.iter().filter(|k| *k == "block").count(), 3, "{k:?}");
+        assert_eq!(k[k.len() - 3..], ["all", "commit", "all"]);
+
+        let (url, seen) = upload_server(vec![
+            ("commit", vec![reply(EXISTS)]),
+            ("all", vec![xml(&committed)]),
+        ])
+        .await;
+        let err = upload(&quick_store(&url), "qw/i/s.split", &data)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+        assert_eq!(kinds(&seen), ["all", "commit"]);
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_upload_still_sends_every_block() {
+        // Listing staged blocks fails; the upload goes on without it.
+        let (url, seen) = upload_server(vec![("all", vec![reply(DENIED)])]).await;
+        let store = quick_store(&url);
+        assert_eq!(
+            upload(&store, "qw/i/s.split", &upload_data())
+                .await
+                .unwrap(),
+            2560
+        );
+        assert_eq!(kinds(&seen), ["all", "block", "block", "block", "commit"]);
+    }
 
     #[tokio::test]
     async fn conditional_reads_and_deletes() {

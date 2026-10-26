@@ -16,7 +16,7 @@ targetScope = 'resourceGroup'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
-import { lakeOpen, publicAccountIds } from 'public-accounts.bicep'
+import { cosmosOpen, indexOpen, lakeOpen, publicAccountIds } from 'public-accounts.bicep'
 
 @description('As in main.bicep.')
 param environmentName string
@@ -26,6 +26,20 @@ param ocrNodes bool = false
 param ocrNodeIps string = ''
 @description('As in main.bicep.')
 param serialSetOnPrem bool = false
+@description('The Japanese OCR runs on-prem (main.bicep jaOcrOnPrem): the data lake opens to the node IPs.')
+param jaOcrOnPrem bool = false
+@description('As in main.bicep.')
+param onPremRelease bool = false
+@description('As in main.bicep.')
+param indexStorage bool = false
+@description('The on-prem serving container uses the lake and Cosmos (main.bicep onPremServing, #955): both open to the node IPs.')
+param onPremServing bool = false
+@description('The search log is copied to tank (main.bicep searchLogCopy, #1097): the data lake opens to the node IPs.')
+param searchLogCopy bool = false
+@description('As in main.bicep.')
+param cosmosOnPremAccess bool = false
+@description('The OCR pickup runs on-prem (main.bicep ocrSyncOnPrem, #917): the lake and Cosmos open to the node IPs.')
+param ocrSyncOnPrem bool = false
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -43,7 +57,17 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
     parameters: {
       effect: { value: 'deny' }
       publicAccountIds: {
-        value: publicAccountIds(subscription().subscriptionId, n, ocrNodes, lakeOpen(serialSetOnPrem, ocrNodeIps))
+        value: publicAccountIds(
+          subscription().subscriptionId,
+          n,
+          ocrNodes,
+          lakeOpen(
+            serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy,
+            ocrNodeIps
+          ),
+          indexOpen(onPremRelease, indexStorage, ocrNodeIps),
+          cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+        )
       }
     }
   }

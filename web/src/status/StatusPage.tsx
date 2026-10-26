@@ -1,13 +1,22 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, API_BASE } from "../api/client";
-import type { Backfill, HourBin, Indexing, Status, TitlesPipeline, Versions } from "../api/types";
+import type { Backfill, HourBin, Indexing, RunStatus, Status, TitlesPipeline, Versions } from "../api/types";
 import { TITLES } from "../route";
 import { count, health, relative, span, when } from "./format";
-import { STATE_LABEL, headline, rightNow, steps, localDate } from "./now";
+import { STATE_LABEL, headline, laterIndexRun, pipelineVersionNote, rightNow, steps, localDate } from "./now";
 import { TERMS } from "./terms";
 import { Brand } from "../components/Brand";
-import { InTheIndex, Languages, OurOcr, Places, TheDatasets, VersionsSection, lastPublished } from "./DatasetSections";
+import {
+  CHRONICLING_AMERICA,
+  InTheIndex,
+  Languages,
+  OurOcr,
+  Places,
+  TheDatasets,
+  VersionsSection,
+  lastPublished,
+} from "./DatasetSections";
 import { Bar, Stats, Table, Time, Unavailable } from "./parts";
 import { BoincSection } from "./BoincSection";
 
@@ -15,8 +24,8 @@ const REFRESH_MS = 30_000;
 
 /**
  * `/datasets`: what the site searches, where its text comes from, and what is
- * being added now, for anyone (no sign-in). It reads `/v1/status` and
- * `/v1/versions` (07 §7.10).
+ * being added now, for anyone (no sign-in). It reads `/v1/status`,
+ * `/v1/versions` and `/v1/meta` (07 §7.10).
  */
 export default function DatasetsPage() {
   const status = useQuery({
@@ -28,6 +37,13 @@ export default function DatasetsPage() {
   const versions = useQuery({
     queryKey: ["versions"],
     queryFn: ({ signal }) => api.versions(signal),
+    refetchInterval: REFRESH_MS,
+    staleTime: 0,
+  });
+  // The served version's text layout and page languages, which /v1/status doesn't carry.
+  const meta = useQuery({
+    queryKey: ["meta"],
+    queryFn: ({ signal }) => api.meta(signal),
     refetchInterval: REFRESH_MS,
     staleTime: 0,
   });
@@ -43,6 +59,8 @@ export default function DatasetsPage() {
   }, []);
 
   const s = status.data;
+  // Only when it describes the same version, so the page never mixes two.
+  const m = s && meta.data?.index_version === s.published.index_version ? meta.data : undefined;
   return (
     <div className="app status-page">
       <header className="topbar">
@@ -66,10 +84,10 @@ export default function DatasetsPage() {
           </p>
         )}
         {s && <InTheIndex s={s} />}
-        {s && <TheDatasets s={s} now={now} />}
+        {s && <TheDatasets s={s} meta={m} now={now} />}
         {s && <OurOcr s={s} now={now} />}
         <BoincSection now={now} />
-        {s && <Languages s={s} />}
+        {s && <Languages s={s} meta={m} />}
         {s && <Places s={s} />}
         {s && <InProgress s={s} now={now} versions={versions.data} />}
         {s && <VersionsSection versions={versions.data} error={versions.isError} now={now} />}
@@ -77,7 +95,7 @@ export default function DatasetsPage() {
       </main>
       <footer className="credits">
         <a href="/">Search</a> · Newspaper pages from{" "}
-        <a href="https://chroniclingamerica.loc.gov/" target="_blank" rel="noopener noreferrer">
+        <a href={CHRONICLING_AMERICA} target="_blank" rel="noopener noreferrer">
           Chronicling America
         </a>{" "}
         (
@@ -132,7 +150,7 @@ function RightNow({ s, now }: { s: Status; now: number }) {
   );
 }
 
-/** "Searchable now: X of Y pages (Z%)". */
+/** "In the published version: N pages, from X of Y downloaded batches (Z%)". */
 function Headline({ s }: { s: Status }) {
   const h = headline(s);
   return (
@@ -140,14 +158,7 @@ function Headline({ s }: { s: Status }) {
       <h3 id="searchable-now" className="status-headline__text">
         {h.text}
       </h3>
-      {h.share !== null && (
-        <Bar
-          // Copies against copies: the published pages plus the duplicate copies they left out.
-          value={s.published.pages + (s.published.duplicate_pages ?? 0)}
-          max={s.backfill.available ? s.backfill.pages : s.published.pages}
-          label={h.text}
-        />
-      )}
+      {h.progress && <Bar value={h.progress.done} max={h.progress.total} label={h.text} />}
       <p>
         {h.sub} {h.share !== null && h.share < 1 && "The rest are downloaded and on their way through the steps below."}
       </p>
@@ -238,8 +249,21 @@ function Technical({ s, now }: { s: Status; now: number }) {
   );
 }
 
+/**
+ * How an index run ended, before its end time. A published run's time is
+ * when its build finished: a staged release is marked published when it is
+ * staged, hours before the site switches to it.
+ */
+const RUN_ENDED: Record<RunStatus, string> = {
+  published: "build finished",
+  failed: "failed",
+  stopped: "stopped",
+  building: "building",
+};
+
 function ActivityDetails({ s, now }: { s: Status; now: number }) {
   const a = s.activity;
+  const later = laterIndexRun(s);
   return (
     <>
       <h3>Current activity</h3>
@@ -278,7 +302,9 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
           />
           {a.last && (
             <p>
-              <strong>Last run:</strong> {a.last.outcome.replace("_", " ")} <Time iso={a.last.ended_at} now={now} />
+              {/* The ingest job's own report, or the newest index run when the job has none (activity.rs). */}
+              <strong>Last reported run:</strong> {a.last.outcome.replace("_", " ")}{" "}
+              <Time iso={a.last.ended_at} now={now} />
               {a.last.index_version && (
                 <>
                   {" "}
@@ -290,6 +316,22 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
                   : <ErrorText text={a.last.error} />
                 </>
               )}
+            </p>
+          )}
+          {later && (
+            <p>
+              <strong>A later index run:</strong>{" "}
+              {later.ended ? (
+                <>
+                  {RUN_ENDED[later.run.status]} <Time iso={later.at} now={now} />
+                </>
+              ) : (
+                <>
+                  {later.run.status}, started <Time iso={later.at} now={now} /> (its end time isn&apos;t reported)
+                </>
+              )}{" "}
+              (<code>{later.run.index_version}</code>), which the ingest job didn&apos;t report. Recent index runs are
+              under Index builds.
             </p>
           )}
         </>
@@ -463,7 +505,7 @@ function IndexingSection({ s, now }: { s: Status; now: number }) {
       <Stats
         items={[
           ["Version", <code key="v">{p.index_version}</code>],
-          ["Published", <Time key="p" iso={p.published_at} now={now} />],
+          ["Build finished", <Time key="p" iso={p.published_at} now={now} />],
           ["Pages", count(p.pages)],
           ["Newspapers", count(p.titles)],
           ["Places", count(p.places)],
@@ -486,6 +528,17 @@ function IndexingSection({ s, now }: { s: Status; now: number }) {
             )
           </>
         )}
+        {p.ja && p.ja.indexes.length > 0 && (
+          <>
+            ; Japanese{" "}
+            {p.ja.indexes.map((d, k) => (
+              <span key={d}>
+                {k > 0 && ", "}
+                <code>{d}</code>
+              </span>
+            ))}
+          </>
+        )}
         .
       </p>
       <p>
@@ -495,12 +548,17 @@ function IndexingSection({ s, now }: { s: Status; now: number }) {
           : `Each release adds a delta; after ${p.max_deltas}, the next release rebuilds a single base index.`}
       </p>
       <Bar value={p.deltas} max={p.max_deltas} label={deltaLabel} />
-      {!i.available ? <Unavailable reason={i.reason} /> : <IndexingBody i={i} now={now} />}
+      {!i.available ? (
+        <Unavailable reason={i.reason} />
+      ) : (
+        <IndexingBody i={i} note={pipelineVersionNote(s)} now={now} />
+      )}
     </section>
   );
 }
 
-function IndexingBody({ i, now }: { i: Indexing; now: number }) {
+/** `note`: what to say of the pipeline's current version when it isn't the served one. */
+function IndexingBody({ i, note, now }: { i: Indexing; note: string | null; now: number }) {
   const r = i.release;
   return (
     <>
@@ -522,7 +580,17 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
       )}
       <Stats
         items={[
-          ["Pipeline's current version", i.current_version ? <code key="c">{i.current_version}</code> : "–"],
+          [
+            "Pipeline's current version",
+            i.current_version ? (
+              <span key="c">
+                <code>{i.current_version}</code>
+                {note && <> ({note})</>}
+              </span>
+            ) : (
+              "–"
+            ),
+          ],
           [
             "Writer lock",
             i.writer.held ? (

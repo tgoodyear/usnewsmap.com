@@ -3,6 +3,8 @@
 //! - [`stage`] gets each page's full-size IIIF JPEG (the scan archive first,
 //!   then tile.loc.gov one request at a time; see [`crate::scans`]) and
 //!   writes one unit directory per page.
+//! - [`gold`] stages the OCR gold set's crops as crop units and writes
+//!   Surya's reading of them as the hypothesis file `gold.py score` takes.
 //! - [`submit`] hands staged units to stock `create_work`, two results each.
 //! - [`work`] runs one unit on a volunteer host, CPU or GPU, and always
 //!   writes a result and its diagnostics.
@@ -13,7 +15,12 @@
 //! - [`summary`] reads those copies back into one table.
 use anyhow::{bail, ensure, Context};
 use std::path::{Path, PathBuf};
+use usnm_core::page_id::{PageId, Source};
 
+pub mod cli;
+pub mod collect;
+pub mod crops;
+pub mod gold;
 pub mod stage;
 pub mod submit;
 pub mod summary;
@@ -28,6 +35,48 @@ pub const DIAG_FILE: &str = "diag.txt";
 /// The page image's open name in the slot.
 pub const PAGE_FILE: &str = "page.jpg";
 pub const APP: &str = "usnm_surya";
+
+/// The worker image's pins, `KEY=value` a line (`ocr/boinc/surya/engine.lock`): the one place the
+/// Containerfile's build arguments are written, compiled in so a default can read it.
+const ENGINE_LOCK: &str = include_str!("../../../../ocr/boinc/surya/engine.lock");
+
+/// surya-ocr's version, from the lock: what the image installs and records as `USNM_SURYA_VERSION`,
+/// and so the version a unit is staged for unless `--engine-surya` says otherwise.
+pub const SURYA_VERSION: &str = lock_value(ENGINE_LOCK, "SURYA_VERSION");
+
+/// The value of `key` in a pin lock (the first line that is `key=value`; comments and other keys
+/// do not match). Evaluated at compile time for [`SURYA_VERSION`], so a lock without the key, or
+/// with an empty value, does not build.
+const fn lock_value(lock: &'static str, key: &str) -> &'static str {
+    let (lock, key) = (lock.as_bytes(), key.as_bytes());
+    let mut start = 0;
+    while start < lock.len() {
+        let mut end = start;
+        while end < lock.len() && lock[end] != b'\n' {
+            end += 1;
+        }
+        let mut matches = end - start > key.len() && lock[start + key.len()] == b'=';
+        let mut i = 0;
+        while matches && i < key.len() {
+            matches = lock[start + i] == key[i];
+            i += 1;
+        }
+        if matches {
+            let value_start = start + key.len() + 1;
+            // A checkout with CRLF line endings must not put a carriage return in the pin.
+            let value_end = if lock[end - 1] == b'\r' { end - 1 } else { end };
+            assert!(value_end > value_start, "a pin in the engine lock is empty");
+            let (_, rest) = lock.split_at(value_start);
+            let (value, _) = rest.split_at(value_end - value_start);
+            return match core::str::from_utf8(value) {
+                Ok(value) => value,
+                Err(_) => panic!("a pin in the engine lock is not UTF-8"),
+            };
+        }
+        start = end + 1;
+    }
+    panic!("a pin is missing from the engine lock")
+}
 
 /// One page to stage: its round 1 group, ISO 639-3 language, doc id
 /// (`<lccn>_<date>_ed-<n>_seq-<n>`) and the batches that may hold it
@@ -71,9 +120,122 @@ impl std::str::FromStr for Page {
     }
 }
 
+impl Page {
+    /// A page of `group` from a row of the quality campaign's sample
+    /// (`quality sample`, #968): its batch is the one the prefetch manifest
+    /// places it in.
+    pub fn from_sample(row: &crate::assess::SampleRow, group: &str) -> anyhow::Result<Self> {
+        crate::assess::check_doc_id(&row.doc_id)?;
+        check_group(group)?;
+        check_word(&row.lang, "language")?;
+        ensure!(
+            !row.batch.is_empty(),
+            "{}: sample row has no batch",
+            row.doc_id
+        );
+        Ok(Self {
+            doc_id: row.doc_id.clone(),
+            group: group.to_owned(),
+            lang: row.lang.clone(),
+            batches: vec![(row.batch.clone(), row.batch_version)],
+        })
+    }
+}
+
 /// Where the units live under the staging root.
 pub fn units(root: &Path) -> PathBuf {
     root.join("units")
+}
+
+/// Marks a campaign whose units live at `units/<source>/<local id>`
+/// (ADR-0026), so a LoC page unit and a benchmark sample's unit cannot share
+/// a directory. A campaign with units and no marker was staged before, at
+/// `units/<id>`, and keeps that layout: a resumed run adds no second copy of
+/// a unit it already staged.
+pub const LAYOUT_FILE: &str = "units-layout";
+const LAYOUT: &[u8] = b"source/local\n";
+
+/// Where a campaign's writers put its units, in the layout it was started
+/// with.
+#[derive(Debug, Clone)]
+pub struct Units {
+    dir: PathBuf,
+    qualified: bool,
+}
+
+impl Units {
+    /// Creates `units/` if need be. A campaign with no units yet gets the
+    /// qualified layout and its marker.
+    pub fn open(root: &Path) -> anyhow::Result<Self> {
+        let dir = units(root);
+        let marker = root.join(LAYOUT_FILE);
+        let qualified = if marker.exists() {
+            ensure!(
+                crate::read(&marker, 64)? == LAYOUT,
+                "unknown unit layout in {}",
+                marker.display()
+            );
+            true
+        } else if std::fs::read_dir(&dir).is_ok_and(|mut d| d.next().is_some()) {
+            false
+        } else {
+            crate::atomic(&marker, LAYOUT)?;
+            true
+        };
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self { dir, qualified })
+    }
+
+    /// Whether units go under `units/<source>/<local id>`.
+    pub fn qualified(&self) -> bool {
+        self.qualified
+    }
+
+    /// The unit of `page`, or with `suffix` the name beside it: a crop unit
+    /// (`<page>.<crop id>`) or a marker (`<page>.<crop id>.missing`).
+    pub fn path(&self, page: &PageId, suffix: Option<&str>) -> anyhow::Result<PathBuf> {
+        let base = if self.qualified {
+            page.path()
+        } else {
+            ensure!(
+                page.source() == Source::Loc,
+                "{page}: a campaign staged before ADR-0026 holds LoC pages only"
+            );
+            page.local().to_owned()
+        };
+        Ok(self.dir.join(match suffix {
+            Some(s) => format!("{base}.{s}"),
+            None => base,
+        }))
+    }
+}
+
+/// Every unit (a directory holding `surya.json`) of the campaign at `root`,
+/// sorted, in either layout: `units/<id>` from before ADR-0026, or
+/// `units/<source>/<local id>`, which is two or three levels deep.
+pub fn unit_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let e = e?;
+            if !e.file_type()?.is_dir() {
+                continue;
+            }
+            let p = e.path();
+            if p.join(JOB_FILE).exists() {
+                out.push(p);
+            } else if depth > 1 {
+                walk(&p, depth - 1, out)?;
+            }
+        }
+        Ok(())
+    }
+    let dir = units(root);
+    let mut out = Vec::new();
+    if dir.exists() {
+        walk(&dir, 3, &mut out)?;
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// A hold written when LoC refused or failed a request, as for the
@@ -94,7 +256,13 @@ pub fn outputs() -> [&'static str; 5] {
     ]
 }
 
-/// Lower-case ASCII letters and hyphens, as a group or language.
+/// A group as the quality campaign names them: lower-case ASCII letters,
+/// digits and hyphens, 1 to 32 bytes.
+pub fn check_group(s: &str) -> anyhow::Result<()> {
+    usnm_ocr_contract::quality::check_name(s, "group")
+}
+
+/// Lower-case ASCII letters and hyphens, as a language.
 pub fn check_word(s: &str, what: &str) -> anyhow::Result<()> {
     ensure!(
         !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
@@ -106,6 +274,27 @@ pub fn check_word(s: &str, what: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_sample_row_becomes_a_page_of_the_group() {
+        let row: crate::assess::SampleRow = serde_json::from_value(serde_json::json!({
+            "batch": "dlc_arlington", "batch_version": 1, "crash_weight": 1.0,
+            "damage": "mid", "damage_rate": 0.3, "decade": 1910,
+            "doc_id": "sn85055101_1917-04-03_ed-1_seq-3", "lang": "srp", "mode": "ocr",
+            "prefix": "dlc", "stratum_pages": 10, "weight": 1.0, "year": 1917
+        }))
+        .unwrap();
+        let p = Page::from_sample(&row, "campaign-a").unwrap();
+        assert_eq!(p.group, "campaign-a");
+        assert_eq!(p.lang, "srp");
+        assert_eq!(p.batches, vec![("dlc_arlington".to_owned(), 1)]);
+        // The quality campaign's groups carry digits.
+        assert_eq!(
+            Page::from_sample(&row, "campaign-1").unwrap().group,
+            "campaign-1"
+        );
+        assert!(Page::from_sample(&row, "Campaign 1").is_err());
+    }
+
     #[test]
     fn pages_parse() {
         let p: Page = "serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01"
@@ -131,5 +320,104 @@ mod tests {
                 .parse::<Page>()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn new_campaigns_qualify_units_and_old_ones_keep_their_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loc: PageId = "sn85055101_1917-04-03_ed-1_seq-3".parse().unwrap();
+        let sample: PageId = "sample:overproof-ca/overproof-1".parse().unwrap();
+
+        let new = tmp.path().join("new");
+        let units = Units::open(&new).unwrap();
+        assert!(units.qualified());
+        let page = units.path(&loc, None).unwrap();
+        assert_eq!(page, new.join("units/loc/sn85055101_1917-04-03_ed-1_seq-3"));
+        assert_eq!(
+            units.path(&loc, Some("c01")).unwrap(),
+            new.join("units/loc/sn85055101_1917-04-03_ed-1_seq-3.c01")
+        );
+        let bench = units.path(&sample, None).unwrap();
+        assert_eq!(bench, new.join("units/sample/overproof-ca/overproof-1"));
+        for unit in [&page, &bench] {
+            std::fs::create_dir_all(unit).unwrap();
+            std::fs::write(unit.join(JOB_FILE), b"{}").unwrap();
+        }
+        // A directory without a job (a missing page) is not a unit.
+        std::fs::create_dir_all(new.join("units/loc/sn85055101_1917-04-03_ed-1_seq-4")).unwrap();
+        assert_eq!(unit_dirs(&new).unwrap(), vec![page, bench]);
+        // Reopened, it stays qualified.
+        assert!(Units::open(&new).unwrap().qualified());
+
+        // Units from before the marker: the bare layout, LoC pages only.
+        let old = tmp.path().join("old");
+        let unit = units_dir_with_job(&old, "sn85055101_1917-04-03_ed-1_seq-3");
+        let units = Units::open(&old).unwrap();
+        assert!(!units.qualified());
+        assert!(!old.join(LAYOUT_FILE).exists());
+        assert_eq!(units.path(&loc, None).unwrap(), unit);
+        assert_eq!(
+            units.path(&loc, Some("c01")).unwrap(),
+            old.join("units/sn85055101_1917-04-03_ed-1_seq-3.c01")
+        );
+        assert!(units.path(&sample, None).is_err());
+        assert_eq!(unit_dirs(&old).unwrap(), vec![unit]);
+
+        // An unknown marker is refused.
+        std::fs::write(new.join(LAYOUT_FILE), b"other\n").unwrap();
+        assert!(Units::open(&new).is_err());
+    }
+
+    fn units_dir_with_job(root: &Path, name: &str) -> PathBuf {
+        let unit = units(root).join(name);
+        std::fs::create_dir_all(&unit).unwrap();
+        std::fs::write(unit.join(JOB_FILE), b"{}").unwrap();
+        unit
+    }
+
+    #[test]
+    fn the_engine_lock_holds_the_version_and_the_digests() {
+        let parts: Vec<_> = SURYA_VERSION.split('.').collect();
+        assert!(
+            parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+            "{SURYA_VERSION:?}"
+        );
+        for key in ["LLAMA_DIGEST", "LLAMA_VULKAN_DIGEST", "SURYA_WEIGHTS"] {
+            let value = lock_value(ENGINE_LOCK, key);
+            assert!(
+                value
+                    .strip_prefix("sha256:")
+                    .is_some_and(|hex| hex.len() == 64
+                        && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))),
+                "{key}: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_value_reads_the_line_that_is_the_key() {
+        let lock = "# SURYA_VERSION=9.9.9\nSURYA_VERSION_X=1\nSURYA=2\r\nSURYA_VERSION=0.1.2\r\nPIN=a=b\nLAST=z";
+        assert_eq!(lock_value(lock, "SURYA_VERSION"), "0.1.2");
+        assert_eq!(lock_value(lock, "SURYA"), "2");
+        assert_eq!(lock_value(lock, "PIN"), "a=b");
+        assert_eq!(lock_value(lock, "LAST"), "z");
+    }
+
+    #[test]
+    #[should_panic(expected = "missing from the engine lock")]
+    fn lock_value_refuses_a_missing_key() {
+        lock_value(
+            "# SURYA_VERSION=1.2.3\nSURYA_VERSION_X=1\n",
+            "SURYA_VERSION",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is empty")]
+    fn lock_value_refuses_an_empty_value() {
+        lock_value("SURYA_VERSION=\r\n", "SURYA_VERSION");
     }
 }

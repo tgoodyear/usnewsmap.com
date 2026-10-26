@@ -6,7 +6,9 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use usnm_ocr_contract::status::{Completion, Dataset, InFlight, Outcomes, Pool, QueueStats};
 
-use crate::fetch::{FailureLine, Fetch, FetchStatus, Tally, GROUPS};
+use crate::fetch::{
+    BulkStatus, FailureLine, Fetch, FetchStatus, PacerState, QueuedManifest, Tally, Watched, GROUPS,
+};
 use crate::hosts::Hosts;
 use crate::nodes::Nodes;
 use crate::sset::{SsetStatus, Ssets};
@@ -36,6 +38,9 @@ pub struct View {
     pub next: NextView,
     pub ocred: OcredView,
     pub azure: AzureView,
+    /// Redacted for the public listener ([`crate::public::redact`]).
+    #[serde(skip)]
+    pub public: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,11 +103,64 @@ pub struct GroupView {
     pub eta_secs: Option<u64>,
 }
 
+/// The fetch queue, summed over its manifests.
+#[derive(Debug, Default, Serialize)]
+pub struct QueueSummary {
+    pub manifests: usize,
+    pub queued: usize,
+    pub fetching: usize,
+    pub cooling: usize,
+    pub fetched: usize,
+    /// Pages in all of them, and of those in the index.
+    pub pages: u64,
+    pub pages_fetched: u64,
+    /// Pages not yet fetched in manifests the queue will run (queued,
+    /// fetching or cooling).
+    pub pages_left: u64,
+}
+
+/// A JSON file the dashboard reads, if it is configured.
+#[derive(Debug, Serialize)]
+pub struct FileView<T> {
+    pub configured: bool,
+    pub value: Option<T>,
+    pub error: Option<String>,
+    pub modified: Option<DateTime<Utc>>,
+}
+
+impl<T: Clone> FileView<T> {
+    fn of(w: &Watched<T>) -> Self {
+        FileView {
+            configured: w.path.is_some(),
+            value: w.value.clone(),
+            error: w.error.clone(),
+            modified: w.modified,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct FetchView {
+    /// The fetcher's current (or last) run: one manifest.
     pub status: Option<FetchStatus>,
     pub status_error: Option<String>,
+    /// What the fetcher is doing: `running`, `idle` (status done and the
+    /// queue empty), `queued` (manifests waiting, no fresh status), or
+    /// `unknown`.
+    pub activity: &'static str,
+    /// The plan shown by set and group, and whether it is pinned.
+    pub plan: Option<String>,
+    pub plan_pinned: bool,
     pub plan_error: Option<String>,
+    /// Every page fetched, by any run, from the index.
+    pub total: Tally,
+    pub index_error: Option<String>,
+    pub queue: Vec<QueuedManifest>,
+    pub queue_summary: QueueSummary,
+    pub queue_configured: bool,
+    pub queue_error: Option<String>,
+    pub bulk: FileView<BulkStatus>,
+    pub pacer: FileView<PacerState>,
     pub sets: Vec<SetView>,
     pub groups: Vec<GroupView>,
     pub last_hour: Rate,
@@ -114,8 +172,11 @@ pub struct FetchView {
     pub failures_last_hour: usize,
     pub failures_last_day: usize,
     pub dead_pages: usize,
-    /// Pages skipped while loc.gov can't serve their issue's item.
+    /// Pages skipped while loc.gov can't serve their issue's item, in a
+    /// manifest the queue will run again.
     pub cooling_pages: usize,
+    /// The same, in no such manifest: asked for again only if queued again.
+    pub cooling_unqueued: usize,
     pub recent_failures: Vec<FailureLine>,
     pub keep_eta_secs: Option<u64>,
 }
@@ -142,8 +203,9 @@ pub struct NodeView {
     pub pages_per_min: f64,
     /// Pages done in the last hour.
     pub pages_per_hour: u64,
-    /// `working`, `idle` (nothing in flight, no page for [`IDLE_AFTER`])
-    /// or `no status`.
+    /// `working`, `idle` (nothing in flight, no page for [`IDLE_AFTER`]),
+    /// `no status`, or `retired` (no answer for [`RETIRED_AFTER`]). Without
+    /// a fresh status its rates and pages in flight are left empty.
     pub state: &'static str,
     pub started_at: Option<DateTime<Utc>>,
     /// By the worker's own clock.
@@ -154,6 +216,11 @@ pub struct NodeView {
 
 /// A worker with nothing in flight and no page done for this long is idle.
 pub const IDLE_AFTER: Duration = Duration::minutes(10);
+/// A worker that hasn't answered for this long is shown as retired: OCR
+/// runs through BOINC now (#1053), so a direct worker isn't expected back.
+pub const RETIRED_AFTER: Duration = Duration::days(1);
+/// A fetcher status older than this isn't the fetcher's current activity.
+pub const FETCH_FRESH_SECS: i64 = 900;
 /// A Serial Set status older than this is marked stale (it is pushed every
 /// ten minutes).
 pub const SSET_FRESH: Duration = Duration::minutes(25);
@@ -164,7 +231,8 @@ pub struct SsetView {
     pub received: DateTime<Utc>,
     pub age_secs: i64,
     pub stale: bool,
-    /// `finished`, `running`, or systemd's word for the unit.
+    /// `finished`, `running`, or systemd's word for the unit; `unknown`
+    /// once the status is stale.
     pub state: String,
     pub status: SsetStatus,
     /// Curated, empty and incomplete volumes.
@@ -175,17 +243,13 @@ pub struct SsetView {
 pub struct NextRow {
     pub doc_id: String,
     pub lang: String,
-    pub group: &'static str,
-    pub fetched: bool,
-    pub in_flight: bool,
+    /// The queued manifest it is in.
+    pub manifest: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct NextView {
-    /// Keep-set pages in fetch order not yet OCRed.
-    pub to_ocr: Vec<NextRow>,
-    pub keep_left_to_ocr: u64,
-    /// Keep-set pages in fetch order not yet fetched.
+    /// Pages of the queued manifests not yet fetched, in the queue's order.
     pub to_fetch: Vec<NextRow>,
     pub seed_plan: Option<BTreeMap<String, String>>,
 }
@@ -198,7 +262,11 @@ pub struct NodeLatest {
 
 #[derive(Debug, Serialize)]
 pub struct OcredView {
+    /// Pages in the journals copied here from the direct queue workers,
+    /// configured or retired (#1053), and the newest page's time.
     pub pages: u64,
+    pub journals: Vec<String>,
+    pub last_at: Option<DateTime<Utc>>,
     pub by_language: Vec<(String, u64)>,
     pub by_engine: Vec<(String, u64)>,
     pub latest: Vec<NodeLatest>,
@@ -224,14 +292,19 @@ pub const NODE_FRESH: Duration = Duration::minutes(3);
 /// A look at the queues older than this is marked stale.
 pub const QUEUES_FRESH: Duration = Duration::minutes(5);
 
+/// The fetcher's status says what it is doing now. A plan that can't be
+/// read doesn't change that: the plan is only what the sets are counted
+/// against.
 pub fn fetch_status_fresh(v: &View) -> bool {
-    v.fetch.status_error.is_none()
-        && v.fetch.plan_error.is_none()
-        && v.fetch.status.as_ref().is_some_and(|s| {
-            DateTime::parse_from_rfc3339(&s.updated_at).is_ok_and(|at| {
-                (0..=900).contains(&(v.generated_at - at.with_timezone(&Utc)).num_seconds())
-            })
+    v.fetch.status_error.is_none() && status_fresh(v.fetch.status.as_ref(), v.generated_at)
+}
+
+fn status_fresh(s: Option<&FetchStatus>, now: DateTime<Utc>) -> bool {
+    s.is_some_and(|s| {
+        DateTime::parse_from_rfc3339(&s.updated_at).is_ok_and(|at| {
+            (0..=FETCH_FRESH_SECS).contains(&(now - at.with_timezone(&Utc)).num_seconds())
         })
+    })
 }
 
 pub fn node_status_fresh(n: &NodeView, now: DateTime<Utc>) -> bool {
@@ -239,9 +312,9 @@ pub fn node_status_fresh(n: &NodeView, now: DateTime<Utc>) -> bool {
 }
 
 /// Where the queues come from (12 §12.2.5).
-pub const QUEUES_NOTE: &str = "From the nodes: each worker with a status port looks once a minute, with Get Queue \
-Metadata and Peek Messages (Storage Queue Data Reader on each queue), and takes nothing. The lengths count hidden \
-messages too; the dead letters are the oldest visible ones.";
+pub const QUEUES_NOTE: &str = "Queue lengths came from the direct queue workers' status ports, and those workers \
+are retired (#1053): this panel shows a count only while a configured worker still reports one. The OCR queues are \
+now on-prem (PostgreSQL and pgmq, ADR-0025); the dashboard doesn't read them yet.";
 
 /// The freshest look at the queues among the nodes, with every node's
 /// dead letters joined.
@@ -338,10 +411,59 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
             bytes: f.buffer.bytes,
         });
     }
+    let queue = f.queue(now);
+    let mut qs = QueueSummary {
+        manifests: queue.len(),
+        ..QueueSummary::default()
+    };
+    for m in &queue {
+        match m.state {
+            "queued" => qs.queued += 1,
+            "fetching" => qs.fetching += 1,
+            "cooling" => qs.cooling += 1,
+            _ => qs.fetched += 1,
+        }
+        qs.pages += m.pages;
+        qs.pages_fetched += m.fetched;
+        if m.state != "fetched" {
+            qs.pages_left += m.pages.saturating_sub(m.fetched);
+        }
+    }
+    let fresh = f.status_error.is_none() && status_fresh(f.status.as_ref(), now);
+    let state = f.status.as_ref().map(|s| s.state.as_str());
+    let activity = if fresh && state != Some("done") {
+        "running"
+    } else if f.manifests.is_none() || f.queue_error.is_some() {
+        if fresh {
+            "idle"
+        } else {
+            "unknown"
+        }
+    } else if qs.queued + qs.fetching > 0 {
+        "queued"
+    } else if state.is_some_and(|s| s == "done") || f.status.is_none() {
+        // The queue sleeps without rewriting the status, so a done status
+        // goes on being the latest one while there's nothing to fetch.
+        "idle"
+    } else {
+        "unknown"
+    };
+    let (cooling_pages, cooling_unqueued) = f.cooling_pages();
     FetchView {
         status: f.status.clone(),
         status_error: f.status_error.clone(),
+        activity,
+        plan: f.plan.as_ref().map(|p| p.path.display().to_string()),
+        plan_pinned: f.manifest.is_some(),
         plan_error: f.plan_error.clone(),
+        total: f.total,
+        index_error: f.index_error.clone(),
+        queue,
+        queue_summary: qs,
+        queue_configured: f.manifests.is_some(),
+        queue_error: f.queue_error.clone(),
+        bulk: FileView::of(&f.bulk),
+        pacer: FileView::of(&f.pacer),
         sets,
         groups,
         last_hour: hour,
@@ -352,7 +474,8 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         failures_last_hour: f.failures_since(now - Duration::hours(1)),
         failures_last_day: f.failures_since(now - Duration::days(1)),
         dead_pages: f.dead.len(),
-        cooling_pages: f.cooling_pages(),
+        cooling_pages,
+        cooling_unqueued,
         recent_failures: f.failures.iter().rev().take(15).cloned().collect(),
         keep_eta_secs: keep_eta,
     }
@@ -419,45 +542,15 @@ pub fn build(
     now: DateTime<Utc>,
 ) -> View {
     let fv = fetch_view(fetch, now);
-    let in_flight: HashSet<&str> = nodes
-        .nodes
-        .iter()
-        .filter_map(|n| n.status.as_ref())
-        .flat_map(|st| st.in_flight.iter().map(|p| p.doc_id.as_str()))
-        .collect();
-    let group_name = |g: u8| GROUPS[usize::from(g.min(5))];
     let to_fetch: Vec<NextRow> = fetch
-        .next_to_fetch(s.next_n)
+        .next_queued(s.next_n)
         .into_iter()
-        .map(|r| NextRow {
-            doc_id: r.doc_id.to_string(),
-            lang: r.lang.to_string(),
-            group: group_name(r.group),
-            fetched: false,
-            in_flight: in_flight.contains(&*r.doc_id),
+        .map(|(manifest, doc_id, lang)| NextRow {
+            doc_id,
+            lang,
+            manifest,
         })
         .collect();
-    let (to_ocr, keep_left) = match &fetch.plan {
-        Some(p) => (
-            p.keep
-                .iter()
-                .filter(|r| !nodes.ocred.contains_key(&r.doc_id))
-                .take(s.next_n)
-                .map(|r| NextRow {
-                    doc_id: r.doc_id.to_string(),
-                    lang: r.lang.to_string(),
-                    group: group_name(r.group),
-                    fetched: fetch.fetched.contains_key(&r.doc_id),
-                    in_flight: in_flight.contains(&*r.doc_id),
-                })
-                .collect(),
-            p.keep
-                .iter()
-                .filter(|r| !nodes.ocred.contains_key(&r.doc_id))
-                .count() as u64,
-        ),
-        None => (Vec::new(), 0),
-    };
     let mut by_language: BTreeMap<&str, u64> = BTreeMap::new();
     let mut by_engine: BTreeMap<&str, u64> = BTreeMap::new();
     for o in nodes.ocred.values() {
@@ -490,8 +583,18 @@ pub fn build(
         .nodes
         .iter()
         .map(|n| {
-            let st = n.status.clone().unwrap_or_default();
             let ok = n.error.is_none() && n.status.is_some();
+            let fresh = ok && n.last_ok.is_some_and(|at| now - at <= NODE_FRESH);
+            // An old status's counters and pages in flight aren't current:
+            // only its identity is shown.
+            let mut st = n.status.clone().unwrap_or_default();
+            if !fresh {
+                st.in_flight.clear();
+                st.last_hour = Outcomes::default();
+                st.last_day = Outcomes::default();
+                st.recent.clear();
+            }
+            let retired = n.last_ok.is_none_or(|at| now - at > RETIRED_AFTER);
             // The status's recent list is bounded and starts empty after a
             // restart; the pages copied here (`latest`) outlast both.
             let last_page_at = st
@@ -507,7 +610,8 @@ pub fn build(
                 name: n.name.clone(),
                 url: n.url.clone(),
                 ok,
-                state: match (ok, busy) {
+                state: match (fresh, busy) {
+                    (false, _) if retired => "retired",
                     (false, _) => "no status",
                     (true, true) => "working",
                     (true, false) => "idle",
@@ -550,13 +654,18 @@ pub fn build(
             .iter()
             .map(|(name, s)| {
                 let st = &s.status;
+                let stale = now - s.received > SSET_FRESH;
                 SsetView {
                     name: name.clone(),
                     received: s.received,
                     age_secs: (now - s.received).num_seconds(),
-                    stale: now - s.received > SSET_FRESH,
+                    stale,
                     state: if st.finished {
                         "finished".to_owned()
+                    } else if stale {
+                        // Its node may be gone: what it last said isn't
+                        // what it is doing.
+                        "unknown".to_owned()
                     } else if st.active == "active" {
                         "running".to_owned()
                     } else {
@@ -568,13 +677,13 @@ pub fn build(
             })
             .collect(),
         next: NextView {
-            to_ocr,
-            keep_left_to_ocr: keep_left,
             to_fetch,
             seed_plan,
         },
         ocred: OcredView {
             pages: nodes.ocred.len() as u64,
+            journals: nodes.journals.clone(),
+            last_at: nodes.last_at,
             by_language: sorted(by_language),
             by_engine: sorted(by_engine),
             latest,
@@ -591,6 +700,7 @@ pub fn build(
             imports: IMPORTS_NOTE,
             workbook_url: s.workbook_url.clone(),
         },
+        public: false,
     }
 }
 

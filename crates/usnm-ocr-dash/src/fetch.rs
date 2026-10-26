@@ -1,9 +1,16 @@
 //! The scan fetch (#368), from the files the fetcher writes into
 //! `tank/ocr/scans` (read-only here): `status-full.json`, `index-full.jsonl`
-//! and `failures-full.jsonl`, and the manifest it fetches from.
+//! and `failures-full.jsonl`; the plan it was given; and the fetch queue's
+//! manifests (`manifests/queue-ocr-*` and `queue-quality-*`, #1082), which
+//! `usnm-loc-fetch-queue.sh` runs one at a time.
+//!
+//! The status file describes the fetcher's current run only, and the queue
+//! rewrites it for every manifest. Progress that outlasts a run comes from
+//! the index (every page ever fetched) and from each queued manifest.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -62,7 +69,169 @@ pub struct FetchStatus {
     pub loc_holds: Option<u64>,
     pub last_doc_id: String,
     pub error: Option<String>,
+    pub pid: u64,
+    pub out: String,
+    pub buffer_resolution: String,
+    /// Of `fetched`: JP2s, and pages through the item API and IIIF JPEG.
+    pub fetched_jp2: u64,
+    pub fetched_item_api: u64,
+    /// Of `fetched_jp2`: those whose bytes came from a mirror (#1087), and
+    /// from LoC's bucket (#1114).
+    pub fetched_mirror: u64,
+    pub fetched_bucket: u64,
+    /// Pages left for a run that may ask LoC: neither LoC's bucket nor a
+    /// mirror had them, and the manifest takes JP2s from nowhere else.
+    pub deferred_needs_loc: u64,
+    pub no_loc: bool,
+    pub mirrors: BTreeMap<String, RouteCounts>,
+    pub bucket: Option<RouteCounts>,
 }
+
+/// One fetch route's counts (a mirror's, or LoC's bucket's), read
+/// leniently: each has a few fields the other lacks.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RouteCounts {
+    pub requests: u64,
+    /// A mirror's JP2s that matched the bag's md5.
+    pub hits: u64,
+    /// The bucket's JP2s.
+    pub jp2s: u64,
+    pub misses: u64,
+    pub md5_mismatches: u64,
+    pub skipped_held: u64,
+    pub holds: u64,
+    /// A mirror's timeouts and connection errors that didn't hold it.
+    pub errors: u64,
+    pub held_secs: Option<u64>,
+}
+
+impl RouteCounts {
+    /// JP2s taken from this route.
+    pub fn taken(&self) -> u64 {
+        self.hits.max(self.jp2s)
+    }
+}
+
+/// The bulk OCR archive download's `bulk-status.json` (usnm-loc-bulk,
+/// #1075), read leniently.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BulkStatus {
+    pub state: String,
+    pub archives: u64,
+    pub done: u64,
+    pub fetched_this_run: u64,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub bytes_this_run: u64,
+    pub elapsed_secs: f64,
+    pub bytes_per_sec: f64,
+    pub failed: Vec<serde_json::Value>,
+    pub updated_at: String,
+}
+
+/// The host's global LoC pacer (`pacer.json`, #1075), which every LoC
+/// request from prefetch and the bulk download goes through.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PacerState {
+    pub sent: u64,
+    /// Set while LoC has pushed back and the budget is lowered.
+    pub slowed: Option<serde_json::Value>,
+    pub hold_until_ms: u64,
+    pub next_ms: u64,
+    pub generation: u64,
+}
+
+/// A small JSON file read at each poll, if one is configured.
+#[derive(Debug, Default)]
+pub struct Watched<T> {
+    pub path: Option<PathBuf>,
+    pub value: Option<T>,
+    pub error: Option<String>,
+    /// The file's modification time.
+    pub modified: Option<DateTime<Utc>>,
+}
+
+impl<T: serde::de::DeserializeOwned> Watched<T> {
+    fn poll(&mut self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        let read = std::fs::metadata(path)
+            .and_then(|m| Ok((m.modified()?, std::fs::read(path)?)))
+            .map_err(anyhow::Error::from)
+            .and_then(|(m, b)| {
+                anyhow::ensure!(b.len() <= 1 << 20, "over 1 MB");
+                Ok((m, serde_json::from_slice::<T>(&b)?))
+            });
+        match read {
+            Ok((m, v)) => {
+                self.value = Some(v);
+                self.modified = Some(m.into());
+                self.error = None;
+            }
+            Err(e) => {
+                self.value = None;
+                self.error = Some(format!("{}: {e:#}", path.display()));
+            }
+        }
+    }
+}
+
+/// A queued manifest's kind, from its directory's name.
+pub fn queue_kind(name: &str) -> Option<&'static str> {
+    if name.starts_with("queue-ocr-") {
+        Some("ocr")
+    } else if name.starts_with("queue-quality-") {
+        Some("quality")
+    } else {
+        None
+    }
+}
+
+/// Whether a manifest path is one of the queue's (`.../queue-*/manifest.parquet`).
+pub fn is_queue_manifest(path: &Path) -> bool {
+    path.parent()
+        .and_then(|d| d.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| queue_kind(n).is_some())
+}
+
+/// A manifest in the fetch queue, and how far the fetcher has got with it.
+#[derive(Debug, Clone, Serialize)]
+pub struct QueuedManifest {
+    pub name: String,
+    /// `ocr` or `quality`.
+    pub kind: &'static str,
+    pub path: String,
+    pub pages: u64,
+    /// Its pages in the index, by any run.
+    pub fetched: u64,
+    /// `queued`, `fetching`, `cooling` (skipped for a day after its pages'
+    /// issues cooled off) or `fetched` (its run ended done with no
+    /// transient failure).
+    pub state: &'static str,
+    /// When the `fetched` or `cooling` file was written.
+    pub marked_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+}
+
+/// A queued manifest as read: its pages as hashes, and, while it is
+/// unfinished, its first pages in file order for the "to fetch" list.
+#[derive(Debug)]
+struct QueueEntry {
+    info: QueuedManifest,
+    stamp: Option<(SystemTime, u64)>,
+    hashes: Vec<u64>,
+    rows: Vec<(Box<str>, Box<str>)>,
+}
+
+/// Rows kept per unfinished manifest for the "to fetch" list.
+const QUEUE_ROWS: usize = 2000;
+/// How long a `cooling` file holds a manifest back, as the queue script does.
+const COOLING: Duration = Duration::hours(24);
 
 /// The fields of an index line used here.
 #[derive(Debug, Deserialize)]
@@ -178,8 +347,21 @@ pub struct Tally {
 #[derive(Debug)]
 pub struct Fetch {
     pub scans: PathBuf,
-    /// The manifest to use when the status doesn't name one.
+    /// The plan shown by set and group. Given, it is pinned: the fetcher's
+    /// status naming another manifest (each queued one does) doesn't
+    /// replace it.
     pub manifest: Option<PathBuf>,
+    /// Where the queue's manifests are (`queue-ocr-*/`, `queue-quality-*/`).
+    pub manifests: Option<PathBuf>,
+    queue: BTreeMap<String, QueueEntry>,
+    pub queue_error: Option<String>,
+    /// Every page in the index, by any run (hashes), when each was last
+    /// fetched; and their pages and bytes (each page's first fetch).
+    all: HashMap<u64, DateTime<Utc>>,
+    pub total: Tally,
+    pub index_error: Option<String>,
+    pub bulk: Watched<BulkStatus>,
+    pub pacer: Watched<PacerState>,
     pub plan: Option<Plan>,
     pub plan_error: Option<String>,
     pub status: Option<FetchStatus>,
@@ -203,8 +385,6 @@ pub struct Fetch {
     holds: VecDeque<DateTime<Utc>>,
     last_hold_until: Option<DateTime<Utc>>,
     last_hold_count: Option<u64>,
-    /// The first keep page not yet fetched.
-    cursor: usize,
     /// The manifest last read, or tried: (path, sha256), when.
     attempt: Option<((PathBuf, String), DateTime<Utc>)>,
 }
@@ -218,6 +398,14 @@ impl Fetch {
             failures_tail: Tail::new(scans.join("failures-full.jsonl")),
             scans,
             manifest,
+            manifests: None,
+            queue: BTreeMap::new(),
+            queue_error: None,
+            all: HashMap::new(),
+            total: Tally::default(),
+            index_error: None,
+            bulk: Watched::default(),
+            pacer: Watched::default(),
             plan: None,
             plan_error: None,
             status: None,
@@ -233,19 +421,32 @@ impl Fetch {
             holds: VecDeque::new(),
             last_hold_until: None,
             last_hold_count: None,
-            cursor: 0,
             attempt: None,
         }
+    }
+
+    /// Read the fetch queue's manifests from `dir`.
+    pub fn with_manifests(mut self, dir: Option<PathBuf>) -> Self {
+        self.manifests = dir;
+        self
+    }
+
+    /// Read the bulk download's status and the LoC pacer's state too.
+    pub fn with_files(mut self, bulk: Option<PathBuf>, pacer: Option<PathBuf>) -> Self {
+        self.bulk.path = bulk;
+        self.pacer.path = pacer;
+        self
     }
 
     /// Forget what the index said, to read it again from the start.
     fn reset_index(&mut self) {
         self.index.offset = 0;
+        self.all.clear();
+        self.total = Tally::default();
         self.fetched.clear();
         self.groups = [Tally::default(); 6];
         self.buffer = Tally::default();
         self.events.clear();
-        self.cursor = 0;
     }
 
     /// Read what changed. Blocking (file reads); run it off the async
@@ -253,9 +454,16 @@ impl Fetch {
     pub fn poll(&mut self, now: DateTime<Utc>) {
         self.read_status(now);
         self.load_plan(now);
-        if let Err(e) = self.read_index() {
-            tracing::warn!(error = %e, "can't read the fetch index");
-        }
+        self.index_error = match self.read_index() {
+            Ok(()) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "can't read the fetch index");
+                Some(format!("{e:#}"))
+            }
+        };
+        self.read_queue(now);
+        self.bulk.poll();
+        self.pacer.poll();
         if let Err(e) = self.read_failures() {
             tracing::warn!(error = %e, "can't read the fetch failures");
         }
@@ -315,21 +523,27 @@ impl Fetch {
     }
 
     fn load_plan(&mut self, now: DateTime<Utc>) {
-        let want = self
+        let named = self
             .status
             .as_ref()
             .map(|s| s.manifest.as_str())
             .filter(|m| !m.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| self.manifest.clone());
+            .map(PathBuf::from);
+        // A pinned plan stays whatever the fetcher runs. Without one, the
+        // status's manifest is followed, but never a queued one: each is a
+        // small batch, and following it would swap the plan every run.
+        let want = match &self.manifest {
+            Some(m) => Some(m.clone()),
+            None => named.clone().filter(|m| !is_queue_manifest(m)),
+        };
         let Some(want) = want else {
             return;
         };
-        let sha = self
-            .status
-            .as_ref()
-            .map(|s| s.manifest_sha256.clone())
-            .unwrap_or_default();
+        // The status's sha256 checks the file only when it names this one.
+        let sha = match (&named, &self.status) {
+            (Some(n), Some(s)) if *n == want => s.manifest_sha256.clone(),
+            _ => String::new(),
+        };
         if self
             .plan
             .as_ref()
@@ -402,6 +616,17 @@ impl Fetch {
 
     fn add_fetch(&mut self, line: IndexLine) {
         self.events.push_back((line.fetched_at, line.bytes));
+        match self.all.entry(doc_hash(&line.doc_id)) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let t = e.get_mut();
+                *t = (*t).max(line.fetched_at);
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(line.fetched_at);
+                self.total.pages += 1;
+                self.total.bytes += line.bytes;
+            }
+        }
         // A page of neither set (an older manifest's, or before the
         // manifest is read) counts in the rates only.
         let set = self
@@ -482,33 +707,232 @@ impl Fetch {
         self.holds.iter().rev().take_while(|t| **t >= since).count()
     }
 
-    /// Pages skipped for an item error and not fetched since.
-    pub fn cooling_pages(&self) -> usize {
-        self.cooling
-            .iter()
-            .filter(|(d, at)| self.fetched.get(d.as_str()).is_none_or(|f| f < *at))
-            .count()
+    /// Pages skipped for an item error and not fetched since: those in a
+    /// manifest the queue will run again (queued or cooling), and the rest,
+    /// which are asked for again only if they are queued again.
+    pub fn cooling_pages(&self) -> (usize, usize) {
+        let pending: HashSet<u64> = self
+            .queue
+            .values()
+            .filter(|e| e.info.state != "fetched")
+            .flat_map(|e| e.hashes.iter().copied())
+            .collect();
+        let mut queued = 0;
+        let mut other = 0;
+        for (d, at) in &self.cooling {
+            let h = doc_hash(d);
+            if self.all.get(&h).is_some_and(|f| f >= at) {
+                continue;
+            }
+            if pending.contains(&h) {
+                queued += 1;
+            } else {
+                other += 1;
+            }
+        }
+        (queued, other)
+    }
+
+    /// Read the queue's directories; a manifest is decoded again only when
+    /// its file changes.
+    fn read_queue(&mut self, now: DateTime<Utc>) {
+        let Some(dir) = self.manifests.clone() else {
+            return;
+        };
+        let names = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| queue_kind(n).is_some())
+                .collect::<HashSet<String>>(),
+            Err(e) => {
+                self.queue_error = Some(format!("{}: {e}", dir.display()));
+                return;
+            }
+        };
+        self.queue_error = None;
+        self.queue.retain(|n, _| names.contains(n));
+        for name in names {
+            let d = dir.join(&name);
+            let path = d.join("manifest.parquet");
+            let stamp = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| Some((m.modified().ok()?, m.len())));
+            let marker = |f: &str| {
+                std::fs::metadata(d.join(f))
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(DateTime::<Utc>::from)
+            };
+            let fetched_at = marker("fetched");
+            let cooling_at = marker("cooling").filter(|t| now - *t < COOLING);
+            let (state, marked_at) = match (fetched_at, cooling_at) {
+                (Some(t), _) => ("fetched", Some(t)),
+                (None, Some(t)) => ("cooling", Some(t)),
+                (None, None) => ("queued", None),
+            };
+            let entry = self
+                .queue
+                .entry(name.clone())
+                .or_insert_with(|| QueueEntry {
+                    info: QueuedManifest {
+                        kind: queue_kind(&name).unwrap_or("ocr"),
+                        name: name.clone(),
+                        path: path.display().to_string(),
+                        pages: 0,
+                        fetched: 0,
+                        state,
+                        marked_at,
+                        error: None,
+                    },
+                    stamp: None,
+                    hashes: Vec::new(),
+                    rows: Vec::new(),
+                });
+            entry.info.state = state;
+            entry.info.marked_at = marked_at;
+            if stamp.is_none() {
+                // Not there yet (a PUT in progress), or gone.
+                entry.stamp = None;
+                entry.hashes.clear();
+                entry.rows.clear();
+                entry.info.pages = 0;
+                entry.info.error = Some("no manifest.parquet".into());
+                continue;
+            }
+            // Rows are cached a window at a time; once every cached row is
+            // fetched and the manifest has more, it is read again for the next.
+            // Refilled when fewer than half a window of cached rows are
+            // still pending and pending pages remain outside the window (a
+            // page that keeps failing doesn't pin it, and a manifest whose
+            // pending pages are all cached isn't read again).
+            let window_done = state != "fetched" && {
+                let cached = entry
+                    .rows
+                    .iter()
+                    .filter(|(d, _)| !self.all.contains_key(&doc_hash(d)))
+                    .count();
+                let pending = entry
+                    .hashes
+                    .iter()
+                    .filter(|h| !self.all.contains_key(h))
+                    .count();
+                cached < QUEUE_ROWS / 2 && pending > cached
+            };
+            if entry.stamp == stamp && entry.info.error.is_none() && !window_done {
+                if state == "fetched" {
+                    entry.rows = Vec::new();
+                }
+                continue;
+            }
+            entry.stamp = stamp;
+            let mut hashes = Vec::new();
+            let mut rows = Vec::new();
+            let keep_rows = state != "fetched";
+            let read = std::fs::read(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| {
+                    decode_where(Bytes::from(b), |r| {
+                        hashes.push(doc_hash(&r.doc_id));
+                        if keep_rows
+                            && rows.len() < QUEUE_ROWS
+                            && !self.all.contains_key(&doc_hash(&r.doc_id))
+                        {
+                            rows.push((
+                                Box::<str>::from(r.doc_id.as_str()),
+                                Box::<str>::from(iso(r.lang_or_und())),
+                            ));
+                        }
+                        false
+                    })
+                });
+            match read {
+                Ok(_) => {
+                    entry.info.pages = hashes.len() as u64;
+                    entry.hashes = hashes;
+                    entry.rows = rows;
+                    entry.info.error = None;
+                }
+                Err(e) => {
+                    tracing::warn!(manifest = %path.display(), error = format!("{e:#}"), "can't read a queued manifest");
+                    entry.hashes.clear();
+                    entry.rows.clear();
+                    entry.info.pages = 0;
+                    entry.info.error = Some(format!("{e:#}"));
+                }
+            }
+        }
+        // The totals leave out a manifest that can't be read: say so.
+        let unread: Vec<&str> = self
+            .queue
+            .values()
+            .filter(|e| e.info.error.is_some())
+            .map(|e| e.info.name.as_str())
+            .collect();
+        if !unread.is_empty() {
+            self.queue_error = Some(format!(
+                "{} queued manifests can't be read, so the queue totals leave them out: {}",
+                unread.len(),
+                unread.join(", ")
+            ));
+        }
+    }
+
+    /// The queue's manifests in the order the queue takes them (OCR's
+    /// before quality's, each by name), with their progress. The one the
+    /// fetcher's status names is `fetching` while its run is.
+    pub fn queue(&self, now: DateTime<Utc>) -> Vec<QueuedManifest> {
+        // Only a current status says which manifest is being fetched.
+        let running = self
+            .status
+            .as_ref()
+            .filter(|s| self.status_error.is_none() && s.state == "running")
+            .filter(|s| {
+                DateTime::parse_from_rfc3339(&s.updated_at)
+                    .is_ok_and(|at| (now - at.with_timezone(&Utc)) <= Duration::minutes(15))
+            })
+            .map(|s| s.manifest.as_str());
+        let mut v: Vec<QueuedManifest> = self
+            .queue
+            .values()
+            .map(|e| {
+                let mut m = e.info.clone();
+                m.fetched = e.hashes.iter().filter(|h| self.all.contains_key(h)).count() as u64;
+                if m.state == "queued" && running == Some(m.path.as_str()) {
+                    m.state = "fetching";
+                }
+                m
+            })
+            .collect();
+        v.sort_by(|a, b| (a.kind != "ocr", &a.name).cmp(&(b.kind != "ocr", &b.name)));
+        v
+    }
+
+    /// The next `n` queued pages not yet fetched, in the queue's order:
+    /// (manifest, doc_id, language).
+    pub fn next_queued(&self, n: usize) -> Vec<(String, String, String)> {
+        let mut entries: Vec<&QueueEntry> = self
+            .queue
+            .values()
+            .filter(|e| e.info.state == "queued")
+            .collect();
+        entries.sort_by(|a, b| {
+            (a.info.kind != "ocr", &a.info.name).cmp(&(b.info.kind != "ocr", &b.info.name))
+        });
+        entries
+            .into_iter()
+            .flat_map(|e| {
+                e.rows
+                    .iter()
+                    .filter(|(d, _)| !self.all.contains_key(&doc_hash(d)))
+                    .map(move |(d, l)| (e.info.name.clone(), d.to_string(), l.to_string()))
+            })
+            .take(n)
+            .collect()
     }
 
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
         self.failure_times.iter().filter(|t| **t >= since).count()
-    }
-
-    /// The next `n` keep pages not yet fetched, in fetch order.
-    pub fn next_to_fetch(&mut self, n: usize) -> Vec<&PlanRow> {
-        let Some(plan) = &self.plan else {
-            return Vec::new();
-        };
-        while self.cursor < plan.keep.len()
-            && self.fetched.contains_key(&plan.keep[self.cursor].doc_id)
-        {
-            self.cursor += 1;
-        }
-        plan.keep[self.cursor..]
-            .iter()
-            .filter(|r| !self.fetched.contains_key(&r.doc_id))
-            .take(n)
-            .collect()
     }
 
     /// The group the fetcher is in: its last page's.
@@ -615,16 +1039,125 @@ mod tests {
         assert!(f.dead.contains("sn3_1890-01-01_ed-1_seq-1"));
         // sn4's page was skipped for an item error and fetched since; sn1's
         // was fetched before its item error, so it counts, as does sn5's.
-        assert_eq!(f.cooling_pages(), 2);
+        // No queue: neither is in a manifest that will run again.
+        assert_eq!(f.cooling_pages(), (0, 2));
+        // Every page fetched, by any run: sn4, sn1 and sn9 once each.
+        assert_eq!(f.total.pages, 3);
+        assert_eq!(f.total.bytes, 112);
         assert_eq!(f.holds_since(now - Duration::hours(1)), 1);
         // The same hold seen again isn't counted twice.
         f.poll(now);
         assert_eq!(f.holds_since(now - Duration::hours(1)), 1);
-        let next: Vec<&str> = f.next_to_fetch(2).iter().map(|r| &*r.doc_id).collect();
-        assert_eq!(
-            next,
-            ["sn4_1890-01-01_ed-1_seq-2", "sn3_1890-01-01_ed-1_seq-1"]
+    }
+
+    #[test]
+    fn a_pinned_plan_stays_while_the_queue_runs_and_each_manifest_shows_its_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let scans = dir.path().join("scans");
+        let manifests = dir.path().join("manifests");
+        let plan_dir = manifests.join("pages-v1");
+        std::fs::create_dir_all(&scans).unwrap();
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        let plan = plan_dir.join("manifest.parquet");
+        std::fs::write(
+            &plan,
+            encode(&[
+                row("sn4_1890-01-01_ed-1_seq-1", "az_a", "ger"),
+                row("sn4_1890-01-01_ed-1_seq-2", "az_a", "ger"),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let queue = |name: &str, docs: &[&str]| {
+            let d = manifests.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            let rows: Vec<ManifestRow> = docs.iter().map(|x| row(x, "az_a", "ger")).collect();
+            std::fs::write(d.join("manifest.parquet"), encode(&rows).unwrap()).unwrap();
+            d
+        };
+        let q1 = queue(
+            "queue-ocr-20261024t181421",
+            &["sn4_1890-01-01_ed-1_seq-1", "sn7_1890-01-01_ed-1_seq-1"],
         );
+        std::fs::write(q1.join("fetched"), "2026-10-24T23:19:00Z\n").unwrap();
+        let q2 = queue(
+            "queue-ocr-20261025t015125",
+            &["sn8_1890-01-01_ed-1_seq-1", "sn8_1890-01-01_ed-1_seq-2"],
+        );
+        queue(
+            "queue-quality-20261025t000000",
+            &["sn9_1890-01-01_ed-1_seq-1"],
+        );
+        std::fs::create_dir_all(manifests.join("batches")).unwrap();
+        let now = Utc::now();
+        let at = (now - Duration::minutes(5)).to_rfc3339();
+        std::fs::write(
+            scans.join("index-full.jsonl"),
+            format!(
+                "{{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":10}}\n\
+                 {{\"doc_id\":\"sn7_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":10}}\n\
+                 {{\"doc_id\":\"sn8_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":10}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            scans.join("failures-full.jsonl"),
+            format!("{{\"doc_id\":\"sn8_1890-01-01_ed-1_seq-2\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{at}\"}}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            scans.join("status-full.json"),
+            format!(
+                "{{\"state\":\"running\",\"updated_at\":\"{at}\",\"manifest\":\"{}\",\"manifest_sha256\":\"{}\",\
+                 \"fetched_jp2\":2,\"fetched_mirror\":1,\"mirrors\":{{\"wayback\":{{\"requests\":2,\"hits\":1,\"holds\":1,\"held_secs\":59}}}}}}",
+                q2.join("manifest.parquet").display(),
+                "0".repeat(64)
+            ),
+        )
+        .unwrap();
+        let mut f = Fetch::new(scans.clone(), Some(plan.clone())).with_manifests(Some(manifests));
+        f.poll(now);
+        // The pinned plan, not the queued manifest the status names.
+        assert!(f.plan_error.is_none(), "{:?}", f.plan_error);
+        assert_eq!(f.plan.as_ref().unwrap().path, plan);
+        assert_eq!(f.groups[0].pages, 1);
+        assert_eq!(f.total.pages, 3);
+        let s = f.status.as_ref().unwrap();
+        assert_eq!(s.mirrors["wayback"].taken(), 1);
+        assert_eq!(s.fetched_mirror, 1);
+        let q = f.queue(now);
+        let names: Vec<(&str, &str, u64, u64)> = q
+            .iter()
+            .map(|m| (m.name.as_str(), m.state, m.pages, m.fetched))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("queue-ocr-20261024t181421", "fetched", 2, 2),
+                ("queue-ocr-20261025t015125", "fetching", 2, 1),
+                ("queue-quality-20261025t000000", "queued", 1, 0),
+            ]
+        );
+        // sn8's second page cools off in a manifest the queue runs again.
+        assert_eq!(f.cooling_pages(), (1, 0));
+        let next = f.next_queued(5);
+        let docs: Vec<&str> = next.iter().map(|(_, d, _)| d.as_str()).collect();
+        // The one being fetched first, then the quality one.
+        assert_eq!(
+            docs,
+            ["sn8_1890-01-01_ed-1_seq-2", "sn9_1890-01-01_ed-1_seq-1"]
+        );
+        // A cooling file holds a manifest back for a day.
+        std::fs::write(q2.join("cooling"), "x").unwrap();
+        f.poll(now);
+        assert_eq!(f.queue(now)[1].state, "cooling");
+
+        // Unpinned, a queued manifest named by the status is not followed.
+        let mut f = Fetch::new(scans, None);
+        f.poll(now);
+        assert!(f.plan.is_none());
+        assert!(f.plan_error.is_none());
+        assert_eq!(f.total.pages, 3);
     }
 
     #[test]

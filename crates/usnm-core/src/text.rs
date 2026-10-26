@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::char::is_combining_mark;
 
 use crate::ja::is_ja;
+use crate::ocr_engine::EngineTag;
 use unicode_normalization::UnicodeNormalization;
 
 /// Folded words longer than this are OCR garbage: the query parser takes
@@ -40,8 +41,77 @@ pub enum TextStatus {
     Empty,
 }
 
-/// Normalize raw OCR text for storage (04 §4.5). Case is preserved.
+/// Which line-end marks [`normalize_ocr_for`] takes for a broken word.
+///
+/// A word broken at a line end is a letter and a hyphen at the end of one
+/// line, then a letter at the start of the next. Engines print the hyphen as
+/// `-`, `⸗` (U+2E17), `¬`, `‐` (U+2010) or, in our `frak2021` text, an em dash
+/// `—` (U+2014) (#1065).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Hyphenation {
+    /// `-`, and `⸗`, `¬` and `‐`, which no text uses as a dash. For text
+    /// that isn't known to be German Fraktur.
+    #[default]
+    Hyphens,
+    /// Also `—`, straight after a letter, when the next line starts with a
+    /// lowercase letter. In English text a `—` at a line end is usually a
+    /// real dash, and in German a capital after it usually starts a new word
+    /// (`Haus— Cunow`, a column break), so the lowercase letter decides.
+    Fraktur,
+}
+
+impl Hyphenation {
+    /// For a page read as `ocr_engine`, a full tag
+    /// (`tesseract/5.5.0 profile=frak2021 …`) or the older
+    /// `tesseract-5.5.1/frak2021` form: [`Hyphenation::Fraktur`] when a model
+    /// it read with is a Fraktur one. A value that doesn't parse as a tag is
+    /// Fraktur only if it names `frak2021` or `deu_latf`.
+    pub fn for_engine(ocr_engine: &str) -> Self {
+        let fraktur = match EngineTag::parse(ocr_engine) {
+            Ok(EngineTag::Tag(t)) => t
+                .profile()
+                .split('+')
+                .any(|m| m.starts_with("frak") || m == "deu_latf"),
+            _ => ocr_engine.contains("frak2021") || ocr_engine.contains("deu_latf"),
+        };
+        if fraktur {
+            Self::Fraktur
+        } else {
+            Self::Hyphens
+        }
+    }
+
+    /// For a page in `language` (ISO 639-3): [`Hyphenation::Fraktur`] for
+    /// German, whose older print is Fraktur.
+    pub fn for_language(language: &str) -> Self {
+        if language == "deu" {
+            Self::Fraktur
+        } else {
+            Self::Hyphens
+        }
+    }
+
+    /// For a page in `language` read as `ocr_engine`: Fraktur when either
+    /// says so.
+    pub fn for_page(ocr_engine: &str, language: &str) -> Self {
+        match Self::for_engine(ocr_engine) {
+            Self::Fraktur => Self::Fraktur,
+            Self::Hyphens => Self::for_language(language),
+        }
+    }
+}
+
+/// Normalize raw OCR text for storage (04 §4.5), for text that isn't known
+/// to be German Fraktur ([`Hyphenation::Hyphens`]). Case is preserved.
 pub fn normalize_ocr(raw: &str) -> String {
+    normalize_ocr_for(raw, Hyphenation::Hyphens)
+}
+
+/// [`normalize_ocr`], rejoining broken words as `hyphenation` says. Running
+/// it again on its output with the same `hyphenation`, or with
+/// [`Hyphenation::Hyphens`] after [`Hyphenation::Fraktur`], changes nothing,
+/// so a release can normalize stored text again.
+pub fn normalize_ocr_for(raw: &str, hyphenation: Hyphenation) -> String {
     let nfc: String = raw
         .nfc()
         .filter_map(|c| match c {
@@ -52,7 +122,7 @@ pub fn normalize_ocr(raw: &str) -> String {
         })
         .collect();
     let expanded = expand_ligatures(&nfc);
-    let joined = rejoin_hyphenation(&expanded);
+    let joined = rejoin_hyphenation(&expanded, hyphenation);
     collapse_whitespace(&joined)
 }
 
@@ -83,15 +153,20 @@ fn expand_ligatures(s: &str) -> String {
     out
 }
 
-/// `indus-\ntry` → `industry`, only when both sides are alphabetic.
-fn rejoin_hyphenation(s: &str) -> String {
+/// `indus-\ntry` → `industry`: a hyphen after a letter, at a line end (any
+/// [`is_blank`] after it is skipped, as [`collapse_whitespace`] drops it), and
+/// a letter at the start of the next line (a blank line between is skipped).
+/// `-` joins any two alphabetic characters. `⸗`, `¬` and `‐` join two letters
+/// that aren't Japanese, so they leave a Japanese page's `‐` alone. `—` joins
+/// in [`Hyphenation::Fraktur`] text only, to a lowercase letter.
+fn rejoin_hyphenation(s: &str, hyphenation: Hyphenation) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '-' && i > 0 && chars[i - 1].is_alphabetic() {
+        if i > 0 && is_line_end_mark(chars[i]) {
             let mut j = i + 1;
-            while j < chars.len() && (chars[j] == ' ' || chars[j] == '\t') {
+            while j < chars.len() && is_blank(chars[j]) {
                 j += 1;
             }
             if j < chars.len() && chars[j] == '\n' {
@@ -99,7 +174,7 @@ fn rejoin_hyphenation(s: &str) -> String {
                 while k < chars.len() && chars[k].is_whitespace() {
                     k += 1;
                 }
-                if k < chars.len() && chars[k].is_alphabetic() {
+                if k < chars.len() && joins(chars[i], chars[i - 1], chars[k], hyphenation) {
                     i = k;
                     continue;
                 }
@@ -111,7 +186,33 @@ fn rejoin_hyphenation(s: &str) -> String {
     out
 }
 
-/// Collapse runs of spaces/tabs; keep single line breaks as paragraph markers.
+/// The characters [`rejoin_hyphenation`] looks at: the ones an engine may
+/// print for a hyphen.
+fn is_line_end_mark(c: char) -> bool {
+    matches!(c, '-' | '\u{2E17}' | '\u{00AC}' | '\u{2010}' | '\u{2014}')
+}
+
+/// Whether `mark`, after `before` at the end of a line, joins it to `after`,
+/// the first character of the next line.
+fn joins(mark: char, before: char, after: char, hyphenation: Hyphenation) -> bool {
+    let letter = |c: char| c.is_alphabetic() && !is_ja(c);
+    match mark {
+        '-' => before.is_alphabetic() && after.is_alphabetic(),
+        '\u{2014}' => hyphenation == Hyphenation::Fraktur && letter(before) && after.is_lowercase(),
+        _ => letter(before) && letter(after),
+    }
+}
+
+/// Whitespace other than the line break: the characters
+/// [`collapse_whitespace`] folds into a space, or drops before a line break.
+/// [`rejoin_hyphenation`] skips the same ones between a mark and the line
+/// break, so the two agree on what is at a line end, and normalizing again
+/// changes nothing.
+fn is_blank(c: char) -> bool {
+    c != '\n' && c.is_whitespace()
+}
+
+/// Collapse runs of whitespace; keep single line breaks as paragraph markers.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut pending_space = false;
@@ -120,7 +221,7 @@ fn collapse_whitespace(s: &str) -> String {
         if c == '\n' {
             pending_newline = true;
             pending_space = false;
-        } else if c.is_whitespace() {
+        } else if is_blank(c) {
             if !pending_newline {
                 pending_space = true;
             }
@@ -342,12 +443,241 @@ mod tests {
         );
     }
 
+    /// The marks other than `-` that end a line for a broken word.
+    const HYPHEN_MARKS: [char; 3] = ['\u{2E17}', '\u{AC}', '\u{2010}'];
+
     #[test]
     fn keeps_hyphens_that_are_not_line_breaks() {
         assert_eq!(
             normalize_ocr("well-known 1896-\n97"),
             "well-known 1896-\n97"
         );
+        // The other marks follow the same rule: letters on both sides.
+        for mark in HYPHEN_MARKS {
+            let digits = format!("1896{mark}\n97");
+            assert_eq!(normalize_ocr(&digits), digits, "{mark:?}");
+            // Not at the end of a line, or after a space.
+            let inside = format!("Zei{mark}tung Zeit {mark}\nung");
+            assert_eq!(normalize_ocr(&inside), inside, "{mark:?}");
+        }
+    }
+
+    #[test]
+    fn rejoins_every_hyphen_mark_in_all_text() {
+        // `⸗` (U+2E17), `¬` and `‐` (U+2010) end a line as `-` does, for
+        // text from any engine or language (#1065).
+        for mark in HYPHEN_MARKS {
+            for hyphenation in [Hyphenation::Hyphens, Hyphenation::Fraktur] {
+                assert_eq!(
+                    normalize_ocr_for(&format!("Die Zei{mark}\ntung kam an."), hyphenation),
+                    "Die Zeitung kam an.",
+                    "{mark:?}"
+                );
+                // Spaces before the break and blank lines after it, as for `-`.
+                assert_eq!(
+                    normalize_ocr_for(&format!("im Drath{mark} \n\n  haus"), hyphenation),
+                    "im Drathhaus",
+                    "{mark:?}"
+                );
+            }
+            assert_eq!(
+                normalize_ocr(&format!("indus{mark}\ntry")),
+                "industry",
+                "{mark:?}"
+            );
+        }
+        assert_eq!(normalize_ocr("ein Draht\u{2E17}\nzaun"), "ein Drahtzaun");
+        // Japanese text keeps its `‐`, where `-` is rejoined as before.
+        assert_eq!(normalize_ocr("日本\u{2010}\n語"), "日本\u{2010}\n語");
+        assert_eq!(normalize_ocr("ニュ\u{2E17}\nース"), "ニュ\u{2E17}\nース");
+        assert_eq!(normalize_ocr("日本-\n語"), "日本語");
+    }
+
+    #[test]
+    fn rejoins_an_em_dash_only_in_fraktur_text_before_a_lowercase_letter() {
+        let fraktur = |s: &str| normalize_ocr_for(s, Hyphenation::Fraktur);
+        // The dash is part of the word at the line end (#1065).
+        assert_eq!(
+            fraktur("durch den engen Haus\u{2014}\ngang schritt"),
+            "durch den engen Hausgang schritt"
+        );
+        assert_eq!(
+            fraktur("jeden Abend wei\u{2014} \n ter ausbaut"),
+            "jeden Abend weiter ausbaut"
+        );
+        assert_eq!(fraktur("Haus\u{2014}\n\ngang"), "Hausgang");
+        assert_eq!(fraktur("Fe\u{2014}\nßler"), "Feßler");
+        // Anywhere else it stays a dash: unspaced inside a line, spaced,
+        // before a capital (a column break), a digit, or after a digit.
+        for kept in [
+            "Haus\u{2014}gang",
+            "er kam \u{2014}\nund ging",
+            "Haus\u{2014}\nCunow",
+            "Haus\u{2014}\n1919",
+            "1919\u{2014}\nund",
+            "Haus\u{2014}\n\u{2014}gang",
+            "Haus\u{2014}\u{2014}\ngang",
+            "Haus\u{2014}\n",
+            "Haus\u{2014}",
+        ] {
+            assert_eq!(fraktur(kept), normalize_ocr(kept), "{kept:?}");
+        }
+        // Without the Fraktur rule, as in English text, it is never rejoined.
+        for s in ["said\u{2014}\nand then", "Haus\u{2014}\ngang"] {
+            assert_eq!(normalize_ocr(s), s);
+            assert_eq!(normalize_ocr_for(s, Hyphenation::Hyphens), s);
+        }
+        // A Japanese character is no lowercase letter.
+        assert_eq!(fraktur("日本\u{2014}\n語"), "日本\u{2014}\n語");
+    }
+
+    /// Every whitespace character but the newline, which is what
+    /// `collapse_whitespace` removes before a line break: a no-break space,
+    /// the narrow and thin spaces, the ideographic space and the rest.
+    /// (`char::is_whitespace` holds for nothing above U+3000.)
+    fn blanks() -> Vec<char> {
+        let blanks: Vec<char> = (0..=0x3000u32)
+            .filter_map(char::from_u32)
+            .filter(|c| *c != '\n' && c.is_whitespace())
+            .collect();
+        for c in ['\u{00A0}', '\u{2009}', '\u{202F}', '\u{3000}'] {
+            assert!(blanks.contains(&c), "{c:?}");
+        }
+        blanks
+    }
+
+    #[test]
+    fn a_space_of_any_kind_before_the_line_break_still_rejoins() {
+        // The scan from the mark to the line break skips the same characters
+        // the whitespace collapse removes, so a no-break or narrow space
+        // there doesn't hold the join back for one pass (#1065).
+        let all_marks = ['-', '\u{2E17}', '\u{AC}', '\u{2010}'];
+        for blank in blanks() {
+            for mark in all_marks {
+                for hyphenation in [Hyphenation::Hyphens, Hyphenation::Fraktur] {
+                    for raw in [
+                        format!("indus{mark}{blank}\ntry"),
+                        format!("indus{mark}{blank}{blank}\n{blank}try"),
+                        format!("indus{mark}\n{blank}try"),
+                    ] {
+                        assert_eq!(
+                            normalize_ocr_for(&raw, hyphenation),
+                            "industry",
+                            "{hyphenation:?} {raw:?}"
+                        );
+                    }
+                }
+            }
+            let dash = format!("Haus\u{2014}{blank}\ngang");
+            assert_eq!(
+                normalize_ocr_for(&dash, Hyphenation::Fraktur),
+                "Hausgang",
+                "{dash:?}"
+            );
+            // Without the Fraktur rule the dash stays, and so does the break.
+            assert_eq!(
+                normalize_ocr_for(&dash, Hyphenation::Hyphens),
+                "Haus\u{2014}\ngang",
+                "{dash:?}"
+            );
+            // A space after the mark doesn't make a join of a spaced dash.
+            let spaced = format!("Haus {blank}\u{2014}{blank}\ngang");
+            assert_eq!(
+                normalize_ocr_for(&spaced, Hyphenation::Fraktur),
+                "Haus \u{2014}\ngang",
+                "{spaced:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizing_again_changes_nothing() {
+        let samples = [
+            "The indus-\ntry of the ſtate\u{0007} is  great.\n\n\nNew  para ﬁne",
+            "durch den engen Haus\u{2014}\ngang schritt, wei\u{2E17}\nter, je\u{2010}\nden Abend",
+            "a-\nb-\nc, x\u{2014}\ny\u{2014}\nz, 1896-\n97, Haus\u{2014}\nCunow",
+            "Draht\u{AC}\n\u{AC}\nzaun und Haus\u{2014}\n-\ngang",
+            // A no-break or narrow space between the mark and the line break.
+            "Haus\u{2014}\u{00A0}\ngang und indus-\u{00A0}\ntry",
+            "Haus\u{2014}\u{202F}\ngang, wei\u{2E17}\u{2009}\nter, Draht\u{AC}\u{3000}\nzaun",
+            "je\u{2010}\u{00A0} \u{202F}\n\u{00A0}den, Haus\u{2014} \u{00A0}\n\u{00A0}Cunow",
+        ];
+        for s in samples {
+            for h in [Hyphenation::Hyphens, Hyphenation::Fraktur] {
+                let once = normalize_ocr_for(s, h);
+                assert_eq!(normalize_ocr_for(&once, h), once, "{h:?} {s:?}");
+            }
+            // The release normalizes stored Fraktur text again, ungated.
+            let fraktur = normalize_ocr_for(s, Hyphenation::Fraktur);
+            assert_eq!(normalize_ocr(&fraktur), fraktur, "{s:?}");
+        }
+        // Whatever space follows a mark, for each mark and rule.
+        for blank in blanks() {
+            for mark in ['-', '\u{2E17}', '\u{AC}', '\u{2010}', '\u{2014}'] {
+                for raw in [
+                    format!("Haus{mark}{blank}\ngang"),
+                    format!("Haus{mark}{blank}\n{blank}Gang"),
+                    format!("Haus {mark}{blank}\ngang"),
+                    format!("Haus{mark}{blank}\n\n{blank}1919"),
+                ] {
+                    for h in [Hyphenation::Hyphens, Hyphenation::Fraktur] {
+                        let once = normalize_ocr_for(&raw, h);
+                        assert_eq!(normalize_ocr_for(&once, h), once, "{h:?} {raw:?}");
+                    }
+                    let fraktur = normalize_ocr_for(&raw, Hyphenation::Fraktur);
+                    assert_eq!(normalize_ocr(&fraktur), fraktur, "{raw:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hyphenation_follows_the_engine_and_language() {
+        const TAG: &str = "tesseract/5.5.0 profile=PROFILE image=sha256:3f9a0c1d2e4b \
+            models=sha256:8c2d71aa09fe route=minimal@r1 contract=0";
+        let tag = |profile: &str| TAG.replace("PROFILE", profile);
+        for (profile, want) in [
+            ("frak2021", Hyphenation::Fraktur),
+            ("frak2021-fast", Hyphenation::Fraktur),
+            ("deu_latf+deu", Hyphenation::Fraktur),
+            ("deu+deu_latf", Hyphenation::Fraktur),
+            ("deu", Hyphenation::Hyphens),
+            ("eng", Hyphenation::Hyphens),
+            ("srp+srp_latn", Hyphenation::Hyphens),
+        ] {
+            assert_eq!(Hyphenation::for_engine(&tag(profile)), want, "{profile}");
+        }
+        // The older forms name the models after the `/`.
+        for (legacy, want) in [
+            ("tesseract-5.5.1/frak2021", Hyphenation::Fraktur),
+            ("tesseract-5.5.1/deu_latf+deu", Hyphenation::Fraktur),
+            ("tesseract-5.5.1/deu", Hyphenation::Hyphens),
+            ("tesseract-5.5.1/eng", Hyphenation::Hyphens),
+            ("ndlocr-lite 1a2b3c", Hyphenation::Hyphens),
+            ("", Hyphenation::Hyphens),
+        ] {
+            assert!(matches!(EngineTag::parse(legacy), Ok(EngineTag::Legacy(_))));
+            assert_eq!(Hyphenation::for_engine(legacy), want, "{legacy:?}");
+        }
+        // A value that starts like a tag but has a bad field doesn't parse:
+        // Fraktur only if it names a Fraktur model.
+        let bad = tag("frak2021").replace("sha256:3f9a0c1d2e4b", "sha256:xyz");
+        assert!(EngineTag::parse(&bad).is_err());
+        assert_eq!(Hyphenation::for_engine(&bad), Hyphenation::Fraktur);
+        let bad = tag("eng").replace("sha256:3f9a0c1d2e4b", "sha256:xyz");
+        assert!(EngineTag::parse(&bad).is_err());
+        assert_eq!(Hyphenation::for_engine(&bad), Hyphenation::Hyphens);
+
+        assert_eq!(Hyphenation::for_language("deu"), Hyphenation::Fraktur);
+        for l in ["eng", "fra", "de", ""] {
+            assert_eq!(Hyphenation::for_language(l), Hyphenation::Hyphens, "{l:?}");
+        }
+        // A page takes the rule from either.
+        let (frak, eng) = (tag("frak2021"), tag("eng"));
+        assert_eq!(Hyphenation::for_page(&frak, "eng"), Hyphenation::Fraktur);
+        assert_eq!(Hyphenation::for_page(&eng, "deu"), Hyphenation::Fraktur);
+        assert_eq!(Hyphenation::for_page(&frak, "deu"), Hyphenation::Fraktur);
+        assert_eq!(Hyphenation::for_page(&eng, "eng"), Hyphenation::Hyphens);
     }
 
     #[test]

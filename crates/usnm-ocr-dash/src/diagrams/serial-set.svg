@@ -40,9 +40,9 @@
 <g id="serial-set-run" class="box local" data-state="@@cls:sset-fetch@@">
 <rect class="card" x="10" y="150" width="200" height="139" rx="4"/>
 <rect class="bar" x="10" y="151" width="6" height="137" rx="2"/>
-<text class="ttl" x="24" y="169">1  usnm-sset</text>
-<text x="24" y="184">congress-serialset command</text>
-<text x="24" y="199">one request at a time, paced;</text>
+<text class="ttl" x="24" y="169">1  usnm-sset (stopped)</text>
+<text x="24" y="184">no host runs it now; it ran</text>
+<text x="24" y="199">on a retired OCR node, paced;</text>
 <text x="24" y="214">pdftotext reads the PDF's own</text>
 <text x="24" y="229">text layer: no OCR. The PDF</text>
 <text x="24" y="244">is deleted after reading</text>
@@ -52,7 +52,7 @@
 <g id="serial-set-raw" class="box local" data-state="none">
 <rect class="card" x="230" y="150" width="200" height="94" rx="4"/>
 <rect class="bar" x="230" y="151" width="6" height="92" rx="2"/>
-<text class="ttl" x="244" y="169">2  Raw store on the node</text>
+<text class="ttl" x="244" y="169">2  Raw store</text>
 <text x="244" y="184">MODS and page texts,</text>
 <text x="244" y="199">zstd, so a stopped volume</text>
 <text x="244" y="214">resumes without its PDFs;</text>
@@ -65,7 +65,7 @@
 <text x="24" y="370">{volume}/{attempt}/ Parquet</text>
 <text x="24" y="385">and counts.json; one attempt</text>
 <text x="24" y="400">per finished volume, written</text>
-<text x="24" y="415">over the node's Arc identity</text>
+<text x="24" y="415">over the runner's identity</text>
 <text x="24" y="430">@@txt:sset-curated@@</text>
 <text class="st" x="24" y="445">@@lbl:sset-curated@@</text>
 </g>
@@ -95,6 +95,6 @@
 <path class="arrow" d="M250 398 L450 390.5" marker-end="url(#ah-serial-set)"/>
 <path class="arrow" d="M650 390.5 L670 390.5" marker-end="url(#ah-serial-set)"/>
 <text class="lane x" x="14" y="22">GovInfo (U.S. Government Publishing Office)</text>
-<text class="lane h" x="14" y="142">Home network (OCR node 3)</text>
+<text class="lane h" x="14" y="142">Home network</text>
 <text class="lane a" x="14" y="328">Azure (data lake, private)</text>
 </svg>

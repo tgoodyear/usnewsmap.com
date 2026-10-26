@@ -20,14 +20,13 @@
 #   2. unless the node is already connected, creates a throwaway app
 #      registration and service principal with a 2-hour secret and only
 #      Azure Connected Machine Onboarding on the environment's group;
-#   3. copies scripts/ocr-node/node-setup.sh, the worker's unit,
-#      usnm-ocr-worker.service, and reboot-if-needed.sh (the weekly reboot
-#      window's script) to the node and runs node-setup.sh with
-#      sudo, sending the tenant, app id and secret on its stdin (never on a
-#      command line, never on the node's disk); and the exchange account
-#      and the nodes' Application Insights connection string
-#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets) for the worker's
-#      unit, and --reboot-day, the node's day for its weekly reboot window
+#   3. copies scripts/ocr-node/node-setup.sh and reboot-if-needed.sh (the
+#      weekly reboot window's script) to the node and runs node-setup.sh
+#      with sudo, sending the tenant, app id and secret on its stdin (never
+#      on a command line, never on the node's disk); and the exchange
+#      account and the nodes' Application Insights connection string
+#      (OCR_NODE_APPINSIGHTS) as arguments (not secrets), and --reboot-day,
+#      the node's day for its weekly reboot window
 #      (a new node needs one no other node has; without it, a node keeps
 #      the day it has);
 #   4. deletes the role assignment, the service principal and the app
@@ -89,7 +88,7 @@ case "$REBOOT_DAY" in ""|Mon|Tue|Wed|Thu|Fri|Sat|Sun) ;; *) die "--reboot-day: M
 
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
-[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/azure/bootstrap.sh --env $ENV_NAME first"
 
 SUBSCRIPTION=$(aget AZURE_SUBSCRIPTION_ID)
 TENANT=$(aget AZURE_TENANT_ID)
@@ -104,17 +103,17 @@ CONN=$(aget OCR_NODE_APPINSIGHTS)
 APPI_ID=$(aget OCR_NODE_APPINSIGHTS_ID)
 DCR_ID=$(aget OCR_NODE_DCR_ID)
 [ -n "$SUBSCRIPTION" ] && [ -n "$TENANT" ] && [ -n "$GROUP" ] ||
-  die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/provision.sh --env $ENV_NAME"
+  die "$ENV_FILE has no AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID or AZURE_RESOURCE_GROUP; run scripts/azure/provision.sh --env $ENV_NAME"
 [ "$NODES" = true ] ||
-  die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/settings.sh --env $ENV_NAME --key USNM_OCR_NODES --value true, then scripts/provision.sh --env $ENV_NAME"
+  die "USNM_OCR_NODES isn't true for $ENV_NAME: scripts/azure/settings.sh --env $ENV_NAME --key USNM_OCR_NODES --value true, then scripts/azure/provision.sh --env $ENV_NAME"
 [ -n "$EXCHANGE" ] ||
-  die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/provision.sh --env $ENV_NAME first"
+  die "no OCR_EXCHANGE_ACCOUNT for $ENV_NAME yet: run scripts/azure/provision.sh --env $ENV_NAME first"
 [ -n "$NODE_GROUP" ] ||
-  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/provision.sh --env $ENV_NAME"
+  die "no USNM_OCR_NODE_GROUP for $ENV_NAME: scripts/ocr-node/group.sh --env $ENV_NAME, then scripts/azure/provision.sh --env $ENV_NAME"
 [ -n "$DCR_ID" ] ||
-  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/provision.sh --env $ENV_NAME first"
+  die "no OCR_NODE_DCR_ID for $ENV_NAME (the nodes' data collection rule): run scripts/azure/provision.sh --env $ENV_NAME first"
 [ -n "$CONN" ] ||
-  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/provision.sh --env $ENV_NAME"
+  echo "warning: OCR_NODE_APPINSIGHTS (the nodes' Application Insights) is empty, so the worker will send no telemetry; run scripts/azure/provision.sh --env $ENV_NAME"
 [ -n "$NODE_IPS" ] ||
   echo "warning: USNM_OCR_NODE_IPS is empty, so the exchange account's firewall lets no node in; set it to the node's public IP and provision"
 
@@ -313,7 +312,7 @@ elif [ "$DRY_RUN" = true ]; then
 fi
 if [ "$DRY_RUN" = true ]; then
   echo "RHEL hosts must be registered and have OS repositories enabled before onboarding"
-  echo "would copy scripts/ocr-node/node-setup.sh, usnm-ocr-worker.service and reboot-if-needed.sh to $HOST and run:"
+  echo "would copy scripts/ocr-node/node-setup.sh and reboot-if-needed.sh to $HOST and run:"
   echo "  sudo bash node-setup.sh $SETUP_ARGS < (tenant, app id and secret)"
 else
   if [ "$connected" != Connected ]; then
@@ -349,8 +348,6 @@ else
     die "can't reach $HOST over ssh"
   # shellcheck disable=SC2029 # $remote is meant to expand here
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/node-setup.sh" < scripts/ocr-node/node-setup.sh
-  # shellcheck disable=SC2029
-  ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/usnm-ocr-worker.service" < scripts/ocr-node/usnm-ocr-worker.service
   # shellcheck disable=SC2029
   ssh "${SSH_OPTS[@]}" "$HOST" "cat > $remote/reboot-if-needed.sh" < scripts/ocr-node/reboot-if-needed.sh
   # Only the application's temporary Azure onboarding credential is sent.
@@ -633,6 +630,5 @@ echo "$NAME has the node roles on $EXCHANGE through $NODE_GROUP_NAME; no provisi
 echo "A token the node fetched for storage before it joined the group lacks the membership"
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
 echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
-echo "  scripts/logs.sh --env $ENV_NAME --query-name ocr-node-health"
-echo "The worker starts once its binary is installed on the node, as root:"
-echo "  install -m 0755 usnm-ocr-worker /usr/local/bin/ && systemctl enable --now usnm-ocr-worker"
+echo "  scripts/azure/logs.sh --env $ENV_NAME --query-name ocr-node-health"
+echo "No direct queue worker is installed: local OCR runs through BOINC only (#966; docs/boinc/README.md)."

@@ -35,8 +35,8 @@ patterns=(
 # to one is checked again.
 allow=$(cat <<'ALLOW'
 infra/modules/deployer.bicep:          'Microsoft.App/containerApps/listSecrets/action'
-scripts/bootstrap.sh:  gh secret delete AZURE_STATIC_WEB_APPS_API_TOKEN -R "$REPO" 2> /dev/null &&
-scripts/bootstrap.sh:    echo "deleted secret AZURE_STATIC_WEB_APPS_API_TOKEN" || true
+scripts/azure/bootstrap.sh:  gh secret delete AZURE_STATIC_WEB_APPS_API_TOKEN -R "$REPO" 2> /dev/null &&
+scripts/azure/bootstrap.sh:    echo "deleted secret AZURE_STATIC_WEB_APPS_API_TOKEN" || true
 crates/usnm-store/src/blob.rs:            "https://acct.blob.core.windows.net/c?sv=2024&sig=x",
 ALLOW
 )
@@ -44,7 +44,7 @@ ALLOW
 # Everything tracked that can authenticate: infra, scripts, workflows,
 # Dockerfiles, the Rust crates and the web app. Docs, tests and lockfiles
 # may name the patterns.
-files=$(git ls-files infra scripts .github 'Dockerfile*' crates web \
+files=$(git ls-files infra scripts .github docker crates web \
   | grep -v -e '^scripts/ci/no-shared-keys\.sh$' -e '\.md$' -e '_test\.rs$' -e '/tests/' \
     -e '\.test\.tsx\?$' -e '^web/e2e/' -e 'package-lock\.json$')
 

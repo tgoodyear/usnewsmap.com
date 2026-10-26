@@ -94,7 +94,7 @@ def check_value(kinds, key, value, where):
     vis = spec["x-usnm-visibility"]
     if vis == "private":
         raise Invalid(f"{where}: {key} is private: it goes in the settings store, under the environment's label, "
-                      "never in the repository (docs/operations.md, \"Settings\")")
+                      "never in the repository (docs/operations/environments-and-deploys.md, \"Settings\")")
     if vis == "local":
         raise Invalid(f"{where}: {key} is local: the scripts keep it in the local settings file")
     want = TYPES[spec["type"]]

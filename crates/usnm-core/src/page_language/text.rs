@@ -1,4 +1,4 @@
-//! A page's tokens and word tokens, as `ja-ocr/damage_v2.py` reads them
+//! A page's tokens and word tokens, as `ocr/ja-ocr/damage_v2.py` reads them
 //! (`text_words`, `token_info`, `garbage`), with Python's string semantics.
 //!
 //! Python and Rust disagree on several character classes, so this module
@@ -238,6 +238,10 @@ pub(crate) struct TokenInfo {
     pub garbage: bool,
     /// It flags it in a language whose words can lack vowels.
     pub garbage_syllabic: bool,
+    /// Non-word token containing at least one numeric character (digits, vulgar fractions).
+    pub numeric: bool,
+    /// Contains explicit Fraktur / long-s (`\u{017f}`) or mathematical Blackletter characters.
+    pub has_long_s: bool,
 }
 
 /// `token_info`.
@@ -258,10 +262,16 @@ pub(crate) fn token_info(token: &str) -> TokenInfo {
         };
         (core.chars().count() >= 2 && str_is_alpha(&core)).then(|| casefold(&core))
     });
+    let numeric = word.is_none() && token.chars().any(|c| is_alnum(c) && !is_alpha(c));
+    let has_long_s = token
+        .chars()
+        .any(|c| c == '\u{017f}' || ('\u{1d504}'..='\u{1d537}').contains(&c));
     TokenInfo {
         word,
         garbage: g,
         garbage_syllabic: g_syllabic,
+        numeric,
+        has_long_s,
     }
 }
 
@@ -304,6 +314,14 @@ pub struct TextWords {
     pub garbage: usize,
     /// Of those, the ones it flags in a language whose words can lack vowels.
     pub garbage_syllabic: usize,
+    /// Non-word tokens containing numeric characters (`words.len() + numeric_tokens <= tokens`).
+    pub numeric_tokens: usize,
+    /// Non-empty lines in the raw text.
+    pub non_empty_lines: usize,
+    /// Non-empty lines containing `1..=4` whitespace tokens.
+    pub short_lines: usize,
+    /// Tokens containing explicit Fraktur long-s (`\u{017f}`) or Blackletter characters.
+    pub long_s_tokens: usize,
 }
 
 /// `text_words`: a page's whitespace tokens, its word tokens (letters only,
@@ -315,11 +333,21 @@ pub fn text_words(text: &str) -> TextWords {
     // lru_cache does in Python.
     const CACHED: usize = 1 << 18;
     thread_local! {
-        static CACHE: std::cell::RefCell<std::collections::HashMap<String, TokenInfo>> =
-            std::cell::RefCell::new(std::collections::HashMap::new());
+        // A lookup cache, never iterated: a fast hasher for short keys.
+        static CACHE: std::cell::RefCell<rustc_hash::FxHashMap<String, TokenInfo>> =
+            std::cell::RefCell::new(rustc_hash::FxHashMap::default());
+    }
+    let mut out = TextWords::default();
+    for line in text.lines() {
+        let n = line.split(is_space).filter(|t| !t.is_empty()).count();
+        if n > 0 {
+            out.non_empty_lines += 1;
+            if n <= 4 {
+                out.short_lines += 1;
+            }
+        }
     }
     let text = dehyphenate(text);
-    let mut out = TextWords::default();
     CACHE.with_borrow_mut(|cache| {
         for token in text.split(is_space).filter(|t| !t.is_empty()) {
             out.tokens += 1;
@@ -336,6 +364,8 @@ pub fn text_words(text: &str) -> TextWords {
             };
             out.garbage += usize::from(info.garbage);
             out.garbage_syllabic += usize::from(info.garbage_syllabic);
+            out.numeric_tokens += usize::from(info.numeric);
+            out.long_s_tokens += usize::from(info.has_long_s);
             if let Some(w) = &info.word {
                 out.words.push(w.clone());
             }

@@ -1,5 +1,5 @@
 // Parameters for infra/main.bicep, from the environment's settings
-// (.azure/<env>/.env). scripts/bootstrap.sh exports the settings that have
+// (.azure/<env>/.env). scripts/azure/bootstrap.sh exports the settings that have
 // a value before it deploys the stack; the rest take the defaults here.
 using './main.bicep'
 
@@ -38,7 +38,18 @@ param congressJob = bool(readEnvironmentVariable('USNM_CONGRESS_JOB', 'false'))
 param serialSetJob = bool(readEnvironmentVariable('USNM_SERIALSET_JOB', 'false'))
 param serialSetOnPrem = bool(readEnvironmentVariable('USNM_SERIALSET_ONPREM', 'false'))
 param serialSetRunner = readEnvironmentVariable('USNM_SERIALSET_RUNNER', '')
+param onPremRelease = bool(readEnvironmentVariable('USNM_ONPREM_RELEASE', 'false'))
+param onPremReleaseHost = readEnvironmentVariable('USNM_ONPREM_RELEASE_HOST', '')
+param onPremServing = bool(readEnvironmentVariable('USNM_ONPREM_SERVING', 'false'))
+param onPremServingHost = readEnvironmentVariable('USNM_ONPREM_SERVING_HOST', '')
+param searchLogCopy = bool(readEnvironmentVariable('USNM_SEARCH_LOG_COPY', 'false'))
+param searchLogCopyHost = readEnvironmentVariable('USNM_SEARCH_LOG_COPY_HOST', '')
 param boincHandoffRunner = readEnvironmentVariable('USNM_BOINC_HANDOFF_RUNNER', '')
+param boincControllerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_CONTROLLER_ONPREM', 'false'))
+param boincServerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_SERVER_ONPREM', 'false'))
+param boincHandoffOnPrem = bool(readEnvironmentVariable('USNM_BOINC_HANDOFF_ONPREM', 'false'))
+param scanFetchPublishFetched = bool(readEnvironmentVariable('USNM_SCAN_FETCH_PUBLISH_FETCHED', 'false'))
+param boincOnPremHost = readEnvironmentVariable('USNM_BOINC_ONPREM_HOST', '')
 param boincHandoffImage = readEnvironmentVariable('USNM_BOINC_HANDOFF_IMAGE', '')
 param jaLatin = bool(readEnvironmentVariable('USNM_JA_LATIN', 'false'))
 param ocrLocal = bool(readEnvironmentVariable('USNM_OCR_LOCAL', 'false'))
@@ -46,6 +57,7 @@ param partitionDecade = bool(readEnvironmentVariable('USNM_PARTITION_DECADE', 'f
 param singleTextField = bool(readEnvironmentVariable('USNM_SINGLE_TEXT_FIELD', 'false'))
 param pageLanguage = bool(readEnvironmentVariable('USNM_PAGE_LANGUAGE', 'false'))
 param splitDocs = int(readEnvironmentVariable('USNM_SPLIT_DOCS', '0'))
+param writerIngest = readEnvironmentVariable('USNM_WRITER_INGEST', 'v2')
 param dedicatedProfile = bool(readEnvironmentVariable('USNM_DEDICATED_PROFILE', 'false'))
 param ingestOnDedicated = bool(readEnvironmentVariable('USNM_INGEST_ON_DEDICATED', 'false'))
 param archiveAccountId = readEnvironmentVariable('USNM_ARCHIVE_ACCOUNT', '')
@@ -55,6 +67,7 @@ param backfillCron = readEnvironmentVariable('USNM_BACKFILL_CRON', '')
 param ingestScratchGiB = int(readEnvironmentVariable('USNM_INGEST_SCRATCH_GIB', '0'))
 param ingestMergeTimeoutSecs = int(readEnvironmentVariable('USNM_MERGE_TIMEOUT_SECS', '14400'))
 param cosmosFreeTier = bool(readEnvironmentVariable('USNM_COSMOS_FREE_TIER', 'true'))
+param cosmosOnPremAccess = bool(readEnvironmentVariable('USNM_COSMOS_ONPREM_ACCESS', 'false'))
 param logDailyCapGb = readEnvironmentVariable('USNM_LOG_DAILY_CAP_GB', '')
 param alertEmails = readEnvironmentVariable('USNM_ALERT_EMAILS', '')
 param searchLogReaders = readEnvironmentVariable('USNM_SEARCH_LOG_READERS', '')
@@ -65,6 +78,14 @@ param deployBoincGroup = bool(readEnvironmentVariable('USNM_BOINC_GROUP', 'false
 param ocrNodes = bool(readEnvironmentVariable('USNM_OCR_NODES', 'false'))
 param ocrNodeIps = readEnvironmentVariable('USNM_OCR_NODE_IPS', '')
 param ocrNodeGroupId = readEnvironmentVariable('USNM_OCR_NODE_GROUP', '')
+param onPremGroupId = readEnvironmentVariable('USNM_ONPREM_GROUP', '')
+param ocrDamageOnPrem = bool(readEnvironmentVariable('USNM_OCR_DAMAGE_ONPREM', 'false'))
+param ocrDamageRunner = readEnvironmentVariable('USNM_OCR_DAMAGE_RUNNER', '')
+param ocrSyncOnPrem = bool(readEnvironmentVariable('USNM_OCR_SYNC_ONPREM', 'false'))
+param batchHost = readEnvironmentVariable('USNM_BATCH_HOST', '')
+param ingestOnPrem = bool(readEnvironmentVariable('USNM_INGEST_ONPREM', 'false'))
+param backfillOnPrem = bool(readEnvironmentVariable('USNM_BACKFILL_ONPREM', 'false'))
+param ocrSyncAlerts = bool(readEnvironmentVariable('USNM_OCR_SYNC_ALERTS', 'false'))
 param scanArchiveUploaderId = readEnvironmentVariable('USNM_SCAN_ARCHIVE_UPLOADER_ID', '')
 param ocrKeyVaultAdmins = readEnvironmentVariable('USNM_OCR_KEYVAULT_ADMINS', '')
 param ocrSyncCron = readEnvironmentVariable('USNM_OCR_SYNC_CRON', '17 * * * *')
@@ -85,6 +106,7 @@ param ocrSeed = {
 }
 param jaOcrJob = bool(readEnvironmentVariable('USNM_JA_OCR_JOB', 'false'))
 param jaOcrReplicas = int(readEnvironmentVariable('USNM_JA_OCR_REPLICAS', '2'))
+param jaOcrOnPrem = bool(readEnvironmentVariable('USNM_JA_OCR_ONPREM', 'false'))
 param searchCluster = bool(readEnvironmentVariable('USNM_SEARCH_CLUSTER', 'false'))
 param searchClusterNodes = int(readEnvironmentVariable('USNM_SEARCH_CLUSTER_NODES', '1'))
 param searchClusterIndexers = int(readEnvironmentVariable('USNM_SEARCH_CLUSTER_INDEXERS', '1'))
@@ -99,6 +121,7 @@ param searchLocalCacheGib = int(readEnvironmentVariable('USNM_SEARCH_LOCAL_CACHE
 param searchNfsGiB = int(readEnvironmentVariable('USNM_SEARCH_NFS_GIB', '64'))
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
+param dnsZoneHosted = bool(readEnvironmentVariable('USNM_DNS_ZONE_HOSTED', 'true'))
 // Google Search Console domain verification, published at the apex next to SPF.
 param dnsApexTxtValues = {
   'usnewsmap.com': ['google-site-verification=5KCwOzVrZH4QvucrU0UkbqJ1I1jYmjkKNnUuy78VTWg']

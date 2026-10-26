@@ -1,6 +1,8 @@
-//! A stand-in for LoC in tests: files by path, redirects, and scripted
-//! answers, with every request recorded. It builds batch directories (a
-//! bag manifest with real md5s, issue METS, JP2s) the way LoC lays them out.
+//! A stand-in for LoC in tests: files by path (with headers of their own),
+//! redirects, and scripted answers, with every request recorded, and a
+//! delay for every answer to see how many requests come at once. It builds
+//! batch directories (a bag manifest with real md5s, issue METS, JP2s) the
+//! way LoC lays them out.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -35,6 +37,13 @@ struct Inner {
     /// A bag's manifest lines, by batch path.
     bags: BTreeMap<String, Vec<String>>,
     hits: Vec<(std::time::Instant, String)>,
+    /// Headers sent with a file, by path.
+    headers: HashMap<String, Vec<(header::HeaderName, header::HeaderValue)>>,
+    /// Every answer waits this long.
+    delay: Option<Duration>,
+    /// Requests being answered now, and the most at once.
+    open: usize,
+    most_open: usize,
 }
 
 #[derive(Clone)]
@@ -52,16 +61,35 @@ pub struct Page<'a> {
 
 async fn answer(State(s): State<StandIn>, uri: Uri) -> Response {
     let path = uri.path().to_owned();
-    let (scripted, redirect, file) = {
+    let (scripted, redirect, file, headers, delay) = {
         let mut i = s.inner.lock().unwrap();
         i.hits.push((std::time::Instant::now(), path.clone()));
+        i.open += 1;
+        i.most_open = i.most_open.max(i.open);
         let scripted = i.scripted.get_mut(&path).and_then(|q| q.pop_front());
         (
             scripted,
             i.redirects.get(&path).cloned(),
             i.files.get(&path).cloned(),
+            i.headers.get(&path).cloned().unwrap_or_default(),
+            i.delay,
         )
     };
+    if let Some(d) = delay {
+        tokio::time::sleep(d).await;
+    }
+    let r = respond(&s, scripted, redirect, file, headers).await;
+    s.inner.lock().unwrap().open -= 1;
+    r
+}
+
+async fn respond(
+    s: &StandIn,
+    scripted: Option<Scripted>,
+    redirect: Option<String>,
+    file: Option<Vec<u8>>,
+    headers: Vec<(header::HeaderName, header::HeaderValue)>,
+) -> Response {
     let status = |c: u16| StatusCode::from_u16(c).unwrap();
     let retry_after = match scripted {
         Some(Scripted::ChallengeRetryAfter(_, secs)) => Some(secs),
@@ -104,7 +132,13 @@ async fn answer(State(s): State<StandIn>, uri: Uri) -> Response {
             .into_response();
     }
     match file {
-        Some(b) => b.into_response(),
+        Some(b) => {
+            let mut r = b.into_response();
+            for (k, v) in headers {
+                r.headers_mut().insert(k, v);
+            }
+            r
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -140,6 +174,37 @@ impl StandIn {
             .unwrap()
             .files
             .insert(path.to_owned(), body.into());
+    }
+
+    /// The file at `path`, if there is one.
+    pub fn file(&self, path: &str) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().files.get(path).cloned()
+    }
+
+    /// Send header `name: value` with the file at `path`.
+    pub fn header(&self, path: &str, name: &str, value: &str) {
+        // Checked here, so a bad one fails the test that set it.
+        let name = header::HeaderName::from_bytes(name.as_bytes())
+            .unwrap_or_else(|e| panic!("stand-in header name {name:?}: {e}"));
+        let value = header::HeaderValue::from_str(value)
+            .unwrap_or_else(|e| panic!("stand-in header {name}: {value:?}: {e}"));
+        self.inner
+            .lock()
+            .unwrap()
+            .headers
+            .entry(path.to_owned())
+            .or_default()
+            .push((name, value));
+    }
+
+    /// Make every answer wait `d`.
+    pub fn delay(&self, d: Duration) {
+        self.inner.lock().unwrap().delay = Some(d);
+    }
+
+    /// The most requests that were being answered at once.
+    pub fn most_at_once(&self) -> usize {
+        self.inner.lock().unwrap().most_open
     }
 
     pub fn redirect(&self, from: &str, to: &str) {

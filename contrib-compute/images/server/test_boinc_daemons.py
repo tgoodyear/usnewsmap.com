@@ -67,5 +67,28 @@ class LocalPidDir(unittest.TestCase):
         self.assertIn("not a link", r.stderr)
 
 
+class Maintenance(unittest.TestCase):
+    """stop_maintenance holds the project stopped across container starts (the share cutover)."""
+
+    def check(self, proj: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", 'set -euo pipefail; source "$1"; proj="$2"; maintenance', "-", SCRIPT, proj],
+            capture_output=True, text=True, check=False)
+
+    def test_marker_holds_the_start(self):
+        with tempfile.TemporaryDirectory() as t:
+            proj = Path(t)
+            self.assertEqual(self.check(proj).returncode, 1)
+            (proj / "stop_maintenance").touch()
+            r = self.check(proj)
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("not starting the project", r.stderr)
+
+    def test_both_starts_check_the_marker(self):
+        main = SCRIPT.read_text().split("main() {")[1].split("\n}")[0]
+        self.assertIn("until ! maintenance; do sleep 60; done\n  run 'bin/start'", main)
+        self.assertIn("maintenance || run 'bin/start --cron'", main)
+
+
 if __name__ == "__main__":
     unittest.main()

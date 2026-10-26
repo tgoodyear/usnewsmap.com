@@ -74,6 +74,11 @@ pub struct PageDoc {
     /// ([`IndexSet::american_stories`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_as: Option<String>,
+    /// LoC's original text of a page whose `text` is our own OCR in its
+    /// place (12 §12.5 Step 9), when the version keeps it (#925). Searched
+    /// only on [`TextLayout::SingleWithLoc`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_loc: Option<String>,
     /// A Congress page's fields (#229), in the Congress index set only
     /// (`infra/quickwit/congress-index.yaml`). `None` on newspaper pages.
     #[serde(flatten)]
@@ -140,10 +145,10 @@ pub struct IndexSet {
     /// Every index has American Stories' text at the API's
     /// `usnm_core::american_stories::VERSION` (05 §5.5.4), and searches
     /// cover it: in `text_as` and `text_as_cg`, or in the one searched
-    /// field of [`TextLayout::Single`].
+    /// field of [`TextLayout::Single`] and the layouts after it.
     american_stories: bool,
     /// Which fields the texts are searched in (05 §5.5.7, #283): a field
-    /// per text, or one for both.
+    /// per text, or one for all of them.
     text_layout: TextLayout,
     /// Every index has the `decade` field at the API's
     /// `usnm_core::decade::VERSION`, and the decades its pages span (05
@@ -216,9 +221,17 @@ impl IndexSet {
 
     /// Whether the aggregate can count the pages only American Stories'
     /// text matches (05 §5.5.4): searches cover it, in fields of its own.
-    /// With one field for both texts, LoC's alone can't be searched.
+    /// With one field for all the texts, LoC's alone can't be searched.
     pub fn counts_american_stories_only(&self) -> bool {
-        self.american_stories && self.text_layout == TextLayout::Separate
+        self.american_stories && !self.text_layout.searches_one_field()
+    }
+
+    /// Whether hits say which of a page's texts the query matches
+    /// (`matched_in`, 05 §5.5.4, §5.5.7): the search covers a text besides
+    /// the page's own, American Stories' or LoC's original text kept
+    /// beside our OCR's (#925).
+    pub fn reports_matched_in(&self) -> bool {
+        self.american_stories || self.text_layout.keeps_loc_original()
     }
 
     /// Whether searches name their decades, and the decades the version's
@@ -450,15 +463,16 @@ pub struct Hit {
     /// The engine and version that made it (`ndlocr-lite 636d1cf`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_engine: Option<String>,
-    /// Which text the snippets come from when it isn't LoC's:
+    /// Which text the snippets come from when it isn't the page's own:
     /// [`SNIPPETS_FROM_AMERICAN_STORIES`] when the query matched only in
-    /// American Stories' text (05 §5.5.4).
+    /// American Stories' text (05 §5.5.4), [`SNIPPETS_FROM_LOC_ORIGINAL`]
+    /// when it matched only in LoC's original text (#925).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet_source: Option<&'static str>,
-    /// Which of the page's texts the query matches (05 §5.5.4):
-    /// [`MATCHED_IN_LOC`], [`SNIPPETS_FROM_AMERICAN_STORIES`] or both, from
-    /// [`snippet::matched_in`]. Only when the search covers American
-    /// Stories' text, and not on Japanese pages.
+    /// Which of the page's texts the query matches (05 §5.5.4): a list of
+    /// [`MATCHED_IN_LOC`], [`SNIPPETS_FROM_AMERICAN_STORIES`] and
+    /// [`SNIPPETS_FROM_LOC_ORIGINAL`], from [`snippet::matched_in`]. Only
+    /// when [`IndexSet::reports_matched_in`], and not on Japanese pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_in: Option<Vec<&'static str>>,
     /// A Congress page's series, title, citation and link (#229); empty,
@@ -471,8 +485,13 @@ pub struct Hit {
 /// that text in [`Hit::matched_in`].
 pub const SNIPPETS_FROM_AMERICAN_STORIES: &str = "american_stories";
 
-/// LoC's text (`text`) in [`Hit::matched_in`].
+/// The page's own text (`text`) in [`Hit::matched_in`]: LoC's, or our OCR's
+/// where it replaced LoC's (12 §12.5 Step 9).
 pub const MATCHED_IN_LOC: &str = "loc";
+
+/// [`Hit::snippet_source`] for snippets from LoC's original text of a page
+/// our OCR replaced it on, and that text in [`Hit::matched_in`] (#925).
+pub const SNIPPETS_FROM_LOC_ORIGINAL: &str = "loc_original";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HitsPage {
@@ -483,7 +502,7 @@ pub struct HitsPage {
     pub days: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Capabilities {
     pub fuzzy: bool,
     pub max_slop: u8,
@@ -502,6 +521,10 @@ pub enum SearchError {
     /// `Backend`, trying again won't help.
     #[error("search backend rejected the request: {0}")]
     Rejected(String),
+    /// The backend has no index by this id: a lookup found nothing (Quickwit's
+    /// metastore answered 404). Only [`SearchBackend::prepare`] returns it.
+    #[error("the search backend has no index `{0}`")]
+    MissingIndex(String),
 }
 
 #[async_trait]
@@ -640,6 +663,8 @@ pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<Strin
     let mut phrases: Vec<Vec<String>> = Vec::new();
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
+        // A fraction read with a slash is marked as the phrase it is (#1067).
+        phrases.extend(usnm_core::fractions::slash_phrases(node));
         match node {
             // Prefix, wildcard and `~ocr` (a Latin word in a Japanese query)
             // and fuzzy (memory backend only) terms: mark each printed word

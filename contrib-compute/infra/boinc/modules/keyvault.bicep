@@ -1,9 +1,16 @@
 // Key Vault for the BOINC project secrets, read by the app's managed identity.
-// The vault is not public: public network access is off and it is reached through a private
-// endpoint in the project's VNet (docs/design.md, section 5.2).
+// It is reached through a private endpoint in the project's VNet (docs/design.md, section 5.2).
+// With allowedIps (#917, maintainer decision of 20 October 2026) its public endpoint also
+// opens, but its firewall admits only those addresses (the home network's), so the operator
+// and the on-prem hosts can read and set secrets while BOINC moves on-prem. Access still
+// needs an RBAC role. The resource group's deny-public-network policy is exempted for this
+// vault alone (policy exemption usnm-boinc-kv-home-ip on it, not on the group). The exemption
+// is created outside this stack (a stack that depends on an extension resource of the vault
+// sees the vault as a potential deletion); the guardrails' publicAccountIds is its Bicep home.
 //
 // Who writes what:
-// - this template: mysql-admin-password (a new random value each deployment, from main.bicep)
+// - this template: mysql-admin-password (a new random value each deployment, from main.bicep;
+//   with the server on-prem it is no longer authoritative: the host keeps its own copy, #942)
 //   and code-sign-public-key (the PUBLIC half of the offline key, from the settings, if set).
 //   Both go through Azure Resource Manager, which needs no network path into the VNet.
 // - the secrets job (secrets-job.bicep), inside the VNet with its own identity:
@@ -15,7 +22,10 @@ param location string
 param readerPrincipalId string
 @description('The secrets job\'s identity: Key Vault Secrets Officer, to create the secrets that must not rotate.')
 param writerPrincipalId string
+@description('Audit logs go here; empty sends none (the on-prem server mode has no workspace, #942).')
 param logAnalyticsWorkspaceId string
+@description('A private endpoint in the project VNet. Off once nothing in Azure reads the vault (the on-prem server mode, #942).')
+param privateEndpoint bool = true
 param peSubnetId string
 param dnsZoneId string
 @description('Entra object ids (people or groups) given Key Vault Secrets Officer, to inspect or repair secrets by hand.')
@@ -23,6 +33,11 @@ param operatorPrincipalIds array
 @secure()
 param mysqlAdminPassword string
 param codeSignPublicKey string = ''
+@description('Public IPv4 addresses the vault firewall admits; empty keeps the vault private-only.')
+param allowedIps array = []
+@description('The on-prem hosts\' Entra group (usnm-onprem-grp-<env>): Key Vault Secrets User, so the on-prem BOINC server reads the project secrets with its Arc identity (#942). Empty: no grant.')
+param onPremReaderGroupId string = ''
+var open = !empty(allowedIps)
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: vaultName
@@ -34,12 +49,12 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableSoftDelete: true
     softDeleteRetentionInDays: 30
     enablePurgeProtection: true
-    publicNetworkAccess: 'Disabled'
-    networkAcls: { defaultAction: 'Deny', bypass: 'None' }
+    publicNetworkAccess: open ? 'Enabled' : 'Disabled'
+    networkAcls: { defaultAction: 'Deny', bypass: 'None', ipRules: [for ip in allowedIps: { value: ip }] }
   }
 }
 
-resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
+resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (privateEndpoint) {
   name: endpointName
   location: location
   properties: {
@@ -50,7 +65,7 @@ resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   }
 }
 
-resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
+resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (privateEndpoint) {
   parent: endpoint
   name: 'default'
   properties: { privateDnsZoneConfigs: [ { name: 'vault', properties: { privateDnsZoneId: dnsZoneId } } ] }
@@ -71,6 +86,17 @@ resource readerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // Key Vault Secrets Officer, as infra/modules/ocr-vault.bicep grants its operators.
 var secretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+
+// The on-prem BOINC server (#942) reads the same secrets as the app, with its Arc identity.
+resource onPremReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(onPremReaderGroupId)) {
+  scope: vault
+  name: guid(vault.id, onPremReaderGroupId, secretsUser)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsUser)
+    principalId: onPremReaderGroupId
+    principalType: 'Group'
+  }
+}
 
 resource officers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for operator in operatorPrincipalIds: {
@@ -105,7 +131,7 @@ resource codeSignPublic 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!em
   properties: { value: codeSignPublicKey, contentType: 'text/plain' }
 }
 
-resource diag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource diag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceId)) {
   scope: vault
   name: 'to-log'
   properties: {

@@ -1,0 +1,38 @@
+[package]
+name = "usnm-congress"
+version = "0.1.0"
+description = "US News Map Congress pages: the Congressional Globe and Serial Set fetches, the curated Congress pages and what a release builds from them"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-core.workspace = true
+usnm-state.workspace = true
+usnm-store.workspace = true
+anyhow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+parquet.workspace = true
+# The OAI-PMH listing of the Congressional Globe (globe, #229).
+quick-xml.workspace = true
+reqwest = { workspace = true, features = ["stream", "http2"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
+tracing.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
+
+[lints]
+workspace = true

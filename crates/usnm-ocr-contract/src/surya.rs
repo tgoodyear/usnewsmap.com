@@ -103,10 +103,42 @@ pub struct Job {
     pub gpu_timeout_secs: u32,
     /// Deadline per mode on a CPU.
     pub cpu_timeout_secs: u32,
+    /// Set when `page.jpg` is one crop of the page rather than the page
+    /// (#968): the crop's id, box and stratum, cut with the campaign's
+    /// recipe so `usnm_qwen` and `usnm_quality` compare the same text.
+    /// Absent from a page unit, and left out of the JSON, so units staged
+    /// before crops existed keep their identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<CropRef>,
 }
+
+/// Which crop of the page a crop unit reads (`Job::crop`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CropRef {
+    /// The crop's id in the page's `usnm_qwen` job (`c01`, `c02`, ...).
+    pub id: String,
+    /// `[x0, y0, x1, y1]` in the page's pixels.
+    #[serde(rename = "box")]
+    pub rect: [u32; 4],
+    /// The recipe's stratum the crop was drawn from.
+    pub stratum: String,
+}
+impl CropRef {
+    /// The IIIF media fragment of the box, for the input's URL.
+    pub fn xywh(&self) -> String {
+        let [x0, y0, x1, y1] = self.rect;
+        format!(
+            "xywh={x0},{y0},{},{}",
+            x1.saturating_sub(x0),
+            y1.saturating_sub(y0)
+        )
+    }
+}
+
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
-        Ok(sha256(&serde_json::to_vec(&(
+        let page = (
             self.v,
             &self.doc_id,
             &self.group,
@@ -117,7 +149,12 @@ impl Job {
             &self.cpu_modes,
             self.gpu_timeout_secs,
             self.cpu_timeout_secs,
-        ))?))
+        );
+        // A page unit's identity is what it was before crops existed.
+        Ok(match &self.crop {
+            None => sha256(&serde_json::to_vec(&page)?),
+            Some(crop) => sha256(&serde_json::to_vec(&(page, crop))?),
+        })
     }
     pub fn workunit(&self) -> String {
         format!("usnm_surya_{}", self.id)
@@ -134,8 +171,7 @@ impl Job {
         );
         ensure!(is_sha256(&self.input.sha256), "invalid input checksum");
         ensure!(
-            self.input.url.starts_with("https://tile.loc.gov/")
-                && self.input.url.len() <= 512
+            self.input.url.len() <= 512
                 && !self
                     .input
                     .url
@@ -143,6 +179,43 @@ impl Job {
                     .any(|c| c.is_control() || c.is_whitespace()),
             "invalid input URL"
         );
+        match &self.crop {
+            None => ensure!(
+                self.input.url.starts_with("https://tile.loc.gov/"),
+                "invalid input URL"
+            ),
+            Some(crop) => {
+                // The page's source (a tile.loc.gov URL or a hand-off path)
+                // with the box as a media fragment.
+                ensure!(
+                    self.input
+                        .url
+                        .strip_suffix(&crop.xywh())
+                        .is_some_and(|s| s.ends_with('#') && s.len() > 1),
+                    "a crop unit's input URL ends with the crop's #xywh fragment"
+                );
+                ensure!(
+                    !crop.id.is_empty()
+                        && crop.id.len() <= 32
+                        && crop
+                            .id
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                    "invalid crop id"
+                );
+                let [x0, y0, x1, y1] = crop.rect;
+                ensure!(x0 < x1 && y0 < y1, "invalid crop box");
+                // The recipe's strata are `wc-low/top` and the like.
+                ensure!(
+                    !crop.stratum.is_empty()
+                        && crop.stratum.len() <= 32
+                        && crop.stratum.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'/'
+                        }),
+                    "invalid crop stratum"
+                );
+            }
+        }
         for d in [&self.engine.image, &self.engine.llama, &self.engine.weights] {
             ensure!(
                 d.strip_prefix("sha256:").is_some_and(is_sha256),
@@ -172,14 +245,26 @@ impl Job {
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
             ensure!((60..=14_400).contains(&t), "invalid deadline");
         }
-        for (s, what) in [(&self.group, "group"), (&self.language, "language")] {
-            ensure!(
-                !s.is_empty()
-                    && s.len() <= 32
-                    && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
-                "invalid {what}"
-            );
-        }
+        // The group is the quality campaign's (`campaign-1`, say): lower-case
+        // letters, digits and hyphens. The language is ISO 639-3.
+        ensure!(
+            !self.group.is_empty()
+                && self.group.len() <= 32
+                && self
+                    .group
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "invalid group"
+        );
+        ensure!(
+            !self.language.is_empty()
+                && self.language.len() <= 32
+                && self
+                    .language
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'-'),
+            "invalid language"
+        );
         Ok(())
     }
 }
@@ -194,8 +279,8 @@ pub enum Outcome {
     /// Surya exited non-zero or was killed by a signal (an out-of-memory
     /// kill shows as signal 9).
     Failed,
-    /// The GPU version ran, but no usable NVIDIA GPU was visible in the
-    /// container, so nothing was read (the diagnostics say why).
+    /// The GPU version ran, but no usable NVIDIA or Vulkan GPU was visible in
+    /// the container, so nothing was read (the diagnostics say why).
     NoGpu,
 }
 impl Outcome {
@@ -218,8 +303,8 @@ pub struct Run {
     /// CPU seconds of the process group (Python and llama-server), summed
     /// over the processes seen while it ran.
     pub cpu_secs: Option<f64>,
-    /// What llama-server ran the model on: `cuda` when it offloaded layers
-    /// to a GPU, else `cpu`; `none` when nothing ran.
+    /// What llama-server ran the model on: `cuda` or `vulkan` when it
+    /// offloaded layers to a GPU, else `cpu`; `none` when nothing ran.
     pub device: String,
     pub engine_ms: u64,
     /// Highest GPU memory in use while the mode ran, less what was in use
@@ -324,7 +409,7 @@ impl ResultManifest {
                     };
                     ensure!(consistent, "outcome does not match the exit status");
                     ensure!(
-                        ["cpu", "cuda", "none"].contains(&r.device.as_str()),
+                        ["cpu", "cuda", "vulkan", "none"].contains(&r.device.as_str()),
                         "unknown device"
                     );
                     ensure!(
@@ -434,6 +519,7 @@ mod tests {
             cpu_modes: vec![InputMode::Tiled],
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 5400,
+            crop: None,
         };
         j.id = j.identity().unwrap();
         j
@@ -480,6 +566,66 @@ mod tests {
             },
             texts,
         )
+    }
+
+    #[test]
+    fn a_crop_unit_has_its_own_identity_and_url() {
+        let page = job();
+        let mut c = job();
+        c.crop = Some(CropRef {
+            id: "c01".into(),
+            rect: [100, 200, 900, 300],
+            stratum: "wc-low/top".into(),
+        });
+        // The page's URL with the box as a media fragment.
+        c.input.url = format!("{}#xywh=100,200,800,100", page.input.url);
+        c.gpu_modes = vec![InputMode::Whole];
+        c.cpu_modes = vec![InputMode::Whole];
+        c.id = c.identity().unwrap();
+        c.validate().unwrap();
+        assert_ne!(c.id, page.id);
+        // Serialised with the field, parsed back the same; a page job's JSON
+        // has no `crop` at all, as before crops existed.
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"crop\""));
+        assert_eq!(serde_json::from_str::<Job>(&json).unwrap(), c);
+        assert!(!serde_json::to_string(&page).unwrap().contains("\"crop\""));
+        for (fix, why) in [
+            (
+                Box::new(|j: &mut Job| j.input.url = page.input.url.clone())
+                    as Box<dyn Fn(&mut Job)>,
+                "no fragment",
+            ),
+            (
+                Box::new(|j: &mut Job| j.crop.as_mut().unwrap().rect = [900, 200, 100, 300]),
+                "box",
+            ),
+            (
+                Box::new(|j: &mut Job| j.crop.as_mut().unwrap().id = "C 1".into()),
+                "id",
+            ),
+            (
+                Box::new(|j: &mut Job| j.crop.as_mut().unwrap().stratum = String::new()),
+                "stratum",
+            ),
+        ] {
+            let mut bad = c.clone();
+            fix(&mut bad);
+            bad.id = bad.identity().unwrap();
+            assert!(bad.validate().is_err(), "{why}");
+        }
+        // The quality campaign's groups carry digits; a crop job keeps the
+        // page's group as it is.
+        let mut g = c.clone();
+        g.group = "campaign-1".into();
+        g.id = g.identity().unwrap();
+        g.validate().unwrap();
+        // A hand-off page source works as the URL's base too.
+        let mut h = c.clone();
+        h.input.url =
+            "handoff:scans/sn85055101_1917-04-03_ed-1_seq-3.jpg#xywh=100,200,800,100".into();
+        h.id = h.identity().unwrap();
+        h.validate().unwrap();
     }
 
     #[test]

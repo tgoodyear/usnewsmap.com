@@ -10,7 +10,7 @@ As §13.9 says, round 1 is indicative only. It ran on the Python harness, not on
 
 # Summary
 
-- **No ground truth, so no CER or WER.** No crops were hand-transcribed. Accuracy is the language audit's damage metric (`ja-ocr/quality.py`): each text's damage rate and its known words, compared with LoC's text of the same page. Lower damage is better. More known words than LoC means more words a search could match.
+- **No ground truth, so no CER or WER.** No crops were hand-transcribed. Accuracy is the language audit's damage metric (`ocr/ja-ocr/quality.py`): each text's damage rate and its known words, compared with LoC's text of the same page. Lower damage is better. More known words than LoC means more words a search could match.
 - **Tesseract with cleared models improves German, Czech and Serbian on most pages.** The median damage rate drops from 0.371 to 0.086 for German with `frak2021` (0.163 with `deu_latf`, on the same 13 pages), from 0.500 to 0.288 for Czech (`ces`) and from 0.217 to 0.126 for Serbian (`srp`). With `ces` and `srp`, every page has more known words than LoC's text.
 - **NDNP Open OCR is the only engine that read all 15 of the worst English pages and beat LoC on every one.** Its median damage was 0.194 against LoC's 0.532, and it found 1.53 times LoC's known words. The variant surveyed uses American Stories' layout model, which has no explicit licence. Since 11 October that model is in the attributed tier, so it can go to production once the site has a credits page (#372).
 - **On the Polish, Russian and control pages, no engine's median damage was clearly below LoC's,** except Surya on the one Russian page it finished.
@@ -55,7 +55,7 @@ The tiers are those of 13 §13.7.2 and ADR-0016, as of the licence decisions of 
 | czech | 15 | 1876-1920 | Pokrok Západu | 0.500 | 0.311 | 2424 |
 | polish | 5 | 1890-1936 | Polish-language titles | 0.123 | 0.485 | 2217 |
 
-**Engines.** Each engine ran in its own podman container built from `scripts/ocr-survey/containers/`. The versions are the ones the engines reported in their results.
+**Engines.** Each engine ran in its own podman container built from `scripts/ocr-survey/containers/`; those survey containers have since been removed, and the two retained engines live under `ocr/engines/`. The versions are the ones the engines reported in their results.
 
 | Engine | Version | Models or variant | Groups | Node |
 |---|---|---|---|---|
@@ -67,7 +67,7 @@ The tiers are those of 13 §13.7.2 and ADR-0016, as of the licence decisions of 
 
 Node 1 is VM 120 on the NUC (Intel i5-4250U, 2 cores, 4 threads). Node 2 is VM 200 on pve-big (Intel i7-7700K, 8 vCPUs, 40 GiB). Both run AlmaLinux 9.8.
 
-**Scoring.** Node 1's results were copied to node 2, and `score.py` ran there on 11 October at 2:07 PM ET, in a `python:3.12-slim` container with wordfreq 3.1.1 and lxml 6.1.3 (`data/run-score.sh`), using `ja-ocr/quality.py` as of 5ced3c6. It ran again on 12 October at 7:07 AM ET with `score.py`'s fix to the "LoC, same pages" baseline and `dedup.py` (`data/run-score-r2.sh`, `data/pip-freeze.txt`). `scores.jsonl`, `alto.jsonl` and `timing.jsonl` came out byte for byte the same, and only three German baselines in `summary.json` changed. For each page, it scores LoC's text and each engine's text in the group's language:
+**Scoring.** Node 1's results were copied to node 2, and `score.py` ran there on 11 October at 2:07 PM ET, in a `python:3.12-slim` container with wordfreq 3.1.1 and lxml 6.1.3 (`data/run-score.sh`), using `ocr/ja-ocr/quality.py` as of 5ced3c6. It ran again on 12 October at 7:07 AM ET with `score.py`'s fix to the "LoC, same pages" baseline and `dedup.py` (`data/run-score-r2.sh`, `data/pip-freeze.txt`). `scores.jsonl`, `alto.jsonl` and `timing.jsonl` came out byte for byte the same, and only three German baselines in `summary.json` changed. For each page, it scores LoC's text and each engine's text in the group's language:
 
 - `damage_rate`: near-misses of the language's 20 most frequent words, over near-misses plus those words.
 - `known_share` and `known_words`: the share and the number of the text's words that are in the language's top 5,000.

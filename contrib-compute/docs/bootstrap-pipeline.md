@@ -7,6 +7,17 @@ not replace the proposed subscription/dev bootstrap in PR #634: the isolated
 BOINC resource group, registry, policy/waiver prerequisites and credentials must
 already exist. It never invokes the full application provisioner.
 
+It has no on-prem mode: it never gives `boinc-app-release.sh` the `--onprem-host` and
+`--onprem-ct` that a `"server": "onprem"` environment needs, so it cannot release to
+prod, whose server has run on-prem since 21 October 2026
+([boinc-onprem.md](../../docs/boinc-onprem.md)). Preflight rejects on-prem or unknown
+server modes from freshly fetched main, including on resume and `--dry-run`,
+before invoking acceptance validation or any lifecycle phase. It works on a
+server hosted in Azure; an omitted `server` keeps the schema's Azure default.
+Do not change production's server mode to bypass this gate. On-prem end-to-end
+orchestration remains a separate reviewed implementation, not a reason to replay
+the Azure build/provision path.
+
 ## Interface
 
 Run from a clean, current-main checkout containing this pipeline and **the merged

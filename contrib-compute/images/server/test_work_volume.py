@@ -19,9 +19,13 @@ ROOT = HERE.parents[2]
 
 
 def runtime_defaults_setup():
-    """bridge-job.sh's write_mycnf function and a call to it."""
-    source = (HERE / "bridge-job.sh").read_text().split("\nwrite_mycnf() {\n", 1)[1]
-    return "write_mycnf() {\n" + source.split("\n}\n", 1)[0] + "\n}\nwrite_mycnf\n"
+    """bridge-job.sh's write_mycnf and runtime_password functions and a call to write_mycnf."""
+    text = (HERE / "bridge-job.sh").read_text()
+
+    def function(name):
+        return f"{name}() {{\n" + text.split(f"\n{name}() {{\n", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+
+    return function("runtime_password") + function("write_mycnf") + "write_mycnf\n"
 
 
 class WorkVolume(unittest.TestCase):

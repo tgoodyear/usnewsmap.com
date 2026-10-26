@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { VersionItem } from "../api/types";
-import { byDecade, featureChanges, pagesChange, publishedVersions, reasonLabel } from "./datasets";
+import type { IndexRun, Status, VersionItem } from "../api/types";
+import { byDecade, featureChanges, mainIndexPages, pagesChange, publishedVersions, reasonLabel } from "./datasets";
 
 const version = (v: Partial<VersionItem>): VersionItem => ({
   index_version: "pages-v1",
@@ -72,6 +72,38 @@ describe("featureChanges", () => {
     ]);
   });
 
+  it("names page language and leaves out the split size, which readers don't see", () => {
+    // pages-v20261022-1 against pages-v20261010-2, as /v1/versions has them.
+    const then = version({ build: { features: { american_stories: 1, common_grams: 1, ja_fold: 1, ja_latin: 1 } } });
+    const now = version({
+      full: true,
+      build: {
+        features: {
+          american_stories: 1,
+          common_grams: 2,
+          decades: 1,
+          ja_fold: 2,
+          ja_latin: 1,
+          ocr_local: 1,
+          page_language: 1,
+          split_docs: 60000,
+          text_layout: 2,
+        },
+      },
+    });
+    expect(featureChanges(now, then)).toEqual([
+      "New version of word pairs for phrase searches (2)",
+      "Added the index split by decade",
+      "New version of folding of old Japanese character forms (2)",
+      "Added our own OCR in place of weak Library of Congress text",
+      "Added each page's own language, which the language filter matches",
+      "Added one searched field for the page's texts",
+    ]);
+    // A changed split size isn't a change either.
+    const smaller = version({ full: true, build: { features: { ...now.build!.features, split_docs: 30000 } } });
+    expect(featureChanges(smaller, now)).toEqual([]);
+  });
+
   it("says nothing without both build records", () => {
     const recorded = version({ build: { features: { american_stories: 1 } } });
     expect(featureChanges(recorded, undefined)).toEqual([]);
@@ -107,5 +139,45 @@ describe("publishedVersions and pagesChange", () => {
       ["c", "a"],
       ["a", undefined],
     ]);
+  });
+});
+
+describe("mainIndexPages", () => {
+  const run = (r: Partial<IndexRun>): IndexRun => ({
+    index_version: "pages-v20261022-1",
+    full: true,
+    status: "published",
+    new_index: "pages-base-20261022-1",
+    indexes: 1,
+    batches: 3010,
+    docs: 23_740_914,
+    pages: 23_766_177,
+    started_at: "2026-10-22T15:00:00Z",
+    published_at: "2026-10-24T05:19:12Z",
+    duration_secs: null,
+    previous_version: "pages-v20261010-2",
+    error: null,
+    ...r,
+  });
+  const status = (runs: IndexRun[], indexes = ["pages-base-20261022-1"]) =>
+    ({
+      published: { index_version: "pages-v20261022-1", pages: 23_766_177, indexes },
+      indexing: { available: true, runs },
+    }) as unknown as Status;
+
+  it("counts the served full rebuild's documents", () => {
+    expect(mainIndexPages(status([run({})]))).toBe(23_740_914);
+  });
+
+  it("is null when the run doesn't count the whole main index or isn't listed", () => {
+    // With deltas, a run's documents are its own delta's.
+    expect(mainIndexPages(status([run({})], ["pages-base-20261022-1", "pages-delta-1"]))).toBeNull();
+    expect(mainIndexPages(status([run({ full: false })]))).toBeNull();
+    expect(mainIndexPages(status([run({ index_version: "pages-v20261010-2" })]))).toBeNull();
+    expect(mainIndexPages(status([run({ status: "failed" })]))).toBeNull();
+    expect(mainIndexPages(status([run({ docs: 0 })]))).toBeNull();
+    expect(
+      mainIndexPages({ ...status([]), indexing: { available: false, reason: "none" } } as unknown as Status),
+    ).toBeNull();
   });
 });

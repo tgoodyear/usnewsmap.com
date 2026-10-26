@@ -41,14 +41,14 @@ class SuryaBenchmarkTests(unittest.TestCase):
                    "input": {"sha256": row["image_sha256"]}, "cpu_modes": ["tiled"], "gpu_modes": list(module.MODES)}
             (unit / "surya.json").write_bytes(module.encode(job))
             seen = Path(directory) / "seen"
-            result_dir = seen / "usnm_surya_job_host10_4321_1792340312_0_3"
+            result_dir = seen / "usnm_surya_job_host10_4321_1792340312_0_r2014260292_3"
             result_dir.mkdir(parents=True)
             result = {"job_id": "job", "engine": job["engine"], "runs": [
                 {"mode": "tiled", "device": "cuda", "outcome": "ok", "engine_ms": 123},
                 {"mode": "whole", "device": "cuda", "outcome": "timeout"}]}
             (result_dir / "result.json").write_bytes(module.encode(result))
             (result_dir / "text-tiled.txt").write_bytes(b"text\r\nwith\rnewline")
-            other = seen / "usnm_surya_job_host11_4321_1792340312_0_3"
+            other = seen / "usnm_surya_job_host11_4321_1792340312_0_r2014260292_3"
             other.mkdir()
             (other / "result.json").write_bytes(module.encode(result))
             with patch.object(module.subprocess, "run") as validator:
@@ -61,6 +61,24 @@ class SuryaBenchmarkTests(unittest.TestCase):
                 self.assertEqual((out / "cuda-whole-english.jsonl").read_bytes(), b"")
                 saved = json.loads((out / "receipt.json").read_text())
                 self.assertEqual(saved["records"][1]["outcome"], "timeout")
+            vk_result = {"job_id": "job", "engine": job["engine"], "runs": [
+                {"mode": "tiled", "device": "vulkan", "outcome": "ok", "engine_ms": 123}]}
+            (result_dir / "result.json").write_bytes(module.encode(vk_result))
+            with patch.object(module.subprocess, "run") as validator:
+                vk_out = Path(directory) / "out-vulkan"
+                receipt = module.collect(root, seen, vk_out, "usnm-boinc", "vulkan")
+                validator.assert_called_once()
+                self.assertEqual(receipt["returned"], 1)
+                exported = json.loads((vk_out / "vulkan-tiled-english.jsonl").read_text())
+                self.assertEqual(exported, {"id": "sample-1", "text": "text\r\nwith\rnewline"})
+            (result_dir / "result.json").write_bytes(module.encode(result))
+            numeric = seen / "usnm_surya_job_host10_4321_1792340312_0_3"
+            result_dir.rename(numeric)
+            with patch.object(module.subprocess, "run") as validator:
+                receipt = module.collect(root, seen, Path(directory) / "numeric", "usnm-boinc", "cuda")
+                validator.assert_called_once()
+                self.assertEqual(receipt["returned"], 1)
+            numeric.rename(result_dir)
             with patch.object(module.subprocess, "run", side_effect=RuntimeError("validator rejected")):
                 with self.assertRaises(RuntimeError):
                     module.collect(root, seen, Path(directory) / "rejected", "usnm-boinc", "cuda")
@@ -74,6 +92,46 @@ class SuryaBenchmarkTests(unittest.TestCase):
             (root / "benchmark-ready").unlink()
             with self.assertRaises(FileNotFoundError):
                 module.collect(root, seen, Path(directory) / "partial", "usnm-boinc", "cuda")
+
+    def test_export_reads_qualified_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "campaign"
+            row = {"sample_id": "sample-1", "dataset": "overproof-ca", "group": "english",
+                   "image_sha256": module.digest(b"image"), "reference_sha256": module.digest(b"reference")}
+            unit, doc_id = module.unit_of(root, row)
+            self.assertEqual(unit, root / "units" / "sample" / "overproof-ca" / "sample-1")
+            self.assertEqual(doc_id, "sample:overproof-ca/sample-1")
+            self.assertEqual(module.unit_of(root, {"sample_id": "sample-1"}),
+                             (root / "units" / "sample-1", "sample-1"))
+            unit.mkdir(parents=True)
+            (root / "target-host.json").write_bytes(module.encode([10, False]))
+            raw = module.encode([row])
+            (root / "benchmark-inputs.json").write_bytes(raw)
+            for name in ("benchmark-inputs.sha256", "benchmark-ready"):
+                (root / name).write_text(module.digest(raw))
+            (unit / "page.jpg").write_bytes(b"image")
+            (unit / "reference.txt").write_bytes(b"reference")
+            job = {"id": "job", "doc_id": doc_id, "engine": {"image": "pinned"},
+                   "input": {"sha256": row["image_sha256"]}, "cpu_modes": ["tiled"], "gpu_modes": list(module.MODES)}
+            (unit / "surya.json").write_bytes(module.encode(job))
+            seen = Path(directory) / "seen"
+            result_dir = seen / "usnm_surya_job_host10_4321_1792340312_0_3"
+            result_dir.mkdir(parents=True)
+            result = {"job_id": "job", "engine": job["engine"], "runs": [
+                {"mode": "tiled", "device": "cpu", "outcome": "ok", "engine_ms": 1}]}
+            (result_dir / "result.json").write_bytes(module.encode(result))
+            (result_dir / "text-tiled.txt").write_bytes(b"text")
+            with patch.object(module.subprocess, "run"):
+                out = Path(directory) / "out"
+                receipt = module.collect(root, seen, out, "usnm-boinc", "cpu")
+            self.assertEqual(receipt["returned"], 1)
+            # Scores keep the release's own sample id.
+            exported = json.loads((out / "cpu-tiled-english.jsonl").read_text())
+            self.assertEqual(exported, {"id": "sample-1", "text": "text"})
+            job["doc_id"] = "sample-1"
+            (unit / "surya.json").write_bytes(module.encode(job))
+            with self.assertRaises(ValueError):
+                module.collect(root, seen, Path(directory) / "bare", "usnm-boinc", "cpu")
 
 
 if __name__ == "__main__":

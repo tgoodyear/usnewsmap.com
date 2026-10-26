@@ -21,6 +21,16 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - .dockerignore
+      # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "catalog/**"
+      - "fixtures/ocr-gold/bundle-v1.lock.json"
+      - "infra/quickwit/**"
+      - "ocr/boinc/qwen/disk-policy.json"
+      - "ocr/boinc/qwen/weights.lock"
+      - "ocr/boinc/surya/engine.lock"
+      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "ocr/engines/ndlocr-lite/models.lock"
+      - "ocr/routing/routes.toml"
       - "!**/*.md"
 permissions:
   contents: read
@@ -30,9 +40,26 @@ concurrency:
 env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
 jobs:
+  # Whether this change touches what the image is built from (scripts/ci/changes.sh):
+  # a crate counts when the image builds it, not for being under crates/.
+  # Not named `changes`: ci.yml's required check has that name.
+  inputs:
+    name: worker image inputs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.boinc_worker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
   check:
     name: worker image (${{ matrix.arch }}, native build)
-    if: github.event_name == 'pull_request'
+    needs: inputs
+    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
     strategy: &native
       fail-fast: false
       matrix:

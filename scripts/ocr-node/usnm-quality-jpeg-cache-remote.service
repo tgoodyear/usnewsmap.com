@@ -1,0 +1,44 @@
+# The quality wave's page JPEG cache (#850) on another LAN host: the same script as
+# usnm-quality-jpeg-cache.service, reading each master and its sidecar from the scan
+# server (--scan-server) instead of /tank, so a host with idle CPU adds to CT 211's.
+# The host's Arc machine identity needs the hand-off writer role (the private setting
+# USNM_QUALITY_JPEG_WRITERS) and the host must be on the scan server's --allow. Its
+# settings are in /etc/usnm/quality-jpeg-cache.env (ACCOUNT, LIST, WORKERS,
+# SCAN_SERVER); docs/boinc/scan-cache-handoff.md#the-quality-waves-page-jpeg-cache has the runbook.
+[Unit]
+Description=usnewsmap quality wave page JPEG cache (from the scan server)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/usr/local/lib/usnm-quality-jpeg-cache/py/PIL
+StartLimitIntervalSec=1d
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+SupplementaryGroups=himds
+EnvironmentFile=/etc/usnm/quality-jpeg-cache.env
+Environment=PYTHONPATH=/usr/local/lib/usnm-quality-jpeg-cache/py
+ExecStart=/usr/bin/python3 /usr/local/lib/usnm-quality-jpeg-cache/quality-jpeg-cache.py \
+  --account ${ACCOUNT} --list ${LIST} --workers ${WORKERS} --state ${STATE_DIRECTORY} \
+  --scan-server ${SCAN_SERVER}
+StateDirectory=usnm-quality-jpeg-cache
+Restart=on-failure
+RestartSec=5min
+SyslogIdentifier=usnm-quality-jpeg-cache
+# The host's own work comes first.
+Nice=15
+CPUWeight=10
+IOSchedulingClass=idle
+MemoryMax=3G
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

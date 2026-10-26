@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2034
-# Shared by scripts/provision-boinc.sh and scripts/build-boinc-images.sh. Sourced from the
+# Shared by scripts/boinc/provision-boinc.sh and scripts/boinc/build-boinc-images.sh. Sourced from the
 # repository root after ENV_NAME and ALLOW_DIRTY are set; needs a die() function.
 #
 # The BOINC server's settings are committed in contrib-compute/infra/boinc/env/<env>.json
@@ -8,6 +8,12 @@
 
 BOINC_DIR=contrib-compute/infra/boinc
 BOINC_SETTINGS="$BOINC_DIR/env/$ENV_NAME.json"
+# The tests (scripts/boinc/test_boinc_provision.py) run against fixture settings with stubbed
+# Azure calls: USNM_BOINC_SETTINGS_FILE, honoured only with USNM_BOINC_TEST=1.
+if [ -n "${USNM_BOINC_SETTINGS_FILE:-}" ]; then
+  [ "${USNM_BOINC_TEST:-}" = 1 ] || { echo "error: USNM_BOINC_SETTINGS_FILE is for the tests" >&2; exit 1; }
+  BOINC_SETTINGS=$USNM_BOINC_SETTINGS_FILE
+fi
 BOINC_RG="usnm-boinc-rg-$ENV_NAME"
 BOINC_STACK="usnm-boinc-$ENV_NAME"
 # Never touched by these scripts (other production resources).
@@ -27,10 +33,12 @@ PY
 case "$ENV_NAME" in prod | dev) ;; *) die "--env must be prod or dev (the BOINC server has no experiment environments)" ;; esac
 [ -f "$BOINC_SETTINGS" ] || die "no settings file $BOINC_SETTINGS"
 
-# The settings file and its schema must be committed, as scripts/provision.sh requires of
+# The settings file and its schema must be committed, as scripts/azure/provision.sh requires of
 # infra/env/<env>.json, unless --allow-dirty (dev only).
 boinc_clean_check() {
   local out
+  # Fixture settings in the tests live outside the repository.
+  [ -z "${USNM_BOINC_SETTINGS_FILE:-}" ] || return 0
   out=$(git status --porcelain -- "$BOINC_SETTINGS" "$BOINC_DIR/env/schema.json" 2>&1) ||
     die "can't check $BOINC_SETTINGS with git: $out"
   [ -z "$out" ] && return 0
@@ -41,23 +49,34 @@ boinc_clean_check() {
 }
 
 # Checks the settings against the rules in schema.json, with jq, and reads them into
-# ASSESSMENT, GOLD_BUNDLE, SUBSCRIPTION, LOCATION, PROJECT_URL, MASTER_HOST, OPERATOR_ID, OPERATOR_LOGIN,
+# ASSESSMENT, GOLD_BUNDLE, QUALITY_WAVE_SCRIPT, QUALITY_WAVE_SHA256, SUBSCRIPTION, LOCATION, PROJECT_URL, MASTER_HOST, OPERATOR_ID, OPERATOR_LOGIN,
 # SERVER_IMAGE, BRIDGE_IMAGE, WORKER_IMAGE and APPVER_IMAGE.
 boinc_load_settings() {
   local err
   err=$(jq -r '
     def guid: test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     def acr: test("^$|^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$");
-    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "location", "operator", "projectUrl", "requireSecureTransport", "subscriptionId"]
+    [ (keys - ["$schema", "assessment", "codeSignPublicKey", "goldBundle", "images", "keyVaultAllowedIps", "location", "onPremGroupId", "operator", "projectShare", "projectUrl", "qualityWave", "requireSecureTransport", "server", "subscriptionId"]
         | if length > 0 then "unknown keys: \(join(", "))" else empty end),
       (if keys_unsorted != keys then "keys are not sorted" else empty end),
       (if (.assessment | type) != "boolean" then "assessment must be true or false" else empty end),
       (if (.codeSignPublicKey | type) != "string" then "codeSignPublicKey must be a string" else empty end),
       (if (.goldBundle | type) != "boolean" then "goldBundle must be true or false" else empty end),
+      (if has("qualityWave") and ((.qualityWave | type) != "object" or (.qualityWave | keys) != ["script", "sha256"]
+          or (.qualityWave.script | test("^https://[a-z0-9]+\\.blob\\.core\\.windows\\.net/[a-z0-9-]+/[A-Za-z0-9/._-]+\\.py$") | not)
+          or (.qualityWave.sha256 | test("^[0-9a-f]{64}$") | not))
+        then "qualityWave must be {script: an https blob URL of a .py file, sha256: 64 hex}" else empty end),
       (if has("requireSecureTransport") and (.requireSecureTransport | type) != "boolean" then "requireSecureTransport must be true or false" else empty end),
-      (if (.images | type) != "object" or (.images | keys) != ["appver", "bridge", "server", "worker"] then "images must have exactly appver, bridge, server and worker" else empty end),
+      (if has("server") and (.server != "azure" and .server != "onprem") then "server must be azure or onprem" else empty end),
+      (if has("projectShare") and ([.projectShare] | inside(["standard", "copy", "provisioned", "provisioned-final"]) | not) then "projectShare must be standard, copy, provisioned or provisioned-final" else empty end),
+      (if has("keyVaultAllowedIps") and ((.keyVaultAllowedIps | type) != "array" or (.keyVaultAllowedIps | length) > 4 or any(.keyVaultAllowedIps[]; type != "string" or (test("^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$") | not))) then "keyVaultAllowedIps must be up to 4 public IPv4 addresses" else empty end),
+      (if has("onPremGroupId") and ((.onPremGroupId | type) != "string" or (.onPremGroupId | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$") | not)) then "onPremGroupId must be an object id" else empty end),
+      (if (.images | type) != "object" or ((.images | keys) - ["web"]) != ["appver", "bridge", "server", "worker"] then "images must have appver, bridge, server and worker, with optional web" else empty end),
+      (if has("images") and (.images | has("web")) and (.images.web | type) != "string" then "images.web must be a string" else empty end),
+      (if (.images.web // "" | acr) then empty else "images.web must be empty or an immutable ACR image" end),
       (if (.images.server // "" | acr) and (.images.bridge // "" | acr) then empty else "images.server and images.bridge must be empty or <registry>.azurecr.io/<name>@sha256:<64 hex>" end),
       (if (.images.appver // "") | test("^$|^[a-z0-9.-]+\\.azurecr\\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$") then empty else "images.appver must be empty or <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>" end),
+      (if (.images.web // "" | length > 0) and (.images.server // "" | length == 0) then "images.web needs images.server" else empty end),
       (if (.images.appver // "" | length > 0) and (.images.server // "" | length == 0) then "images.appver needs images.server (the publish job runs in the app environment)" else empty end),
       (if (.images.worker // "") | test("^$|^ghcr\\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}$") then empty else "images.worker must be empty or ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>" end),
       (if (.images.server // "" | length > 0) != (.images.bridge // "" | length > 0) then "images.server and images.bridge are set together (the bridge image is built on the server image)" else empty end),
@@ -70,12 +89,15 @@ boinc_load_settings() {
   [ -z "$err" ] || die "$BOINC_SETTINGS: $(printf '%s; ' "$err" | sed 's/; $//')"
   ASSESSMENT=$(jq -r .assessment "$BOINC_SETTINGS")
   GOLD_BUNDLE=$(jq -r .goldBundle "$BOINC_SETTINGS")
+  QUALITY_WAVE_SCRIPT=$(jq -r '.qualityWave.script // ""' "$BOINC_SETTINGS")
+  QUALITY_WAVE_SHA256=$(jq -r '.qualityWave.sha256 // ""' "$BOINC_SETTINGS")
   REQUIRE_SECURE_TRANSPORT=$(jq -r '.requireSecureTransport // false' "$BOINC_SETTINGS")
   SUBSCRIPTION=$(jq -r .subscriptionId "$BOINC_SETTINGS")
   LOCATION=$(jq -r .location "$BOINC_SETTINGS")
   PROJECT_URL=$(jq -r .projectUrl "$BOINC_SETTINGS")
   OPERATOR_ID=$(jq -r .operator.objectId "$BOINC_SETTINGS")
   OPERATOR_LOGIN=$(jq -r .operator.login "$BOINC_SETTINGS")
+  WEB_IMAGE=$(jq -r '.images.web // ""' "$BOINC_SETTINGS")
   SERVER_IMAGE=$(jq -r .images.server "$BOINC_SETTINGS")
   BRIDGE_IMAGE=$(jq -r .images.bridge "$BOINC_SETTINGS")
   WORKER_IMAGE=$(jq -r .images.worker "$BOINC_SETTINGS")
@@ -100,7 +122,7 @@ boinc_az_check() {
   [ "$(az account show --subscription "$SUBSCRIPTION" --query id -o tsv 2> /dev/null)" = "$SUBSCRIPTION" ] ||
     die "az cannot see subscription $SUBSCRIPTION (az login --tenant <its tenant> first)"
   baz group show --name "$BOINC_RG" --query name -o none 2> /dev/null ||
-    die "no resource group $BOINC_RG: it comes from the main stack (USNM_BOINC_GROUP true in infra/env/$ENV_NAME.json, then scripts/provision.sh --env $ENV_NAME)"
+    die "no resource group $BOINC_RG: it comes from the main stack (USNM_BOINC_GROUP true in infra/env/$ENV_NAME.json, then scripts/azure/provision.sh --env $ENV_NAME)"
 }
 
 # boinc_output NAME: one output of the BOINC stack, empty if the stack or the output is
@@ -175,7 +197,7 @@ boinc_execution_log() {
   deadline=$(($(date +%s) + wait))
   echo "reading $execution's log from Log Analytics (up to ${wait}s for ingestion)" >&2
   while :; do
-    rows=$(python3 scripts/log_analytics.py --subscription "$SUBSCRIPTION" --workspace "$workspace" --timespan P1D --query \
+    rows=$(python3 scripts/azure/log_analytics.py --subscription "$SUBSCRIPTION" --workspace "$workspace" --timespan P1D --query \
       "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '$execution-' | order by TimeGenerated desc | take 50 | order by TimeGenerated asc | project TimeGenerated, Log_s" \
       | jq -r '.tables[0].rows[] | "\(.[0])  \(.[1])"' 2> /dev/null) || rows=""
     [ -z "$rows" ] || break
@@ -188,4 +210,27 @@ boinc_execution_log() {
   echo "--- $execution (last 50 lines) ---" >&2
   echo "$rows" >&2
   echo "---" >&2
+}
+
+# boinc_check_public_health FILE: the master URL's project config (saved to FILE) must name
+# it and be running (with BOINC_MAINTENANCE=1 the scheduler may be closed on purpose).
+# provision-boinc.sh (both server modes) and the on-prem app release use it. Needs
+# PROJECT_URL (boinc_load_settings).
+boinc_check_public_health() {
+  local out=$1
+  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$out" ||
+    die "the public BOINC project endpoint is not healthy"
+  # BOINC_MAINTENANCE=1 (the share cutover, docs/boinc/server-and-apps.md): the scheduler is closed on purpose
+  # (stop_sched), so it is accepted here; check again with BOINC_MAINTENANCE unset after resuming.
+  python3 - "$out" "$PROJECT_URL" "${BOINC_MAINTENANCE:-0}" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+config = ET.parse(sys.argv[1]).getroot()
+sched_ok = ("0", "1") if sys.argv[3] == "1" else ("0",)
+if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") not in sched_ok):
+    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
+PY
 }

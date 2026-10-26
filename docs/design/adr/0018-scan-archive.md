@@ -149,22 +149,22 @@ Cost of keeping the data on the Proxmox host: nothing new. The archive is a seco
 
 ## Deferred direct-client code and deployment gates (#649)
 
-The isolated [`usnm-scan-reader`](../../../crates/usnm-scan-reader/README.md)
-crate now implements the later axum router, ticket verification, bounded local
-admission and streaming/range integrity behavior for decisions 6–8. It is
-**unwired code/tests only**, not an activated service or an authorization to
-provision resources, expose a listener, change BOINC, or add search-API load.
-Its private reader is an injected identity abstraction; a production Entra
-adapter and conditional Azure read verification remain activation work. The
-current offline pilot continues to stage scans with the bridge identity.
+The isolated `usnm-scan-reader` crate (#649) implemented the later axum
+router, ticket verification, bounded local admission and streaming/range
+integrity behavior for decisions 6–8. It was **unwired code/tests only**, never
+an activated service or an authorization to provision resources, expose a
+listener, change BOINC, or add search-API load. It had no consumers and has been
+removed; the design below stands for any future reader. Its private reader was
+an injected identity abstraction; a production Entra adapter and conditional
+Azure read verification would have remained activation work. The current
+offline pilot continues to stage scans with the bridge identity.
 
 Before any deployment, the maintainer must explicitly settle **durable,
 atomic cross-replica/restart budget semantics** (including backend failure,
 refunds, time/rollover and reissuance) and **signing-key Key Vault placement,
 signer identity/access and rotation/revocation**. These remain open gates,
 not defaults approved by tests. In-memory counters reset on restart and count
-independently per replica: **they are not an account cost cap**. The crate's
-README records additional ingress, identity-adapter and protocol gates. #649
+independently per replica: **they are not an account cost cap**. The removed crate's README recorded additional ingress, identity-adapter and protocol gates. #649
 stays open for these decisions and separately authorized deployment.
 
 The bearer-response cache policy intentionally tightens decision 6: the service

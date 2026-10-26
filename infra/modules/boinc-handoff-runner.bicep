@@ -1,7 +1,9 @@
 // The BOINC hand-off's access (#469): `usnm-boinc export` and `usnm-boinc
 // collect` run as the hand-off job's identity (boinc-handoff-job.bicep,
-// docs/boinc.md#one-page-from-the-scan-cache). Only what those two commands
-// touch:
+// docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache). The on-prem BOINC host's own
+// Arc identity gets the same grants for claim and collect (boincHandoffOnPrem,
+// #967); the ledger writer role is defined here once for both. Only what those
+// commands touch:
 // - Cosmos: Built-in Data Contributor on the `ops` container alone, for the
 //   `ocr-sync` lease export takes and the published version it reads
 //   (usnm-state's current_version and lock items). Nothing on titles,
@@ -20,7 +22,7 @@
 param storageName string
 param exchangeName string
 param cosmosName string
-@description('Object ids given these grants: the hand-off job\'s identity.')
+@description('Object ids given these grants, all service principals: the hand-off job\'s identity and, with boincHandoffOnPrem, the on-prem BOINC host\'s Arc machine identity.')
 param principalIds array
 @description('The ledger writer role\'s name, before its scope (infra/naming.bicep).')
 param roleLabel string

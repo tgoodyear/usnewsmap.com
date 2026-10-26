@@ -4,17 +4,28 @@
   "codeSignPublicKey": "1024\ned41759f6f9d26afc59cb55b47403279aefb529ddf0c7a45dd05edd252b406cf\n90b71251e5e224a2df33de05941de47c966258a7a0042c1d276d999f1aaa8d79\n2894de320981f6bbf430b30a40987c37d647b029051abcf21f79da809f7f28a2\na8bb6d18af8eb4edca94c4413e5fb6b2fa7c4c6cd6ab4b205944d31babdd9739\n0000000000000000000000000000000000000000000000000000000000000000\n0000000000000000000000000000000000000000000000000000000000000000\n0000000000000000000000000000000000000000000000000000000000000000\n0000000000000000000000000000000000000000000000000000000000010001\n.\n",
   "goldBundle": true,
   "images": {
-    "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:8db09402135495f1c9384c87e344586842632053fc01c57f72050f0168ebd2e2",
-    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:a30e65777cd396c12c991bbdd270a1bc367617455343399dd8c058d99f9882cd",
-    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:c19eae5e0d4d393c7e8bd8f3024450fa8b97d5331e3a6165c7b2575354555210",
+    "appver": "crusnmprodffapzy.azurecr.io/usnm-boinc-appver@sha256:495f9c269291f13ec99439c83e6fd094f3c9cf343bcb42f4972130256693f02d",
+    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:8ec2b15ea5ae6b10302e3d8a68bdd41234ade1f5b4ddfe58c9ea06381425daa2",
+    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:3b6d73b4e56dfe9edd2290432a10d8e251234972bce49e2a366992bbd6728251",
+    "web": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:9b40bb510243097dcb09b5392d9b96c1ca10b0c9534c2951aa5c2d73492042d1",
     "worker": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa"
   },
+  "keyVaultAllowedIps": [
+    "107.205.227.23"
+  ],
   "location": "westus2",
+  "onPremGroupId": "40effb39-70a4-4d15-bb36-ea9b45e2f80f",
   "operator": {
     "login": "Trevor Goodyear",
     "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"
   },
+  "projectShare": "provisioned",
   "projectUrl": "https://boinc.usnewsmap.com/",
+  "qualityWave": {
+    "script": "https://stusnmoffapzy.blob.core.windows.net/boinc-handoff/quality/v1-wave9/run_wave9-07ad7aa68230.py",
+    "sha256": "07ad7aa6823082587b8a3b4c1f4817025af89dbf37f4de81997027f630e7f22b"
+  },
   "requireSecureTransport": false,
+  "server": "onprem",
   "subscriptionId": "25bf257c-c94e-4d61-bba3-edc635f46602"
 }

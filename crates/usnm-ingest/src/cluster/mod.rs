@@ -1,4 +1,4 @@
-//! The experimental search cluster (#238, #239; docs/operations.md, "Search
+//! The experimental search cluster (#238, #239; docs/operations/environments-and-deploys.md, "Search
 //! cluster experiment"): Quickwit nodes as Container Apps, each one replica,
 //! and the tooling that measures them on a sample of the corpus.
 //!
@@ -36,7 +36,7 @@ pub mod sample;
 pub mod set;
 
 /// One JSON report line in the job's console (`qwcluster report`), which
-/// `scripts/qwcluster-report.py` reads back from Log Analytics.
+/// `scripts/azure/qwcluster-report.py` reads back from Log Analytics.
 pub fn log_report(kind: &str, report: &serde_json::Value) {
     tracing::info!(kind, report = %report, "qwcluster report");
 }

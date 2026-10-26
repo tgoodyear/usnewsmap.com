@@ -15,7 +15,7 @@ def main():
     a = p.parse_args()
     work = a.work.resolve()
     work.mkdir(parents=True)
-    scan = pathlib.Path("ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg").resolve()
+    scan = pathlib.Path("ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg").resolve()
     base = ["docker", "run", "--rm", "--network=none", "--read-only", "--cap-drop=ALL",
             "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges", "--cpus=1",
             "--memory=4g", "--memory-swap=4g", "-v", f"{work}:/work:rw"]

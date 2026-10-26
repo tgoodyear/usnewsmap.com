@@ -175,8 +175,8 @@ class Pipeline:
             raise PipelineError("unexpected origin repository")
         sha = self.main()
         files = self.git("ls-tree", "-r", "--name-only", sha).splitlines()
-        for name in (self.settings, "scripts/provision-boinc.sh", "scripts/build-boinc-images.sh",
-                     "scripts/boinc-app-release.sh", "scripts/boinc/acceptance.py"):
+        for name in (self.settings, "scripts/boinc/provision-boinc.sh", "scripts/boinc/build-boinc-images.sh",
+                     "scripts/boinc/boinc-app-release.sh", "scripts/boinc/acceptance.py"):
             if name not in files:
                 dependency = " (#807/#548 must merge first)" if name == "scripts/boinc/acceptance.py" else ""
                 raise PipelineError("missing reviewed main entrypoint: " + name + dependency)
@@ -185,6 +185,10 @@ class Pipeline:
                 self.args.coordination_claim or ""):
             raise PipelineError("execution requires an active #529 coordination claim (not deployment authorization)")
         settings = json.loads(self.git("show", sha + ":" + self.settings))
+        if settings.get("server", "azure") != "azure":
+            raise PipelineError("bootstrap pipeline supports only Azure-hosted BOINC servers; "
+                                "on-prem releases require a separate reviewed orchestration "
+                                "(docs/boinc-onprem.md)")
         if not settings.get("codeSignPublicKey"):
             raise PipelineError("reviewed public signing key is missing")
         if not (ROOT / "scripts/boinc/acceptance.py").is_file():
@@ -217,7 +221,7 @@ class Pipeline:
     def script(self, work, name, *args):
         if self.git("status", "--porcelain", "--untracked-files=normal", cwd=work):
             raise PipelineError("clean lifecycle workspace required; unreviewed local edits cannot deploy")
-        self.run([str(work / "scripts" / name), "--env", self.config["env"], *args], cwd=work)
+        self.run([str(work / "scripts" / "boinc" / name), "--env", self.config["env"], *args], cwd=work)
 
     def acceptance(self, work, dry_run=False):
         argv = [sys.executable, str(work / "scripts/boinc/acceptance.py"), "--env", self.config["env"],

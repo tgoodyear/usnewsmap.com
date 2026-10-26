@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -64,6 +65,267 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertTrue(POLICY.refresh(self.source, self.target))
         self.assertFalse(POLICY.refresh(self.source, self.target))
 
+    def test_amd_upgrade_and_restart_preserve_independent_windows(self):
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        tree.getroot().remove(nodes["amd_vulkan_8b"])
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            nodes[name].find("min_wu_id").text = "200"
+            nodes[name].find("max_wu_id").text = "209"
+        tree.write(self.target)
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("min_wu_id"), "2")
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("max_wu_id"), "1")
+        nodes["amd_vulkan_8b"].find("min_wu_id").text = "300"
+        nodes["amd_vulkan_8b"].find("max_wu_id").text = "300"
+        tree.write(self.target)
+        POLICY.refresh(self.source, self.target)
+        nodes = {node.findtext("name"): node for node in ET.parse(self.target).findall("plan_class")}
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("min_wu_id"), "300")
+        self.assertEqual(nodes["amd_vulkan_8b"].findtext("max_wu_id"), "300")
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            self.assertEqual(nodes[name].findtext("min_wu_id"), "200")
+            self.assertEqual(nodes[name].findtext("max_wu_id"), "209")
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_explicit_amd_general_promotion_survives_restart_and_stop_stays_closed(self):
+        tree = ET.parse(self.target)
+        for node in tree.findall("plan_class"):
+            if node.findtext("name") in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+                node.find("min_wu_id").text = "17099"
+                node.find("max_wu_id").text = "17100"
+        tree.write(self.target)
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        command = ["php", str(helper), "--project", str(self.root),
+                   "--plan-class", "amd_vulkan_8b", "--general"]
+        before = self.target.read_bytes()
+        result = subprocess.run(command, text=True, capture_output=True, check=True)
+        self.assertEqual(json.loads(result.stdout)["admission_mode"], "general")
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertFalse((self.root / "ops-issue-559").exists())
+        subprocess.run(command + ["--apply"], text=True, capture_output=True, check=True)
+        promoted = self.target.read_bytes()
+        _, old = POLICY.parse_policy(before)
+        _, new = POLICY.parse_policy(promoted)
+        def fields(node):
+            return [(c.tag, (c.text or "").strip(), dict(c.attrib))
+                    for c in node if isinstance(c.tag, str)]
+        for name, node in old.items():
+            if name != "amd_vulkan_8b":
+                self.assertEqual(fields(node), fields(new[name]))
+        amd = new["amd_vulkan_8b"]
+        self.assertEqual(fields(amd), [f for f in fields(old["amd_vulkan_8b"])
+                                      if f[0] not in ("min_wu_id", "max_wu_id")])
+        self.assertEqual(amd.findtext("gpu_type"), "ati")
+        self.assertIsNotNone(amd.find("opencl"))
+        self.assertEqual((amd.findtext("min_batch"), amd.findtext("max_batch")), ("8", "8"))
+        self.assertEqual(amd.findtext("min_gpu_ram_mb"), "7000")
+        self.assertEqual(amd.findtext("ngpus"), "1")
+        self.assertNotIn("project_prefs_tag", [f[0] for f in fields(amd)])
+        subprocess.run(command + ["--apply"], text=True, capture_output=True, check=True)
+        self.assertEqual(self.target.read_bytes(), promoted)
+        self.assertEqual(len(list((self.root / "ops-issue-559/native-cohort").glob("*.json"))), 1)
+        POLICY.refresh(self.source, self.target)
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+        _, restarted = POLICY.parse_policy(self.target.read_bytes())
+        self.assertIsNone(restarted["amd_vulkan_8b"].find("min_wu_id"))
+        self.assertIn(POLICY.AMD_GENERAL_MARKER, self.target.read_text())
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            self.assertEqual(fields(restarted[name]), fields(old[name]))
+        subprocess.run(command[:-1] + ["--stop", "--apply"],
+                       text=True, capture_output=True, check=True)
+        POLICY.refresh(self.source, self.target)
+        stopped = ET.parse(self.target).find("plan_class[name='amd_vulkan_8b']")
+        self.assertEqual((stopped.findtext("min_wu_id"), stopped.findtext("max_wu_id")), ("2", "1"))
+        self.assertNotIn(POLICY.AMD_GENERAL_MARKER, self.target.read_text())
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_nvidia_vulkan_general_admission_survives_restart_and_operator_stop_closes_it(self):
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        command = ["php", str(helper), "--project", str(self.root),
+                   "--plan-class", "nvidia_vulkan_8b", "--general"]
+        before = self.target.read_bytes()
+        result = subprocess.run(command, text=True, capture_output=True, check=True)
+        self.assertEqual(json.loads(result.stdout)["admission_mode"], "general")
+        self.assertEqual(self.target.read_bytes(), before)
+        subprocess.run(command + ["--apply"], text=True, capture_output=True, check=True)
+        _, old = POLICY.parse_policy(before)
+        _, new = POLICY.parse_policy(self.target.read_bytes())
+        def fields(node):
+            return [(c.tag, (c.text or "").strip()) for c in node if isinstance(c.tag, str)]
+        nvidia = new["nvidia_vulkan_8b"]
+        self.assertIsNone(nvidia.find("min_wu_id"))
+        self.assertIsNone(nvidia.find("max_wu_id"))
+        self.assertEqual(nvidia.findtext("gpu_type"), "nvidia")
+        self.assertEqual(fields(nvidia), [f for f in fields(old["nvidia_vulkan_8b"])
+                                         if f[0] not in ("min_wu_id", "max_wu_id")])
+        for name, node in old.items():
+            if name != "nvidia_vulkan_8b":
+                self.assertEqual(fields(node), fields(new[name]))
+        # A restart keeps it, and AMD's admission is untouched.
+        POLICY.refresh(self.source, self.target)
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+        self.assertIn(POLICY.NVIDIA_GENERAL_MARKER, self.target.read_text())
+        self.assertNotIn(POLICY.AMD_GENERAL_MARKER, self.target.read_text())
+        # The operator stop (default class) closes both NVIDIA classes, general admission included.
+        subprocess.run(["php", str(helper), "--project", str(self.root), "--stop", "--apply"],
+                       text=True, capture_output=True, check=True)
+        POLICY.refresh(self.source, self.target)
+        stopped = ET.parse(self.target).find("plan_class[name='nvidia_vulkan_8b']")
+        self.assertEqual((stopped.findtext("min_wu_id"), stopped.findtext("max_wu_id")), ("2", "1"))
+        self.assertNotIn(POLICY.NVIDIA_GENERAL_MARKER, self.target.read_text())
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_other_windows_keep_nvidia_general_admission_and_its_own_window_replaces_it(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        def run(xml_fn):
+            code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                    "echo " + xml_fn + ";")
+            return subprocess.run(["php", "-r", code], text=True, capture_output=True, check=True).stdout
+        source = json.dumps(self.source.read_text())
+        general = run("native_qwen_general_xml(" + source + ", 'nvidia_vulkan_8b')")
+        self.assertIn(POLICY.NVIDIA_GENERAL_MARKER, general)
+        literal = json.dumps(general)
+        intel = ET.fromstring(run("native_qwen_cohort_xml(" + literal + ", 'intel_vulkan_8b', 17300)").encode())
+        self.assertEqual(intel.findtext("plan_class[name='intel_vulkan_8b']/min_wu_id"), "17300")
+        self.assertIsNone(intel.find("plan_class[name='nvidia_vulkan_8b']/min_wu_id"))
+        shared = ET.fromstring(run("native_qwen_cohort_xml(" + literal + ", 'shared_8b', 17300, 17305)").encode())
+        self.assertEqual(shared.findtext("plan_class[name='nvidia_vulkan_8b']/min_wu_id"), "17300")
+        self.assertEqual(shared.findtext("plan_class[name='nvidia_vulkan_8b']/max_wu_id"), "17305")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_nvidia_general_promotes_from_a_shared_range_and_amd_stays_singleton(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        def run(expr, check=True):
+            code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                    "echo " + expr + ";")
+            return subprocess.run(["php", "-r", code], text=True, capture_output=True, check=check)
+        source = json.dumps(self.source.read_text())
+        shared = run("native_qwen_cohort_xml(" + source + ", 'shared_8b', 17300, 17305)").stdout
+        promoted = run("native_qwen_general_xml(" + json.dumps(shared) + ", 'nvidia_vulkan_8b')").stdout
+        self.assertIn(POLICY.NVIDIA_GENERAL_MARKER, promoted)
+        self.assertIsNone(ET.fromstring(promoted.encode()).find("plan_class[name='nvidia_vulkan_8b']/min_wu_id"))
+        # AMD's own window is still one workunit.
+        amd_range = ET.fromstring(shared.encode())
+        node = amd_range.find("plan_class[name='amd_vulkan_8b']")
+        node.find("min_wu_id").text, node.find("max_wu_id").text = "17300", "17305"
+        refused = run("native_qwen_general_xml(" + json.dumps(ET.tostring(amd_range, encoding="unicode"))
+                      + ", 'amd_vulkan_8b')", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Invalid amd_vulkan_8b admission state", refused.stdout + refused.stderr)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_proof_reports_preserved_nvidia_general_admission_as_open(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        def run(expr):
+            code = ("$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper)) + "; "
+                    "echo json_encode(" + expr + ");")
+            return json.loads(subprocess.run(["php", "-r", code], text=True, capture_output=True, check=True).stdout)
+        source = json.dumps(self.source.read_text())
+        general = json.dumps(subprocess.run(
+            ["php", "-r", "$_SERVER['SCRIPT_FILENAME'] = ''; require " + json.dumps(str(helper))
+             + "; echo native_qwen_general_xml(" + source + ", 'nvidia_vulkan_8b');"],
+            text=True, capture_output=True, check=True).stdout)
+        intel = "native_qwen_cohort_xml(" + general + ", 'intel_vulkan_8b', 17300)"
+        self.assertFalse(run("native_qwen_other_closed(" + intel + ", 'intel_vulkan_8b')"))
+        closed = "native_qwen_cohort_xml(" + source + ", 'intel_vulkan_8b', 17300)"
+        self.assertTrue(run("native_qwen_other_closed(" + closed + ", 'intel_vulkan_8b')"))
+        self.assertTrue(run("native_qwen_other_closed(" + source + ", 'amd_vulkan_8b')"))
+
+    def test_nvidia_general_marker_malformed_states_fail_closed(self):
+        for count, bounds in ((1, ("2", "1")), (2, None)):
+            with self.subTest(markers=count, bounds=bounds):
+                root = ET.fromstring(self.source.read_bytes())
+                node = root.find("plan_class[name='nvidia_vulkan_8b']")
+                for tag in ("min_wu_id", "max_wu_id"):
+                    node.remove(node.find(tag))
+                for _ in range(count):
+                    node.append(ET.Comment(POLICY.NVIDIA_GENERAL_MARKER))
+                if bounds:
+                    for tag, value in zip(("min_wu_id", "max_wu_id"), bounds):
+                        ET.SubElement(node, tag).text = value
+                self.target.write_bytes(ET.tostring(root))
+                before = self.target.read_bytes()
+                with self.assertRaisesRegex(ValueError, "explicit NVIDIA general"):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), before)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_general_rejects_other_vendors_and_fixture_arguments_before_mutations(self):
+        (self.root / "config.xml").write_text("<boinc/>")
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        for arguments in (
+            ["--plan-class", "intel_vulkan_8b", "--general"],
+            ["--plan-class", "nvidia_cuda_8b", "--general"],
+            ["--plan-class", "nvidia_vulkan_8b", "--general", "--workunit", "300"],
+            ["--plan-class", "shared_8b", "--general"],
+            ["--plan-class", "amd_vulkan_8b", "--general", "--workunit", "300"],
+            ["--plan-class", "amd_vulkan_8b", "--general", "--workunit-end", "300"],
+            ["--plan-class", "amd_vulkan_8b", "--general", "--stop"],
+        ):
+            with self.subTest(arguments=arguments):
+                before = self.target.read_bytes()
+                result = subprocess.run(["php", str(helper), "--project", str(self.root),
+                                         *arguments, "--apply"], text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.target.read_bytes(), before)
+                self.assertFalse((self.root / ".native-qwen-cohort.lock").exists())
+                self.assertFalse((self.root / "ops-issue-559").exists())
+
+    def test_amd_general_marker_is_explicit_and_malformed_states_fail_closed(self):
+        tree = ET.parse(self.target)
+        amd = tree.find("plan_class[name='amd_vulkan_8b']")
+        for tag in ("min_wu_id", "max_wu_id"):
+            amd.remove(amd.find(tag))
+        tree.write(self.target)
+        POLICY.refresh(self.source, self.target)
+        self.assertEqual(ET.parse(self.target).findtext("plan_class[name='amd_vulkan_8b']/min_wu_id"), "2")
+        for count, bounds in ((1, ("2", "1")), (2, None), (1, ("2", None))):
+            with self.subTest(markers=count, bounds=bounds):
+                root = ET.fromstring(self.source.read_bytes())
+                amd = root.find("plan_class[name='amd_vulkan_8b']")
+                for tag in ("min_wu_id", "max_wu_id"):
+                    amd.remove(amd.find(tag))
+                for _ in range(count):
+                    amd.append(ET.Comment(POLICY.AMD_GENERAL_MARKER))
+                if bounds:
+                    for tag, value in zip(("min_wu_id", "max_wu_id"), bounds):
+                        if value is not None:
+                            ET.SubElement(amd, tag).text = value
+                self.target.write_bytes(ET.tostring(root))
+                before = self.target.read_bytes()
+                with self.assertRaisesRegex(ValueError, "explicit AMD general"):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), before)
+
+    def test_upgrade_restores_missing_vulkan_classes_without_resetting_admission(self):
+        tree = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in tree.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b"):
+            tree.getroot().remove(nodes[name])
+        nodes["nvidia_cuda_2b"].find("min_wu_id").text = "100"
+        nodes["nvidia_cuda_2b"].find("max_wu_id").text = "100"
+        for tag, value in (("min_wu_id", "2"), ("max_wu_id", "1")):
+            ET.SubElement(nodes["docker_nvidia_cuda_8b"], tag).text = value
+        tree.write(self.target)
+        self.assertTrue(POLICY.refresh(self.source, self.target))
+        updated = ET.parse(self.target)
+        nodes = {node.findtext("name"): node for node in updated.findall("plan_class")}
+        for name in ("intel_vulkan_8b", "nvidia_vulkan_8b",
+                     "nvidia_cuda_8b", "docker_nvidia_cuda_8b"):
+            with self.subTest(plan_class=name):
+                self.assertEqual(nodes[name].findtext("min_wu_id"), "2")
+                self.assertEqual(nodes[name].findtext("max_wu_id"), "1")
+        self.assertEqual(nodes["nvidia_cuda_2b"].findtext("min_wu_id"), "100")
+        self.assertEqual(nodes["nvidia_cuda_2b"].findtext("max_wu_id"), "100")
+        self.assertFalse(POLICY.refresh(self.source, self.target))
+
     def test_invalid_existing_windows_fail_without_replacing_policy(self):
         original = self.source.read_bytes()
         for low, high in (("0", "0"), ("5", "4"), ("10", "20"), ("bad", "20")):
@@ -77,6 +339,17 @@ class PlanPolicyRefresh(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     POLICY.refresh(self.source, self.target)
                 self.assertEqual(self.target.read_bytes(), payload)
+
+    def test_amd_refresh_refuses_a_range_without_replacing_existing_policy(self):
+        tree = ET.parse(self.target)
+        node = next(node for node in tree.findall("plan_class") if node.findtext("name") == "amd_vulkan_8b")
+        node.find("min_wu_id").text = "300"
+        node.find("max_wu_id").text = "301"
+        tree.write(self.target)
+        before = self.target.read_bytes()
+        with self.assertRaisesRegex(ValueError, "exactly one workunit"):
+            POLICY.refresh(self.source, self.target)
+        self.assertEqual(self.target.read_bytes(), before)
 
     def test_failed_replace_retains_original_and_cleans_only_owned_staging(self):
         before = self.target.read_bytes()
@@ -223,8 +496,9 @@ class CanaryPreferences(unittest.TestCase):
                 self.assertIn("CPU/GPU", source)
         scheduler = (ROOT / "scripts/boinc/patch-server-apple-gpu.py").read_text()
         self.assertNotIn("qwen_native_cuda_canary", scheduler)
-        driver = (ROOT / "crates/usnm-qwen-app/src/main.rs").read_text()
-        self.assertNotIn("qwen_native_cuda_canary", driver)
+        for module in sorted((ROOT / "crates/usnm-qwen-app/src").glob("*.rs")):
+            with self.subTest(module=module.name):
+                self.assertNotIn("qwen_native_cuda_canary", module.read_text())
 
     @unittest.skipUnless(shutil.which("php"), "PHP required")
     def test_operator_cohort_has_one_exact_workunit_stop_and_durable_preview(self):
@@ -292,7 +566,39 @@ foreach ($opened->plan_class as $node) {
         assert($node->asXML() === $matching[0]->asXML());
     }
 }
-foreach ([["shared_8b",200,210],["shared_8b",200,199],["nvidia_cuda_8b",200,201]] as $bad) {
+// AMD admission touches only AMD; legacy/shared commands must leave it untouched.
+$beforeAmd = simplexml_load_file("$project/plan_class_spec.xml");
+$amdPreview = native_qwen_cohort_write($project, "amd_vulkan_8b", 300, false);
+assert(!$amdPreview["apply"]);
+assert($beforeAmd->asXML() === simplexml_load_file("$project/plan_class_spec.xml")->asXML());
+native_qwen_cohort_write($project, "amd_vulkan_8b", 300, true);
+$withAmd = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($withAmd->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "amd_vulkan_8b") {
+        assert((int)$node->min_wu_id === 300 && (int)$node->max_wu_id === 300);
+    } else {
+        assert($node->asXML() === $beforeAmd->xpath("plan_class[name='$name']")[0]->asXML());
+    }
+}
+foreach (["shared_8b", "nvidia_cuda_2b"] as $legacy) {
+    native_qwen_cohort_write($project, $legacy, 0, true);
+    $after = simplexml_load_file("$project/plan_class_spec.xml");
+    assert((int)$after->xpath("plan_class[name='amd_vulkan_8b']")[0]->min_wu_id === 300);
+}
+native_qwen_cohort_write($project, "shared_8b", 200, true, 209);
+native_qwen_cohort_write($project, "amd_vulkan_8b", 0, true);
+$after = simplexml_load_file("$project/plan_class_spec.xml");
+foreach ($after->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "amd_vulkan_8b") {
+        assert((int)$node->min_wu_id === 2 && (int)$node->max_wu_id === 1);
+    } else {
+        assert($node->asXML() === $beforeAmd->xpath("plan_class[name='$name']")[0]->asXML());
+    }
+}
+foreach ([["shared_8b",200,210],["shared_8b",200,199],["nvidia_cuda_8b",200,201],
+          ["amd_vulkan_8b",300,301],["amd_vulkan_8b",1,1]] as $bad) {
     $refused = false;
     try { native_qwen_cohort_xml($xml, ...$bad); }
     catch (RuntimeException $e) { $refused = true; }
@@ -325,6 +631,20 @@ $wu->batch = 8; $wu->rsc_disk_bound = 19327352832; $results[0]->server_state = 2
 native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b");
 native_qwen_cohort_validate($wu, $results, "intel_vulkan_8b");
 native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_8b");
+$wu->transitioner_flags = 2; $wu->transition_time = 2147483647; $wu->need_validate = 0;
+native_qwen_cohort_validate($wu, [], "amd_vulkan_8b");
+$refused = false;
+try { native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b"); }
+catch (RuntimeException $e) { $refused = true; }
+assert($refused);
+foreach (["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>1,
+    "target_nresults"=>3,"canonical_resultid"=>10,"error_mask"=>1,
+    "transitioner_flags"=>0,"transition_time"=>1,"need_validate"=>1] as $key=>$value) {
+    $bad = clone $wu; $bad->$key = $value; $refused = false;
+    try { native_qwen_cohort_validate($bad, [], "amd_vulkan_8b"); }
+    catch (RuntimeException $e) { $refused = true; }
+    assert($refused);
+}
 foreach ($results as $row) $row->sent_time = 1;
 $refused = false;
 try { native_qwen_cohort_validate($wu, $results, "nvidia_cuda_8b"); }

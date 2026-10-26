@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use usnm_core::ids::PageKey;
 use usnm_core::params::{BrowseRequest, RawParams};
@@ -25,6 +26,9 @@ use crate::searchlog::{self, Admission};
 use crate::{version, AppState};
 
 pub const MAX_LIMIT: usize = 50;
+/// The parameters it takes besides the search's ([`usnm_core::params::COMMON_KEYS`]).
+pub(crate) const EXTRA_KEYS: &[&str] = &["place", "cursor", "limit", "sort"];
+
 /// A search's cursor: the offset of its next page, at most
 /// `Config::max_offset` (10,000).
 #[derive(Serialize, Deserialize)]
@@ -75,7 +79,7 @@ impl BrowseCursor {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct HitsResponse {
     index_version: String,
     synthetic: bool,
@@ -90,21 +94,29 @@ struct HitsResponse {
     next_cursor: Option<String>,
 }
 
-#[derive(Serialize)]
+/// The schema of the response, for `/v1/openapi.json`.
+pub(crate) fn schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    gen.subschema_for::<HitsResponse>()
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "HitsPlace")]
 struct PlaceOut {
     id: String,
     name: String,
     state: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "HitsTitle")]
 struct TitleOut {
     lccn: String,
     name: String,
 }
 
 /// One page, as `/v1/hits` lists it and `/v1/aggregate` names the first and last.
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "Page")]
 pub(crate) struct Item {
     doc_id: String,
     date: String,
@@ -115,14 +127,18 @@ pub(crate) struct Item {
     seq: u16,
     front_page: bool,
     snippets: Vec<String>,
-    /// Where the snippets come from when it isn't LoC's text:
+    /// Where the snippets come from when it isn't the page's own text:
     /// `american_stories` when the query matched only in American Stories'
-    /// text (05 §5.5.4).
+    /// text (05 §5.5.4), `loc_original` when it matched only in the Library
+    /// of Congress's text of a page our OCR replaced it on (05 §5.5.7).
     #[serde(skip_serializing_if = "Option::is_none")]
     snippet_source: Option<&'static str>,
-    /// Which of the page's texts the query matches: `["loc"]`,
-    /// `["american_stories"]` or both (05 §5.5.4). Only when the version
-    /// searches American Stories' text, and not on Japanese pages.
+    /// Which of the page's texts the whole query matches: `loc` (the page's
+    /// own text, the Library of Congress's, or ours where it replaced it),
+    /// `american_stories`, and `loc_original` (the Library of Congress's
+    /// text of a page our OCR replaced it on), one or more (05 §5.5.4,
+    /// §5.5.7). Only when the version searches American Stories' text or
+    /// keeps the original text, and not on Japanese pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_in: Option<Vec<&'static str>>,
     /// When the text is our own OCR, not LoC's: the Japanese index's pages
@@ -138,7 +154,8 @@ pub(crate) struct Item {
     links: Links,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "PageCongress")]
 struct CongressOut {
     series: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,13 +180,15 @@ struct CongressOut {
 }
 
 /// Who made a page's text when it isn't LoC's OCR.
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "PageOcr")]
 struct Ocr {
     source: String,
     engine: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(rename = "PageLinks")]
 struct Links {
     viewer: Option<String>,
 }
@@ -266,7 +285,7 @@ pub async fn hits(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_unknown(&["place", "cursor", "limit", "sort"])?;
+    raw.reject_unknown(EXTRA_KEYS)?;
     if raw.get("q").is_none() && state.config.browse_pages {
         return browse(state, &uri, &raw, &headers).await;
     }

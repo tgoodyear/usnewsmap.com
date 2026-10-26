@@ -1,6 +1,6 @@
 //! Our own OCR of the Japanese pages LoC has no text for (04 §4.8, #139).
 //!
-//! The OCR job (`ja-ocr/jaocr.py`) writes `ocr-ja/pages/<issue>[.<n>].parquet`
+//! The OCR job (`ocr/ja-ocr/jaocr.py`) writes `ocr-ja/pages/<issue>[.<n>].parquet`
 //! to the curated store, one row per page, keyed by `doc_id`. A release reads
 //! every part, keeps the newest row for each page (by `ocred_at`, then part
 //! path), and keeps the pages of batches in the version whose titles are in
@@ -33,8 +33,9 @@ use crate::catalog::{Catalog, Place, Title};
 use crate::source::hex;
 
 /// Where the OCR job writes its parts in the curated store (a directory:
-/// stores list it without the trailing slash).
-pub const PREFIX: &str = "ocr-ja/pages";
+/// stores list it without the trailing slash). The path lives with the
+/// schema in `usnm-overlay`, for the local OCR seeder, which skips these titles.
+pub const PREFIX: &str = usnm_overlay::JA_PREFIX;
 
 /// The Japanese pages' index mapping.
 pub const JA_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-ja-index.yaml");
@@ -161,6 +162,24 @@ pub async fn load(
     })
 }
 
+#[cfg(test)]
+impl JaPage {
+    /// A page of ours, for other modules' tests.
+    pub fn for_test(key: PageKey, batch: &str, loc_text: &str, printed: &str) -> Self {
+        Self {
+            key,
+            batch: batch.into(),
+            loc_text: loc_text.into(),
+            ok: true,
+            printed: Some(printed.into()),
+            ocr_source: "usnm-ndlocr-lite".into(),
+            ocr_engine: "ndlocr-lite test".into(),
+            ocred_at: 0,
+            part: "p".into(),
+        }
+    }
+}
+
 /// The rows of one overlay part (the schema `jaocr.py write_part` writes,
 /// [`usnm_overlay::schema`]).
 pub fn read_part(bytes: Bytes, path: &str) -> anyhow::Result<Vec<JaPage>> {
@@ -193,7 +212,7 @@ pub fn ja_doc(page: &JaPage, title: &Title, place: &Place, analyzer: Analyzer) -
         "place_id": place.id,
         "place_shard": place.ordinal % 8,
         "lccn": k.lccn,
-        "state": title.state,
+        "state": title.state_in(place),
         "language": title.languages,
         "front_page": k.seq == 1,
         "edition": k.edition,
@@ -275,7 +294,7 @@ pub fn latin_text(printed: &str) -> String {
     usnm_core::text::normalize_ocr(&out)
 }
 
-/// Tokens that look like words, by `ja-ocr/jaocr.py`'s rule (`WORDLIKE`,
+/// Tokens that look like words, by `ocr/ja-ocr/jaocr.py`'s rule (`WORDLIKE`,
 /// the test that picks pages for our OCR): after trimming `.,;:!?'"()`, a
 /// lower-case word of 2 letters or more, optionally capitalized, or 3 to 15
 /// capitals. OCR noise mixes case and letters with digits and symbols.
@@ -313,7 +332,15 @@ pub fn latin_doc(
     place: &Place,
     format: crate::release::DocFormat,
 ) -> Value {
-    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None, format)
+    crate::release::main_doc(
+        &page.key,
+        &page.batch,
+        latin,
+        title,
+        place,
+        crate::release::SideTexts::default(),
+        format,
+    )
 }
 
 /// What our OCR found on a page: `japanese` (at least 20 characters, half of

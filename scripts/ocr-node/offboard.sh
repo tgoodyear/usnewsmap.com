@@ -35,7 +35,7 @@
 #   4. deletes the Arc machine with your own az sign-in, which deletes its
 #      identity.
 # The on-prem Serial Set fetch (usnm-sset.service, #229) is left alone;
-# stop and disable it first on a node that runs it (docs/operations.md).
+# stop and disable it first on a node that runs it (docs/operations/congress-pages.md).
 # Tokens the node already holds stay valid until they expire: up to about
 # 24 hours for a managed identity (ADR-0015). Run again, it skips what's done.
 #
@@ -235,8 +235,9 @@ rm -rf /run/usnm-ocr
 systemctl daemon-reload
 if getent group usnmocr > /dev/null; then groupdel usnmocr && echo "removed group usnmocr"; fi'
 # Automatic updates and the weekly reboot window that node-setup.sh sets
-# up, and the worker's nightly update from install-worker.sh: a node kept or reused after offboarding neither updates nor reboots
-# by itself. dnf-automatic stays installed.
+# up, and the retired direct worker's nightly update (#966), which older
+# installs left: a node kept or reused after offboarding neither updates
+# nor reboots by itself. dnf-automatic stays installed.
 UPDATES_REMOVE='systemctl disable --now usnm-ocr-reboot.timer usnm-ocr-update.timer dnf-automatic.timer 2> /dev/null || true
 systemctl stop usnm-ocr-reboot.service usnm-ocr-update.service 2> /dev/null || true
 systemctl disable usnm-ocr-reboot-resume.service 2> /dev/null || true

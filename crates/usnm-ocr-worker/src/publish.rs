@@ -10,8 +10,7 @@
 //! with the node's own identity. `ocr-sync`'s pickup never lists
 //! `fetched/`, and `ocr-out`'s lifecycle rule deletes old lists after 30
 //! days. `run --publish-fetched <version>` does the same every
-//! `--publish-every-secs` beside the queue loop; the operator sets it on one
-//! node (`install-worker.sh --publish-fetched`).
+//! `--publish-every-secs` beside the queue loop, on one node.
 //!
 //! The index is read as a stream, a line at a time, with caps on the line
 //! length, the line count and the time, so a large index never sits in

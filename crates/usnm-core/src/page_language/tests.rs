@@ -1,4 +1,4 @@
-//! `ja-ocr/test_quality.py`'s detection tests, ported (as the damage
+//! `ocr/ja-ocr/test_quality.py`'s detection tests, ported (as the damage
 //! metric's are), and the index's page languages. The parity test
 //! (`tests/page_language_parity.rs`) checks the results against Python's on
 //! real pages.

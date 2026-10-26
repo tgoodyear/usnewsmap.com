@@ -198,7 +198,7 @@ impl Progress {
             elapsed: self.started.elapsed(),
             disk_free: work_dir.and_then(|d| disk_free(d)),
             rss: rss_bytes(None),
-            quickwit_rss: s.node_pid.and_then(|p| rss_bytes(Some(p))),
+            quickwit_rss: s.node_pid().and_then(|p| rss_bytes(Some(p))),
         }
     }
 

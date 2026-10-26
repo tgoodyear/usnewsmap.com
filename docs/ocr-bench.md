@@ -6,7 +6,9 @@ because everyone uses the same bytes. Each release is a GitHub release of this r
 tagged `ocr-bench-<version>`. It has a content digest to cite and named subsets that resolve to
 the same files ([#738](https://github.com/tgoodyear/usnewsmap.com/issues/738)).
 
-Candidate licensing, model-availability and bounded local CPU findings are recorded in [the 2026-10-18 feasibility note](ocr-bench-candidate-feasibility-2026-10-18.md).
+Candidate licensing, model-availability and bounded local CPU findings are recorded in [the 2026-10-18 feasibility note](notes/2026-10-18-ocr-bench-candidate-feasibility.md).
+
+The pilot's page images (`ocr/bench/serialset-pilot/images/`) and the raw native result archives under `ocr/bench/results/` are not tracked: they are the `bench-assets` set of `scripts/ops/data-assets.sh`, fetched with `scripts/ops/data-assets.sh --fetch --set bench-assets` and published by the `publish data assets` workflow ([reports/README.md](reports/README.md), "Data"). `SHA256SUMS` and `inputs.sha256` stay in the tree and pin the bytes.
 
 ## Fetch a release
 
@@ -55,7 +57,7 @@ the sha256 of one line per member, `id image-sha256 reference-sha256`, in id ord
 
 The [transcription, illegibility-mask and damage policy](ocr-bench-annotation-policy.md)
 defines new reviewed annotations, Unicode offsets and real versus unknown damage.
-The [source audit and measured coverage](ocr-bench-source-audit-2026-10-18.md)
+The [source audit and measured coverage](notes/2026-10-18-ocr-bench-source-audit.md)
 separates admissible public GT from candidates and unmet tier targets.
 
 ## Release v1.0.0
@@ -117,7 +119,7 @@ sets, the Austrian newspapers and NZZ. Each new language or label comes as a new
 v1.1.0 adds 52 CC BY 4.0 NewsEye validation-region image/GT pairs from 18
 source pages: French 24 (8 pages), Finnish 18 (6), Swedish 10 (4). It does not
 repeat or replace the 1,000 v1.0.0 samples. Sources, licences, exact counts,
-selection and unmet targets are in the [source audit](ocr-bench-source-audit-2026-10-18.md).
+selection and unmet targets are in the [source audit](notes/2026-10-18-ocr-bench-source-audit.md).
 
 ```sh
 scripts/ocr-bench/fetch --version v1.1.0 --verify --subset multilingual/all-52

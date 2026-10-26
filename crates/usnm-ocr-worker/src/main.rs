@@ -65,8 +65,7 @@ struct EngineArgs {
     tesseract_bin: PathBuf,
     /// Run Tesseract from this container image with podman, one container
     /// per page: `sha256:<image id>` or `<name>@sha256:<digest>`, never a
-    /// tag. `scripts/ocr-node/install-worker.sh` loads the release's image
-    /// and sets it.
+    /// tag.
     #[arg(long, env = "USNM_OCR_TESSERACT_IMAGE")]
     tesseract_image: Option<String>,
     /// The podman binary, for --tesseract-image.
@@ -437,6 +436,101 @@ enum Command {
             default_value = "/tank/ocr/manifests/batches"
         )]
         batch_cache: PathBuf,
+        /// The host's global LoC budget (#962): a state file every LoC client
+        /// on the host shares, 45 requests a minute in all, 10 once LoC pushes
+        /// back. Without it, only this process's own gaps apply.
+        #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+        loc_global_pacer: Option<PathBuf>,
+        /// Copies of LoC's JP2s to ask before LoC, comma-separated: the
+        /// state partners `nbu`, `pst`, `oru` and `scu` (each for its own
+        /// batches) and `wayback`. Only bytes matching the bag's md5 are
+        /// taken. None by default.
+        #[arg(long, env = "USNM_PREFETCH_MIRRORS", value_delimiter = ',')]
+        mirrors: Vec<String>,
+        /// Between requests to one state partner.
+        #[arg(long, env = "USNM_PREFETCH_PARTNER_GAP_MS", default_value_t = 5000)]
+        partner_gap_ms: u64,
+        /// Between requests to the Wayback Machine.
+        #[arg(long, env = "USNM_PREFETCH_WAYBACK_GAP_MS", default_value_t = 5000)]
+        wayback_gap_ms: u64,
+        /// LoC's own S3 bucket of NDNP batches
+        /// (`https://ndnp-batches.s3.amazonaws.com/`), asked before
+        /// tile.loc.gov for the bag manifest, the issue METS and the JP2 of
+        /// each batch it holds (1,074 of 3,010 batches, 38.1% of pages, on 24
+        /// October 2026), each checked as LoC's are. A manifest from it is
+        /// kept under the LoC URL the batch's name gives, marked as a guess
+        /// until LoC confirms it. One request at a time, outside the host's
+        /// LoC budget; anything it can't serve goes to LoC. Only an
+        /// amazonaws.com host. Empty: off (the default).
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
+        loc_bucket: Option<String>,
+        /// From the end of one request to LoC's bucket to the start of the
+        /// next; at least 1000.
+        #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 2000)]
+        loc_bucket_gap_ms: u64,
+        /// Only pages of these awardees' batches, comma-separated (the
+        /// batch name's first part, e.g. `nbu`); all by default.
+        #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
+        awardees: Vec<String>,
+        /// Manifest directory-name prefixes, comma-separated (e.g.
+        /// `queue-quality-`): a manifest in a directory whose name starts
+        /// with one takes pages' JP2s only from LoC's bucket or the
+        /// mirrors. A page neither has is deferred (`deferred_needs_loc` in
+        /// the status), not fetched from LoC, not a failure, and left for a
+        /// later run. Batch manifests and METS still come from LoC when
+        /// the bucket can't serve them. None by default.
+        #[arg(long, env = "USNM_PREFETCH_NO_LOC_PREFIXES", value_delimiter = ',')]
+        no_loc_prefixes: Vec<String>,
+    },
+    /// Chronicling America's bulk OCR archives (ALTO with word confidence),
+    /// one at a time, inside the host's global LoC budget (#962).
+    BulkOcr {
+        /// Where the archives go.
+        #[arg(long, env = "USNM_BULK_OUT")]
+        out: PathBuf,
+        /// The host's global LoC budget (required: bulk never runs outside it).
+        #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+        loc_global_pacer: PathBuf,
+        /// LoC's datasets table.
+        #[arg(long, default_value = usnm_ocr_worker::bulk::LIST_URL)]
+        list_url: String,
+        /// Seconds between archive requests (LoC: 10 bulk requests in 10 minutes).
+        #[arg(long, env = "USNM_BULK_GAP_SECS", default_value_t = 60)]
+        gap_secs: u64,
+        /// Stop starting archives after this many hours (LoC may stop programs
+        /// that run past 24).
+        #[arg(long, env = "USNM_BULK_MAX_HOURS", default_value_t = 20.0)]
+        max_hours: f64,
+        /// Keep at least this many GB free on the output's filesystem.
+        #[arg(long, env = "USNM_BULK_MIN_FREE_GB", default_value_t = 200)]
+        min_free_gb: u64,
+        /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
+    /// per archive, skipping archives already read. Reads only.
+    LocAltoStats {
+        /// The archives (`bulk-ocr`'s output).
+        #[arg(long, env = "USNM_LOC_ALTO_ARCHIVES")]
+        archives: PathBuf,
+        /// Where the Parquet files go.
+        #[arg(long, env = "USNM_LOC_ALTO_OUT")]
+        out: PathBuf,
+        /// The `wc_below` share counts words under this confidence.
+        #[arg(long, env = "USNM_LOC_ALTO_THRESHOLD", default_value_t = 0.5)]
+        threshold: f64,
+        /// At most this many archives this run.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// The host's global LoC budget: print it, or reset it to the normal rate
+    /// after LoC pushed back (an operator's decision).
+    LocPacer {
+        #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
+        file: PathBuf,
+        #[arg(long)]
+        reset: bool,
     },
     /// Serve the prefetched scans to the OCR nodes over HTTP (#368): GET
     /// scans and sidecars, DELETE buffer-set scans, PUT manifests, from the
@@ -565,8 +659,18 @@ enum Command {
 mod cli_tests {
     use super::*;
 
+    /// Held by every test here that sets the environment: parsing reads
+    /// all of the flags' variables, and tests run in parallel.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn run_metadata_flag_and_environment_are_opt_in() {
+        let _env = env_lock();
         const NAME: &str = "USNM_OCR_RUN_METADATA_DIR";
         struct Restore(Option<std::ffi::OsString>);
         impl Drop for Restore {
@@ -615,6 +719,7 @@ mod cli_tests {
 
     #[test]
     fn drain_on_stop_can_be_enabled_through_environment() {
+        let _env = env_lock();
         struct RestoreEnv(Option<std::ffi::OsString>);
 
         impl Drop for RestoreEnv {
@@ -643,6 +748,71 @@ mod cli_tests {
             Command::Run { drain_on_stop, .. } => assert!(drain_on_stop),
             _ => panic!("expected run command"),
         }
+    }
+
+    #[test]
+    fn locs_bucket_is_off_unless_named_and_never_under_a_second_apart() {
+        let _env = env_lock();
+        const NAMES: [&str; 2] = [
+            "USNM_PREFETCH_LOC_BUCKET",
+            "USNM_PREFETCH_LOC_BUCKET_GAP_MS",
+        ];
+        struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (name, value) in self.0.drain(..) {
+                    match value {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let _restore = Restore(NAMES.map(|n| (n, std::env::var_os(n))).to_vec());
+        for n in NAMES {
+            std::env::remove_var(n);
+        }
+        let bucket = |extra: &[&str]| {
+            let args = [
+                "usnm-ocr-worker",
+                "prefetch",
+                "--manifest",
+                "m",
+                "--out",
+                "o",
+            ];
+            let cli = Cli::try_parse_from(args.iter().chain(extra)).unwrap();
+            match cli.command {
+                Command::Prefetch {
+                    loc_bucket,
+                    loc_bucket_gap_ms,
+                    ..
+                } => loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms),
+                _ => panic!("expected prefetch"),
+            }
+        };
+        // Off by default, and when empty.
+        assert!(bucket(&[]).unwrap().is_none());
+        assert!(bucket(&["--loc-bucket", ""]).unwrap().is_none());
+        // The flag, 2 s apart unless told otherwise.
+        let root = usnm_ocr_worker::loc::bucket::ROOT;
+        let b = bucket(&["--loc-bucket", root]).unwrap().unwrap();
+        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(2)));
+        let b = bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "9000"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.gap, Duration::from_secs(9));
+        assert!(bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "0"]).is_err());
+        assert!(bucket(&["--loc-bucket", "https://tile.loc.gov/"]).is_err());
+        // The environment, as the unit sets it.
+        std::env::set_var(NAMES[0], root);
+        std::env::set_var(NAMES[1], "7000");
+        let b = bucket(&[]).unwrap().unwrap();
+        assert_eq!((b.root.as_str(), b.gap), (root, Duration::from_secs(7)));
+        std::env::set_var(NAMES[1], "999");
+        assert!(bucket(&[]).is_err());
+        std::env::set_var(NAMES[0], "");
+        assert!(bucket(&[]).unwrap().is_none(), "empty: off");
     }
 }
 
@@ -695,6 +865,18 @@ enum PrefetchOrder {
 enum Priority {
     User,
     Bulk,
+}
+
+/// LoC's bucket from `--loc-bucket` and `--loc-bucket-gap-ms`: `None` when
+/// the flag is absent or empty.
+fn loc_bucket_config(
+    root: Option<&str>,
+    gap_ms: u64,
+) -> anyhow::Result<Option<usnm_ocr_worker::loc::bucket::BucketConfig>> {
+    usnm_ocr_worker::loc::bucket::BucketConfig::at(
+        root.unwrap_or_default(),
+        Duration::from_millis(gap_ms),
+    )
 }
 
 /// Turns true on SIGTERM or Ctrl-C.
@@ -958,8 +1140,31 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             storage_gap_ms,
             storage_own_budget,
             batch_cache,
+            loc_global_pacer,
+            mirrors,
+            partner_gap_ms,
+            wayback_gap_ms,
+            loc_bucket,
+            loc_bucket_gap_ms,
+            awardees,
+            no_loc_prefixes,
         } => {
+            let mirrors = {
+                let cfg = usnm_ocr_worker::loc::mirror::MirrorConfig {
+                    partner_gap: Duration::from_millis(partner_gap_ms),
+                    wayback_gap: Duration::from_millis(wayback_gap_ms),
+                    ..usnm_ocr_worker::loc::mirror::MirrorConfig::named(&mirrors)?
+                };
+                if cfg.is_empty() {
+                    None
+                } else {
+                    Some(Arc::new(usnm_ocr_worker::loc::mirror::Mirrors::new(cfg)?))
+                }
+            };
+            let bucket = loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms)?;
             let loc = Arc::new(LocClient::new(LocConfig {
+                global_pacer: loc_global_pacer,
+                bucket,
                 api_gap: Duration::from_millis(api_gap_ms),
                 tile_gap: Duration::from_millis(tile_gap_ms),
                 storage_gap: Duration::from_millis(storage_gap_ms),
@@ -993,9 +1198,72 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 stop_min_titles,
                 item_cooloff: Duration::from_secs(item_cooloff_secs),
                 item_max_cooloffs,
+                mirrors,
+                awardees: awardees
+                    .into_iter()
+                    .map(|a| a.trim().to_owned())
+                    .filter(|a| !a.is_empty())
+                    .collect(),
+                no_loc_prefixes: no_loc_prefixes
+                    .into_iter()
+                    .map(|a| a.trim().to_owned())
+                    .filter(|a| !a.is_empty())
+                    .collect(),
             };
             let status = prefetch::run(opts, loc, stop_signal()).await?;
             println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::BulkOcr {
+            out,
+            loc_global_pacer,
+            list_url,
+            gap_secs,
+            max_hours,
+            min_free_gb,
+            limit,
+        } => {
+            let status = usnm_ocr_worker::bulk::run(
+                usnm_ocr_worker::bulk::Options {
+                    out,
+                    list_url,
+                    gap: Duration::from_secs(gap_secs.max(60)),
+                    max_hours: max_hours.clamp(0.0, 23.0),
+                    min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
+                    limit,
+                    global_pacer: loc_global_pacer,
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::LocAltoStats {
+            archives,
+            out,
+            threshold,
+            limit,
+        } => {
+            anyhow::ensure!((0.0..=1.0).contains(&threshold), "--threshold: 0 to 1");
+            let s = tokio::task::spawn_blocking(move || {
+                usnm_ocr_worker::loc_alto::run(&usnm_ocr_worker::loc_alto::Options {
+                    archives,
+                    out,
+                    threshold,
+                    limit,
+                })
+            })
+            .await??;
+            println!("{}", serde_json::to_string(&s)?);
+            Ok(())
+        }
+        Command::LocPacer { file, reset } => {
+            let g = usnm_ocr_worker::loc::global::GlobalPacer::new(file);
+            if reset {
+                g.reset()?;
+            }
+            println!("{}", serde_json::to_string(&g.state()?)?);
             Ok(())
         }
         Command::ServeScans {

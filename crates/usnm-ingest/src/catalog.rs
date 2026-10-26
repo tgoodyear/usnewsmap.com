@@ -4,9 +4,10 @@
 //! `catalog/titles.json` and `catalog/places.json` in the reference store. Each published reference snapshot carries its own copy,
 //! so a published version never changes when the catalog does.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::{bail, Context};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use usnm_store::{is_safe_segment, ObjectStore};
@@ -57,13 +58,136 @@ pub struct Title {
     /// Stable integer, never reused: the leading part of a hit's same-day
     /// `sort_key` (05 §5.5).
     pub ordinal: u32,
+    /// The title's place: where most of its pages were published. A page
+    /// dated within one of `place_periods` is in that period's place instead.
     pub place_id: String,
     pub state: String,
     #[serde(default)]
     pub languages: Vec<String>,
+    /// The places of a title that moved, by the dates of its pages
+    /// (`catalog/overrides/title-places.json`, #1066), oldest first: at least
+    /// two, the first without `from`, the last without `to`, each starting
+    /// the day after the one before ends ([`Catalog::new`] checks), so every
+    /// date has a place. Empty for a title in one place, and in catalogs
+    /// written before they were recorded: every page is then in `place_id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub place_periods: Vec<PlacePeriod>,
     /// Anything else the catalog records (dates, ethnicity, …), passed through.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+/// A place a title is in for part of its run: its pages dated from `from`
+/// to `to`, both days included. A period without `from` starts with the
+/// title, one without `to` runs to its end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacePeriod {
+    pub place_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<NaiveDate>,
+}
+
+impl PlacePeriod {
+    /// Whether a page dated `date` falls in the period.
+    pub fn contains(&self, date: NaiveDate) -> bool {
+        self.from.is_none_or(|f| f <= date) && self.to.is_none_or(|t| date <= t)
+    }
+}
+
+impl Title {
+    /// The id of the place a page of this title dated `date` is in: the
+    /// place of the period the date falls in, else the title's own place.
+    pub fn place_id_on(&self, date: NaiveDate) -> &str {
+        self.place_periods
+            .iter()
+            .find(|p| p.contains(date))
+            .map_or(self.place_id.as_str(), |p| p.place_id.as_str())
+    }
+
+    /// Every place a page of this title can be in, each once: its periods'
+    /// places, oldest first (two periods in one place list it once), then
+    /// its own place if no period is there. Allocates nothing, which matters
+    /// in loops over every title; the few periods of a title that moved are
+    /// compared with each other instead.
+    pub fn place_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let periods = &self.place_periods;
+        periods
+            .iter()
+            .enumerate()
+            .filter(move |&(i, p)| !periods[..i].iter().any(|q| q.place_id == p.place_id))
+            .map(|(_, p)| p.place_id.as_str())
+            .chain(
+                Some(self.place_id.as_str())
+                    .filter(move |own| !periods.iter().any(|q| q.place_id == *own)),
+            )
+    }
+
+    /// The state of a page of this title that is in `place`: the title's
+    /// own, or, for a title that moved between places, the place's.
+    pub fn state_in<'a>(&'a self, place: &'a Place) -> &'a str {
+        if self.place_periods.is_empty() {
+            &self.state
+        } else {
+            &place.state
+        }
+    }
+
+    /// The `day` each place period after the first starts on, oldest first.
+    /// They cut the title's days into one range per period: a document
+    /// belongs to the period whose number is how many of these are at or
+    /// before its `day`. Empty for a title in one place.
+    pub fn period_cuts(&self) -> Vec<u32> {
+        self.place_periods
+            .iter()
+            .skip(1)
+            .filter_map(|p| p.from)
+            .map(usnm_core::time::day_number)
+            .collect()
+    }
+}
+
+/// [`Title::period_cuts`] of the titles that have place periods, by LCCN.
+pub type PeriodCuts = BTreeMap<String, Vec<u32>>;
+
+/// A title's `place_periods` as `catalog/overrides/README.md` has them: none,
+/// or at least two, oldest first, the first without `from`, the last without
+/// `to`, and each starting the day after the one before ends. A date in no
+/// period would fall back to the title's own place, putting its pages in a
+/// place the source doesn't give them, so a gap or an open end where another
+/// period follows is refused.
+fn check_periods(lccn: &str, periods: &[PlacePeriod]) -> anyhow::Result<()> {
+    if periods.is_empty() {
+        return Ok(());
+    }
+    if periods.len() < 2 {
+        bail!("title `{lccn}`: fewer than two place periods: a title in one place has none");
+    }
+    for (i, p) in periods.iter().enumerate() {
+        let n = i + 1;
+        let (first, last) = (i == 0, n == periods.len());
+        match (first, p.from, last, p.to) {
+            (true, Some(_), _, _) => {
+                bail!("title `{lccn}`: place period {n}, the first, has a `from`")
+            }
+            (false, None, _, _) => bail!("title `{lccn}`: place period {n} has no `from`"),
+            (_, _, true, Some(_)) => {
+                bail!("title `{lccn}`: place period {n}, the last, has a `to`")
+            }
+            (_, _, false, None) => bail!("title `{lccn}`: place period {n} has no `to`"),
+            _ => {}
+        }
+        if p.from.zip(p.to).is_some_and(|(from, to)| from > to) {
+            bail!("title `{lccn}`: place period {n} ends before it starts");
+        }
+        if i > 0 && periods[i - 1].to.and_then(|to| to.succ_opt()) != p.from {
+            bail!(
+                "title `{lccn}`: place period {n} doesn't start the day after the one before it ends"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Title ordinals fill bits 32 and up of `sort_key` (edition and seq take 16
@@ -106,6 +230,12 @@ impl Catalog {
             if !place_index.contains_key(&t.place_id) {
                 bail!("title `{}` names unknown place `{}`", t.lccn, t.place_id);
             }
+            for p in &t.place_periods {
+                if !place_index.contains_key(&p.place_id) {
+                    bail!("title `{}` names unknown place `{}`", t.lccn, p.place_id);
+                }
+            }
+            check_periods(&t.lccn, &t.place_periods)?;
         }
         Ok(Self {
             titles,
@@ -135,47 +265,87 @@ impl Catalog {
         self.place_index.get(id).map(|&i| &self.places[i])
     }
 
+    /// The cuts of every title that has place periods: what a sink needs to
+    /// count a title's documents by period (`IndexSink::title_fields`).
+    pub fn period_cuts(&self) -> PeriodCuts {
+        self.titles
+            .iter()
+            .filter(|t| !t.place_periods.is_empty())
+            .map(|t| (t.lccn.clone(), t.period_cuts()))
+            .collect()
+    }
+
+    /// The place a page of `title` dated `date` is in ([`Title::place_id_on`]).
+    pub fn place_on(&self, title: &Title, date: NaiveDate) -> Option<&Place> {
+        self.place(title.place_id_on(date))
+    }
+
     /// For an incremental release: titles already published keep their
     /// published record, so their pages stay with the place the published
-    /// indexes give them (changes, a move to another place included, wait
-    /// for the next full rebuild, 04 §4.7). A new title whose place took in
-    /// published titles from another place (a merge) goes where those are
-    /// published, so the version doesn't gain a second id for the town. A
-    /// published place keeps its id, ordinal and state but takes its name,
-    /// coordinates and precision (and where they came from) from the
-    /// current catalog: index documents
-    /// carry only the place's id and shard, so a corrected point needs no
+    /// indexes give them (changes, a move to another place or places by
+    /// date included, wait for the next full rebuild, 04 §4.7). A new
+    /// title whose place took in published titles from another place (a
+    /// merge) goes where those are published, so the version doesn't gain
+    /// a second id for the town. A published place keeps its id, ordinal
+    /// and state but takes its name, coordinates and precision (and where
+    /// they came from) from the current catalog: index documents carry
+    /// only the place's id and shard, so a corrected point needs no
     /// reindex (04 §4.6). New places come from the current catalog.
     pub fn carried_forward(published: &Catalog, current: &Catalog) -> anyhow::Result<Self> {
         // For each current place, the published places of its published
-        // titles, with how many.
+        // titles, with how many titles: the title's own place, and the
+        // place of each period the title has in both catalogs for the same
+        // dates (pages of those dates are published there). A place only
+        // some titles' early pages are in is found this way too.
         let mut published_as: HashMap<&str, BTreeMap<&str, usize>> = HashMap::new();
         for t in &published.titles {
-            if let Some(now) = current.title(&t.lccn) {
+            let Some(now) = current.title(&t.lccn) else {
+                continue;
+            };
+            let mut pairs = BTreeSet::from([(now.place_id.as_str(), t.place_id.as_str())]);
+            for was in &t.place_periods {
+                if let Some(is) = now
+                    .place_periods
+                    .iter()
+                    .find(|is| (is.from, is.to) == (was.from, was.to))
+                {
+                    pairs.insert((is.place_id.as_str(), was.place_id.as_str()));
+                }
+            }
+            for (now_id, was_id) in pairs {
                 *published_as
-                    .entry(now.place_id.as_str())
+                    .entry(now_id)
                     .or_default()
-                    .entry(t.place_id.as_str())
+                    .entry(was_id)
                     .or_default() += 1;
             }
         }
         let mut titles = published.titles.clone();
-        for t in &current.titles {
-            if published.title(&t.lccn).is_some() {
-                continue;
-            }
-            let mut t = t.clone();
-            if let Some(ids) = published_as.get(t.place_id.as_str()) {
-                if !ids.contains_key(t.place_id.as_str()) {
+        // Where a new title's place goes: the published place with most of
+        // the published titles its place took in, else its own.
+        let retarget = |id: &str| -> String {
+            if let Some(ids) = published_as.get(id) {
+                if !ids.contains_key(id) {
                     // The published place with most of them, then the lowest ordinal.
                     let ordinal = |id: &str| published.place(id).map_or(u32::MAX, |p| p.ordinal);
                     if let Some((id, _)) = ids
                         .iter()
                         .max_by_key(|(id, n)| (**n, std::cmp::Reverse(ordinal(id))))
                     {
-                        t.place_id = (*id).to_owned();
+                        return (*id).to_owned();
                     }
                 }
+            }
+            id.to_owned()
+        };
+        for t in &current.titles {
+            if published.title(&t.lccn).is_some() {
+                continue;
+            }
+            let mut t = t.clone();
+            t.place_id = retarget(&t.place_id);
+            for p in &mut t.place_periods {
+                p.place_id = retarget(&p.place_id);
             }
             titles.push(t);
         }
@@ -206,16 +376,17 @@ impl Catalog {
     }
 
     /// The published titles the current catalog puts in another place (a
-    /// merge, an alias, a corrected city), in LCCN order: an incremental
-    /// release keeps them where they were published (04 §4.6).
+    /// merge, an alias, a corrected city) or in other places by date, in
+    /// LCCN order: an incremental release keeps them where they were
+    /// published (04 §4.6).
     pub fn regrouped(published: &Catalog, current: &Catalog) -> Vec<String> {
         published
             .titles
             .iter()
             .filter(|t| {
-                current
-                    .title(&t.lccn)
-                    .is_some_and(|now| now.place_id != t.place_id)
+                current.title(&t.lccn).is_some_and(|now| {
+                    now.place_id != t.place_id || now.place_periods != t.place_periods
+                })
             })
             .map(|t| t.lccn.clone())
             .collect()
@@ -248,6 +419,7 @@ mod tests {
             place_id: place_id.into(),
             state: "IL".into(),
             languages: vec!["eng".into()],
+            place_periods: vec![],
             extra: BTreeMap::new(),
         }
     }
@@ -369,6 +541,366 @@ mod tests {
         };
         let back: Place = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back, p);
+    }
+
+    fn day(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    /// sn1 was in P1 to 1833-11-13 and is in P2 from 1833-11-14.
+    fn moved() -> Title {
+        let mut t = title("sn1", 1, "P2");
+        t.place_periods = vec![
+            PlacePeriod {
+                place_id: "P1".into(),
+                from: None,
+                to: Some(day("1833-11-13")),
+            },
+            PlacePeriod {
+                place_id: "P2".into(),
+                from: Some(day("1833-11-14")),
+                to: None,
+            },
+        ];
+        t
+    }
+
+    #[test]
+    fn a_page_is_in_the_place_of_its_date() {
+        let t = moved();
+        assert_eq!(t.place_id_on(day("1826-05-01")), "P1");
+        assert_eq!(t.place_id_on(day("1833-11-13")), "P1", "the last day is in");
+        assert_eq!(
+            t.place_id_on(day("1833-11-14")),
+            "P2",
+            "the first day is in"
+        );
+        assert_eq!(t.place_id_on(day("1857-04-01")), "P2");
+        assert_eq!(t.place_ids().collect::<Vec<_>>(), ["P1", "P2"]);
+        // A date in no period is in the title's own place. (`Catalog::new`
+        // refuses periods with such a date; this is a title it hasn't seen.)
+        let mut gap = moved();
+        gap.place_periods[0].from = Some(day("1830-01-01"));
+        assert_eq!(gap.place_id_on(day("1826-05-01")), "P2");
+        // A title in one place is there whatever the date.
+        let one = title("sn2", 2, "P1");
+        assert_eq!(one.place_id_on(day("1826-05-01")), "P1");
+        assert_eq!(one.place_ids().collect::<Vec<_>>(), ["P1"]);
+        // And the page's state is its place's, for a title that moved.
+        let c = Catalog::new(vec![t.clone()], vec![place("P1", 1), place("P2", 2)]).unwrap();
+        let mut maine = place("P1", 1);
+        maine.state = "ME".into();
+        assert_eq!(t.state_in(&maine), "ME");
+        assert_eq!(
+            one.state_in(&maine),
+            "IL",
+            "a title in one place keeps its own"
+        );
+        assert_eq!(c.place_on(&t, day("1830-01-01")).unwrap().id, "P1");
+        assert_eq!(c.place_on(&t, day("1840-01-01")).unwrap().id, "P2");
+    }
+
+    #[test]
+    fn the_days_a_title_changes_place_cut_its_documents_into_periods() {
+        let t = moved();
+        let cut = usnm_core::time::day_number(day("1833-11-14"));
+        assert_eq!(t.period_cuts(), [cut]);
+        // A document is in the period whose number is the cuts at or before
+        // its day: the first day of a period is in it.
+        let period = |d: &str| {
+            t.period_cuts()
+                .partition_point(|&c| c <= usnm_core::time::day_number(day(d)))
+        };
+        assert_eq!(period("1833-11-13"), 0);
+        assert_eq!(period("1833-11-14"), 1);
+        assert!(title("sn2", 2, "P1").period_cuts().is_empty());
+        let c = Catalog::new(
+            vec![t, title("sn2", 2, "P1")],
+            vec![place("P1", 1), place("P2", 2)],
+        )
+        .unwrap();
+        assert_eq!(
+            c.period_cuts(),
+            PeriodCuts::from([("sn1".into(), vec![cut])])
+        );
+    }
+
+    #[test]
+    fn a_titles_places_are_each_listed_once() {
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| PlacePeriod {
+            place_id: id.into(),
+            from: from.map(day),
+            to: to.map(day),
+        };
+        // It left P1 and came back, and is in P2 for most of its pages.
+        let mut t = title("sn1", 1, "P2");
+        t.place_periods = vec![
+            period("P1", None, Some("1850-12-31")),
+            period("P2", Some("1851-01-01"), Some("1860-12-31")),
+            period("P1", Some("1861-01-01"), None),
+        ];
+        assert_eq!(t.place_ids().collect::<Vec<_>>(), ["P1", "P2"]);
+        // A title's own place that no period names is listed too, after them.
+        t.place_id = "P3".into();
+        assert_eq!(t.place_ids().collect::<Vec<_>>(), ["P1", "P2", "P3"]);
+    }
+
+    #[test]
+    fn periods_name_known_places() {
+        let places = vec![place("P1", 1), place("P2", 2)];
+        assert!(Catalog::new(vec![moved()], places.clone()).is_ok());
+        let mut t = moved();
+        t.place_periods[0].place_id = "P9".into();
+        let err = Catalog::new(vec![t], places).unwrap_err().to_string();
+        assert!(err.contains("unknown place `P9`"), "{err}");
+    }
+
+    /// `catalog/overrides/README.md`: at least two periods, oldest first, the
+    /// first without `from`, the last without `to`, each starting the day
+    /// after the one before ends, so every date has a place.
+    #[test]
+    fn periods_cover_every_date_without_a_gap() {
+        let places = vec![place("P1", 1), place("P2", 2), place("P3", 3)];
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| PlacePeriod {
+            place_id: id.into(),
+            from: from.map(day),
+            to: to.map(day),
+        };
+        let refused = |periods: Vec<PlacePeriod>| {
+            let mut t = moved();
+            t.place_periods = periods;
+            Catalog::new(vec![t], places.clone())
+                .unwrap_err()
+                .to_string()
+        };
+        // Three periods, each the day after the one before.
+        let mut three = moved();
+        three.place_periods = vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1850-12-31")),
+            period("P3", Some("1851-01-01"), None),
+        ];
+        assert!(Catalog::new(vec![three], places.clone()).is_ok());
+        // A period with one day is fine.
+        let mut one_day = moved();
+        one_day.place_periods = vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1833-11-14")),
+            period("P3", Some("1833-11-15"), None),
+        ];
+        assert!(Catalog::new(vec![one_day], places.clone()).is_ok());
+
+        // One period is a title in one place, which has none.
+        let err = refused(vec![period("P1", None, None)]);
+        assert!(err.contains("fewer than two"), "{err}");
+        // A gap of a day, as the second starting two days after the first.
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-15"), None),
+        ]);
+        assert!(
+            err.contains("period 2 doesn't start the day after"),
+            "{err}"
+        );
+        // Overlapping, on the same day or earlier, and out of order.
+        for from in ["1833-11-13", "1833-01-01"] {
+            let err = refused(vec![
+                period("P1", None, Some("1833-11-13")),
+                period("P2", Some(from), None),
+            ]);
+            assert!(
+                err.contains("period 2 doesn't start the day after"),
+                "{err}"
+            );
+        }
+        let err = refused(vec![
+            period("P2", Some("1833-11-14"), None),
+            period("P1", None, Some("1833-11-13")),
+        ]);
+        assert!(err.contains("period 1, the first, has a `from`"), "{err}");
+        // The first starts with the title, the last runs to its end: a date
+        // before or after them would be in no period.
+        let err = refused(vec![
+            period("P1", Some("1830-01-01"), Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), None),
+        ]);
+        assert!(err.contains("period 1, the first, has a `from`"), "{err}");
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1857-12-31")),
+        ]);
+        assert!(err.contains("period 2, the last, has a `to`"), "{err}");
+        // Every other period has both ends.
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), None),
+            period("P3", Some("1851-01-01"), None),
+        ]);
+        assert!(err.contains("period 2 has no `to`"), "{err}");
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", None, Some("1850-12-31")),
+            period("P3", Some("1851-01-01"), None),
+        ]);
+        assert!(err.contains("period 2 has no `from`"), "{err}");
+        // A period that ends before it starts.
+        let err = refused(vec![
+            period("P1", None, Some("1833-11-13")),
+            period("P2", Some("1833-11-14"), Some("1833-11-01")),
+            period("P3", Some("1833-11-02"), None),
+        ]);
+        assert!(err.contains("period 2 ends before it starts"), "{err}");
+    }
+
+    #[test]
+    fn a_title_without_periods_reads_and_writes_as_before() {
+        let json =
+            r#"{"lccn":"sn1","name":"x","ordinal":1,"place_id":"P1","state":"IL","languages":[]}"#;
+        let t: Title = serde_json::from_str(json).unwrap();
+        assert!(t.place_periods.is_empty());
+        assert_eq!(serde_json::to_string(&t).unwrap(), json);
+        // With periods they round trip, the open ends left out.
+        let t = moved();
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(
+            json["place_periods"],
+            serde_json::json!([
+                {"place_id": "P1", "to": "1833-11-13"},
+                {"place_id": "P2", "from": "1833-11-14"},
+            ])
+        );
+        let back: Title = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+        assert!(back.extra.is_empty());
+    }
+
+    #[test]
+    fn an_incremental_release_keeps_a_published_title_in_its_one_place() {
+        let published = Catalog::new(
+            vec![title("sn1", 1, "P2")],
+            vec![place("P1", 1), place("P2", 2)],
+        )
+        .unwrap();
+        // Now sn1 is placed by date, and sn2 is new and placed by date too.
+        let mut new = moved();
+        new.lccn = "sn2".into();
+        new.ordinal = 2;
+        let current = Catalog::new(
+            vec![moved(), new.clone()],
+            vec![place("P1", 1), place("P2", 2), place("P3", 3)],
+        )
+        .unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        assert!(
+            c.title("sn1").unwrap().place_periods.is_empty(),
+            "pages already published stay in the one place they were published in"
+        );
+        assert_eq!(c.title("sn2").unwrap().place_periods, new.place_periods);
+        // The change waits for the next full release, which says so.
+        assert_eq!(Catalog::regrouped(&published, &current), ["sn1"]);
+        assert!(Catalog::regrouped(&current, &current).is_empty());
+        // A full release's catalog is the current one.
+        assert_eq!(current.title("sn1").unwrap().place_periods.len(), 2);
+    }
+
+    #[test]
+    fn a_new_titles_periods_follow_a_merged_place() {
+        // Published: sn1 in P1, sn2 in P2 (two spellings of one town).
+        let published = Catalog::new(
+            vec![title("sn1", 1, "P1"), title("sn2", 2, "P2")],
+            vec![place("P1", 1), place("P2", 2)],
+        )
+        .unwrap();
+        // Now merged into P3. sn3 is new and was in P3 up to 1900 and in P4
+        // after.
+        let mut sn3 = title("sn3", 3, "P4");
+        sn3.place_periods = vec![
+            PlacePeriod {
+                place_id: "P3".into(),
+                from: None,
+                to: Some(day("1900-12-31")),
+            },
+            PlacePeriod {
+                place_id: "P4".into(),
+                from: Some(day("1901-01-01")),
+                to: None,
+            },
+        ];
+        let current = Catalog::new(
+            vec![title("sn1", 1, "P3"), title("sn2", 2, "P3"), sn3],
+            vec![
+                place("P1", 1),
+                place("P2", 2),
+                place("P3", 3),
+                place("P4", 4),
+            ],
+        )
+        .unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        let ids: Vec<&str> = c
+            .title("sn3")
+            .unwrap()
+            .place_periods
+            .iter()
+            .map(|p| p.place_id.as_str())
+            .collect();
+        assert_eq!(ids, ["P1", "P4"], "the merged town keeps its published id");
+    }
+
+    /// The published sn1 was in P1 up to 1833-11-13 and in P2 after; now its
+    /// early place is P3, and P2 is still where most of its pages are. A new
+    /// title with a P3 period goes where sn1's early pages are published,
+    /// whichever place of its own it has, so the town keeps one id.
+    #[test]
+    fn a_new_titles_periods_follow_a_merge_of_a_published_titles_early_place() {
+        let places = |n| {
+            (1..=n)
+                .map(|i| place(&format!("P{i}"), i))
+                .collect::<Vec<_>>()
+        };
+        let period = |id: &str, from: Option<&str>, to: Option<&str>| PlacePeriod {
+            place_id: id.into(),
+            from: from.map(day),
+            to: to.map(day),
+        };
+        let published = Catalog::new(vec![moved()], places(2)).unwrap();
+        let mut sn1 = moved();
+        sn1.place_periods[0].place_id = "P3".into();
+        let mut sn2 = title("sn2", 2, "P4");
+        sn2.place_periods = vec![
+            period("P3", None, Some("1900-12-31")),
+            period("P4", Some("1901-01-01"), None),
+        ];
+        let current = Catalog::new(vec![sn1, sn2], places(4)).unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        let ids = |lccn: &str| -> Vec<String> {
+            let t = c.title(lccn).unwrap();
+            t.place_periods.iter().map(|p| p.place_id.clone()).collect()
+        };
+        assert_eq!(ids("sn1"), ["P1", "P2"], "the published pages stay in P1");
+        assert_eq!(ids("sn2"), ["P1", "P4"], "and so do the new title's");
+        assert_eq!(c.title("sn2").unwrap().place_id, "P4");
+
+        // Periods that cover other dates now don't say it is the same town.
+        let mut sn1 = moved();
+        sn1.place_periods[0].place_id = "P3".into();
+        sn1.place_periods[0].to = Some(day("1840-12-31"));
+        sn1.place_periods[1].from = Some(day("1841-01-01"));
+        let mut sn2 = title("sn2", 2, "P4");
+        sn2.place_periods = vec![
+            period("P3", None, Some("1900-12-31")),
+            period("P4", Some("1901-01-01"), None),
+        ];
+        let current = Catalog::new(vec![sn1, sn2], places(4)).unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        let ids: Vec<&str> = c
+            .title("sn2")
+            .unwrap()
+            .place_periods
+            .iter()
+            .map(|p| p.place_id.as_str())
+            .collect();
+        assert_eq!(ids, ["P3", "P4"]);
     }
 
     #[test]

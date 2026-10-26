@@ -1,7 +1,7 @@
 // The fixture pages spread over several decades, for the tests of decade
 // partitions (05 §5.5.5, #123): the fixture corpus covers 1895 to 1897, one
 // decade. Included with `#[path]` by `crates/usnm-ingest/examples/decade_fixture.rs`
-// (which loads them into Quickwit for scripts/quickwit-fixtures.sh) and by
+// (which loads them into Quickwit for scripts/dev/quickwit-fixtures.sh) and by
 // the parity test (`crates/usnm-search/tests/quickwit_parity.rs`), so both
 // backends see the same pages.
 //

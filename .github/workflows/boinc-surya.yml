@@ -26,6 +26,17 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".dockerignore"
+      # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "catalog/**"
+      - "fixtures/ocr-gold/bundle-v1.lock.json"
+      - "infra/quickwit/**"
+      - "ocr/boinc/qwen/disk-policy.json"
+      - "ocr/boinc/qwen/weights.lock"
+      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "ocr/engines/engines.toml"
+      - "ocr/engines/ndlocr-lite/models.lock"
+      - "ocr/engines/tesseract/models.lock"
+      - "ocr/routing/routes.toml"
       - "!**/*.md"
 
 permissions:
@@ -39,12 +50,37 @@ env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
 
 jobs:
-  # Pull requests: build and check only, with a read-only token.
-  check:
-    name: surya worker image (build)
+  # Whether this change touches what the image is built from (scripts/ci/changes.sh):
+  # a crate counts when the image builds it, not for being under crates/.
+  # Not named `changes`: ci.yml's required check has that name.
+  inputs:
+    name: surya worker image inputs
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.boinc_surya }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
+  # Pull requests: build and check only, with a read-only token.
+  check:
+    name: surya worker image (${{ matrix.variant }}, build)
+    needs: inputs
+    if: github.event_name == 'pull_request' && needs.inputs.outputs.build == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cuda
+            tag_prefix: surya
+          - variant: vulkan
+            tag_prefix: surya-vulkan
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,15 +88,24 @@ jobs:
       - uses: ./.github/actions/boinc-surya-build
         with:
           image: ${{ env.IMAGE }}
-          tag: surya-${{ github.sha }}
+          tag: ${{ matrix.tag_prefix }}-${{ github.sha }}
+          variant: ${{ matrix.variant }}
 
   # A manual run on main: the same build, then the push. Only this job can write packages.
   publish:
-    name: surya worker image (build, push)
+    name: surya worker image (${{ matrix.variant }}, build, push)
     # Only main, so what is published went through review and branch protection.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cuda
+            tag_prefix: surya
+          - variant: vulkan
+            tag_prefix: surya-vulkan
     permissions:
       contents: read
       packages: write
@@ -71,26 +116,30 @@ jobs:
       - uses: ./.github/actions/boinc-surya-build
         with:
           image: ${{ env.IMAGE }}
-          tag: surya-${{ github.sha }}
+          tag: ${{ matrix.tag_prefix }}-${{ github.sha }}
+          variant: ${{ matrix.variant }}
       - name: Push to GHCR
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
           SHA: ${{ github.sha }}
+          TAG_PREFIX: ${{ matrix.tag_prefix }}
+          VARIANT: ${{ matrix.variant }}
         run: |
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
-          docker push "$IMAGE:surya-$SHA"
-          digest=$(docker buildx imagetools inspect "$IMAGE:surya-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          docker push "$IMAGE:$TAG_PREFIX-$SHA"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$TAG_PREFIX-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest after the push"; exit 1; }
           docker logout ghcr.io
-          env=$(docker image inspect --format '{{json .Config.Env}}' "$IMAGE:surya-$SHA")
+          env=$(docker image inspect --format '{{json .Config.Env}}' "$IMAGE:$TAG_PREFIX-$SHA")
           llama=$(jq -r '.[] | select(startswith("USNM_SURYA_LLAMA_IMAGE=")) | sub("^[^=]*="; "")' <<< "$env")
           weights=$(jq -r '.[] | select(startswith("USNM_SURYA_WEIGHTS=")) | sub("^[^=]*="; "")' <<< "$env")
           {
-            echo "### Surya worker image"
+            echo "### Surya worker image ($VARIANT)"
             echo
             echo "| | |"
             echo "| --- | --- |"
+            echo "| variant | \`$VARIANT\` |"
             echo "| image (release --worker-image) | \`$IMAGE@$digest\` |"
             echo "| digest (SURYA_ENGINE_IMAGE) | \`$digest\` |"
             echo "| SURYA_ENGINE_LLAMA | \`$llama\` |"

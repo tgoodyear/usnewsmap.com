@@ -1,0 +1,20 @@
+# Loads the text agreement of LoC against American Stories (#962, #1062) into usnm_quality,
+# as quality_text_writer, in the batch container CT215: every finished batch file under the
+# read-only /srv/text-agreement (pve-big's tank/usnm-release, where CT216's usnm-agree-full
+# writes it), skipping the ones already loaded. It only reads that tree.
+[Unit]
+Description=usnewsmap text agreement into usnm_quality (#962)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/text-agreement
+ConditionPathExists=/etc/usnm/quality-text-db/dsn
+
+[Service]
+Type=oneshot
+Environment=LC_ALL=C.UTF-8
+ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/load.py agreement \
+  --dsn "$(cat /etc/usnm/quality-text-db/dsn)" --dir /srv/text-agreement/text-agreement/v1 \
+  --state /var/lib/usnm-quality-feed/agreement-loaded.tsv'
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h

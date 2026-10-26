@@ -1,0 +1,9 @@
+[Unit]
+Description=usnewsmap LoC word confidence into usnm_quality, hourly (#962)
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=1h
+
+[Install]
+WantedBy=timers.target

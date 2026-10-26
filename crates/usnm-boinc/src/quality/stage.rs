@@ -50,6 +50,15 @@ pub const SAMPLE_FILE: &str = "sample.json";
 /// The LoC reader's name and source in `texts.json`.
 pub const LOC_READER: &str = "loc";
 pub const LOC_SOURCE: &str = "loc-alto";
+/// The words `ocr-local`'s `loc_text` column holds: why we OCRed the page
+/// (the queue message's reason, `bulk` or `user`, as
+/// `usnm_ocr_contract::message::Reason` names them; `priority` for the
+/// queue's own name; or the Japanese job's reading of LoC's text). The
+/// column is a label, never LoC's text, but its name invites the mistake:
+/// v1-wave6 was staged with `loc-hist` as `bulk` on all 10,000 pages (#1079).
+pub const LOC_TEXT_LABELS: [&str; 8] = [
+    "bulk", "user", "priority", "missing", "empty", "short", "garbled", "mixed",
+];
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -62,6 +71,10 @@ pub struct Options {
     pub engine: Engine,
     /// The hand-off job's `texts/` export, one `<doc_id>.json` per page.
     pub texts_dir: PathBuf,
+    /// `surya collect`'s export (#968): `<doc_id>.surya.json`, the page's
+    /// Surya text as the reader `ours-surya`, joined into the unit's texts
+    /// when `--readers` names it.
+    pub surya_texts: Option<PathBuf>,
     /// The hand-off container's `scans/`, when the pages were fetched by
     /// the node: `<doc_id>.jpg` and `<doc_id>.xml`.
     pub scans_dir: Option<PathBuf>,
@@ -413,7 +426,7 @@ async fn page(
     };
     // The export, with LoC's text added from the ALTO.
     let export_path = opts.texts_dir.join(format!("{}.json", p.doc_id));
-    let exported: Texts = if export_path.exists() {
+    let mut exported: Texts = if export_path.exists() {
         serde_json::from_slice(&read(&export_path, MAX_TEXTS)?)
             .with_context(|| format!("reading {}", export_path.display()))?
     } else {
@@ -422,6 +435,11 @@ async fn page(
             readers: vec![],
         }
     };
+    check_loc_texts(&exported).with_context(|| format!("{}", export_path.display()))?;
+    if let Some(reader) = surya_reader(opts.surya_texts.as_deref(), &p.doc_id)? {
+        exported.readers.retain(|r| r.name != reader.name);
+        exported.readers.push(reader);
+    }
     let (width, height) = image::load_from_memory(&scan.page)
         .context("decoding page.jpg")?
         .to_luma8()
@@ -460,6 +478,48 @@ async fn page(
     }
     debug_assert_eq!(job.doc_id, p.doc_id);
     Ok(Some(loc_only))
+}
+
+/// The page's `ours-surya` reader from `surya collect`'s export, when the
+/// directory is given and the page has one.
+pub fn surya_reader(dir: Option<&Path>, doc_id: &str) -> anyhow::Result<Option<TextReader>> {
+    let Some(dir) = dir else {
+        return Ok(None);
+    };
+    let path = dir.join(crate::surya::collect::export_name(doc_id));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let reader: TextReader = serde_json::from_slice(&read(&path, MAX_TEXTS)?)
+        .with_context(|| format!("reading {}", path.display()))?;
+    anyhow::ensure!(
+        reader.name == crate::surya::collect::READER,
+        "{}: reader is {:?}, not {}",
+        path.display(),
+        reader.name,
+        crate::surya::collect::READER
+    );
+    Ok(Some(reader))
+}
+
+/// Refuses an exported LoC reader (`loc` or `loc-hist`) whose text is one
+/// of [`LOC_TEXT_LABELS`]: that is `ocr-local`'s `loc_text` label put where
+/// LoC's text belongs (#1079), and staging it would compare every reader
+/// against a single word. Stage stops at the page and writes `HOLD`.
+pub fn check_loc_texts(exported: &Texts) -> anyhow::Result<()> {
+    for r in &exported.readers {
+        if r.name != LOC_READER && r.name != "loc-hist" {
+            continue;
+        }
+        let t = r.text.trim();
+        if let Some(label) = LOC_TEXT_LABELS.iter().find(|l| t.eq_ignore_ascii_case(l)) {
+            anyhow::bail!(
+                "the {} text is {label:?}, an ocr-local loc_text label (why the page was OCRed), not LoC's text",
+                r.name
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The unit's `texts.json`: LoC's text first, then the exported readers,
@@ -817,7 +877,7 @@ pub fn places_txt(places: &[usnm_ingest::catalog::Place]) -> String {
 
 /// `<lang>.txt` for the campaign's languages: the first `n` words of the
 /// language's embedded word list (wordfreq's `top_n_list`, the one
-/// `usnm-ingest ocr-damage` scores with), as `ja-ocr/quality.py` takes
+/// `usnm-ingest ocr-damage` scores with), as `ocr/ja-ocr/quality.py` takes
 /// the 100 most frequent words for its function-word share. Languages
 /// with no list (`usnm_core::lang::wordlist`) are an error.
 pub fn write_function_words(langs: &[String], n: usize, out_dir: &Path) -> anyhow::Result<()> {
@@ -849,6 +909,10 @@ pub fn write_function_words(langs: &[String], n: usize, out_dir: &Path) -> anyho
 #[derive(Debug, Clone)]
 pub struct TextsExportOptions {
     pub curated_url: String,
+    /// Where the American Stories page shards are read, when not from `curated_url`: a local
+    /// copy of `curated` (its `american-stories/pages/...` tree), which never changes, so only
+    /// the `ocr-local` overlays come from the curated store.
+    pub american_stories_url: Option<String>,
     pub out_dir: PathBuf,
     pub sample: Option<PathBuf>,
     pub doc_ids: Vec<String>,
@@ -861,6 +925,53 @@ pub struct TextsExportSummary {
     pub american_stories: usize,
     pub ocr_local: usize,
     pub altos: usize,
+    /// Bytes read from the curated store (`curated_url`): with a local American Stories copy,
+    /// only the `ocr-local` overlays and their ALTO.
+    pub curated_bytes: u64,
+}
+
+/// A store that counts the bytes its reads return.
+#[derive(Debug)]
+struct Counted {
+    inner: std::sync::Arc<dyn usnm_store::ObjectStore>,
+    bytes: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl usnm_store::ObjectStore for Counted {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        let got = self.inner.get(path).await?;
+        if let Some(b) = &got {
+            self.bytes
+                .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(got)
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.inner.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.inner.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list(prefix).await
+    }
+    async fn list_info(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<usnm_store::ObjectInfo>, usnm_store::StoreError> {
+        self.inner.list_info(prefix).await
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -961,6 +1072,7 @@ fn ours_reader_name(engine: &str, source: &str) -> String {
 /// Export each requested page's non-LoC texts (American Stories and `ocr-local`)
 /// and our ALTO from the curated store into `opts.out_dir`.
 pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExportSummary> {
+    use usnm_store::ObjectStore as _;
     let mut wanted: BTreeSet<String> = BTreeSet::new();
     for doc_id in &opts.doc_ids {
         crate::assess::check_doc_id(doc_id)?;
@@ -982,13 +1094,24 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             .insert(key.date.year());
     }
 
-    let curated = usnm_store::open(&opts.curated_url)?;
+    let curated = Counted {
+        inner: usnm_store::open(&opts.curated_url)?,
+        bytes: Default::default(),
+    };
+    let american_stories: std::sync::Arc<dyn usnm_store::ObjectStore> =
+        match &opts.american_stories_url {
+            Some(url) => usnm_store::open(url)?,
+            None => std::sync::Arc::new(Counted {
+                inner: curated.inner.clone(),
+                bytes: Default::default(),
+            }),
+        };
     std::fs::create_dir_all(&opts.out_dir)?;
 
     let mut as_by_doc: BTreeMap<String, (Option<PageSize>, TextReader)> = BTreeMap::new();
     for (lccn, years) in &by_lccn_year {
         let prefix = format!("{}/{lccn}", usnm_ingest::american_stories::PAGES);
-        let mut paths = curated.list(&prefix).await?;
+        let mut paths = american_stories.list(&prefix).await?;
         paths.sort();
         let dir_prefix = format!("{prefix}/");
         for path in paths {
@@ -1007,9 +1130,14 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             if !years.contains(&year) {
                 continue;
             }
-            let Some(bytes) = curated.get(&path).await? else {
+            let Some(bytes) = american_stories.get(&path).await? else {
                 continue;
             };
+            if opts.american_stories_url.is_none() {
+                curated
+                    .bytes
+                    .fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
             let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes))
                 .with_context(|| format!("reading {path}"))?
                 .build()
@@ -1059,14 +1187,10 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
         }
     }
 
-    let revoked = usnm_ingest::ocr_local::replace::revocations(curated.as_ref()).await?;
-    let listing = usnm_ingest::ocr_local::replace::Listing::list(curated.as_ref()).await?;
+    let revoked = usnm_ingest::ocr_local::replace::revocations(&curated).await?;
+    let listing = usnm_ingest::ocr_local::replace::Listing::list(&curated).await?;
     let loaded = listing
-        .load(
-            curated.as_ref(),
-            by_lccn_year.keys().map(String::as_str),
-            &revoked,
-        )
+        .load(&curated, by_lccn_year.keys().map(String::as_str), &revoked)
         .await?;
     let mut ocr_candidates: BTreeMap<String, usnm_ingest::ocr_local::replace::Candidate> =
         BTreeMap::new();
@@ -1171,12 +1295,26 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
             summary.written += 1;
         }
     }
+    summary.curated_bytes = curated.bytes.load(std::sync::atomic::Ordering::Relaxed);
     Ok(summary)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let dest = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &dest);
+            } else {
+                std::fs::copy(entry.path(), dest).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn alto_url_follows_the_iiif_base() {
@@ -1218,6 +1356,38 @@ pub(crate) mod tests {
         let deu = read_words(&tmp.path().join("deu.txt")).unwrap();
         assert!(deu.contains(&"und".to_string()));
         assert!(write_function_words(&["xxx".into()], 100, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn loc_text_labels_are_refused_as_loc_text() {
+        let texts = |name: &str, text: &str| Texts {
+            page: None,
+            readers: vec![TextReader {
+                alto: false,
+                name: name.into(),
+                regions: vec![],
+                source: name.into(),
+                text: text.into(),
+            }],
+        };
+        for (name, text) in [
+            ("loc-hist", "bulk"),
+            ("loc", " Priority\n"),
+            ("loc-hist", "missing"),
+        ] {
+            let e = check_loc_texts(&texts(name, text)).unwrap_err().to_string();
+            assert!(e.contains(name) && e.contains("loc_text label"), "{e}");
+        }
+        // A text that only starts with a label, another reader's, and the
+        // empty or `none` text join_texts fills from the ALTO all pass.
+        for (name, text) in [
+            ("loc-hist", "bulk carrier sails"),
+            ("as", "bulk"),
+            ("loc-hist", ""),
+            ("loc", "none"),
+        ] {
+            check_loc_texts(&texts(name, text)).unwrap();
+        }
     }
 
     #[test]
@@ -1332,6 +1502,7 @@ pub(crate) mod tests {
             root: tmp.path().join("root"),
             engine: j.engine.clone(),
             texts_dir,
+            surya_texts: None,
             scans_dir: Some(scans),
             places: tmp.path().join("places.txt"),
             function_words_dir: fw,
@@ -1371,6 +1542,102 @@ pub(crate) mod tests {
         // A second run stages nothing new.
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.already), (0, 1));
+        // With surya collect's export and the reader named, the page's Surya
+        // text joins the unit as ours-surya, after the hand-off's readers.
+        let surya_dir = tmp.path().join("surya-texts");
+        std::fs::create_dir_all(&surya_dir).unwrap();
+        std::fs::write(
+            surya_dir.join(crate::surya::collect::export_name(doc_id)),
+            serde_json::to_vec(&TextReader {
+                alto: false,
+                name: crate::surya::collect::READER.into(),
+                regions: vec![],
+                source: "surya:whole:abc".into(),
+                text: "The mayor spoke to the council\n".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let with_surya = Options {
+            root: tmp.path().join("root-surya"),
+            surya_texts: Some(surya_dir.clone()),
+            readers: vec![
+                "loc".into(),
+                "as".into(),
+                "ours-tesseract".into(),
+                "ours-surya".into(),
+            ],
+            ..opts.clone()
+        };
+        let s = run(&with_surya).await.unwrap();
+        assert_eq!((s.staged, s.loc_only), (1, 0));
+        let unit = units(&with_surya.root).join(doc_id);
+        let texts: Texts =
+            serde_json::from_slice(&std::fs::read(unit.join(TEXTS_FILE)).unwrap()).unwrap();
+        let names: Vec<&str> = texts.readers.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["loc", "as", "ours-tesseract", "ours-surya"]);
+        let surya = texts.readers.last().unwrap();
+        assert_eq!(surya.source, "surya:whole:abc");
+        assert!(surya.text.contains("mayor"));
+        let job: Job =
+            serde_json::from_slice(&std::fs::read(unit.join(JOB_FILE)).unwrap()).unwrap();
+        assert_eq!(job.readers.len(), 4);
+        // Not named in --readers: left out, as any exported reader is.
+        let unnamed = Options {
+            root: tmp.path().join("root-unnamed"),
+            surya_texts: Some(surya_dir),
+            ..opts.clone()
+        };
+        run(&unnamed).await.unwrap();
+        let texts: Texts = serde_json::from_slice(
+            &std::fs::read(units(&unnamed.root).join(doc_id).join(TEXTS_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(texts.readers.len(), 3);
+        // v1-wave6 (#1079): the export's loc-hist reader carried ocr-local's
+        // loc_text label, "bulk", as its text. Stage stops at the page with a
+        // HOLD instead of comparing every reader against one word.
+        let wave6_texts = tmp.path().join("texts-wave6");
+        std::fs::create_dir_all(&wave6_texts).unwrap();
+        let mut bulk = export.clone();
+        bulk.readers.insert(
+            0,
+            TextReader {
+                alto: false,
+                name: "loc-hist".into(),
+                regions: vec![],
+                source: "loc-hist".into(),
+                text: "bulk".into(),
+            },
+        );
+        std::fs::write(
+            wave6_texts.join(format!("{doc_id}.json")),
+            serde_json::to_vec(&bulk).unwrap(),
+        )
+        .unwrap();
+        let wave6 = Options {
+            root: tmp.path().join("root-wave6"),
+            texts_dir: wave6_texts.clone(),
+            readers: vec!["loc-hist".into(), "as".into(), "ours-tesseract".into()],
+            ..opts.clone()
+        };
+        let err = run(&wave6).await.unwrap_err();
+        assert!(format!("{err:#}").contains("\"bulk\""), "{err:#}");
+        let hold = std::fs::read_to_string(crate::assess::hold_path(&wave6.root)).unwrap();
+        assert!(hold.starts_with(doc_id) && hold.contains("loc_text label"));
+        assert!(!units(&wave6.root).join(doc_id).join(JOB_FILE).exists());
+        // LoC's real text in the export stages as before.
+        bulk.readers[0].text = "The mayor spoke to the council".into();
+        std::fs::write(
+            wave6_texts.join(format!("{doc_id}.json")),
+            serde_json::to_vec(&bulk).unwrap(),
+        )
+        .unwrap();
+        let fixed = Options {
+            root: tmp.path().join("root-wave6-fixed"),
+            ..wave6.clone()
+        };
+        assert_eq!(run(&fixed).await.unwrap().staged, 1);
         // A page the scans lack would go to LoC; a language without a list stops first.
         let bad = Options {
             pages: vec!["probe:xxx:sn83045462_1890-05-04_ed-1_seq-1:dlc_abc_ver01"
@@ -1461,6 +1728,7 @@ pub(crate) mod tests {
             root: tmp.path().join("root"),
             engine: j.engine.clone(),
             texts_dir,
+            surya_texts: None,
             scans_dir: None,
             places: tmp.path().join("places.txt"),
             function_words_dir: fw,
@@ -1597,12 +1865,15 @@ pub(crate) mod tests {
         let out_dir = tmp.path().join("texts");
         let sum = texts_export(&TextsExportOptions {
             curated_url: curated_dir.to_str().unwrap().into(),
+            american_stories_url: None,
             out_dir: out_dir.clone(),
             sample: None,
             doc_ids: vec![doc_id.into()],
         })
         .await
         .unwrap();
+        let all_bytes = sum.curated_bytes;
+        assert!(all_bytes > 0);
         assert_eq!(
             sum,
             TextsExportSummary {
@@ -1611,7 +1882,38 @@ pub(crate) mod tests {
                 american_stories: 1,
                 ocr_local: 1,
                 altos: 1,
+                curated_bytes: all_bytes,
             }
+        );
+        // With a local copy of the American Stories shards, the same texts, and the curated
+        // store gives only the overlays.
+        let local = tmp.path().join("local-copy");
+        let shards = curated_dir.join(usnm_ingest::american_stories::PAGES);
+        let to = local.join(usnm_ingest::american_stories::PAGES);
+        copy_tree(&shards, &to);
+        std::fs::remove_dir_all(&shards).unwrap();
+        let out2 = tmp.path().join("texts-local");
+        let local_sum = texts_export(&TextsExportOptions {
+            curated_url: curated_dir.to_str().unwrap().into(),
+            american_stories_url: Some(local.to_str().unwrap().into()),
+            out_dir: out2.clone(),
+            sample: None,
+            doc_ids: vec![doc_id.into()],
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                local_sum.written,
+                local_sum.american_stories,
+                local_sum.altos
+            ),
+            (1, 1, 1)
+        );
+        assert!(local_sum.curated_bytes < all_bytes);
+        assert_eq!(
+            std::fs::read(out2.join(format!("{doc_id}.json"))).unwrap(),
+            std::fs::read(out_dir.join(format!("{doc_id}.json"))).unwrap()
         );
 
         let exported: Texts =
@@ -1722,6 +2024,7 @@ pub(crate) mod tests {
             root: tmp.path().join("root"),
             engine: j.engine.clone(),
             texts_dir,
+            surya_texts: None,
             scans_dir: Some(scans),
             places: tmp.path().join("places.txt"),
             function_words_dir: fw,

@@ -1,0 +1,63 @@
+{
+  "read": 100,
+  "reading_ms": {
+    "max": 2076,
+    "p50": 1523,
+    "p95": 1874
+  },
+  "release": "v1.0.0",
+  "samples": 100,
+  "slots": [
+    {
+      "device": "cuda",
+      "engine_ms": 41465,
+      "gpu_mem_peak_mib": 7013,
+      "job_id": "1fc6689539ecff212d71b5d6672608e0b3a9ad6ff9f9ebd3e3c61f990c6beb30",
+      "load_ms": 21048,
+      "model": "qwen3-vl-8b-q4km",
+      "outcome": "ok",
+      "peak_rss_kib": 8720,
+      "read": 25,
+      "samples": 25
+    },
+    {
+      "device": "cuda",
+      "engine_ms": 42185,
+      "gpu_mem_peak_mib": 7011,
+      "job_id": "428db60e4d77af9b02fc83cfd47e3d5a85fcc72d90ec90f4c534424d05708b51",
+      "load_ms": 2744,
+      "model": "qwen3-vl-8b-q4km",
+      "outcome": "ok",
+      "peak_rss_kib": 8360,
+      "read": 25,
+      "samples": 25
+    },
+    {
+      "device": "cuda",
+      "engine_ms": 42549,
+      "gpu_mem_peak_mib": 7011,
+      "job_id": "43f64fac2f60884966a746d5a504fd4728e4eb98db6e4eb45617db97c2e93f61",
+      "load_ms": 2658,
+      "model": "qwen3-vl-8b-q4km",
+      "outcome": "ok",
+      "peak_rss_kib": 8456,
+      "read": 25,
+      "samples": 25
+    },
+    {
+      "device": "cuda",
+      "engine_ms": 41386,
+      "gpu_mem_peak_mib": 7011,
+      "job_id": "55f88fbd4330142b94b859fe098e17a6ee7cc37804c49070339cc182938fb5c5",
+      "load_ms": 2702,
+      "model": "qwen3-vl-8b-q4km",
+      "outcome": "ok",
+      "peak_rss_kib": 8580,
+      "read": 25,
+      "samples": 25
+    }
+  ],
+  "subset": "legacy/overproof-en-100",
+  "subset_digest": "e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04",
+  "tokens": 7185
+}

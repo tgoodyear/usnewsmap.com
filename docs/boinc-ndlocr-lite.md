@@ -2,7 +2,7 @@
 
 Issue [#626](https://github.com/tgoodyear/usnewsmap.com/issues/626) adds a CPU-only
 volunteer engine for Japanese scans. It uses the same upstream revision and
-conversion as `Dockerfile.ja-ocr` and `ja-ocr/jaocr.py`, without the Flet desktop UI.
+conversion as `docker/Dockerfile.ja-ocr` and `ocr/ja-ocr/jaocr.py`, without the Flet desktop UI.
 Engine-level routing is tracked in [#624](https://github.com/tgoodyear/usnewsmap.com/issues/624).
 
 **Status:** the pinned contract engine and dedicated BOINC lifecycle are
@@ -21,6 +21,10 @@ python3 scripts/boinc/smoke-ndlocr.py --image usnm-ndlocr-lite --work "$PWD/ndlo
 
 The Python and Rust bases are pinned by digest. `NDLOCR_COMMIT` is
 `636d1cfeb1331f89f4048f416e49e23a09a714b5`, matching the existing Japanese job.
+`ocr/engines/ndlocr-lite/models.lock` is where the commit is pinned (its header and
+every model URL); a Dockerfile, the adapter's `COMMIT` and the engine catalog cannot
+read it, so `scripts/ci/check-engine-pins.py` fails CI when any of them, including
+`docker/Dockerfile.ja-ocr` and the source archive's checksum, names another commit.
 The upstream source archive has a SHA-256 check, and
 `ocr/engines/ndlocr-lite/models.lock` independently pins all four ONNX models
 (DEIM layout and the 30-, 50-, and 100-character PARSeq recognizers). The build
@@ -49,7 +53,7 @@ processing an image. Extensionless BOINC scans get a detected JPEG, PNG, or JP2
 suffix in private job scratch.
 
 The adapter converts NDLOCR XML to the **same ALTO 3.1 in inch1200** as
-`ja-ocr/alto.py`: fractional reading order, one String per line, block unions,
+`ocr/ja-ocr/alto.py`: fractional reading order, one String per line, block unions,
 confidence clamping, scan dpi, and optional LoC page-size clamping. It returns
 the upstream text with the NFC, control-character and whitespace rules of
 `jaocr.normalize`, not the general pipeline's Latin ligature expansion or
@@ -118,7 +122,7 @@ identity before comparing hosts or increasing the campaign.
 
 The published BOINC worker was exercised independently in Docker on pve-big
 (CT 100, i7-7700K) and pve-laptop (CT 110, i7-1185G7). Both runs used
-`ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
+`ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`, one CPU, 4 GiB
 memory with no additional swap, no network, and a read-only container root.
 No BOINC workunit was submitted, and no curated data or trust state was changed.
 
@@ -451,9 +455,10 @@ After merge:
    `xadd`, and restart daemons so its script validator and batch assimilator
    run. Install the input/output templates when publishing the app version.
 3. Publish a signed **x86_64 Linux container** app version with
-   `scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
+   `scripts/boinc/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
 --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST
---signing-host HOST`. Its dedicated `job.toml` is selected automatically.
+--signing-host HOST --onprem-host HOST --onprem-ct ID` (the last two because prod's
+   server is on-prem). Its dedicated `job.toml` is selected automatically.
    Do not reuse the Tesseract image or publish unsupported native or GPU
    versions.
 4. Pilot a small classified set not yet read by `jaocr.py`, comparing independent

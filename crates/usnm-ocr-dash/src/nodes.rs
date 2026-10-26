@@ -69,6 +69,11 @@ pub struct Nodes {
     /// Interned languages and engine tags.
     pub names: Vec<String>,
     index: HashMap<String, u32>,
+    /// The journal copies read, configured nodes' and retired ones' (a
+    /// copy left in the state directory by a node no longer configured).
+    pub journals: Vec<String>,
+    /// When the newest page OCRed in them finished.
+    pub last_at: Option<DateTime<Utc>>,
 }
 
 /// What one poll of a node brought.
@@ -115,6 +120,7 @@ impl Nodes {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
+            me.journals.push(me.nodes[i].name.clone());
             for l in std::io::BufReader::new(f).lines() {
                 if let Ok(c) = serde_json::from_str::<Completion>(&l?) {
                     if c.check().is_ok() && c.outcome == "done" {
@@ -122,6 +128,29 @@ impl Nodes {
                     }
                 }
             }
+        }
+        // The copies of nodes no longer configured still count: the
+        // direct workers they came from are retired, not wrong.
+        let mut retired: Vec<String> = std::fs::read_dir(&me.state_dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|n| {
+                let name = n.strip_prefix("journal-")?.strip_suffix(".jsonl")?;
+                (check_name(name).is_ok() && !me.nodes.iter().any(|x| x.name == name))
+                    .then(|| name.to_owned())
+            })
+            .collect();
+        retired.sort();
+        for name in retired {
+            let f = std::fs::File::open(me.state_dir.join(format!("journal-{name}.jsonl")))?;
+            for l in std::io::BufReader::new(f).lines() {
+                if let Ok(c) = serde_json::from_str::<Completion>(&l?) {
+                    if c.check().is_ok() && c.outcome == "done" {
+                        me.count(u16::MAX, &c);
+                    }
+                }
+            }
+            me.journals.push(name);
         }
         Ok(me)
     }
@@ -144,12 +173,7 @@ impl Nodes {
     /// Count a page OCRed. Repeats (a journal copied twice) change nothing
     /// but which node and engine it is under.
     fn add(&mut self, i: usize, c: Completion) {
-        let o = Ocred {
-            node: i as u16,
-            language: self.intern(&c.language),
-            engine: self.intern(&c.engine),
-        };
-        self.ocred.insert(c.doc_id.as_str().into(), o);
+        self.count(i as u16, &c);
         let latest = &mut self.nodes[i].latest;
         if !latest
             .iter()
@@ -160,6 +184,18 @@ impl Nodes {
                 latest.pop_front();
             }
         }
+    }
+
+    /// Count a page OCRed under node `node` (`u16::MAX`: a retired node's
+    /// copy).
+    fn count(&mut self, node: u16, c: &Completion) {
+        let o = Ocred {
+            node,
+            language: self.intern(&c.language),
+            engine: self.intern(&c.engine),
+        };
+        self.ocred.insert(c.doc_id.as_str().into(), o);
+        self.last_at = self.last_at.max(Some(c.finished_at));
     }
 
     /// Ask a node for its status and any journal past `offset`. A journal
@@ -422,6 +458,13 @@ mod tests {
         // Reopened: the copy, the offset and the id are back.
         let again = Nodes::open(dir.path().to_owned(), &nodes).unwrap();
         assert_eq!(again.ocred.len(), 2);
+        assert_eq!(again.journals, ["node1"]);
+        // Not configured any more: its copy still counts, as retired.
+        let retired = Nodes::open(dir.path().to_owned(), &[]).unwrap();
+        assert_eq!(retired.ocred.len(), 2);
+        assert_eq!(retired.journals, ["node1"]);
+        assert!(retired.nodes.is_empty());
+        assert!(retired.last_at.is_some());
         assert_eq!(again.nodes[0].offset, n.nodes[0].offset);
         assert_eq!(again.nodes[0].journal_id, "j2");
         let o = again.ocred["sn1_1890-01-01_ed-1_seq-3"];

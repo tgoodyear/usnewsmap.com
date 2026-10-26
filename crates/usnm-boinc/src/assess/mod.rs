@@ -8,10 +8,11 @@
 //! - [`validate`] is what stock `script_validator` calls.
 //! - [`collect`] turns canonical results into the files the report's
 //!   `score.py` and `aggregate.py` read.
-use anyhow::{bail, ensure, Context};
+use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod cli;
 pub mod collect;
 pub mod sample;
 pub mod stage;
@@ -70,18 +71,8 @@ pub fn read_sample(path: &Path) -> anyhow::Result<Vec<SampleRow>> {
         .collect()
 }
 
-/// A doc id safe to use as a directory name.
-pub fn check_doc_id(doc_id: &str) -> anyhow::Result<()> {
-    ensure!(
-        !doc_id.is_empty()
-            && doc_id.len() <= 128
-            && doc_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)),
-        "invalid doc id {doc_id:?}"
-    );
-    Ok(())
-}
+/// A doc id safe to use as a directory name: the quality stage's check, shared.
+pub use usnm_ocr_contract::quality::check_doc_id;
 
 /// A hold written when LoC refused or failed a request. Staging will not
 /// start again until a person has looked and removed it.

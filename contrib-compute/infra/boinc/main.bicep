@@ -6,11 +6,11 @@
 //
 // Deployed as the deployment stack usnm-boinc-<env> into the group usnm-boinc-rg-<env>, which
 // infra/main.bicep creates (deployBoincGroup) with the guardrails and two waivers (ADR-0019,
-// decision 5). Settings: env/<env>.json. Deployment: scripts/provision-boinc.sh.
+// decision 5). Settings: env/<env>.json. Deployment: scripts/boinc/provision-boinc.sh.
 //
 // Two phases. Until the settings name the server image, only the base resources are deployed
 // (registry, network, vault, storage, database, monitoring), so the images can be built into
-// the registry (scripts/build-boinc-images.sh); with the images set, the app and the jobs too.
+// the registry (scripts/boinc/build-boinc-images.sh); with the images set, the app and the jobs too.
 targetScope = 'resourceGroup'
 
 import { checkedEnvName, usnmName, usnmCompactName, usnmGlobalName } from '../../../infra/naming.bicep'
@@ -38,14 +38,23 @@ param image string = ''
 @description('Bridge job image (images/bridge), by digest, in the same registry. Required with image: the server image has no usnm-boinc binary.')
 param bridgeImage string = ''
 
-@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc-app-release.sh; empty: no publish job.')
+@description('Optional web/daemon image override, independent of lifecycle pins. Empty uses assessment selection. Preserves additive production releases.')
+param webImage string = ''
+
+@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc/boinc-app-release.sh; empty: no publish job.')
 param publishImage string = ''
 
 @description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')
 param assessment bool = false
 
-@description('Deploy the gold bundle job (docs/boinc.md#build-the-gold-bundle): the bridge image running the gold-bundle step, which builds the gold bundle v1 from its publishers onto the share. Off by default.')
+@description('Deploy the gold bundle job (docs/boinc/gold-check.md#build-the-gold-bundle): the bridge image running the gold-bundle step, which builds the gold bundle v1 from its publishers onto the share. Off by default.')
 param goldBundle bool = false
+
+@description('The usnm_quality wave runner script\'s blob URL (qualityWave.script in env/<env>.json); empty: no quality wave job.')
+param qualityWaveScript string = ''
+
+@description('The runner script\'s sha256 (qualityWave.sha256); the job stops if the downloaded script has any other.')
+param qualityWaveScriptSha256 string = ''
 
 @description('Seconds before a bridge job run is stopped. assess-stage fetches at 5 s per request, so a longer limit lets one run stage more pages.')
 param bridgeTimeoutSeconds int = 1800
@@ -75,12 +84,23 @@ param operatorPrincipalIds array
 @description('The PUBLIC half of the offline code-signing key (code_sign_public). Empty until it is made offline.')
 param codeSignPublicKey string = ''
 
+@description('The project share\'s billing (#917): standard, the pay-as-you-go StorageV2 share; copy, the provisioned v2 SSD share is created and the server also mounts it at /project-v2 to fill it; provisioned, /project is the provisioned share everywhere and the old account is kept for rollback; provisioned-final, the old account is removed. docs/boinc/server-and-apps.md, "Moving the project share".')
+@allowed([ 'standard', 'copy', 'provisioned', 'provisioned-final' ])
+param projectShare string = 'standard'
+@description('Public IPv4 addresses the BOINC Key Vault admits on its public endpoint (the home network); empty keeps it private-only. modules/keyvault.bicep.')
+param keyVaultAllowedIps array = []
+@description('The on-prem hosts\' Entra group (usnm-onprem-grp-<env>): Key Vault Secrets User on the project vault, for the on-prem BOINC server (#942). Empty: none.')
+param onPremGroupId string = ''
+
 @description('Create the workbook "usnm BOINC (<env>)" over the workspace (modules/workbook.bicep). On by default in prod.')
 param workbook bool = env == 'prod'
 
+@description('The BOINC server runs on-prem (#942, docs/boinc-onprem.md): no app, jobs, MySQL, project storage, workspace or private endpoints here. The identities (the main environment\'s Bicep reads usnm-boinc-id-<env>), the vault the on-prem host reads, the VNet (its aca subnet is in the main environment\'s storage rules) and the static site stay.')
+param serverOnPrem bool = false
+
 var envName = checkedEnvName(env)
 var sfx = take(uniqueString(subscription().id, envName, 'boinc', location), 6)
-var withApp = !empty(image)
+var withApp = !empty(image) && !serverOnPrem
 
 var names = {
   app: usnmName('boinc', 'ca', envName)
@@ -88,11 +108,16 @@ var names = {
   environment: usnmName('boinc', 'cae', envName)
   files: usnmCompactName('boinc', 'st', envName, sfx)
   filesEndpoint: usnmName('boinc-files', 'pep', envName)
+  filesV2: usnmCompactName('boincv2', 'st', envName, sfx)
+  filesV2Endpoint: usnmName('boinc-files-v2', 'pep', envName)
+  shareCopyJob: usnmName('boinc-sharecopy', 'caj', envName)
+  shareCopyIdentity: usnmName('boinc-sharecopy', 'id', envName)
   identity: usnmName('boinc', 'id', envName)
   mysql: usnmGlobalName('boinc', 'mysql', envName, sfx)
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
   initJob: usnmName('boinc-init', 'caj', envName)
   goldBundleJob: usnmName('boinc-gold', 'caj', envName)
+  qualityWaveJob: usnmName('boinc-quality', 'caj', envName)
   publishJob: usnmName('boinc-publish', 'caj', envName)
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
@@ -117,6 +142,13 @@ resource secretsIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
   location: location
 }
 
+// The share copy job's own identity (projectShare copy): writes the provisioned share, reads
+// the old one through its mount, and pulls the bridge image. Nothing else.
+resource shareCopyIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (projectShare == 'copy') {
+  name: names.shareCopyIdentity
+  location: location
+}
+
 var runtimePrincipal = empty(runtimePrincipalId) ? identity.properties.principalId : runtimePrincipalId
 var secretsPrincipal = empty(keyWriterPrincipalId) ? secretsIdentity.properties.principalId : keyWriterPrincipalId
 
@@ -125,18 +157,18 @@ module registry 'modules/registry.bicep' = {
   scope: resourceGroup(registryResourceGroup)
   params: {
     registryName: registryName
-    pullPrincipalIds: [ runtimePrincipal, secretsPrincipal ]
+    pullPrincipalIds: concat([ runtimePrincipal, secretsPrincipal ], projectShare == 'copy' ? [ shareCopyIdentity!.properties.principalId ] : [])
   }
 }
 
-module monitor 'modules/monitor.bicep' = {
+module monitor 'modules/monitor.bicep' = if (!serverOnPrem) {
   name: 'monitor'
   params: { workspaceName: names.workspace, location: location, operatorPrincipalIds: operatorPrincipalIds }
 }
 
-module workbookModule 'modules/workbook.bicep' = if (workbook) {
+module workbookModule 'modules/workbook.bicep' = if (workbook && !serverOnPrem) {
   name: 'workbook'
-  params: { location: location, workspaceId: monitor.outputs.id, title: names.workbookTitle }
+  params: { location: location, workspaceId: monitor!.outputs.id, title: names.workbookTitle }
 }
 
 module network 'modules/network.bicep' = {
@@ -152,28 +184,38 @@ module vault 'modules/keyvault.bicep' = {
     location: location
     readerPrincipalId: runtimePrincipal
     writerPrincipalId: secretsPrincipal
+    privateEndpoint: !serverOnPrem
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.vaultDnsZoneId
     operatorPrincipalIds: operatorPrincipalIds
-    logAnalyticsWorkspaceId: monitor.outputs.id
+    logAnalyticsWorkspaceId: serverOnPrem ? '' : monitor!.outputs.id
     mysqlAdminPassword: mysqlAdminPassword
     codeSignPublicKey: codeSignPublicKey
+    allowedIps: keyVaultAllowedIps
+    onPremReaderGroupId: onPremGroupId
   }
 }
 
-module storage 'modules/storage.bicep' = {
+module storage 'modules/storage.bicep' = if (!serverOnPrem) {
   name: 'storage'
   params: {
     filesAccountName: names.files
     endpointName: names.filesEndpoint
     location: location
-    shareQuotaGb: env == 'prod' ? 250 : 200
+    // Raised by hand to 250 GB for the quality wave's bundles; kept here so a provision
+    // doesn't shrink it under live data (#529). The provisioned share is the same size.
+    shareQuotaGb: 250
+    legacyShare: projectShare != 'provisioned-final'
+    provisionedShare: projectShare != 'standard'
+    provisionedAccountName: names.filesV2
+    provisionedEndpointName: names.filesV2Endpoint
+    copyWriterPrincipalId: projectShare == 'copy' ? shareCopyIdentity!.properties.principalId : ''
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
   }
 }
 
-module mysql 'modules/mysql.bicep' = {
+module mysql 'modules/mysql.bicep' = if (!serverOnPrem) {
   name: 'mysql'
   params: {
     serverName: names.mysql
@@ -193,9 +235,11 @@ module frontend 'modules/frontend.bicep' = {
 // The Container Apps mount takes the account key and the environment's log configuration the
 // workspace key (ADR-0019, decision 5, waived for this group). Both are read here, inside the
 // deployment, from resources this template creates; no key is passed in, printed or committed.
-resource filesAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
-  name: names.files
-}
+// Which account /project is, by stage; during the copy the provisioned one is also mounted.
+// The app module reads the account's key itself, after the storage module has made it (a key
+// read here, through an `existing` reference, came first, and the first deployment of the copy
+// stage failed with ResourceNotFound).
+var projectOnV2 = projectShare == 'provisioned' || projectShare == 'provisioned-final'
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
   name: names.workspace
@@ -209,20 +253,21 @@ module app 'modules/app.bicep' = if (withApp) {
     appName: names.app
     location: location
     acaSubnetId: network.outputs.acaSubnetId
-    logAnalyticsCustomerId: monitor.outputs.customerId
+    logAnalyticsCustomerId: monitor!.outputs.customerId
     logAnalyticsSharedKey: workspace.listKeys().primarySharedKey
     identityId: identity.id
     identityClientId: identity.properties.clientId
-    image: assessment ? bridgeImage : image
+    image: !empty(webImage) ? webImage : (assessment ? bridgeImage : image)
     // The bridge image's entry point is bridge-job; the server keeps its own.
-    command: assessment ? [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--serve' ] : []
+    command: assessment || !empty(webImage) ? [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--serve' ] : []
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    filesAccountName: storage.outputs.filesAccountName
-    shareName: storage.outputs.shareName
-    filesAccountKey: filesAccount.listKeys().keys[0].value
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    filesAccountName: projectOnV2 ? names.filesV2 : names.files
+    // A new storage name on each switch (and back, on rollback) forces a new revision.
+    projectStorageName: projectOnV2 ? 'project-v2' : 'project'
+    shareName: storage!.outputs.shareName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     customDomainStage: empty(dnsZoneName) ? 0 : customDomainStage
   }
@@ -251,12 +296,16 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
     image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     timeoutSeconds: bridgeTimeoutSeconds
+    extraEnv: env == 'prod' ? [
+      { name: 'BRIDGE_STEP', value: 'iris-bundle-collect' }
+      { name: 'IRIS_CAMPAIGN', value: 'overproof-100-v12' }
+    ] : []
   }
 }
 
@@ -275,8 +324,8 @@ module initJob 'modules/bridge-job.bicep' = if (withApp) {
     image: image
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -300,12 +349,15 @@ module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImag
     image: publishImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     command: [ '/usr/local/lib/usnm-boinc/publish-appver.sh' ]
+    // Publish into the live project, keeping its credentials and config links
+    // (contrib-compute/docs/amd-885-release.md); set by hand for the AMD release (#529).
+    extraEnv: [ { name: 'APPVER_REUSE_PROJECT', value: '1' } ]
   }
 }
 
@@ -325,8 +377,8 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
     image: bridgeImage
     registryServer: registryServer
     keyVaultName: vault.outputs.name
-    mysqlHost: mysql.outputs.host
-    databaseName: mysql.outputs.databaseName
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
@@ -336,6 +388,90 @@ module goldBundleJob 'modules/bridge-job.bicep' = if (withApp && goldBundle) {
     extraEnv: [
       { name: 'BRIDGE_STEP', value: 'gold-bundle' }
       { name: 'GOLD_CAMPAIGN', value: 'v1-tess550' }
+    ]
+  }
+}
+
+// The usnm_quality wave (scripts/boinc/quality_corpus_runner.py, uploaded by boinc-quality-campaign.py launch-corpus): eight shards
+// that stage page bundles onto the share and collect results. The script is fetched with the
+// BOINC identity and run only if its sha256 is the committed one. 4 vCPUs: the runner converts
+// any page the on-prem JPEG cache (docs/boinc/scan-cache-handoff.md) hasn't; more cache, not more vCPUs, is the
+// way to speed it up. A day per run; it is started by hand (az containerapp job start).
+// It stages only pages the scan archive holds and then ends: the LoC fallback pass, one
+// 5-second pacer across every shard, is off unless QUALITY_LOC_FALLBACK=1 (#914).
+module qualityWaveJob 'modules/bridge-job.bicep' = if (withApp && !empty(qualityWaveScript)) {
+  name: 'quality-wave-job'
+  dependsOn: [ registry ]
+  params: {
+    jobName: names.qualityWaveJob
+    location: location
+    environmentId: app!.outputs.environmentId
+    identityId: identity.id
+    identityClientId: identity.properties.clientId
+    image: bridgeImage
+    registryServer: registryServer
+    keyVaultName: vault.outputs.name
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
+    masterHost: masterHost
+    projectStorageName: app!.outputs.projectStorageName
+    workloadProfileName: app!.outputs.workloadProfileName
+    timeoutSeconds: 86400
+    cpu: '4'
+    memory: '8Gi'
+    extraEnv: [
+      { name: 'QUALITY_WAVE_SCRIPT', value: qualityWaveScript }
+      { name: 'QUALITY_WAVE_SHA256', value: qualityWaveScriptSha256 }
+    ]
+    command: [
+      '/bin/bash'
+      '-c'
+      'set -euo pipefail; tok="$(curl -fsS -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$AZURE_CLIENT_ID" | jq -er .access_token)"; curl -fsSL -H "Authorization: Bearer $tok" -H "x-ms-version: 2021-08-06" "$QUALITY_WAVE_SCRIPT" -o /tmp/run_wave9.py; echo "$QUALITY_WAVE_SHA256  /tmp/run_wave9.py" | sha256sum -c -; export NUM_SHARDS=8 BUNDLE_SIZE=200 MAX_IN_FLIGHT_BUNDLES=45 MIN_FREE_GB=35.0; pids=""; for s in 0 1 2 3 4 5 6 7; do SHARD_ENV=$s python3 /tmp/run_wave9.py & pids="$pids $!"; sleep 3; done; rc=0; for p in $pids; do wait "$p" || rc=1; done; exit "$rc"'
+    ]
+  }
+}
+
+// The share copy job (projectShare copy; docs/boinc/server-and-apps.md, "Moving the project share"): AzCopy,
+// pinned by version and sha256, syncs the old share to the provisioned one, both over REST
+// through their private endpoints, as the job's identity. Over REST, BOINC's symlinks are the
+// mfsymlinks files that store them, so they copy byte for byte. Run it while live, then once more with the daemons
+// stopped; sync sends only what changed and deletes what's gone.
+var azcopyUrl = 'https://github.com/Azure/azure-storage-azcopy/releases/download/v10.32.8/azcopy_linux_amd64_10.32.8.tar.gz'
+var azcopySha256 = 'a95277dbc265912cefdddbaf251aa99ec648cb18ba657e8788066357a9022dc3'
+module shareCopyJob 'modules/bridge-job.bicep' = if (withApp && projectShare == 'copy') {
+  name: 'share-copy-job'
+  dependsOn: [ registry ]
+  params: {
+    jobName: names.shareCopyJob
+    location: location
+    environmentId: app!.outputs.environmentId
+    identityId: shareCopyIdentity.id
+    identityClientId: shareCopyIdentity!.properties.clientId
+    image: bridgeImage
+    registryServer: registryServer
+    keyVaultName: vault.outputs.name
+    mysqlHost: mysql!.outputs.host
+    databaseName: mysql!.outputs.databaseName
+    masterHost: masterHost
+    projectStorageName: app!.outputs.projectStorageName
+    workloadProfileName: app!.outputs.workloadProfileName
+    timeoutSeconds: 21600
+    // Walking 345,000 files over the SMB mount was the whole cost of a pass (156 minutes to
+    // send 28 files, 107 with 4 cores and 32 scanners); the source is now listed over REST.
+    cpu: '4'
+    memory: '8Gi'
+    mountProject: false
+    extraEnv: [
+      { name: 'AZCOPY_URL', value: azcopyUrl }
+      { name: 'AZCOPY_SHA256', value: azcopySha256 }
+      { name: 'SHARE_COPY_SRC', value: 'https://${names.files}.file.${environment().suffixes.storage}/project' }
+      { name: 'SHARE_COPY_DEST', value: 'https://${names.filesV2}.file.${environment().suffixes.storage}/project' }
+      { name: 'AZCOPY_CONCURRENT_SCAN', value: '32' }
+    ]
+    command: [
+      '/bin/bash'
+      '-c'
+      'set -euo pipefail; cd /tmp; curl -fsSL -o azcopy.tgz "$AZCOPY_URL"; echo "$AZCOPY_SHA256  azcopy.tgz" | sha256sum -c -; tar -xzf azcopy.tgz --strip-components=1; export AZCOPY_AUTO_LOGIN_TYPE=MSI AZCOPY_MSI_CLIENT_ID="$AZURE_CLIENT_ID" AZCOPY_LOG_LOCATION=/tmp/azcopy-logs AZCOPY_JOB_PLAN_LOCATION=/tmp/azcopy-plans; ./azcopy --version; rc=0; ./azcopy sync "$SHARE_COPY_SRC" "$SHARE_COPY_DEST" --recursive --delete-destination=true --output-level=essential || rc=$?; jid=$(./azcopy jobs list | sed -n "s/^JobId: //p" | head -1); [ -z "$jid" ] || ./azcopy jobs show "$jid" --with-status=Failed | head -60; exit "$rc"'
     ]
   }
 }
@@ -359,11 +495,12 @@ module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
 output appFqdn string = withApp ? app!.outputs.fqdn : ''
 output bridgeJobName string = withApp ? bridgeJob!.outputs.name : ''
 output goldBundleJobName string = withApp && goldBundle ? goldBundleJob!.outputs.name : ''
+output qualityWaveJobName string = withApp && !empty(qualityWaveScript) ? qualityWaveJob!.outputs.name : ''
 output initJobName string = withApp ? initJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
-output mysqlHost string = mysql.outputs.host
-output logAnalyticsQueryHost string = monitor.outputs.logAnalyticsQueryHost
-output logAnalyticsQueryHosts array = monitor.outputs.logAnalyticsQueryHosts
+output mysqlHost string = serverOnPrem ? '' : mysql!.outputs.host
+output logAnalyticsQueryHost string = serverOnPrem ? '' : monitor!.outputs.logAnalyticsQueryHost
+output logAnalyticsQueryHosts array = serverOnPrem ? [] : monitor!.outputs.logAnalyticsQueryHosts
 output publishJobName string = withApp && !empty(publishImage) ? publishJob!.outputs.name : ''
 output registryName string = registryName
 output registryServer string = registryServer

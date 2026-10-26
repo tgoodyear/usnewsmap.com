@@ -8,7 +8,7 @@
 # file changed, so Prettier checks its format), and provision=true|false:
 # whether it changes the Azure stack beyond what a deploy applies (the API
 # image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
-# applies), so scripts/provision.sh must run. Documentation (Markdown
+# applies), so scripts/azure/provision.sh must run. Documentation (Markdown
 # anywhere, anything under docs/) counts for no output but markdown: a change
 # to it alone runs only the Markdown format check.
 # ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
@@ -16,11 +16,13 @@
 # check run in the infra job. Most fixtures/ocr-gold/ files count for none
 # of rust/quickwit/web/image/fixtures. The v1 lock is embedded in the Rust
 # mirror CLI, and it and reviewed selections also build the bridge.
+# edge: the Cloudflare fallback Worker (edge/: JavaScript, its Wrangler config and deploy
+# script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098).
 # boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
-# Everything runs for a default workflow_dispatch (scripts/bootstrap.sh dispatches ci
+# Everything runs for a default workflow_dispatch (scripts/azure/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out; everything but ops, which runs only
 # when its own files change (the snapshots, the index history, their schemas,
@@ -30,13 +32,33 @@
 # workspace manifest and lock file only when the packages Cargo resolves for
 # those crates change, and the fixtures, index configs and Quickwit scripts.
 # image and e2e are narrowed the same way: image for the workspace crates
-# usnm-api (Dockerfile) and usnm-ingest (Dockerfile.ingest) build, e2e (the web
+# usnm-api (docker/Dockerfile.api) and usnm-ingest (docker/Dockerfile.ingest) build, e2e (the web
 # end-to-end job) for those usnm-api builds, the API that
 # scripts/ci/start-api-fixtures.sh starts. A crate outside a closure (the BOINC
 # or OCR survey crates, say) runs neither.
 # The infra job (code) checks the workbook definitions, so any change to
 # infra/workbooks/ runs it; infra/workbooks/boinc.json, which the BOINC stack
 # loads, also runs contrib, which builds that stack.
+# infra: what the infra job's Bicep, naming, workbook and script-test steps read.
+# `code` still runs that job's shared-key and named-argument scans over every
+# crate; `infra` alone runs the rest. It is false for a change confined to
+# src/ and tests/ of the dashboard crate, which none of those steps name
+# (test_changes.py checks that).
+# ocr_worker, ocr_dash: the OCR worker's and the LAN dashboard's EL9 build.
+# ocr_worker also runs the RHEL 10 and Tesseract image check. On main, either
+# one runs the release job, whose release holds both binaries.
+# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, boinc_native,
+# ocr_dashboard: the BOINC worker image workflows, the native BOINC apps'
+# builds on five targets and the dashboard's static build, which read these
+# outputs from their own `inputs` job. They run for what each builds, not for
+# anything under crates/: a crate counts when it is in the closure of what the
+# image or binary builds (normal and build dependencies from cargo metadata,
+# plus the roots' own dev-dependencies for what builds examples or runs
+# tests), the files those crates embed with include_str!/include_bytes!
+# count, and the workspace manifest and lock file count only when the packages
+# Cargo resolves for the roots change or the manifest's other settings do.
+# Files the image's own recipe reads are listed below. test_changes.py checks
+# the lists and the embedded files against each workflow's `paths:`.
 set -euo pipefail
 out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps them.
@@ -44,7 +66,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -56,7 +78,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker page_language contrib ocr_gold boinc_pages; do
+      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages edge; do
         case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
@@ -100,8 +122,8 @@ if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwi
   provision=true
 fi
 # The index version snapshots and the index history must match their schemas
-# (and what writes them); searches.sh's date-span summary has its tests there too.
-matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$)' && ops=true
+# (and what writes them); azure/searches.sh's date-span summary has its tests there too.
+matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(ops/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history)|azure/test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$)' && ops=true
 # Another workflow or dependabot.yml defines no job here. An edit to ci.yml
 # outside a job (triggers, env) or to the changes job runs everything; an edit
 # inside other jobs forces just the flags those jobs' `if:` lines read.
@@ -117,7 +139,7 @@ matches '^\.github/workflows/ci\.yml$' && {
       !injobs { if (hit[NR]) print "ALL"; next }
       /^  [a-z0-9_-]+:$/ { job = $1; if (job == "changes:") job = "ALL"; hitjob[job] = hitjob[job] || hit[NR]; cur = job; next }
       { if (hit[NR]) hitjob[cur] = 1
-        while (match($0, /outputs\.[a-z_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
+        while (match($0, /outputs\.[a-z0-9_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
       END { for (j in hitjob) if (hitjob[j]) { if (j == "ALL") print "ALL"; else print flags[j] } }' .github/workflows/ci.yml | tr -s ' \n' ' ')
   rm -f "$lines"
   case " $forced " in *" ALL "*) ops=true; all "workflow changed" ;; esac
@@ -126,6 +148,29 @@ matches '^\.github/workflows/ci\.yml$' && {
   done
   echo "workflow jobs changed, forcing:$forced"
 }
+# A workflow, or the composite action it builds with, is an input of its own
+# job: editing it runs that job and no other.
+workflow_input() {
+  local re="^\.github/(workflows/$2\.yml$"
+  [ -z "${3:-}" ] || re="$re|actions/$3/"
+  if matches "$re)"; then forced="$forced $1"; fi
+}
+workflow_input boinc_worker boinc-worker boinc-worker-build
+workflow_input boinc_qwen boinc-qwen boinc-qwen-build
+workflow_input boinc_surya boinc-surya boinc-surya-build
+workflow_input boinc_ndlocr boinc-ndlocr-lite
+workflow_input boinc_native boinc-quality-native
+workflow_input ocr_dashboard ocr-dashboard
+# The composite actions ci.yml's jobs call are steps of those jobs, as if written in ci.yml:
+# editing one runs the jobs that call it, by the flags their `if:` lines read
+# (test_changes.py checks this list against ci.yml).
+action_input() {
+  local action=$1; shift
+  if matches "^\.github/actions/$action/"; then forced="$forced $*"; fi
+}
+action_input setup-rust rust quickwit page_language ocr_worker ocr_dash e2e
+action_input setup-node-web web e2e
+action_input build-check-image image contrib
 # Workflow files are settled above; they are not code for the file rules below.
 files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # The Rust build and tests: the crates, the files compiled into binaries
@@ -133,7 +178,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
+rust_files='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ocr/ja-ocr/damage_v2\.py$|ocr/ja-ocr/wordlists/|scripts/dev/quickwit-fixtures\.sh)'
 rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
@@ -142,30 +187,56 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # Cargo resolves for them. Not catalog/, web/src/examples.json,
 # ops/index-history.json or other CI scripts, which the rust job's own tests
 # cover; editing them doesn't change what Quickwit is asked to do.
-quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
+quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
-image="$rust_files|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
+# The queue job (usnm-store against PostgreSQL + pgmq) also runs for its schema and fixture (#967).
+rust="$rust|^scripts/onprem/queue/"
+# The OCR-quality results database (#962): its schema and loader, checked in the queue job.
+rust="$rust|^scripts/onprem/quality/"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
-# The OCR worker's release: the worker and the LAN dashboard, the crates they use, the workspace's
-# build files, its Tesseract image and the release script.
-ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-ocr-route|usnm-alto|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|scripts/ci/ocr-worker-release\.sh$)'
+# The OCR worker's EL9 build, RHEL 10 check and release, and the LAN dashboard's
+# EL9 build. The crates each builds are a closure (narrow_release, below); what
+# is listed here is what is not a crate: the Tesseract image, the catalog and
+# routes the worker reads, the toolchain and the release script. The dashboard
+# shares the release but not the engine: it reads the engine catalog, the
+# Tesseract models lock and the routes only through the worker crate it links.
+ocr_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|rust-toolchain\.toml$|scripts/ci/ocr-worker-release\.sh$)'
+ocr_dash='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$)'
+# ocr-dashboard.yml builds the same binary for musl, from the same inputs.
+ocr_dashboard=$ocr_dash
+# The BOINC worker images (.github/workflows/boinc-*.yml) build usnm-boinc from
+# the checkout (COPY . .), so what each one adds to the crates is its own
+# Containerfile, its smoke tests and what they download or pin. The worker and
+# NDLOCR images also build usnm-boinc's examples (narrow_examples).
+boinc_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/boinc/Containerfile$|scripts/boinc/smoke-worker\.py$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_qwen='^(ocr/boinc/qwen/|scripts/boinc/qwen_(disk|cold_cache)\.py$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_surya='^(ocr/boinc/surya/|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/smoke-ndlocr(-worker)?\.py$|ocr/ja-ocr/(testdata/|alto\.py$|jaocr\.py$)|rust-toolchain\.toml$|\.dockerignore$)'
+# The native apps (boinc-quality-native.yml) build usnm-quality-app and
+# usnm-qwen-app and test those and the two crates they share with the engines;
+# usnm-ocr-contract's tests read the v1 contract files.
+boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/test_amd_device_map\.py$|rust-toolchain\.toml$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
 # scripts that write the lists and the samples.
-page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
+page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/data/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v1\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
+# The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
+# documentation, above).
+edge='^edge/'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path
 # dependencies in their manifests), from cargo metadata, so a new dependency
@@ -177,13 +248,56 @@ closure_crates() {
         | if $n == $s then $s else $n | close end;
     $ARGS.positional | close | .[] | $p[.].manifest_path | ltrimstr($root) | rtrimstr("Cargo.toml")' "$@"
 }
-# closure_tree DIR ROOT...: every package (with its features) Cargo builds for
-# the roots' tests, in the checkout at DIR, without the workspace crates' local
-# paths (a git source keeps its revision).
+# closure_build_crates DEV ROOT...: the directories of the workspace crates a
+# build of the roots compiles: the roots and their normal and build
+# dependencies, transitively, as `cargo build` follows them. A dev-dependency
+# of a dependency is never built, so the worker's dev-dependency on the ingest
+# crate doesn't make the dashboard's binary depend on it. DEV=true adds the
+# roots' own dev-dependencies (a build of their examples compiles them).
+closure_build_crates() {
+  local dev=$1; shift
+  cargo metadata --format-version 1 --no-deps --offline | jq -r --arg root "$PWD/" --argjson dev "$dev" --args '
+    (.packages | map({key: .name, value: .}) | from_entries) as $p
+    | def build_deps: map($p[.].dependencies[] | select(.path and .kind != "dev") | .name);
+      def close: . as $s | (($s + ($s | build_deps)) | unique) as $n
+        | if $n == $s then $s else $n | close end;
+    $ARGS.positional as $r
+    | (if $dev then $r + ($r | map($p[.].dependencies[] | select(.path) | .name)) else $r end | unique) | close
+    | .[] | $p[.].manifest_path | ltrimstr($root) | rtrimstr("Cargo.toml")' "$@"
+}
+# closure_embeds DIR...: the repository files the crates in DIR... embed in
+# their binaries with include_str! or include_bytes! (a literal path, relative
+# to the file naming it, in src/, examples/ or build.rs), as regular
+# expressions, one per line. Tests and their fixtures are not built.
+closure_embeds() {
+  local dir sub paths=()
+  for dir in "$@"; do
+    [ -d "$dir" ] || continue
+    for sub in src examples build.rs; do
+      [ ! -e "$dir$sub" ] || paths+=("$dir$sub")
+    done
+  done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  find "${paths[@]}" -name '*.rs' -type f -exec perl -0777 -ne '
+    use File::Basename;
+    while (/\binclude_(?:str|bytes)!\s*\(\s*"([^"]+)"/g) {
+      my @p;
+      for (split m{/}, dirname($ARGV) . "/" . $1) {
+        next if $_ eq "" or $_ eq ".";
+        if ($_ eq "..") { pop @p } else { push @p, $_ }
+      }
+      print join("/", @p), "\n";
+    }' {} + | sort -u | sed -e 's/[][\.*^$()+?{|]/\\&/g' -e 's/^/^/' -e 's/$/$/'
+}
+# closure_tree KIND DIR ROOT...: packages and features across all targets,
+# without local workspace paths (a git source keeps its revision). Release
+# builds exclude dev dependencies so their unified features cannot mask a
+# release-only feature change. Tests and examples include the roots' dev deps.
 closure_tree() {
-  local dir=$1 p args=(); shift
+  local kind=$1 dir=$2 edges=normal,build p args=(); shift 2
+  [ "$kind" = release ] || edges=normal,build,dev
   for p in "$@"; do args+=(-p "$p"); done
-  (cd "$dir" && cargo tree --locked "${args[@]}" -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
+  (cd "$dir" && cargo tree --locked --target all "${args[@]}" -e "$edges" --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
 }
 # root_settings: the workspace manifest at revision $1 without its member list
 # and [workspace.dependencies], whose effect on these crates the package tree
@@ -194,47 +308,107 @@ root_settings() {
     /^members = \[/ { skip = 1 } skip { if (/^\]/) skip = 0; next }
     /^\[/ { deps = ($0 == "[workspace.dependencies]") } !deps'
 }
-# lock_changed ROOT...: whether the packages resolved for the roots differ
+# lock_changed KIND ROOT...: whether the packages resolved for the roots differ
 # between the base and this revision (a crate added outside them changes
 # neither). True if that can't be worked out.
+lock_cache=
 lock_changed() {
-  local base dir before after
+  local key="$*" result=true
+  case $lock_cache in
+    *"|$key=true|"*) return 0 ;;
+    *"|$key=false|"*) return 1 ;;
+  esac
+  if lock_changed_uncached "$@"; then result=true; else result=false; fi
+  lock_cache="$lock_cache|$key=$result|"
+  [ "$result" = true ]
+}
+lock_changed_uncached() {
+  local kind=$1 base dir before after; shift
   case "$range" in *...*) base=$(git merge-base "${range%%...*}" "${range##*...}") ;; *) base=${range%%..*} ;; esac || return 0
   [ "$(root_settings "$base")" = "$(root_settings HEAD)" ] || return 0
   dir=$(mktemp -d)
   git worktree add -q --detach "$dir" "$base" || { rm -rf "$dir"; return 0; }
-  before=$(closure_tree "$dir" "$@") || before=
+  before=$(closure_tree "$kind" "$dir" "$@") || before=
   git worktree remove --force "$dir"
-  after=$(closure_tree . "$@") || after=
+  after=$(closure_tree "$kind" . "$@") || after=
   [ -z "$before" ] || [ -z "$after" ] || [ "$before" != "$after" ]
 }
-# narrow PART ROOT...: run PART when a crate in the roots' closure changed, or
-# the workspace manifest or lock file changed what Cargo resolves for them.
-# Fails open: when cargo can't say, PART runs.
-narrow() {
-  local part=$1 dirs; shift
+# fail_open KIND PART: run PART because what it builds can't be worked out. The
+# build kinds are forced, which the loop below honours for any change; the
+# pattern '.' matches only built files, and a change to the gold set alone has
+# none, though the BOINC images embed its lock. KIND test keeps '.', so the
+# application jobs still leave the gold set out.
+fail_open() {
+  if [ "$1" = test ]; then printf -v "$2" '.'; else forced="$forced $2"; fi
+}
+# _narrow KIND PART ROOT...: run PART when a crate in the roots' closure
+# changed, or the workspace manifest or lock file changed what Cargo resolves
+# for them. KIND test takes the closure the tests build (closure_crates).
+# KIND release takes what a release build of the roots compiles and KIND
+# examples also the roots' dev-dependencies (closure_build_crates); both add the
+# files those crates embed (the gold set's embedded lock among them). Fails
+# open: when cargo or perl can't say, PART runs.
+_narrow() {
+  local kind=$1 part=$2 dirs='' embeds listed=true; shift 2
   matches_built "${!part}" && return 0
-  if ! dirs=$(closure_crates "$@") || [ -z "$dirs" ]; then
-    echo "cargo metadata failed: running $part"; printf -v "$part" '.'
+  case $kind in
+    test) dirs=$(closure_crates "$@") || listed=false ;;
+    release) dirs=$(closure_build_crates false "$@") || listed=false ;;
+    examples) dirs=$(closure_build_crates true "$@") || listed=false ;;
+  esac
+  if [ "$listed" = false ] || [ -z "$dirs" ]; then
+    echo "cargo metadata failed: running $part"
+    fail_open "$kind" "$part"
+    return 0
   elif matches_built "^($(paste -sd'|' - <<< "$dirs"))"; then
     printf -v "$part" '.'
-  elif matches_built '^Cargo\.(toml|lock)$' && lock_changed "$@"; then
+    return 0
+  fi
+  if [ "$kind" != test ]; then
+    # shellcheck disable=SC2086 # one argument per crate directory
+    if ! embeds=$(closure_embeds $dirs); then
+      echo "can't list what $* embed: running $part"
+      fail_open "$kind" "$part"
+      return 0
+    elif [ -n "$embeds" ] && matches "$(paste -sd'|' - <<< "$embeds")"; then
+      forced="$forced $part"
+      return 0
+    fi
+  fi
+  if matches_built '^Cargo\.(toml|lock)$' && lock_changed "$kind" "$@"; then
     echo "the packages resolved for $* changed: running $part"; printf -v "$part" '.'
   fi
 }
+narrow() { _narrow test "$@"; }
+narrow_release() { _narrow release "$@"; }
+narrow_examples() { _narrow examples "$@"; }
 narrow quickwit usnm-search usnm-ingest
 narrow image usnm-api usnm-ingest
 narrow e2e usnm-api
-for part in rust quickwit web image e2e fixtures; do
+narrow_release ocr_worker usnm-ocr-worker
+narrow_release ocr_dash usnm-ocr-dash
+narrow_release ocr_dashboard usnm-ocr-dash
+narrow_examples boinc_worker usnm-boinc
+narrow_release boinc_qwen usnm-boinc
+narrow_release boinc_surya usnm-boinc
+narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
+narrow_examples boinc_native usnm-quality-app usnm-qwen-app usnm-ocr-quality usnm-ocr-contract
+for part in rust quickwit web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native; do
   if matches_built "${!part}" ||
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
     [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
-for part in ocr_worker page_language contrib ocr_gold; do
+for part in page_language contrib ocr_gold edge; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"
 echo "markdown=$markdown" >> "$out"
 echo "boinc_pages=$boinc_pages" >> "$out"
 if [ -n "$files" ] || [[ " $forced " == *" code "* ]]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
+# The infra job's Bicep, naming, workbook and script-test steps read nothing in
+# the dashboard crate's src/ and tests/ (its manifest is read, with every
+# crate's, by the selector's own tests), so a change confined to them skips
+# those steps. Anything else, a crate's other Rust sources included, runs them.
+infra_files=$(grep -Ev '^crates/usnm-ocr-dash/(src|tests)/' <<< "$files" || true)
+if [ -n "$infra_files" ] || [[ " $forced " == *" infra "* ]]; then echo "infra=true" >> "$out"; else echo "infra=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"

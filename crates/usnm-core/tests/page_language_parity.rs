@@ -1,17 +1,17 @@
-//! The page-language detector's Rust port against `ja-ocr/damage_v2.py`'s
+//! The page-language detector's Rust port against `ocr/ja-ocr/damage_v2.py`'s
 //! `detect` (05 §5.5.8, #289): every page of two fixtures, scored in Python,
 //! must get the same language, decision, second language, script,
 //! runner-up and shares here:
 //!
 //! - `tests/data/damage-parity.jsonl.zst`, the damage metric's: pages from
 //!   loc.gov's text service and made-up pages for the known traps between
-//!   Python's string handling and Rust's (`ja-ocr/damage_parity.py`);
+//!   Python's string handling and Rust's (`ocr/ja-ocr/damage_parity.py`);
 //! - `tests/data/page-language-parity.jsonl.zst`: 42 loc.gov pages before
 //!   1929, from Chronicling America's language facets, of titles in 24
 //!   languages (Cherokee, Croatian with Slovenian, and the Yiddish and Hebrew
 //!   papers among them), the first two pages of a multilingual title's
 //!   issue, cut to 8,000 characters but for the two longest
-//!   (`scripts/page-language-sample.py`).
+//!   (`scripts/data/page-language-sample.py`).
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -55,13 +55,13 @@ fn languages(r: &Value) -> Vec<&str> {
 
 #[test]
 fn fixtures_were_scored_by_this_damage_v2_py() {
-    let ja_ocr = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ja-ocr");
+    let ja_ocr = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ocr/ja-ocr");
     for name in FIXTURES {
         let (header, records) = fixture_file(name);
         assert_eq!(
             header["damage_v2_sha256"].as_str(),
             Some(sha256(&format!("{ja_ocr}/damage_v2.py")).as_str()),
-            "damage_v2.py changed since {name} was scored: python3 ja-ocr/damage_parity.py --rescore"
+            "damage_v2.py changed since {name} was scored: python3 ocr/ja-ocr/damage_parity.py --rescore"
         );
         assert_eq!(header["wordfreq"].as_str(), Some("3.1.1"), "{name}");
         assert_eq!(

@@ -30,6 +30,51 @@ sys.exit(0 if ok else 1)
 
 
 class CheckAppver(unittest.TestCase):
+    def test_amd_identity_helper_is_signed_and_cannot_be_omitted(self):
+        proj = self.root / "amd-project"
+        proj.mkdir()
+        (proj / "config.xml").write_text("<boinc/>")
+        payload = self.root / "fixture"
+        payload.write_bytes(b"native-fixture")
+        directory = install.install(
+            proj, version="1.0", app="usnm_qwen", plan_class="amd_vulkan_8b",
+            kind="native", binary=payload,
+            extra_files=[f"{name}={payload}" for name in
+                         ("llama-server", "llama.lock", "weights.lock", "usnm-amd-device-map",
+                          "libggml.so", "libggml-base.so", "libggml-vulkan.so")])
+        signatures = self.root / "amd-sigs"
+        signatures.mkdir()
+        for path in directory.iterdir():
+            if path.name != "version.xml":
+                (signatures / (path.name + ".sig")).write_text("good " + hashlib.md5(path.read_bytes()).hexdigest())
+        ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+        for signature in directory.glob("*.sig"):
+            signature.unlink()
+        helper = next(p for p in directory.iterdir() if p.name.endswith("_usnm-amd-device-map"))
+        helper.write_bytes(b"changed")
+        with self.assertRaisesRegex(ca.Refused, "does not verify"):
+            ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+        for signature in directory.glob("*.sig"):
+            signature.unlink()
+        helper.write_bytes(payload.read_bytes())
+        original_xml = (directory / "version.xml").read_bytes()
+        for logical in ("usnm-amd-device-map", "libggml.so", "libggml-base.so", "libggml-vulkan.so"):
+            tree = ca.ET.fromstring(original_xml)
+            node = next(n for n in tree.findall("file") if n.findtext("logical_name") == logical)
+            physical = directory / node.findtext("physical_name")
+            content = physical.read_bytes()
+            signature = signatures / (physical.name + ".sig")
+            signature_content = signature.read_bytes()
+            physical.unlink()
+            signature.unlink()
+            tree.remove(node)
+            (directory / "version.xml").write_bytes(ca.ET.tostring(tree))
+            with self.subTest(logical=logical), self.assertRaisesRegex(ca.Refused, "missing required bundle files: " + logical):
+                ca.check(directory, signatures, self.key, str(self.crypt), kind="native")
+            physical.write_bytes(content)
+            signature.write_bytes(signature_content)
+            (directory / "version.xml").write_bytes(original_xml)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

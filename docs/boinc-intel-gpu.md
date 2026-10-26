@@ -10,7 +10,7 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 ([app releases](../contrib-compute/docs/app-release.md)).
 
 `usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
-[docs/boinc-iris-pilot.md](boinc-iris-pilot.md)) is a separate experiment with a different model
+[docs/notes/2026-10-16-boinc-iris-pilot.md](notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
 (4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum.
 
 ## How a host is chosen and checked
@@ -57,13 +57,13 @@ refused by the app.
 
 ## Supported hardware
 
-| GPU                                    | Host                              | Status                                                                           |
-| -------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
-| Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                 |
-| Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9 |
-| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Proxmox host, CT 214              | Measured (below)                                                                 |
-| Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                             |
-| AMD GPUs through the same Vulkan build |                                   | Not in scope                                                                     |
+| GPU                                    | Host                              | Status                                                                                              |
+| -------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Iris Xe (TigerLake-LP GT2), i7-1185G7  | 16 GB RAM, Debian 13, Mesa 25.0.7 | Measured (below)                                                                                    |
+| Iris Xe with 8 GB RAM                  |                                   | Not measured; likely refused if its Vulkan heap is half of RAM, as on Computer 9                    |
+| NVIDIA GeForce RTX 2060 SUPER, 8 GiB   | Proxmox host, CT 214              | CUDA and Vulkan-on-NVIDIA measured (below)                                                          |
+| Arc A-series (A750 8 GB, A770 16 GB)   |                                   | Not measured; no Arc hardware was available for #829                                                |
+| AMD GPUs through the same Vulkan build |                                   | [Separate automatic AMD admission](boinc-amd-gpu.md); RX 9070 XT hardware acceptance pending (#885) |
 
 ## Measured on Computer 9 (#787)
 
@@ -124,6 +124,102 @@ The private container requested 6 GiB memory and 2 CPUs, but CT 214 did not dele
 limits (`memory.max` and `cpu.max` read as `max`), so those limits were not enforced. The
 observed worker peak RSS was about 5.23 GiB. The production CUDA image is a different pinned
 llama.cpp build from the native Vulkan `llama.lock` route; the similar CER values do **not**
-establish CUDA/Vulkan equivalence. Paired raw Vulkan readings and matching engine metadata are
-still required for the equivalence item in [#786](https://github.com/tgoodyear/usnewsmap.com/issues/786).
+establish CUDA/Vulkan equivalence. The separate native b8799 pair below supplies that backend
+comparison; it does not turn this b11610 production-image run into a same-build pair.
 No Arc hardware was available, so Arc was not measured.
+
+## Paired native b8799 CUDA / Vulkan on NVIDIA (#786, #829)
+
+On 2026-10-18, the **same RTX 2060 SUPER**, existing driver 610.57.04 and native
+`usnm_qwen` 1.6 executable read the same 100 verified `legacy/overproof-en-100` crops through
+both backends. **This is Vulkan on NVIDIA, not Intel hardware.** It tests the pinned Vulkan
+backend that Intel hosts use without needing the unavailable raw Computer 9 readings.
+
+The Vulkan archive is the exact `ubuntu-vulkan-x64` b8799 asset in `llama.lock`
+(SHA-256 `d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309`). Because #849 did
+not document a retained raw-output location and its CT scratch was removed, CUDA was run
+again in the same window. To avoid a b11610/b8799 confound, this new CUDA run was built from
+b8799 source commit `e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd`, using CUDA 12.8.1, GCC 13.3.0
+and architecture 75. **It is a source-pinned native benchmark build, not the production CUDA
+image or a prebuilt Linux CUDA asset from `llama.lock`.** Its banner is `b0-unknown` because
+its source archive/build container had no Git metadata; the source archive, resulting binaries,
+compiler and commands are independently pinned in the [run receipt](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/run.json).
+Do not substitute its CER for #849's production-image 2.137%, or attribute the timing difference
+between those two CUDA runs solely to a backend change.
+
+Both native passes used four identical 25-crop jobs, the same Qwen3-VL-8B Q4_K_M and Q8_0
+vision-projector bytes from `weights.lock`, prompt v1, context 4096, GPU layers 99, two CPU
+threads, parallel 1, temperature 0, top-p 1, seed 42 and four output tokens per 1,000 square
+pixels. The native plan classes were `nvidia_cuda_8b` and `nvidia_vulkan_8b`; the Intel class
+would deliberately refuse the NVIDIA device. Both server logs confirm 37/37 layers offloaded
+to the GPU. Vulkan used CT 214's existing NVIDIA ICD with no CT or driver configuration changes.
+
+| Measurement                                          |                        Native CUDA b8799 | Pinned Vulkan b8799 on NVIDIA |
+| ---------------------------------------------------- | ---------------------------------------: | ----------------------------: |
+| Successful crops / missing                           |                                  100 / 0 |                       100 / 0 |
+| CER, `legacy-ws-v1`                                  |                    2.256% (627 / 27,795) |         2.241% (623 / 27,795) |
+| CER, `raw-v1`                                        |                    2.490% (692 / 27,795) |         2.446% (680 / 27,795) |
+| Completed-pass wall / mean per crop, including loads |                       293.29 s / 2.933 s |            423.15 s / 4.232 s |
+| All 100 readings, p50 / p95                          |                        1.523 s / 1.874 s |             1.693 s / 2.112 s |
+| Remaining 96 warm readings, p50 / p95                |                        1.518 s / 1.874 s |             1.685 s / 2.047 s |
+| First read after each model start                    |                            1.630–2.076 s |               34.476–35.585 s |
+| Model load per slot                                  | 21.048 s first; 2.658–2.744 s next three |                 4.604–4.908 s |
+| Sampled peak physical VRAM, of 8,192 MiB             |                                7,013 MiB |                     6,490 MiB |
+| Sampled combined worker + server peak RSS            |                                 5.17 GiB |                      5.31 GiB |
+| Sampled GPU utilization, mean / peak                 |                              51.0% / 97% |                   39.3% / 97% |
+| Reported GPU-board power, mean / peak                |                        103.6 W / 209.1 W |              83.6 W / 185.9 W |
+| Estimated GPU-board electricity per 1,000 pages      |                                    $0.15 |                         $0.18 |
+
+The electricity estimates use 12 crops/page and $0.15/kWh, exclude host power and one-time
+build/setup costs, and are not wall-meter measurements. RSS is sampled across the worker and
+its server; the native result's `peak_rss_kib` alone describes only the small worker process.
+These were native processes, not newly resource-limited inference containers. Filesystem and
+private shader caches were not cleared: “first read” means a fresh model/server, not cold disk
+or cold shader caches. A first Vulkan attempt yielded to a newly executing unrelated CPU BOINC
+task after 75 completed readings; it was discarded, and all 100 Vulkan crops were rerun from
+fresh slots after a 15-minute idle recheck. The table uses only the uninterrupted completed
+passes, not the discarded attempt, waiting interval, CUDA build or coordination time.
+
+### Pairwise agreement and retained evidence
+
+`usnm-boinc qwen compare`, the implementation invoked by `usnm_qwen_compare`, validated the
+unmodified readings/manifests/diagnostics and accepted **all four slots / all 100 crops** at
+both the existing 0.5 probe Dice floor and an additional fixed 0.95 benchmark threshold.
+
+- **Exact text equality:** 92/100; after whitespace normalization, 95/100.
+- **Word-bag Dice:** mean 0.999792, median 1.0, minimum 0.979167; 99/100 word bags identical.
+  The only Dice below 1 was `pub-overproof-ca-053`. None fell below 0.95.
+- **Aggregate Vulkan minus CUDA CER:** −0.014391 percentage points (`legacy-ws-v1`, four fewer
+  edits) and −0.043173 points (`raw-v1`, 12 fewer edits). These are edit-weighted aggregate
+  differences, not averages of per-crop CERs.
+- Exact differences were crops 007, 018, 044, 053, 072, 081, 088 and 106 (all with prefix
+  `pub-overproof-ca-`). The [per-crop comparison](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/crop-comparison.jsonl)
+  retains exact/whitespace matches, Dice, both CER edit deltas and timings for every crop;
+  [pairs.jsonl](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/pairs.jsonl) and
+  `strict-pairs.jsonl` retain the actual validator decisions.
+
+The native jobs were staged once before either run. For this native-only benchmark,
+`engine.image` fingerprints the identical native executable and `engine.llama` is the allowed
+release-level `llama.lock` digest, **not a claim that CUDA/Vulkan executable bytes are identical
+or that either ran inside the production image**. Backend binaries/source are pinned separately
+in the receipt. Byte-identical result-manifest copies were given BOINC-safe upload filenames
+solely for validator logging; no job, engine or output metadata was rewritten.
+
+[All evidence](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/) includes both
+100-row output files, both scorer rules/reports, timing/power traces, comparison summary,
+SHA-256 inventory and `raw-native-results.tar.gz` (the archive is in the `bench-assets` set: `scripts/ops/data-assets.sh --fetch --set bench-assets`). The archive preserves byte-exact native
+outputs, server logs, staged job metadata, validator-name copies, build receipts and the
+separately labelled discarded Vulkan attempt. For offline replay, extract it into a new local
+project directory, then run `usnm-boinc qwen compare --files READINGS RESULT DIAG --files2
+READINGS RESULT DIAG --min-dice 0.95 --log replay-pairs.jsonl`, selecting the corresponding
+`native/{cuda,vulkan}/JOB/` readings/diagnostics and `native/validator-upload-names/` result
+copies. Re-score `cuda-outputs.jsonl` and `vulkan-outputs.jsonl` with `bench-score` against the
+verified v1.0.0 release under both rules.
+
+This completes #829's remaining paired-comparison measurement and supplies bounded b8799
+backend-agreement evidence for #786. It is **not** cross-vendor Intel validation, an
+independent-host production quorum receipt, or permission to widen a cohort. Arc hardware was
+unavailable and remains optional for #829; Intel rollout/audited work, Arc characterization
+and integrated-GPU host-RAM reservation remain separate #786 follow-ups. The isolated CT
+workspace/store/cache were removed and the GPU was explicitly released on #794 before any
+PR/review work; shared BOINC processes, preferences, caches and other sessions were untouched.

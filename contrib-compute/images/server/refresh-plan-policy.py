@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh image plan classes without resetting bounded Qwen admission."""
+"""Refresh image plan classes without resetting explicit Qwen admission."""
 import argparse
 import fcntl
 import os
@@ -9,8 +9,12 @@ import xml.etree.ElementTree as ET
 
 COHORT_CLASSES = (
     "nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b",
-    "nvidia_vulkan_8b", "docker_nvidia_cuda_8b",
+    "nvidia_vulkan_8b", "amd_vulkan_8b", "docker_nvidia_cuda_8b",
 )
+AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
+NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
+# Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
+GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER}
 
 
 def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
@@ -34,6 +38,20 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
             continue
         old = existing[name]
         fields = [old.findall(tag) for tag in ("min_wu_id", "max_wu_id")]
+        marker = GENERAL_MARKERS.get(name)
+        if marker:
+            markers = [node for node in old if node.tag is ET.Comment
+                       and (node.text or "").strip() == marker]
+            if markers:
+                if len(markers) != 1 or any(fields) or name not in reviewed:
+                    label = "AMD" if name == "amd_vulkan_8b" else "NVIDIA"
+                    raise ValueError(f"Invalid explicit {label} general admission")
+                for node in list(reviewed[name]):
+                    if node.tag in ("min_wu_id", "max_wu_id") or (
+                            node.tag is ET.Comment and (node.text or "").strip() == marker):
+                        reviewed[name].remove(node)
+                reviewed[name].append(ET.Comment(marker))
+                continue
         if not any(fields):
             continue
         if any(len(field) != 1 for field in fields) or name not in reviewed:
@@ -41,6 +59,8 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
         low, high = (int(field[0].text) for field in fields)
         if (low, high) != (2, 1) and not (2 <= low <= high and high - low < 10):
             raise ValueError(f"Invalid bounded cohort for {name}")
+        if name == "amd_vulkan_8b" and (low, high) != (2, 1) and low != high:
+            raise ValueError("AMD acceptance requires exactly one workunit")
         for tag, value in (("min_wu_id", low), ("max_wu_id", high)):
             targets = reviewed[name].findall(tag)
             if len(targets) > 1:
