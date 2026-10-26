@@ -648,7 +648,8 @@ Without `--apply` the controller reads and runs nothing and prints the steps a t
 would run at an empty queue. The host lock and `state.json` are as for the OCR plan,
 but a Surya plan takes no Azure lease and its state is not tied to the
 configuration's hash, so a later tick may change the watermarks and caps. The engine
-pins are held to the campaign: staged units keep the pins they were cut with, so a
+pins are held to the campaign, persisted before staging even if the step fails:
+staged units keep the pins they were cut with, so a
 tick whose pins differ from the campaign's recorded ones refuses to run, and a new
 engine goes under a new `campaign` name. Collecting results (`surya-collect`, which needs the assimilator's spool) is still an
 operator step. Over ssh the controller's key may set only `SURYA_CAMPAIGN`,

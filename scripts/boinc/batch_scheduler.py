@@ -1230,6 +1230,8 @@ def surya_tick(config, state, transport, persist, now=None, *, drain=False,
             f"engine pins changed for campaign {campaign}; stage a new engine under a new campaign")
     record.update(campaign=campaign, engine=engine)
     state["surya"] = record
+    # A failed staging step may already have written units with these pins.
+    persist()
     if not drain:
         status = _extract_status({}, transport, server_status=server_status)
         require(status is not None and SURYA_APP_NAME in status["apps"],
