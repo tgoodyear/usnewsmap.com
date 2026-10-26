@@ -190,7 +190,7 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # targets only these integration tests; tests in crates that are merely
 # dependencies (such as usnm-api) are not built or run. The ingest pipeline
 # target is a module tree, not a single pipeline.rs file.
-quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$|crates/usnm-search/tests/quickwit_parity\.rs$|crates/usnm-ingest/tests/pipeline/)'
+quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/(install-quickwit\.sh|rust-test-times\.py)$|crates/usnm-search/tests/quickwit_parity\.rs$|crates/usnm-ingest/tests/pipeline/)'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
@@ -199,7 +199,7 @@ e2e="$rust_files|$web"
 image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
-rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
+rust="$rust|^contrib-compute/images/server/bridge-job\.sh$|^scripts/ci/rust-test-times\.py$"
 # The queue job (usnm-store against PostgreSQL + pgmq) also runs for its schema and fixture (#967).
 rust="$rust|^scripts/onprem/queue/"
 # The OCR-quality results database (#962): its schema and loader, checked in the queue job.

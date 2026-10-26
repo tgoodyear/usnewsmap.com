@@ -635,6 +635,15 @@ class BuildInputs(unittest.TestCase):
         self.assertIn(marker, ci)
         self.assertEqual(self.select((path, ci.replace(marker, marker + "      # touched\n"))), {"edge"})
 
+    def test_an_edit_inside_a_script_shard_also_enables_its_required_gate(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "      - name: Every selected script module runs in exactly one isolated shard\n"
+        self.assertIn(marker, ci)
+        self.assertEqual(self.select((path, ci.replace(marker, marker + "        # touched\n"))),
+                         {"code", "infra"})
+
     def test_a_broken_cargo_runs_everything_that_builds_a_crate(self):
         on = self.select("crates/usnm-ocr-dash/src/html.rs", env=self.stub_tool("cargo"))
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
@@ -845,7 +854,7 @@ class Wiring(unittest.TestCase):
             self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
-        job = job_text(self.workflow("ci.yml"), "infra")
+        job = job_text(self.workflow("ci.yml"), "infra-checks")
         always = ("actions/checkout", "No shared-key authentication", "Scripts and CLIs take named arguments")
         steps = re.split(r"(?m)^      - ", job.split("    steps:\n", 1)[1])[1:]
         self.assertGreaterEqual(len(steps), 12)  # the split found the steps; script unit tests are one step

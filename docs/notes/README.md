@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                             |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------- |
+| 2026-10-26 | [Shortening hosted CI's critical path](2026-10-26-hosted-ci-critical-path.md)                                   | operations           | Production CI run 40389690376; hosted optimization PR #1232             |
 | 2026-10-26 | [Initial Intel and AMD BOINC acceptance follow-through](2026-10-26-boinc-gpu-initial-probes.md)                 | ocr, operations      | Two actual Xe returns; fresh AMD-eligible repeat; acceptance incomplete |
 | 2026-10-26 | [BOINC GPU release follow-through](2026-10-26-boinc-gpu-release.md)                                             | ocr, operations      | Signed on-prem publication; 72 public payload hashes; no GPU experiment |
 | 2026-10-25 | [Decade pruning: production acceptance](2026-10-25-decade-pruning-acceptance.md)                                | indexing, operations | `pages-v20261022-1`, live Azure searcher and bounded API benchmarks     |

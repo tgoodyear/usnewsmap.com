@@ -24,4 +24,4 @@ runs:
         tags: ${{ inputs.tag }}
         load: true
         cache-from: type=gha,scope=${{ inputs.cache-scope }}
-        cache-to: type=gha,scope=${{ inputs.cache-scope }},mode=max
+        cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,scope={0},mode=max', inputs.cache-scope) || '' }}
