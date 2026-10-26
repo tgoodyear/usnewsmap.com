@@ -64,5 +64,6 @@ describe("readable search paths", () => {
     expect(searchPath("well-known", "all")).toBe("/search/well-known");
     expect(searchPath("日本")).toBe("/search/%E6%97%A5%E6%9C%AC");
     expect(queryForPath(searchPath("日本"))).toBe("日本");
+    expect(searchPath("İstanbul")).toBe("/search/%C4%B0stanbul");
   });
 });

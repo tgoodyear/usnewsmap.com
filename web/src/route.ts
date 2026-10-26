@@ -15,8 +15,8 @@ export type Page = "search" | "datasets" | "privacy" | "credits" | "not-found";
 export const DATASETS_PATH = "/datasets";
 export const OLD_DATASETS_PATH = "/status";
 
-const WORD = /^[\p{L}\p{M}\p{N}]+$/u;
-const SLUG = /^[\p{L}\p{M}\p{N}]+(?:-[\p{L}\p{M}\p{N}]+)*$/u;
+const WORD = /^[\p{L}\p{N}]+$/u;
+const SLUG = /^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$/u;
 
 /**
  * The readable path segment for a plain exact-phrase search: lowercase words
@@ -37,7 +37,9 @@ export function slugFor(q: string, mode = "phrase"): string | null {
   }
   const words = text.split(/[\s-]+/).filter(Boolean);
   if (words.length === 0 || !words.every((w) => WORD.test(w))) return null;
-  return words.map((w) => w.toLowerCase()).join("-");
+  // Lowercasing can add a combining mark (İ), which splits a token.
+  const lower = words.map((w) => w.toLowerCase());
+  return lower.every((w) => WORD.test(w)) ? lower.join("-") : null;
 }
 
 /** A single encoded segment preserves spaces, punctuation and search syntax. */

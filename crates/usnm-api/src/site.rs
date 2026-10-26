@@ -178,9 +178,9 @@ fn slug_for(q: &str, phrase_mode: bool) -> Option<String> {
         .split(|c: char| c.is_whitespace() || c == '-')
         .filter(|w| !w.is_empty())
         .map(|w| {
-            w.chars()
-                .all(char::is_alphanumeric)
-                .then(|| w.to_lowercase())
+            // Lowercasing can add a combining mark (İ), which splits a token.
+            let lower = w.to_lowercase();
+            lower.chars().all(char::is_alphanumeric).then_some(lower)
         })
         .collect::<Option<_>>()?;
     (!words.is_empty()).then(|| words.join("-"))
@@ -974,6 +974,8 @@ mod tests {
         assert_eq!(to("/search/fifteenth-amendment"), None);
         assert_eq!(to("/search/%22cross%20of%20gold%22?mode=all"), None,);
         assert_eq!(to("/search/%E6%97%A5%E6%9C%AC"), None);
+        assert_eq!(search_path("İstanbul"), "/search/%C4%B0stanbul");
+        assert_eq!(to("/search/%C4%B0stanbul"), None);
         assert_eq!(search_path("日本"), "/search/%E6%97%A5%E6%9C%AC");
         assert_eq!(to("/search/well-known?mode=all"), None);
         assert_eq!(
