@@ -24,7 +24,7 @@ characters (`[A-Za-z0-9_-]`, in `usnm-ocr-contract/src/quality.rs` and
 Today each place that parses an id knows its source from context. These are LoC-only boundaries,
 not current defects, and mixing sources would break them:
 
-- `status/assemble.rs` takes the LCCN by splitting on `_`, for the main index's Japanese
+- `status/assemble/published.rs` takes the LCCN by splitting on `_`, for the main index's Japanese
   overlay, which holds LoC pages only.
 - The API builds a loc.gov viewer link with `PageKey::from_doc_id` for main-index hits. Congress
   hits return their stored source link before that point (`usnm-api/src/routes/hits.rs`).
@@ -84,7 +84,7 @@ not current defects, and mixing sources would break them:
 
 - LoC-only code keeps working with no change, and code that may see other sources has to
   check the source before parsing.
-- The LoC-only boundaries (`status/assemble.rs`, the loc.gov viewer link) check the source
+- The LoC-only boundaries (`status/assemble/published.rs`, the loc.gov viewer link) check the source
   before parsing, so a mixed-source caller fails clearly instead of misreading an id. Surya's
   two kinds of unit no longer share a directory.
 - By design, every new source needs a row and a rule before its ids enter shared stores.
