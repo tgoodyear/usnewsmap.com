@@ -25,7 +25,7 @@ param handoffWriterIds array = []
 param fetchedPublisherIds array = []
 @description('Object id of the on-prem hosts\' Entra group (usnm-onprem-grp-<env>, scripts/ocr-node/group.sh --kind onprem): the node writer role on `boinc-handoff`, as the handoffWriterIds have. Empty grants none.')
 param onPremGroupId string = ''
-@description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296, and the on-prem BOINC host\'s Arc machine identity, #967), all service principals: Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`. Sender, so a page BOINC can\'t use goes back to the queue for the nodes. Nothing on `ocr-deadletter`, and no Update Message.')
+@description('Principals that take pages off the two work queues for BOINC (the hand-off job\'s identity, #296, and the on-prem BOINC host\'s Arc machine identity, #967), all service principals: Message Processor and Message Sender on `ocr-priority` and `ocr-bulk`, and Message Sender only on `ocr-deadletter` (#1154). No Update Message.')
 param handoffQueueIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
@@ -357,6 +357,18 @@ resource handoffQueuePut 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     name: guid(queues[p.queue].id, p.id, queueMessageSender)
     properties: {
       principalId: p.id
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
+    }
+  }
+]
+
+resource handoffDeadLetterPut 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for p in handoffQueueIds: {
+    scope: deadLetter
+    name: guid(deadLetter.id, p, queueMessageSender)
+    properties: {
+      principalId: p
       principalType: 'ServicePrincipal'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
     }
