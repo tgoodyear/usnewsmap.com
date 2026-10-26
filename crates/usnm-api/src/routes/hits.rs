@@ -276,8 +276,8 @@ impl Item {
     }
 }
 
-/// Select hits by `place=`, or by title with a single `lccn=` (the same
-/// parameter that filters the other endpoints). With `place`, `lccn` stays a filter.
+/// Select hits by `place=`, by title with a single `lccn=` (the same
+/// parameter that filters the other endpoints), or by a single `state=`. With `place`, `lccn` stays a filter.
 /// Without `q`, and with `USNM_BROWSE_PAGES` on, one title's pages ([`browse`]).
 pub async fn hits(
     State(state): State<Arc<AppState>>,
@@ -310,9 +310,12 @@ pub async fn hits(
             known_title(rd, lccn)?;
             Some(lccn.clone())
         }
+        // One state's pages: the `state` filter says which; `lccn`s still narrow them.
+        (None, _) if req.filters.states.len() == 1 => None,
         (None, _) => {
             return Err(ApiError::BadRequest(
-                "give `place`, or a single `lccn` to list one title's pages".into(),
+                "give `place`, a single `lccn` to list one title's pages, or a single `state` to list one state's pages"
+                    .into(),
             ))
         }
     };

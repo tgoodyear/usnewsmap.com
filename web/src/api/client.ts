@@ -369,7 +369,9 @@ export const api = {
   ) => {
     const s = searchQuery(p, version);
     s.delete("bucket");
-    s.set("place", place);
+    // "state:PA" asks for every matching page of one state, not one place's.
+    if (place.startsWith("state:")) s.set("state", place.slice(6));
+    else s.set("place", place);
     s.set("limit", "20");
     // Oldest first is the API's default, and leaving it out keeps one URL per list.
     if (sort !== "oldest") s.set("sort", sort);

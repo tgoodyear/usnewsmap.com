@@ -175,7 +175,7 @@ export function parseView(search: string): ViewState {
       parseLccns(s.get("lccn")),
       oneOf(s.get("source"), ["news", "congress"] as const, DEFAULTS.source),
     ),
-    place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
+    place: /^([A-Za-z0-9_-]{1,32}|state:[A-Z]{2})$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
     z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,
