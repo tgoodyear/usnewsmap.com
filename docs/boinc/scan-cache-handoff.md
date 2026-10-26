@@ -251,8 +251,10 @@ extract into a fresh directory, not over the old Pillow installation.
 # keep-files.txt: in CT 211, cd /tank/ocr/scans && find keep -type f (all formats: JPEG-only
 # batches still take their turn in the rotation; only JPEG2000 pages are listed).
 scripts/ocr-node/quality-jpeg-list.py --manifest wave9_manifest.parquet --out pages.txt \
-  --damage-index damage.txt --keep-files keep-files.txt --done done-l-q75-r2.txt \
+  --damage-index damage.txt --keep-files keep-files.txt \
   --current 0=dlc_friendship_ver03,1=dlc_eject_ver01,...
+# For later lists, add --done done-l-q75-r2.txt once that r2 ledger exists.
+# The first r2 list must not use an r1 ledger or a nonexistent r2 ledger.
 # In CT 211, as root: the pinned Pillow wheel, as the bridge image installs it.
 d=/usr/local/lib/usnm-quality-jpeg-cache
 mkdir -p "$d/py" && cd "$d"
