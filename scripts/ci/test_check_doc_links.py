@@ -59,6 +59,20 @@ class DocLinksTest(unittest.TestCase):
             )
             self.assertEqual(CHECK.check([doc]), [])
 
+    def test_balanced_and_escaped_parentheses_in_destinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "report(v2).json").write_text("{}")
+            (root / "report(v2(final)).json").write_text("{}")
+            doc = root / "note.md"
+            doc.write_text(
+                "[report](report(v2).json)\n"
+                "[nested](report(v2(final)).json \"title\")\n"
+                "[escaped](report\\(v2\\).json)\n"
+                "[reference]: report(v2).json \"title\"\n"
+            )
+            self.assertEqual(CHECK.check([doc]), [])
+
 
 if __name__ == "__main__":
     unittest.main()

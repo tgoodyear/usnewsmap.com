@@ -46,11 +46,36 @@ def anchors(text):
 def links(text):
     clean = prose(text)
     clean = re.sub(r"(`+)(.*?)\1", lambda m: " " * len(m[0]), clean)
-    pattern = r"!?\[[^\]\n]*\]\((<[^>\n]+>|[^)\n]+)\)|^ {0,3}\[[^\]\n]+\]:\s*(<[^>\n]+>|\S+)"
+    pattern = r"!?\[[^\]\n]*\]\(\s*|^ {0,3}\[[^\]\n]+\]:[ \t]*"
     for match in re.finditer(pattern, clean, re.M):
-        raw = (match[1] or match[2]).strip()
-        target = raw[1:raw.index(">")] if raw.startswith("<") else raw.split()[0]
-        yield clean.count("\n", 0, match.start()) + 1, target
+        rest = clean[match.end():].split("\n", 1)[0]
+        if rest.startswith("<"):
+            end = rest.find(">")
+            if end == -1:
+                continue
+            target = rest[1:end]
+        else:
+            depth = 0
+            escaped = False
+            end = 0
+            for end, char in enumerate(rest):
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif char.isspace():
+                    break
+            else:
+                end = len(rest)
+            target = re.sub(r"\\([\\()<>])", r"\1", rest[:end])
+        if target:
+            yield clean.count("\n", 0, match.start()) + 1, target
 
 
 def check(paths):
