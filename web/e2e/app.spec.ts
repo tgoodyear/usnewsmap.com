@@ -119,6 +119,18 @@ test("the home page shows three examples, and adds more on request", async ({ pa
   await expect(cards.first()).toContainText(title);
 });
 
+test("example clicks reset inherited filters to match their link URLs", async ({ page }) => {
+  await page.goto("/?source=congress&state=CA&mode=any&tab=table");
+  const card = exampleCards(page).first();
+  await expect(card).toBeVisible();
+  const href = await card.getAttribute("href");
+  expect(href).not.toContain("source=");
+  expect(href).not.toContain("state=");
+  expect(href).not.toContain("mode=");
+  await card.click();
+  await expect(page).toHaveURL(new URL(href!, page.url()).href);
+});
+
 test("path searches survive reload and history when only the query changes", async ({ page }) => {
   await page.goto("/search/%22cross%20of%20gold%22?tab=table");
   await expect(page.getByRole("searchbox")).toHaveValue('"cross of gold"');

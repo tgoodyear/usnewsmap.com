@@ -662,7 +662,7 @@ export function App() {
             order={EXAMPLE_ORDER}
             clicks={exampleClicks}
             onMore={() => setExampleClicks((c) => c + 1)}
-            onPick={(ex) => search({ ...ex.view })}
+            onPick={search}
           />
         </main>
       ) : (

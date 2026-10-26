@@ -351,7 +351,7 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
     let version = snap.refdata.version().to_owned();
     let key = snap
         .refdata
-        .search_key("site-preview-v3", &canonical, &search.query);
+        .search_key("site-preview-v4", &canonical, &search.query);
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
@@ -409,9 +409,10 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
             };
             html.push_str(&format!("<li><p>{citation}</p>"));
             for snippet in hit.snippets {
+                // Backend snippets already escape text; only highlight tags are markup.
                 html.push_str(&format!(
                     "<p>{}</p>",
-                    escape_html(&snippet.replace("<mark>", "").replace("</mark>", ""))
+                    snippet.replace("<mark>", "").replace("</mark>", "")
                 ));
             }
             html.push_str("</li>");

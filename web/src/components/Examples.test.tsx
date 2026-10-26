@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Examples } from "./Examples";
-import { EXAMPLE_ORDER, EXAMPLES, type Example } from "../examples";
+import { EXAMPLE_ORDER, EXAMPLES } from "../examples";
+import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
 
 /** The cards as App shows them, with the press count held in state. */
-function Home({ onPick = () => undefined }: { onPick?: (ex: Example) => void }) {
+function Home({ onPick = () => undefined }: { onPick?: (view: ViewState) => void }) {
   const [clicks, setClicks] = useState(0);
   return <Examples order={EXAMPLE_ORDER} clicks={clicks} onMore={() => setClicks((c) => c + 1)} onPick={onPick} />;
 }
@@ -71,7 +72,8 @@ describe("Examples", () => {
     const link = document.querySelectorAll<HTMLAnchorElement>("#examples a.example")[1]!;
     expect(link.getAttribute("href")).toMatch(/^\/search\//);
     fireEvent.click(link);
-    expect(onPick).toHaveBeenCalledWith(EXAMPLE_ORDER[1]);
+    expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...EXAMPLE_ORDER[1]!.view });
+    expect(viewUrl(onPick.mock.calls[0]![0])).toBe(link.getAttribute("href"));
   });
 
   it("links to indexable base searches and leaves modified clicks to the browser", () => {

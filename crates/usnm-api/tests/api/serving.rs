@@ -15,7 +15,7 @@ use usnm_search::memory::MemoryBackend;
 use usnm_store::LocalStore;
 
 use crate::common::{
-    config, fixture_backend, get, header_str, persisted_files, refdata, state_with,
+    config, fixture_backend, get, header_str, load_docs, persisted_files, refdata, state_with,
 };
 
 #[tokio::test]
@@ -710,6 +710,37 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     let (_, _, home) = get_site(&s, "/", None).await;
     assert!(home.contains(r#"<nav aria-label="Common newspaper searches">"#));
     assert!(home.contains(r#"<a href="/search/whigs">whigs</a>"#));
+}
+
+#[tokio::test]
+async fn search_previews_preserve_escaped_snippet_text_without_double_escaping() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("search-snippet-entities"));
+    std::fs::write(
+        cfg.site_dir.as_ref().unwrap().join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    let mut doc = load_docs("pages-base-fixture").remove(0);
+    doc.text = "Reader's & Co. <archive>. cross of gold.".to_owned();
+    let mut backend = MemoryBackend::new();
+    backend.add_index("pages-base-fixture", vec![doc]);
+    backend.add_index("pages-delta-fixture-1", vec![]);
+    let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
+    let (status, _, body) = get_site(&s, "/search/%22cross%20of%20gold%22", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("Reader&#39;s &amp; Co. &lt;archive&gt;"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("&amp;#39;") && !body.contains("&amp;lt;"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("<archive>") && !body.contains("<mark>"),
+        "{body}"
+    );
 }
 
 async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::response::Response {
