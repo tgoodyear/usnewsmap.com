@@ -790,6 +790,7 @@ jobs:
       - run: npm run lint
       # Prettier: web/ and Markdown anywhere in the repository.
       - run: npm run format:check
+      - run: python3 ../scripts/ci/check-doc-links.py
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -811,6 +812,7 @@ jobs:
       - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm run format:check
+      - run: python3 ../scripts/ci/check-doc-links.py
 
   web-e2e:
     name: web end-to-end (Playwright + axe)

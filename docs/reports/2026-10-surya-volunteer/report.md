@@ -1,5 +1,7 @@
 # Surya 2 on BOINC volunteers
 
+Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
+
 **Status: bounded 23-unit BOINC trial completed, collected and scored.**
 This supersedes the historical preflight-only receipts in #848/#852. Do not
 widen the sample or change production OCR routing on this evidence. The
@@ -93,7 +95,7 @@ includes the timed-out attempt (5400.317 s) and the successful attempt
 they are not missing results. Empty-ok counts are per mode, not additional units.
 The tiny CPU repeat sample is not comparable to the complete 20-input GPU leg.
 
-Machine-readable [results.json](results.json) records unrounded values, edit
+Machine-readable [results.json](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz) records unrounded values, edit
 counts, reference lengths, outcomes and medians. It contains metrics only, not
 images, reference text, returned OCR text, credentials or full host diagnostics.
 
