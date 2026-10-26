@@ -2544,6 +2544,25 @@ class SuryaPlanTests(unittest.TestCase):
         self.assertEqual(self.state["surya"]["last_run"]["unsent"], 0)
         self.assertEqual(self.state["surya"]["unsent"], 300)
 
+    def test_interrupted_first_stage_keeps_engine_pins_across_restart(self):
+        for previous_campaign in (False, True):
+            with self.subTest(previous_campaign=previous_campaign):
+                self.setUp()
+                if previous_campaign:
+                    self.tick(300)
+                    self.config["surya"]["campaign"] = "surya-wave2"
+                self.fake.fail = "surya-stage-crops"
+                with self.assertRaises(RuntimeError):
+                    self.tick(0)
+                # A failed step may already have written units with the original pins.
+                self.state = copy.deepcopy(self.saved[-1]) if self.saved else {}
+                self.config["surya"]["engine_weights"] = "sha256:" + "4" * 64
+                self.fake.fail = None
+                self.fake.steps.clear()
+                with self.assertRaisesRegex(ValueError, "engine pins changed"):
+                    self.tick(0)
+                self.assertEqual(self.fake.steps, [])
+
     def test_a_failed_stage_stops_before_submit_and_a_failed_submit_keeps_the_stage_on_record(self):
         self.fake.fail = "surya-stage-crops"
         with self.assertRaises(RuntimeError):
