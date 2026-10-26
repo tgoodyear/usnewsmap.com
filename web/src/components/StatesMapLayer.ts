@@ -50,7 +50,11 @@ export class StatesMapLayer {
   }
 
   hasDrawn() {
-    return this.map.isSourceLoaded(SOURCE) && this.map.queryRenderedFeatures(undefined, { layers: [FILL] }).length > 0;
+    return this.isReady() && this.map.queryRenderedFeatures(undefined, { layers: [FILL] }).length > 0;
+  }
+
+  isReady() {
+    return this.map.isSourceLoaded(SOURCE);
   }
 
   destroy() {

@@ -35,6 +35,8 @@ use tower_http::services::ServeDir;
 use crate::error::ApiError;
 use crate::AppState;
 
+mod social;
+
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
 ///
@@ -120,6 +122,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         }
     };
     Router::new()
+        .route("/share-image.png", axum::routing::get(social::image))
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
         .layer(middleware::from_fn(cache_control))
@@ -536,7 +539,7 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
         StatusCode::NOT_FOUND
     };
     let mut body = match tokio::fs::read(&index).await {
-        Ok(body) => shell_for(path, body),
+        Ok(body) => social::shell(req.uri(), shell_for(path, body)),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             return (StatusCode::NOT_FOUND, "not found").into_response();

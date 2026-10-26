@@ -17,7 +17,7 @@ const DatasetsPage = lazy(() => import("./status/StatusPage"));
 const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
 const page = pageFor(window.location.pathname);
-if (page === "search") void preloadBasemap();
+if (page === "search" && !("__USNM_SHARE_CAPTURE__" in window)) void preloadBasemap();
 // The old path, where a server didn't redirect it: show the new one.
 if (page === "datasets" && window.location.pathname.replace(/\/+$/, "") === OLD_DATASETS_PATH) {
   window.history.replaceState(null, "", `${DATASETS_PATH}${window.location.search}${window.location.hash}`);
