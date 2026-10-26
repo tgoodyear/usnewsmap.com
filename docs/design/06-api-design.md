@@ -82,6 +82,26 @@ Principles:
 
 The API **canonicalizes** parameters (sorted, defaults made explicit, dates normalized) and returns `Content-Location` with the canonical URL. The SPA always requests canonical URLs so the cache hit rate is as high as possible.
 
+**Endpoint-specific compatibility behavior (#1047).** The following describes the
+served API, not proposed normalization changes:
+
+- `/v1/meta`, `/v1/status` and `/v1/versions` ignore query strings. Extra parameters
+  do not change their response, but can create separate browser-cache entries.
+  Search and reference-list routes reject unknown keys.
+- Search routes skip empty items in comma-separated filters and cap those lists
+  at 60 values. `/v1/coverage` parses `state` separately: it has no 60-value cap
+  and rejects empty items, so `state=IL,` answers 400 there.
+- `near` parses integers from 0 to 20; only `mode=near` uses it, and that mode
+  requires 1 to 20. Other modes ignore its valid value. `front` accepts `1` and
+  `0` as well as `true` and `false`.
+- `/v1/days` accepts and validates `bucket`, then always groups by day; the
+  supplied bucket does not change the result or canonical cache key.
+- A malformed or unknown LCCN in `/v1/titles/{lccn}` answers 404, not 400.
+- Problem `type` values are relative URI references such as
+  `/errors/bad-parameter`, not absolute URLs. OpenAPI schema descriptions come
+  from the response types' documentation and may name issue numbers or
+  configuration variables; those references do not add public API parameters.
+
 ### 6.3.2 Endpoints
 
 | Method & path                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Cache                     |
