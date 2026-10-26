@@ -1,10 +1,10 @@
 ---
-
-Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
 title: "Languages in the usnewsmap index: status, October 2026"
 subtitle: "Pages, text sources, OCR quality and search for the 29 languages Chronicling America catalogs"
 date: "October 2026"
 ---
+
+Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
 
 This report grew out of an earlier one on Japanese-language newspapers (merged in #195, in `docs/reports/2026-10-japanese-newspapers`, now renamed to this directory). The Japanese material is now one section among the others.
 

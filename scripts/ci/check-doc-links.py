@@ -71,7 +71,7 @@ def check(paths):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", type=Path, help="Markdown files (default: docs/**/*.md)")
+    parser.add_argument("--paths", nargs="+", type=Path, help="Markdown files (default: docs/**/*.md)")
     args = parser.parse_args()
     paths = args.paths or sorted(ROOT.joinpath("docs").rglob("*.md"))
     failures = check(paths)

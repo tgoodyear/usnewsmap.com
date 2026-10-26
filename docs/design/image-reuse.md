@@ -67,13 +67,26 @@ development split. Semantic embedding similarity alone must not assert reuse.
 
 There is deliberately no production cosine cutoff selected from an unmeasured
 model. On development data, sweep thresholds and geometric-verification settings
-and choose the highest-recall combination whose one-sided 95% lower confidence
-bound on pair precision is at least 99%. Bootstrap by reprint family, not by
-correlated pairs. Freeze the selected values, sampling scheme and analysis code
-before measuring the held-out test set. Publish precision/recall, confidence
-intervals, class/quality strata and inspected false positives. If evidence cannot
-support the bound, keep the result as exploratory retrieval rather than publish
-asserted reuse clusters.
+and choose the highest-recall combination meeting the following evidence gate.
+On each of development and held-out test, require at least 300 independent
+evaluation families and sample one asserted pair per family using a preregistered
+uniform-within-family sampler. Pairs sharing either a source page or a known
+reprint family count as one evidence unit, not multiple independent observations.
+The exact one-sided 95% Clopper-Pearson lower bound on this **family-balanced pair
+precision** must be at least 99%. With 300 correct independent observations and
+zero errors the lower bound is approximately 99.006%, not 100%; fewer independent
+observations cannot pass the minimum-evidence gate.
+
+Freeze the selected thresholds, sampling scheme and analysis code before
+measuring the held-out test set, which must independently pass the same gate
+before publishing asserted reuse clusters. A failed test gate requires a new
+campaign with a fresh holdout, not retuning on that test set. Also report
+ordinary pair-weighted precision/recall, family counts, confidence intervals,
+class/quality strata and inspected false positives; the family-balanced gate is
+not a claim of 99% pair-weighted precision. Family-block bootstrap intervals may
+describe these secondary metrics, but an empirical bootstrap with zero observed
+errors is never sufficient acceptance evidence. If independent evidence is
+insufficient, keep the result as exploratory retrieval.
 
 Connected components of pair matches can chain unrelated pictures together.
 Require a new member to pass verification against the cluster's representative,

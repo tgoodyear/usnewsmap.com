@@ -1,4 +1,6 @@
 import importlib.util
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,19 @@ SPEC.loader.exec_module(CHECK)
 
 
 class DocLinksTest(unittest.TestCase):
+    def test_named_paths_option_checks_the_requested_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "note.md"
+            doc.write_text("[gone](missing.json)\n")
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("check-doc-links.py")),
+                 "--paths", str(doc)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("1 Markdown files; 1 broken local links", result.stdout)
+            self.assertIn(f"{doc}:1: missing file: missing.json", result.stderr)
+
     def test_missing_file_and_anchor_are_reported_but_examples_are_not(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
