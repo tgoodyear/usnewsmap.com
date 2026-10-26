@@ -13,6 +13,64 @@ use crate::common::{
     read_jsonl, write_archive, Page,
 };
 
+fn writer_port() -> anyhow::Result<u16> {
+    use std::io::ErrorKind;
+    use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+
+    // Quickwit needs REST and adjacent gRPC ports, plus UDP gossip on REST's
+    // port. The external process cannot inherit these sockets.
+    for _ in 0..64 {
+        let rest = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let port = rest.local_addr()?.port();
+        let Some(grpc_port) = port.checked_add(1) else {
+            continue;
+        };
+        let _grpc = match TcpListener::bind((Ipv4Addr::LOCALHOST, grpc_port)) {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let _gossip = match UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) {
+            Ok(socket) => socket,
+            Err(e) if e.kind() == ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e.into()),
+        };
+        return Ok(port);
+    }
+    anyhow::bail!("no available ephemeral REST/gRPC/gossip port pair after 64 probes")
+}
+
+#[test]
+fn independent_writer_test_processes_can_share_a_host() {
+    if std::env::var_os("QUICKWIT_BIN").is_none_or(|b| b.is_empty()) {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    }
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "a_writer_seals_an_index_that_received_no_documents",
+                    "--nocapture",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "concurrent writer failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 /// The same two releases into a real Quickwit writer node run by the
 /// pipeline (as the Azure job does). Runs when `QUICKWIT_BIN` is set; CI's
 /// `quickwit` job sets it.
@@ -36,7 +94,7 @@ async fn releases_into_a_quickwit_writer_node() {
     std::fs::create_dir_all(&qw).unwrap();
     let meta = format!("file://{}/meta", qw.display());
     let root = format!("file://{}/indexes", qw.display());
-    let node = QuickwitNode::start(Path::new(&bin), &qw, 7390, &meta, &root)
+    let node = QuickwitNode::start(Path::new(&bin), &qw, writer_port().unwrap(), &meta, &root)
         .await
         .unwrap();
 
@@ -157,7 +215,7 @@ async fn releases_into_a_quickwit_writer_node() {
 /// Runs when `QUICKWIT_BIN` is set.
 #[tokio::test]
 async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
-    writer_merges_small_splits(7395, None).await;
+    writer_merges_small_splits(None).await;
 }
 
 #[cfg(unix)]
@@ -172,7 +230,7 @@ fn a_writer_uses_a_fresh_local_wal_and_seals_an_index() {
             .enable_all()
             .build()
             .unwrap();
-        runtime.block_on(writer_merges_small_splits(7851, Some(Path::new(&root))));
+        runtime.block_on(writer_merges_small_splits(Some(Path::new(&root))));
         return;
     }
     // Isolate the environment override from all other concurrent writer tests.
@@ -196,7 +254,7 @@ fn a_writer_uses_a_fresh_local_wal_and_seals_an_index() {
     );
 }
 
-async fn writer_merges_small_splits(port: u16, local_wal_root: Option<&Path>) {
+async fn writer_merges_small_splits(local_wal_root: Option<&Path>) {
     let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
         eprintln!("QUICKWIT_BIN not set; skipping");
         return;
@@ -211,7 +269,7 @@ async fn writer_merges_small_splits(port: u16, local_wal_root: Option<&Path>) {
     std::fs::write(qw.join("qwdata/wal/stale"), b"x").unwrap();
     let meta = format!("file://{}/meta", qw.display());
     let root = format!("file://{}/indexes", qw.display());
-    let node = QuickwitNode::start(Path::new(&bin), &qw, port, &meta, &root)
+    let node = QuickwitNode::start(Path::new(&bin), &qw, writer_port().unwrap(), &meta, &root)
         .await
         .unwrap();
     assert!(!qw.join("qwdata/wal/stale").exists());
@@ -340,7 +398,7 @@ async fn a_writer_seals_an_index_that_received_no_documents() {
     std::fs::create_dir_all(&qw).unwrap();
     let meta = format!("file://{}/meta", qw.display());
     let root = format!("file://{}/indexes", qw.display());
-    let node = QuickwitNode::start(Path::new(&bin), &qw, 7397, &meta, &root)
+    let node = QuickwitNode::start(Path::new(&bin), &qw, writer_port().unwrap(), &meta, &root)
         .await
         .unwrap();
     let id = "pages-delta-20261022-1";
@@ -412,7 +470,7 @@ async fn v1_writer_merges_by_restarting(local: &Path) {
     std::fs::create_dir_all(&qw).unwrap();
     let meta = format!("file://{}/meta", qw.display());
     let root = format!("file://{}/indexes", qw.display());
-    let node = QuickwitNode::start(Path::new(&bin), &qw, 7431, &meta, &root)
+    let node = QuickwitNode::start(Path::new(&bin), &qw, writer_port().unwrap(), &meta, &root)
         .await
         .unwrap();
     let http = reqwest::Client::new();
