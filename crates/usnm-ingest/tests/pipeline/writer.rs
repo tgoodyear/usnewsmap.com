@@ -51,7 +51,7 @@ fn independent_writer_test_processes_can_share_a_host() {
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "a_writer_seals_an_index_that_received_no_documents",
+                    "writer::a_writer_seals_an_index_that_received_no_documents",
                     "--nocapture",
                 ])
                 .stdout(std::process::Stdio::piped())
@@ -63,7 +63,8 @@ fn independent_writer_test_processes_can_share_a_host() {
     for child in children {
         let output = child.wait_with_output().unwrap();
         assert!(
-            output.status.success(),
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
             "concurrent writer failed:\n{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -239,7 +240,7 @@ fn a_writer_uses_a_fresh_local_wal_and_seals_an_index() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "a_writer_uses_a_fresh_local_wal_and_seals_an_index",
+            "writer::a_writer_uses_a_fresh_local_wal_and_seals_an_index",
             "--nocapture",
         ])
         .env("USNM_TEST_LOCAL_WAL_ROOT", &local)
@@ -247,7 +248,7 @@ fn a_writer_uses_a_fresh_local_wal_and_seals_an_index() {
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
         "local-WAL writer failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -446,7 +447,7 @@ fn a_v1_writer_merges_by_restarting_and_holds_each_page_once() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "a_v1_writer_merges_by_restarting_and_holds_each_page_once",
+            "writer::a_v1_writer_merges_by_restarting_and_holds_each_page_once",
             "--nocapture",
         ])
         .env("USNM_TEST_LOCAL_WAL_ROOT", &local)
@@ -454,7 +455,7 @@ fn a_v1_writer_merges_by_restarting_and_holds_each_page_once() {
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
         "v1 writer failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
