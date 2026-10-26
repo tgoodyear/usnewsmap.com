@@ -187,9 +187,10 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # Cargo resolves for them. Not catalog/, web/src/examples.json,
 # ops/index-history.json or other CI scripts, which the rust job's own tests
 # cover; editing them doesn't change what Quickwit is asked to do. The job
-# targets only these two integration tests; tests in crates that are merely
-# dependencies (such as usnm-api) are not built or run.
-quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$|crates/usnm-search/tests/quickwit_parity\.rs$|crates/usnm-ingest/tests/pipeline\.rs$)'
+# targets only these integration tests; tests in crates that are merely
+# dependencies (such as usnm-api) are not built or run. The ingest pipeline
+# target is a module tree, not a single pipeline.rs file.
+quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$|crates/usnm-search/tests/quickwit_parity\.rs$|crates/usnm-ingest/tests/pipeline/)'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
@@ -234,7 +235,7 @@ boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/data/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(contrib-compute/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
 # documentation, above).

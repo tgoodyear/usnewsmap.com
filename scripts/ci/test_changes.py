@@ -175,9 +175,12 @@ class Quickwit(unittest.TestCase):
         self.change = lambda: self.touch("crates/usnm-api/tests/api/serving.rs")
         self.assertFalse(self.quickwit())
 
-    def test_a_quickwit_target_test_runs_it(self):
-        self.change = lambda: self.touch("crates/usnm-search/tests/quickwit_parity.rs")
-        self.assertTrue(self.quickwit())
+    def test_quickwit_target_tests_run_it(self):
+        for path in ["crates/usnm-search/tests/quickwit_parity.rs",
+                     "crates/usnm-ingest/tests/pipeline/writer.rs"]:
+            with self.subTest(path=path):
+                self.change = lambda path=path: self.touch(path)
+                self.assertTrue(self.quickwit())
 
     def test_a_boinc_only_change_runs_no_image_or_e2e(self):
         self.change = lambda: self.touch("crates/usnm-boinc/src/lib.rs")
@@ -434,6 +437,10 @@ class BuildInputs(unittest.TestCase):
 
     def test_docs_only_change_runs_only_the_markdown_check(self):
         self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
+
+    def test_shared_well_known_metadata_runs_both_site_and_boinc_image_checks(self):
+        on = self.select("web/public/.well-known/security.txt")
+        self.assertGreaterEqual(on, {"contrib", "image", "web", "e2e"})
 
     def test_boinc_only_change_runs_the_boinc_images_but_no_dashboard_or_worker_release(self):
         on = self.select("crates/usnm-boinc/src/lib.rs")
