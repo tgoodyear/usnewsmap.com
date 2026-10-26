@@ -98,7 +98,7 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
         (format!("{}_loc_xml", job.id), super::ALTO_FILE),
         (format!("{}_texts_json", job.id), super::TEXTS_FILE),
         (
-            format!("usnm_quality_places_{}", job.inputs.places.sha256),
+            format!("usnm_quality_places_v2_{}", job.inputs.places.sha256),
             PLACES_FILE,
         ),
         (format!("{}_quality_json", job.id), JOB_FILE),
@@ -190,6 +190,8 @@ mod tests {
         assert_eq!(files, super::super::inputs());
         assert!(names[3].0.starts_with("usnm_quality_places_"));
         assert!(!names[3].0.contains(&j.id));
+        // Old workunits can still delete the original shared name.
+        assert!(names[3].0.starts_with("usnm_quality_places_v2_"));
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_quality_in".to_string()));
         assert!(args.ends_with(&[names[3].0.clone(), names[4].0.clone()]));
