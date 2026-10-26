@@ -409,6 +409,7 @@ The worker refuses a production engine at startup, and `routes check` refuses it
 
 - **Adapter deadline.** Each image declares `cancel` in `hello`.
   - With `adapter`, the adapter stops at `deadline_ms`. Before it answers `timeout`, it kills every process it started for the page (it runs engine children in their own process group and kills the group) and cancels in-flight server requests, restarting the server if it has to (Surya's llama-server). Otherwise an orphan keeps working into the next page and its CPU and memory are counted against that page.
+    The text-only Tesseract adapter keeps its deadline active until the child exits and both output pipes reach EOF: a descendant can retain stdout or stderr after the parent exits. If those pipes remain open at the deadline, the adapter kills the process group and answers `timeout`, rather than blocking while collecting output.
   - With `kill`, the adapter makes no promise, and the worker's kill is the path. Python adapters use `SIGALRM`, which Python delivers only between bytecodes, so a long native call in torch or ONNX Runtime isn't interrupted. Python adapters whose engine spends most of a page in such a call declare `kill`. Each kill costs a model load.
   - After any `timeout` result, the worker compares `cgroup.procs` with the set it recorded after `hello`, and recycles the instance if extra processes remain.
 - **Worker deadline.** At `deadline_ms` + 15 s the worker runs `podman --remote kill --signal KILL` and removes the instance.
