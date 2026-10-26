@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Survey which Georgia Historic Newspapers (GHN) titles are not in Chronicling America
-(CA) or in our published dataset.
+"""Survey Georgia Historic Newspapers (GHN) titles against our cached Chronicling
+America (CA) records and published dataset, without inferring CA absence.
 
 Inputs: GHN's public title listing (/newspapers/, allowed by its robots.txt), our CA title
-list (reference container, raw/titles.json: every title CA has digitized) and the published
+cache (reference container, raw/titles.json: fetched records, NOT a complete inventory) and the published
 snapshot's batches.json (the LCCNs we have pages for). Nothing is asked of loc.gov, whose
 Cloudflare challenge blocks bulk lookups.
 
 Each GHN title lands in one bucket:
   ours          pages in our published dataset
-  ca_not_ours   in CA but not in our dataset (an ingestion gap)
-  ghn_only      not in CA: GHN is the only source
+  ca_not_ours   cached CA record but no pages in our dataset (investigate availability)
+  ca_unknown    absent from our cache and dataset; CA availability is unknown
+
+Title sync skips catalogued titles and can stop early or fail. A missing cached
+record therefore does not establish that GHN is the only source. A cached record
+also does not establish complete digitized page availability.
 
 Usage: ghn-gap-survey.py --ca-titles titles.json --batches batches.json --out OUTDIR
 Get the inputs with `az storage blob download --auth-mode login --account-name ACCOUNT
@@ -63,7 +67,7 @@ def our_lccns(path):
 
 def classify(ghn, ca, ours):
     for t in ghn:
-        t["bucket"] = "ours" if t["lccn"] in ours else "ca_not_ours" if t["lccn"] in ca else "ghn_only"
+        t["bucket"] = "ours" if t["lccn"] in ours else "ca_not_ours" if t["lccn"] in ca else "ca_unknown"
     return ghn
 
 
