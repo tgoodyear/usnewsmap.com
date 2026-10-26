@@ -5,6 +5,7 @@ scoped to usnm_quality, and it must not touch GPU admission (plan_class_spec.xml
 """
 
 import importlib.util
+import hashlib
 import json
 import os
 import re
@@ -65,6 +66,81 @@ class Scope(unittest.TestCase):
         submit = SOURCE.split("submit.lock")[1].split("transitioner -d 2 --one_pass")[0]
         self.assertNotIn("rename_colliding_workunit", submit)
         self.assertIn("existing and existing[1] == 0", submit)
+
+
+class SharedPlaces(unittest.TestCase):
+    def test_recovery_copies_legacy_input_without_replacing_either_existing_file(self):
+        for existing_v2 in (False, True):
+            with self.subTest(existing_v2=existing_v2), tempfile.TemporaryDirectory() as tmp:
+                r = load_runner()
+                root = Path(tmp)
+                checksum = hashlib.sha256(b"places").hexdigest()
+                job = {"inputs": {"places": {"sha256": checksum}}}
+                legacy = root / f"usnm_quality_places_{checksum}"
+                current = root / f"usnm_quality_places_v2_{checksum}"
+                legacy_data = b"old cache" if existing_v2 else b"places"
+                legacy.write_bytes(legacy_data)
+                if existing_v2:
+                    current.write_bytes(b"places")
+                with mock.patch.object(r, "dir_hier_path", lambda name: str(root / name)):
+                    physical = r.recover_quality_places(job)
+                self.assertEqual(root / physical, current)
+                self.assertEqual(legacy.read_bytes(), legacy_data)
+                self.assertEqual(current.read_bytes(), b"places")
+
+    def test_recovery_does_not_copy_a_corrupt_legacy_input(self):
+        r = load_runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checksum = hashlib.sha256(b"places").hexdigest()
+            job = {"inputs": {"places": {"sha256": checksum}}}
+            legacy = root / f"usnm_quality_places_{checksum}"
+            legacy.write_bytes(b"corrupt")
+            with mock.patch.object(r, "dir_hier_path", lambda name: str(root / name)):
+                with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                    r.recover_quality_places(job)
+            self.assertFalse((root / f"usnm_quality_places_v2_{checksum}").exists())
+            self.assertEqual(legacy.read_bytes(), b"corrupt")
+
+    def test_fresh_bundle_submits_the_isolated_shared_input(self):
+        r = load_runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage = root / "stage"
+            bundle = stage / "units" / "bundle-0"
+            bundle.mkdir(parents=True)
+            units, locks = root / "units", root / "locks"
+            units.mkdir()
+            locks.mkdir()
+            checksum = hashlib.sha256(b"places").hexdigest()
+            job = {
+                "id": "a" * 64,
+                "inputs": {
+                    name: {"bytes": len(data), "sha256": checksum}
+                    for name, data in (("page", b"page"), ("alto", b"alto"),
+                                       ("texts", b"texts"), ("places", b"places"))
+                },
+            }
+            for name, data in (("page.jpg", b"page"), ("loc.xml", b"alto"),
+                               ("texts.json", b"texts"), ("places.txt", b"places")):
+                (bundle / name).write_bytes(data)
+            (bundle / "quality.json").write_text(json.dumps(job))
+            with mock.patch.multiple(r, PROJ=str(root), UNITS_DIR=str(units), LOCAL_LOCKS_DIR=str(locks)), \
+                 mock.patch.object(r, "dir_hier_path", lambda name: str(root / "download" / name)), \
+                 mock.patch.object(r, "wait_for_queue_headroom"), \
+                 mock.patch.object(r, "collect_and_purge"), \
+                 mock.patch.object(r, "to_sample_row", return_value={}), \
+                 mock.patch.object(r.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)) as run:
+                submitted = r.flush_bundle(0, [("doc", {})], 1, str(stage),
+                                           str(root / "scans"), str(root / "texts"), {"bundle_names": []})
+            create = next(call.args[0] for call in run.call_args_list
+                          if call.args[0][0].endswith("/bin/create_work"))
+            physical = f"usnm_quality_places_v2_{checksum}"
+            self.assertEqual(submitted, 1)
+            self.assertIn(physical, create)
+            self.assertNotIn(f"usnm_quality_places_{checksum}", create)
+            self.assertEqual((root / "download" / physical).read_bytes(), b"places")
+            self.assertEqual(len(list(units.glob("*/submitted"))), 1)
 
 
 class NoPasswordOnCommandLines(unittest.TestCase):

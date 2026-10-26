@@ -109,6 +109,10 @@ class InstallTest(unittest.TestCase):
         for name in ["usnm_quality_in", "usnm_quality_out"]:
             self.assertTrue((self.project / "templates" / name).is_file())
         self.assertIn("<sticky/>", (self.project / "templates" / "usnm_quality_in").read_text())
+        self.assertIn(
+            "<file_info><number>3</number><sticky/><no_delete/></file_info>",
+            (self.project / "templates" / "usnm_quality_in").read_text(),
+        )
         cpu = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_qwen", "docker_mt_2b")
         gpu = module.install(self.project, self.wrapper, IMAGE, "1.1", "usnm_qwen", "docker_nvidia_cuda_8b")
         self.assertIn("use_gpu = true", (gpu / "job_usnm_qwen_1.1_x86_64-pc-linux-gnu_docker_nvidia_cuda_8b.toml").read_text())
