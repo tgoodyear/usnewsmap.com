@@ -143,6 +143,25 @@ class Masters(unittest.TestCase):
         with open(f"{state}/done.txt") as f:
             self.assertEqual(f.read(), "keep/b/1.jp2\tuploaded\n")
 
+    def test_existing_blob_conflict_does_not_mark_page_done(self):
+        lst, state = f"{self.root}/list.txt", f"{self.root}/state"
+        with open(lst, "w") as f:
+            f.write("keep/b/1.jp2\n")
+
+        def opener(req, timeout):
+            if req.get_method() == "PUT":
+                raise http_error(412)
+            return Resp(headers={"Content-Length": str(len(qjc.convert(self.raw, True)[0]))})
+
+        blobs = qjc.Blobs("https://a.blob.core.windows.net/boinc-handoff", mock.Mock(), opener)
+        with mock.patch.object(qjc, "PILLOW_VERSION", PIL.__version__), \
+                mock.patch.object(qjc, "ProcessPoolExecutor", FakePool), \
+                mock.patch.object(qjc, "_init"), mock.patch.object(qjc, "_blobs", blobs):
+            with self.assertRaisesRegex(qjc.Refused, "sha256"):
+                qjc.main(["--account", "acct123", "--list", lst, "--scans-root", self.root, "--state", state])
+        with open(f"{state}/done.txt") as f:
+            self.assertEqual(f.read(), "")
+
 
 class ScanServer(unittest.TestCase):
     def setUp(self):
@@ -217,13 +236,39 @@ class Upload(unittest.TestCase):
         self.assertEqual((seen[0].get_method(), h["if-none-match"], h["x-ms-meta-recipe"]), ("PUT", "*", "r"))
         self.assertEqual(h["authorization"], "Bearer T")
 
-    def test_same_size_already_there(self):
+    def test_matching_provenance_already_there(self):
+        meta = {"sha256": hashlib.sha256(b"abc").hexdigest(), "source_sha256": "a" * 64,
+                "recipe": qjc.RECIPE, "pillow": qjc.PILLOW_VERSION, "width": 64, "height": 48}
+
         def opener(req, timeout):
             if req.get_method() == "PUT":
                 raise http_error(409)
-            return Resp(headers={"Content-Length": "3"})
+            return Resp(headers={"Content-Length": "3",
+                                 **{f"X-Ms-Meta-{k}": str(v) for k, v in meta.items()}})
 
-        self.assertFalse(self.blobs(opener).put_once("x.jpg", b"abc", {}))
+        self.assertFalse(self.blobs(opener).put_once("x.jpg", b"abc", meta))
+
+    def test_same_size_with_missing_or_conflicting_provenance_stops(self):
+        meta = {"sha256": hashlib.sha256(b"abc").hexdigest(), "source_sha256": "a" * 64,
+                "recipe": qjc.RECIPE, "pillow": qjc.PILLOW_VERSION, "width": 64, "height": 48}
+        for status in (409, 412):
+            for field in meta:
+                for value in (None, "different"):
+                    with self.subTest(status=status, field=field, value=value):
+                        headers = {"Content-Length": "3",
+                                   **{f"x-ms-meta-{k}": str(v) for k, v in meta.items()}}
+                        if value is None:
+                            del headers[f"x-ms-meta-{field}"]
+                        else:
+                            headers[f"x-ms-meta-{field}"] = value
+
+                        def opener(req, timeout):
+                            if req.get_method() == "PUT":
+                                raise http_error(status)
+                            return Resp(headers=headers)
+
+                        with self.assertRaisesRegex(qjc.Refused, field):
+                            self.blobs(opener).put_once("x.jpg", b"abc", meta)
 
     def test_other_size_stops(self):
         def opener(req, timeout):
