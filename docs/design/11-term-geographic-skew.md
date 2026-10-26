@@ -1,6 +1,6 @@
 # 11: Geographic Skew of Search Terms
 
-**Status:** Proposal for review; phase 1 built, and the per-language baselines from phase 2 (§11.14) · **Date:** September 2026 · **Code:** `crates/usnm-core/src/skew.rs` (scoring and its tests), `crates/usnm-core/examples/term_skew.rs` (the evidence below), `web/src/engine/skew.ts` and `skewModel.ts` (the browser port), `fixtures/skew-vectors.json` (shared test vectors)
+**Status:** Proposal for review; phase 1 built, and the per-language baselines from phase 2 (§11.14) · **Date:** September 2026 · **Code:** `crates/usnm-core/src/skew.rs` (scoring and its tests), `crates/usnm-core/src/skew/special.rs` (numerics and known-value tests), `crates/usnm-core/examples/term_skew.rs` (the evidence below), `web/src/engine/skew.ts` and `skewModel.ts` (the browser port), `fixtures/skew-vectors.json` (shared test vectors)
 
 ## 11.1 The question
 

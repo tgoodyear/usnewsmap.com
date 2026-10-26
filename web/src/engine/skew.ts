@@ -1,7 +1,7 @@
 // Geographic skew (docs/design/11-term-geographic-skew.md): does a place
 // print a search term more or less often than the other places did over the
-// same dates? A port of crates/usnm-core/src/skew.rs, the reference
-// implementation. fixtures/skew-vectors.json holds inputs and the scores the
+// same dates? A port of crates/usnm-core/src/skew.rs and skew/special.rs, the
+// reference implementation. fixtures/skew-vectors.json holds inputs and the scores the
 // Rust gives them; skew.test.ts checks this file against it, so the two
 // can't drift. Keep the arithmetic in the same order as the Rust.
 
