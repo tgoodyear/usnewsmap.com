@@ -264,7 +264,7 @@ pub fn iiif_base(iiif_root: &str, jp2_url: &str) -> Option<String> {
 pub fn page_images(iiif_root: &str, item: &Value) -> BTreeMap<u16, String> {
     let files = item["resources"][0]["files"]
         .as_array()
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
     let mut out = BTreeMap::new();
     for (i, page) in files.iter().enumerate() {
