@@ -27,6 +27,9 @@ try {
     userAgent: "USNewsMap-Preview/1.0 (screenshot bot)",
     extraHTTPHeaders: { DNT: "1", "Sec-GPC": "1" },
   });
+  await context.addInitScript(() => {
+    Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true });
+  });
   const page = await context.newPage();
   page.setDefaultTimeout(25_000);
   let basemapFailed = false;
@@ -52,9 +55,12 @@ try {
     const results = page.locator('[data-share-ready="true"], [data-share-error="true"]');
     await results.waitFor();
     if ((await results.getAttribute("data-share-error")) === "true") {
-      throw new Error("Selected-place results failed to load");
+      throw new Error("Search view results failed to load");
     }
-    await page.locator('[data-testid="map"], .tables, .notice:has-text("No pages match.")').first().waitFor();
+    await page
+      .locator('[data-testid="map"], .tables, .results:not(:has(.stage)) .notice:has-text("No pages match.")')
+      .first()
+      .waitFor();
     if (target.searchParams.get("tab") !== "table" && (await page.locator(".tables").count())) {
       throw new Error("WebGL map is unavailable");
     }

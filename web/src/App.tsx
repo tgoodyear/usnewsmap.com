@@ -681,7 +681,10 @@ export function App() {
       ) : (
         <main
           className={agg.isFetching ? "results results--loading" : "results"}
-          data-share-error={!!view.place && selectedPlace.isError}
+          data-share-error={
+            (!!view.place && selectedPlace.isError) ||
+            (!!baselineRef && (view.tab === "table" || statesActive) && coverage.isError)
+          }
           data-share-ready={
             !!data &&
             !!places.data &&
@@ -691,6 +694,8 @@ export function App() {
             !problem &&
             !placesFailed &&
             !coverageFailed &&
+            (!baselineRef || (view.tab !== "table" && !statesActive) || !!pageSums) &&
+            (!statesActive || !!statesSums) &&
             (!view.place || (selectedPlace.isSuccess && !selectedPlace.isFetching)) &&
             !skewNotice &&
             (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket")

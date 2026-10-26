@@ -60,3 +60,42 @@ test("native states preview accepts a fully rendered ocean viewport", async ({ r
   expect(image.status()).toBe(200);
   expect(image.headers()["content-type"]).toBe("image/png");
 });
+
+test("baseline-dependent table previews wait for coverage and reject failures", async ({ page, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app");
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/v1/coverage?**", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&tab=table");
+  await expect(page.locator(".summary")).toContainText("places");
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "false");
+  release();
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "true");
+  await page.unroute("**/v1/coverage?**");
+  await page.route("**/v1/coverage?**", (route) =>
+    route.fulfill({
+      status: 400,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ type: "about:blank", title: "Coverage unavailable", status: 400 }),
+    }),
+  );
+  await page.reload();
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-error", "true", { timeout: 15_000 });
+  await expect(page.locator("main.results")).toHaveAttribute("data-share-ready", "false");
+});
+
+test("zero-result native states preview waits for its lazy map", async ({ request, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
+  test.setTimeout(45_000);
+  const response = await request.get(
+    "/share-image.png?page=%2F&q=unmatchedfixtureword&from=1896-01-01&to=1896-12-31&layer=states",
+    { timeout: 40_000 },
+  );
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toBe("image/png");
+});

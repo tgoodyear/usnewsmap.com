@@ -369,37 +369,38 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri) -> Response {
         )
             .into_response();
     };
-    if let Some(body) = IMAGES.get(&card.image).await {
-        return ([(header::CONTENT_TYPE, "image/png")], body).into_response();
-    }
-    let Ok(permit) = RENDERS.clone().try_acquire_owned() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::RETRY_AFTER, "1")],
-            "share image renderer is busy",
-        )
-            .into_response();
-    };
     let key = card.image.clone();
     // Finish and cache a render even if the crawler stops waiting. The permit
     // bounds both browsers and static-card rasterization until they finish.
     match tokio::spawn(async move {
-        let _permit = permit;
-        let body = if card.url.starts_with(&format!("{SITE}/?"))
-            || card.url.starts_with(&format!("{SITE}/search/"))
-        {
-            screenshot(&card).await?
-        } else {
-            tokio::task::spawn_blocking(move || png(&card))
-                .await
-                .map_err(|_| "share card task failed".to_owned())??
-        };
-        IMAGES.insert(key, body.clone()).await;
-        Ok::<_, String>(body)
+        IMAGES
+            .try_get_with(key, async move {
+                let _permit = RENDERS
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| RenderError::Busy)?;
+                if card.url.starts_with(&format!("{SITE}/?"))
+                    || card.url.starts_with(&format!("{SITE}/search/"))
+                {
+                    screenshot(&card).await.map_err(RenderError::Failed)
+                } else {
+                    tokio::task::spawn_blocking(move || png(&card))
+                        .await
+                        .map_err(|_| RenderError::Failed("share card task failed".to_owned()))?
+                        .map_err(RenderError::Failed)
+                }
+            })
+            .await
     })
     .await
     {
         Ok(Ok(body)) => ([(header::CONTENT_TYPE, "image/png")], body).into_response(),
+        Ok(Err(error)) if matches!(*error, RenderError::Busy) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "1")],
+            "share image renderer is busy",
+        )
+            .into_response(),
         result => {
             tracing::error!(?result, "could not render share image");
             (
@@ -411,9 +412,40 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri) -> Response {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum RenderError {
+    #[error("share image renderer is busy")]
+    Busy,
+    #[error("{0}")]
+    Failed(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn identical_cache_misses_share_one_render_slot() {
+        use http_body_util::BodyExt;
+        let _reserved = RENDERS.clone().acquire_owned().await.unwrap();
+        let uri: Uri = "/share-image.png?page=%2Fdatasets".parse().unwrap();
+        IMAGES
+            .invalidate(&Card::new("/datasets", "").unwrap().image)
+            .await;
+        let (a, b, c) = tokio::join!(
+            image(OriginalUri(uri.clone())),
+            image(OriginalUri(uri.clone())),
+            image(OriginalUri(uri)),
+        );
+        assert_eq!(a.status(), StatusCode::OK);
+        assert_eq!(b.status(), StatusCode::OK);
+        assert_eq!(c.status(), StatusCode::OK);
+        let a = a.into_body().collect().await.unwrap().to_bytes();
+        let b = b.into_body().collect().await.unwrap().to_bytes();
+        let c = c.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+    }
 
     #[test]
     fn metadata_uses_the_permalink_and_escapes_untrusted_text() {
@@ -511,7 +543,7 @@ mod tests {
         };
         let image = app
             .clone()
-            .oneshot(request("GET", "/share-image.png?page=%2Fprivacy"))
+            .oneshot(request("GET", "/share-image.png?page=%2Fdatasets"))
             .await
             .unwrap();
         assert_eq!(image.status(), StatusCode::OK);
