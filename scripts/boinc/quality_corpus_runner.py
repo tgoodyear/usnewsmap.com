@@ -367,6 +367,23 @@ def dir_hier_path(physical):
     ).strip()
 
 
+def quality_places_name(job):
+    return f"usnm_quality_places_v2_{job['inputs']['places']['sha256']}"
+
+
+def recover_quality_places(job):
+    physical = quality_places_name(job)
+    if not Path(dir_hier_path(physical)).is_file():
+        legacy = Path(dir_hier_path(f"usnm_quality_places_{job['inputs']['places']['sha256']}"))
+        if legacy.is_file() and legacy.stat().st_size > 0:
+            # Preserve the legacy input for existing workunits; replacements use the protected name.
+            with legacy.open("rb") as source:
+                if hashlib.file_digest(source, "sha256").hexdigest() != job["inputs"]["places"]["sha256"]:
+                    raise RuntimeError("legacy shared places checksum mismatch")
+            stage_stream(PROJ, physical, legacy)
+    return physical
+
+
 def spool_ready(wu):
     return all(
         os.path.exists(f"{SPOOL_DIR}/{wu}__file_{fn}")
@@ -653,7 +670,7 @@ def repair_and_reclaim_download_space():
                 f"{jid}_page_jpg",
                 f"{jid}_loc_xml",
                 f"{jid}_texts_json",
-                f"usnm_quality_places_{job['inputs']['places']['sha256']}",
+                recover_quality_places(job),
                 f"{jid}_quality_json",
             ]
             has_all_downloads = all(
@@ -733,8 +750,8 @@ def repair_and_reclaim_download_space():
                     shutil.copyfile(dl_t, tfile)
                 elif not tfile.exists():
                     open(tfile, "wb").close()
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"bundle recovery warning: {udir.name}: {error}", file=sys.stderr, flush=True)
 
     diag = {}
     try:
@@ -1602,7 +1619,7 @@ def flush_bundle(shard_idx, chunk_rows, bundle_seq, stage_dir, scans_dir, texts_
             (f"{jid}_page_jpg", udir / "page.jpg"),
             (f"{jid}_loc_xml", udir / "loc.xml"),
             (f"{jid}_texts_json", udir / "texts.json"),
-            (f"usnm_quality_places_{job['inputs']['places']['sha256']}", udir / "places.txt"),
+            (quality_places_name(job), udir / "places.txt"),
             (f"{jid}_quality_json", qfile),
         ]
         for phys, src in phys_map:
