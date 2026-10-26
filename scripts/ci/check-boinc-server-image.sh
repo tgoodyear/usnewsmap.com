@@ -13,6 +13,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$image" ] || usage
+diff -ru web/public/.well-known contrib-compute/images/server/well-known
 docker run --rm --entrypoint bash "$image" -c '
 set -e
 cd /usr/local/boinc
@@ -26,6 +27,9 @@ for f in tools/make_project tools/xadd tools/update_versions tools/upgrade; do
 done
 [ -x /usr/local/lib/usnm-boinc/docker_wrapper ] || { echo "missing docker_wrapper" >&2; exit 1; }
 [ -x /usr/local/bin/bridge-job ] || { echo "missing bridge-job" >&2; exit 1; }
+for f in security.txt trust.txt gpc.json assetlinks.json dnt-policy.txt; do
+  [ -s "/usr/local/lib/usnm-boinc/well-known/$f" ] || { echo "missing .well-known/$f" >&2; exit 1; }
+done
 test -r /usr/local/lib/usnm-boinc/work-volume.py
 python3 /usr/local/lib/usnm-boinc/work-volume.py --help >/dev/null
 php -m | grep -qx mysqli

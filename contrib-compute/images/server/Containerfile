@@ -34,6 +34,7 @@ COPY images/server/gold-mirror-config.py /usr/local/lib/usnm-boinc/
 COPY images/server/batch-inventory.py /usr/local/lib/usnm-boinc/
 COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
 COPY boinc/gold-engine-platforms.json /usr/local/lib/usnm-boinc/
+COPY images/server/well-known /usr/local/lib/usnm-boinc/well-known
 # Project web pages (about.php, the front-page description), installed by entrypoint.sh --serve
 COPY boinc/html /usr/local/lib/usnm-boinc/html
 COPY images/server/prepare-prefs.py images/server/refresh-scheduler.py images/server/refresh-plan-policy.py images/server/refresh-project-code.py /usr/local/lib/usnm-boinc/

@@ -1,0 +1,3 @@
+US News Map honors Do Not Track and Global Privacy Control signals.
+When either signal is present, page views and searches are not recorded.
+See https://usnewsmap.com/privacy for details.
