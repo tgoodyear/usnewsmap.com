@@ -277,7 +277,7 @@ async fn page_views_are_forwarded_with_route_referrer_and_coarse_client() {
     ] {
         assert!(
             !console.contains(secret),
-            "`{secret}` was logged: {console}"
+            "sensitive fixture data was logged"
         );
     }
 }
