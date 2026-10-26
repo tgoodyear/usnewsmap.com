@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::engine::read_failure;
+use crate::engine::tail;
 use crate::testimg;
 
 /// The line the suite renders and reads back.
