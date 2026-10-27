@@ -1,4 +1,22 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
+
+async function screenshot(request: APIRequestContext, path: string): Promise<Buffer> {
+  let png: Buffer = Buffer.alloc(0);
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(path, { timeout: 10_000 });
+        expect(response.status()).toBe(200);
+        expect(response.headers()["content-type"]).toBe("image/png");
+        if (response.headers()["cache-control"] === "no-store") return false;
+        png = await response.body();
+        return true;
+      },
+      { timeout: 50_000, intervals: [500, 1000, 2000] },
+    )
+    .toBe(true);
+  return png;
+}
 
 test("search previews are rendered PNGs of the linked view and cached", async ({ request, isMobile }) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
@@ -8,17 +26,12 @@ test("search previews are rendered PNGs of the linked view and cached", async ({
   const image = /property="og:image" content="([^"]+)"/.exec(html)?.[1];
   expect(image).toContain("/share-image.png?");
   const imagePath = new URL(image!.replaceAll("&amp;", "&")).pathname + new URL(image!.replaceAll("&amp;", "&")).search;
-  const first = await request.get(imagePath, { timeout: 40_000 });
-  expect(first.status()).toBe(200);
-  expect(first.headers()["content-type"]).toBe("image/png");
-  const png = await first.body();
+  const png = await screenshot(request, imagePath);
   expect(png.subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
   expect(png.readUInt32BE(16)).toBe(1200);
   expect(png.readUInt32BE(20)).toBe(630);
   expect(await (await request.get(imagePath)).body()).toEqual(png);
-  const filtered = await request.get(`${imagePath}&state=GA&t=1896-08-01`, { timeout: 40_000 });
-  expect(filtered.status()).toBe(200);
-  expect(await filtered.body()).not.toEqual(png);
+  expect(await screenshot(request, `${imagePath}&state=GA&t=1896-08-01`)).not.toEqual(png);
 });
 
 test("selected-place screenshots wait for page results and reject failed panels", async ({ page, isMobile }) => {
@@ -52,13 +65,12 @@ test("selected-place screenshots wait for page results and reject failed panels"
 
 test("native states preview accepts a fully rendered ocean viewport", async ({ request, isMobile }) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
-  test.setTimeout(45_000);
-  const image = await request.get(
+  test.setTimeout(60_000);
+  const png = await screenshot(
+    request,
     "/share-image.png?page=%2F&q=cross+of+gold&from=1896-01-01&to=1896-12-31&layer=states&z=12&c=0,0",
-    { timeout: 40_000 },
   );
-  expect(image.status()).toBe(200);
-  expect(image.headers()["content-type"]).toBe("image/png");
+  expect(png.subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
 });
 
 test("baseline-dependent table previews wait for coverage and reject failures", async ({ page, isMobile }) => {
@@ -91,11 +103,10 @@ test("baseline-dependent table previews wait for coverage and reject failures", 
 
 test("zero-result native states preview waits for its lazy map", async ({ request, isMobile }) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
-  test.setTimeout(45_000);
-  const response = await request.get(
+  test.setTimeout(60_000);
+  const png = await screenshot(
+    request,
     "/share-image.png?page=%2F&q=unmatchedfixtureword&from=1896-01-01&to=1896-12-31&layer=states",
-    { timeout: 40_000 },
   );
-  expect(response.status()).toBe(200);
-  expect(response.headers()["content-type"]).toBe("image/png");
+  expect(png.subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
 });

@@ -655,6 +655,9 @@ async fn cache_control(req: Request, next: Next) -> Response {
     if !resp.status().is_success() && !(html && resp.status() == StatusCode::NOT_FOUND) {
         return resp;
     }
+    if resp.headers().contains_key(header::CACHE_CONTROL) {
+        return resp;
+    }
     let value = if immutable {
         "public, max-age=31536000, immutable"
     } else if html {
