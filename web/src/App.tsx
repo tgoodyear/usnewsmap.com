@@ -51,6 +51,7 @@ import { congressFeature } from "./lib/congress";
 import { SampleResults, topPlace } from "./components/SampleResults";
 import { STATE_NAMES, prepareStates, stateTotals, stateBreaks } from "./engine/states";
 import { StatesLegend, StatesTable } from "./components/StatesPanel";
+import { ShareButton } from "./components/ShareButton";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -1068,27 +1069,6 @@ function WhenLegend({ from, to }: { from: string; to: string }) {
         <span>{to}</span>
       </div>
     </div>
-  );
-}
-
-function ShareButton() {
-  return (
-    <button
-      type="button"
-      className="button toolbar__share"
-      onClick={(e) => {
-        const btn = e.currentTarget;
-        void navigator.clipboard?.writeText(window.location.href).then(
-          () => {
-            btn.textContent = "Link copied";
-            setTimeout(() => (btn.textContent = "Share"), 2000);
-          },
-          () => undefined,
-        );
-      }}
-    >
-      Share
-    </button>
   );
 }
 
