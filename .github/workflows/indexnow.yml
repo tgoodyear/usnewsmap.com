@@ -1,0 +1,50 @@
+name: indexnow
+
+on:
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    # Share the deploy lock and acknowledgement cache with CI's production
+    # submission, including publishes which happen without an app deploy.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    env:
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/indexnow/sitemap.sha256
+          key: indexnow-v1-prod-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: indexnow-v1-prod-
+      - name: Notify added, changed and removed URLs
+        id: indexnow
+        env:
+          INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
+        run: scripts/ci/indexnow.sh
+      - if: steps.indexnow.outputs.submitted == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/indexnow/sitemap.sha256
+          key: indexnow-v1-prod-${{ github.run_id }}-${{ github.run_attempt }}

@@ -1180,7 +1180,7 @@ jobs:
           path: ${{ runner.temp }}/indexnow/sitemap.sha256
           key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: indexnow-v1-${{ matrix.environment }}-
-      # Submit every live sitemap URL only when the URL set changes. Record
+      # Submit added/removed URLs and existing URLs whose lastmod changed. Record
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
