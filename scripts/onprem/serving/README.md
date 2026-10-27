@@ -40,11 +40,13 @@ Every script takes named flags and has a `--dry-run`.
 
 ## Cloudflare cache policy
 
-The public apex, `www` and `api` remain **DNS-only while Azure serves them**.
-Staging Cache Rules does not enable proxying or prove a cache HIT. ADR-0027
-requires the Phase 2 measurements, privacy update, fallback and certificate
-checks before the Phase 3 tunnel/DNS cutover; do not orange-cloud the Azure
-records as a shortcut, because that breaks the managed-certificate renewal path.
+Staging Cache Rules does not enable proxying or prove a cache HIT.
+[ADR-0028](../../../docs/design/adr/0028-cloudflare-with-azure-origin.md) allows
+proxying the existing Azure origin independently of the on-prem migration.
+Replace DNS-dependent managed certificates with renewable DNS-01 certificates,
+deploy the privacy/proxy changes and verify strict TLS before enabling the
+proxy. ADR-0027's hardware, rehearsal and fallback gates still apply to the
+later on-prem cutover, not to the Azure-origin proxy.
 
 Preview the policy without credentials or network calls:
 

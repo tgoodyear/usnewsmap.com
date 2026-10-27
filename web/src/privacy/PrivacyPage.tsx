@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 15 October 2026.</p>
+        <p className="privacy-updated">Last updated 27 October 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
           runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
@@ -54,11 +54,12 @@ export default function PrivacyPage() {
 
         <h2>Searches</h2>
         <p>
-          The words you search for are never stored with your IP address or anything else about you. The server keeps a
-          record of each request it answers: the kind of request (such as search results or map places), its status and
-          how long it took. These records leave out the page address, your search and your IP address. So that a
-          repeated search is fast, the server caches search results for up to 14 days. A cached result includes the
-          search words but nothing about who searched.
+          The site's own records never store the words you search for with your IP address or anything else about you.
+          Cloudflare may retain the full request address, including search words, with your IP address as described
+          below. The server keeps a record of each request it answers: the kind of request (such as search results or
+          map places), its status and how long it took. These records leave out the page address, your search and your
+          IP address. So that a repeated search is fast, the server caches search results for up to 14 days. A cached
+          result includes the search words but nothing about who searched.
         </p>
         <p>
           The site keeps the words of every search indefinitely, to understand what people look for. Each search is
@@ -79,6 +80,24 @@ export default function PrivacyPage() {
           salted hash of the address in memory for this and never writes it anywhere.
         </p>
 
+        <h2>Cloudflare</h2>
+        <p>
+          Requests to this site pass through Cloudflare before reaching our servers in Microsoft Azure. Cloudflare
+          terminates HTTPS and can see your IP address, the full address you request (including search words in a path
+          or query string), and request headers. Do Not Track and Global Privacy Control do not prevent this processing.
+          Cloudflare caches static files and versioned lookup data, but not search results or this site's HTML pages.
+        </p>
+        <p>
+          Cloudflare may retain sampled security request records containing your IP address and the requested address
+          for up to 31 days, visible to the maintainer. The exact fields available vary by Cloudflare's security
+          features. It acts as a processor for customer logs and content passing through its network, and as a
+          controller for other visitor information described in the{" "}
+          <a href="https://www.cloudflare.com/privacypolicy/" {...ext}>
+            Cloudflare privacy policy
+          </a>
+          . We disable optional Cloudflare analytics, content rewriting and cookie-based challenges for this site.
+        </p>
+
         <h2>Storage and retention</h2>
         <p>
           Microsoft Azure processes and stores this data in its East US 2 region (Virginia, United States). Page views,
@@ -89,8 +108,9 @@ export default function PrivacyPage() {
         <h2>Legal basis</h2>
         <p>
           The site uses this data for aggregate statistics, such as visits per day and which sites send visitors, and to
-          keep the service working. That is a legitimate interest, and the records keep no IP address, cookie or
-          identifier. The site doesn't ask for consent because it stores nothing on your device.
+          keep the service working. That is a legitimate interest, and the site's own records keep no IP address, cookie
+          or identifier. The same legitimate interest covers using Cloudflare to deliver and protect the site. The site
+          doesn't ask for consent because it stores nothing on your device.
         </p>
 
         <h2>Other sites</h2>

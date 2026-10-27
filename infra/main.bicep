@@ -360,13 +360,13 @@ param dnsZoneHosted bool = true
 @description('More TXT values at the zone apex, keyed by zone name (site-verification tokens). They are public, so they live in git.')
 param dnsApexTxtValues object = {}
 
-@description('Managed certificate for api.{dnsZoneName}, recorded by scripts/azure/bootstrap.sh after it issues one.')
+@description('Certificate for api.{dnsZoneName}, managed or uploaded. Recorded in private settings after issuance/binding.')
 param apiCertificateId string = ''
 
-@description('Managed certificate for {dnsZoneName} itself (the site), recorded by scripts/azure/bootstrap.sh.')
+@description('Certificate for {dnsZoneName} itself (the site), managed or uploaded. Recorded in private settings after issuance/binding.')
 param siteCertificateId string = ''
 
-@description('Managed certificate for www.{dnsZoneName}, recorded by scripts/azure/bootstrap.sh.')
+@description('Certificate for www.{dnsZoneName}, managed or uploaded. Recorded in private settings after issuance/binding.')
 param wwwCertificateId string = ''
 
 @description('The issue number of the experiment this environment is up for (#275; docs/operations/environments-and-deploys.md, "Dev environment lifecycle"). Tags the project resource group with `experiment` and `started`. scripts/lib/env.sh requires it for dev. Empty: no tags.')

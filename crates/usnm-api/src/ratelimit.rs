@@ -7,7 +7,8 @@
 //! taken from `X-Forwarded-For` counting back `trusted_proxy_hops` entries
 //! from the right, since entries further left are client-supplied, or, with
 //! `USNM_TRUST_CF_CONNECTING_IP`, from Cloudflare's `CF-Connecting-IP` when
-//! the request comes from this host (see [`ClientAddress`]).
+//! the request comes from this host (see [`ClientAddress`]). Behind ACA,
+//! a verified Cloudflare connection source adds one trusted forwarding hop.
 
 use std::hash::BuildHasher;
 use std::net::IpAddr;
@@ -101,7 +102,9 @@ fn cf_connecting_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr>
 /// The client address: `hops` entries from the right of `X-Forwarded-For`
 /// (all header lines, in order). If the header has fewer entries than there
 /// are trusted proxies, or the chosen entry isn't an address, no entry can be
-/// shown to be proxy-added, so this falls back to the peer address.
+/// shown to be proxy-added, so this falls back to the peer address. For the
+/// one-hop ACA mode, an ingress-added Cloudflare source permits one more
+/// address from the right, retaining the actual visitor instead of the edge.
 pub fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, hops: usize) -> Option<IpAddr> {
     if hops == 0 {
         return peer;
@@ -115,9 +118,61 @@ pub fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, hops: usize) -> Opti
         .filter(|s| !s.is_empty())
         .collect();
     match entries.len().checked_sub(hops) {
-        Some(i) => parse_ip(entries[i]).or(peer),
+        Some(i) => {
+            let proxy = parse_ip(entries[i]);
+            // ACA appends its verified connection source. Only peel the
+            // extra hop when that source is a published Cloudflare network;
+            // direct requests cannot opt into trusting a spoofed CF header.
+            if hops == 1 && proxy.is_some_and(cloudflare_edge) && i > 0 {
+                parse_ip(entries[i - 1]).or(peer)
+            } else {
+                proxy.or(peer)
+            }
+        }
         None => peer,
     }
+}
+
+// https://www.cloudflare.com/ips/ (verified 27 October 2026).
+fn cloudflare_edge(ip: IpAddr) -> bool {
+    let (value, ranges): (u128, &[(u128, u32)]) = match ip.to_canonical() {
+        IpAddr::V4(ip) => (
+            u32::from(ip).into(),
+            &[
+                (0xadf53000, 20),
+                (0x6715f400, 22),
+                (0x6716c800, 22),
+                (0x671f0400, 22),
+                (0x8d654000, 18),
+                (0x6ca2c000, 18),
+                (0xbe5df000, 20),
+                (0xbc726000, 20),
+                (0xc5eaf000, 22),
+                (0xc6298000, 17),
+                (0xa29e0000, 15),
+                (0x68100000, 13),
+                (0x68180000, 14),
+                (0xac400000, 13),
+                (0x83004800, 22),
+            ],
+        ),
+        IpAddr::V6(ip) => (
+            u128::from(ip),
+            &[
+                (0x2400cb00000000000000000000000000, 32),
+                (0x26064700000000000000000000000000, 32),
+                (0x2803f800000000000000000000000000, 32),
+                (0x2405b500000000000000000000000000, 32),
+                (0x24058100000000000000000000000000, 32),
+                (0x2a0698c0000000000000000000000000, 29),
+                (0x2c0ff248000000000000000000000000, 32),
+            ],
+        ),
+    };
+    let bits = if ip.to_canonical().is_ipv4() { 32 } else { 128 };
+    ranges
+        .iter()
+        .any(|(network, prefix)| value >> (bits - prefix) == network >> (bits - prefix))
 }
 
 /// Accepts `1.2.3.4`, `1.2.3.4:5678`, `2001:db8::1` and `[2001:db8::1]:5678`.
@@ -153,6 +208,24 @@ mod tests {
         let h = xff(&["6.6.6.6", "[2001:db8::1]:443"]);
         assert_eq!(client_ip(&h, peer, 1), Some("2001:db8::1".parse().unwrap()));
         assert_eq!(client_ip(&xff(&["garbage"]), peer, 1), peer);
+    }
+
+    #[test]
+    fn azure_cloudflare_chain_ignores_spoofed_prefix_and_preserves_direct_clients() {
+        let peer = Some("192.0.2.9".parse().unwrap());
+        assert_eq!(
+            client_ip(&xff(&["6.6.6.6, 203.0.113.7, 172.64.1.2"]), peer, 1),
+            Some("203.0.113.7".parse().unwrap())
+        );
+        assert_eq!(
+            client_ip(&xff(&["6.6.6.6, 203.0.113.7"]), peer, 1),
+            Some("203.0.113.7".parse().unwrap())
+        );
+        assert_eq!(
+            client_ip(&xff(&["2001:db8::7, 2606:4700::1"]), peer, 1),
+            Some("2001:db8::7".parse().unwrap())
+        );
+        assert_eq!(client_ip(&xff(&["garbage, 172.64.1.2"]), peer, 1), peer);
     }
 
     fn cf(values: &[&str]) -> HeaderMap {
