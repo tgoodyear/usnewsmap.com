@@ -220,7 +220,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: exit 1 # Intentional disposable #1215 enforcement probe; do not merge.
+      - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
       - run: python3 -m unittest -v contrib-compute/images/server/test_work_summary.py
 
   boinc-db-tls:
