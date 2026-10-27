@@ -71,6 +71,16 @@ three verified full pages. Both systems produced all three outputs. The human re
 has digest `a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9`; the complete
 pilot file-set digest is `47c8cf4b5b8e768cf7225629fac4ff6edcd9b3ca19bfe1f0bd58f54a4131acee`.
 
+Revalidated 27 October 2026 against current scorer sources after restoring the
+checksum-pinned `bench-assets` release. The previous score binding was correctly
+rejected as stale. Running `--score` and then `--verify` reproduced all four
+reports below byte-for-byte; only the scorer implementation binding changed.
+The refreshed pilot file-set digest is
+`2ef05d3661ffae0eb34ebcb3628ec0f21bb735cb9b659608adf20975df9329e0`.
+No image, reference, OCR output, selection or annotation status changed. This
+satisfies #814's stated scored-pilot-or-annotation-gap acceptance alternative,
+not the separate full-corpus quality and search-publication gates in #922.
+
 | OCR output             | Rule           | Edits / reference chars |    CER | Missing |
 | ---------------------- | -------------- | ----------------------: | -----: | ------: |
 | GovInfo PDF text layer | `legacy-ws-v1` |             613 / 6,407 |  9.57% |   0 / 3 |
