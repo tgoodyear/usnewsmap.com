@@ -16,10 +16,13 @@ KEY = "0123456789abcdef0123456789abcdef"
 NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 
 
-def sitemap(urls):
+def sitemap(urls, dates=None):
     root = ET.Element("urlset", xmlns=NS)
     for url in urls:
-        ET.SubElement(ET.SubElement(root, "url"), "loc").text = url
+        entry = ET.SubElement(root, "url")
+        ET.SubElement(entry, "loc").text = url
+        if dates and url in dates:
+            ET.SubElement(entry, "lastmod").text = dates[url]
     return ET.tostring(root, encoding="unicode")
 
 
@@ -31,6 +34,7 @@ class IndexNow(unittest.TestCase):
         script = self.root / "scripts/ci/indexnow.sh"
         script.parent.mkdir(parents=True)
         shutil.copy(ROOT / "scripts/ci/indexnow.sh", script)
+        shutil.copy(ROOT / "scripts/ci/indexnow-plan.py", script.parent)
         public = self.root / "web/public"
         public.mkdir(parents=True)
         (public / f"{KEY}.txt").write_text(KEY)
@@ -56,7 +60,11 @@ elif "-X" in args:
             "body": json.loads(Path(args[args.index("--data-binary") + 1][1:]).read_text()),
         }) + "\\n")
     Path(args[args.index("-o") + 1]).write_text("test response")
-    print(os.environ.get("STUB_STATUS", "200"), end="")
+    count = len((root / "posts.jsonl").read_text().splitlines())
+    status = os.environ.get("STUB_STATUS", "200")
+    if str(count) == os.environ.get("STUB_FAIL_BATCH"):
+        status = "503"
+    print(status, end="")
 elif args[-1].endswith("/sitemap.xml"):
     print((root / "live-sitemap.xml").read_text())
 elif args[-1].endswith(".txt"):
@@ -130,14 +138,81 @@ else:
         self.assertEqual(len(posts), 1)
         self.assertIn("sitemap URLs unchanged", output)
 
-    def test_changed_url_set_submits_every_url_again(self):
+    def test_added_url_submits_only_the_new_url(self):
         urls = [f"https://{HOST}/"]
         self.submit(sitemap(urls))
         urls.append(f"https://{HOST}/search/new-query")
         posts, _ = self.submit(sitemap(urls))
         self.assertEqual(len(posts), 2)
-        self.assertEqual(posts[-1]["body"]["urlList"], urls)
+        self.assertEqual(posts[-1]["body"]["urlList"], urls[-1:])
         self.assertIn("submitted=true", (self.root / "outputs").read_text())
+
+    def test_only_changed_dates_are_submitted_and_failures_retried(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/search/gold"]
+        before = {url: "2026-10-25T10:00:00Z" for url in urls}
+        self.submit(sitemap(urls, before))
+        after = {**before, urls[1]: "2026-10-26T10:00:00Z"}
+        self.env["STUB_STATUS"] = "429"
+        self.submit(sitemap(urls, after))
+        self.env["STUB_STATUS"] = "200"
+        posts, _ = self.submit(sitemap(urls, after))
+        self.assertEqual([p["body"]["urlList"] for p in posts], [urls, urls[1:], urls[1:]])
+        posts, _ = self.submit(sitemap(urls, after))
+        self.assertEqual(len(posts), 3)
+
+    def test_removed_urls_are_notified(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/search/old"]
+        self.submit(sitemap(urls))
+        posts, _ = self.submit(sitemap(urls[:1]))
+        self.assertEqual(posts[-1]["body"]["urlList"], urls[1:])
+
+    def test_partial_batch_failure_keeps_the_acknowledged_state(self):
+        urls = [f"https://{HOST}/search/query-{i}" for i in range(10001)]
+        self.env["STUB_FAIL_BATCH"] = "2"
+        self.submit(sitemap(urls))
+        self.assertFalse(Path(self.env["INDEXNOW_STATE_FILE"]).exists())
+        self.env.pop("STUB_FAIL_BATCH")
+        posts, _ = self.submit(sitemap(urls))
+        self.assertEqual([len(p["body"]["urlList"]) for p in posts], [10000, 1, 10000, 1])
+        self.assertTrue(Path(self.env["INDEXNOW_STATE_FILE"]).exists())
+
+    def test_migrates_digest_state_and_then_preserves_dates(self):
+        state = Path(self.env["INDEXNOW_STATE_FILE"])
+        state.parent.mkdir()
+        state.write_text("0" * 64 + "\n")
+        urls = [f"https://{HOST}/"]
+        self.submit(sitemap(urls, {urls[0]: "2026-10-26"}))
+        posts, _ = self.submit(sitemap(urls, {urls[0]: "2026-10-26"}))
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(json.loads(state.read_text())["version"], 2)
+
+    def test_invalid_lastmod_does_not_acknowledge_changes(self):
+        url = f"https://{HOST}/"
+        posts, output = self.submit(sitemap([url], {url: "not-a-date"}))
+        self.assertEqual(posts, [])
+        self.assertIn("::warning::IndexNow:", output)
+        self.assertFalse(Path(self.env["INDEXNOW_STATE_FILE"]).exists())
+
+    def test_equivalent_datetimes_are_not_resubmitted(self):
+        url = f"https://{HOST}/"
+        self.submit(sitemap([url], {url: "2026-10-26T10:00:00Z"}))
+        posts, _ = self.submit(sitemap([url], {url: "2026-10-26T06:00:00-04:00"}))
+        self.assertEqual(len(posts), 1)
+
+    def test_key_rotation_resubmits_current_urls(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/search/gold"]
+        self.submit(sitemap(urls))
+        state = Path(self.env["INDEXNOW_STATE_FILE"])
+        previous = json.loads(state.read_text())
+        previous["key"] = "previous-key"
+        state.write_text(json.dumps(previous))
+        posts, _ = self.submit(sitemap(urls))
+        self.assertEqual(posts[-1]["body"]["urlList"], urls)
+
+    def test_scheduled_main_runs_notify_without_a_deploy(self):
+        self.env["GITHUB_EVENT_NAME"] = "schedule"
+        posts, _ = self.submit(sitemap([f"https://{HOST}/"]))
+        self.assertEqual(len(posts), 1)
 
     def test_failed_submission_is_retried(self):
         xml = sitemap([f"https://{HOST}/"])

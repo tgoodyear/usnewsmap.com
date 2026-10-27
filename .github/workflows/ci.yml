@@ -1172,19 +1172,61 @@ jobs:
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: scripts/ci/roll-api.sh
+      # A build provenance attestation for the API image, for an origin that
+      # checks it before it runs the image (#955), as hosts check the OCR
+      # worker release's. Its subject is the
+      # digest the push returned, the one `usnewsmap-api:<sha>` names.
+      - name: Attest the API image
+        if: steps.head.outputs.current == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.ACR }}/usnewsmap-api
+          subject-digest: ${{ steps.api.outputs.digest }}
+
+  indexnow:
+    name: notify changed URLs (${{ matrix.environment }})
+    needs: publish
+    if: >-
+      always() && needs.publish.result == 'success'
+      && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
+    environment: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: indexnow-${{ matrix.environment }}
+      cancel-in-progress: false
+    env:
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: env.APP != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Restore the last successful IndexNow submission
-        if: steps.head.outputs.current == 'true' && env.APP != ''
+        if: env.APP != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: ${{ runner.temp }}/indexnow/sitemap.sha256
           key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: indexnow-v1-${{ matrix.environment }}-
-      # Submit every live sitemap URL only when the URL set changes. Record
+      # Submit added/removed URLs and existing URLs whose lastmod changed. Record
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: steps.head.outputs.current == 'true' && env.APP != ''
+        if: env.APP != ''
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
@@ -1196,15 +1238,3 @@ jobs:
         with:
           path: ${{ runner.temp }}/indexnow/sitemap.sha256
           key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-      # A build provenance attestation for the API image, for an origin that
-      # checks it before it runs the image (#955), as hosts check the OCR
-      # worker release's. Its subject is the
-      # digest the push returned, the one `usnewsmap-api:<sha>` names. Last,
-      # so a failure here doesn't hold back the rollout or IndexNow, but
-      # still fails the deployment.
-      - name: Attest the API image
-        if: steps.head.outputs.current == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.ACR }}/usnewsmap-api
-          subject-digest: ${{ steps.api.outputs.digest }}

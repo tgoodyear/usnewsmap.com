@@ -35,6 +35,7 @@ use tower_http::services::ServeDir;
 use crate::error::ApiError;
 use crate::AppState;
 
+pub(crate) mod sitemap;
 mod social;
 
 /// Headers on every response (the site's and the API's). `connect-src`
@@ -92,6 +93,9 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         let index = index.clone();
         let state = state.clone();
         async move {
+            if req.uri().path() == "/sitemap.xml" && state.config.sitemap_state_url().is_some() {
+                return sitemap::response(&state, &req);
+            }
             if let Some(location) = matches!(*req.method(), Method::GET | Method::HEAD)
                 .then(|| search_redirect(req.uri()))
                 .flatten()
@@ -266,7 +270,7 @@ fn search_redirect(uri: &Uri) -> Option<String> {
     (uri.path_and_query()?.as_str() != target).then_some(target)
 }
 
-static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
+pub(crate) static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
         #[derive(serde::Deserialize)]
         struct Example {
@@ -406,6 +410,15 @@ fn preview_query(q: &str) -> String {
 }
 
 async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
+    search_preview_snapshot(state, state.snapshot.load_full(), q, false).await
+}
+
+pub(crate) async fn search_preview_snapshot(
+    state: &Arc<AppState>,
+    snap: Arc<crate::Snapshot>,
+    q: &str,
+    background: bool,
+) -> Result<String, ApiError> {
     use crate::routes::{cached_body, with_timeout, Job};
     use crate::version::Pinning;
     use usnm_core::ids::PageKey;
@@ -413,14 +426,15 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
     use usnm_core::time::date_from_day;
     use usnm_search::HitsQuery;
 
-    let snap = state.snapshot.load_full();
     let raw = preview_query(q);
     let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
     let canonical = search.canonical();
     let version = snap.refdata.version().to_owned();
-    let key = snap
-        .refdata
-        .search_key("site-preview-v5", &canonical, &search.query);
+    let key = snap.refdata.search_key(
+        &format!("site-preview-{}", sitemap::renderer()),
+        &canonical,
+        &search.query,
+    );
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
@@ -491,9 +505,10 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
         );
         Ok::<_, ApiError>(html)
     };
+    let job = Job::search("site-preview", background, state.config.compute_cap);
     let (_, body) = cached_body(
         state,
-        Job::search("site-preview", false, state.config.compute_cap),
+        job,
         key,
         &Pinning::Unversioned,
         &version,

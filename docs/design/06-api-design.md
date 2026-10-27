@@ -597,3 +597,18 @@ Every search a visitor runs on the site is kept, indefinitely and without anythi
 - **Writing.** The handler queues the record without waiting (1,024 slots; a full queue drops it). A background task writes each day's records, shuffled, as one new blob, `staging/{day}/{32 random hex digits}.jsonl`, created with `If-None-Match: *`, every 5 minutes (`USNM_SEARCH_LOG_FLUSH_SECS`), when 2,000 are waiting, and at shutdown (at most 10 s after the requests drain). A failed write is retried at the next flush under the same name, so a write that succeeded without the API seeing the response is stored once. At most 20,000 records wait. Records for a day that aren't staged 45 minutes after it ends are dropped and counted as lost. An hour after each UTC day ends, a replica lists that day's batches, shuffles all of their lines together and writes `days/{day}.jsonl` create-only; whichever replica gets there first writes it. Staged batches expire 7 days after they're written, then stay recoverable for the account's 3 days of soft delete. `USNM_SEARCH_LOG_URL` names the container (`https://{account}.blob.core.windows.net/searches`); unset, nothing is recorded.
 - **Logging.** Neither the queue nor the writer logs search text. A failed write logs `search log write failed` with the error (the blob path and HTTP status) and the number of records; a failed day file logs the day.
 - **Reading.** `scripts/azure/searches.sh --env <env> [--days N]` (09 §9.4.2).
+
+The same persistent container reserves `sitemap/state/` for the public site's
+immutable, monotonically numbered sitemap checkpoints (#1190). These are not
+visitor search records and never enter `staging/` or the expiring response
+cache. `USNM_SITEMAP_STATE_URL` can independently select a persistent store
+without enabling visitor logging; it defaults to `USNM_SEARCH_LOG_URL`. On-prem
+serving sets a shared, non-expiring local directory instead. The API needs only
+the container's existing list/read/create access.
+Every checkpoint stores one complete snapshot's canonical URL fingerprints and
+retained modification dates; competing replicas serialize with `put_new`, not
+a mutable pointer. Refreshes run in the background without blocking readiness,
+retain the last successful generation on failure, and return retryable `503`
+until the first complete checkpoint exists. See
+[persistent sitemap dates](../../web/README.md#persistent-sitemap-dates) for
+date provenance, bootstrap and rollback rules.

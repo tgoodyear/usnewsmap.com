@@ -14,6 +14,8 @@
 # per-process counter), and both colors run the API as process 1, so two
 # colors writing one directory at once could take each other's temporary
 # files.
+# Sitemap checkpoints instead share a durable directory across colors. Their
+# create-only store uses process-unique temporary names and atomic appends.
 #
 # Host network, as on the BOINC host (docs/boinc-onprem.md), so the API
 # reaches the searcher and the Arc agent's identity endpoint on loopback.
@@ -35,6 +37,7 @@ ExecStartPre=-/usr/bin/podman rm -f usnm-api-%i
 ExecStart=/usr/bin/podman run --rm --name usnm-api-%i --network host --pull never \
   --env-file /etc/usnm-serving/api.env -e USNM_BIND=${USNM_BIND} \
   -v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache \
+  -v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state \
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro --group-add ${HIMDS_GID} \
   --read-only --tmpfs /tmp:rw,size=64m --cap-drop all --security-opt no-new-privileges \
   --memory 2g --stop-timeout 40 ${API_IMAGE}

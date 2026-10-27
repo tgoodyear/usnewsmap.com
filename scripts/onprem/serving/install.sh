@@ -37,7 +37,7 @@
 # No API color starts here: the timer's first run deploys the image prod
 # runs to blue. The response cache, /srv/usnm-serving/cache, should be the
 # host's bind mount from the NVMe pool; it is created if missing and given
-# to the API image's user (65532), and the tmpfiles rule makes a directory
+# to the API image's node user (1000), and the tmpfiles rule makes a directory
 # in it for each color.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
@@ -65,7 +65,7 @@ R=${USNM_SERVING_TEST_ROOT:-}
 ETC=$R/etc/usnm-serving
 SRV=$R/srv/usnm-serving
 UNITS=$R/etc/systemd/system
-CACHE_UID=65532
+CACHE_UID=1000
 
 for f in api.env searcher.env searcher.yaml; do
   [ -s "$CONFIG/$f" ] || die "no $CONFIG/$f; run gen-env.sh --out $CONFIG first"
@@ -111,6 +111,9 @@ if [ "$(stat -c %u "$SRV/cache" 2> /dev/null || true)" != "$CACHE_UID" ]; then
   run chown "$CACHE_UID:$CACHE_UID" "$SRV/cache"
 fi
 run chmod 750 "$SRV/cache"
+run mkdir -p "$SRV/sitemap-state"
+run chown "$CACHE_UID:$CACHE_UID" "$SRV/sitemap-state"
+run chmod 750 "$SRV/sitemap-state"
 
 # The index the searcher reads must be there, as the config names it.
 index=$(sed -n 's|^default_index_root_uri: file://||p' "$CONFIG/searcher.yaml")

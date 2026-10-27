@@ -40,7 +40,7 @@ Every script takes named flags and has a `--dry-run`.
 ## Setup (Phase 2)
 
 1. home-infra's `serving-ct.sh` creates the container, its VLAN tag, its firewall and its packages. Then the container joins Arc under its own identity, outside the on-prem group, and Bicep grants that identity its roles with `onPremServing` on.
-2. The host mounts the index read-only at the path the release wrote into its metastore (the release's run directory plus `/qw`), and the NVMe pool's cache dataset at `/srv/usnm-serving/cache`.
+2. The host mounts the index read-only at the path the release wrote into its metastore (the release's run directory plus `/qw`), and the NVMe pool's cache dataset at `/srv/usnm-serving/cache`. The installer also creates `/srv/usnm-serving/sitemap-state`, writable by the API image's user and bind-mounted into both API colors. `USNM_SITEMAP_STATE_URL` points there independently of visitor search logging, which remains disabled before cutover. Unlike the response cache, these durable sitemap checkpoints never expire; preserve this directory across upgrades and restores.
 3. On the operator's machine:
 
    ```bash

@@ -399,4 +399,64 @@ the normal image-only rollout preserves existing resource limits.
 - `public/og-image.png` remains the homepage's share image. Search links get a 1200×630 Chromium screenshot of the actual linked page, preserving map viewport, filters, timeline position, layer, legend, and attribution. The API injects Open Graph and Twitter metadata before JavaScript runs and serves the PNG at `/share-image.png`. Captures wait for search data, tiles, and the overlay; unlike interactive views, they do not replace a slow initial basemap request with the offline background after two seconds. A failed basemap is rejected, never cached as a complete screenshot. Image URLs carry a render revision to avoid reusing earlier degraded previews. If rendering takes more than two seconds, fails, or both render slots are occupied, the endpoint serves the existing static homepage image with `Cache-Control: no-store` and logs the fallback without the search query. Slow captures continue within their existing 40-second limit and populate the screenshot cache on success; fallback images never enter that cache. Up to 128 successful images are cached for an hour, with two renders at once. Dataset/privacy pages use lightweight summary cards with the bundled SIL Open Font License Noto Sans font.
 - The API image bundles Node and Chromium. Locally, run `npm ci` and `node node_modules/playwright-core/cli.js install chromium` in `web`, build the app, then serve it through the API with `USNM_SITE_DIR=web/dist`. Screenshot navigation uses loopback and the port in `USNM_BIND` (default 8080), allowing only local app requests and OpenFreeMap assets. `USNM_SHARE_SCRIPT` overrides the renderer location; `PW_CHROMIUM_PATH` selects an existing browser. Vite alone does not serve dynamic sharing metadata or images.
 - `public/robots.txt` tells crawlers not to fetch `/v1/`. The Vite build generates `dist/sitemap.xml` with the home page, `/privacy`, `/datasets`, `/credits` and deduplicated base queries from `src/examples.json`. Add curated examples there to seed more searches; the API reads the same list to allow indexing. Filter variants and uncurated searches remain `noindex`. Curated base searches include a count and up to ten earliest results from the city with the most hits (dates, newspaper titles, snippets and source links) in their initial HTML, with their own escaped title, canonical link and `og:url`. A visually hidden (but in-DOM) "Sample results" section keeps these available after the app loads. These previews share the API's versioned caches, computation queue, concurrency and timeout limits; an unavailable preview returns a retryable error rather than an indexable empty shell. The homepage's initial HTML links to every curated base search, and example cards are real links. Plain exact-phrase searches get readable lowercase paths (`/search/cross-of-gold`, quotes dropped, hyphens for spaces; search is case-insensitive and a hyphen is a word break); searches with operators, wildcards, other punctuation or a non-default mode keep the percent-encoded form, and old `%22` URLs redirect to the readable one. Interactive map results still require JavaScript. `/privacy`, `/datasets` and `/credits` also get their own metadata, and `/status` redirects to `/datasets`.
-- `public/<key>.txt` is the public IndexNow ownership key. After a production main deploy, CI fetches the live generated `sitemap.xml` and compares its URL set with the last successful submission, persisted in an Actions cache per environment. **Only a changed URL set or ownership key triggers submission** of every listed URL, including all curated searches, in batches of at most 10,000 (`scripts/ci/indexnow.sh`). It verifies the live key and hostname first; PRs, preview deployments and unchanged sitemaps never submit. There is no source-tree sitemap or second URL list to maintain. Failed submissions warn without failing the deploy and do not advance the saved fingerprint, so a later deploy retries. If the cache is missing or evicted, the next production deploy submits once to establish its baseline.
+- `public/<key>.txt` is the public IndexNow ownership key. After a production main deploy and hourly between deploys (`indexnow.yml`), CI compares each live sitemap URL's `lastmod` with its last acknowledged submission. **Only added, changed or removed URLs are submitted**, in batches of at most 10,000 (`scripts/ci/indexnow.sh`). This catches index publications without an app deploy. The acknowledgement is JSON in the historical `sitemap.sha256` Actions-cache file; old digest state, a missing cache, or key rotation triggers one complete submission to establish the new baseline. Post-deploy and scheduled notifications share a dedicated notification concurrency group and cache keys, separate from the rollout lock. The script verifies the live ownership key and hostname, uses DNT for site fetches, and never submits from PRs or feature branches. Failed or partially accepted batches warn without failing a deployment and never advance acknowledgement state, so later checks retry. IndexNow supports Bing and other participating engines, not Google.
+
+### Persistent sitemap dates
+
+With `USNM_SITE_DIR` and a sitemap state store configured, the API serves a durable
+`/sitemap.xml`, not the undated Vite file. A background generation starts on each
+replica's startup and on an index-version change, retries failures at the normal
+reference refresh interval, and does not gate API readiness. It pins one snapshot
+for every curated preview, computing one query at a time through the existing
+warm-up slot. Immutable preview bodies share version/build-keyed caches and
+in-flight computations with visitors, so retries reuse partial successes;
+only modification dates require the non-expiring checkpoint store. Only a complete,
+successful generation is committed; the previous sitemap remains available
+while computing or after failure. Before the first durable generation, the
+endpoint returns a logged, retryable `503`, never an undated production success.
+`USNM_SITEMAP_STATE_URL` selects this store independently of visitor logging;
+unset, it defaults to `USNM_SEARCH_LOG_URL` when present. Fixtures with neither
+store setting still serve Vite's undated sitemap.
+
+Search fingerprints include the exact deterministic initial-HTML sample results
+and effective runtime American Stories search policy:
+total matches, top city, its count, and up to ten earliest hits' dates, titles,
+snippets and citations (including the no-results case). Unchanged fingerprints
+retain their dates across index publishes, rebuilds and restarts. Changed
+results after a genuinely forward index publication use `current.json`'s
+`published_at` only when the page's rendering/copy provenance is unchanged;
+code/content changes, including those deployed alongside an index, use generation
+observation time. Legacy checkpoints without that provenance conservatively use
+observation time for changed pages. First
+observations and new URLs also use observation time: no historical change time
+is invented. A changed page is never backdated behind its previous date.
+
+Vite also emits `sitemap-pages.json` with source-content fingerprints for `/`,
+`/privacy`, `/credits` and `/datasets`, following their local imports (including
+shared visible components and the OCR credit catalog) and source HTML shell.
+These are conservative source fingerprints, not generated JS chunks or asset
+filenames. Build timestamps alone do not change a page's date. Dataset details
+and OCR credits also include the pinned published index's provenance; transient health, queue and
+other live status counters are intentionally not sitemap change signals.
+Dataset details and search pages also track effective runtime search policy in
+their content and non-index provenance. Policy switches use observation time,
+even alongside a forward publication; ignored settings do not invent changes.
+
+Full immutable checkpoints live under `sitemap/state/{sequence:020}.json` in
+the selected store (Azure defaults to the existing **searches** container),
+outside expiring response-cache and staged search-log prefixes. On-prem serving
+uses `/srv/usnm-serving/sitemap-state`, a shared writable bind mount for both API
+colors with no expiry; search logging can stay disabled. Listing finds the latest
+checkpoint; create-only appends
+serialize replicas, and collisions re-read and recompare against the winner.
+No mutable pointer, delete permission or new storage grant is needed. Separate
+API compilation and web build timestamps prevent an older deployed image from
+undoing newer state (including when Docker reuses one build stage). An intentional
+image rollback must be rebuilt; merely restarting an old image cannot rewrite
+dates. The current index pointer remains authoritative, including a rollback
+to an older publication: unchanged pages retain their dates, and changed
+rollback results use observation time rather than the older publication time. Clocks
+must be correct: future provenance is rejected. Snapshot and published pointer
+are checked before appending, but these separate stores cannot form a transaction;
+a publish racing that final check may briefly leave the preceding complete
+generation visible until the next refresh.

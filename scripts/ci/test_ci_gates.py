@@ -138,6 +138,24 @@ class Gates(unittest.TestCase):
                 if "| tee " in step:
                     self.assertIn("shell: bash", step)
 
+    def test_indexnow_notifications_cannot_replace_pending_deployments(self):
+        publish = job("publish")
+        notify = job("indexnow")
+        scheduled = (ROOT / ".github/workflows/indexnow.yml").read_text()
+
+        def group(text):
+            return re.search(r"(?m)^\s+group: (.+)$", text)[1].replace(
+                "${{ matrix.environment }}", "prod",
+            )
+
+        self.assertNotIn("scripts/ci/indexnow.sh", publish)
+        self.assertIn("needs: publish", notify)
+        self.assertIn("needs.publish.result == 'success'", notify)
+        self.assertIn("scripts/ci/indexnow.sh", notify)
+        self.assertIn("scripts/ci/indexnow.sh", scheduled)
+        self.assertEqual(group(notify), group(scheduled))
+        self.assertNotEqual(group(publish), group(scheduled))
+
     def test_script_shards_install_the_pinned_arm_contract_compiler(self):
         scripts = job("script-tests")
         self.assertLess(scripts.index("run: scripts/ci/install-bicep.sh"),
