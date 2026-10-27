@@ -187,6 +187,39 @@ class SourceTest(unittest.TestCase):
                     driver.tick(a)
                 self.assertEqual(remote.call_count, 2)
 
+    def test_ready_sources_return_without_waiting_for_new_scan_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
+                                      server_host="boinc.example", server_ct=230, prep_ct=215,
+                                      archive_host="archive.example", archives="/archives",
+                                      alto_export="/cache", scan_server="http://scan.example",
+                                      outbox=Path(folder), min_free_gb=50, max_ready=1000,
+                                      max_pending=3, chunk_pages=100)
+            page = {"doc_id": DOC, "damage_rate": 0.9}
+            inv = {"ready": 0, "documents": [], "free_bytes": 100 * 1024**3}
+            pool = {"report": [{"lv": [{"lv_size": str(200 * 1024**3), "data_percent": "50"}]}]}
+            receipt = {"cached": [DOC], "missing": [], "pending": []}
+
+            def run(args, data=None):
+                if any("ocr_manifest.py" in arg for arg in args):
+                    raise TimeoutError("scan-manifest generation must not block ready work")
+                if args[-1].endswith("/selected.jsonl") and "cat" in args:
+                    return json.dumps(page).encode()
+                if "-c" in args:
+                    return b"[]"
+                return b""
+
+            with mock.patch.object(driver, "remote", side_effect=[
+                    json.dumps(inv), json.dumps(pool), json.dumps(receipt)]), \
+                    mock.patch.object(driver, "command", side_effect=run) as command, \
+                    mock.patch.object(driver.urllib.request, "urlopen") as source:
+                source.return_value.__enter__.return_value.read.return_value = b"index"
+                driver.tick(a)
+            prepared = [call for call in command.call_args_list
+                        if "run" in call.args[0] and any(
+                            arg.endswith("/quality_feed.py") for arg in call.args[0])]
+            self.assertEqual(len(prepared), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
