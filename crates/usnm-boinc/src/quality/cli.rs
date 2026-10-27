@@ -166,6 +166,12 @@ pub enum QualityCommands {
         qwen_root: PathBuf,
         #[arg(long)]
         qwen_spool: PathBuf,
+        /// Reuse content-addressed per-unit rows; late canonical readings invalidate joins.
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        /// Bound recomputation per pass; incomplete cache warming never publishes partial tables.
+        #[arg(long, default_value_t = 8)]
+        max_dirty_units: usize,
         /// The usnm_surya staging root and spool: its crop units' texts join crops.parquet as the
         /// reader `surya` (#968).
         #[arg(long, requires = "surya_spool")]
@@ -407,6 +413,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             spool,
             qwen_root,
             qwen_spool,
+            cache,
+            max_dirty_units,
             surya_root,
             surya_spool,
             out_dir,
@@ -418,6 +426,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 spool,
                 qwen_root,
                 qwen_spool,
+                cache,
+                max_dirty_units,
                 surya_root,
                 surya_spool,
                 out_dir,

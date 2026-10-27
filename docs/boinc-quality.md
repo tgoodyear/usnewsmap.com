@@ -478,6 +478,30 @@ no LoC request:
    loaded Qwen science. The two collectors share the host pass lock and server bridge
    lock. Neither changes work identities, submission, source selection or quorum.
 
+   Both services opt into native incremental collection (`--incremental` on the
+   host driver). Deploy the matching `usnm-boinc` collector binary **before**
+   installing these service units; an old binary rejects the cache flags and
+   safely prevents pulling or loading a stale snapshot. Each campaign retains
+   immutable JSON row parts under `collected-parts/`. Keys include the collector
+   executable and format version, staged scientific inputs and optional OCR
+   sidecars, canonical QUALITY outputs, and the relevant Qwen jobs/canonical
+   outputs (including missing-to-present transitions). Surya dependencies
+   conservatively invalidate all parts. A late reading therefore recomputes
+   affected crop joins/hat rows instead of treating a previously loaded page as
+   permanently complete. Dependency changes during computation abort publication.
+
+   `--max-dirty-units` (default 8, positive) bounds expensive recomputation per pass.
+   Cold caches or upgrades may need multiple ticks to warm: completed parts are
+   fsynced, but any deferred unit makes collection exit nonzero **before** replacing
+   campaign outputs or starting pull/load. The prior scientific snapshot and all
+   database rows remain intact. A subsequent tick resumes from those parts; a
+   clean pass assembles the complete current campaign and uses the existing
+   idempotent certificate loader. Corrupt parts fail closed and remain available
+   for operator diagnosis. No scientific inputs, historical parts or database rows
+   are deleted. This bounds recomputation, not the linear input hashing,
+   table assembly, transfer or loader costs; measure end-to-end pass duration
+   after warming before claiming capacity for a larger campaign.
+
 ```sh
 # On pve-laptop, once: the trust and the mounts (home-infra).
 scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi

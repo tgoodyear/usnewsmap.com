@@ -34,7 +34,29 @@ class ResultsTest(unittest.TestCase):
     def args(self):
         return types.SimpleNamespace(campaign="v1-test", engine_image="sha256:" + "a" * 64,
                                      server_host="server.example", server_ct=230, ctid=216,
-                                     qwen_campaign=None)
+                                     qwen_campaign=None, incremental=False, max_dirty_units=8)
+
+    def test_incremental_forwarding_and_incomplete_warming_never_pulls_stale_snapshot(self):
+        args = self.args()
+        args.incremental = True
+        args.max_dirty_units = 3
+        with mock.patch.object(results.subprocess, "run",
+                               side_effect=subprocess.CalledProcessError(1, ["warming"])) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                results.run(args)
+            self.assertEqual(run.call_count, 1)
+            command = run.call_args.args[0][-1]
+            self.assertIn("--cache /project/quality/v1-test/collected-parts", command)
+            self.assertIn("--max-dirty-units 3", command)
+
+    def test_nonpositive_dirty_bound_is_rejected_before_lock_or_remote_work(self):
+        for bound in ("0", "-1"):
+            with self.subTest(bound=bound), mock.patch.object(results, "run") as run:
+                with self.assertRaises(SystemExit) as error:
+                    results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64,
+                                  "--max-dirty-units", bound])
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
 
     def test_collection_pull_then_certificate_load_with_bounded_locks_and_retry(self):
         with mock.patch.object(results.subprocess, "run") as run:

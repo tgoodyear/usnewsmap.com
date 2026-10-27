@@ -56,6 +56,9 @@ def run(args):
         "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
         "--out-dir", root + "/out",
     ]
+    if args.incremental:
+        command.extend(["--cache", root + "/collected-parts",
+                        "--max-dirty-units", str(args.max_dirty_units)])
     subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                     f"root@{args.server_host}", shlex.join(command)],
                    check=True, timeout=1260)
@@ -88,6 +91,9 @@ def main(argv=None):
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--engine-image", required=True)
     parser.add_argument("--qwen-campaign", help="join this native Qwen campaign's canonical batch-8 readings")
+    parser.add_argument("--incremental", action="store_true",
+                        help="reuse native content-addressed rows; incomplete warming never loads")
+    parser.add_argument("--max-dirty-units", type=int, default=8)
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)
@@ -96,8 +102,8 @@ def main(argv=None):
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign)
             or not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image)
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
-            or min(args.ctid, args.server_ct) < 1):
-        parser.error("invalid campaign, engine image, server host or container id")
+            or min(args.ctid, args.server_ct, args.max_dirty_units) < 1):
+        parser.error("invalid campaign, engine image, server host, container id or dirty-unit bound")
     if args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign):
         parser.error("invalid native Qwen campaign")
     with args.lock.open("a") as lock:
