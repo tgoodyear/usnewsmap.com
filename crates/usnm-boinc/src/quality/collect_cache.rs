@@ -4,7 +4,7 @@ use anyhow::{ensure, Context};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -30,7 +30,8 @@ struct Envelope {
 pub(super) struct Cache {
     dir: PathBuf,
     version: Vec<u8>,
-    qwen: BTreeMap<String, Dependency>,
+    qwen: BTreeMap<String, Vec<PathBuf>>,
+    qwen_dependencies: BTreeMap<PathBuf, Dependency>,
     surya: Dependency,
     qwen_root: PathBuf,
     surya_root: Option<PathBuf>,
@@ -131,6 +132,7 @@ impl Cache {
         // A release/rebuild (including hat or contract changes) invalidates all derived rows.
         file(&mut version, &std::env::current_exe()?)?;
         let mut qwen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+        let mut qwen_dependencies = BTreeMap::new();
         let mut job_bytes = Vec::new();
         let mut inventory = jobs(&opts.qwen_root, crate::qwen::JOB_FILE)?;
         for path in &inventory {
@@ -143,8 +145,9 @@ impl Cache {
                 &crate::qwen::outputs(),
             ));
             for doc in std::iter::once(&job.doc_id).chain(job.pages.iter().map(|p| &p.doc_id)) {
-                qwen.entry(doc.clone()).or_default().extend(paths.clone());
+                qwen.entry(doc.clone()).or_default().push(path.clone());
             }
+            qwen_dependencies.insert(path.clone(), Dependency::new(paths)?);
             job_bytes.push((path.clone(), bytes));
         }
         let mut surya = Vec::new();
@@ -165,10 +168,6 @@ impl Cache {
                 surya.push(spool.join(format!("{}_no_output_files", job.workunit())));
             }
         }
-        let qwen = qwen
-            .into_iter()
-            .map(|(doc, paths)| Ok((doc, Dependency::new(paths)?)))
-            .collect::<anyhow::Result<_>>()?;
         let surya = Dependency::new(surya)?;
         for (path, bytes) in job_bytes {
             ensure!(
@@ -180,6 +179,7 @@ impl Cache {
             dir: dir.to_owned(),
             version: version.finalize().to_vec(),
             qwen,
+            qwen_dependencies,
             surya,
             qwen_root: opts.qwen_root.clone(),
             surya_root: opts.surya_root.clone(),
@@ -217,10 +217,14 @@ impl Cache {
             inputs.push(spool.join(format!("{}_error", job.workunit())));
             inputs.push(spool.join(format!("{}_no_output_files", job.workunit())));
         }
+        let mut dependencies = BTreeSet::new();
         for doc in std::iter::once(&job.doc_id).chain(job.pages.iter().map(|p| &p.doc_id)) {
-            if let Some(dep) = self.qwen.get(doc) {
-                field(&mut hash, &dep.digest);
+            if let Some(paths) = self.qwen.get(doc) {
+                dependencies.extend(paths);
             }
+        }
+        for path in dependencies {
+            field(&mut hash, &self.qwen_dependencies[path].digest);
         }
         field(&mut hash, &self.surya.digest);
         inputs.sort();
@@ -260,7 +264,7 @@ impl Cache {
             inventory == self.inventory,
             "reading job inventory changed during collection"
         );
-        for dep in self.qwen.values() {
+        for dep in self.qwen_dependencies.values() {
             dep.verify()?;
         }
         self.surya.verify()
@@ -304,6 +308,70 @@ impl Cache {
 mod tests {
     use super::*;
     use crate::quality::collect::{collect, run, tests::cached_fixture};
+
+    #[tokio::test]
+    async fn bundled_qwen_dependencies_are_shared_and_invalidate_every_affected_page() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        let other = super::super::units(&opts.root).join("other");
+        let mut peer = crate::quality::work::tests::unit(&other);
+        peer.doc_id = "other".into();
+        peer.id = peer.identity().unwrap();
+        std::fs::write(
+            other.join(super::super::JOB_FILE),
+            serde_json::to_vec(&peer).unwrap(),
+        )
+        .unwrap();
+        let mut sources = Vec::new();
+        for (i, doc) in [&job.doc_id, &peer.doc_id].into_iter().enumerate() {
+            let path = dir.path().join(format!("qwen-stage-{i}"));
+            let mut q = crate::qwen::stage::local_unit(
+                &unit.join("page.jpg"),
+                &unit.join("loc.xml"),
+                &path,
+                crate::qwen::stage::tests::engine(),
+                1,
+                4,
+                600,
+                4,
+            )
+            .unwrap();
+            q.doc_id = doc.clone();
+            q.id = q.identity().unwrap();
+            std::fs::write(
+                path.join(crate::qwen::JOB_FILE),
+                serde_json::to_vec(&q).unwrap(),
+            )
+            .unwrap();
+            sources.push(path);
+        }
+        let bundled = crate::qwen::stage::write_bundle(
+            &super::super::units(&opts.qwen_root).join("bundle"),
+            &sources,
+        )
+        .unwrap();
+        let before = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        assert_eq!(before.qwen.len(), 2);
+        assert_eq!(before.qwen_dependencies.len(), 1);
+        let canonical = super::super::collect::spool_files(
+            &opts.spool,
+            &job.workunit(),
+            &super::super::outputs(),
+        );
+        let a = before.key(&unit, &job, &canonical).unwrap();
+        let b = before.key(&other, &peer, &canonical).unwrap();
+        std::fs::create_dir_all(&opts.qwen_spool).unwrap();
+        std::fs::write(
+            opts.qwen_spool
+                .join(format!("{}__file_diag.txt", bundled.workunit())),
+            b"late",
+        )
+        .unwrap();
+        assert!(before.verify_readings().is_err());
+        let after = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        assert_ne!(after.key(&unit, &job, &canonical).unwrap(), a);
+        assert_ne!(after.key(&other, &peer, &canonical).unwrap(), b);
+    }
 
     #[tokio::test]
     async fn final_quality_guard_revalidates_earlier_hits_and_spool_markers() {

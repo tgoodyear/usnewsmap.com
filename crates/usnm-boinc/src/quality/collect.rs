@@ -1832,10 +1832,11 @@ pub(super) mod tests {
         let dir = tempfile::tempdir_in(".").unwrap();
         let (opts, unit, quality) = cached_fixture(dir.path()).await;
         let qunit = units(&opts.qwen_root).join("page");
+        let first = dir.path().join("staged-qwen-first");
         let mut job = crate::qwen::stage::local_unit(
             &unit.join(PAGE_FILE),
             &unit.join(ALTO_FILE),
-            &qunit,
+            &first,
             crate::qwen::stage::tests::engine(),
             quality.crop_seed,
             quality.k_crops,
@@ -1846,10 +1847,23 @@ pub(super) mod tests {
         job.doc_id = quality.doc_id.clone();
         job.id = job.identity().unwrap();
         std::fs::write(
-            qunit.join(crate::qwen::JOB_FILE),
+            first.join(crate::qwen::JOB_FILE),
             serde_json::to_vec(&job).unwrap(),
         )
         .unwrap();
+        let second = dir.path().join("staged-qwen-second");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::copy(first.join(PAGE_FILE), second.join(PAGE_FILE)).unwrap();
+        let mut peer = job.clone();
+        peer.doc_id = "second".into();
+        peer.id = peer.identity().unwrap();
+        std::fs::write(
+            second.join(crate::qwen::JOB_FILE),
+            serde_json::to_vec(&peer).unwrap(),
+        )
+        .unwrap();
+        let job = crate::qwen::stage::write_bundle(&qunit, &[first, second]).unwrap();
+        assert_eq!(job.pages.len(), 2);
         let before = collect(&opts).unwrap();
         assert_eq!(before.summary.with_readings, 0);
         assert!(before.crops.iter().all(|r| r.cer_vs_vlm.is_none()));
