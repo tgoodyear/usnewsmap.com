@@ -60,7 +60,11 @@ elif "-X" in args:
             "body": json.loads(Path(args[args.index("--data-binary") + 1][1:]).read_text()),
         }) + "\\n")
     Path(args[args.index("-o") + 1]).write_text("test response")
-    print(os.environ.get("STUB_STATUS", "200"), end="")
+    count = len((root / "posts.jsonl").read_text().splitlines())
+    status = os.environ.get("STUB_STATUS", "200")
+    if str(count) == os.environ.get("STUB_FAIL_BATCH"):
+        status = "503"
+    print(status, end="")
 elif args[-1].endswith("/sitemap.xml"):
     print((root / "live-sitemap.xml").read_text())
 elif args[-1].endswith(".txt"):
@@ -161,6 +165,16 @@ else:
         self.submit(sitemap(urls))
         posts, _ = self.submit(sitemap(urls[:1]))
         self.assertEqual(posts[-1]["body"]["urlList"], urls[1:])
+
+    def test_partial_batch_failure_keeps_the_acknowledged_state(self):
+        urls = [f"https://{HOST}/search/query-{i}" for i in range(10001)]
+        self.env["STUB_FAIL_BATCH"] = "2"
+        self.submit(sitemap(urls))
+        self.assertFalse(Path(self.env["INDEXNOW_STATE_FILE"]).exists())
+        self.env.pop("STUB_FAIL_BATCH")
+        posts, _ = self.submit(sitemap(urls))
+        self.assertEqual([len(p["body"]["urlList"]) for p in posts], [10000, 1, 10000, 1])
+        self.assertTrue(Path(self.env["INDEXNOW_STATE_FILE"]).exists())
 
     def test_migrates_digest_state_and_then_preserves_dates(self):
         state = Path(self.env["INDEXNOW_STATE_FILE"])
