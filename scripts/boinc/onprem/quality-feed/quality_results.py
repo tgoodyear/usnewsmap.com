@@ -50,7 +50,7 @@ def run(args):
         "flock", "-n", "/run/usnm-boinc-step.lock",
         "podman", "exec", "usnm-boinc-server",
         "timeout", "--signal=TERM", "--kill-after=30s", "20m",
-        "usnm-boinc", "quality", "collect", "--campaign", args.campaign,
+        args.collector, "quality", "collect", "--campaign", args.campaign,
         "--root", root, "--spool", "/project/usnmocr/results/0",
         "--qwen-root", qwen_root,
         "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
@@ -94,6 +94,8 @@ def main(argv=None):
     parser.add_argument("--incremental", action="store_true",
                         help="reuse native content-addressed rows; incomplete warming never loads")
     parser.add_argument("--max-dirty-units", type=int, default=8)
+    parser.add_argument("--collector", default="usnm-boinc",
+                        help="native collector executable inside the server (dedicated persistent path in services)")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)

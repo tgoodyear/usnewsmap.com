@@ -479,8 +479,12 @@ no LoC request:
    lock. Neither changes work identities, submission, source selection or quorum.
 
    Both services opt into native incremental collection (`--incremental` on the
-   host driver). Deploy the matching `usnm-boinc` collector binary **before**
-   installing these service units; an old binary rejects the cache flags and
+   host driver). Deploy the matching `usnm-boinc` collector binary at the
+   dedicated persistent `/project/ops/quality-results/usnm-boinc` path **before**
+   installing these service units. Only collectors use this binary; do not
+   replace the server's shared executable or restart the BOINC server container.
+   `QUALITY_COLLECTOR` in the results environment selects a different path if
+   needed (`--collector` on the driver). A missing or old binary rejects the cache flags and
    safely prevents pulling or loading a stale snapshot. Each campaign retains
    immutable JSON row parts under `collected-parts/`. Keys include the collector
    executable and format version, staged scientific inputs and optional OCR

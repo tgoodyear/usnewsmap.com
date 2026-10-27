@@ -34,12 +34,14 @@ class ResultsTest(unittest.TestCase):
     def args(self):
         return types.SimpleNamespace(campaign="v1-test", engine_image="sha256:" + "a" * 64,
                                      server_host="server.example", server_ct=230, ctid=216,
-                                     qwen_campaign=None, incremental=False, max_dirty_units=8)
+                                     qwen_campaign=None, incremental=False, max_dirty_units=8,
+                                     collector="usnm-boinc")
 
     def test_incremental_forwarding_and_incomplete_warming_never_pulls_stale_snapshot(self):
         args = self.args()
         args.incremental = True
         args.max_dirty_units = 3
+        args.collector = "/project/ops/quality-results/usnm-boinc"
         with mock.patch.object(results.subprocess, "run",
                                side_effect=subprocess.CalledProcessError(1, ["warming"])) as run:
             with self.assertRaises(subprocess.CalledProcessError):
@@ -48,6 +50,7 @@ class ResultsTest(unittest.TestCase):
             command = run.call_args.args[0][-1]
             self.assertIn("--cache /project/quality/v1-test/collected-parts", command)
             self.assertIn("--max-dirty-units 3", command)
+            self.assertIn("/project/ops/quality-results/usnm-boinc quality collect", command)
 
     def test_nonpositive_dirty_bound_is_rejected_before_lock_or_remote_work(self):
         for bound in ("0", "-1"):
