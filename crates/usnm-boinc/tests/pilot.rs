@@ -332,6 +332,62 @@ async fn explicit_rejection_preserves_bad_outputs_and_native_reservations() {
 }
 
 #[tokio::test]
+async fn rejection_reconciles_interrupted_quarantine_without_overwriting_evidence() {
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let mut record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    record.stage = Stage::Submitted;
+    usnm_boinc::save(&fx.options.root, &record).unwrap();
+    let (spool, hashes) = rejection_spool(&fx, &id, true);
+    let quarantine = fx
+        .options
+        .root
+        .join("quarantine")
+        .join(&id)
+        .join("rejected");
+    usnm_boinc::atomic(&quarantine.join("text.txt"), b"conflicting evidence").unwrap();
+    assert!(usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("partial quarantined bytes conflict"));
+    assert_eq!(
+        std::fs::read(quarantine.join("text.txt")).unwrap(),
+        b"conflicting evidence"
+    );
+    assert!(!quarantine.join("result.json").exists());
+    assert!(!quarantine.join("receipt.json").exists());
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Submitted
+    );
+    std::fs::write(quarantine.join("text.txt"), b"").unwrap();
+    usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap();
+    usnm_boinc::save(&fx.options.root, &record).unwrap();
+    usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Failed
+    );
+}
+
+#[tokio::test]
 async fn rejection_refuses_valid_changed_missing_or_accepted_outputs() {
     let fx = Fixture::new("eng").await;
     let id = fx.export().await;

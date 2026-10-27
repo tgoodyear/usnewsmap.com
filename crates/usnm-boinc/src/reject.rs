@@ -71,7 +71,21 @@ pub fn reject(root: &Path, spool: &Path, id: &str, expected: [&str; 3]) -> anyho
             "failed job has no rejection receipt"
         );
         for (name, bytes) in names.iter().zip(&files) {
-            atomic(&quarantine.join(name), bytes)?;
+            let path = quarantine.join(name);
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => ensure!(
+                    read(&path, boinc::MAX_ALTO)? == *bytes,
+                    "partial quarantined bytes conflict"
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for (name, bytes) in names.iter().zip(&files) {
+            let path = quarantine.join(name);
+            if std::fs::symlink_metadata(&path).is_err() {
+                atomic(&path, bytes)?;
+            }
         }
         atomic(&receipt_path, &receipt)?;
     }

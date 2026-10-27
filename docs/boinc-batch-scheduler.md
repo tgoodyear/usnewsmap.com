@@ -34,10 +34,28 @@ Ordinary collection and all trust checks are unchanged.
 
 For a remote hand-off, first back up both authoritative dispatch journals and
 the canonical files under the exclusive operator/controller locks. Run the
-command on a private working copy fetched with the existing hand-off helpers.
-Persist its failed record and quarantine through the existing `handoff put`
-workflow before resuming the controller; changing only a local working copy
-does not recover production. With `--dead-letter-failed`, the existing controller
+command on a private working copy reconciled with the existing hand-off helpers:
+
+1. Read the BOINC bridge's `handoff/jobs/<job>/record.json` and the collection
+   container's `dispatch/jobs/<job>/record.json`. Remote submission can leave the
+   latter **reserved** while the bridge is **submitted**; do not manually advance
+   its stage. Require matching complete job identity, plan, stamp and native
+   ledger, a confirmed submitted canonical workunit, no bundle and no uncertain
+   submission. A mismatch requires reconciliation, not disposition.
+2. Use the verified **submitted bridge record** as the private working record.
+   Fetch the collection-side `dispatch/jobs/<job>/accepted/` into that working
+   job's `accepted/`, and check the bridge-side accepted directory too. Any
+   accepted manifest makes the command refuse; do not discard accepted data to
+   pass its guard. Preserve existing quarantine files in the working copy as
+   well, so a retry cannot overwrite conflicting evidence.
+3. After the command succeeds, persist the exact failed record to **both**
+   bridge `handoff/jobs/<job>/record.json` and collection
+   `dispatch/jobs/<job>/record.json`. Persist its quarantine to collection
+   `dispatch/quarantine/<job>/` through the existing `handoff put` workflow and
+   the bridge's corresponding local quarantine path. Verify all hashes before
+   resuming the controller. A changed local working copy alone is not recovery.
+
+With `--dead-letter-failed`, the existing controller
 then uses the failed journal's reason to send only that page to `ocr-deadletter`,
 preserving the native reservation and scientific database. Confirm message
 settlement and a clean subsequent ordinary tick; a lost queue lease still needs
