@@ -13,6 +13,9 @@ __pycache__/
 .boinc-acceptance-*
 .boinc-provision-*
 .boinc-work-*
+.origin-tls-work/
+.origin-tls-test-*/
+.origin-tls-role.json
 
 # Data assets live in GitHub releases and are fetched in place by scripts/ops/data-assets.sh
 # (ops/data-assets.json, docs/reports/README.md); the sets are these kinds of files.

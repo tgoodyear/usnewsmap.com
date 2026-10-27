@@ -1,0 +1,89 @@
+# Production origin TLS
+
+The apex, `www` and `api` use one public Let's Encrypt DNS-01 certificate in
+`cae-usnm-prod`, named `usnm-public-dns01`. Its resource ID is stable across
+renewal. Cloudflare must use **Full (strict)**. DNS-01 works with proxied DNS;
+Azure managed-certificate direct-DNS renewal does not. Keep `letsencrypt.org`
+authorized in the zone's CAA records (retain DigiCert until migration completes).
+
+## Provision and validate
+
+Run from the repository root as the authorized operator, signed in with `az
+login`. Requires `python3`, `certbot`, `openssl` and `dig`. Certbot's manual hooks
+use only Python's standard library; no Cloudflare plugin or token file is needed.
+
+```sh
+python3 scripts/azure/origin_tls_bootstrap.py
+python3 scripts/azure/origin_tls.py renew --staging --no-bind
+python3 scripts/azure/origin_tls.py renew --no-bind
+```
+
+Bootstrap creates the 90-day zone-DNS-only token with the IP-restricted operator
+token **in memory**, saves it directly to Key Vault, and grants the existing
+production OIDC identity secret-level access plus environment certificate
+read/write (no certificate delete). It is idempotent and rotates tokens with
+fewer than 30 days left, revoking the old token only after saving the replacement.
+It does not grant access to the operator token or other vault secrets.
+
+Staging exercises all DNS challenges without changing stored production state,
+uploading an untrusted staging certificate, or binding hostnames. Production
+state is persisted **before** upload; a failed deployment retries the same
+certificate rather than issuing another one. Loss of state is a recovery event:
+restore a previous Key Vault secret version rather than repeatedly issuing.
+
+Once issued and approved, preserve the current `customDomains` as a rollback
+receipt, then bind with:
+
+```sh
+python3 scripts/azure/origin_tls.py renew
+```
+
+This patches only ingress custom domains and verifies all three bindings; it
+never changes public DNS, Cloudflare settings, app secrets or revisions. Set
+the existing private prod `USNM_API_CERTIFICATE_ID`, `USNM_SITE_CERTIFICATE_ID`
+and `USNM_WWW_CERTIFICATE_ID` settings to the uploaded certificate ID using
+`scripts/azure/settings.sh`, so subsequent provisioning preserves the bindings.
+Do not delete the previous managed certificates until cutover is validated.
+
+## Renewal and credential maintenance
+
+`.github/workflows/origin-tls.yml` runs weekly on main using the existing prod
+environment and Azure OIDC identity. It reuses the saved ACME account, issues
+when the certificate has fewer than 30 days remaining (normally about every
+60 days), and uploads to the same certificate ID. It deliberately does not
+patch the application or race deployments. There are no private-key caches,
+artifacts, long-lived Azure credentials or operator-machine dependencies.
+After merging, dispatch the workflow once and verify it succeeds. Scheduled
+workflows do not run from an unmerged feature branch.
+
+**Every 60 days**, run `origin_tls_bootstrap.py` as the operator to rotate the
+90-day DNS token. This is intentional human credential maintenance, not a
+certificate-renewal dependency on a particular workstation. Subscribe to failed
+Actions notifications for `origin-tls`: failures include the explicit rotation
+instruction once token validity falls below 14 days. The token expiration is
+also recorded in Key Vault secret attributes. Rotation needs the authorized
+operator IP; do not broaden or give the operator token to CI.
+
+Certificate/account keys exist on disk only under `.origin-tls-work` (0700,
+files 0600) during execution. Normal exit removes them; the workflow's always
+step also cleans up cancellation. Never enable shell tracing, upload this
+directory, or cache it. An interrupted local invocation may leave this protected
+directory: ensure no renewal is running before removing it and retrying.
+
+Verify the certificate expiry and SANs at the Azure origin with SNI for all
+three names, then verify the public names after proxying. A renewal failure
+does not replace the currently serving certificate. The certificate is public
+trust, not Cloudflare Origin CA: bypassing Cloudflare still passes normal TLS
+validation, while application trust of proxy headers must remain independent.
+
+## Live acceptance (27 October 2026)
+
+Staging and production DNS-01 issuance succeeded. The production certificate
+expires **25 January 2027, 20:32:33 UTC**, and direct connections to the Azure
+origin passed system trust and SNI/hostname validation for all three names.
+All three private certificate-ID settings were read back successfully.
+The prior managed bindings are retained in the ignored operator receipt
+`.azure/receipts/origin-tls-bindings-before-2026-10-27.json`; no managed
+certificate was deleted. The DNS token expires 25 January 2027: first operator
+rotation is due **26 December 2026**. The scheduled job must be dispatched and
+checked after merge to main; local acceptance does not claim a GitHub OIDC run.
