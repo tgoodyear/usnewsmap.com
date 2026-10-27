@@ -505,8 +505,7 @@ pub(crate) async fn search_preview_snapshot(
         );
         Ok::<_, ApiError>(html)
     };
-    let mut job = Job::search("site-preview", background, state.config.compute_cap);
-    job.refresh = background;
+    let job = Job::search("site-preview", background, state.config.compute_cap);
     let (_, body) = cached_body(
         state,
         job,

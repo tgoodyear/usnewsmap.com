@@ -116,14 +116,10 @@ struct Generation {
 impl Generation {
     fn check_freshness(&self, previous: Option<&Checkpoint>) -> Result<()> {
         if previous.is_some_and(|p| {
-            self.build_at < p.build_at
-                || self.web_at < p.web_at
-                || self.published_at < p.published_at
-                || self.observed_at < p.observed_at
-                || (self.published_at == p.published_at && self.version != p.version)
+            self.build_at < p.build_at || self.web_at < p.web_at || self.observed_at < p.observed_at
         }) {
             return Err(backend(
-                "superseded generation; rebuild/re-publish to roll back",
+                "superseded build or observation; rebuild an older image to roll back",
             ));
         }
         Ok(())
@@ -449,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_builds_publications_and_conflicting_observations_cannot_undo_newer_state() {
+    fn stale_builds_and_observations_cannot_undo_newer_state() {
         let mut g = generation();
         let previous = g.checkpoint(None).unwrap();
         g.build_at = at(3);
@@ -465,7 +461,7 @@ mod tests {
         assert!(g.checkpoint(Some(&newer)).is_err());
         g.observed_at = at(5);
         g.version = "different-at-same-publish-time".into();
-        assert!(g.checkpoint(Some(&newer)).is_err());
+        assert!(g.checkpoint(Some(&newer)).is_ok());
     }
 
     struct Directory(std::path::PathBuf);
@@ -674,6 +670,28 @@ mod tests {
         assert_ne!(fingerprint(&snippet), fingerprint(render(vec![doc]).await));
     }
 
+    #[tokio::test]
+    async fn background_retry_reuses_successful_immutable_previews() {
+        let dir = Directory::new();
+        let st = state(&dir, Some(Vec::new())).await;
+        let render = async || {
+            super::super::search_preview_snapshot(&st, st.snapshot.load_full(), "whigs", true).await
+        };
+        let successful = render().await.unwrap();
+        let unavailable = state(&dir, None).await;
+        st.snapshot.store(unavailable.snapshot.load_full());
+        assert_eq!(
+            render().await.unwrap(),
+            successful,
+            "retry reuses partial success instead of recomputing against a failed backend"
+        );
+        st.cache.invalidate_all();
+        assert!(
+            render().await.is_err(),
+            "without reusable progress the backend fails"
+        );
+    }
+
     #[derive(Debug)]
     struct RacingStore {
         inner: LocalStore,
@@ -781,5 +799,80 @@ mod tests {
         let store = LocalStore::new(dir.0.join("checkpoints"));
         assert!(commit(&st, &snap, &store, &generation()).await.is_err());
         assert!(store.list(PREFIX).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authoritative_pointer_rollback_advances_only_changed_pages() {
+        let dir = Directory::new();
+        let mut st = state(&dir, Some(Vec::new())).await;
+        let fixtures = LocalStore::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data"),
+        );
+        let mut refdata = crate::refdata::RefData::load(&fixtures).await.unwrap();
+        refdata.current.index_version = "newer-publication".into();
+        refdata.current.published_at = at(5).to_rfc3339();
+        let newer = Arc::new(Snapshot {
+            refdata,
+            backend: st.snapshot.load_full().backend.clone(),
+            congress_dropped: false,
+        });
+        let reference = Arc::new(LocalStore::new(dir.0.join("reference")));
+        reference
+            .put(
+                "current.json",
+                serde_json::to_vec(&newer.refdata.current).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        Arc::get_mut(&mut st).unwrap().loader = Some(crate::Loader {
+            reference: reference.clone(),
+            engine: crate::Engine::Shared(newer.backend.clone()),
+            congress_search: true,
+        });
+        st.snapshot.store(newer.clone());
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut g = generation();
+        g.version = newer.refdata.version().into();
+        g.published_at = at(5);
+        g.observed_at = at(6);
+        let first = commit(&st, &newer, &store, &g).await.unwrap();
+
+        let mut refdata = crate::refdata::RefData::load(&fixtures).await.unwrap();
+        refdata.current.published_at = at(1).to_rfc3339();
+        let older = Arc::new(Snapshot {
+            refdata,
+            backend: newer.backend.clone(),
+            congress_dropped: false,
+        });
+        reference
+            .put(
+                "current.json",
+                serde_json::to_vec(&older.refdata.current).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        g.version = older.refdata.version().into();
+        g.published_at = at(1);
+        g.observed_at = at(7);
+        g.pages
+            .insert("/search/whigs".into(), "rolled-back results".into());
+        // The pointer is already rolled back, but this replica has not yet
+        // swapped snapshots. Its old captured generation must not append.
+        assert!(commit(&st, &newer, &store, &g).await.is_err());
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            first.sequence
+        );
+        st.snapshot.store(older.clone());
+        let rolled_back = commit(&st, &older, &store, &g).await.unwrap();
+        assert_eq!(rolled_back.version, older.refdata.version());
+        assert_eq!(rolled_back.published_at, at(1));
+        assert_eq!(rolled_back.pages["/search/whigs"].lastmod, at(7));
+        for path in ["/privacy", "/datasets", "/search/no-results"] {
+            assert_eq!(rolled_back.pages[path].lastmod, first.pages[path].lastmod);
+        }
+        assert!(commit(&st, &newer, &store, &g).await.is_err());
     }
 }
