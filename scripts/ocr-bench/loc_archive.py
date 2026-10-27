@@ -20,7 +20,9 @@ def software_summary(pages):
                 counts.items(), key=lambda item: tuple(value or "" for value in item[0]))]
 
 
-def inspect(path, expected_sha256):
+def inspect(path, expected_sha256, *, max_uncompressed_bytes=512 << 20):
+    if max_uncompressed_bytes <= 0:
+        raise ValueError("uncompressed size bound must be positive")
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1 << 20), b""):
@@ -37,7 +39,7 @@ def inspect(path, expected_sha256):
             if member.size > 16 << 20:
                 raise ValueError("oversized OCR member")
             total += member.size
-            if total > 512 << 20:
+            if total > max_uncompressed_bytes:
                 raise ValueError("archive exceeds uncompressed size bound")
             lccn, year, month, day, edition, seq, kind = match.groups()
             doc_id = f"{lccn}_{year}-{month}-{day}_ed-{edition}_seq-{seq}"
@@ -62,7 +64,7 @@ def inspect(path, expected_sha256):
     return {"format": "usnm-loc-ocr-artifacts/1", "archive_sha256": expected_sha256,
             "pages": [pages[key] for key in sorted(pages)], "page_count": len(pages),
             "source_image_identity": "not established by OCR archive",
-            "uncompressed_bytes": total}
+            "uncompressed_bytes": total, "uncompressed_limit_bytes": max_uncompressed_bytes}
 
 
 def main():
@@ -73,10 +75,13 @@ def main():
     parser.add_argument("--repair-pages", type=Path)
     parser.add_argument("--summary-out", type=Path)
     parser.add_argument("--retrieved-at", required=True)
+    parser.add_argument("--max-uncompressed-mib", type=int, default=512,
+                        help="explicit streamed archive size bound (default: 512 MiB)")
     args = parser.parse_args()
     data = args.metadata.read_bytes()
     metadata = json.loads(data)
-    result = inspect(args.archive, metadata["sha256"])
+    result = inspect(args.archive, metadata["sha256"],
+                     max_uncompressed_bytes=args.max_uncompressed_mib << 20)
     if args.archive.stat().st_size != metadata["size"] or result["page_count"] != metadata["page_count"]:
         raise ValueError("archive size/page count differs from metadata")
     result["metadata_sha256"] = hashlib.sha256(data).hexdigest()
