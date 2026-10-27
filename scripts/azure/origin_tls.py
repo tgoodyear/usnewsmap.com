@@ -15,7 +15,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VAULT = "home-kv-bmfr6iwvyzs52"
+VAULT = "usnmtlskvprodffapzy"
+OPERATOR_VAULT = "home-kv-bmfr6iwvyzs52"
 TOKEN_SECRET = "usnm-prod-acme-cloudflare-token"
 STATE_SECRET = "usnm-prod-acme-state"
 ZONE = "5c88f07cb8d4b5d2857cf5bd9dc7ab19"
@@ -60,8 +61,8 @@ def azure_token(resource):
     ).decode().strip()
 
 
-def secret(name, value=None, missing_ok=False, expires=None, tags=None):
-    url = f"https://{VAULT}.vault.azure.net/secrets/{name}?api-version=7.4"
+def secret(name, value=None, missing_ok=False, expires=None, tags=None, vault=None):
+    url = f"https://{vault or VAULT}.vault.azure.net/secrets/{name}?api-version=7.4"
     token = azure_token("https://vault.azure.net")
     if value is not None:
         body = {"value": value}

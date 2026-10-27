@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import uuid
 
 if __package__:
     from . import origin_tls as tls
@@ -15,7 +16,7 @@ else:
 ACCOUNT = "14b06d73ae737d2512564c89dfb1e4a3"
 PRINCIPAL = "4d3deafd-dffb-4bc6-98ee-484b2bf61c89"
 VAULT_SCOPE = (
-    f"/subscriptions/{tls.SUBSCRIPTION}/resourceGroups/home-hosts-rg"
+    f"/subscriptions/{tls.SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
     f"/providers/Microsoft.KeyVault/vaults/{tls.VAULT}"
 )
 
@@ -24,7 +25,78 @@ def az(*args):
     return subprocess.check_output(["az", *args, "-o", "json"], stderr=subprocess.PIPE)
 
 
-def main():
+def provision_vault():
+    operator = json.loads(az("ad", "signed-in-user", "show", "--query", "id"))
+    role_id = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"  # Key Vault Secrets Officer
+    management_token = tls.azure_token("https://management.azure.com/")
+    vault_url = f"https://management.azure.com{VAULT_SCOPE}?api-version=2023-07-01"
+    try:
+        tls.request("GET", vault_url, management_token)
+        exists = True
+    except RuntimeError as error:
+        if not str(error).endswith("HTTP 404"):
+            raise
+        exists = False
+    template = {
+        "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+        "contentVersion": "1.0.0.0",
+        "resources": [{
+            "type": "Microsoft.KeyVault/vaults", "apiVersion": "2023-07-01",
+            "name": tls.VAULT, "location": "eastus2",
+            "tags": {"purpose": "production-origin-dns01", "managed-by": "origin_tls_bootstrap.py"},
+            "properties": {
+                "tenantId": "a203c0c8-bd4b-4679-b826-4de746bee5da",
+                "sku": {"family": "A", "name": "standard"},
+                "enableRbacAuthorization": True, "enableSoftDelete": True,
+                "enablePurgeProtection": True, "softDeleteRetentionInDays": 90,
+                "accessPolicies": [], "publicNetworkAccess": "Disabled",
+                "networkAcls": {"bypass": "None", "defaultAction": "Allow",
+                                "ipRules": [], "virtualNetworkRules": []},
+            },
+        }],
+    }
+    path = Path(".origin-tls-vault-" + uuid.uuid4().hex + ".json")
+    try:
+        if not exists:
+            path.write_text(json.dumps(template))
+            az("deployment", "group", "create", "--resource-group", "rg-usnm-prod",
+               "--name", "origin-tls-vault", "--template-file", str(path),
+               "--only-show-errors")
+    finally:
+        path.unlink(missing_ok=True)
+    # Never weaken the group policy or exempt any other vault. GitHub-hosted
+    # runners need this endpoint; Entra secret-level RBAC remains enforced.
+    exemption_url = (
+        f"https://management.azure.com{VAULT_SCOPE}/providers/"
+        "Microsoft.Authorization/policyExemptions/usnm-origin-tls-github"
+        "?api-version=2022-07-01-preview"
+    )
+    tls.request("PUT", exemption_url, management_token, {"properties": {
+        "displayName": "Production DNS-01 vault: GitHub OIDC network access",
+        "description": "Only ACME state and zone-DNS token; secret-level Entra RBAC, no access to home vault.",
+        "exemptionCategory": "Mitigated",
+        "policyAssignmentId": (
+            f"/subscriptions/{tls.SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
+            "/providers/Microsoft.Authorization/policyAssignments/usnm-audit-data-public-network"
+        ),
+    }})
+    tls.request("PATCH", vault_url, management_token, {"properties": {
+        "publicNetworkAccess": "Enabled", "enableRbacAuthorization": True,
+        "networkAcls": {"bypass": "None", "defaultAction": "Allow",
+                        "ipRules": [], "virtualNetworkRules": []},
+    }})
+    assignments = json.loads(az("role", "assignment", "list",
+                               "--assignee", operator, "--scope", VAULT_SCOPE))
+    if not any(item["roleDefinitionId"].endswith("/" + role_id) for item in assignments):
+        az("role", "assignment", "create", "--assignee-object-id", operator,
+           "--assignee-principal-type", "User", "--role", role_id, "--scope", VAULT_SCOPE)
+
+
+def operator_token():
+    return tls.secret("cloudflare-api-token", vault=tls.OPERATOR_VAULT)
+
+
+def bootstrap_credentials():
     url = f"https://{tls.VAULT}.vault.azure.net/secrets/{tls.TOKEN_SECRET}?api-version=7.4"
     try:
         existing = tls.request("GET", url, tls.azure_token("https://vault.azure.net"))
@@ -37,7 +109,7 @@ def main():
         # The IP-restricted operator token never leaves this process or reaches CI.
         result = tls.request(
             "POST", f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/tokens",
-            tls.secret("cloudflare-api-token"), {
+            operator_token(), {
                 "name": "usnm-prod-acme-dns01",
                 "expires_on": datetime.datetime.fromtimestamp(
                     expires, datetime.timezone.utc,
@@ -58,14 +130,14 @@ def main():
         except RuntimeError:
             tls.request(
                 "DELETE", f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/tokens/{token_id}",
-                tls.secret("cloudflare-api-token"),
+                operator_token(),
             )
             raise
         old_id = existing.get("tags", {}).get("cloudflare-token-id")
         if old_id:
             revoked = tls.request(
                 "DELETE", f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/tokens/{old_id}",
-                tls.secret("cloudflare-api-token"),
+                operator_token(),
             )
             if not revoked.get("success"):
                 raise RuntimeError("New DNS token saved but old token revocation failed")
@@ -103,6 +175,11 @@ def main():
        "--assignee-principal-type", "ServicePrincipal", "--role", role_name,
        "--scope", tls.ENVIRONMENT)
     print("Production OIDC identity has secret-level state/DNS access and certificate upload access.")
+
+
+def main():
+    provision_vault()
+    bootstrap_credentials()
 
 
 if __name__ == "__main__":

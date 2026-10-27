@@ -148,10 +148,44 @@ class OriginTlsTests(unittest.TestCase):
                     "operator-token", RuntimeError("PUT vault: HTTP 403"), "operator-token",
                 ]):
             with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
-                bootstrap.main()
+                bootstrap.bootstrap_credentials()
             deletion = request.call_args
             self.assertEqual(deletion.args[0], "DELETE")
             self.assertTrue(deletion.args[1].endswith("/tokens/new-id"))
+
+    def test_vault_bootstrap_limits_policy_exception_and_operator_permissions(self):
+        created_templates = []
+
+        def az(*args):
+            if args[:4] == ("ad", "signed-in-user", "show", "--query"):
+                return json.dumps("operator-object-id").encode()
+            if args[:3] == ("deployment", "group", "create"):
+                path = Path(args[args.index("--template-file") + 1])
+                created_templates.append(json.loads(path.read_text()))
+            if args[:3] == ("role", "assignment", "list"):
+                return b"[]"
+            return b"{}"
+
+        with patch.object(bootstrap, "az", side_effect=az) as azure, \
+                patch.object(tls, "azure_token", return_value="management-token"), \
+                patch.object(tls, "request", side_effect=[
+                    RuntimeError("GET management: HTTP 404"), {}, {},
+                ]) as request:
+            bootstrap.provision_vault()
+        vault = created_templates[0]["resources"][0]
+        self.assertEqual(vault["properties"]["publicNetworkAccess"], "Disabled")
+        self.assertTrue(vault["properties"]["enableRbacAuthorization"])
+        exemption, enable_network = request.call_args_list[1:]
+        self.assertIn(bootstrap.VAULT_SCOPE + "/providers/Microsoft.Authorization/policyExemptions/",
+                      exemption.args[1])
+        self.assertEqual(exemption.args[3]["properties"]["exemptionCategory"], "Mitigated")
+        self.assertEqual(enable_network.args[0], "PATCH")
+        self.assertIn(bootstrap.VAULT_SCOPE + "?", enable_network.args[1])
+        role_call = azure.call_args_list[-1].args
+        self.assertEqual(role_call[role_call.index("--assignee-object-id") + 1],
+                         "operator-object-id")
+        self.assertEqual(role_call[role_call.index("--scope") + 1], bootstrap.VAULT_SCOPE)
+        self.assertFalse(list(Path.cwd().glob(".origin-tls-vault-*.json")))
 
 
 if __name__ == "__main__":
