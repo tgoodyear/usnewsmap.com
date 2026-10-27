@@ -534,6 +534,10 @@ All existing fixture isolation, independent quorum, canonical output and cleanup
 requirements still apply. An in-container 90-second deadline (with a five-second
 termination grace) bounds the adapter even if its transport disconnects; killing
 the Podman client alone would not stop a container exec process.
+The host lock descriptor is also inherited by the container exec, so interruption
+cannot release the project lock before that bounded backend stops. This requires
+Podman's `--preserve-fds` support with the `crun` runtime (the current on-prem
+configuration); unsupported runtimes fail rather than falling back without the lock.
 A transport timeout is an uncertain outcome: reconcile
 the durable reservation/dispatch journal before retrying; this transport never
 replays a request. Installing or running this adapter is not authorized by these
