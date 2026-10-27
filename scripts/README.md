@@ -61,7 +61,7 @@ Their tests are in the same directory, offline, against a stub `az`:
 
 ## BOINC
 
-`boinc/`. The volunteer pilot's server and apps ([boinc/docs/README.md](../boinc/docs/README.md); status: see that page). The files that define the apps are in [`boinc/apps/`](../ocr/README.md) and the server's hosting in [`boinc/`](../boinc/README.md). The rest of the directory's tooling (volunteer setup, patches, the batch scheduler, acceptance and smoke tests, `db-tls/` and `onprem/`) is listed in the table of directories above.
+Moved to [`boinc/scripts/`](../boinc/scripts). The volunteer pilot's server and apps are documented in [boinc/docs/README.md](../boinc/docs/README.md). The app definitions are in [`boinc/apps/`](../boinc/apps) and hosting is in [`boinc/`](../boinc/README.md). The tooling (volunteer setup, patches, the batch scheduler, acceptance and smoke tests, `db-tls/` and `onprem/`) is listed in the table above.
 
 The scripts that deploy and operate the Azure server:
 
@@ -138,7 +138,7 @@ Both are described in the [development guide](../docs/development.md).
 
 ## Running the tests
 
-`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, each in its own `python3 -m unittest` process from the repository root, so a new test file runs in CI without being added to a list. It is the "script unit tests" step of the `infra` job in `ci.yml`.
+`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py` and `boinc/scripts/**/test_*.py`, each in its own `python3 -m unittest` process from the repository root, so a new test file runs in CI without being added to a list. It is the "script unit tests" step of the `infra` job in `ci.yml`.
 
 ```sh
 scripts/ci/run-unit-tests.py --list                          # what it runs and what it leaves out
