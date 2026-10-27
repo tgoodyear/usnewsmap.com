@@ -3,6 +3,10 @@ import datetime as dt
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest import mock
+import tempfile
+import types
+import json
 
 spec = importlib.util.spec_from_file_location("ocr_manifest", Path(__file__).resolve().parent / "ocr_manifest.py")
 m = importlib.util.module_from_spec(spec)
@@ -107,6 +111,30 @@ class PickIssuesTest(unittest.TestCase):
             g.write("x'; drop table y; --\n")
         with self.assertRaises(SystemExit):
             m.read_batches(f.name)
+
+
+class NonEnglishTest(unittest.TestCase):
+    def test_scored_nonenglish_pages_keep_language_and_page_damage_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan", dsn="test",
+                                      strata=1, slack=20, max_pages=2, non_english=True, what_if=True)
+            # The SQL itself orders individual pages, not language medians or strata,
+            # and deliberately does not exclude already image-scored/staged pages.
+            rows = ("sn1_1900-01-02_ed-1_seq-3,xx_test,1,detected,0.8,sn1,1900,srp\n"
+                    "sn2_1900-01-02_ed-1_seq-1,xx_other,1,detected,0.6,sn2,1900,rus\n")
+            run = types.SimpleNamespace(returncode=0, stdout=rows)
+            with mock.patch.object(m, "staged_pairs", return_value={("xx_test", "sn3_1900-01-02_ed-1_seq-1"): {}}), \
+                    mock.patch("subprocess.run", return_value=run) as psql, \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest:
+                m.cmd_build_quality(a)
+            query = psql.call_args.kwargs["input"]
+            self.assertIn("ORDER BY s.damage_rate DESC NULLS LAST, s.doc_id", query)
+            self.assertNotIn("has_image_features", query)
+            self.assertIn("sn3_1900-01-02_ed-1_seq-1\n\\.", query)
+            self.assertNotIn("-c", psql.call_args.args[0])
+            self.assertEqual([r["lang"] for r in manifest.call_args.args[0]], ["srp", "rus"])
+            self.assertEqual([r["damage_rate"] for r in manifest.call_args.args[0]], [0.8, 0.6])
+            self.assertFalse(Path(folder, "last-quality.json").exists())
 
 
 if __name__ == "__main__":

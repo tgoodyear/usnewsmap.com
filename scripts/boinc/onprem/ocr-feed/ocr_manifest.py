@@ -370,6 +370,23 @@ COPY (
 ) TO STDOUT WITH (FORMAT csv)
 """
 
+# Unlike the image-quality survey, Qwen still needs scans of already-scored pages.
+# Exclusions go through COPY, not an unbounded IN list in the command line.
+NON_ENGLISH_SQL = """
+CREATE TEMP TABLE qwen_excluded (doc_id text PRIMARY KEY);
+COPY qwen_excluded FROM STDIN;
+{excluded}\\.
+COPY (
+  SELECT s.doc_id, s.batch, s.batch_version, coalesce(s.decision, 'detected'),
+         coalesce(s.damage_rate, 0), s.lccn, s.decade, s.lang
+  FROM quality.page_summary s
+  WHERE s.lang IS NOT NULL AND s.lang NOT IN ('eng', 'und', '')
+    AND NOT EXISTS (SELECT FROM qwen_excluded e WHERE e.doc_id = s.doc_id)
+  ORDER BY s.damage_rate DESC NULLS LAST, s.doc_id
+  LIMIT {max_pages}
+) TO STDOUT WITH (FORMAT csv);
+"""
+
 BATCH_RE = re.compile(r"^[a-z]+_[A-Za-z0-9]+_ver[0-9]{2}$")
 
 
@@ -482,20 +499,33 @@ def cmd_build_quality(a):
                 queued |= {line.strip() for line in f if line.strip()}
     # Each stratum is read --slack issues deep, so an issue left out below (all its pages
     # already queued, or already in the index) gives way to the stratum's next one.
-    p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
-                        QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack), batch_filter=batch_filter)],
-                       capture_output=True, text=True, timeout=3600)
+    if getattr(a, "non_english", False):
+        excluded = queued | {doc for _, doc in index}
+        if any(not DOC_RE.fullmatch(doc) for doc in excluded):
+            raise ValueError("invalid doc id in manifest exclusions")
+        query = NON_ENGLISH_SQL.format(excluded="".join(doc + "\n" for doc in sorted(excluded)),
+                                       max_pages=int(a.max_pages))
+        p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1"],
+                           input=query, capture_output=True, text=True, timeout=3600)
+    else:
+        p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+                            QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack), batch_filter=batch_filter)],
+                           capture_output=True, text=True, timeout=3600)
     if p.returncode:
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
-    picked = pick_issues(list(csv.reader(io.StringIO(p.stdout))), queued, index, a.strata, a.max_pages)
-    rows = [row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": "eng"},
-                   {doc: {"lang": "eng", "decision": decision, "damage_rate": float(rate)}})
-            for doc, batch, bv, decision, rate, *_ in picked]
+    candidates = list(csv.reader(io.StringIO(p.stdout)))
+    picked = candidates if getattr(a, "non_english", False) else pick_issues(candidates, queued, index, a.strata, a.max_pages)
+    rows = []
+    for doc, batch, bv, decision, rate, *rest in picked:
+        lang = rest[-1] if getattr(a, "non_english", False) else "eng"
+        rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": lang},
+                           {doc: {"lang": lang, "decision": decision, "damage_rate": float(rate)}}))
     if not rows:
         log("no quality pages left in these strata", strata=a.strata)
         return
     body = manifest_bytes(rows)
-    name = "queue-quality-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
+    name = "queue-quality-" + ("qwen-" if getattr(a, "non_english", False) else "")
+    name += dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
     issues = len({issue_of(r["doc_id"]) for r in rows})
     batches = len({r["batch"] for r in rows})
     if a.what_if:
@@ -538,8 +568,12 @@ def main(argv=None):
     q.add_argument("--slack", type=int, default=20, help="extra issues read per stratum to refill it")
     q.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     q.add_argument("--what-if", action="store_true")
+    q.add_argument("--non-english", action="store_true",
+                   help="all non-English pages, descending page damage; keep their true language/scan retention")
     a = ap.parse_args(argv)
     if a.cmd == "build-quality":
+        if a.non_english and a.batches:
+            sys.exit("--non-english covers the corpus; do not combine it with --batches")
         if not 1 <= a.max_pages <= 20000 or not 1 <= a.strata <= 1000:
             sys.exit("--max-pages 1 to 20000, --strata 1 to 1000")
         cmd_build_quality(a)

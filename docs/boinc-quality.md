@@ -464,6 +464,55 @@ scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
   --engine-image sha256:<worker digest> --enable
 ```
 
+### Sustained non-English Qwen crop feed
+
+The opt-in `usnm-qwen-feed.timer` runs on the quality shipper host every ten minutes
+after the previous run finishes. It does not replace the ordinary quality feeder.
+Install `qwen_feed.py` and the updated `quality-ship.sh` beside that host's existing
+`quality_receive.py`; install the updated `quality_feed.py` and `ocr_manifest.py` in
+the preparation CT's `/opt/usnm-quality-feed/`. Install `archive_alto.py` on the archive
+host at `/opt/usnm-quality-feed/`, and `qwen_submit.py` inside the server container at
+`/project/ops/qwen-feed/`. The existing pinned preparation venv suffices; no new
+packages or LoC clients are needed. Both SSH destinations must have verified host keys
+and the existing host trust, never `StrictHostKeyChecking=no`.
+
+Configure `/etc/usnm/qwen-feed.env` on the shipper host with `CAMPAIGN` (a new campaign),
+`SERVER_HOST`, `ARCHIVE_HOST`, `SCAN_SERVER`, the existing quality `ENGINE_IMAGE`,
+`QWEN_ENGINE_PLAN` (a reviewed `/project/.../plan.json` containing the pinned `engine`),
+and `QWEN_MODELS` (the existing checksum-pinned shared-model directory, not another
+model copy). Install the service/timer from `scripts/boinc/onprem/quality-feed/`, verify
+one service execution and its authoritative workunit audit, then enable the timer.
+
+Each tick excludes all retained Qwen single-page/bundle documents and the campaign's
+completed source chunks, selects explicitly non-English **available** scans by descending
+individual-page damage, and prepares at most 100 pages. Original ALTO is read from the
+retained bulk archives into `/tank/locstats/qwen-alto`, exposed through the preparation
+CT's existing read-only `/srv/locstats` mount. Each XML has a SHA256 receipt naming its
+archive, member and archive signature; receipts travel in the checksummed source chunks.
+Absent original ALTO is explicitly deferred for a day, not replaced with synthetic boxes.
+
+The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
+staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.
+It refuses submission uncertainty, cross-campaign duplicate documents, changed hashes,
+incorrect database routing/quorum, more than 1,000 ready Qwen replicas (including a
+per-chunk reservation), or less than 50 GiB free in either the project filesystem or
+the host thin pool. Up to three unshipped chunks are buffered. Failures retain READY
+chunks and submission journals; never delete `submitting` to replay work.
+
+An independent `build-quality --non-english` scan manifest checkpoint requests missing
+non-English corpus scans in descending page-damage order, retaining the real language
+(and therefore the keep set). Already-fetched or already-requested pages are excluded
+through a temporary SQL table, not a command-line-sized `IN` list. Only the normal scan
+fetcher performs these downloads, under its existing global budget, holds and failure
+limits. User OCR keeps its existing priority.
+
+`waiting_for_crop_sources` is **not corpus completion**. Deferred archives, inaccessible
+scans, failed validation and storage backpressure remain outstanding. Canonical outputs
+still need the normal `quality-collect` join (`QWEN_SPOOL` is the native batch-8 result
+directory) and archival before any input-retention cleanup. This automation does not
+delete scientific inputs/results, qualify GPUs, reopen broken plan classes, or replace
+whole-page searchable OCR with sampled crop readings.
+
 ### OCR's prefetch manifests (#1055)
 
 The scan fetcher (home-infra `usnm-loc-fetch`) takes OCR's manifests before the quality
