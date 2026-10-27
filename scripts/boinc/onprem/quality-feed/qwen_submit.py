@@ -38,7 +38,9 @@ $running = BoincResult::enum("appid=".intval($app->id)." AND server_state=4");
 echo json_encode(["ready"=>count($ready), "dispatched"=>count($running)]);
 """ % json.dumps(str(project / "html/inc"))
     counts = json.loads(subprocess.check_output(["php", "-r", php], text=True))
-    return {**counts, "documents": sorted(seen), "free_bytes": shutil.disk_usage(share).free}
+    free = min(shutil.disk_usage(path).free
+               for path in (share, share / "quality", project / "download"))
+    return {**counts, "documents": sorted(seen), "free_bytes": free}
 
 
 def assert_submitted(root):
