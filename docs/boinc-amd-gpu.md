@@ -190,7 +190,8 @@ install it).
 
 ### Required bounded acceptance: stage, audit, admit, then resume the same workunit
 
-This procedure is **required** before reopening the corrected Windows release
+This procedure, or the [ordinary one-workunit canary](#ordinary-one-workunit-canary)
+below, is **required** before reopening the corrected Windows release
 (and remains available as a diagnostic afterwards). It deliberately
 replaces general AMD admission with an exact-one-workunit pilot; coordinate any
 such platform-wide diagnostic with other AMD users and close AMD first.
@@ -264,6 +265,50 @@ commands (including an unqualified `--stop`) preserve AMD. Stop AMD explicitly.
 All modes share the policy lock and durable journal. Image policy refresh
 introduces AMD closed on upgrade and preserves explicit general, bounded or
 stopped AMD state on restart.
+
+### Ordinary one-workunit canary
+
+The staged harness above needs a dedicated assignment-only account and a peer
+host eligible for the **same exact release** (e.g. a second Windows AMD client).
+When no such peer exists, an explicit ordinary canary admits AMD to one
+ordinary scientific workunit instead, the same way the NVIDIA/Intel bounded
+windows do:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class amd_vulkan_8b --ordinary-canary --workunit ID
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class amd_vulkan_8b --ordinary-canary --workunit ID --apply
+```
+
+The difference is where the peer comes from. The staged harness assigns the
+client and a reviewed same-release peer to a new targeted workunit. The ordinary
+canary assigns nothing: the workunit's second **normal replica** goes to any
+host eligible for native 8B (for example Apple or NVIDIA), with the same pinned
+model, batch, crops, scientific identity and quorum, and the normal validator
+compares them. It is a bounded ordinary rollout of one workunit, not a way
+around the staged fixture's isolation checks.
+
+The flag is accepted only with `amd_vulkan_8b` and one `--workunit`; it cannot be
+combined with `--workunit-end`, `--stop` or `--general`. The workunit must be an
+ordinary native-8B workunit: batch 8, 18 GiB disk bound, quorum 2, target 2, not
+yet canonical, no error, `need_validate=0`, `transitioner_flags=0`, not bound to an
+app version (`app_version_num=0`), no `assignment` rows, and exactly two unsent
+results. Choose one that no other host has been sent yet. Without the flag, the
+default AMD window still requires the staged no-results workunit. The plan XML
+change (`min_wu_id=max_wu_id=ID`), shared lock and durable journal are the same
+as the default window; the proof records `admission_mode: ordinary_canary`. It
+changes no host trust, quorum, account, scientific row or other class.
+
+Acceptance still requires all of the following before any general reopening:
+- the AMD host's result ran the intended published app version (check
+  `result.app_version_id`);
+- the device mapping succeeded and the GPU actually offloaded;
+- the result is valid; and
+- an independent peer result agrees and becomes canonical.
+
+If an older app version was chosen, or any evidence is bad, close AMD with
+`--plan-class amd_vulkan_8b --stop --apply` and leave general admission closed.
 
 The scheduler uses `<gpu_type>ati</gpu_type><opencl/>` and reserves one AMD GPU
 plus two host CPUs. The pinned BOINC source accepts `ati`/`amd` in

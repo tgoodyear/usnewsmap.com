@@ -655,6 +655,80 @@ assert($refused);
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_amd_ordinary_canary_is_explicit_and_keeps_the_staged_default(self):
+        helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
+        plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
+        with tempfile.TemporaryDirectory(prefix=".qwen-cohort-", dir=ROOT) as folder:
+            result = subprocess.run(
+                ["php", "-d", "zend.assertions=1", "-d", "assert.exception=1", "-r", r"""
+require $argv[1];
+function refused($call) { try { $call(); } catch (RuntimeException $e) { return true; } return false; }
+$wu = (object)["batch"=>8,"rsc_disk_bound"=>19327352832,"min_quorum"=>2,"target_nresults"=>2,
+    "canonical_resultid"=>0,"error_mask"=>0,"transitioner_flags"=>0,"need_validate"=>0,"app_version_num"=>0];
+$results = [(object)["server_state"=>2,"sent_time"=>0],(object)["server_state"=>2,"sent_time"=>0]];
+// The default AMD window still requires a staged workunit without results.
+assert(refused(fn() => native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b")));
+native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b", true, 0);
+$staged = clone $wu; $staged->transitioner_flags = 2; $staged->transition_time = 2147483647;
+assert(refused(fn() => native_qwen_cohort_validate($staged, [], "amd_vulkan_8b", true, 0)));
+assert(refused(fn() => native_qwen_cohort_validate($wu, $results, "amd_vulkan_8b", true, 1)));
+assert(refused(fn() => native_qwen_cohort_validate($wu, [$results[0]], "amd_vulkan_8b", true, 0)));
+foreach (["batch"=>2,"rsc_disk_bound"=>12884901888,"min_quorum"=>1,"target_nresults"=>3,
+    "canonical_resultid"=>10,"error_mask"=>1,"transitioner_flags"=>2,"need_validate"=>1,
+    "app_version_num"=>110] as $key=>$value) {
+    $bad = clone $wu; $bad->$key = $value;
+    assert(refused(fn() => native_qwen_cohort_validate($bad, $results, "amd_vulkan_8b", true, 0)));
+}
+$sent = [(object)["server_state"=>4,"sent_time"=>1], $results[1]];
+assert(refused(fn() => native_qwen_cohort_validate($wu, $sent, "amd_vulkan_8b", true, 0)));
+assert(refused(fn() => native_qwen_cohort_validate($wu, $results, "nvidia_vulkan_8b", true, 0)));
+$project = $argv[3];
+$xml = file_get_contents($argv[2]);
+file_put_contents("$project/plan_class_spec.xml", $xml);
+foreach ([["nvidia_vulkan_8b",300,300,false],["amd_vulkan_8b",300,301,false],
+          ["amd_vulkan_8b",0,null,false],["amd_vulkan_8b",0,0,true]] as [$class,$id,$last,$general]) {
+    assert(refused(fn() => native_qwen_cohort_write($project, $class, $id, true, $last, $general, true)));
+}
+assert(file_get_contents("$project/plan_class_spec.xml") === $xml);
+$proof = native_qwen_cohort_write($project, "amd_vulkan_8b", 300, true, null, false, true);
+assert($proof["admission_mode"] === "ordinary_canary");
+$after = simplexml_load_file("$project/plan_class_spec.xml");
+$before = simplexml_load_string($xml);
+foreach ($after->plan_class as $node) {
+    $name = (string)$node->name;
+    if ($name === "amd_vulkan_8b") {
+        assert((string)$node->min_wu_id === "300" && (string)$node->max_wu_id === "300");
+    } else {
+        assert($node->asXML() === $before->xpath("plan_class[name='$name']")[0]->asXML());
+    }
+}
+""", str(helper), str(plans), folder],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            root = Path(folder)
+            shutil.rmtree(root / "ops-issue-559")
+            target = root / "plan_class_spec.xml"
+            (root / "config.xml").write_text("<boinc/>")
+            for arguments in (
+                ["--plan-class", "nvidia_vulkan_8b", "--ordinary-canary", "--workunit", "300"],
+                ["--plan-class", "shared_8b", "--ordinary-canary", "--workunit", "300"],
+                ["--plan-class", "amd_vulkan_8b", "--ordinary-canary"],
+                ["--plan-class", "amd_vulkan_8b", "--ordinary-canary", "--stop"],
+                ["--plan-class", "amd_vulkan_8b", "--ordinary-canary", "--general"],
+                ["--plan-class", "amd_vulkan_8b", "--ordinary-canary", "--workunit", "300",
+                 "--workunit-end", "301"],
+            ):
+                with self.subTest(arguments=arguments):
+                    before = target.read_bytes()
+                    result = subprocess.run(["php", str(helper), "--project", str(root),
+                                             *arguments, "--apply"], text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("usage:", result.stderr)
+                    self.assertEqual(target.read_bytes(), before)
+                    self.assertFalse((root / "ops-issue-559").exists())
+
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
     def test_windows_checksum_append_is_portable_ascii_lf(self):
         workflow = (ROOT / ".github/workflows/boinc-quality-native.yml").read_text()
