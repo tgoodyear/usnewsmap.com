@@ -2,6 +2,72 @@
 
 Archived data-file links below download the [report-data archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.tar.gz), not individual files. The [published member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-20261023-48fbb2a/report-data.members.txt) identifies each original path. Extract the archive at the repository root to restore those paths before running the historical reproduction commands.
 
+## Coverage refresh: 27 October 2026
+
+A fresh official guide retrieval supersedes the historical latest-date and
+coverage totals below: **111 batches / 491,472 reported pages**, latest
+batch-added date **24 October 2026**. The
+[immutable refresh release](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-loc-inventory-20261027-ceccea7)
+contains the saved `guide.html`, generated inventory, full benchmark inventory,
+compact summary and sampled official metadata. Its
+[SHA256SUMS](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-loc-inventory-20261027-ceccea7/SHA256SUMS)
+binds all five files. The saved HTML SHA-256 is
+`ceccea70c39fa69e1a4f4ce3b8a96d8ad9569c727b28b7c73b561fcaa5d7d511`.
+The parser checked the summed batch counts against the guide's stated total.
+NDNP-Open-OCR's latest software release remains `v1.2.1`, published
+`2026-07-24T17:20:42Z`; that does not identify the software inside new packages.
+
+Four newly listed Florida batches account for the **18,704-page increase**:
+
+| Batch               | Added      | Reported pages |
+| ------------------- | ---------- | -------------: |
+| `fu_fourteen_ver02` | 2026-10-24 |          7,026 |
+| `fu_five_ver02`     | 2026-10-24 |          2,708 |
+| `fu_three_ver02`    | 2026-10-24 |          1,722 |
+| `fu_eight_ver02`    | 2026-10-24 |          7,248 |
+
+The existing `vi_adams_ver02` row also changed descriptive metadata; it is not
+a fifth new batch. New-guide counts are not added to the old repair-candidate
+count: the full repair-manifest join has **not** been rerun.
+
+The immutable `v1.0.0` benchmark manifest was downloaded and verified against
+its release `SHA256SUMS` (manifest SHA-256
+`ffd1d54147966c562d1f6e13c0fe2c2badb12c726406cbd50d61d8f8a395fe29`).
+Rerunning `loc_inventory.py` against the fresh guide still finds **zero listed
+candidates among the original 100 English acceptance crops / 18 source pages**.
+All 300 English crops remain not-listed; all 700 German samples remain
+outside NDNP. This is not a global absence claim or a paired accuracy result.
+
+One official metadata request for `fu_three_ver02.tar.bz2` reports **1,706
+archive pages / 91,788,172 bytes**, SHA-256
+`79c3d15acf138ef13aefedb843c944bf2a78da947dc66ee54917ba4e2428d2d5`.
+Its 16-page difference from the guide is unresolved. The archive was not
+downloaded or inspected in this refresh, so no new per-page artifact identity,
+source-scan registration, embedded engine version or redistribution-rights
+clearance is claimed. #809 remains open for those gates; #810/#811 cannot
+use a newer guide date to justify replacement or skip recognition.
+
+Reproduce the full benchmark inventory and compact summary with the existing
+`loc_inventory.py`, using the checksum-verified `v1.0.0` manifest described in
+the benchmark guide:
+
+```sh
+gh release download data-loc-inventory-20261027-ceccea7 \
+  --repo tgoodyear/usnewsmap.com --dir loc-refresh
+(cd loc-refresh && shasum -a 256 -c SHA256SUMS)
+python3 scripts/ocr-bench/loc_inventory.py \
+  --coverage-html loc-refresh/guide.html --benchmark /path/to/verified/manifest.json \
+  --retrieved-at 2026-10-27 --out loc-refresh/reproduced.json \
+  --summary-out loc-refresh/reproduced-summary.json
+cmp loc-refresh/benchmark-inventory.json loc-refresh/reproduced.json
+cmp loc-refresh/benchmark-summary.json loc-refresh/reproduced-summary.json
+```
+
+Use fresh output paths; the tool intentionally refuses to overwrite evidence.
+The 18 October snapshot and sample below remain historical, unchanged evidence.
+
+## Original 18 October inventory
+
 Measured 18 October 2026 for [#809](https://github.com/tgoodyear/usnewsmap.com/issues/809)
 and [#810](https://github.com/tgoodyear/usnewsmap.com/issues/810).
 This is an initial inventory and adapter implementation, **not a completed accuracy comparison**.
