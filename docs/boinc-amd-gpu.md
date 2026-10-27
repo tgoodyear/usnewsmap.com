@@ -311,6 +311,36 @@ Acceptance still requires all of the following before any general reopening:
 If an older app version was chosen, or any evidence is bad, close AMD with
 `--plan-class amd_vulkan_8b --stop --apply` and leave general admission closed.
 
+#### Inconclusive canary: one-replica tiebreaker
+
+If the canary and its peer are both successful but **inconclusive**, the
+transitioner raises `target_nresults` and creates one more unsent replica. When
+every other native class is closed, no host may be eligible for it. An explicit
+tiebreaker admits Intel or NVIDIA to that one workunit only:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class intel_vulkan_8b --tiebreaker --workunit ID
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class intel_vulkan_8b --tiebreaker --workunit ID --apply
+```
+
+The flag is accepted only with `intel_vulkan_8b`, `nvidia_vulkan_8b` or
+`shared_8b` and one `--workunit`. The workunit must be ordinary native 8B (batch
+8, 18 GiB disk bound, quorum 2, not canonical, no error, `need_validate=0`,
+`transitioner_flags=0`, `app_version_num=0`, no `assignment` rows), with
+`target_nresults` equal to its result count, exactly one unsent replica, and every
+other result successful and inconclusive (`validate_state=4`). The live
+project `config.xml` (and any private `--db-project` copy) must enable
+`<one_result_per_host_per_wu/>` (or `1`) exactly once in its single `<config>`
+block, so the scheduler sends the replica to a host other than the inconclusive
+ones. The mode edits no result,
+quorum or scientific row: the normal validator compares the new result with the
+existing ones. The plan XML change, lock and journal match the bounded window;
+the proof records `admission_mode: tiebreaker`. Close the class with `--stop` once
+the replica is sent. The default and ordinary-canary modes still refuse
+workunits that already have results.
+
 The scheduler uses `<gpu_type>ati</gpu_type><opencl/>` and reserves one AMD GPU
 plus two host CPUs. The pinned BOINC source accepts `ati`/`amd` in
 [`plan_class_spec.cpp`](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L690-L750)
