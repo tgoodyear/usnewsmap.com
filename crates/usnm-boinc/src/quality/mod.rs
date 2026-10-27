@@ -30,6 +30,7 @@ pub use usnm_ocr_quality::slot::{
 pub mod calibrate;
 pub mod cli;
 pub mod collect;
+mod collect_cache;
 pub mod estimate;
 pub mod rehat;
 pub mod rescore;

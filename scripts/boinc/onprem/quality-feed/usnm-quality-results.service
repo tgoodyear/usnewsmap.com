@@ -10,7 +10,8 @@ ConditionPathExists=/etc/usnm/quality-ship.env
 Type=oneshot
 EnvironmentFile=/etc/usnm/quality-ship.env
 Environment=CTID=215
+Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 EnvironmentFile=-/etc/usnm/quality-results.env
-ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID}
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --incremental --collector ${QUALITY_COLLECTOR}
 TimeoutStartSec=40min
 Nice=10

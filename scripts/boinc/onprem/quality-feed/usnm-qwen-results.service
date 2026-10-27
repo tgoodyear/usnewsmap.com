@@ -10,8 +10,9 @@ ConditionPathExists=/etc/usnm/quality-ship.env
 Type=oneshot
 EnvironmentFile=/etc/usnm/quality-ship.env
 Environment=CTID=215 NATIVE_QWEN_CAMPAIGN=qwen-nonenglish-v1
+Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 EnvironmentFile=-/etc/usnm/quality-results.env
 EnvironmentFile=-/etc/usnm/quality-results-qwen.env
-ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py --campaign ${NATIVE_QWEN_CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --qwen-campaign ${NATIVE_QWEN_CAMPAIGN}
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py --campaign ${NATIVE_QWEN_CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --qwen-campaign ${NATIVE_QWEN_CAMPAIGN} --incremental --collector ${QUALITY_COLLECTOR}
 TimeoutStartSec=40min
 Nice=10
