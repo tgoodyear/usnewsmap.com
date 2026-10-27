@@ -31,6 +31,10 @@ hostnames' settings. Keep Bot Fight Mode off and do not introduce
 cookie-setting challenges. Update `/privacy` before activating the proxy;
 Cloudflare sees IP addresses, complete URLs and headers regardless of DNT/GPC.
 The Azure application's own anonymous search log and retention do not change.
+Disable the zone-wide Speed Brain, Replace Insecure JavaScript and Always
+Online features, recording their prior values. This avoids unsolicited
+prefetches, content rewriting and stale HTML fallback; these three changes also
+apply to other proxied subdomains. Existing per-service cache rules are retained.
 
 ACA's ingress supplies the verified connection source as the rightmost
 forwarded address. In the existing one-hop ACA mode, the application peels one

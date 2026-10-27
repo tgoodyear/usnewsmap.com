@@ -21,6 +21,13 @@ Two records say otherwise. ADR-0022's title keeps the live index and public serv
 
 ## Decision
 
+**27 October amendment:** [ADR-0028](0028-cloudflare-with-azure-origin.md)
+decouples the edge rollout from this origin migration. Cloudflare may proxy the
+existing Azure API/web origin after renewable DNS-01 TLS, privacy and proxy
+handling are ready. The requirement below to keep Azure records DNS-only until
+Phase 3 no longer applies to that separately authorized rollout. Hardware and
+Phase 2 gates still apply before moving the origin on-prem.
+
 ### 1. One serving container on pve-big
 
 - An unprivileged LXC container that does nothing but serve. It has nesting and keyctl for podman, as the BOINC container has. It runs:
