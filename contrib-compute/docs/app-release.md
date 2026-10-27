@@ -528,7 +528,8 @@ For example, an administrator's separately authorized SSH transport can use:
 Replace the example host, path and image ID with verified operator records.
 Use an existing administrator transport, **not** the controller's restricted
 key, and never bypass SSH host-key verification. The local image ID comes from
-the inspected running container, not a mutable tag or a registry manifest digest.
+the inspected running container, not a mutable tag or a registry manifest digest;
+both Podman's bare 64-hex form and the equivalent `sha256:`-prefixed form are accepted.
 All existing fixture isolation, independent quorum, canonical output and cleanup
 requirements still apply. An in-container 90-second deadline (with a five-second
 termination grace) bounds the adapter even if its transport disconnects; killing

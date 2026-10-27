@@ -10,10 +10,16 @@ import subprocess
 import sys
 
 
+def image_id(value):
+    match = re.fullmatch(r"(?:sha256:)?([0-9a-f]{64})", value) if isinstance(value, str) else None
+    return match.group(1) if match else None
+
+
 def execute(args, request, runner=subprocess.run):
     if os.geteuid() != 0:
         raise ValueError("on-prem acceptance transport requires the project-host operator")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.expected_image):
+    expected = image_id(args.expected_image)
+    if expected is None:
         raise ValueError("expected image must be an immutable local image ID")
     if (not re.fullmatch(r"/project(?:/[A-Za-z0-9_.-]+)*", args.project)
             or any(part in (".", "..") for part in args.project.split("/"))):
@@ -26,7 +32,7 @@ def execute(args, request, runner=subprocess.run):
     containers = json.loads(inspected.stdout)
     if (not isinstance(containers, list) or len(containers) != 1
             or not isinstance(containers[0], dict)
-            or containers[0].get("Image") != args.expected_image
+            or image_id(containers[0].get("Image")) != expected
             or not isinstance(containers[0].get("State"), dict)
             or containers[0]["State"].get("Running") is not True
             or not isinstance(containers[0].get("Id"), str)

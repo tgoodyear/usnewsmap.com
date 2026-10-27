@@ -53,8 +53,23 @@ class OnpremAcceptance(unittest.TestCase):
                     adapter.execute(self.args, self.request, runner)
                 self.assertEqual(runner.call_count, 1)
 
+    def test_native_podman_image_ids_bind_the_same_full_hash(self):
+        for expected in ("a" * 64, "sha256:" + "a" * 64):
+            for inspected in ("a" * 64, "sha256:" + "a" * 64):
+                with self.subTest(expected=expected, inspected=inspected):
+                    self.args.expected_image = expected
+                    runner = Mock(side_effect=[
+                        subprocess.CompletedProcess([], 0, json.dumps([{
+                            "Id": "c" * 64, "Image": inspected, "State": {"Running": True}}])),
+                        subprocess.CompletedProcess([], 0, '{"state":"waiting"}'),
+                    ])
+                    self.assertEqual(adapter.execute(self.args, self.request, runner),
+                                     {"state": "waiting"})
+
     def test_invalid_inputs_never_contact_podman(self):
         for field, value in (("expected_image", "localhost/server:latest"),
+                             ("expected_image", "a" * 12),
+                             ("expected_image", "sha256:" + "a" * 63),
                              ("project", "/project/../etc"),
                              ("project", "/etc/project")):
             with self.subTest(field=field):
