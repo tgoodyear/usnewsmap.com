@@ -18,7 +18,9 @@ test.afterEach(async ({ page }) => {
 async function asProduction(page: Page, baseURL: string | undefined): Promise<Captured[]> {
   const reports: Captured[] = [];
   const context = page.context();
-  await context.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
+  await context.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    route.fulfill({ status: 404 }),
+  );
   await context.route(`${SITE}/**`, async (route: Route) => {
     const req = route.request();
     const url = new URL(req.url());
@@ -90,7 +92,9 @@ test("other origins (development, these tests) send no page views", async ({ pag
   page.on("request", (r) => {
     if (r.url().includes("/v1/beacon")) sent.push(r.url());
   });
-  await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    route.fulfill({ status: 404 }),
+  );
   await page.goto("/privacy");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Privacy");
   await page.waitForTimeout(500);

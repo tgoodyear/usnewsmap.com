@@ -118,7 +118,7 @@ test("capture waits beyond the interactive fallback for a real basemap", async (
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("https://tiles.openfreemap.org/styles/positron", async (route) => {
+  await page.route(/\/(?:styles\/positron|basemap\/[^/]+\/style\.json)$/, async (route) => {
     await gate;
     await route.fulfill({
       json: {

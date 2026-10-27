@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
-  await page.route("https://tiles.openfreemap.org/**", (route) =>
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
     route.fulfill({
       json: {
         version: 8,

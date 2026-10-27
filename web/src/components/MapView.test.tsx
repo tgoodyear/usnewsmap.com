@@ -53,6 +53,7 @@ class FakeMap {
 vi.mock("maplibre-gl", () => ({ Map: FakeMap, NavigationControl: class {}, setWorkerUrl: () => {} }));
 vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}));
 vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({ default: "" }));
+vi.mock("../lib/basemapProtocol", () => ({ installBasemapProtocol: () => {} }));
 const layers: { id: string; data: unknown }[][] = [];
 const nativeLayers: { data: unknown; update: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }[] = [];
 vi.mock("./StatesMapLayer", () => ({

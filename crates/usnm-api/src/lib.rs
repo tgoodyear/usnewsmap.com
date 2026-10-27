@@ -15,6 +15,7 @@ use axum::routing::{get, post, MethodRouter};
 use axum::Router;
 use moka::future::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -384,7 +385,9 @@ pub fn app(state: Arc<AppState>) -> Router {
     }
     router
         .layer(cors)
-        .layer(CompressionLayer::new())
+        .layer(CompressionLayer::new().compress_when(
+            DefaultPredicate::new().and(NotForContentType::new("application/vnd.pmtiles")),
+        ))
         // One span per request with the route template, never the path or
         // query: query strings carry search text (09 §9.4.2).
         .layer(middleware::from_fn_with_state(state, telemetry::track))

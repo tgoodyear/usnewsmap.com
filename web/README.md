@@ -324,6 +324,56 @@ Not yet built: compare mode, the first-appearance layer, the coverage overlay, e
 
 ## Search engines and link previews
 
+### Self-hosted overview basemap
+
+The default Positron style and its sprite/glyph assets are served from
+`/basemap/<version>/`. One **19,503,677-byte PMTiles archive** contains 183
+OpenFreeMap/OpenMapTiles tiles: global zooms 0–2, plus zooms 3–5 intersecting
+`[-155, 0, -35, 70]` (west, south, east, north). This covers the default U.S.
+view and adjacent zoom levels. Zoom 6+ and overview tiles outside that extract
+use OpenFreeMap's current TileJSON, fetched only when needed. Both paths use
+the same schema and style. All glyph ranges referenced by overview label
+properties are local; additional detailed-view ranges use OpenFreeMap.
+
+`src/lib/basemapProtocol.ts` registers one MapLibre protocol. PMTiles' reader
+shares header/directory caches and fetches only tile byte ranges; it does not
+download the whole archive per view. HTTP prewarming loads the style/sprites
+but leaves custom-protocol requests to that shared reader. Rendering rejects
+failed local basemap assets just as it rejects failed upstream assets.
+
+`basemap.json` pins a public GitHub release bundle by SHA-256 and exact size.
+`npm run build` and `npm run dev` install and verify it using
+`scripts/prepare-basemap.mjs`. Binary data is excluded from Git and Docker
+contexts; Docker performs the same verified installation. The bundle includes
+source TileJSON/style, provenance, per-file checksums, attribution, ODbL and
+font-license references. It needs no R2 bucket, tile server or new credential.
+
+The archive is named `overview.pmtiles.bin`: it is ordinary PMTiles v3, and
+the `.bin` suffix makes it eligible for Cloudflare's default extension cache.
+The API sends immutable one-year caching, `Content-Length` and unencoded
+`206 Content-Range` responses. It excludes PMTiles from HTTP compression
+(tile payloads are already compressed). Styles/fonts also have versioned
+immutable URLs; JSON/PBF edge caching still requires an appropriate zone
+cache rule, so verify their actual `CF-Cache-Status` rather than assuming it.
+The archive alone requires no custom rule.
+
+To publish an update, use the pinned `go-pmtiles` CLI and
+`scripts/basemap/build.py --out OUTPUT --name VERSION --style STYLE_URL
+--tilejson PINNED_TILEJSON_URL --pmtiles PMTILES_PATH`.
+The builder limits downloads to four connections and 50 MiB, uses a dedicated
+user agent, verifies the archive, and packages matching assets. It supports
+`--maxzoom` (at most 5) and `--bbox WEST SOUTH EAST NORTH`; global zooms 0–2
+remain included. Publish the resulting tarball as a **new immutable release
+asset**, then update `basemap.json` (including glyph/font metadata) in a PR.
+Never replace an existing release asset or reuse a version name. Roll back
+by reverting that manifest/application release; older deployed image assets
+remain coupled to their matching client.
+
+`e2e/basemap.spec.ts` renders the real overview with OpenFreeMap blocked and
+checks byte-range responses; `e2e/share.spec.ts` requires rendered, cached
+screenshots rather than accepting the static timeout image. `check-api-image.sh`
+also checks the archive's range/cache/compression contract.
+
 - `index.html` has the canonical link (the home page), Open Graph and Twitter card tags, and JSON-LD for the site and its publisher. `src/seo.test.ts` checks them, and `e2e/seo.spec.ts` checks them in a browser along with what the API sends crawlers.
 - The root element holds a short description of the site, for crawlers and previews that don't run JavaScript. React replaces it on its first render.
 - `public/og-image.png` remains the homepage's share image. Search links get a 1200×630 Chromium screenshot of the actual linked page, preserving map viewport, filters, timeline position, layer, legend, and attribution. The API injects Open Graph and Twitter metadata before JavaScript runs and serves the PNG at `/share-image.png`. Captures wait for search data, tiles, and the overlay; unlike interactive views, they do not replace a slow initial basemap request with the offline background after two seconds. A failed basemap is rejected, never cached as a complete screenshot. Image URLs carry a render revision to avoid reusing earlier degraded previews. If rendering takes more than two seconds, fails, or both render slots are occupied, the endpoint serves the existing static homepage image with `Cache-Control: no-store` and logs the fallback without the search query. Slow captures continue within their existing 40-second limit and populate the screenshot cache on success; fallback images never enter that cache. Up to 128 successful images are cached for an hour, with two renders at once. Dataset/privacy pages use lightweight summary cards with the bundled SIL Open Font License Noto Sans font.

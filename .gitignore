@@ -30,3 +30,4 @@ ocr/bench/**/*.jpeg
 ocr/bench/**/*.png
 ocr/bench/**/*.tar.gz
 ocr/bench/**/*.tgz
+web/public/basemap/

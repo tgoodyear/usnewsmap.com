@@ -9,8 +9,10 @@ const STYLE = {
 };
 
 test.beforeEach(async ({ page }) => {
-  await page.route("https://tiles.openfreemap.org/**", (route) =>
-    route.request().url().includes("/styles/") ? route.fulfill({ json: STYLE }) : route.fulfill({ status: 404 }),
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    /\/styles\/|\/style\.json$/.test(route.request().url())
+      ? route.fulfill({ json: STYLE })
+      : route.fulfill({ status: 404 }),
   );
 });
 
@@ -91,7 +93,7 @@ test("phones put the playback controls between the map and the legend, in readin
 });
 
 test("the overlay waits for the basemap, then fades in", async ({ page }) => {
-  await page.route("https://tiles.openfreemap.org/styles/positron", async (route) => {
+  await page.route(/\/(?:styles\/positron|basemap\/[^/]+\/style\.json)$/, async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await route.fulfill({ json: STYLE });
   });
@@ -105,7 +107,7 @@ test("the overlay waits for the basemap, then fades in", async ({ page }) => {
 
 test("a blocked basemap does not hide results indefinitely, including with reduced motion", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.route("https://tiles.openfreemap.org/**", (route) => route.abort());
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) => route.abort());
   await page.goto("/?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31");
   await expect(page.locator(".summary")).toContainText("places");
   const overlay = page.locator("#search-overlay");
@@ -119,7 +121,7 @@ for (const direct of [false, true]) {
       page,
       isMobile,
     }) => {
-      await page.route("https://tiles.openfreemap.org/**", async (route) => {
+      await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, async (route) => {
         if (failure === "timeout") await new Promise((resolve) => setTimeout(resolve, 3000));
         await route.abort();
       });

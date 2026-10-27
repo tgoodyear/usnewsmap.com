@@ -18,6 +18,7 @@ import { ALPHA_CLEAR, ALPHA_UNCLEAR, skewColor } from "../lib/skewScale";
 import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { DEFAULT_ZOOM, STYLE_URL, US_CENTER } from "../lib/basemap";
+import { installBasemapProtocol } from "../lib/basemapProtocol";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { stateDescription, type StateTotal } from "../engine/states";
 import boundariesUrl from "../assets/states.geojson?url";
@@ -138,6 +139,7 @@ export default function MapView(props: Props) {
   useEffect(() => {
     const element = container.current;
     if (!element) return;
+    installBasemapProtocol();
     const m = new MapLibreMap({
       container: element,
       style: STYLE_URL === "none" ? PLAIN_STYLE : STYLE_URL,

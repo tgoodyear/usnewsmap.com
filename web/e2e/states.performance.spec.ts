@@ -94,7 +94,7 @@ for (const direct of [false, true]) {
             (1e-8 + Math.random() * 1e-8).toPrecision(9),
           );
         }
-        await page.route("https://tiles.openfreemap.org/**", (route) =>
+        await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
           route.fulfill({
             json: {
               version: 8,
