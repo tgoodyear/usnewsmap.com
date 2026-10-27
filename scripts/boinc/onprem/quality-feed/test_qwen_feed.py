@@ -28,6 +28,26 @@ DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
 class ArchiveTest(unittest.TestCase):
+    def test_budget_yields_between_archives_without_deferring_unread_pages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            body = b"<alto>original</alto>"
+            pages = []
+            for n, batch in enumerate(("xx_first", "xx_second", "xx_third"), 1):
+                doc = f"sn{n}_1900-01-02_ed-1_seq-3"
+                pages.append({"doc_id": doc, "batch": batch, "batch_version": 1})
+                with tarfile.open(root / f"{batch}_ver01.tar.bz2", "w:bz2") as packed:
+                    info = tarfile.TarInfo(f"sn{n}/1900/01/02/ed-1/seq-3/ocr.xml")
+                    info.size = len(body)
+                    packed.addfile(info, io.BytesIO(body))
+            out = root / "cache"
+            for n in range(1, 4):
+                with mock.patch.object(archive.time, "monotonic", side_effect=[0, 2, 2]):
+                    report = archive.extract(pages, root, out, max_seconds=1)
+                self.assertEqual(report["cached"], [p["doc_id"] for p in pages[:n]])
+                self.assertEqual(report["pending"], [p["doc_id"] for p in pages[n:]])
+                self.assertEqual(report["missing"], [])
+
     def test_supported_batch_prefix_and_both_date_layouts(self):
         for prefix in ("", "./", "xx_test_ver01/", "./xx_test_ver01/"):
             for date in ("1900/01/02", "1900-01-02"):
