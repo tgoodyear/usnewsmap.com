@@ -71,8 +71,11 @@ blind retries or raising the frozen limit are not part of this acceptance.
 
 Retained English baseline archive SHA-256:
 `61f29d0d2c8990ef0d4fce174aa9d5bac3c008166da0a735672c8681865a7456`.
+Its CT230 server path is
+`/project/iris-paired-200-e984fcca/iris-paired-baselines.tar.gz`.
 German archive:
 `1469a90029e2d4d715a7b6fe2a8406cd8f7ce89ed9167e42ad8e3b8ae2fbd363`.
+Its path is `/project/iris-reich-700-a379f5b0/baselines.tar.gz`.
 German baseline image:
 `sha256:5522512034b1ac3d07d5b920fb74e8a8b7227dffca13e707b100841ed2a3aeee`.
 
@@ -87,6 +90,11 @@ A fresh manifest check matches both the campaign and completed verification:
 `09d93462e7140628701981e4dedf610f02c3e4e00f285c08b2ee26ca73be4755`.
 This is retained full-image read-back evidence, not a claim that all 83 GB
 were rehashed on 27 October.
+The exact retained receipt is
+`/tank/ocr/scans/experiments/iris-20000-v1/verification.json`, SHA-256
+`a7e1eeb3244e05b9ae254d039b5f599f6ce56cc547c61ca59975ea09bab200ae`.
+An unchanged copy is published as `retrye-iris-retained-verification.json` in
+[the verification/binding evidence release](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-iris-pilot-bindings-20261027).
 
 A separate idle-I/O verification on 27 October checked that **all 20,000
 files still exist with their recorded sizes and one link each**. All 32
@@ -113,10 +121,27 @@ On CT230's BOINC server, retain the manifests and `units/<id>/iris.json` under
 `/project/iris-pilot-100-f175f2c3`,
 `/project/iris-paired-200-e984fcca/iris-paired-campaign{100,200}`, and
 `/project/iris-reich-700-a379f5b0/campaign-{000,100,200,300,400,500,600}`.
-Check each job file against its manifest `job_sha256`, reject duplicate IDs,
-and query only their exact workunit names. Require one terminal result per
-allocated job and verify canonical success, validation, exit status and host
-before accepting its retained `/project/usnmocr/iris/seen/` output.
+First verify all ten `campaign.json` files against the independently published
+`campaign_sha256` map in `retrye-iris-1000-scored.json`; references are in these
+manifests, not in the job files. The follow-up binding audit rechecked all ten.
+Then check each job file against its manifest `job_sha256`, reject duplicate
+IDs, and query only their exact workunit names.
+
+Require one terminal result per allocated job, workunit batch **104**, host
+**9**, `result.app_version_id=27`, joined `app_version.version_num=100`,
+app `usnm_iris` and plan class `docker_intel_opencl_4b`. The fresh binding
+audit checked these values for all 1,000 results, including the three failures.
+Before accepting a successful retained `/project/usnmocr/iris/seen/` output,
+also require canonical-result identity, successful outcome/validation and
+zero exit status.
+
+The registered app version's signed Dockerfile must be exactly the `FROM`
+line for the pinned worker digest above. The existing
+`iris-campaign.py::verify_version_files` procedure checks its registered file
+reference, exact file bytes and code signature with `crypt_prog -verify`
+against `/project/usnmocr/keys/code_sign_public`. That check passed; Dockerfile
+SHA-256 is `860d657a52b8cf4fd5c73d8a1575be29132c627a883472676440dcf1e529dd81`.
+See `retrye-iris-registered-binding.json` in the verification/binding release.
 
 Validate retained jobs/results with `ocr/boinc/iris/contract.py`. Collapse
 reference/prediction whitespace; use an empty prediction for each of the
@@ -130,3 +155,12 @@ Public aggregate receipts preserve the ten campaign hashes and scoring-input
 hashes without republishing licensed reference transcriptions or credentials.
 They are attached to
 [the checksummed evidence release](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-iris-pilot-closeout-20261027).
+The verification/binding release additionally contains
+`retrye-iris-1000-input-hashes.json`, SHA-256
+`3275ad3c1e6ae18b4e9ac1f87e3a4d516404ea6d2aa66cf5a5bae05a9788ed87`.
+For every allocation it pins the reference/job hashes and terminal snapshot;
+for all 997 retained outputs it pins the filename, original file-byte hash and
+canonical-JSON hash. A fresh comparison refused changed or duplicate outputs
+and confirmed every retained output still matches the scored input. The
+receipt also pins the complete private scoring snapshot:
+`2c2cc79d727911ee1d441f4c1528eba88adc48be644fc5f02acd17a1cdb71c9d`.
