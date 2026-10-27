@@ -45,16 +45,16 @@ Every failed Iris job is scored as an empty prediction: all its reference
 characters count as deletions. The exact same allocated image/reference set
 is used for each baseline. English and German are not pooled.
 
-| Set | Engine | Allocated crops | Edits | Reference characters | CER |
-| --- | --- | ---: | ---: | ---: | ---: |
-| English | Iris Qwen3-VL-4B INT4, OpenVINO Intel GPU | 300 | 2,314 | 83,116 | 2.784061% |
-| English | Tesseract 5.5 English PSM 6 | 300 | 2,963 | 83,116 | 3.564897% |
-| English | Tesseract 5.5 English PSM 4 | 300 | 3,127 | 83,116 | 3.762212% |
-| English | docTR 1.1.0 DB ResNet50 + PARSeq multilingual | 300 | 4,100 | 83,116 | 4.932865% |
-| English | LoC source ALTO text | 300 | 7,522 | 83,116 | 9.050002% |
-| German | Iris Qwen3-VL-4B INT4, OpenVINO Intel GPU | 700 | 10,002 | 70,170 | 14.253955% |
-| German | Tesseract 5.5 Frak2021 PSM 6 | 700 | 12,243 | 70,170 | 17.447627% |
-| German | Tesseract 5.5 Frak2021 PSM 4 | 700 | 12,687 | 70,170 | 18.080376% |
+| Set     | Engine                                        | Allocated crops |  Edits | Reference characters |        CER |
+| ------- | --------------------------------------------- | --------------: | -----: | -------------------: | ---------: |
+| English | Iris Qwen3-VL-4B INT4, OpenVINO Intel GPU     |             300 |  2,314 |               83,116 |  2.784061% |
+| English | Tesseract 5.5 English PSM 6                   |             300 |  2,963 |               83,116 |  3.564897% |
+| English | Tesseract 5.5 English PSM 4                   |             300 |  3,127 |               83,116 |  3.762212% |
+| English | docTR 1.1.0 DB ResNet50 + PARSeq multilingual |             300 |  4,100 |               83,116 |  4.932865% |
+| English | LoC source ALTO text                          |             300 |  7,522 |               83,116 |  9.050002% |
+| German  | Iris Qwen3-VL-4B INT4, OpenVINO Intel GPU     |             700 | 10,002 |               70,170 | 14.253955% |
+| German  | Tesseract 5.5 Frak2021 PSM 6                  |             700 | 12,243 |               70,170 | 17.447627% |
+| German  | Tesseract 5.5 Frak2021 PSM 4                  |             700 | 12,687 |               70,170 | 18.080376% |
 
 LoC ALTO is a source-text baseline, **not** a new engine execution on crop pixels.
 English image checksums and references match the retained baseline manifest and
@@ -87,6 +87,11 @@ A fresh manifest check matches both the campaign and completed verification:
 `09d93462e7140628701981e4dedf610f02c3e4e00f285c08b2ee26ca73be4755`.
 This is retained full-image read-back evidence, not a claim that all 83 GB
 were rehashed on 27 October.
+
+A separate idle-I/O verification on 27 October checked that **all 20,000
+files still exist with their recorded sizes and one link each**. All 32
+distributed sample images (132,756,340 bytes) also passed fresh SHA-256
+read-back checks. The manifest remained unchanged and dispatch disabled.
 
 The reviewed source-only stager is commit
 `f01d42199d37a536b778a47b32bd7ed53ce27d47`, operator SHA-256
@@ -123,3 +128,5 @@ silently intersect with the successful subset.
 
 Public aggregate receipts preserve the ten campaign hashes and scoring-input
 hashes without republishing licensed reference transcriptions or credentials.
+They are attached to
+[the checksummed evidence release](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-iris-pilot-closeout-20261027).
