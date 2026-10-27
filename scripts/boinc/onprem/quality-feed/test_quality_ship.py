@@ -31,6 +31,10 @@ with (root / "calls.jsonl").open("a") as f:
     f.write(json.dumps(args) + "\\n")
 if "df" in args:
     print("Avail\\n100")
+    if "/srv/usnm-boinc/project/quality" in args:
+        print(os.environ.get("SHIP_TEST_BULK_FREE", "100"))
+    if "/srv/usnm-boinc/project/usnmocr/download" in args:
+        print(os.environ.get("SHIP_TEST_BULK_FREE", "100"))
 elif "lvs" in args:
     print(json.dumps({"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": "0"}]}]}))
 elif "python3" in args and "-" in args:
@@ -72,3 +76,13 @@ elif "python3" in args and "-" in args:
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("--qwen-max-ready: a positive integer", result.stderr)
                 self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_bulk_mount_floor_blocks_even_when_project_root_has_space(self):
+        self.env["SHIP_TEST_BULK_FREE"] = "39"
+        result = self.run_ship(["--min-free-gb", "50"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("39 GB free (under 50)", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any("tar" in call or "/project/ops/qwen-feed/qwen_submit.py" in call
+                             for call in calls))

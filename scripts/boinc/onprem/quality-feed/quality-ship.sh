@@ -101,7 +101,8 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
     log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
     break
   fi
-  free=$(in_ct df --output=avail -B1G "$SHARE" | tail -1 | tr -d ' G')
+  free=$(in_ct df --output=avail -B1G "$SHARE" "$SHARE/quality" "$SHARE/usnmocr/download" |
+    tail -n +2 | sort -n | head -1 | tr -d ' G')
   [[ $free =~ ^[0-9]+$ ]] || die "couldn't read CT $CT's free space"
   if [ "$free" -lt "$MIN_FREE" ]; then
     log "CT $CT has $free GB free (under $MIN_FREE); $chunk waits"

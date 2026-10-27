@@ -562,6 +562,9 @@ incorrect database routing/quorum, more than 1,000 ready Qwen replicas (includin
 per-chunk reservation), or less than 50 GiB free in either the project filesystem or
 the host thin pool. Up to three unshipped chunks are buffered. Failures retain READY
 chunks and submission journals; never delete `submitting` to replay work.
+The filesystem floor uses the minimum available space across the project root,
+`quality/`, and `usnmocr/download/`, so a separate bulk-data mount or NFS quota
+cannot be hidden by free space on the local root filesystem.
 Successful native workunit audits are retained in `audit.json`, bound to the exact job
 SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
 new or changed jobs always require a fresh authoritative audit.

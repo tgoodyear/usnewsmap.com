@@ -91,6 +91,22 @@ class ArchiveTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
+    def test_inventory_uses_lowest_space_across_project_and_bulk_mounts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            share = Path(folder)
+            project = share / "usnmocr"
+            for lowest in range(3):
+                sizes = [100, 100, 100]
+                sizes[lowest] = 39
+                with self.subTest(lowest=lowest), \
+                        mock.patch.object(submit.subprocess, "check_output",
+                                          return_value='{"ready": 0, "dispatched": 0}'), \
+                        mock.patch.object(submit.shutil, "disk_usage",
+                                          side_effect=[types.SimpleNamespace(free=n) for n in sizes]) as usage:
+                    self.assertEqual(submit.inventory(share, project)["free_bytes"], 39)
+                    self.assertEqual([call.args[0] for call in usage.call_args_list],
+                                     [share, share / "quality", project / "download"])
+
     def test_original_alto_chunk_finishes_without_shadowing_reader_map(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
