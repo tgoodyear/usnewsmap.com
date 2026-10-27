@@ -212,7 +212,7 @@ fixtures='^fixtures/'
 # routes the worker reads, the toolchain and the release script. The dashboard
 # shares the release but not the engine: it reads the engine catalog, the
 # Tesseract models lock and the routes only through the worker crate it links.
-ocr_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|rust-toolchain\.toml$|scripts/ci/ocr-worker-release\.sh$)'
+ocr_worker='^(ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|rust-toolchain\.toml$|scripts/ci/(ocr-worker-release\.sh|ocr-engine-cgroup-smoke\.py)$)'
 ocr_dash='^(ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$)'
 # ocr-dashboard.yml builds the same binary for musl, from the same inputs.
 ocr_dashboard=$ocr_dash

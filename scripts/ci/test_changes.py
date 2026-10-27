@@ -538,6 +538,9 @@ class BuildInputs(unittest.TestCase):
         on = self.select("ocr/engines/tesseract/Containerfile")
         self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}),
                          {"boinc_worker", "ocr_worker"}, on)
+        on = self.select("scripts/ci/ocr-engine-cgroup-smoke.py")
+        self.assertIn("ocr_worker", on)
+        self.assertNotIn("image", on)
 
     def test_a_toolchain_change_runs_every_build(self):
         on = self.select("rust-toolchain.toml")

@@ -4,9 +4,10 @@
 //! production page's would be (the schema, the paths, the size caps and
 //! the layout's limits, 13 §13.4.7 step 1).
 //!
-//! Not checked yet: nothing left in the container's `cgroup.procs` after
-//! a timeout (needs the engine runtime's cgroup, 13 §13.6.6), and
-//! contract N-1 (there is only contract 1). Both are reported `skipped`.
+//! The generic runner reports the post-timeout cgroup check as skipped;
+//! Linux CI wraps it with a live Podman/cgroup-v2 acceptance test
+//! (`scripts/ci/ocr-engine-cgroup-smoke.py`). Contract N-1 is also skipped:
+//! there is only contract 1.
 
 use super::*;
 use crate::engine::read_failure;
