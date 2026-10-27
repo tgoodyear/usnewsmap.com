@@ -100,6 +100,7 @@ def _tick(a):
                              "--max-pending", str(a.max_pending), "--workers", "2", "--once",
                              "--alto-cache", "/srv/locstats/qwen-alto"])
         print(json.dumps({"status": "prepared", "pages": len(usable), "missing_original_alto": receipt["missing"],
+                          "pending_original_alto": receipt["pending"],
                           "ready_before": inv["ready"], "highest_damage": pages[0]["damage_rate"]}))
     # Separate checkpoint: an unfinished image-quality survey must not stall Qwen's corpus.
     command(ct + ["mkdir", "-p", "/var/lib/usnm-ocr-manifest/qwen-nonenglish"])

@@ -492,6 +492,11 @@ retained bulk archives into `/tank/locstats/qwen-alto`, exposed through the prep
 CT's existing read-only `/srv/locstats` mount. Each XML has a SHA256 receipt naming its
 archive, member and archive signature; receipts travel in the checksummed source chunks.
 Absent original ALTO is explicitly deferred for a day, not replaced with synthetic boxes.
+Archive extraction yields between archives after a 30-minute budget (finishing at
+least one archive), returning unvisited pages as `pending`, not `missing`. Cached
+XML and provenance are verified on subsequent ticks, so large first-time selections
+make incremental progress rather than repeatedly exceeding the SSH timeout. Pending
+pages remain eligible immediately; only confirmed missing sources get the daily deferral.
 
 The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
 staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.

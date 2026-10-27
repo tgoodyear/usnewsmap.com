@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sys
 import tarfile
+import time
 
 DOC = re.compile(r"^[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+$")
 BATCH = re.compile(r"^[a-z]+_[a-zA-Z0-9]+$")
@@ -54,15 +55,17 @@ def atomic(path, raw):
     tmp.replace(path)
 
 
-def extract(pages, archives, out):
+def extract(pages, archives, out, max_seconds=1800):
     out.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + max_seconds
     groups = {}
     for row in pages:
         doc, batch, version = row["doc_id"], row["batch"], int(row["batch_version"])
         if not DOC.fullmatch(doc) or not BATCH.fullmatch(batch) or not 1 <= version <= 99:
             raise ValueError("invalid archive page identity")
         groups.setdefault((batch, version), set()).add(doc)
-    report = {"cached": [], "missing": []}
+    report = {"cached": [], "missing": [], "pending": []}
+    scanned = False
     for (batch, version), docs in sorted(groups.items()):
         archive = archives / f"{batch}_ver{version:02d}.tar.bz2"
         if not archive.is_file():
@@ -82,6 +85,11 @@ def extract(pages, archives, out):
                     wanted.remove(doc)
                     report["cached"].append(doc)
         if wanted:
+            # Finish one archive before yielding; its verified cache survives the next tick.
+            if scanned and time.monotonic() >= deadline:
+                report["pending"].extend(sorted(wanted))
+                continue
+            scanned = True
             with tarfile.open(archive, "r|bz2") as packed:
                 for member in packed:
                     doc = member_doc(member.name)
@@ -110,10 +118,14 @@ def main():
     ap.add_argument("--pages", required=True)
     ap.add_argument("--archives", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--max-seconds", type=int, default=1800,
+                    help="Yield between archives after this budget; always finish at least one.")
     args = ap.parse_args()
+    if args.max_seconds < 1:
+        ap.error("--max-seconds must be positive")
     with (sys.stdin if args.pages == "-" else open(args.pages)) as f:
         pages = [json.loads(line) for line in f if line.strip()]
-    print(json.dumps(extract(pages, args.archives, args.out), sort_keys=True))
+    print(json.dumps(extract(pages, args.archives, args.out, args.max_seconds), sort_keys=True))
 
 
 if __name__ == "__main__":
