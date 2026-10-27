@@ -505,6 +505,44 @@ Example **operator-local, secret-free** config for an existing dedicated client
 returning one JSON receipt. Use the included server adapter **on the project
 host**, as project owner, never on the signing host. It uses the existing TLS
 MySQL connector and project configuration; no DB credentials leave the server.
+
+For the current on-prem server, `scripts/boinc/onprem_acceptance.py` is a
+root-local transport for that same adapter. Install it **and its adjacent reviewed
+`acceptance_server.py`** in an operator-owned directory on the BOINC host. It
+shares `/run/usnm-boinc-step.lock` with the bridge runner and fails immediately
+while another step holds the lock. It checks the running `usnm-boinc-server`
+container against an explicitly reviewed **local image ID**, then runs the adapter
+inside that existing container as project owner UID/GID 1000. It neither creates
+nor restarts a container, installs a daemon, enables assignment, stages fixtures,
+nor expands the controller's forced-command SSH allowlist.
+
+For example, an administrator's separately authorized SSH transport can use:
+
+```json
+{
+  "server_command": ["ssh", "-o", "BatchMode=yes", "root@BOINC-HOST",
+    "python3 /opt/reviewed/scripts/boinc/onprem_acceptance.py --expected-image sha256:REVIEWED_64_HEX_ID --project /project/usnmocr"]
+}
+```
+
+Replace the example host, path and image ID with verified operator records.
+Use an existing administrator transport, **not** the controller's restricted
+key, and never bypass SSH host-key verification. The local image ID comes from
+the inspected running container, not a mutable tag or a registry manifest digest;
+both Podman's bare 64-hex form and the equivalent `sha256:`-prefixed form are accepted.
+All existing fixture isolation, independent quorum, canonical output and cleanup
+requirements still apply. An in-container 90-second deadline (with a five-second
+termination grace) bounds the adapter even if its transport disconnects; killing
+the Podman client alone would not stop a container exec process.
+The host lock descriptor is also inherited by the container exec, so interruption
+cannot release the project lock before that bounded backend stops. This requires
+Podman's `--preserve-fds` support with the `crun` runtime (the current on-prem
+configuration); unsupported runtimes fail rather than falling back without the lock.
+A transport timeout is an uncertain outcome: reconcile
+the durable reservation/dispatch journal before retrying; this transport never
+replays a request. Installing or running this adapter is not authorized by these
+instructions and needs a scoped coordination window.
+
 `python_command` executes Python source from stdin as the **BOINC service user**,
 with its normal local RPC-password lookup. For nonstandard data directories,
 put `env BOINC_DIR=/path/to/data` before `python3 -`. This also permits Mac,
