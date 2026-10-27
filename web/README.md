@@ -352,8 +352,11 @@ Search fingerprints are the exact deterministic initial-HTML sample results:
 total matches, top city, its count, and up to ten earliest hits' dates, titles,
 snippets and citations (including the no-results case). Unchanged fingerprints
 retain their dates across index publishes, rebuilds and restarts. Changed
-results after a new index publication use `current.json`'s `published_at`;
-same-version code/content changes use generation observation time. First
+results after a genuinely forward index publication use `current.json`'s
+`published_at` only when the page's rendering/copy provenance is unchanged;
+code/content changes, including those deployed alongside an index, use generation
+observation time. Legacy checkpoints without that provenance conservatively use
+observation time for changed pages. First
 observations and new URLs also use observation time: no historical change time
 is invented. A changed page is never backdated behind its previous date.
 
@@ -361,8 +364,8 @@ Vite also emits `sitemap-pages.json` with source-content fingerprints for `/`,
 `/privacy`, `/credits` and `/datasets`, following their local imports (including
 shared visible components and the OCR credit catalog) and source HTML shell.
 These are conservative source fingerprints, not generated JS chunks or asset
-filenames. Build timestamps alone do not change a page's date. Dataset content
-also includes the published index's provenance; transient health, queue and
+filenames. Build timestamps alone do not change a page's date. Dataset details
+and OCR credits also include the pinned published index's provenance; transient health, queue and
 other live status counters are intentionally not sitemap change signals.
 
 Full immutable checkpoints live under `sitemap/state/{sequence:020}.json` in

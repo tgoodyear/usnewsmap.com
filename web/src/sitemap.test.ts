@@ -26,4 +26,7 @@ it("tracks page copy and shared visible sources, not emitted chunk names or buil
     'import { Brand } from "./brand"; export const page = <><Brand /><p>New page copy</p></>;',
   );
   expect(pageFingerprint(root, "page.tsx")).not.toBe(shared);
+  const copy = pageFingerprint(root, "page.tsx");
+  writeFileSync(resolve(root, "index.html"), "<!-- source-only note --><title>US News Map</title>");
+  expect(pageFingerprint(root, "page.tsx")).not.toBe(copy);
 });

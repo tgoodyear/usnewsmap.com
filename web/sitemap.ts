@@ -9,7 +9,7 @@ export function pageFingerprint(root: string, entry: string): string {
   const visit = (file: string) => {
     if (sources.has(file)) return;
     const source = readFileSync(file, "utf8");
-    sources.set(file, source.replace(/<!--[\s\S]*?-->/g, ""));
+    sources.set(file, source);
     if (!/\.[jt]sx?$/.test(file)) return;
     const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
     sources.set(file, ts.createPrinter({ removeComments: true }).printFile(tree));

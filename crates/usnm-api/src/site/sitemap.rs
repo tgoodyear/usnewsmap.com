@@ -27,6 +27,10 @@ pub(crate) struct Service {
 struct Page {
     fingerprint: String,
     lastmod: DateTime<Utc>,
+    /// Rendering/copy identity without index data. Legacy checkpoints lack it,
+    /// so their first changed page conservatively uses observation time.
+    #[serde(default)]
+    content_provenance: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -111,6 +115,7 @@ struct Generation {
     web_at: DateTime<Utc>,
     observed_at: DateTime<Utc>,
     pages: BTreeMap<String, String>,
+    content_provenance: BTreeMap<String, String>,
 }
 
 impl Generation {
@@ -132,14 +137,23 @@ impl Generation {
             .iter()
             .map(|(path, fingerprint)| {
                 let old = previous.and_then(|p| p.pages.get(path));
+                let content_provenance = self
+                    .content_provenance
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_default();
                 let lastmod = match old {
                     Some(old) if &old.fingerprint == fingerprint => old.lastmod,
                     // Publication explains changed results only when it is a
                     // new publication, not a code-only change or bootstrap.
                     Some(old)
-                        if previous.is_some_and(|p| p.version != self.version)
-                            && self.published_at > old.lastmod
-                            && (path.starts_with("/search/") || path == "/datasets") =>
+                        if previous.is_some_and(|p| {
+                            p.version != self.version && self.published_at > p.published_at
+                        }) && self.published_at > old.lastmod
+                            && !content_provenance.is_empty()
+                            && old.content_provenance == content_provenance
+                            && (path.starts_with("/search/")
+                                || matches!(path.as_str(), "/datasets" | "/credits")) =>
                     {
                         self.published_at
                     }
@@ -152,6 +166,7 @@ impl Generation {
                     Page {
                         fingerprint: fingerprint.clone(),
                         lastmod,
+                        content_provenance,
                     },
                 )
             })
@@ -247,6 +262,7 @@ async fn generate(
         web_at: manifest.generated_at,
         observed_at,
         pages: BTreeMap::new(),
+        content_provenance: BTreeMap::new(),
     };
     generation.check_freshness(state.sitemap.committed.load_full().as_deref())?;
     let mut pages = manifest.pages.clone();
@@ -256,11 +272,19 @@ async fn generate(
             "{content}\0{}",
             fingerprint(super::shell_for(path, shell.to_vec()))
         ));
+        generation.content_provenance.insert(
+            path.clone(),
+            fingerprint(format!("{content}\0{}", renderer())),
+        );
     }
-    // The dataset's published content, not live queue/health/timing counters.
+    // Dataset details and OCR credits describe the pinned published snapshot,
+    // not live queue/health/timing counters.
     let provenance = serde_json::to_vec(&snap.refdata.current).map_err(backend)?;
-    let dataset = pages.get_mut("/datasets").expect("validated manifest");
-    *dataset = fingerprint(format!("{dataset}\0{}", fingerprint(provenance)));
+    let provenance = fingerprint(provenance);
+    for path in ["/datasets", "/credits"] {
+        let content = pages.get_mut(path).expect("validated manifest");
+        *content = fingerprint(format!("{content}\0{provenance}"));
+    }
     let mut paths: Vec<_> = super::CURATED_SEARCHES.iter().collect();
     paths.sort();
     for path in paths {
@@ -270,6 +294,9 @@ async fn generate(
         let query = super::search_query(path).expect("curated path");
         let html = super::search_preview_snapshot(state, snap.clone(), &query, true).await?;
         pages.insert(path.clone(), fingerprint(html));
+        generation
+            .content_provenance
+            .insert(path.clone(), renderer().to_owned());
         tokio::task::yield_now().await;
     }
     generation.pages = pages;
@@ -398,6 +425,15 @@ mod tests {
                 ("/search/whigs".into(), "results".into()),
                 ("/search/no-results".into(), "empty".into()),
             ]),
+            content_provenance: [
+                "/privacy",
+                "/datasets",
+                "/search/whigs",
+                "/search/no-results",
+            ]
+            .into_iter()
+            .map(|p| (p.to_owned(), "same renderer and copy".to_owned()))
+            .collect(),
         }
     }
 
@@ -462,6 +498,113 @@ mod tests {
         g.observed_at = at(5);
         g.version = "different-at-same-publish-time".into();
         assert!(g.checkpoint(Some(&newer)).is_ok());
+    }
+
+    #[test]
+    fn publication_dates_require_forward_publication_and_comparable_page_content() {
+        let mut g = generation();
+        let first = g.checkpoint(None).unwrap();
+        g.version = "newer-index-same-results".into();
+        g.published_at = at(5);
+        g.observed_at = at(6);
+        let newer = g.checkpoint(Some(&first)).unwrap();
+        assert_eq!(newer.pages["/search/whigs"].lastmod, at(2));
+        g.version = "rolled-back-index".into();
+        g.published_at = at(3); // Later than this page's date, but a rollback.
+        g.observed_at = at(7);
+        g.pages
+            .insert("/search/whigs".into(), "rolled-back results".into());
+        let rollback = g.checkpoint(Some(&newer)).unwrap();
+        assert_eq!(rollback.pages["/search/whigs"].lastmod, at(7));
+        assert_eq!(rollback.pages["/datasets"].lastmod, at(2));
+
+        g.version = "forward-index-and-deployment".into();
+        g.published_at = at(8);
+        g.observed_at = at(9);
+        for path in ["/search/whigs", "/datasets"] {
+            g.pages.insert(path.into(), "new rendered content".into());
+            g.content_provenance
+                .insert(path.into(), "new renderer or page copy".into());
+        }
+        let deployed = g.checkpoint(Some(&rollback)).unwrap();
+        assert_eq!(deployed.pages["/search/whigs"].lastmod, at(9));
+        assert_eq!(deployed.pages["/datasets"].lastmod, at(9));
+        assert_eq!(deployed.pages["/privacy"].lastmod, at(2));
+        // Existing pre-provenance checkpoints remain readable, but cannot
+        // establish that an observed change came solely from publication.
+        let mut legacy = serde_json::to_value(rollback).unwrap();
+        legacy["pages"]["/datasets"]
+            .as_object_mut()
+            .unwrap()
+            .remove("content_provenance");
+        let legacy: Checkpoint = serde_json::from_value(legacy).unwrap();
+        g.content_provenance
+            .insert("/datasets".into(), "same renderer and copy".into());
+        assert_eq!(
+            g.checkpoint(Some(&legacy)).unwrap().pages["/datasets"].lastmod,
+            at(9)
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_only_changes_pinned_credits_without_changing_content_provenance() {
+        let dir = Directory::new();
+        let st = state(&dir, Some(Vec::new())).await;
+        let mut manifest = Manifest {
+            generated_at: Utc::now() - chrono::Duration::hours(1),
+            pages: STATIC
+                .into_iter()
+                .map(|p| (p.to_owned(), fingerprint(p)))
+                .collect(),
+        };
+        let old = generate(&st, st.snapshot.load_full(), &manifest)
+            .await
+            .unwrap();
+        let fixtures = LocalStore::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data"),
+        );
+        let mut refdata = crate::refdata::RefData::load(&fixtures).await.unwrap();
+        refdata.current.index_version = "new-ocr-inventory-publication".into();
+        refdata.current.published_at = at(6).to_rfc3339();
+        st.snapshot.store(Arc::new(Snapshot {
+            refdata,
+            backend: st.snapshot.load_full().backend.clone(),
+            congress_dropped: false,
+        }));
+        let new = generate(&st, st.snapshot.load_full(), &manifest)
+            .await
+            .unwrap();
+        assert_ne!(old.pages["/credits"], new.pages["/credits"]);
+        assert_eq!(
+            old.content_provenance["/credits"],
+            new.content_provenance["/credits"]
+        );
+        assert_eq!(old.pages["/privacy"], new.pages["/privacy"]);
+        let mut old = old;
+        old.observed_at = at(2);
+        old.published_at = at(1);
+        let previous = old.checkpoint(None).unwrap();
+        let current = new.checkpoint(Some(&previous)).unwrap();
+        assert_eq!(current.pages["/credits"].lastmod, at(6));
+        assert_eq!(current.pages["/privacy"].lastmod, at(2));
+        for path in ["/datasets", "/credits"] {
+            manifest.pages.insert(
+                path.into(),
+                "new source copy deployed with publication".into(),
+            );
+        }
+        let deployed = generate(&st, st.snapshot.load_full(), &manifest)
+            .await
+            .unwrap();
+        let current = deployed.checkpoint(Some(&previous)).unwrap();
+        for path in ["/datasets", "/credits"] {
+            assert_ne!(
+                deployed.content_provenance[path],
+                old.content_provenance[path]
+            );
+            assert_eq!(current.pages[path].lastmod, deployed.observed_at);
+        }
+        assert_eq!(current.pages["/privacy"].lastmod, at(2));
     }
 
     struct Directory(std::path::PathBuf);

@@ -581,8 +581,8 @@ class Install(Stubbed):
                      "usnm-serving-update.service", "usnm-serving-update.timer"):
             self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/system", unit)), unit)
         self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/journald.conf.d/usnm-serving.conf")))
-        self.assertIn("chown 65532:65532 %s/srv/usnm-serving/cache" % self.root, self.calls())
-        self.assertIn("chown 65532:65532 %s/srv/usnm-serving/sitemap-state" % self.root, self.calls())
+        self.assertIn("chown 1000:1000 %s/srv/usnm-serving/cache" % self.root, self.calls())
+        self.assertIn("chown 1000:1000 %s/srv/usnm-serving/sitemap-state" % self.root, self.calls())
         open(self.log, "w").close()
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -698,11 +698,11 @@ class Static(unittest.TestCase):
         self.assertIn("MaxRetentionSec=30day", self.read("journald-usnm-serving.conf"))
         tmpfiles = self.read("usnm-serving.tmpfiles")
         for color in ("blue", "green"):
-            self.assertIn("d /srv/usnm-serving/cache/%s 0750 65532 65532 mM:14d" % color, tmpfiles)
+            self.assertIn("d /srv/usnm-serving/cache/%s 0750 1000 1000 mM:14d" % color, tmpfiles)
         self.assertIn("-v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache", self.read("usnm-api@.service"))
         self.assertIn("-v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state",
                       self.read("usnm-api@.service"))
-        self.assertIn("d /srv/usnm-serving/sitemap-state 0750 65532 65532 -", tmpfiles)
+        self.assertIn("d /srv/usnm-serving/sitemap-state 0750 1000 1000 -", tmpfiles)
 
     @unittest.skipUnless(LINUX, "needs GNU sed")
     def test_cloudflared_lines_lose_their_query_strings(self):
