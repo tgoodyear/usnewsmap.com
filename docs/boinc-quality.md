@@ -509,7 +509,19 @@ Successful native workunit audits are retained in `audit.json`, bound to the exa
 SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
 new or changed jobs always require a fresh authoritative audit.
 
-An independent `build-quality --non-english` scan manifest checkpoint requests missing
+The separate `usnm-qwen-manifest.timer` in the preparation CT runs
+`build-quality --non-english` every ten minutes after its previous execution finishes.
+Install its service/timer from `scripts/boinc/onprem/ocr-feed/`; it reuses
+`SCAN_SERVER` from `/etc/usnm/quality-build.env`, the existing certificate-authenticated
+database DSN, and `/var/lib/usnm-ocr-manifest/qwen-nonenglish` state. When upgrading,
+let the old Qwen feed's inline manifest finish before starting this timer, so the two
+versions never write that checkpoint concurrently. Verify one manifest pass, then
+enable its timer independently of `usnm-qwen-feed.timer`.
+Manifest failure or slowness cannot prevent the feed service's `ExecStartPost` from
+shipping already-ready native work. Its separate service lock prevents concurrent
+manifest runs.
+
+This checkpoint requests missing
 non-English corpus scans in descending page-damage order, retaining the real language
 (and therefore the keep set). Already-retained or already-requested pages are excluded
 through a temporary SQL table, not a command-line-sized `IN` list. Consumed fetch-history

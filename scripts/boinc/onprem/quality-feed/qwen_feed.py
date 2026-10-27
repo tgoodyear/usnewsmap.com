@@ -102,13 +102,6 @@ def _tick(a):
         print(json.dumps({"status": "prepared", "pages": len(usable), "missing_original_alto": receipt["missing"],
                           "pending_original_alto": receipt["pending"],
                           "ready_before": inv["ready"], "highest_damage": pages[0]["damage_rate"]}))
-    # Separate checkpoint: an unfinished image-quality survey must not stall Qwen's corpus.
-    command(ct + ["mkdir", "-p", "/var/lib/usnm-ocr-manifest/qwen-nonenglish"])
-    command(ct + ["sh", "-c",
-                  'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py '
-                  'build-quality --non-english --state /var/lib/usnm-ocr-manifest/qwen-nonenglish '
-                  '--dsn "$(cat /etc/usnm/quality-db/dsn)" --max-pages 1000 --scan-server '
-                  + shlex.quote(a.scan_server)])
 
 
 def main():
