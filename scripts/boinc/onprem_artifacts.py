@@ -8,8 +8,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
-IMAGE = r"sha256:[0-9a-f]{64}"
+LOCK_FD = None
 
 
 def image_id(value):
@@ -18,8 +19,9 @@ def image_id(value):
     return value if value.startswith("sha256:") else "sha256:" + value
 
 
-def call(*argv):
-    return subprocess.check_output(argv, text=True, timeout=14400).strip()
+def call(*argv, timeout=30):
+    return subprocess.check_output(argv, text=True, timeout=timeout, start_new_session=True,
+                                   pass_fds=() if LOCK_FD is None else (LOCK_FD,)).strip()
 
 
 def inspect(image, source=None):
@@ -135,8 +137,32 @@ def install(value, conf=Path("/etc/usnm-boinc")):
             os.fsync(stream.fileno())
         os.replace(staged, conf / "server.env")
     # Also reconciles interruption after env replacement but before restart.
-    call("systemctl", "restart", "usnm-boinc-server.service")
-    verify_runtime(value, conf)
+    call("systemctl", "restart", "usnm-boinc-server.service", timeout=300)
+    wait_for_runtime(value, conf)
+
+
+def wait_for_runtime(value, conf, timeout=180):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            verify_runtime(value, conf)
+            return
+        except (ValueError, subprocess.SubprocessError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(1)
+
+
+def wait_for_jobs():
+    # A timed-out systemctl client does not cancel the submitted systemd job.
+    # Keep the independent supervisor's lock if its completion cannot be observed.
+    while True:
+        try:
+            if not call("systemctl", "show", "usnm-boinc-server.service", "--property=Job", "--value"):
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+        time.sleep(1)
 
 
 def build(source, commit):
@@ -156,31 +182,52 @@ def build(source, commit):
                 "--file", str(source / "contrib-compute/images" / directory / "Containerfile")]
         for name in args:
             argv += ["--build-arg", name + "=" + images[{"BASE_IMAGE": "base", "SERVER_IMAGE": "server", "BIN_IMAGE": "bin"}[name]]]
-        subprocess.run([*argv, str(source)], check=True, stdout=sys.stderr, timeout=14400)
+        subprocess.run([*argv, str(source)], check=True, stdout=sys.stderr, timeout=14400,
+                       start_new_session=True, pass_fds=() if LOCK_FD is None else (LOCK_FD,))
         images[key] = inspect(image_id(iid.read_text().strip()), commit)
     return images
 
 
+def supervise(args, lock, program=None):
+    process = subprocess.Popen(
+        [sys.executable, str(program or Path(__file__).resolve()), "--operation", args.operation,
+         "--payload", args.payload, "--lock-fd", str(lock.fileno())],
+        start_new_session=True, pass_fds=(lock.fileno(),))
+    return process.wait()
+
+
 def main():
+    global LOCK_FD
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--operation", choices=("build", "install", "verify"), required=True)
     parser.add_argument("--payload", required=True)
+    parser.add_argument("--lock-fd", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     value = json.loads(args.payload)
-    with open("/run/usnm-boinc-step.lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if args.operation == "build":
-            result = build(Path(value["source"]), value["commit"])
-        elif args.operation == "install":
-            install(value)
-            result = {"installed": value["images"]["bridge"]}
-        elif args.operation == "verify":
-            verify_runtime(value)
-            result = {"verified": value["images"]["bridge"]}
-        else:
-            raise ValueError("unknown artifact operation")
+    if args.lock_fd is None:
+        with open("/run/usnm-boinc-step.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return supervise(args, lock)
+    with os.fdopen(args.lock_fd, "a") as lock:
+        inherited, expected = os.fstat(lock.fileno()), os.stat("/run/usnm-boinc-step.lock")
+        if (inherited.st_dev, inherited.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ValueError("supervisor did not inherit the installed runner's lock")
+        LOCK_FD = lock.fileno()
+        try:
+            if args.operation == "build":
+                result = build(Path(value["source"]), value["commit"])
+            elif args.operation == "install":
+                install(value)
+                result = {"installed": value["images"]["bridge"]}
+            elif args.operation == "verify":
+                verify_runtime(value)
+                result = {"verified": value["images"]["bridge"]}
+        finally:
+            if args.operation == "install":
+                wait_for_jobs()
     print(json.dumps(result))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -70,6 +70,11 @@ lock. Existing runtime prerequisites are read first; base/server/bridge-bin/brid
 built locally from an archived reviewed source, using the existing Containerfiles.
 Each local image's immutable ID and source label is read back. Partial builds retain
 private per-stage image-ID receipts on the CT and reuse only source-verified IDs.
+An independent per-operation supervisor inherits that lock and passes it to child
+commands, so a lost SSH/helper cannot release exclusion while an operation continues.
+Installation waits for the expected container to be running. A submitted systemd job
+must finish before the supervisor releases its lock; if systemd cannot confirm this,
+exclusion remains held for operator reconciliation rather than permitting overlap.
 
 Two independent review checkpoints remain mandatory:
 
@@ -87,7 +92,7 @@ Two independent review checkpoints remain mandatory:
    and installed step runner consume that file. The running image is checked, not
    just a tag. Signing transfers only this public image to the isolated signing host;
    no Azure pull/pin fallback is allowed. `boinc-app-release.sh --prepare-only
-   --onprem-manifest PATH --artifact-receipt FILE` emits a versioned signed local
+--onprem-manifest PATH --artifact-receipt FILE` emits a versioned signed local
    appver-ID receipt. Its source and runtime must match the candidate.
    A second manifest-only PR adds `images.appver` and `signing_source`.
    Publication waits for its reviewed merge and successful CI too.
@@ -107,6 +112,8 @@ repeat automatically. A crash after `server.env` replacement can be reconciled b
 runtime retry, which restarts and reads back the already-reviewed pin. There is no
 automatic rollback, key unlock or destructive recovery. Do not delete state to evade
 an ambiguous publication or acceptance reservation.
+Native binary/auxiliary inputs are rehashed after copying into private staging;
+only those verified copies are transferred for signing and appver construction.
 
 ## What runs on the host
 

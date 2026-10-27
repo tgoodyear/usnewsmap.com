@@ -100,8 +100,8 @@ class OnpremPipeline(Pipeline):
                         shlex.quote(command))
 
     def remote(self, work, action, value):
-        program = (work / "scripts/boinc/onprem_artifacts.py").read_text()
-        return json.loads(self.ct("python3 -c " + shlex.quote(program) + " --operation " +
+        program = self.remote_directory + "/source/scripts/boinc/onprem_artifacts.py"
+        return json.loads(self.ct("python3 " + shlex.quote(program) + " --operation " +
                                   shlex.quote(action) + " --payload " + shlex.quote(json.dumps(value))))
 
     def preflight(self):

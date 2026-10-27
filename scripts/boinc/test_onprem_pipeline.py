@@ -1,5 +1,6 @@
 """Hermetic on-prem lifecycle, reviewed promotion and interrupted retry tests."""
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -133,6 +135,109 @@ ssh_host() {
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(transfer.read_text(), "podman save '" + manifest()["images"]["bridge"] + "'")
 
+    def test_native_private_stage_rejects_rebuilt_binary_or_auxiliary_before_transfer(self):
+        text = (pipeline.ROOT / "scripts/boinc/boinc-app-release.sh").read_text()
+        marker = 'if [ -n "$ONPREM_MANIFEST" ] && [ "$KIND" = native ]; then'
+        block = marker + text.split(marker, 1)[1].split("# --- 2. Stage", 1)[0]
+        work = self.directory / "stage"
+        (work / "extra").mkdir(parents=True)
+        binary = work / "binary_payload"
+        binary.write_bytes(b"approved native")
+        extra = work / "extra/llama-server"
+        extra.write_bytes(b"approved helper")
+        path = self.directory / "native-manifest.json"
+        path.write_text(json.dumps({"worker": {
+            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "extra_files": {"llama-server": {"sha256": hashlib.sha256(extra.read_bytes()).hexdigest()}}}}))
+        shell = 'set -euo pipefail\ndie() { echo "$*" >&2; exit 1; }\n'
+        env = dict(os.environ, ONPREM_MANIFEST=str(path), KIND="native", work=str(work), binary_name="binary_payload")
+        def verify():
+            return subprocess.run(["bash", "-c", shell + block], cwd=pipeline.ROOT, env=env, capture_output=True, text=True)
+        self.assertEqual(verify().returncode, 0)
+        for changed in (binary, extra):
+            old = changed.read_bytes()
+            changed.write_bytes(b"concurrent rebuild")
+            result = verify()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("nothing transferred or signed", result.stderr)
+            changed.write_bytes(old)
+
+    def test_startup_wait_tolerates_absent_or_old_container_but_is_bounded(self):
+        with patch.object(artifacts, "verify_runtime", side_effect=[ValueError("not created"), ValueError("old"), None]) as verify, patch.object(
+                artifacts.time, "sleep") as sleep:
+            artifacts.wait_for_runtime(manifest(), self.directory)
+        self.assertEqual(verify.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        with patch.object(artifacts, "verify_runtime", side_effect=ValueError("wrong image")), patch.object(
+                artifacts.time, "monotonic", side_effect=[0, 181]), patch.object(artifacts.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "wrong image"):
+                artifacts.wait_for_runtime(manifest(), self.directory)
+        sleep.assert_not_called()
+
+    def test_systemd_job_reconciliation_keeps_waiting_on_pending_or_unknown_job(self):
+        with patch.object(artifacts, "call", side_effect=["123", OSError("connection lost"), ""]), patch.object(
+                artifacts.time, "sleep") as sleep:
+            artifacts.wait_for_jobs()
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_supervisor_keeps_exclusion_after_outer_helper_is_killed(self):
+        program = self.directory / "child.py"
+        ready, release = self.directory / "ready", self.directory / "release"
+        program.write_text(f"""import argparse, os, time
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument('--operation')
+parser.add_argument('--payload')
+parser.add_argument('--lock-fd', type=int)
+args = parser.parse_args()
+Path({str(ready)!r}).write_text(str(os.getpid()))
+while not Path({str(release)!r}).exists():
+    time.sleep(.01)
+os.close(args.lock_fd)
+""")
+        lock_path = self.directory / "operation.lock"
+        wrapper = self.directory / "outer.py"
+        wrapper.write_text(f"""import argparse, fcntl, sys
+sys.path.insert(0, {str(Path(artifacts.__file__).parent)!r})
+import onprem_artifacts as artifacts
+with open({str(lock_path)!r}, 'a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    artifacts.supervise(argparse.Namespace(operation='verify', payload='{{}}'), lock, {str(program)!r})
+""")
+        process = subprocess.Popen([sys.executable, str(wrapper)], cwd=self.directory)
+        child = None
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(ready.exists())
+            child = int(ready.read_text())
+            process.kill()
+            process.wait(timeout=5)
+            with lock_path.open("a") as lock:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                release.write_text("finished")
+                deadline = time.monotonic() + 5
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            self.fail("completed operation did not release exclusion")
+                        time.sleep(.01)
+        finally:
+            release.write_text("finished")
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            if child is not None:
+                try:
+                    os.kill(child, 15)
+                except ProcessLookupError:
+                    pass
+
     def test_ephemeral_azure_client_rejected_before_resource_operations(self):
         self.acceptance.write_text('{"client":{"mode":"ephemeral"}}')
         with self.assertRaisesRegex(pipeline.PipelineError, "independent existing"):
@@ -144,6 +249,18 @@ ssh_host() {
             with self.assertRaisesRegex(pipeline.PipelineError, "authorize-runtime-install"):
                 self.p.preflight()
         self.assertIn("onprem-", self.p.settings)
+
+    def test_interrupted_process_reload_requires_exact_reconciled_phase(self):
+        self.p.state.update(active="runtime", status="running", done=list(pipeline.PHASES[:4]))
+        self.p.save()
+        resumed = onprem.OnpremPipeline(self.args, self.config, self.p.identity, Mock(return_value=""))
+        with patch.object(resumed, "preflight"), patch.object(resumed, "receipt"), patch.object(resumed, "phase") as phase:
+            with self.assertRaisesRegex(pipeline.PipelineError, "approve-retry"):
+                resumed.execute()
+            phase.assert_not_called()
+            self.args.approve_retry = "runtime"
+            self.assertTrue(resumed.execute()["complete"])
+        self.assertEqual([call.args[0] for call in phase.call_args_list], list(pipeline.PHASES[4:]))
 
     def test_manifest_rejects_azure_tags_missing_worker_and_changed_provenance(self):
         for edit in (lambda v: v["images"].update(bridge="registry.azurecr.io/image@sha256:" + "a" * 64),
@@ -171,7 +288,7 @@ ssh_host() {
         self.assertEqual((conf / ("server.env.before-" + value["source_commit"])).read_text(), old)
         with patch.object(artifacts, "inspect"), patch.object(artifacts, "verify_runtime") as verify, patch.object(artifacts, "call") as call:
             artifacts.install(value, conf)
-        call.assert_called_once_with("systemctl", "restart", "usnm-boinc-server.service")
+        call.assert_called_once_with("systemctl", "restart", "usnm-boinc-server.service", timeout=300)
         verify.assert_called_once_with(value, conf)
 
     def test_runtime_readback_refuses_pin_or_running_container_mismatch(self):

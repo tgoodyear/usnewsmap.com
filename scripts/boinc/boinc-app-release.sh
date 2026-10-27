@@ -443,6 +443,27 @@ elif [ -n "$WRAPPER" ]; then
   esac
 fi
 
+if [ -n "$ONPREM_MANIFEST" ] && [ "$KIND" = native ]; then
+  # Verify the private copies, not mutable build outputs reopened after SSH preflight.
+  python3 - --manifest "$ONPREM_MANIFEST" --binary "$work/$binary_name" --extra-dir "$work/extra" <<'PY' ||
+import argparse, hashlib, json
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument("--manifest", required=True, type=Path)
+parser.add_argument("--binary", required=True, type=Path)
+parser.add_argument("--extra-dir", required=True, type=Path)
+args = parser.parse_args()
+worker = json.loads(args.manifest.read_text())["worker"]
+assert hashlib.sha256(args.binary.read_bytes()).hexdigest() == worker["sha256"]
+extras = worker["extra_files"]
+staged_names = {path.name for path in args.extra_dir.iterdir()} if args.extra_dir.exists() else set()
+assert staged_names == set(extras)
+for logical, entry in extras.items():
+    assert hashlib.sha256((args.extra_dir / logical).read_bytes()).hexdigest() == entry["sha256"]
+PY
+    die "private staged native payload differs from the reviewed manifest; nothing transferred or signed"
+fi
+
 # --- 2. Stage --------------------------------------------------------------------------------
 
 remote=$(ssh_host "python3 -c 'from pathlib import Path; import uuid; p=Path.cwd() / (\".usnm-appver-\"+uuid.uuid4().hex); p.mkdir(mode=0o700); print(p)'") || die "can't make a work directory on the signing host"
