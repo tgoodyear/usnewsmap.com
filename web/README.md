@@ -385,7 +385,8 @@ also checks the archive's range/cache/compression contract.
 The standalone Azure API allocates **1 vCPU / 2 GiB** for the two Chromium
 slots. A local production-limit test at the previous 0.25 vCPU / 0.5 GiB
 failed its deadline even with local assets; two simultaneous captures at the
-new allocation completed in about 4 seconds each. This increases the
+new allocation completed in about 10 seconds each with populated maps and
+verified geographic labels. This increases the
 standalone replica's allocated resources fourfold, not a measured billing
 estimate. The legacy Quickwit-sidecar layout keeps its prior API allocation
 to stay within the Consumption replica cap and may still use the static
