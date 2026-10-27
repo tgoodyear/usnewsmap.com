@@ -538,6 +538,20 @@ class BuildInputs(unittest.TestCase):
         on = self.select("ocr/engines/tesseract/Containerfile")
         self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}),
                          {"boinc_worker", "ocr_worker"}, on)
+        on = self.select("scripts/ci/ocr-engine-cgroup-smoke.py")
+        self.assertIn("ocr_worker", on)
+        self.assertNotIn("image", on)
+        on = self.select("ocr/contract/fixtures/corrupt.png")
+        self.assertIn("ocr_worker", on)
+        for path in [
+            "scripts/ci/ocr-engine-contract/Containerfile",
+            "scripts/ci/ocr-engine-contract/contract-test-adapter.sh",
+        ]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertIn("ocr_worker", on)
+                self.assertNotIn("image", on)
+                self.assertNotIn("contrib", on)
 
     def test_a_toolchain_change_runs_every_build(self):
         on = self.select("rust-toolchain.toml")

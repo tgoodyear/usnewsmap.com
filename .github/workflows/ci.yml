@@ -644,6 +644,16 @@ jobs:
       - name: The worker reads a line with the image, as on a node
         run: |
           dist/usnm-ocr-worker check-engine --tesseract-image "$(cat dist/usnm-ocr-tesseract.image-id)"
+      - name: Linux engine-image resource and deadline cleanup acceptance
+        run: |
+          if ! command -v setfacl >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y acl
+          fi
+          python3 scripts/ci/ocr-engine-cgroup-smoke.py \
+            --worker dist/usnm-ocr-worker \
+            --base-image localhost/usnm-ocr/tesseract:check \
+            --work-dir .ci/ocr-engine-cgroup
       - name: The archive loads back as the same image
         run: |
           podman rmi -f usnm-ocr/tesseract:check
