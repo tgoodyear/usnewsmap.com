@@ -268,6 +268,70 @@ async fn get_site(
 }
 
 #[tokio::test]
+async fn basemap_archive_has_immutable_unencoded_byte_ranges() {
+    let dir = site_dir("basemap-ranges");
+    let path = "basemap/test-v1/overview.pmtiles.bin";
+    std::fs::create_dir_all(dir.join("basemap/test-v1")).unwrap();
+    let data = b"PMTiles".repeat(1024);
+    std::fs::write(dir.join(path), &data).unwrap();
+    let mut cfg = config();
+    cfg.site_dir = Some(dir.clone());
+    let state = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    for (range, status, expected) in [
+        (None, StatusCode::OK, &data[..]),
+        (Some("bytes=0-6"), StatusCode::PARTIAL_CONTENT, &data[..7]),
+    ] {
+        let mut req = Request::builder()
+            .uri(format!("/{path}"))
+            .header(header::ACCEPT_ENCODING, "br, gzip");
+        if let Some(value) = range {
+            req = req.header(header::RANGE, value);
+        }
+        let resp = app(state.clone())
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), status);
+        assert_eq!(
+            header_str(resp.headers(), header::CACHE_CONTROL),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            header_str(resp.headers(), header::CONTENT_TYPE),
+            "application/vnd.pmtiles"
+        );
+        assert_eq!(
+            header_str(resp.headers(), header::CONTENT_LENGTH),
+            expected.len().to_string()
+        );
+        assert!(!resp.headers().contains_key(header::CONTENT_ENCODING));
+        if range.is_some() {
+            assert_eq!(
+                header_str(resp.headers(), header::CONTENT_RANGE),
+                format!("bytes 0-6/{}", data.len())
+            );
+        }
+        assert_eq!(
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            expected
+        );
+    }
+    let (status, headers, _) = get_site(&state, "/basemap/test-v1/missing.pmtiles.bin", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn serves_the_site_alongside_the_api() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("serve"));

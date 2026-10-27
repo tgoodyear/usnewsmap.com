@@ -96,6 +96,8 @@ export async function preloadBasemap({
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   const request = async (url: string, kind: "json" | "image" | "binary") => {
+    // Custom protocols share PMTiles' range cache in the lazy map module.
+    if (!/^https?:/.test(url)) return;
     if (requests >= REQUEST_LIMIT || seen.has(url)) return;
     seen.add(url);
     requests++;

@@ -12,8 +12,10 @@ const STYLE = {
 };
 
 test.beforeEach(async ({ page }) => {
-  await page.route("https://tiles.openfreemap.org/**", (route) =>
-    route.request().url().includes("/styles/") ? route.fulfill({ json: STYLE }) : route.fulfill({ status: 404 }),
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    /\/styles\/|\/style\.json$/.test(route.request().url())
+      ? route.fulfill({ json: STYLE })
+      : route.fulfill({ status: 404 }),
   );
 });
 

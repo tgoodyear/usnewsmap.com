@@ -25,7 +25,7 @@ Build-time settings:
 | Variable             | Default                 | Meaning                                                                                                                                                              |
 | -------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VITE_API_BASE`      | same origin             | API origin. Production leaves it empty: the API serves the site                                                                                                      |
-| `VITE_BASEMAP_STYLE` | OpenFreeMap Positron    | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published             |
+| `VITE_BASEMAP_STYLE` | Self-hosted Positron    | MapLibre style URL. `none` gives a plain background (offline and tests). The default uses the versioned PMTiles overview bundle with OpenFreeMap detail fallback     |
 | `VITE_PAGE_VIEWS`    | unset                   | `1` sends page views from any origin (to try `POST /v1/beacon` against a local API), `0` never. Unset, only a production build on `https://usnewsmap.com` sends them |
 | `USNM_API_ORIGIN`    | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to                                                                                                                       |
 
@@ -323,6 +323,76 @@ warning, which is tested, stays for future growth.
 Not yet built: compare mode, the first-appearance layer, the coverage overlay, embed mode, export beyond the available CSV downloads, and the share dialog beyond copying the link.
 
 ## Search engines and link previews
+
+### Self-hosted overview basemap
+
+The default Positron style and its sprite/glyph assets are served from
+`/basemap/<version>/`. One **19,503,677-byte PMTiles archive** contains 183
+OpenFreeMap/OpenMapTiles tiles: global zooms 0–2, plus zooms 3–5 intersecting
+`[-155, 0, -35, 70]` (west, south, east, north). This covers the default U.S.
+view and adjacent zoom levels. Zoom 6+ and overview tiles outside that extract
+use OpenFreeMap's current TileJSON, fetched only when needed. Both paths use
+the same schema and style. All glyph ranges referenced by overview label
+properties are local; additional detailed-view ranges use OpenFreeMap.
+
+`src/lib/basemapProtocol.ts` registers one MapLibre protocol. PMTiles' reader
+shares header/directory caches and fetches only tile byte ranges; it does not
+download the whole archive per view. HTTP prewarming loads the style/sprites
+but leaves custom-protocol requests to that shared reader. Rendering rejects
+failed local basemap assets just as it rejects failed upstream assets.
+
+`basemap.json` pins a public GitHub release bundle by SHA-256 and exact size.
+`npm run build` and `npm run dev` install and verify it using
+`scripts/prepare-basemap.mjs`. Binary data is excluded from Git; clean Docker
+builds perform the same verified installation. The bundle includes
+source TileJSON/style, provenance, per-file checksums, attribution, ODbL and
+font-license references. It needs no R2 bucket, tile server or new credential.
+
+The archive is named `overview.pmtiles.bin`: it is ordinary PMTiles v3, and
+the `.bin` suffix makes it eligible for Cloudflare's default extension cache.
+The API sends immutable one-year caching, `Content-Length` and unencoded
+`206 Content-Range` responses. It excludes PMTiles from HTTP compression
+(tile payloads are already compressed). Styles/fonts also have versioned
+immutable URLs; JSON/PBF edge caching still requires an appropriate zone
+cache rule, so verify their actual `CF-Cache-Status` rather than assuming it.
+`scripts/onprem/serving/basemap-cache-rule.json` is the apex-only rule:
+add it to the zone's `http_request_cache_settings` entrypoint without
+replacing existing rules. It respects origin TTLs and `no-store` errors,
+does not ignore query strings, and never matches searches or API calls.
+The archive alone requires no custom rule. Edge caching also requires proxied
+DNS. Production currently points directly to Azure; do not enable its proxy
+before the ADR-0027 serving cutover, because that would break Container Apps'
+managed-certificate renewal. Browser caching works independently of that
+cutover; no Cloudflare cache HIT or production CDN speedup is implied.
+
+To publish an update, use the pinned `go-pmtiles` CLI and
+`scripts/basemap/build.py --out OUTPUT --name VERSION --style STYLE_URL
+--tilejson PINNED_TILEJSON_URL --pmtiles PMTILES_PATH`.
+The builder limits downloads to four connections and 50 MiB, uses a dedicated
+user agent, verifies the archive, and packages matching assets. It supports
+`--maxzoom` (at most 5) and `--bbox WEST SOUTH EAST NORTH`; global zooms 0–2
+remain included. Publish the resulting tarball as a **new immutable release
+asset**, then update `basemap.json` (including glyph/font metadata) in a PR.
+Never replace an existing release asset or reuse a version name. Roll back
+by reverting that manifest/application release; older deployed image assets
+remain coupled to their matching client.
+
+`e2e/basemap.spec.ts` renders the real overview with OpenFreeMap blocked and
+checks byte-range responses; `e2e/share.spec.ts` requires rendered, cached
+screenshots rather than accepting the static timeout image. `check-api-image.sh`
+also checks the archive's range/cache/compression contract.
+
+The standalone Azure API allocates **1 vCPU / 2 GiB** for the two Chromium
+slots. A local production-limit test at the previous 0.25 vCPU / 0.5 GiB
+failed its deadline even with local assets; two simultaneous captures at the
+new allocation completed in about 10 seconds each with populated maps and
+verified geographic labels. This increases the
+standalone replica's allocated resources fourfold, not a measured billing
+estimate. The legacy Quickwit-sidecar layout keeps its prior API allocation
+to stay within the Consumption replica cap and may still use the static
+preview fallback under CPU pressure. The resource change needs a provision
+or a matching targeted container update after the reviewed Bicep is merged;
+the normal image-only rollout preserves existing resource limits.
 
 - `index.html` has the canonical link (the home page), Open Graph and Twitter card tags, and JSON-LD for the site and its publisher. `src/seo.test.ts` checks them, and `e2e/seo.spec.ts` checks them in a browser along with what the API sends crawlers.
 - The root element holds a short description of the site, for crawlers and previews that don't run JavaScript. React replaces it on its first render.

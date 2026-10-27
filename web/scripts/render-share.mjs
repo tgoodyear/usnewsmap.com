@@ -33,11 +33,17 @@ try {
   const page = await context.newPage();
   page.setDefaultTimeout(25_000);
   let basemapFailed = false;
+  const isBasemapAsset = (value) => {
+    const url = new URL(value);
+    return (
+      url.hostname === "tiles.openfreemap.org" || (url.origin === target.origin && url.pathname.startsWith("/basemap/"))
+    );
+  };
   page.on("requestfailed", (request) => {
-    if (new URL(request.url()).hostname === "tiles.openfreemap.org") basemapFailed = true;
+    if (isBasemapAsset(request.url())) basemapFailed = true;
   });
   page.on("response", (response) => {
-    if (new URL(response.url()).hostname === "tiles.openfreemap.org" && response.status() >= 400) {
+    if (isBasemapAsset(response.url()) && response.status() >= 400) {
       basemapFailed = true;
     }
   });

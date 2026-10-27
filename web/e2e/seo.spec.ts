@@ -201,7 +201,9 @@ test("sitemap.xml lists canonical site pages and curated base searches", async (
 });
 
 test("the privacy page renders, with links to it from the other pages", async ({ page }) => {
-  await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    route.fulfill({ status: 404 }),
+  );
   await page.goto("/privacy");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Privacy");
   await expect(page.locator("h1")).toHaveCount(1);

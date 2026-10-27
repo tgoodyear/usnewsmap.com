@@ -95,8 +95,8 @@ export default function PrivacyPage() {
 
         <h2>Other sites</h2>
         <p>
-          The map background comes from OpenFreeMap. Your browser requests map tiles and fonts from OpenFreeMap's
-          servers, under the{" "}
+          The map background uses OpenFreeMap data. Overview tiles, styles, sprites and fonts are hosted by this site.
+          Detailed or out-of-area tiles and additional font ranges are requested from OpenFreeMap's servers, under the{" "}
           <a href="https://openfreemap.org/privacy/" {...ext}>
             OpenFreeMap privacy policy
           </a>

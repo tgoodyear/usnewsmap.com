@@ -642,7 +642,9 @@ fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
 }
 
 async fn cache_control(req: Request, next: Next) -> Response {
-    let immutable = req.uri().path().starts_with("/assets/");
+    let basemap = req.uri().path().starts_with("/basemap/");
+    let archive = basemap && req.uri().path().ends_with(".pmtiles.bin");
+    let immutable = req.uri().path().starts_with("/assets/") || basemap;
     let mut resp = next.run(req).await;
     let html = resp
         .headers()
@@ -663,7 +665,13 @@ async fn cache_control(req: Request, next: Next) -> Response {
     if resp.headers().contains_key(header::CACHE_CONTROL) {
         return resp;
     }
-    let value = if immutable {
+    if archive && resp.status().is_success() {
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/vnd.pmtiles"),
+        );
+    }
+    let value = if immutable && !html {
         "public, max-age=31536000, immutable"
     } else if html {
         "no-cache"

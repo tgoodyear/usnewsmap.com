@@ -18,6 +18,7 @@ import { ALPHA_CLEAR, ALPHA_UNCLEAR, skewColor } from "../lib/skewScale";
 import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { DEFAULT_ZOOM, STYLE_URL, US_CENTER } from "../lib/basemap";
+import { installBasemapProtocol } from "../lib/basemapProtocol";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { stateDescription, type StateTotal } from "../engine/states";
 import boundariesUrl from "../assets/states.geojson?url";
@@ -138,9 +139,10 @@ export default function MapView(props: Props) {
   useEffect(() => {
     const element = container.current;
     if (!element) return;
+    installBasemapProtocol();
     const m = new MapLibreMap({
       container: element,
-      style: STYLE_URL === "none" ? PLAIN_STYLE : STYLE_URL,
+      ...(STYLE_URL === "none" ? { style: PLAIN_STYLE } : {}),
       center: latest.current.center ?? US_CENTER,
       zoom: latest.current.zoom ?? DEFAULT_ZOOM,
       minZoom: MIN_ZOOM,
@@ -163,8 +165,25 @@ export default function MapView(props: Props) {
       element.dataset.basemapReady = "false";
       m.setStyle(PLAIN_STYLE, { diff: false });
     };
-    m.on("error", recoverStyle);
+    m.on("error", () => {
+      if (capturing) {
+        element.dataset.basemapError = "true";
+        element.dataset.basemapReady = "false";
+      }
+      recoverStyle();
+    });
     m.on("style.load", () => setStyleReady(true));
+    if (STYLE_URL !== "none") {
+      m.setStyle(STYLE_URL, {
+        transformStyle: (_previous, next) => ({
+          ...next,
+          // MapLibre requires absolute sprite URLs, including same-origin assets.
+          ...(typeof next.sprite === "string"
+            ? { sprite: new URL(next.sprite, new URL(STYLE_URL, window.location.href)).href }
+            : {}),
+        }),
+      });
+    }
     if (m.isStyleLoaded()) setStyleReady(true);
 
     let ready = false;
@@ -187,7 +206,10 @@ export default function MapView(props: Props) {
     m.on("idle", () => {
       if (loaded && m.areTilesLoaded()) reveal();
       element.dataset.basemapReady = String(
-        loaded && m.areTilesLoaded() && (STYLE_URL === "none" || !fallbackStyleUsed),
+        loaded &&
+          m.areTilesLoaded() &&
+          element.dataset.basemapError !== "true" &&
+          (STYLE_URL === "none" || !fallbackStyleUsed),
       );
     });
     m.on("movestart", () => {
