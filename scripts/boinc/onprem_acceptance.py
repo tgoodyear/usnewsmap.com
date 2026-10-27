@@ -24,9 +24,13 @@ def execute(args, request, runner=subprocess.run):
         ["podman", "container", "inspect", "usnm-boinc-server"],
         check=True, capture_output=True, text=True, timeout=15)
     containers = json.loads(inspected.stdout)
-    if (len(containers) != 1 or containers[0].get("Image") != args.expected_image
-            or containers[0].get("State", {}).get("Running") is not True
-            or not re.fullmatch(r"[0-9a-f]{64}", containers[0].get("Id", ""))):
+    if (not isinstance(containers, list) or len(containers) != 1
+            or not isinstance(containers[0], dict)
+            or containers[0].get("Image") != args.expected_image
+            or not isinstance(containers[0].get("State"), dict)
+            or containers[0]["State"].get("Running") is not True
+            or not isinstance(containers[0].get("Id"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", containers[0]["Id"])):
         raise ValueError("running server does not match the reviewed image ID")
     source = Path(__file__).with_name("acceptance_server.py").read_text()
     result = runner(

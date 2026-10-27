@@ -41,7 +41,10 @@ class OnpremAcceptance(unittest.TestCase):
         self.assertEqual(self.runner.call_args.kwargs["timeout"], 120)
 
     def test_changed_or_stopped_server_never_receives_request(self):
-        for value in ([], [{"Image": "sha256:" + "b" * 64, "State": {"Running": True}}],
+        for value in (None, {}, [None], [],
+                      [{"Image": "sha256:" + "b" * 64, "State": {"Running": True}}],
+                      [{"Image": self.args.expected_image, "State": None}],
+                      [{"Id": 1, "Image": self.args.expected_image, "State": {"Running": True}}],
                       [{"Image": self.args.expected_image, "State": {"Running": False}}]):
             with self.subTest(value=value):
                 runner = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps(value)))
