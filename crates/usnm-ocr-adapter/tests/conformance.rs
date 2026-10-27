@@ -463,12 +463,14 @@ async fn the_real_tesseract_conforms() {
         eprintln!("tesseract with eng isn't installed; skipping");
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
-    let r = conformance::run(
-        options(ADAPTER.into(), Vec::new(), dir.path()),
-        Path::new(FIXTURES),
-    )
-    .await
-    .unwrap();
-    assert!(r.passed(), "{}", outcomes(&r));
+    for args in [Vec::new(), vec!["--alto".into()]] {
+        let dir = tempfile::tempdir().unwrap();
+        let r = conformance::run(
+            options(ADAPTER.into(), args, dir.path()),
+            Path::new(FIXTURES),
+        )
+        .await
+        .unwrap();
+        assert!(r.passed(), "{}", outcomes(&r));
+    }
 }
