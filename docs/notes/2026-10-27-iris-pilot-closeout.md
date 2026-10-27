@@ -26,6 +26,18 @@ A fresh read-only BOINC database audit and retained-output inspection on
 failures**, all on host 9. Batch 104's broader 1,014-workunit population is
 not the denominator.
 
+The inputs are the immutable [OCR benchmark v1.0.0](../ocr-bench.md#release-v100).
+Its content digest is
+`c5e38736b6e60610ef0dbe6d8296c3dc58f8a945d6e1cfea5aa47b03fb163800`,
+manifest SHA-256
+`ffd1d54147966c562d1f6e13c0fe2c2badb12c726406cbd50d61d8f8a395fe29`.
+The `all-1000` subset digest is
+`3f8972e16e61f568394aac5e2ec59591d654e5dde15a9b7b53b54e03ae31a39c`;
+its 300 English and 700 German samples are scored separately here.
+The original `legacy/overproof-en-100` subset digest is
+`e99edaf91b5493fcd3eaf309cea9f31dbbeb23438bab865638ab92889cd14d04`.
+Obtain and verify the release with `scripts/ocr-bench/fetch --version v1.0.0 --verify`.
+
 The worker is
 `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:d89127d048438bfab6e06a7e81bc6bc7044a1779552fb45c8c19746fda8e2c8c`.
 The existing job/result contracts were revalidated, including immutable model,
@@ -105,6 +117,13 @@ The reviewed source-only stager is commit
 `f01d42199d37a536b778a47b32bd7ed53ce27d47`, operator SHA-256
 `5f7ef0c5ea07e2bd385716b1bf4403b0694df502e86f6ca66b7e3da34da9175b`.
 The stage binds the inspected original-pilot acceptance and worker above.
+Specifically, hash the staged
+`/tank/ocr/scans/experiments/iris-20000-v1/acceptance.json` and require both
+the original acceptance SHA-256 above and the retained verification receipt's
+`acceptance_sha256` to equal
+`c672b203e571ba9131fcc59841ec7b5097c03053fff31c175ca56f7aba0371e1`.
+This actual staged-file hash was freshly checked and matched; the page
+manifest and campaign summary alone do not establish that acceptance binding.
 `stage_only=true`, `dispatch_enabled=false`, `executable_workunits=0` and
 `DISPATCH_DISABLED` remain in force.
 
