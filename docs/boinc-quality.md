@@ -448,6 +448,17 @@ no LoC request:
    nothing while the server has more than 300 results unsent, and waits its turn on the step
    lock.
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
+   On the preparation host, `usnm-quality-results.timer` runs every 15 minutes:
+   `quality_results.py` collects the configured campaign's canonical spool into a fresh
+   `out/pages.parquet` under CT230's bridge lock, uses `quality-results-pull.sh
+--snapshot-only` to copy it to the preparation CT215, then runs the existing
+   `load.py results` with that container's certificate-authenticated loader DSN.
+   The whole pass has its own host lock and bounded phase timeouts; any failed phase
+   prevents loading an old snapshot. A busy bridge retries at the next tick.
+   Collection does not submit work or alter quorum. Repeated loads upsert the same
+   campaign/page/reader keys. The existing six-hour summary refresh timer updates
+   ranking views; a successful BOINC result is not a loaded result until the loader
+   succeeds. The installer enables collection once the loader DSN exists.
 
 ```sh
 # On pve-laptop, once: the trust and the mounts (home-infra).
