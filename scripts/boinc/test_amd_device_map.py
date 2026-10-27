@@ -14,6 +14,90 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class PinnedIdentityPatch(unittest.TestCase):
+    def test_patch_rejects_unpinned_source_without_modifying_it(self):
+        from scripts.boinc.patch_amd_vulkan_identity import patch
+        with tempfile.TemporaryDirectory(prefix=".amd-patch-", dir=ROOT) as folder:
+            source = Path(folder) / "ggml-vulkan.cpp"
+            source.write_text("unreviewed runtime")
+            with self.assertRaisesRegex(ValueError, "unchanged pinned b8799"):
+                patch(source)
+            self.assertEqual(source.read_text(), "unreviewed runtime")
+
+    @unittest.skipUnless(os.environ.get("AMD_PINNED_VULKAN_SOURCE"), "pinned Vulkan source required")
+    def test_patch_actual_pinned_source_and_compile_identity_function(self):
+        from scripts.boinc.patch_amd_vulkan_identity import patch
+        with tempfile.TemporaryDirectory(prefix=".amd-source-", dir=ROOT) as folder:
+            source = Path(folder) / "ggml-vulkan.cpp"
+            shutil.copyfile(os.environ["AMD_PINNED_VULKAN_SOURCE"], source)
+            patch(source)
+            text = source.read_text()
+            function = text[text.index("static std::string ggml_backend_vk_get_device_pci_id("):
+                            text.index("//////////////////////////",
+                                       text.index("static std::string ggml_backend_vk_get_device_pci_id("))]
+            # Compile the exact patched function with deterministic Vulkan API responses.
+            probe = Path(folder) / "probe.cpp"
+            probe.write_text(r'''
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+#ifdef USNM_TEST_WINDOWS
+#define _WIN32
+#endif
+#define GGML_ASSERT assert
+#define VK_LUID_SIZE 8
+static bool pci_extension = false, luid_valid = true, zero_luid = false;
+namespace vk {
+struct ExtensionProperties { char extensionName[64] = "VK_EXT_pci_bus_info"; };
+struct PhysicalDeviceProperties2 { void *pNext = nullptr; };
+struct PhysicalDeviceIDProperties { bool deviceLUIDValid = false; uint8_t deviceLUID[8]{}; };
+struct PhysicalDevicePCIBusInfoPropertiesEXT {
+    uint32_t pciDomain = 1, pciBus = 3, pciDevice = 0, pciFunction = 0;
+};
+struct PhysicalDevice {
+    std::vector<ExtensionProperties> enumerateDeviceExtensionProperties() {
+        return pci_extension ? std::vector<ExtensionProperties>{{}} : std::vector<ExtensionProperties>{};
+    }
+    void getProperties2(PhysicalDeviceProperties2 *props) {
+        if (!pci_extension) {
+            auto *id = static_cast<PhysicalDeviceIDProperties *>(props->pNext);
+            id->deviceLUIDValid = luid_valid;
+            for (int i = 0; i < 8; ++i) id->deviceLUID[i] = zero_luid ? 0 : i + 1;
+        }
+    }
+};
+struct Instance {
+    std::vector<PhysicalDevice> enumeratePhysicalDevices() { return {{}}; }
+};
+}
+static struct { std::vector<size_t> device_indices{0}; vk::Instance instance; } vk_instance;
+''' + function + r'''
+int main() {
+#ifdef _WIN32
+    assert(ggml_backend_vk_get_device_pci_id(0) == "luid:0102030405060708");
+#else
+    assert(ggml_backend_vk_get_device_pci_id(0).empty());
+#endif
+    luid_valid = false;
+    assert(ggml_backend_vk_get_device_pci_id(0).empty());
+    luid_valid = true; zero_luid = true;
+    assert(ggml_backend_vk_get_device_pci_id(0).empty());
+    pci_extension = true;
+    assert(ggml_backend_vk_get_device_pci_id(0) == "0001:03:00.0");
+}
+''')
+            for flags in ([], ["-DUSNM_TEST_WINDOWS"]):
+                binary = Path(folder) / "probe"
+                subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                                *flags, str(probe), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+            with self.assertRaisesRegex(ValueError, "unchanged pinned b8799"):
+                patch(source)
+
+
 @unittest.skipUnless(os.environ.get("AMD_PINNED_LLAMA_ARCHIVES"), "pinned Vulkan release archives required")
 class PinnedLibraries(unittest.TestCase):
     def test_actual_release_exports_match_helper_library_split(self):

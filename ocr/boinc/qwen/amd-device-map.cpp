@@ -1,6 +1,7 @@
 // Native boundary for the pinned b8799 ggml ABI and the OpenCL ICD API.
 // No GPU inference or ordinal fallback: emit one PCI-verified Vulkan device or fail.
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -11,7 +12,9 @@
 #include <string>
 #include <vector>
 #ifdef _WIN32
+#define NOMINMAX
 #include <windows.h>
+#include <d3dkmthk.h>
 #define CL_CALL __stdcall
 #else
 #include <dlfcn.h>
@@ -53,7 +56,8 @@ struct Pci {
     bool domain_known;
 };
 static bool matches(const Pci &a, const Pci &b) {
-    return (!a.domain_known || !b.domain_known || a.domain == b.domain)
+    // A Windows adapter address cannot establish an OpenCL-reported PCI domain.
+    return (!a.domain_known || (b.domain_known && a.domain == b.domain))
         && a.bus == b.bus && a.device == b.device && a.function == b.function;
 }
 static Pci parse_pci(const char *text) {
@@ -77,6 +81,66 @@ struct Props {
     struct { bool async, host_buffer, buffer_from_host_ptr, events; } caps;
 };
 struct Adapter { std::string name; Pci pci; };
+
+using Luid = std::array<unsigned char, 8>;
+static Luid parse_luid(const std::string &text) {
+    if (text.size() != 21 || text.rfind("luid:", 0) != 0)
+        throw std::runtime_error("invalid Vulkan LUID");
+    Luid luid{};
+    const std::string hex = "0123456789abcdef";
+    for (size_t i = 0; i < luid.size(); ++i) {
+        auto hi = hex.find(text[5 + i * 2]), lo = hex.find(text[6 + i * 2]);
+        if (hi == std::string::npos || lo == std::string::npos)
+            throw std::runtime_error("invalid Vulkan LUID");
+        luid[i] = static_cast<unsigned char>(hi * 16 + lo);
+    }
+    if (std::all_of(luid.begin(), luid.end(), [](unsigned char b) { return b == 0; }))
+        throw std::runtime_error("zero Vulkan LUID");
+    return luid;
+}
+
+#ifdef _WIN32
+template<class Open, class Query, class Close>
+static Pci query_windows_luid(const Luid &luid, Open open, Query query, Close close) {
+    D3DKMT_OPENADAPTERFROMLUID adapter{};
+    static_assert(sizeof(adapter.AdapterLuid) == sizeof(luid));
+    std::memcpy(&adapter.AdapterLuid, luid.data(), luid.size());
+    if (open(&adapter) < 0) throw std::runtime_error("Vulkan LUID adapter unavailable");
+    D3DKMT_ADAPTERADDRESS address{};
+    D3DKMT_QUERYADAPTERINFO request{};
+    request.hAdapter = adapter.hAdapter;
+    request.Type = KMTQAITYPE_ADAPTERADDRESS;
+    request.pPrivateDriverData = &address;
+    request.PrivateDriverDataSize = sizeof(address);
+    auto status = query(&request);
+    D3DKMT_CLOSEADAPTER closing{adapter.hAdapter};
+    auto closed = close(&closing);
+    if (status < 0 || closed < 0) throw std::runtime_error("Vulkan LUID PCI address unavailable");
+    if (address.BusNumber > 255 || address.DeviceNumber > 31 || address.FunctionNumber > 7)
+        throw std::runtime_error("invalid Windows PCI address");
+    // D3DKMT_ADAPTERADDRESS has no PCI domain; do not invent domain zero.
+    return {0, address.BusNumber, address.DeviceNumber, address.FunctionNumber, false};
+}
+#endif
+
+static Pci windows_luid_pci(const Luid &luid) {
+#ifdef _WIN32
+    Library gdi("gdi32.dll");
+    auto open = gdi.symbol<NTSTATUS(APIENTRY *)(D3DKMT_OPENADAPTERFROMLUID *)>("D3DKMTOpenAdapterFromLuid");
+    auto query = gdi.symbol<NTSTATUS(APIENTRY *)(const D3DKMT_QUERYADAPTERINFO *)>("D3DKMTQueryAdapterInfo");
+    auto close = gdi.symbol<NTSTATUS(APIENTRY *)(const D3DKMT_CLOSEADAPTER *)>("D3DKMTCloseAdapter");
+    return query_windows_luid(luid, open, query, close);
+#else
+    (void)luid;
+    throw std::runtime_error("Windows Vulkan LUID is unsupported on this platform");
+#endif
+}
+
+using LuidResolver = Pci (*)(const Luid &);
+static Pci vulkan_identity(const char *text, LuidResolver resolve = windows_luid_pci) {
+    if (text && std::string(text).rfind("luid:", 0) == 0) return resolve(parse_luid(text));
+    return parse_pci(text);
+}
 
 // PCI identity as dddd:bb:dd.f, with ????: when OpenCL's AMD topology gives no domain.
 static std::string format_pci(const Pci &p) {
@@ -171,14 +235,16 @@ static std::vector<Adapter> vulkan_devices(const std::filesystem::path &dir) {
     for (size_t i = 0; i < n; ++i) {
         Props value{};
         props(device(reg, i), &value);
-        if (!value.name || !value.description || !value.device_id) continue;
+        if (!value.name || !value.description) continue;
         std::string name(value.name), description(value.description);
         std::transform(description.begin(), description.end(), description.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (description.find("llvmpipe") != std::string::npos || description.find("lavapipe") != std::string::npos
                 || description.find("swiftshader") != std::string::npos) continue;
         if (name.rfind("Vulkan", 0) != 0) continue;
-        result.push_back({name, parse_pci(value.device_id)});
+        if (!value.device_id)
+            throw std::runtime_error("Vulkan adapter " + name + " has no physical identity; corrected signed runtime required");
+        result.push_back({name, vulkan_identity(value.device_id)});
     }
     return result;
 }
@@ -205,7 +271,47 @@ int main(int argc, char **argv) {
             auto other_domain = parse_pci("0001:03:00.0");
             try { unique_match({a}, {{"Vulkan0", a}, {"Vulkan1", other_domain}}); }
             catch (const std::exception &) { refused = true; }
-            return refused ? 0 : 1;
+            if (!refused) return 1;
+            auto windows = vulkan_identity("luid:0102030405060708", [](const Luid &luid) -> Pci {
+                if (luid != Luid{1, 2, 3, 4, 5, 6, 7, 8}) throw std::runtime_error("wrong LUID byte order");
+                return {0, 3, 0, 0, false};
+            });
+            if (unique_match({a}, {{"Vulkan7", windows}}) != "Vulkan7") return 1;
+            if (matches(parse_pci("0001:03:00.0"), windows)) return 1;
+#ifdef _WIN32
+            for (int mode = 0; mode < 4; ++mode) {
+                int closed = 0;
+                bool failed = false;
+                try {
+                    auto pci = query_windows_luid(parse_luid("luid:0102030405060708"),
+                        [mode](D3DKMT_OPENADAPTERFROMLUID *adapter) -> NTSTATUS {
+                            if (adapter->AdapterLuid.LowPart != 0x04030201 ||
+                                    adapter->AdapterLuid.HighPart != 0x08070605)
+                                throw std::runtime_error("incorrect Windows LUID byte order");
+                            adapter->hAdapter = 42;
+                            return mode == 1 ? -1 : 0;
+                        },
+                        [mode](const D3DKMT_QUERYADAPTERINFO *request) -> NTSTATUS {
+                            auto *address = static_cast<D3DKMT_ADAPTERADDRESS *>(request->pPrivateDriverData);
+                            address->BusNumber = mode == 3 ? 256 : 3;
+                            return request->hAdapter == 42 && mode != 2 ? 0 : -1;
+                        },
+                        [&closed](const D3DKMT_CLOSEADAPTER *adapter) -> NTSTATUS {
+                            if (adapter->hAdapter == 42) ++closed;
+                            return 0;
+                        });
+                    if (pci.domain_known || pci.bus != 3) return 1;
+                } catch (const std::exception &) { failed = true; }
+                if (failed != (mode != 0) || closed != (mode == 1 ? 0 : 1)) return 1;
+            }
+#endif
+            for (const auto &text : {"luid:", "luid:0000000000000000", "luid:010203040506070x",
+                                     "luid:010203040506070809"}) {
+                bool invalid = false;
+                try { parse_luid(text); } catch (const std::exception &) { invalid = true; }
+                if (!invalid) return 1;
+            }
+            return 0;
         }
         if (argc != 3) throw std::runtime_error("expected bundle directory and OpenCL device index");
         std::string raw(argv[2]);

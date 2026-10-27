@@ -83,12 +83,77 @@ Do not substitute the CPU or CUDA archive. Bundle `llama-server[.exe]`, all its
 runtime shared libraries, `llama.lock`, `weights.lock`, and the matching native
 CI artifact's `usnm-amd-device-map[.exe]` as signed native extra files. The helper
 is required for AMD only and uses the unchanged b8799 ggml device-properties ABI
-to verify PCI identity; it does not rebuild or replace llama.cpp. Windows requires
+to verify PCI identity. On Windows drivers without `VK_EXT_pci_bus_info`, the
+baseline runtime is **not sufficient**: use the identity-only patched b8799
+Vulkan DLL described below, together with the corrected signed helper. Windows requires
 `ggml-vulkan.dll`, the common llama/ggml/mtmd DLLs,
 `ggml-cpu-x64.dll`, `libomp140.x86_64.dll`, and the Microsoft CRT enforced by
 `scripts/boinc/install.py`. Keep the complete pinned Linux library set as well.
 Verify that the bundled server launches and lists the real AMD Vulkan device
 before admission. Retain checksums and the signed publication/readback receipt.
+
+### Windows drivers without Vulkan PCI bus information
+
+The actual signed Windows 1.10/110 RX 9070 XT task failed before inference with
+OpenCL `????:03:00.0` and Vulkan `[]`. In baseline b8799, ggml exports no
+`device_id` when `VK_EXT_pci_bus_info` is absent, even when the adapter supports
+Vulkan inference. Re-signing the helper alone cannot fix that runtime limitation.
+AMD admission remains intentionally closed under `home-infra#81`; neither a
+successful build nor a device listing is hardware acceptance.
+
+The pinned source patch exports `luid:` followed by the **same physical Vulkan
+device's eight LUID bytes** only when PCI information is unavailable on Windows.
+The helper opens that exact LUID with `D3DKMTOpenAdapterFromLuid`, queries
+`KMTQAITYPE_ADAPTERADDRESS`, closes the adapter, and compares its PCI
+bus/device/function with the BOINC-assigned OpenCL topology. No enumeration
+ordinal or adapter name is used as an identity. D3DKMT does not supply a PCI
+domain: the helper refuses a domain-known OpenCL assignment rather than invent
+domain zero. Duplicate matches, invalid/zero LUIDs, unavailable adapter APIs or
+failed address queries remain refusals. Linux and extension-provided PCI
+identities retain their existing path.
+
+Build on Windows with MSVC, CMake, Python, and the upstream b8799 Vulkan SDK
+version **1.4.313.2** installed (`VULKAN_SDK` set). Use an operator build
+directory, not an installed BOINC slot. From this reviewed repository checkout:
+
+```powershell
+git clone --config core.autocrlf=false --no-checkout https://github.com/ggml-org/llama.cpp.git amd-llama-source
+git -C amd-llama-source checkout e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
+.\scripts\boinc\build_amd_vulkan_runtime.ps1 `
+  -Source "$PWD/amd-llama-source" -Build "$PWD/amd-llama-build" `
+  -Output "$PWD/amd-llama-identity"
+```
+
+The builder rejects a dirty/wrong source checkout; the patcher also verifies the
+original Vulkan source SHA-256. It builds only the `ggml-vulkan` target and emits
+`ggml-vulkan.dll` plus `AMD_RUNTIME_BUILD.json` (source commit, patch digest,
+output digest and local SDK provenance). These are **unsigned build artifacts**.
+The exact patched function is tested against synthetic Vulkan responses on both
+platform branches in CI; Windows CI also compiles and self-tests the helper.
+This is not a full patched-runtime build or a real-card test.
+
+For the next reviewed Windows AMD app version:
+
+1. Verify and unpack the pinned `win-vulkan-x64` baseline archive; replace only
+   `ggml-vulkan.dll` with the builder output. Keep its complete original runtime
+   and model set. Retain the receipt; do not claim the resulting bundle equals
+   the unmodified archive hash.
+2. Use the same reviewed native CI commit's app, corrected helper, app-local CRT
+   and unchanged locks. Verify every artifact hash, and test the original
+   `llama-server.exe` with the patched DLL before signing.
+3. Use `scripts/boinc/boinc-app-release.sh`'s existing native
+   `--plan-class amd_vulkan_8b --platform windows_x86_64` on-prem release path,
+   signing **all** replaced and existing extra files. Include
+   `--extra-file AMD_RUNTIME_BUILD.json=PATH`. Never overlay an unsigned DLL
+   into a client slot or expose signing keys. Record the new app/version IDs,
+   commit and public signed-download/readback hashes.
+4. Coordinate with the current `#529` runtime owner **before** publication,
+   host validation or any admission change. Keep general AMD admission stopped.
+   Use the bounded exact-one-workunit acceptance procedure below only with
+   separately coordinated permission; require the corrected signed app download,
+   exact device mapping, real offload and valid inference return. Then require
+   ordinary independent-peer validation/collection before general reopening.
+   A pre-inference failure or missing LUID leaves admission closed.
 
 Publish through the normal [reviewed app release path](../contrib-compute/docs/app-release.md)
 with `--app usnm_qwen --kind native --plan-class amd_vulkan_8b` and the matching
@@ -216,7 +281,8 @@ to equal the index among visible Vulkan devices. Following the pinned
 `boinc_get_opencl_ids_aux` convention, the helper resolves the assigned OpenCL
 GPU index on AMD platforms and obtains its PCI identity (`cl_khr_pci_bus_info`
 or AMD PCI topology). It matches that identity against the bundled ggml Vulkan
-backend's PCI identities, returning exactly one `VulkanN`, regardless of order.
+backend's PCI identities (or the verified Windows LUID-to-PCI bridge above),
+returning exactly one `VulkanN`, regardless of order.
 AMD topology lacks a domain, so matches across multiple domains are ambiguous
 and refused. Conflicting AMD platform mappings, missing PCI support, duplicate
 identities, or an invisible assigned adapter are also refused, even if another

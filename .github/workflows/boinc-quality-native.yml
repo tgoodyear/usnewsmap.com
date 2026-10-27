@@ -14,6 +14,8 @@ on:
       - ocr/boinc/qwen/weights.lock
       - ocr/boinc/qwen/amd-device-map.cpp
       - scripts/boinc/test_amd_device_map.py
+      - scripts/boinc/patch_amd_vulkan_identity.py
+      - scripts/boinc/build_amd_vulkan_runtime.ps1
       - "!**/*.md"
 
 permissions:
@@ -141,7 +143,11 @@ jobs:
           gh release download b8799 --repo ggml-org/llama.cpp \
             --pattern '*bin-ubuntu-vulkan-x64.tar.gz' --pattern '*bin-win-vulkan-x64.zip' \
             --dir .amd-pinned-archives
-          AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" python3 -m unittest scripts.boinc.test_amd_device_map
+          gh api repos/ggml-org/llama.cpp/contents/ggml/src/ggml-vulkan/ggml-vulkan.cpp?ref=e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd \
+            -H 'Accept: application/vnd.github.raw+json' > .amd-pinned-archives/ggml-vulkan.cpp
+          AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" \
+            AMD_PINNED_VULKAN_SOURCE="$PWD/.amd-pinned-archives/ggml-vulkan.cpp" \
+            python3 -m unittest scripts.boinc.test_amd_device_map
       - name: Build AMD PCI identity helper (Windows x64)
         if: matrix.boinc_platform == 'windows_x86_64'
         shell: pwsh
