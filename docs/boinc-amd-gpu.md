@@ -301,6 +301,7 @@ as the default window; the proof records `admission_mode: ordinary_canary`. It
 changes no host trust, quorum, account, scientific row or other class.
 
 Acceptance still requires all of the following before any general reopening:
+
 - the AMD host's result ran the intended published app version (check
   `result.app_version_id`);
 - the device mapping succeeded and the GPU actually offloaded;
