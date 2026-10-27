@@ -18,17 +18,19 @@ intact; admission and validation policy are unchanged. See the
 [release receipt](notes/2026-10-26-boinc-gpu-release.md).
 This is not a successful RX 9070 XT execution or a resolved startup-failure claim.
 
-## Automatic scheduling and optional qualification
+## Admission status and qualification
 
-The production admission mode is automatic: an attached host with a
-compatible accelerator should receive eligible accelerator-only work through
-normal BOINC scheduling, without a manual admission step for each volunteer.
-The maintainer authorized initial AMD admission before hardware qualification;
-signed publication plus one operator **platform-wide promotion** enables it.
-That promotion removes only AMD workunit bounds, not GPU, memory or validation
-checks. Volunteers do not need an individual cohort, audited workunit or manual
-host approval. The optional bounded procedure below remains a diagnostic tool,
-not a prerequisite for normal volunteers.
+AMD admission is **currently stopped** under
+[home-infra#81](https://github.com/tgoodyear/home-infra/issues/81) after signed
+Windows 1.10/110 failed before inference on an actual RX 9070 XT. Do not apply
+the general promotion below until a corrected signed release completes the
+**required** bounded exact-one-workunit acceptance (real-device inference and a
+valid returned result) and ordinary independent-peer validation/collection, and
+the reopening is coordinated on #529. After that acceptance, the intended mode
+is automatic again: compatible hosts receive eligible accelerator-only work
+through normal BOINC scheduling without per-volunteer cohorts or manual host
+approval. Promotion removes only AMD workunit bounds, not GPU, memory or
+validation checks.
 
 GPU-only Qwen routes use separate resource classes: AMD/ATI and Intel are
 detected through OpenCL for Vulkan execution; NVIDIA uses CUDA detection for
@@ -164,8 +166,8 @@ platform. Stage the unchanged Qwen3-VL-8B Q4_K_M model and Q8_0 projector from
 native-8B batch 8, 6 GiB host-memory/18 GiB disk bounds, quorum 2 and target
 replicas 2. Do not edit scientific rows or relax independent/distinct-host validation.
 
-After publication, under the normal #529 controller guard, preview and explicitly
-promote **only AMD**:
+Only after the required acceptance above has passed and the reopening is
+coordinated on #529, preview and explicitly promote **only AMD**:
 
 ```sh
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
@@ -186,9 +188,10 @@ helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohor
 (the `amd-885` and `live-overlay` server images under `contrib-compute/images/server/`
 install it).
 
-### Optional bounded diagnostic: stage, audit, admit, then resume the same workunit
+### Required bounded acceptance: stage, audit, admit, then resume the same workunit
 
-This procedure is not required for automatic scheduling. It deliberately
+This procedure is **required** before reopening the corrected Windows release
+(and remains available as a diagnostic afterwards). It deliberately
 replaces general AMD admission with an exact-one-workunit pilot; coordinate any
 such platform-wide diagnostic with other AMD users and close AMD first.
 
@@ -224,7 +227,7 @@ payload, template, batch, bounds and version, then add that ID to the same fixtu
 as `audited_workunit_id` and use it as `ID` below.
 
 The installation default is **closed** (`min_wu_id=2`, `max_wu_id=1`); normal
-production promotion above is separate. For this optional diagnostic, preview and
+production promotion above is separate. For this bounded acceptance, preview and
 apply one newly staged, audited, unaccepted workunit without generic replicas:
 
 ```sh
@@ -254,7 +257,7 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --stop --apply
 ```
 
-AMD's optional pilot has an **independent exact-one-workunit** window;
+AMD's bounded pilot has an **independent exact-one-workunit** window;
 `--workunit-end` cannot widen it. It is deliberately not a member of the existing `shared_8b`
 Intel/NVIDIA pilot. Opening/stopping AMD preserves all old windows; legacy/shared
 commands (including an unqualified `--stop`) preserve AMD. Stop AMD explicitly.

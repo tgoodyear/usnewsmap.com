@@ -1,0 +1,107 @@
+name: amd-vulkan-runtime
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/amd-vulkan-runtime.yml
+      - ocr/boinc/qwen/amd-device-map.cpp
+      - ocr/boinc/qwen/llama.lock
+      - scripts/boinc/patch_amd_vulkan_identity.py
+      - scripts/boinc/build_amd_vulkan_runtime.ps1
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/amd-vulkan-runtime.yml
+      - ocr/boinc/qwen/amd-device-map.cpp
+      - ocr/boinc/qwen/llama.lock
+      - scripts/boinc/patch_amd_vulkan_identity.py
+      - scripts/boinc/build_amd_vulkan_runtime.ps1
+
+permissions:
+  contents: read
+
+jobs:
+  # Unsigned build input for the reviewed Windows AMD release. It is not hardware acceptance.
+  windows:
+    name: patched b8799 Vulkan runtime (Windows x64)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      VULKAN_VERSION: 1.4.313.2
+      VULKAN_SHA256: 34a921d951858274ca8e470e9d0a3b7624db41216b3908ccea9f73c8a1b7500e
+      LLAMA_COMMIT: e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_COMMIT }}
+          path: amd-llama-source
+          persist-credentials: false
+      - name: Install pinned Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'VulkanSDK-Installer.exe'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe" -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:VULKAN_SHA256) { throw 'Vulkan SDK digest mismatch' }
+          & $installer --accept-licenses --default-answer --confirm-command install
+          if ($LASTEXITCODE -ne 0) { throw 'Vulkan SDK installation failed' }
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$env:VULKAN_VERSION\bin"
+      - name: Build patched runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvars`" && pwsh -NoProfile -File scripts\boinc\build_amd_vulkan_runtime.ps1 -Source amd-llama-source -Build amd-llama-build -Output amd-vulkan-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Patched runtime build failed' }
+      - name: Compare loading against the pinned release registry
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = (Get-Content ocr\boinc\qwen\llama.lock -Raw | ConvertFrom-Json).assets.'win-vulkan-x64'
+          gh release download b8799 --repo ggml-org/llama.cpp --pattern $asset.file --dir amd-pinned
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
+          $zip = Join-Path amd-pinned $asset.file
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset.sha256) { throw 'Pinned release digest mismatch' }
+          Expand-Archive $zip amd-baseline
+          New-Item -ItemType Directory amd-patched | Out-Null
+          Copy-Item amd-baseline\* amd-patched -Recurse
+          Copy-Item amd-vulkan-runtime\ggml-vulkan.dll amd-patched\ggml-vulkan.dll -Force
+          $source = Join-Path $PWD 'ocr\boinc\qwen\amd-device-map.cpp'
+          @"
+          #define main helper_main
+          #include "$($source.Replace('\','/'))"
+          #undef main
+          int main(int argc, char **argv) {
+              if (argc != 2) return 2;
+              try { std::printf("%zu\n", vulkan_devices(argv[1]).size()); return 0; }
+              catch (const std::exception &e) { std::printf("%s\n", e.what()); return 1; }
+          }
+          "@ | Set-Content amd-probe.cpp -Encoding ascii
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "`"$(Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat')`" && cl /nologo /std:c++17 /EHsc /W4 /WX /D_CRT_SECURE_NO_WARNINGS amd-probe.cpp /Fe:amd-probe.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }
+          # The hosted runner has no GPU; the patched plugin must behave exactly like the
+          # signed baseline under the original pinned registry and base libraries.
+          $baseline = & .\amd-probe.exe (Resolve-Path amd-baseline); $baselineCode = $LASTEXITCODE
+          $patched = & .\amd-probe.exe (Resolve-Path amd-patched); $patchedCode = $LASTEXITCODE
+          "baseline=$baselineCode $baseline"; "patched=$patchedCode $patched"
+          if ($baselineCode -ne $patchedCode -or "$baseline" -ne "$patched") { throw 'Patched runtime changed pinned plugin loading' }
+          $hash = (Get-FileHash amd-vulkan-runtime\ggml-vulkan.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ggml-vulkan.dll" | Set-Content amd-vulkan-runtime\SHA256SUMS -Encoding ascii
+          git rev-parse HEAD | Set-Content amd-vulkan-runtime\GIT_COMMIT -Encoding ascii
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: amd-vulkan-runtime-windows_x86_64
+          path: ${{ github.workspace }}/amd-vulkan-runtime/
+          if-no-files-found: error
