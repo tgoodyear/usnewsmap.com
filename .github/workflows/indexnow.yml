@@ -16,10 +16,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Share the deploy lock and acknowledgement cache with CI's production
-    # submission, including publishes which happen without an app deploy.
+    # Serialize acknowledgements, never deployments: a pending notification
+    # may replace another notification, but must not cancel a queued rollout.
     concurrency:
-      group: deploy-prod
+      group: indexnow-prod
       cancel-in-progress: false
     env:
       APP: ${{ vars.USNM_API_APP }}
