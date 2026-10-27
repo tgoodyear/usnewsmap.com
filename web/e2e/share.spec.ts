@@ -1,5 +1,42 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 
+test("Share copies immediately and warms the actual current view before reporting readiness", async ({
+  page,
+  request,
+}) => {
+  test.skip(!process.env.PW_BASE_URL, "requires the API serving the built app and Chromium");
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text: string) => {
+          document.documentElement.dataset.copiedLink = text;
+        },
+      },
+    });
+  });
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/share-image.png") requests.push(request.url());
+  });
+  await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&state=IL&bucket=week");
+  const share = page.getByRole("button", { name: "Share", exact: true });
+  await expect(share).toBeVisible();
+  await expect(page.getByTestId("map")).toHaveAttribute("data-basemap-ready", "true");
+  const link = page.url();
+  expect(requests).toEqual([]);
+  await share.click();
+  await expect(page.getByRole("button", { name: "Link copied", exact: true })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-copied-link", link);
+  await expect(page.locator(".share-status")).toHaveText("Preview ready for copied link", { timeout: 50_000 });
+  expect(requests.length).toBeGreaterThan(0);
+  expect(new URL(requests[0]!).searchParams.get("state")).toBe("IL");
+  const cached = await request.get(requests[0]!);
+  expect(cached.status()).toBe(200);
+  expect(cached.headers()["cache-control"]).toContain("max-age=3600");
+  expect((await cached.body()).subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
+});
+
 async function screenshot(request: APIRequestContext, path: string): Promise<Buffer> {
   let png: Buffer = Buffer.alloc(0);
   await expect
