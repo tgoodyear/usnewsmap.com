@@ -660,6 +660,66 @@ jobs:
             dist/usnm-ocr-tesseract.image-id
           if-no-files-found: error
 
+  # Require one always-reporting context, not path-filtered child checks.
+  worker-contrib:
+    name: worker and BOINC checks
+    needs:
+      - changes
+      - contrib-compute
+      - boinc-pages
+      - boinc-db-tls
+      - boinc-mysql84-db-tls
+      - boinc-node-client
+      - contrib-images
+      - ocr-worker-el9
+      - ocr-worker-check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every applicable worker and BOINC check must pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CONTRIB_REQUIRED: ${{ needs.changes.outputs.contrib }}
+          PAGES_REQUIRED: ${{ needs.changes.outputs.boinc_pages }}
+          WORKER_REQUIRED: ${{ needs.changes.outputs.ocr_worker }}
+          DASH_REQUIRED: ${{ needs.changes.outputs.ocr_dash }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          if needs.get("changes", {}).get("result") != "success":
+              raise SystemExit("::error::changes must succeed before classifying worker/BOINC checks")
+          flags = {}
+          for name in ("CONTRIB_REQUIRED", "PAGES_REQUIRED", "WORKER_REQUIRED", "DASH_REQUIRED"):
+              value = os.environ.get(name)
+              if value not in ("true", "false"):
+                  raise SystemExit(f"::error::{name} must be true or false, got {value!r}")
+              flags[name] = value == "true"
+          event = os.environ["GITHUB_EVENT_NAME"]
+          if event not in ("pull_request", "push", "workflow_dispatch"):
+              raise SystemExit(f"::error::unsupported CI event: {event}")
+          required = dict.fromkeys((
+              "contrib-compute", "boinc-db-tls", "boinc-mysql84-db-tls",
+              "boinc-node-client", "contrib-images",
+          ), flags["CONTRIB_REQUIRED"])
+          required["boinc-pages"] = flags["PAGES_REQUIRED"]
+          required["ocr-worker-el9"] = flags["WORKER_REQUIRED"] or flags["DASH_REQUIRED"]
+          required["ocr-worker-check"] = flags["WORKER_REQUIRED"] or (
+              flags["DASH_REQUIRED"] and event != "pull_request"
+          )
+          errors = []
+          for name, selected in required.items():
+              expected = "success" if selected else "skipped"
+              result = needs.get(name, {}).get("result", "missing")
+              print(f"{name}: {result} (expected {expected})")
+              if result != expected:
+                  errors.append(f"::error::{name} must be {expected}, got {result}")
+          if errors:
+              raise SystemExit("\n".join(errors))
+          PY
+
   # On main: a GitHub release of the worker binary, the LAN dashboard and
   # the Tesseract image, with a build provenance attestation, which hosts
   # check with `gh attestation verify` before they install anything. No node

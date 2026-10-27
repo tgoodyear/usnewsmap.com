@@ -1,6 +1,11 @@
 """The split checks must preserve branch protection and publishing dependencies."""
+import json
+import os
 from pathlib import Path
 import re
+import subprocess
+import sys
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +20,94 @@ def job(name):
 
 
 class Gates(unittest.TestCase):
+    def worker_gate(self, outputs=None, results=None, event="pull_request"):
+        text = job("worker-contrib")
+        flags = dict.fromkeys(("contrib", "boinc_pages", "ocr_worker", "ocr_dash"), "false")
+        flags.update(outputs or {})
+        names = re.findall(r"^      - ([a-z0-9-]+)$", text, re.M)
+        needs = {name: {"result": "skipped"} for name in names}
+        needs["changes"] = {"result": "success", "outputs": flags}
+        for name, result in (results or {}).items():
+            if result is None:
+                needs.pop(name, None)
+            else:
+                needs[name] = {"result": result}
+        env = dict(os.environ, GITHUB_EVENT_NAME=event, NEEDS_JSON=json.dumps(needs))
+        for name, output in re.findall(
+            r"^          ([A-Z_]+): \$\{\{ needs\.changes\.outputs\.([a-z_]+) \}\}$",
+            text, re.M,
+        ):
+            env[name] = flags[output]
+        script = re.search(
+            r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", text,
+        )[1]
+        return subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            env=env, text=True, capture_output=True,
+        )
+
+    def test_worker_gate_reports_success_when_all_path_scoped_jobs_are_skipped(self):
+        self.assertIn("    if: always()\n", job("worker-contrib"))
+        result = self.worker_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_worker_gate_accepts_successful_selected_checks(self):
+        contrib = {name: "success" for name in (
+            "contrib-compute", "boinc-db-tls", "boinc-mysql84-db-tls",
+            "boinc-node-client", "contrib-images",
+        )}
+        cases = [
+            ({"contrib": "true"}, contrib, "pull_request"),
+            ({"boinc_pages": "true"}, {"boinc-pages": "success"}, "pull_request"),
+            ({"ocr_worker": "true"}, {
+                "ocr-worker-el9": "success", "ocr-worker-check": "success",
+            }, "pull_request"),
+            ({"ocr_dash": "true"}, {"ocr-worker-el9": "success"}, "pull_request"),
+        ]
+        for event in ("push", "workflow_dispatch"):
+            cases.append(({"ocr_dash": "true"}, {
+                "ocr-worker-el9": "success", "ocr-worker-check": "success",
+            }, event))
+        for flags, results, event in cases:
+            with self.subTest(flags=flags, event=event):
+                result = self.worker_gate(flags, results, event)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_worker_gate_fails_closed_for_each_selected_child(self):
+        children = (
+            "contrib-compute", "boinc-pages", "boinc-db-tls", "boinc-mysql84-db-tls",
+            "boinc-node-client", "contrib-images", "ocr-worker-el9", "ocr-worker-check",
+        )
+        flags = dict.fromkeys(("contrib", "boinc_pages", "ocr_worker", "ocr_dash"), "true")
+        for child in children:
+            for state in ("failure", "cancelled", "skipped", None):
+                with self.subTest(child=child, state=state):
+                    results = dict.fromkeys(children, "success")
+                    results[child] = state
+                    result = self.worker_gate(flags, results)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(child, result.stderr)
+
+    def test_worker_gate_rejects_bad_classification_or_unexpected_results(self):
+        for state in ("failure", "cancelled", "skipped", None):
+            with self.subTest(changes=state):
+                result = self.worker_gate(results={"changes": state})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("changes must succeed", result.stderr)
+        for value in ("", "True", "unknown"):
+            with self.subTest(flag=value):
+                result = self.worker_gate(outputs={"contrib": value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CONTRIB_REQUIRED", result.stderr)
+        for state in ("failure", "cancelled", "success", None):
+            with self.subTest(unselected=state):
+                result = self.worker_gate(results={"boinc-pages": state})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("boinc-pages", result.stderr)
+        result = self.worker_gate(event="unknown")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported CI event", result.stderr)
+
     def test_required_gates_fail_closed_on_failed_cancelled_or_skipped_children(self):
         for gate, child in [("quickwit", "quickwit-tests"), ("image", "image-tests")]:
             text = job(gate)
