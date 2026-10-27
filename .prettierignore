@@ -11,6 +11,7 @@
 # Within web/: npm's lockfile, and what builds and test runs write.
 /web/package-lock.json
 /web/dist/
+/web/public/basemap/
 /web/test-results/
 /web/playwright-report/
 # The example searches keep each example's view on one line, past 120

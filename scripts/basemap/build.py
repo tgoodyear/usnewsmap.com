@@ -100,6 +100,9 @@ def build(a):
     if not (-180 <= west < east <= 180 and -85 <= south < north <= 85):
         raise ValueError("Invalid overview bounding box")
     a.out.mkdir(parents=True, exist_ok=True)
+    root = a.out / a.name
+    if root.exists():
+        raise ValueError("Bundle output already exists; use a new version or output directory")
     cache = a.out / "downloads"
     cache.mkdir(exist_ok=True)
     lock = threading.Lock()
@@ -133,11 +136,7 @@ def build(a):
     style = json.loads(upstream_style)
     metadata = json.loads(download(a.tilejson))
     template = metadata["tiles"][0]
-    root = a.out / a.name
-    root.mkdir(exist_ok=True)
-    for path in root.rglob("*"):
-        if path.is_file():
-            path.unlink()
+    root.mkdir()
     db_path = a.out / "overview.mbtiles"
     if db_path.exists():
         db_path.unlink()
