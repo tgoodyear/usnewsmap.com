@@ -20,7 +20,8 @@ UNIT_PATH = Path("/etc/systemd/system") / SERVICE
 DROPIN_PATH = Path(str(UNIT_PATH) + ".d")
 SUBID_PATHS = (Path("/etc/subuid"), Path("/etc/subgid"))
 CGROUP_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
-MARKER = "# Managed by boinc/scripts/prepare_node.py; bounded canary, disabled by default."
+# This installed ownership token is stable even when the source tree moves.
+MARKER = "# Managed by scripts/boinc/prepare_node.py; bounded canary, disabled by default."
 UNIT = f"""{MARKER}
 [Unit]
 Description=Optional resource-capped BOINC canary (disabled by default)

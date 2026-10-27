@@ -162,6 +162,22 @@ class PrepareNodeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 node.allocation(value)
 
+    def test_rollback_accepts_pre_migration_installed_unit(self):
+        with self.host() as (root, state, commands, baseline):
+            state["created"] = True
+            node.UNIT_PATH.write_text(
+                "# Managed by scripts/boinc/prepare_node.py; bounded canary, disabled by default.\n"
+                + node.UNIT.split("\n", 1)[1])
+            node.stop()
+            cleanup = [call.args for call in commands.call_args_list
+                       if call.args[:2] != ("systemctl", "show")]
+            self.assertEqual(cleanup, [
+                ("systemctl", "stop", node.SERVICE),
+                ("systemctl", "disable", node.SERVICE),
+                ("loginctl", "disable-linger", "boinc"),
+                ("systemctl", "stop", "user@1234.service"),
+            ])
+
     def test_only_fresh_healthy_same_worker_baseline_passes(self):
         now = datetime.now(timezone.utc)
         baseline = {"observed_at": now.isoformat(), "baseline_ready": True,
