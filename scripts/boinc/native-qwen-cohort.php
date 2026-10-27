@@ -288,8 +288,10 @@ function native_qwen_cohort_main() {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
         if ($tiebreaker) {
             $config = new DOMDocument();
-            if (!$config->load("$db_project/config.xml", LIBXML_NONET)
-                || (new DOMXPath($config))->query("/boinc/config/one_result_per_host_per_wu")->length !== 1) {
+            $flags = $config->load("$db_project/config.xml", LIBXML_NONET)
+                ? (new DOMXPath($config))->query("/boinc/config/one_result_per_host_per_wu") : null;
+            // BOINC reads <tag/> as true and a numeric value as its truth; require an enabled flag.
+            if (!$flags || $flags->length !== 1 || !in_array(trim($flags->item(0)->nodeValue), ["", "1"], true)) {
                 throw new RuntimeException("Tiebreaker requires one_result_per_host_per_wu");
             }
         }

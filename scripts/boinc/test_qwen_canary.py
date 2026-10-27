@@ -454,7 +454,7 @@ class SchedulerRefresh(unittest.TestCase):
 
 
 class CanaryPreferences(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("php"), "PHP required")
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_operator_db_context_can_stay_off_the_shared_project(self):
         helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
         plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
@@ -500,7 +500,7 @@ class CanaryPreferences(unittest.TestCase):
             with self.subTest(module=module.name):
                 self.assertNotIn("qwen_native_cuda_canary", module.read_text())
 
-    @unittest.skipUnless(shutil.which("php"), "PHP required")
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_operator_cohort_has_one_exact_workunit_stop_and_durable_preview(self):
         helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
         plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
@@ -729,6 +729,7 @@ foreach ($after->plan_class as $node) {
                     self.assertEqual(target.read_bytes(), before)
                     self.assertFalse((root / "ops-issue-559").exists())
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_tiebreaker_admits_only_the_unsent_replica_of_an_inconclusive_quorum(self):
         helper = ROOT / "scripts/boinc/native-qwen-cohort.php"
         plans = ROOT / "contrib-compute/boinc/plan_class_spec.xml"
@@ -791,22 +792,25 @@ foreach ($after->plan_class as $node) {
             root = Path(folder)
             shutil.rmtree(root / "ops-issue-559")
             target = root / "plan_class_spec.xml"
-            (root / "config.xml").write_text("<boinc><config/></boinc>")
-            for arguments, message in (
-                (["--plan-class", "amd_vulkan_8b", "--tiebreaker", "--workunit", "300"], "usage:"),
-                (["--plan-class", "nvidia_cuda_8b", "--tiebreaker", "--workunit", "300"], "usage:"),
-                (["--plan-class", "shared_8b", "--tiebreaker", "--workunit", "300",
+            empty = "<boinc><config/></boinc>"
+            for config, arguments, message in (
+                (empty, ["--plan-class", "amd_vulkan_8b", "--tiebreaker", "--workunit", "300"], "usage:"),
+                (empty, ["--plan-class", "nvidia_cuda_8b", "--tiebreaker", "--workunit", "300"], "usage:"),
+                (empty, ["--plan-class", "shared_8b", "--tiebreaker", "--workunit", "300",
                   "--workunit-end", "301"], "usage:"),
-                (["--plan-class", "intel_vulkan_8b", "--tiebreaker"], "usage:"),
-                (["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--stop"], "usage:"),
-                (["--plan-class", "nvidia_vulkan_8b", "--tiebreaker", "--general"], "usage:"),
-                (["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--ordinary-canary",
+                (empty, ["--plan-class", "intel_vulkan_8b", "--tiebreaker"], "usage:"),
+                (empty, ["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--stop"], "usage:"),
+                (empty, ["--plan-class", "nvidia_vulkan_8b", "--tiebreaker", "--general"], "usage:"),
+                (empty, ["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--ordinary-canary",
                   "--workunit", "300"], "usage:"),
                 # Distinct-host replication is the scheduler's; without it the mode refuses.
-                (["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--workunit", "300"],
-                 "one_result_per_host_per_wu"),
+                *((setting, ["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--workunit", "300"],
+                   "one_result_per_host_per_wu") for setting in (
+                    empty, "<boinc><config><one_result_per_host_per_wu>0</one_result_per_host_per_wu>"
+                    "</config></boinc>")),
             ):
-                with self.subTest(arguments=arguments):
+                with self.subTest(config=config, arguments=arguments):
+                    (root / "config.xml").write_text(config)
                     before = target.read_bytes()
                     result = subprocess.run(["php", str(helper), "--project", str(root),
                                              *arguments, "--apply"], text=True, capture_output=True)
@@ -814,6 +818,14 @@ foreach ($after->plan_class as $node) {
                     self.assertIn(message, result.stderr)
                     self.assertEqual(target.read_bytes(), before)
                     self.assertFalse((root / "ops-issue-559").exists())
+            # An enabled flag passes the config check; the fixture has no database to read.
+            for setting in ("<one_result_per_host_per_wu/>",
+                            "<one_result_per_host_per_wu> 1 </one_result_per_host_per_wu>"):
+                (root / "config.xml").write_text(f"<boinc><config>{setting}</config></boinc>")
+                result = subprocess.run(["php", str(helper), "--project", str(root), "--plan-class",
+                                         "intel_vulkan_8b", "--tiebreaker", "--workunit", "300"],
+                                        text=True, capture_output=True)
+                self.assertNotIn("one_result_per_host_per_wu", result.stderr + result.stdout)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
     def test_windows_checksum_append_is_portable_ascii_lf(self):
@@ -864,7 +876,7 @@ foreach ($after->plan_class as $node) {
         with self.assertRaises(ValueError):
             MODULE.extend_stock(source + "\nfunction project_specific_prefs_show() {}")
 
-    @unittest.skipUnless(shutil.which("php"), "PHP required")
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_project_participation_ignores_legacy_flags_and_preserves_stock(self):
         with tempfile.TemporaryDirectory(prefix=".qwen-canary-test-", dir=ROOT) as folder:
             folder = Path(folder)
