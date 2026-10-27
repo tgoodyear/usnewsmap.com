@@ -12,6 +12,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CGROUP_ROOT = Path("/sys/fs/cgroup")
 MEMORY_MIB = 256
 PIDS_LIMIT = 64
 
@@ -40,6 +41,27 @@ def cgroup_for(pid):
     if unified is None:
         raise RuntimeError(f"container PID {pid} has no cgroup v2 entry")
     return Path("/sys/fs/cgroup") / unified.lstrip("/")
+
+
+def cgroup_limit(leaf, container_id, resource, *, root=CGROUP_ROOT):
+    root = root.resolve()
+    current = leaf.resolve()
+    if not current.is_relative_to(root):
+        raise RuntimeError(f"container cgroup {current} is outside {root}")
+    scope = f"libpod-{container_id}.scope"
+    values = []
+    while True:
+        limit_file = current / resource
+        if limit_file.is_file():
+            value = limit_file.read_text().strip()
+            if value != "max":
+                values.append(int(value))
+        if current.name == scope:
+            break
+        if current == root:
+            raise RuntimeError(f"container cgroup {current} has no Podman scope {scope}")
+        current = current.parent
+    return min(values) if values else "max"
 
 
 def process_start_time(pid):
@@ -76,13 +98,14 @@ def inspect_containers(podman, url):
         doc = json.loads(raw)
         if isinstance(doc, list):
             doc = doc[0]
+        container_id = doc["Id"]
         pid = int(doc["State"]["Pid"])
         if pid <= 0:
             continue
         try:
             group = cgroup_for(pid)
-            memory = (group / "memory.max").read_text().strip()
-            pids = (group / "pids.max").read_text().strip()
+            memory = cgroup_limit(group, container_id, "memory.max")
+            pids = cgroup_limit(group, container_id, "pids.max")
             processes = (group / "cgroup.procs").read_text().split()
         except FileNotFoundError:
             continue
