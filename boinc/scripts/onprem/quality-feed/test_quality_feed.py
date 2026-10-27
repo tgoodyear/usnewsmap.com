@@ -21,7 +21,7 @@ def load(name, file):
 
 feed = load("quality_feed", "quality_feed.py")
 receive = load("quality_receive", "quality_receive.py")
-loader = load("quality_load", "../../../onprem/quality/load.py")
+loader = load("quality_load", "../../../../scripts/onprem/quality/load.py")
 
 
 class FeedTest(unittest.TestCase):

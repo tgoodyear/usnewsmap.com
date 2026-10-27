@@ -74,7 +74,7 @@ stage=/root/usnm-quality-feed-install
 "${SSH[@]}" "rm -rf $stage && install -d -m 700 $stage"
 scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
-  "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" \
+  "$HERE/usnm-quality-ship.timer" "$HERE/../../../../scripts/onprem/quality/load.py" \
   "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
   "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" \
   "$HERE/../ocr-feed/ocr_manifest.py" "$HERE/../ocr-feed/usnm-ocr-manifest.service" \
