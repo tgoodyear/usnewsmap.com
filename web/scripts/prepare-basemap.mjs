@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -34,7 +33,8 @@ if (existsSync(join(destination, ".verified"))) {
   }
   throw new Error("Existing basemap version differs; publish a new version instead");
 }
-const temp = await mkdtemp(join(tmpdir(), "usnm-basemap-"));
+await mkdir(dirname(destination), { recursive: true });
+const temp = await mkdtemp(join(dirname(destination), ".install-"));
 try {
   const archive = join(temp, "bundle.tar.gz");
   const response = await fetch(manifest.url, { signal: AbortSignal.timeout(120_000) });

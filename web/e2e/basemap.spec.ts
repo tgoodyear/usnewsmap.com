@@ -23,6 +23,7 @@ test("the real overview basemap renders with all external requests blocked", asy
 });
 
 test("the published archive honors cacheable byte ranges, including unsatisfiable ranges", async ({ request }) => {
+  test.skip(!process.env.PW_BASE_URL, "requires the API's cache/range contract, not vite preview");
   const path = `/basemap/${manifest.version}/overview.pmtiles.bin`;
   const response = await request.get(path, { headers: { Range: "bytes=0-126", "Accept-Encoding": "gzip, br" } });
   expect(response.status()).toBe(206);

@@ -20,6 +20,66 @@ LIMIT = 50 * 1024 * 1024
 UA = "USNewsMap-BasemapBundle/1.0 (+https://github.com/tgoodyear/usnewsmap.com)"
 
 
+class DownloadBudget:
+    def __init__(self, limit=LIMIT):
+        self.limit = limit
+        self.total = 0
+        self.lock = threading.Condition()
+        self.active = 0
+        self.exhausted = threading.Event()
+
+    def check(self):
+        if self.exhausted.is_set():
+            raise ValueError("Bundle exceeds OpenFreeMap's 50 MiB offline limit")
+
+    def reserve(self, size, partial=False):
+        with self.lock:
+            while True:
+                self.check()
+                remaining = self.limit - self.total
+                if remaining > 0 and (partial or size <= remaining):
+                    break
+                if self.active:
+                    self.lock.wait()
+                    continue
+                self.exhausted.set()
+                self.check()
+            count = min(size, remaining)
+            self.total += count
+            if partial:
+                self.active += 1
+            return count
+
+    def read(self, response):
+        data = bytearray()
+        while True:
+            count = self.reserve(64 * 1024, partial=True)
+            succeeded = False
+            try:
+                chunk = response.read(count)
+                succeeded = True
+            finally:
+                # Reservations include concurrent reads until their actual size is known.
+                with self.lock:
+                    self.active -= 1
+                    if succeeded:
+                        self.total -= count - len(chunk)
+                    else:
+                        self.exhausted.set()
+                    self.lock.notify_all()
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+
+
+def parallel_results(function, items):
+    pool = ThreadPoolExecutor(max_workers=4)
+    try:
+        yield from pool.map(function, items)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 def fields(data):
     def varint(pos):
         value = shift = 0
@@ -105,31 +165,25 @@ def build(a):
         raise ValueError("Bundle output already exists; use a new version or output directory")
     cache = a.out / "downloads"
     cache.mkdir(exist_ok=True)
-    lock = threading.Lock()
-    total = 0
+    budget = DownloadBudget()
 
     def download(url):
-        nonlocal total
+        budget.check()
         path = cache / hashlib.sha256((url + ":gzip").encode()).hexdigest()
         if path.exists():
+            budget.reserve(path.stat().st_size)
             data = path.read_bytes()
             encoding = path.with_suffix(".encoding").read_text()
         else:
             request = Request(url, headers={"User-Agent": UA, "Accept-Encoding": "gzip"})
             try:
                 with urlopen(request, timeout=60) as response:
-                    data = response.read(LIMIT + 1)
+                    data = budget.read(response)
                     encoding = response.headers.get("Content-Encoding", "")
             except HTTPError as error:
                 raise RuntimeError(f"Download failed: {url} ({error.code})") from error
-            if len(data) > LIMIT:
-                raise ValueError("Download exceeds offline bundle limit")
             path.write_bytes(data)
             path.with_suffix(".encoding").write_text(encoding)
-        with lock:
-            total += len(data)
-            if total > LIMIT:
-                raise ValueError("Bundle exceeds OpenFreeMap's 50 MiB offline limit")
         return gzip.decompress(data) if encoding == "gzip" else data
 
     upstream_style = download(a.style)
@@ -171,12 +225,11 @@ def build(a):
         raw = gzip.decompress(data) if data.startswith(b"\x1f\x8b") else data
         return tile, gzip.compress(raw, mtime=0), glyph_ranges(raw)
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for i, ((z, x, y), data, blocks) in enumerate(pool.map(fetch_tile, tiles), 1):
-            db.execute("INSERT INTO tiles VALUES (?,?,?,?)", (z, x, 2 ** z - 1 - y, data))
-            ranges.update(blocks)
-            if i % 100 == 0:
-                print(json.dumps({"tiles": i, "download_bytes": total}), flush=True)
+    for i, ((z, x, y), data, blocks) in enumerate(parallel_results(fetch_tile, tiles), 1):
+        db.execute("INSERT INTO tiles VALUES (?,?,?,?)", (z, x, 2 ** z - 1 - y, data))
+        ranges.update(blocks)
+        if i % 100 == 0:
+            print(json.dumps({"tiles": i, "download_bytes": budget.total}), flush=True)
     db.commit()
     db.close()
     archive = root / "overview.pmtiles.bin"
@@ -206,8 +259,7 @@ def build(a):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(download(url))
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(fetch_asset, assets))
+    list(parallel_results(fetch_asset, assets))
     # Keep one style/schema across both sources; only the transport changes at zoom 6.
     prefix = f"/basemap/{a.name}"
     style["sprite"] = prefix + "/sprites/ofm"
@@ -228,7 +280,7 @@ def build(a):
                                                 "upstream": json.loads((root / "upstream-style.json").read_text())["glyphs"]}))
     provenance = {"source_style": a.style, "source_tilejson": a.tilejson, "source_tiles": template,
                   "maxzoom": a.maxzoom, "bbox": a.bbox, "global_maxzoom": 2,
-                  "tile_count": len(tiles), "download_bytes": total,
+                  "tile_count": len(tiles), "download_bytes": budget.total,
                   "pmtiles_version": subprocess.check_output([str(a.pmtiles), "version"], text=True).strip(),
                   "attribution": metadata["attribution"], "license": "https://opendatacommons.org/licenses/odbl/",
                   "font_license": "https://github.com/openmaptiles/fonts/blob/master/noto-sans/LICENSE"}
@@ -241,7 +293,7 @@ def build(a):
         tar.add(root, arcname=a.name)
     print(json.dumps({"bundle": str(bundle), "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
                       "archive_bytes": archive.stat().st_size, "bundle_bytes": bundle.stat().st_size,
-                      "glyph_ranges": len(ranges), "download_bytes": total}, indent=2))
+                      "glyph_ranges": len(ranges), "download_bytes": budget.total}, indent=2))
 
 
 if __name__ == "__main__":

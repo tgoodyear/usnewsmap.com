@@ -1,4 +1,7 @@
 import importlib.util
+import io
+from concurrent.futures import ThreadPoolExecutor
+import time
 from pathlib import Path
 import unittest
 
@@ -41,6 +44,51 @@ class GlyphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Truncated packed"):
             list(module.varints(b"\x80"))
 
+
+class BudgetTests(unittest.TestCase):
+    def test_limit_is_enforced_before_reading_excess_response_bytes(self):
+        response = io.BytesIO(b"abcdefghijk")
+        budget = module.DownloadBudget(limit=10)
+        with self.assertRaisesRegex(ValueError, "offline limit"):
+            budget.read(response)
+        self.assertEqual(response.tell(), 10)
+        self.assertEqual(budget.total, 10)
+        with self.assertRaisesRegex(ValueError, "offline limit"):
+            budget.check()
+
+    def test_cached_and_network_bytes_share_one_budget(self):
+        budget = module.DownloadBudget(limit=10)
+        budget.reserve(6)
+        response = io.BytesIO(b"abcde")
+        with self.assertRaises(ValueError):
+            budget.read(response)
+        self.assertEqual(response.tell(), 4)
+        self.assertEqual(budget.total, 10)
+
+    def test_short_reads_return_unused_reservations(self):
+        budget = module.DownloadBudget(limit=100000)
+        self.assertEqual(budget.read(io.BytesIO(b"abc")), b"abc")
+        self.assertEqual(budget.read(io.BytesIO(b"de")), b"de")
+        self.assertEqual(budget.total, 5)
+
+    def test_concurrent_reservations_cannot_overshoot_the_shared_limit(self):
+        class SlowStream(io.BytesIO):
+            def read(self, size):
+                time.sleep(0.002)
+                return super().read(size)
+        streams = [SlowStream(b"a" * 3000) for _ in range(4)]
+        budget = module.DownloadBudget(limit=5000)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(budget.read, stream) for stream in streams]
+            failures = 0
+            for future in futures:
+                try:
+                    future.result()
+                except ValueError:
+                    failures += 1
+        self.assertGreater(failures, 0)
+        self.assertLessEqual(sum(stream.tell() for stream in streams), 5000)
+        self.assertEqual(budget.total, 5000)
 
 if __name__ == "__main__":
     unittest.main()
