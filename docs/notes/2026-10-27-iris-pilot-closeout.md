@@ -117,6 +117,15 @@ by crop-level results.
 
 ## Reproducing the audit
 
+Download both evidence releases and check their `SHA256SUMS` assets before
+using any receipt; compare the input-hash receipt itself against the independent
+SHA-256 pinned below. If using the complete private scoring snapshot, require
+its pinned whole-file hash before parsing. Otherwise, check every reference's
+UTF-8 hash, job file's byte hash, retained result file's byte/canonical-JSON
+hashes and terminal snapshot against `retrye-iris-1000-input-hashes.json`
+**before scoring**. Refuse missing, duplicate or changed evidence rather than
+silently recomputing a different comparison.
+
 On CT230's BOINC server, retain the manifests and `units/<id>/iris.json` under
 `/project/iris-pilot-100-f175f2c3`,
 `/project/iris-paired-200-e984fcca/iris-paired-campaign{100,200}`, and
@@ -125,7 +134,13 @@ First verify all ten `campaign.json` files against the independently published
 `campaign_sha256` map in `retrye-iris-1000-scored.json`; references are in these
 manifests, not in the job files. The follow-up binding audit rechecked all ten.
 Then check each job file against its manifest `job_sha256`, reject duplicate
-IDs, and query only their exact workunit names.
+IDs, and verify every `units/<id>/page.jpg` against the job's `page_sha256` and
+`page_bytes`. A fresh check of all 1,000 actual retained images
+(63,667,186 bytes) passed. The verification/binding release contains
+`retrye-iris-1000-page-hashes.json`, SHA-256
+`09da0dc2d1b0d86b7bac2533c4884c56def72c6dcec068092bd34486c692d8ab`,
+plus its separate page-check checksum asset. Query only the exact allocated
+workunit names.
 
 Require one terminal result per allocated job, workunit batch **104**, host
 **9**, `result.app_version_id=27`, joined `app_version.version_num=100`,
