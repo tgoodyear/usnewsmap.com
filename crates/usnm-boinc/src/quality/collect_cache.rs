@@ -195,23 +195,24 @@ impl Cache {
             serde_json::from_slice::<Job>(&std::fs::read(unit.join(super::JOB_FILE))?)? == *job,
             "QUALITY job changed during collection"
         );
-        // Enumerate optional OCR ALTO sidecars too, so appearing/disappearing files invalidate.
-        let mut inputs = std::fs::read_dir(unit)?
-            .map(|entry| Ok(entry?.path()))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        inputs.retain(|p| {
-            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                matches!(
-                    n,
-                    "quality.json"
-                        | "page.jpg"
-                        | "loc.xml"
-                        | "texts.json"
-                        | "places.txt"
-                        | "submitted"
-                ) || n.ends_with("ours.xml")
-            })
-        });
+        let mut inputs = [
+            super::JOB_FILE,
+            super::PAGE_FILE,
+            super::ALTO_FILE,
+            super::TEXTS_FILE,
+            super::PLACES_FILE,
+            "submitted",
+            super::collect::OURS_FILE,
+        ]
+        .iter()
+        .map(|name| unit.join(name))
+        .collect::<Vec<_>>();
+        // Qualified doc IDs can place optional bundle ALTO sidecars below the unit directory.
+        inputs.extend(
+            job.pages
+                .iter()
+                .map(|page| unit.join(format!("{}.ours.xml", page.doc_id))),
+        );
         inputs.extend_from_slice(canonical);
         if let Some(spool) = canonical.first().and_then(|p| p.parent()) {
             inputs.push(spool.join(format!("{}_error", job.workunit())));
@@ -495,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn input_canonical_and_collector_version_changes_invalidate_rows() {
         let dir = tempfile::tempdir_in(".").unwrap();
-        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        let (opts, unit, mut job) = cached_fixture(dir.path()).await;
         let files = super::super::collect::spool_files(
             &opts.spool,
             &job.workunit(),
@@ -539,6 +540,38 @@ mod tests {
         assert!(cache.load(&updated).unwrap().is_none());
         // All historical parts are retained, not replaced by the newest dependencies.
         assert_eq!(std::fs::read_dir(opts.cache.unwrap()).unwrap().count(), 4);
+        use usnm_ocr_contract::quality::{BundlePage, BundlePageInputs, BundleSlice};
+        let slice = |input: &usnm_ocr_contract::quality::Input| BundleSlice {
+            bytes: input.bytes,
+            offset: 0,
+            sha256: input.sha256.clone(),
+            source: input.source.clone(),
+        };
+        job.pages.push(BundlePage {
+            doc_id: "sample:synthetic/page".into(),
+            crop_seed: job.crop_seed,
+            function_words: job.function_words.clone(),
+            group: job.group.clone(),
+            k_crops: job.k_crops,
+            language: job.language.clone(),
+            readers: job.readers.clone(),
+            inputs: BundlePageInputs {
+                alto: slice(&job.inputs.alto),
+                page: slice(&job.inputs.page),
+                texts: slice(&job.inputs.texts),
+            },
+        });
+        job.id = job.identity().unwrap();
+        std::fs::write(
+            unit.join(super::super::JOB_FILE),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let before = cache.key(&unit, &job, &files).unwrap();
+        let sidecar = unit.join("sample:synthetic/page.ours.xml");
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+        std::fs::write(sidecar, b"nested sidecar").unwrap();
+        assert_ne!(before, cache.key(&unit, &job, &files).unwrap());
     }
 
     #[tokio::test]
