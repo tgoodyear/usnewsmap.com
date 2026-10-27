@@ -113,6 +113,7 @@ describe("MapView", () => {
     afterRender.length = 0;
     layers.length = 0;
     nativeLayers.length = 0;
+    Reflect.deleteProperty(window, "__USNM_SHARE_CAPTURE__");
     vi.unstubAllGlobals();
     vi.useRealTimers();
     config.style = "https://tiles.openfreemap.org/styles/positron";
@@ -161,6 +162,39 @@ describe("MapView", () => {
     expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(false);
     vi.advanceTimersByTime(1);
     expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("keeps a slow initial basemap request alive during capture", () => {
+    vi.useFakeTimers();
+    config.styleLoaded = false;
+    Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true, configurable: true });
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const m = maps[0]!;
+    act(() => vi.advanceTimersByTime(2500));
+    expect(m.setStyle).not.toHaveBeenCalled();
+    expect(getByTestId("map").dataset.basemapError).toBe("false");
+    m.styleLoaded = true;
+    act(() => {
+      m.emit("style.load");
+      m.emit("load");
+      m.emit("idle");
+    });
+    expect(getByTestId("map").dataset.basemapReady).toBe("true");
+  });
+
+  it("never marks a degraded offline background ready for a screenshot", () => {
+    config.styleLoaded = false;
+    Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true, configurable: true });
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const m = maps[0]!;
+    act(() => {
+      m.emit("error");
+      m.emit("load");
+      m.emit("idle");
+    });
+    expect(m.setStyle).toHaveBeenCalledTimes(1);
+    expect(getByTestId("map").dataset.basemapError).toBe("true");
+    expect(getByTestId("map").dataset.basemapReady).toBe("false");
   });
 
   it("shows the offline style immediately and cleans up its timer on unmount", () => {

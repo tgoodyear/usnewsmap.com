@@ -69,8 +69,14 @@ try {
   }
   const map = page.getByTestId("map");
   if (await map.count()) {
-    await page.locator('[data-testid="map"][data-basemap-ready="true"][data-overlay-ready="true"]').waitFor();
-    if (basemapFailed) throw new Error("Basemap assets failed to load");
+    await page
+      .locator(
+        '[data-testid="map"][data-basemap-error="true"], [data-testid="map"][data-basemap-ready="true"][data-overlay-ready="true"]',
+      )
+      .waitFor();
+    if (basemapFailed || (await map.getAttribute("data-basemap-error")) === "true") {
+      throw new Error("Basemap assets failed to load");
+    }
   }
   await page.evaluate(() => document.fonts.ready);
   // Wait for the compositor to present both the WebGL overlay and basemap.
