@@ -148,10 +148,112 @@ class OriginTlsTests(unittest.TestCase):
                     "operator-token", RuntimeError("PUT vault: HTTP 403"), "operator-token",
                 ]):
             with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
-                bootstrap.main()
+                bootstrap.bootstrap_credentials()
             deletion = request.call_args
             self.assertEqual(deletion.args[0], "DELETE")
             self.assertTrue(deletion.args[1].endswith("/tokens/new-id"))
+
+    def test_vault_bootstrap_limits_policy_exception_and_operator_permissions(self):
+        created_templates = []
+
+        def az(*args):
+            if args[:4] == ("ad", "signed-in-user", "show", "--query"):
+                return json.dumps("operator-object-id").encode()
+            if args[:3] == ("deployment", "group", "create"):
+                path = Path(args[args.index("--template-file") + 1])
+                created_templates.append(json.loads(path.read_text()))
+            if args[:3] == ("role", "assignment", "list"):
+                return b"[]"
+            return b"{}"
+
+        with patch.object(bootstrap, "az", side_effect=az) as azure, \
+                patch.object(tls, "azure_token", return_value="management-token"), \
+                patch.object(tls, "request", side_effect=[
+                    RuntimeError("GET management: HTTP 404"), {}, {}, {},
+                ]) as request:
+            bootstrap.provision_vault()
+        vault = created_templates[0]["resources"][0]
+        self.assertEqual(vault["properties"]["publicNetworkAccess"], "Disabled")
+        self.assertTrue(vault["properties"]["enableRbacAuthorization"])
+        diagnostic, exemption, enable_network = request.call_args_list[1:]
+        self.assertIn(bootstrap.VAULT_SCOPE + "/providers/Microsoft.Insights/diagnosticSettings/",
+                      diagnostic.args[1])
+        self.assertEqual(diagnostic.args[3]["properties"], {
+            "workspaceId": bootstrap.WORKSPACE,
+            "logs": [{"category": "AuditEvent", "enabled": True}],
+        })
+        self.assertIn(bootstrap.VAULT_SCOPE + "/providers/Microsoft.Authorization/policyExemptions/",
+                      exemption.args[1])
+        self.assertEqual(exemption.args[3]["properties"]["exemptionCategory"], "Mitigated")
+        self.assertEqual(enable_network.args[0], "PATCH")
+        self.assertIn(bootstrap.VAULT_SCOPE + "?", enable_network.args[1])
+        role_call = azure.call_args_list[-1].args
+        self.assertEqual(role_call[role_call.index("--assignee-object-id") + 1],
+                         "operator-object-id")
+        self.assertEqual(role_call[role_call.index("--scope") + 1], bootstrap.VAULT_SCOPE)
+        self.assertFalse(list(Path.cwd().glob(".origin-tls-vault-*.json")))
+
+    def test_bootstrap_cli_pins_subscription_for_resource_writes(self):
+        commands = (
+            ("deployment", "group", "create", "--resource-group", "rg-usnm-prod"),
+            ("role", "assignment", "create", "--scope", bootstrap.VAULT_SCOPE),
+            ("role", "definition", "create", "--role-definition", "public-role.json"),
+        )
+        with patch.object(bootstrap.subprocess, "check_output", return_value=b"{}") as run:
+            for args in commands:
+                bootstrap.az(*args)
+                argv = run.call_args.args[0]
+                self.assertEqual(argv[argv.index("--subscription") + 1], tls.SUBSCRIPTION)
+
+    def test_existing_vault_receives_audit_diagnostics_without_recreation(self):
+        officer = {"roleDefinitionId": "/providers/Microsoft.Authorization/roleDefinitions/"
+                   "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"}
+        with patch.object(bootstrap, "az", side_effect=[
+                b'"operator"', json.dumps([officer]).encode(),
+        ]) as azure, \
+                patch.object(tls, "azure_token", return_value="management-token"), \
+                patch.object(tls, "request", return_value={}) as request:
+            bootstrap.provision_vault()
+        self.assertFalse(any(call.args[:3] == ("deployment", "group", "create")
+                             for call in azure.call_args_list))
+        diagnostic = request.call_args_list[1]
+        self.assertEqual(diagnostic.args[0], "PUT")
+        self.assertIn("/diagnosticSettings/usnm-origin-tls?", diagnostic.args[1])
+        self.assertEqual(diagnostic.args[3]["properties"]["workspaceId"], bootstrap.WORKSPACE)
+
+    def test_bootstrap_waits_for_rbac_then_accepts_missing_secret(self):
+        with patch.object(tls, "azure_token", return_value="vault-token"), \
+                patch.object(tls, "request", side_effect=[
+                    RuntimeError("GET vault: HTTP 403"), RuntimeError("GET vault: HTTP 404"),
+                ]) as request, \
+                patch.object(bootstrap.time, "monotonic", side_effect=[0, 0, 0]), \
+                patch.object(bootstrap.time, "sleep") as sleep:
+            self.assertEqual(bootstrap.read_existing_token(), {})
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(10)
+
+    def test_bootstrap_rbac_wait_is_bounded_and_preserves_error(self):
+        denied = RuntimeError("GET vault: HTTP 403")
+        with patch.object(tls, "azure_token", return_value="vault-token"), \
+                patch.object(tls, "request", side_effect=denied) as request, \
+                patch.object(bootstrap.time, "monotonic", side_effect=[0, 0, 0, 300]), \
+                patch.object(bootstrap.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError) as raised:
+                bootstrap.read_existing_token()
+        self.assertIs(raised.exception, denied)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(10)
+
+    def test_bootstrap_does_not_retry_other_vault_errors(self):
+        failure = RuntimeError("GET vault: HTTP 500")
+        with patch.object(tls, "azure_token", return_value="vault-token"), \
+                patch.object(tls, "request", side_effect=failure) as request, \
+                patch.object(bootstrap.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError) as raised:
+                bootstrap.read_existing_token()
+        self.assertIs(raised.exception, failure)
+        request.assert_called_once()
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -25,6 +25,28 @@ read/write (no certificate delete). It is idempotent and rotates tokens with
 fewer than 30 days left, revoking the old token only after saving the replacement.
 It does not grant access to the operator token or other vault secrets.
 
+The two workload secrets live in the dedicated production vault
+`usnmtlskvprodffapzy`, not the home-infrastructure vault. Bootstrap provisions
+this vault with RBAC, purge protection and 90-day soft deletion. GitHub-hosted
+runners have changing egress IPs, so this vault has a public endpoint, no
+trusted-service bypass and secret-level Entra authorization. A tracked,
+resource-scoped `Mitigated` policy exemption (`usnm-origin-tls-github`) covers
+only this vault. It does not weaken the resource group's public-data policy,
+home-kv's IP firewall, or any other vault. The production deployment identity
+has no vault-management or firewall-write permission, only the two previously
+described secret-scoped roles. Only the operator gets vault-level Secrets
+Officer. The IP-restricted operator token remains in home-kv and is read from
+there solely by bootstrap on the authorized operator network.
+All Azure CLI resource operations explicitly target the production subscription, not
+the operator's selected CLI default. Bootstrap idempotently enables the vault's
+`AuditEvent` diagnostic category in `log-usnm-prod` for new and existing
+vaults, recording secret access, mutations and denied requests without secret
+values, consistent with the production diagnostic-settings convention.
+After provisioning, bootstrap retries initial secret-read HTTP 403 responses
+for up to five minutes while the operator RBAC grant propagates. HTTP 404
+means the vault is accessible but the token has not been created; other errors
+and a persistent 403 fail without creating or replacing credentials.
+
 Staging exercises all DNS challenges without changing stored production state,
 uploading an untrusted staging certificate, or binding hostnames. Production
 state is persisted **before** upload; a failed deployment retries the same
@@ -55,6 +77,9 @@ patch the application or race deployments. There are no private-key caches,
 artifacts, long-lived Azure credentials or operator-machine dependencies.
 After merging, dispatch the workflow once and verify it succeeds. Scheduled
 workflows do not run from an unmerged feature branch.
+For a real DNS-01 issuance test under the same production OIDC identity,
+dispatch with `validate-dns=true`. This exercises the staging CA, then reuses or
+renews the production certificate normally; staging state is never persisted.
 
 **Every 60 days**, run `origin_tls_bootstrap.py` as the operator to rotate the
 90-day DNS token. This is intentional human credential maintenance, not a
@@ -90,3 +115,9 @@ The prior managed bindings are retained in the ignored operator receipt
 certificate was deleted. The DNS token expires 25 January 2027: first operator
 rotation is due **26 December 2026**. The scheduled job must be dispatched and
 checked after merge to main; local acceptance does not claim a GitHub OIDC run.
+
+The first real GitHub OIDC run (`40592972233`) failed because home-kv permits
+only the operator IP; its principal and secret-level grants were correct.
+The DNS token and existing ACME state were subsequently copied **in memory**
+to the dedicated vault and compared without logging their values, avoiding
+reissuance or a new account. No home-kv network rule was changed.

@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "19 6 * * 1"
   workflow_dispatch:
+    inputs:
+      validate-dns:
+        description: Exercise staging DNS-01 issuance before reusing or renewing the production certificate
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +38,9 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends certbot dnsutils
       - name: Validate certificate tooling
         run: python3 -m unittest discover -s scripts/azure -p test_origin_tls.py
+      - name: Validate DNS-01 issuance against staging
+        if: inputs.validate-dns == true
+        run: python3 scripts/azure/origin_tls.py renew --staging --no-bind
       - name: Renew the production origin certificate
         # The stable certificate ID is already bound by infrastructure. Renewal
         # must never race a deployment by patching application configuration.

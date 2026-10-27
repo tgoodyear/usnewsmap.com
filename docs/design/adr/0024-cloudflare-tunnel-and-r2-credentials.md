@@ -42,13 +42,18 @@ An exception to ADR-0009 covers exactly these Cloudflare credentials:
    It has DNS Write on the `usnewsmap.com` zone only, no account administration,
    token administration or tunnel access. Unlike the operator token, this workload
    token permits GitHub-hosted runner IPs. It expires after 90 days and is stored
-   as `usnm-prod-acme-cloudflare-token` in home-kv. The existing production GitHub
+   as `usnm-prod-acme-cloudflare-token` in the dedicated production vault
+   `usnmtlskvprodffapzy`. The existing production GitHub
    OIDC identity has Secrets User on this secret alone and Secrets Officer on
    `usnm-prod-acme-state` alone (the ACME account and certificate private keys).
    No workload receives the operator token. The operator rotates this token
    every 60 days; the weekly renewal job fails with an explicit maintenance
    instruction when fewer than 14 days remain. See the
    [certificate runbook](../../operations/origin-tls.md).
+   The vault's public endpoint supports GitHub-hosted runner egress with
+   secret-level Entra RBAC; its resource-scoped public-network policy exception
+   covers only the DNS token and ACME state. The home vault retains its
+   operator-only IP firewall, and no workload may read its operator token.
 
 Rules for all applicable credentials:
 

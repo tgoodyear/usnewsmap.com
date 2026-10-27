@@ -16,6 +16,7 @@ __pycache__/
 .origin-tls-work/
 .origin-tls-test-*/
 .origin-tls-role.json
+.origin-tls-vault-*.json
 
 # Data assets live in GitHub releases and are fetched in place by scripts/ops/data-assets.sh
 # (ops/data-assets.json, docs/reports/README.md); the sets are these kinds of files.
