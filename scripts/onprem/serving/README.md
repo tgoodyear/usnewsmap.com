@@ -28,6 +28,7 @@ The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with th
 | `install.sh`                                          | The container, as root, from a checkout                                         | Installs the units, configs and update script, the journald and tmpfiles rules and the Quickwit binary, then enables and starts Caddy, the searcher and the timer. Safe to run again. It restarts the searcher only when its config, binary or unit changed.                                     |
 | `update-api.sh`                                       | The container, from the timer                                                   | Blue/green deploys (below).                                                                                                                                                                                                                                                                      |
 | `apply-tunnel-ingress.sh`                             | The operator's machine, from the address the Cloudflare API token is limited to | Sends `tunnel-ingress.json` to Cloudflare, with the token read from Key Vault. `--hostname` routes a test hostname only.                                                                                                                                                                         |
+| `apply-cache-rules.py`, `cache-rules.json`            | The operator's machine, from the address the Cloudflare API token is limited to | Stages apex static/versioned lookup caching and explicit dynamic/API bypasses. Edits individual rules, preserves existing basemap/OCR rules, and verifies read-back. Does not change DNS or certificates.                                                                                        |
 | `Caddyfile`, `*.service`, `*.timer`                   | Installed by `install.sh`                                                       |                                                                                                                                                                                                                                                                                                  |
 | `tunnel-ingress.json`                                 | Applied by `apply-tunnel-ingress.sh`                                            | The tunnel's ingress, kept in the repository (ADR-0005 decision 3).                                                                                                                                                                                                                              |
 | `flood-rule.json`                                     | Recorded only; the operator makes the rule in the dashboard                     | The zone's one Free rate-limit rule for the four search routes, off until a flood (ADR-0027 settled decision 9), in the shape of the body for the zone's `http_ratelimit` entry point. Until the zone-settings script exists (ADR-0027 decision 12), the dashboard rule must match this file.    |
@@ -36,6 +37,47 @@ The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with th
 | `test_serving.py`                                     | CI and locally                                                                  | Runs every script against stub tools. The deploy and install tests need Linux.                                                                                                                                                                                                                   |
 
 Every script takes named flags and has a `--dry-run`.
+
+## Cloudflare cache policy
+
+The public apex, `www` and `api` remain **DNS-only while Azure serves them**.
+Staging Cache Rules does not enable proxying or prove a cache HIT. ADR-0027
+requires the Phase 2 measurements, privacy update, fallback and certificate
+checks before the Phase 3 tunnel/DNS cutover; do not orange-cloud the Azure
+records as a shortcut, because that breaks the managed-certificate renewal path.
+
+Preview the policy without credentials or network calls:
+
+```bash
+python3 scripts/onprem/serving/apply-cache-rules.py --zone-id <zone id> --dry-run
+```
+
+Stage it with a Key Vault token authorized for the zone's Cache Rules:
+
+```bash
+python3 scripts/onprem/serving/apply-cache-rules.py --zone-id <zone id> --vault <vault> --token-secret <secret>
+```
+
+Keep the printed before/after receipt. The script updates only its three
+stable rule refs, preserving existing rules (including `usnm_versioned_basemap`
+and the OCR dashboard). It places the dynamic bypass last. A failed operation
+is explicit and may leave a partially applied policy; inspect the receipt/zone
+and rerun before proceeding with any cutover.
+
+| Request                                                                                                                                   | Policy                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Apex `/assets/*`, `robots.txt`, `favicon.svg`, `og-image.png`                                                                             | Eligible only under origin Cache-Control; bypass when absent                       |
+| Apex versioned basemap                                                                                                                    | Existing `basemap-cache-rule.json` remains unchanged                               |
+| Apex `/v1/places`, `/v1/titles`, `/v1/titles/*`, `/v1/coverage`, `/v1/days` and `/api/v1` equivalents, with a nonempty `v` query argument | Eligible only under origin Cache-Control; default cache key retains the full query |
+| Everything else on apex, including HTML/search previews, sitemap, aggregate/hits, live metadata/status, health and unversioned lookups    | Bypass                                                                             |
+| All requests on `api` and `www`                                                                                                           | Bypass; avoids cross-origin cache mixing, while `www` redirects to apex            |
+
+Origin `no-store` responses, including lookup 202/307/errors and missing assets,
+must remain uncacheable. No forced TTL, query-string stripping, deployment purge
+or cache-everything rule is introduced. After the approved cutover, fetch each
+class twice and retain `CF-Cache-Status`/`Age` evidence: static/versioned successes
+should warm to HIT, dynamic/API requests must not HIT, and PMTiles ranges must
+retain `Content-Length`/`Content-Range` without `Content-Encoding`.
 
 ## Setup (Phase 2)
 
