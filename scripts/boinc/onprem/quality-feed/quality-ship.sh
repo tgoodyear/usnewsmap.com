@@ -8,6 +8,7 @@
 #     [--readers loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract]
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
+#     [--qwen-max-ready 1000]
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while the server has more than --max-unsent results ready to send (the public
@@ -33,7 +34,7 @@ CAMPAIGN="" ENGINE="" OUTBOX=/var/lib/usnm-quality-feed/outbox SERVER=pve.tjg.fy
 READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
-QWEN_PLAN="" QWEN_MODELS=""
+QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?counts=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -50,6 +51,9 @@ while [ $# -gt 0 ]; do
     --what-if) WHAT_IF=true; shift ;;
     --qwen-engine-plan) QWEN_PLAN=${2:-}; shift 2 ;;
     --qwen-models) QWEN_MODELS=${2:-}; shift 2 ;;
+    --qwen-max-ready)
+      [ $# -ge 2 ] || die "--qwen-max-ready: a positive integer"
+      QWEN_MAX_READY=$2; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -60,6 +64,7 @@ done
 [[ $BUNDLE =~ ^[0-9]+$ && $MAX_UNSENT =~ ^[0-9]+$ && $MAX_CHUNKS =~ ^[0-9]+$ && $CT =~ ^[0-9]+$ && $MIN_FREE =~ ^[0-9]+$ ]] ||
   die "--bundle-size, --max-unsent, --max-chunks, --min-free-gb and --server-ct: numbers"
 [[ $SERVER =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--server-host: a host name"
+[[ $QWEN_MAX_READY =~ ^[1-9][0-9]*$ ]] || die "--qwen-max-ready: a positive integer"
 if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
   [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
     die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
@@ -137,7 +142,8 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
     # before cleanup; failures leave the original READY chunk and receipts intact.
     in_ct flock -n /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
       python3 /project/ops/qwen-feed/qwen_submit.py --campaign "$CAMPAIGN" \
-      --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" --max-pages "$((n + 10))"
+      --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" --max-pages "$((n + 10))" \
+      --max-ready "$QWEN_MAX_READY"
   fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
