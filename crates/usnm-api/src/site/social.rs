@@ -10,6 +10,8 @@ use resvg::{tiny_skia, usvg};
 
 const SITE: &str = "https://usnewsmap.com";
 const IMAGE: &str = "/share-image.png";
+const FALLBACK: &[u8] = include_bytes!("../../../../web/public/og-image.png");
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const VIEW_KEYS: &[&str] = &[
     "q", "source", "mode", "near", "from", "to", "state", "lang", "lccn", "series", "t", "win",
     "bucket", "layer", "norm", "place", "sort", "tab", "z", "c",
@@ -372,7 +374,7 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri) -> Response {
     let key = card.image.clone();
     // Finish and cache a render even if the crawler stops waiting. The permit
     // bounds both browsers and static-card rasterization until they finish.
-    match tokio::spawn(async move {
+    let render = tokio::spawn(async move {
         IMAGES
             .try_get_with(key, async move {
                 let _permit = RENDERS
@@ -391,21 +393,25 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri) -> Response {
                 }
             })
             .await
-    })
-    .await
-    {
-        Ok(Ok(body)) => ([(header::CONTENT_TYPE, "image/png")], body).into_response(),
-        Ok(Err(error)) if matches!(*error, RenderError::Busy) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::RETRY_AFTER, "1")],
-            "share image renderer is busy",
-        )
-            .into_response(),
+    });
+    render_response(render).await
+}
+
+async fn render_response(
+    render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
+) -> Response {
+    // Dropping the timed-out JoinHandle detaches, rather than aborts, the render.
+    // Only successful renders enter IMAGES; a later request can get the screenshot.
+    match tokio::time::timeout(RESPONSE_TIMEOUT, render).await {
+        Ok(Ok(Ok(body))) => ([(header::CONTENT_TYPE, "image/png")], body).into_response(),
         result => {
-            tracing::error!(?result, "could not render share image");
+            tracing::warn!(?result, "serving static share image fallback");
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not render share image; try again shortly",
+                [
+                    (header::CONTENT_TYPE, "image/png"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                FALLBACK,
             )
                 .into_response()
         }
@@ -423,6 +429,82 @@ enum RenderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn slow_render_falls_back_and_still_populates_the_screenshot_cache() {
+        use http_body_util::BodyExt;
+
+        let key = "slow-render-fallback-test".to_owned();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
+        let cache_key = key.clone();
+        let screenshot = b"completed screenshot".to_vec();
+        let body = screenshot.clone();
+        let render = tokio::spawn(async move {
+            wait.await.unwrap();
+            IMAGES.insert(cache_key, body.clone()).await;
+            finished.send(()).unwrap();
+            Ok(body)
+        });
+        let response = render_response(render).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            FALLBACK
+        );
+        assert!(IMAGES.get(&key).await.is_none());
+        release.send(()).unwrap();
+        done.await.unwrap();
+        assert_eq!(IMAGES.get(&key).await.unwrap(), screenshot);
+        let response = render_response(tokio::spawn(
+            async move { Ok(IMAGES.get(&key).await.unwrap()) },
+        ))
+        .await;
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            screenshot
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_and_busy_renders_return_an_uncached_static_png_through_middleware() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        for error in [
+            RenderError::Busy,
+            RenderError::Failed("share screenshot browser failed".to_owned()),
+        ] {
+            let error = Arc::new(error);
+            let app = axum::Router::new()
+                .route(
+                    "/share-image.png",
+                    axum::routing::get(move || {
+                        let error = error.clone();
+                        async move { render_response(tokio::spawn(async move { Err(error) })).await }
+                    }),
+                )
+                .layer(axum::middleware::from_fn(super::super::cache_control));
+            let response = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/share-image.png")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(
+                response.into_body().collect().await.unwrap().to_bytes(),
+                FALLBACK
+            );
+        }
+    }
 
     #[tokio::test]
     async fn identical_cache_misses_share_one_render_slot() {
