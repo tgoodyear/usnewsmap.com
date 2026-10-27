@@ -204,6 +204,8 @@ impl Card {
         if !query.is_empty() {
             image_query.extend_pairs(form_urlencoded::parse(query.as_bytes()));
         }
+        // Do not reuse previews cached before degraded basemaps were rejected.
+        image_query.append_pair("v", "2");
         let image = format!("{SITE}{IMAGE}?{}", image_query.finish());
         Some(Self {
             title,

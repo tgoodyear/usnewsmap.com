@@ -110,3 +110,55 @@ test("zero-result native states preview waits for its lazy map", async ({ reques
   );
   expect(png.subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
 });
+
+test("capture waits beyond the interactive fallback for a real basemap", async ({ page, isMobile }) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app");
+  await page.addInitScript(() => Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("https://tiles.openfreemap.org/styles/positron", async (route) => {
+    await gate;
+    await route.fulfill({
+      json: {
+        version: 8,
+        sources: {
+          land: {
+            type: "geojson",
+            attribution: "Synthetic basemap",
+            data: {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "Polygon",
+                coordinates: [
+                  [
+                    [-125, 25],
+                    [-66, 25],
+                    [-66, 50],
+                    [-125, 50],
+                    [-125, 25],
+                  ],
+                ],
+              },
+            },
+          },
+        },
+        layers: [
+          { id: "water", type: "background", paint: { "background-color": "#aaccdd" } },
+          { id: "land", type: "fill", source: "land", paint: { "fill-color": "#eeddcc" } },
+        ],
+      },
+    });
+  });
+  await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31");
+  const map = page.getByTestId("map");
+  await expect(map).toBeVisible();
+  await page.waitForTimeout(2500);
+  expect(await map.getAttribute("data-basemap-ready")).not.toBe("true");
+  await expect(map).toHaveAttribute("data-basemap-error", "false");
+  release();
+  await expect(map).toHaveAttribute("data-basemap-ready", "true");
+  await expect(map.locator(".maplibregl-ctrl-attrib")).toContainText("Synthetic basemap");
+});

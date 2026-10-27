@@ -151,12 +151,16 @@ export default function MapView(props: Props) {
     });
     m.touchZoomRotate.disableRotation();
     m.addControl(new NavigationControl({ showCompass: false }), "top-left");
+    const capturing = "__USNM_SHARE_CAPTURE__" in window;
     let fallbackStyleUsed = STYLE_URL === "none";
+    element.dataset.basemapError = "false";
     const recoverStyle = () => {
       // getStyle is undefined until the initial document is parsed. A failed
       // tile or font must not replace a usable style or remove native fills.
       if (fallbackStyleUsed || m.getStyle()) return;
       fallbackStyleUsed = true;
+      element.dataset.basemapError = "true";
+      element.dataset.basemapReady = "false";
       m.setStyle(PLAIN_STYLE, { diff: false });
     };
     m.on("error", recoverStyle);
@@ -172,7 +176,9 @@ export default function MapView(props: Props) {
       clearTimeout(fallback);
     };
     const fallback = setTimeout(() => {
-      recoverStyle();
+      // Captures have a separate bounded deadline; do not cancel a slow style
+      // request and permanently cache a screenshot of the offline background.
+      if (!capturing) recoverStyle();
       reveal();
     }, 2000);
     m.on("load", () => {
@@ -180,7 +186,9 @@ export default function MapView(props: Props) {
     });
     m.on("idle", () => {
       if (loaded && m.areTilesLoaded()) reveal();
-      element.dataset.basemapReady = String(loaded && m.areTilesLoaded());
+      element.dataset.basemapReady = String(
+        loaded && m.areTilesLoaded() && (STYLE_URL === "none" || !fallbackStyleUsed),
+      );
     });
     m.on("movestart", () => {
       element.dataset.basemapReady = "false";
