@@ -273,6 +273,35 @@ pub async fn collect(args: CollectArgs) -> anyhow::Result<()> {
 }
 
 #[derive(Args)]
+pub struct RejectOutputArgs {
+    #[arg(long)]
+    root: PathBuf,
+    #[arg(long)]
+    spool: PathBuf,
+    #[arg(long)]
+    job: String,
+    #[arg(long)]
+    expect_result_sha256: String,
+    #[arg(long)]
+    expect_text_sha256: String,
+    #[arg(long)]
+    expect_alto_sha256: String,
+}
+
+pub fn reject_output(args: RejectOutputArgs) -> anyhow::Result<()> {
+    crate::reject::reject(
+        &args.root,
+        &args.spool,
+        &args.job,
+        [
+            &args.expect_result_sha256,
+            &args.expect_text_sha256,
+            &args.expect_alto_sha256,
+        ],
+    )
+}
+
+#[derive(Args)]
 pub struct StatusArgs {
     #[arg(long)]
     root: PathBuf,

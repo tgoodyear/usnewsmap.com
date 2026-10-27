@@ -37,6 +37,8 @@ enum Commands {
     Reconcile(job::ReconcileArgs),
     /// Read stock batch_collect_assimilator's spool and publish native ALTO/Parquet.
     Collect(job::CollectArgs),
+    /// Quarantine explicitly pinned contract-invalid canonical outputs; never requeue.
+    RejectOutput(job::RejectOutputArgs),
     /// Verify the gold bundle and download the original files it refers to (network; outside the
     /// job container).
     GoldStage(gold::cli::GoldStageArgs),
@@ -95,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::SubmitBundle(args) => job::submit_bundle(args).await,
         Commands::Reconcile(args) => job::reconcile(args),
         Commands::Collect(args) => job::collect(args).await,
+        Commands::RejectOutput(args) => job::reject_output(args),
         Commands::GoldStage(args) => gold::cli::gold_stage(args).await,
         Commands::GoldRun(args) => gold::cli::gold_run(args).await,
         Commands::Assess(command) => assess::cli::run(command).await,

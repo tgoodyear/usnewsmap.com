@@ -37,6 +37,7 @@ pub mod host_trust;
 pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
+pub mod reject;
 pub mod scans;
 pub mod submit;
 pub mod surya;

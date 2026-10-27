@@ -262,6 +262,192 @@ impl Fixture {
         .await
     }
 }
+fn rejection_spool(fx: &Fixture, id: &str, empty: bool) -> (PathBuf, [String; 3]) {
+    let files = fx.result(id);
+    let spool = fx.tmp.path().join("canonical");
+    std::fs::create_dir_all(&spool).unwrap();
+    let hashes = std::array::from_fn(|i| {
+        let name = ["result.json", "text.txt", "layout.xml"][i];
+        let source = [&files.0, &files.1, &files.2][i];
+        let mut bytes = std::fs::read(source).unwrap();
+        if empty {
+            bytes.clear();
+        } else if i == 2 {
+            bytes.extend_from_slice(b"corrupt");
+        }
+        std::fs::write(spool.join(format!("usnm_{id}__file_{name}")), &bytes).unwrap();
+        boinc::sha256(&bytes)
+    });
+    (spool, hashes)
+}
+
+#[tokio::test]
+async fn explicit_rejection_preserves_bad_outputs_and_native_reservations() {
+    for empty in [false, true] {
+        let fx = Fixture::new("eng").await;
+        let id = fx.export().await;
+        let mut record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+        record.stage = Stage::Submitted;
+        usnm_boinc::save(&fx.options.root, &record).unwrap();
+        let before = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+        let (spool, hashes) = rejection_spool(&fx, &id, empty);
+        for _ in 0..2 {
+            usnm_boinc::reject::reject(
+                &fx.options.root,
+                &spool,
+                &id,
+                hashes.each_ref().map(String::as_str),
+            )
+            .unwrap();
+        }
+        let rejected = usnm_boinc::load(&fx.options.root, &id).unwrap();
+        assert_eq!(rejected.stage, Stage::Failed);
+        let quarantine = fx
+            .options
+            .root
+            .join("quarantine")
+            .join(&id)
+            .join("rejected");
+        assert!(quarantine.join("receipt.json").exists());
+        for (i, name) in ["result.json", "text.txt", "layout.xml"].iter().enumerate() {
+            assert_eq!(
+                boinc::sha256(&std::fs::read(quarantine.join(name)).unwrap()),
+                hashes[i]
+            );
+        }
+        let after = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+        let doc = record.job.message.key().unwrap().doc_id();
+        assert_eq!(before.outstanding(&doc), after.outstanding(&doc));
+        assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+        assert!(fx.stores.out.list("alto").await.unwrap().is_empty());
+        std::fs::write(quarantine.join("text.txt"), "changed").unwrap();
+        assert!(usnm_boinc::reject::reject(
+            &fx.options.root,
+            &spool,
+            &id,
+            hashes.each_ref().map(String::as_str),
+        )
+        .is_err());
+    }
+}
+
+#[tokio::test]
+async fn rejection_reconciles_interrupted_quarantine_without_overwriting_evidence() {
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let mut record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    record.stage = Stage::Submitted;
+    usnm_boinc::save(&fx.options.root, &record).unwrap();
+    let (spool, hashes) = rejection_spool(&fx, &id, true);
+    let quarantine = fx
+        .options
+        .root
+        .join("quarantine")
+        .join(&id)
+        .join("rejected");
+    usnm_boinc::atomic(&quarantine.join("text.txt"), b"conflicting evidence").unwrap();
+    assert!(usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("partial quarantined bytes conflict"));
+    assert_eq!(
+        std::fs::read(quarantine.join("text.txt")).unwrap(),
+        b"conflicting evidence"
+    );
+    assert!(!quarantine.join("result.json").exists());
+    assert!(!quarantine.join("receipt.json").exists());
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Submitted
+    );
+    std::fs::write(quarantine.join("text.txt"), b"").unwrap();
+    usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap();
+    usnm_boinc::save(&fx.options.root, &record).unwrap();
+    usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap();
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Failed
+    );
+}
+
+#[tokio::test]
+async fn rejection_refuses_valid_changed_missing_or_accepted_outputs() {
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let mut record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    record.stage = Stage::Submitted;
+    usnm_boinc::save(&fx.options.root, &record).unwrap();
+    let (spool, mut hashes) = rejection_spool(&fx, &id, false);
+    let alto = spool.join(format!("usnm_{id}__file_layout.xml"));
+    std::fs::write(&alto, ALTO).unwrap();
+    let attempt = || {
+        usnm_boinc::reject::reject(
+            &fx.options.root,
+            &spool,
+            &id,
+            hashes.each_ref().map(String::as_str),
+        )
+    };
+    assert!(attempt()
+        .unwrap_err()
+        .to_string()
+        .contains("output changed"));
+    std::fs::remove_file(&alto).unwrap();
+    assert!(attempt().is_err());
+    std::fs::write(&alto, ALTO).unwrap();
+    hashes[2] = boinc::sha256(ALTO.as_bytes());
+    assert!(usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("contract is valid"));
+    let (spool, hashes) = rejection_spool(&fx, &id, true);
+    usnm_boinc::atomic(
+        &fx.options
+            .root
+            .join("jobs")
+            .join(&id)
+            .join("accepted/result.json"),
+        b"accepted",
+    )
+    .unwrap();
+    assert!(usnm_boinc::reject::reject(
+        &fx.options.root,
+        &spool,
+        &id,
+        hashes.each_ref().map(String::as_str),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("accepted output"));
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Submitted
+    );
+    assert!(!fx.options.root.join("quarantine").exists());
+}
+
 #[tokio::test]
 async fn round_trip_through_native_ocr_sync_and_duplicate_import() {
     let fx = Fixture::new("ger").await;
