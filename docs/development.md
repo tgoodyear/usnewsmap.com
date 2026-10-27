@@ -74,6 +74,8 @@ scripts/local-azure/down.sh --workdir /tmp/usnm-azure   # data stays; up.sh on t
 
 ## Checks
 
+<!-- Disposable #1215 required-gate probe; never merge this PR. -->
+
 The formatting, lint, test and build commands CI runs are listed in [CONTRIBUTING.md](../CONTRIBUTING.md), and [What CI runs](#what-ci-runs) says which job runs what, when, and what a pull request needs green. The web app's end-to-end tests are described in [`web/README.md`](../web/README.md).
 
 Markdown-only PRs run formatting and the private-address scan, not application or
