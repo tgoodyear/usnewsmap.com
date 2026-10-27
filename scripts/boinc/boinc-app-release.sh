@@ -51,6 +51,7 @@ usage() {
 ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
 ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM="" ONPREM_HOST="" ONPREM_CT=""
+ONPREM_MANIFEST="" ARTIFACT_RECEIPT=""
 EXTRA_FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -75,6 +76,8 @@ while [ $# -gt 0 ]; do
     --coordination-claim) [ $# -ge 2 ] || usage; COORDINATION_CLAIM=$2; shift 2 ;;
     --onprem-host) [ $# -ge 2 ] || usage; ONPREM_HOST=$2; shift 2 ;;
     --onprem-ct) [ $# -ge 2 ] || usage; ONPREM_CT=$2; shift 2 ;;
+    --onprem-manifest) [ $# -ge 2 ] || usage; ONPREM_MANIFEST=$2; shift 2 ;;
+    --artifact-receipt) [ $# -ge 2 ] || usage; ARTIFACT_RECEIPT=$2; shift 2 ;;
     --prepare-only) PREPARE_ONLY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
@@ -210,9 +213,9 @@ fi
 # shellcheck source=scripts/lib/acr-build.sh
 . scripts/lib/acr-build.sh
 boinc_load_settings
-boinc_az_check
+[ -n "$ONPREM_MANIFEST" ] || boinc_az_check
 [ -z "$WORKER_OVERRIDE" ] || WORKER_IMAGE=$WORKER_OVERRIDE
-[ -n "$SERVER_IMAGE" ] || die "no server image in $BOINC_SETTINGS: scripts/boinc/build-boinc-images.sh --env $ENV_NAME first"
+[ -n "$SERVER_IMAGE$ONPREM_MANIFEST" ] || die "no server image in $BOINC_SETTINGS: scripts/boinc/build-boinc-images.sh --env $ENV_NAME first"
 PUBLIC_KEY=$(jq -r .codeSignPublicKey "$BOINC_SETTINGS")
 [ -n "$PUBLIC_KEY" ] || die "no codeSignPublicKey in $BOINC_SETTINGS"
 SERVER_MODE=$(jq -r '.server // "azure"' "$BOINC_SETTINGS")
@@ -221,6 +224,29 @@ case "$SERVER_MODE" in
   onprem) [ -n "$ONPREM_HOST" ] && [ -n "$ONPREM_CT" ] || die "$BOINC_SETTINGS has \"server\": \"onprem\": give --onprem-host and --onprem-ct (docs/boinc-onprem.md)" ;;
   *) die "server must be azure or onprem in $BOINC_SETTINGS" ;;
 esac
+if [ -n "$ONPREM_MANIFEST$ARTIFACT_RECEIPT" ]; then
+  [ "$SERVER_MODE" = onprem ] && $PREPARE_ONLY && [ -f "$ONPREM_MANIFEST" ] && [ -n "$ARTIFACT_RECEIPT" ] ||
+    die "--onprem-manifest and --artifact-receipt require on-prem --prepare-only"
+  git ls-files --error-unmatch "$ONPREM_MANIFEST" >/dev/null || die "on-prem manifest must be tracked and reviewed"
+  SERVER_IMAGE=$(python3 - "$ONPREM_MANIFEST" "$ENV_NAME" "$ONPREM_HOST" "$ONPREM_CT" "$APP" "$VERSION" "$PLATFORM" "$PLAN_CLASS" "$KIND" "$WORKER_IMAGE" "$BINARY" "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}" <<'PY'
+import hashlib, json, pathlib, sys
+sys.path.insert(0, "scripts/boinc")
+from onprem_artifacts import validate
+value = validate(json.load(open(sys.argv[1])))
+env, host, ct, app, version, platform, plan, kind, worker, binary = sys.argv[2:12]
+assert (value["env"], value["host"], value["ct"]) == (env, host, ct)
+assert value["release"] == dict(app=app, version=version, platform=platform, plan_class=plan, kind=kind)
+assert kind == "native" or value["images"]["worker"] == worker
+assert kind != "native" or hashlib.sha256(pathlib.Path(binary).read_bytes()).hexdigest() == value["worker"]["sha256"]
+if kind == "native":
+    extras = dict(spec.split("=", 1) for spec in sys.argv[12:])
+    assert set(extras) == set(value["worker"]["extra_files"])
+    for logical, path in extras.items():
+        assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() == value["worker"]["extra_files"][logical]["sha256"]
+print(value["images"]["bridge"])
+PY
+  ) || die "on-prem manifest does not match release inputs"
+fi
 [ -z "$(git status --porcelain -- "$BOINC_SETTINGS")" ] || die "$BOINC_SETTINGS has uncommitted changes: commit them first (this run deploys the stack and writes images.appver)"
 # A real run deploys this checkout's provision-boinc.sh and Bicep, not only HEAD: refuse a tree
 # that differs from HEAD. --what-if only reads, so it warns.
@@ -229,7 +255,10 @@ if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
   echo "warning: the working tree differs from HEAD; a real run refuses this" >&2
 fi
 sha=$(git rev-parse HEAD)
-registry=$(jq -er .registry infra/names/"$ENV_NAME".json) || die "no registry in infra/names/$ENV_NAME.json"
+registry=""
+if [ -z "$ONPREM_MANIFEST" ]; then
+  registry=$(jq -er .registry infra/names/"$ENV_NAME".json) || die "no registry in infra/names/$ENV_NAME.json"
+fi
 APPVER_REPO=usnm-boinc-appver
 APPVER_TAG="$APP-$VERSION"
 [ "$KIND" = container ] || APPVER_TAG="$APPVER_TAG-native"
@@ -343,6 +372,10 @@ if [ "$SERVER_MODE" = onprem ]; then
   # shellcheck disable=SC2016 # expanded in the container
   onprem_ct '. /etc/usnm-boinc/server.env && [ -n "$SERVER_IMAGE" ] && podman image exists "$SERVER_IMAGE" && command -v usnm-boinc-step > /dev/null' ||
     die "can't reach container $ONPREM_CT on $ONPREM_HOST, or it has no SERVER_IMAGE or usnm-boinc-step"
+  if [ -n "$ONPREM_MANIFEST" ]; then
+    onprem_ct "test \"\$(sed -n 's/^SERVER_IMAGE=//p' /etc/usnm-boinc/server.env)\" = '$SERVER_IMAGE' && podman image exists '$SERVER_IMAGE'" ||
+      die "server.env differs from the reviewed local runtime pin"
+  fi
   echo "on-prem server: container $ONPREM_CT on $ONPREM_HOST has its server image and step runner"
 fi
 
@@ -410,16 +443,44 @@ elif [ -n "$WRAPPER" ]; then
   esac
 fi
 
+if [ -n "$ONPREM_MANIFEST" ] && [ "$KIND" = native ]; then
+  # Verify the private copies, not mutable build outputs reopened after SSH preflight.
+  python3 - --manifest "$ONPREM_MANIFEST" --binary "$work/$binary_name" --extra-dir "$work/extra" <<'PY' ||
+import argparse, hashlib, json
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument("--manifest", required=True, type=Path)
+parser.add_argument("--binary", required=True, type=Path)
+parser.add_argument("--extra-dir", required=True, type=Path)
+args = parser.parse_args()
+worker = json.loads(args.manifest.read_text())["worker"]
+assert hashlib.sha256(args.binary.read_bytes()).hexdigest() == worker["sha256"]
+extras = worker["extra_files"]
+staged_names = {path.name for path in args.extra_dir.iterdir()} if args.extra_dir.exists() else set()
+assert staged_names == set(extras)
+for logical, entry in extras.items():
+    assert hashlib.sha256((args.extra_dir / logical).read_bytes()).hexdigest() == entry["sha256"]
+PY
+    die "private staged native payload differs from the reviewed manifest; nothing transferred or signed"
+fi
+
 # --- 2. Stage --------------------------------------------------------------------------------
 
 remote=$(ssh_host "python3 -c 'from pathlib import Path; import uuid; p=Path.cwd() / (\".usnm-appver-\"+uuid.uuid4().hex); p.mkdir(mode=0o700); print(p)'") || die "can't make a work directory on the signing host"
 [[ $remote =~ ^/root/\.usnm-appver-[a-f0-9]{32}$ ]] || die "unexpected work directory $remote"
 echo "2. staging on the signing host ($remote)"
-baz acr login --name "$registry" --expose-token --query accessToken -o tsv |
-  ssh_host "podman login --authfile $remote/auth.json -u 00000000-0000-0000-0000-000000000000 --password-stdin $registry.azurecr.io > /dev/null" ||
-  die "can't log the signing host in to $registry"
-ssh_host "podman pull -q --authfile $remote/auth.json $SERVER_IMAGE > /dev/null; rc=\$?; rm -f $remote/auth.json; exit \$rc" ||
-  die "the signing host can't pull $SERVER_IMAGE"
+if [ -n "$ONPREM_MANIFEST" ]; then
+  # Transfer only the reviewed public runtime, never the isolated private key.
+  onprem_ct "podman save '$SERVER_IMAGE'" | ssh_host "podman load >/dev/null" ||
+    die "can't transfer the reviewed runtime to the isolated signing host"
+  ssh_host "podman image exists '$SERVER_IMAGE'" || die "signing host lacks the reviewed local runtime"
+else
+  baz acr login --name "$registry" --expose-token --query accessToken -o tsv |
+    ssh_host "podman login --authfile $remote/auth.json -u 00000000-0000-0000-0000-000000000000 --password-stdin $registry.azurecr.io > /dev/null" ||
+    die "can't log the signing host in to $registry"
+  ssh_host "podman pull -q --authfile $remote/auth.json $SERVER_IMAGE > /dev/null; rc=\$?; rm -f $remote/auth.json; exit \$rc" ||
+    die "the signing host can't pull $SERVER_IMAGE"
+fi
 git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc contrib-compute/boinc/project.xml | ssh_host "mkdir $remote/src && tar -x -C $remote/src" ||
   die "can't copy the sources to the signing host"
 if [ "$KIND" = native ]; then
@@ -512,13 +573,14 @@ if [ "$SERVER_MODE" = onprem ]; then
   # from the context, as on the signing host), and in the container podman has none to give it. The context goes in a fresh directory
   # that's removed afterwards; the image stays for the publish step.
   appver_tag="localhost/$APPVER_REPO:$APPVER_TAG"
-  build_args=(--build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION"
+  build_args=(--label "org.usnewsmap.source=$sha" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION"
     --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM"
     --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin"
     --build-arg "BINARY_PATH=$appver_binary")
   # shellcheck disable=SC2016 # expanded in the container
   COPYFILE_DISABLE=1 tar --no-xattrs -C "$ctx" -c . | onprem_ct 'set -euo pipefail
     . /etc/usnm-boinc/server.env
+    '"$(if [ -n "$ONPREM_MANIFEST" ]; then printf 'test "$SERVER_IMAGE" = %q' "$SERVER_IMAGE"; else printf ':'; fi)"'
     d=/root/.usnm-appver-$(tr -d - < /proc/sys/kernel/random/uuid); mkdir -m 700 "$d"; trap '\''rm -rf "$d"'\'' EXIT
     tar -x -C "$d"
     podman build --pull=never --network=none --platform linux/amd64 --build-arg "SERVER_IMAGE=$SERVER_IMAGE" '"$(printf '%q ' "${build_args[@]}")"' \
@@ -531,6 +593,19 @@ if [ "$SERVER_MODE" = onprem ]; then
   [[ $appver_image =~ ^sha256:[0-9a-f]{64}$ ]] || die "the on-prem build gave no image ID"
   echo "   $appver_image ($appver_tag)"
   if $PREPARE_ONLY; then
+    if [ -n "$ARTIFACT_RECEIPT" ]; then
+      python3 - "$ARTIFACT_RECEIPT" "$appver_image" "$sha" "$SERVER_IMAGE" <<'PY'
+import json, os, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+staging = path.with_suffix(".new")
+with open(staging, "w", opener=lambda name, flags: os.open(name, flags, 0o600)) as stream:
+    json.dump(dict(schema=1, image=sys.argv[2], source_commit=sys.argv[3], server_image=sys.argv[4]), stream)
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(staging, path)
+PY
+    fi
     echo "prepared signed $APP $VERSION ($PLATFORM, $PLAN_CLASS) as $appver_image in container $ONPREM_CT; not published or registered"
     echo "publish it there with: usnm-boinc-step --env $ENV_NAME --target publish --step publish --image $appver_image --wait-mins 30"
     exit 0

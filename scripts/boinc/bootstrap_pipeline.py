@@ -79,8 +79,8 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def load(path):
-    config = json.loads(path.read_text())
+def load(path, supplied=None):
+    config = json.loads(path.read_text()) if supplied is None else dict(supplied)
     required = {"env", "app", "version", "platform", "plan_class", "signing_host", "acceptance_config"}
     if set(config) != required:
         raise PipelineError("configuration must contain exactly the documented fields")
@@ -185,7 +185,7 @@ class Pipeline:
                 self.args.coordination_claim or ""):
             raise PipelineError("execution requires an active #529 coordination claim (not deployment authorization)")
         settings = json.loads(self.git("show", sha + ":" + self.settings))
-        if settings.get("server", "azure") != "azure":
+        if settings.get("server", "azure") != getattr(self, "topology", "azure"):
             raise PipelineError("bootstrap pipeline supports only Azure-hosted BOINC servers; "
                                 "on-prem releases require a separate reviewed orchestration "
                                 "(docs/boinc-onprem.md)")
@@ -294,7 +294,7 @@ class Pipeline:
         else:
             settings["images"]["worker"] = image
             atomic(work / self.settings, settings)
-        check_images(settings["images"], self.image_keys())
+        self.check_images(settings["images"], self.image_keys())
         self.state["worker_build"] = build["databaseId"]
         self.state["worker_commit"] = build["headSha"]
         self.save()
@@ -345,6 +345,8 @@ class Pipeline:
     def image_keys(self, appver=False):
         return ("server", "bridge") + (() if self.worker_pin else ("worker",)) + (("appver",) if appver else ())
 
+    check_images = staticmethod(check_images)
+
     def read_worker_pin(self, work):
         if not self.worker_pin:
             return None
@@ -377,6 +379,10 @@ class Pipeline:
             original = json.loads(self.git("show", source + ":" + self.worker_pin, cwd=work))
             if original != worker_pin:
                 raise PipelineError("signing changed the reviewed app-specific worker pin")
+        self.review_candidate(label, work, settings, worker_pin,
+                              {self.settings} | ({self.worker_pin} if label == "runtime" and self.worker_pin else set()))
+
+    def review_candidate(self, label, work, settings, worker_pin, allowed_paths):
         reviews = self.state["reviews"]
         if label not in reviews:
             reviews[label] = {"branch": "boinc-bootstrap-" + self.state["id"] + "-" + label,
@@ -387,7 +393,6 @@ class Pipeline:
             raise PipelineError("candidate changed after review intent was persisted")
         branch = review["branch"]
         dirty = self.git("status", "--porcelain", "--untracked-files=all", cwd=work).splitlines()
-        allowed_paths = {self.settings} | ({self.worker_pin} if label == "runtime" and self.worker_pin else set())
         if any(line[3:] not in allowed_paths for line in dirty):
             raise PipelineError("artifact preparation changed files outside the settings allowlist")
         if dirty:
@@ -572,9 +577,20 @@ def main():
     parser.add_argument("--coordination-claim")
     parser.add_argument("--approve-retry", choices=PHASES)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--onprem-host")
+    parser.add_argument("--onprem-ct")
+    parser.add_argument("--authorize-runtime-install", action="store_true",
+                        help="explicitly authorize reviewed on-prem server.env installation and service restart")
     args = parser.parse_args()
     try:
-        config, identity = load(args.config)
+        if args.onprem_host or args.onprem_ct:
+            sys.modules.setdefault("bootstrap_pipeline", sys.modules[__name__])
+            from onprem_pipeline import OnpremPipeline, load_onprem
+            config, identity = load_onprem(args.config, args)
+            pipeline_class = OnpremPipeline
+        else:
+            config, identity = load(args.config)
+            pipeline_class = Pipeline
         directory = args.state_dir.resolve()
         if not directory.is_relative_to(ROOT / "target"):
             raise PipelineError("state-dir must be below this checkout's ignored target directory")
@@ -587,7 +603,7 @@ def main():
                 raise PipelineError("pipeline state is already locked") from exc
             for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                 signal.signal(sig, lambda *_: (_ for _ in ()).throw(PipelineError("interrupted")))
-            result = Pipeline(args, config, identity).execute()
+            result = pipeline_class(args, config, identity).execute()
             print(json.dumps(result, sort_keys=True))
         return 0
     except Blocked as exc:
