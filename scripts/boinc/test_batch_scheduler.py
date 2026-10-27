@@ -324,6 +324,7 @@ class SchedulerTests(unittest.TestCase):
             transport = batch.Transport(self.config, directory)
             rows = [record("page-" + str(number), number) for number in range(1, 129)]
             names = [f'dispatch/jobs/{row["job"]["id"]}/record.json' for row in rows]
+            listing = [{"name": name, "etag": '"version-1"'} for name in names]
             stale = directory / "journal-cache" / "stale.json"
             stale.parent.mkdir()
             stale.write_text("{}")
@@ -336,15 +337,38 @@ class SchedulerTests(unittest.TestCase):
                     path.write_text(json.dumps(row))
                 return ""
 
-            with patch.object(transport, "az", return_value=json.dumps(names)), \
+            with patch.object(transport, "az", side_effect=lambda *args: json.dumps(listing)) as az, \
                     patch.object(transport, "run", side_effect=download) as run, \
                     patch.object(transport, "blob", side_effect=AssertionError("per-record CLI")):
                 self.assertEqual(transport.records(), rows)
+                returned = transport.records()
+                returned[0]["stage"] = "must-not-poison-cache"
+                self.assertEqual(transport.records(), rows)
                 self.assertEqual(run.call_count, 1)
+                self.assertEqual(az.call_count, 3)
                 self.assertFalse(stale.exists())
-            with patch.object(transport, "az", return_value=json.dumps(names)), \
+                listing[0]["etag"] = '"version-2"'
+                rows[0]["stage"] = "published"
+                self.assertEqual(transport.records(), rows)
+                self.assertEqual(run.call_count, 2)
+                listing.pop()
+                names.pop()
+                rows.pop()
+                self.assertEqual(transport.records(), rows)
+                self.assertEqual(run.call_count, 3)
+            listing[0]["etag"] = '"version-3"'
+            with patch.object(transport, "az", return_value=json.dumps(listing)), \
                     patch.object(transport, "run", return_value=""), \
                     self.assertRaisesRegex(ValueError, "changed during download"):
+                transport.records()
+            with patch.object(transport, "az", return_value=json.dumps(listing)), \
+                    patch.object(transport, "run", side_effect=download) as run:
+                self.assertEqual(transport.records(), rows)
+                self.assertEqual(run.call_count, 1)
+            listing[0]["etag"] = None
+            with patch.object(transport, "az", return_value=json.dumps(listing)), \
+                    patch.object(transport, "run", side_effect=AssertionError("invalid inventory")), \
+                    self.assertRaisesRegex(ValueError, "missing journal ETag"):
                 transport.records()
         finally:
             import shutil

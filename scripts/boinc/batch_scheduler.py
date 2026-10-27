@@ -572,6 +572,8 @@ class Transport:
                 "on-prem hand-off steps need the config's step_command")
         self.onprem_steps = {step for choice in onprem_handoff for step in ONPREM_HANDOFF[choice]}
         self.timings = timings or Timings()
+        self._journal_snapshot = None
+        self._journal_records = None
 
     def run(self, argv, label, timeout=2100, ok=(0,)):
         # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
@@ -658,10 +660,28 @@ class Transport:
     @timed("journals")
     def records(self):
         listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
-                                     "--query", "[].name", "-o", "json"))
-        names = [name for name in listing if re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name)]
+                                     "--query", "[].{name:name,etag:properties.etag}", "-o", "json"))
+        require(isinstance(listing, list), "invalid dispatch inventory")
+        snapshot = {}
+        for entry in listing:
+            require(isinstance(entry, dict) and isinstance(entry.get("name"), str),
+                    "invalid dispatch inventory entry")
+            name = entry["name"]
+            if not re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name):
+                continue
+            etag = entry.get("etag")
+            require(isinstance(etag, str) and bool(etag.strip()), "missing journal ETag")
+            require(name not in snapshot, "duplicate journal inventory entry")
+            snapshot[name] = etag
+        names = list(snapshot)
         require(len(names) <= MAX_JOBS and len(set(names)) == len(names),
                 "dispatch inventory limit/consistency failure; reconcile drained journals")
+        # Re-list every time, but avoid the second full download within a tick
+        # when every journal identity and ETag is unchanged.
+        if self._journal_snapshot == snapshot:
+            return copy.deepcopy(self._journal_records)
+        self._journal_snapshot = None
+        self._journal_records = None
         cache = self.directory / "journal-cache"
         if cache.exists():
             shutil.rmtree(cache)
@@ -684,6 +704,8 @@ class Transport:
             record = json.loads(path.read_text())
             require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
             records.append(record)
+        self._journal_snapshot = snapshot
+        self._journal_records = copy.deepcopy(records)
         return records
 
     @property
