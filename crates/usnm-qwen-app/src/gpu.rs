@@ -96,7 +96,12 @@ fn vulkan_device(list: &str, vendor: &str, wanted: u32) -> Option<VulkanDevice> 
     devices.into_iter().nth(usize::try_from(wanted).ok()?)
 }
 
-/// `llama-server --list-devices`, bounded to 30 seconds.
+/// Bounds GPU enumeration. Cold Vulkan driver loading on a busy volunteer host can take more
+/// than a minute (65 s measured for a correct NVIDIA listing, #1252), so this matches the
+/// model-load deadline instead of misreporting a slow but healthy GPU as `no_gpu`.
+pub(crate) const DEVICE_PROBE_DEADLINE: Duration = crate::server::LOAD_DEADLINE;
+
+/// `llama-server --list-devices`, bounded by [`DEVICE_PROBE_DEADLINE`].
 fn list_devices(server_bin: &Path) -> Result<String, String> {
     let mut cmd = Command::new(server_bin);
     cmd.arg("--list-devices");
@@ -107,6 +112,14 @@ fn list_devices(server_bin: &Path) -> Result<String, String> {
 }
 
 fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Output, String> {
+    device_probe_within(cmd, server_bin, DEVICE_PROBE_DEADLINE)
+}
+
+fn device_probe_within(
+    cmd: &mut Command,
+    server_bin: &Path,
+    deadline: Duration,
+) -> Result<std::process::Output, String> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -120,10 +133,10 @@ fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Ou
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() > Duration::from_secs(30) => {
+            Ok(None) if started.elapsed() > deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("GPU device probe: no answer in 30s".into());
+                return Err(format!("GPU device probe: no answer in {deadline:?}"));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
@@ -436,6 +449,30 @@ mod tests {
         let bin = slot.join("llama-server");
         std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' '{listing}'\n")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_probe_waits_for_slow_enumeration_but_kills_a_hung_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("llama-server");
+        std::fs::write(&bin, "#!/bin/sh\nsleep \"$1\"\necho Vulkan0\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = device_probe_within(Command::new(&bin).arg("1"), &bin, Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "Vulkan0");
+        let started = Instant::now();
+        let err = device_probe_within(
+            Command::new(&bin).arg("30"),
+            &bin,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err, "GPU device probe: no answer in 300ms");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(DEVICE_PROBE_DEADLINE > Duration::from_secs(65));
+        assert!(DEVICE_PROBE_DEADLINE <= crate::server::LOAD_DEADLINE);
     }
 
     #[cfg(unix)]
