@@ -47,7 +47,8 @@ body="$work/response"
 payload="$work/request.json"
 next_state="$work/state.json"
 trap 'rm -f "$body" "$payload" "$next_state"; rmdir "$work"' EXIT
-locations=$(python3 scripts/ci/indexnow-plan.py "$host" "$key" "$INDEXNOW_STATE_FILE" "$next_state" <<< "$sitemap") ||
+locations=$(python3 scripts/ci/indexnow-plan.py --host "$host" --key "$key" \
+  --state "$INDEXNOW_STATE_FILE" --output-state "$next_state" <<< "$sitemap") ||
   skip "$sitemap_url is not a valid URL sitemap or its submission state is invalid"
 urls=()
 while IFS= read -r url; do

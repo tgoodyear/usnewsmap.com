@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare a live sitemap with the last acknowledged IndexNow submission."""
 
+import argparse
 import datetime as dt
 import json
 import re
@@ -58,12 +59,17 @@ def plan(xml, host, key, previous):
 
 
 if __name__ == "__main__":
-    host, key, previous_path, next_path = sys.argv[1:]
-    previous = Path(previous_path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--key", required=True)
+    parser.add_argument("--state", required=True, type=Path)
+    parser.add_argument("--output-state", required=True, type=Path)
+    args = parser.parse_args()
+    previous = args.state
     state, changed = plan(
-        sys.stdin.read(), host, key,
+        sys.stdin.read(), args.host, args.key,
         previous.read_text() if previous.exists() else None,
     )
-    Path(next_path).write_text(json.dumps(state, sort_keys=True) + "\n")
+    args.output_state.write_text(json.dumps(state, sort_keys=True) + "\n")
     for url in changed:
         print(url)
