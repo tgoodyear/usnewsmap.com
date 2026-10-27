@@ -146,6 +146,7 @@ install -m 0644 "$stage/quality_receive.py" /opt/usnm-quality-feed/quality_recei
 install -m 0644 "$stage/usnm-quality-ship.service" "$stage/usnm-quality-ship.timer" /etc/systemd/system/
 install -m 0755 "$stage/quality_results.py" "$stage/quality-results-pull.sh" /opt/usnm-quality-feed/
 install -m 0644 "$stage/usnm-quality-results.service" "$stage/usnm-quality-results.timer" /etc/systemd/system/
+printf 'CTID=%s\n' "$ct" > /etc/usnm/quality-results.env
 printf 'CAMPAIGN=%s\nENGINE_IMAGE=%s\nMAX_UNSENT=%s\nMAX_CHUNKS=%s\nBUNDLE_SIZE=%s\n' \
   "$campaign" "$engine" "$unsent" "$chunks" "$bundle" > /etc/usnm/quality-ship.env
 systemctl daemon-reload

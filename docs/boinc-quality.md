@@ -455,6 +455,11 @@ no LoC request:
    `load.py results` with that container's certificate-authenticated loader DSN.
    The whole pass has its own host lock and bounded phase timeouts; any failed phase
    prevents loading an old snapshot. A busy bridge retries at the next tick.
+   Transfers use a unique per-pass snapshot directory; timeout terminates the local
+   transfer process group and extraction is bounded inside CT215. Failed snapshots
+   remain for diagnosis; successful loads remove only their own redundant snapshot.
+   The installer records its selected preparation container in
+   `/etc/usnm/quality-results.env` (`CTID`, default 215), never pve-big's CT215.
    Collection does not submit work or alter quorum. Repeated loads upsert the same
    campaign/page/reader keys. The existing six-hour summary refresh timer updates
    ranking views; a successful BOINC result is not a loaded result until the loader

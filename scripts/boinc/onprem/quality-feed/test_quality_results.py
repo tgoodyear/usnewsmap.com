@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import shlex
+import sys
+import time
 import types
 import unittest
 import uuid
@@ -19,32 +21,45 @@ spec.loader.exec_module(results)
 
 
 class ResultsTest(unittest.TestCase):
+    def setUp(self):
+        fixed = mock.patch.object(results.uuid, "uuid4", return_value=types.SimpleNamespace(hex="a" * 32))
+        fixed.start()
+        self.addCleanup(fixed.stop)
+        transfer = mock.patch.object(results, "transfer",
+                                     side_effect=lambda command: results.subprocess.run(
+                                         command, check=True, timeout=300))
+        transfer.start()
+        self.addCleanup(transfer.stop)
+
     def args(self):
         return types.SimpleNamespace(campaign="v1-test", engine_image="sha256:" + "a" * 64,
-                                     server_host="server.example", server_ct=230, ctid=215)
+                                     server_host="server.example", server_ct=230, ctid=216)
 
     def test_collection_pull_then_certificate_load_with_bounded_locks_and_retry(self):
         with mock.patch.object(results.subprocess, "run") as run:
             for _ in range(2):
                 self.assertEqual(results.run(self.args())["campaign"], "v1-test")
             calls = run.call_args_list
-            self.assertEqual(len(calls), 6)
-            self.assertEqual(calls[:3], calls[3:])
-            collect, pull, load = [c.args[0] for c in calls[:3]]
+            self.assertEqual(len(calls), 8)
+            self.assertEqual(calls[:4], calls[4:])
+            collect, pull, load, cleanup = [c.args[0] for c in calls[:4]]
             self.assertIn("flock -n /run/usnm-boinc-step.lock", collect[-1])
             self.assertIn("podman exec usnm-boinc-server timeout --signal=TERM --kill-after=30s 20m",
                           collect[-1])
             self.assertIn("--spool /project/usnmocr/results/0", collect[-1])
             self.assertIn("--snapshot-only", pull)
-            self.assertEqual(load[:4], ["pct", "exec", "215", "--"])
+            self.assertEqual(pull[pull.index("--snapshot-id") + 1], "a" * 32)
+            self.assertEqual(pull[pull.index("--ctid") + 1], "216")
+            self.assertEqual(load[:4], ["pct", "exec", "216", "--"])
             self.assertIn('$(cat /etc/usnm/quality-db/dsn)', load[-1])
-            self.assertIn("/results/v1-test/out/pages.parquet", load[-1])
+            self.assertIn("/results/v1-test/snapshots/" + "a" * 32 + "/out/pages.parquet", load[-1])
+            self.assertEqual(cleanup[-1], "/var/lib/usnm-quality-feed/results/v1-test/snapshots/" + "a" * 32)
             for call in calls:
                 self.assertTrue(call.kwargs["check"])
                 self.assertGreater(call.kwargs["timeout"], 0)
 
     def test_failed_or_timed_out_phase_never_advances(self):
-        for phase in range(3):
+        for phase in range(4):
             for error in (subprocess.CalledProcessError(1, ["phase"]),
                           subprocess.TimeoutExpired(["phase"], 1)):
                 with self.subTest(phase=phase, error=type(error).__name__):
@@ -111,3 +126,15 @@ raise SystemExit(int(os.environ.get("SSH_EXIT", "0")))
                     results.main(["--campaign", "v1-test", "--engine-image",
                                   "sha256:" + "a" * 64, "--lock", str(path)])
                 run.assert_not_called()
+
+    def test_timed_out_transfer_kills_children_even_when_parent_exits_on_term(self):
+        late = self.root / "late-write"
+        child = ("import signal,time;from pathlib import Path;"
+                 "signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(1);"
+                 f"Path({str(late)!r}).write_text('orphan')")
+        parent = ("import subprocess,sys,time;"
+                  f"subprocess.Popen([sys.executable,'-c',{child!r}]);time.sleep(20)")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            results.transfer([sys.executable, "-c", parent], timeout=0.4)
+        time.sleep(1)
+        self.assertFalse(late.exists())

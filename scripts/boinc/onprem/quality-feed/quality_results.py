@@ -9,13 +9,37 @@ continues to publish ranking updates.
 import argparse
 import fcntl
 import json
+import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import time
+import uuid
 
 HERE = Path(__file__).resolve().parent
+
+
+def transfer(command, timeout=300):
+    with subprocess.Popen(command, start_new_session=True) as process:
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(process.pid, sig)
+                except ProcessLookupError:
+                    pass
+                if sig == signal.SIGTERM:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+            process.wait()
+            raise
+        if code:
+            raise subprocess.CalledProcessError(code, command)
 
 
 def run(args):
@@ -33,22 +57,26 @@ def run(args):
     subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                     f"root@{args.server_host}", shlex.join(command)],
                    check=True, timeout=1260)
-    subprocess.run(["bash", str(HERE / "quality-results-pull.sh"),
-                    "--campaign", args.campaign, "--server-host", args.server_host,
-                    "--server-ct", str(args.server_ct), "--ctid", str(args.ctid),
-                    "--snapshot-only"], check=True, timeout=300)
+    snapshot = uuid.uuid4().hex
+    transfer(["bash", str(HERE / "quality-results-pull.sh"),
+              "--campaign", args.campaign, "--server-host", args.server_host,
+              "--server-ct", str(args.server_ct), "--ctid", str(args.ctid),
+              "--snapshot-only", "--snapshot-id", snapshot])
     # Read the existing certificate-auth DSN only inside the preparation container.
     # A failed load is retried in full next tick; load.py's keys make this idempotent.
     load = [
         "/opt/usnm-quality-feed/venv/bin/python", "/opt/usnm-quality-feed/load.py",
         "results", "--campaign", args.campaign, "--engine", args.engine_image,
-        "--file", f"/var/lib/usnm-quality-feed/results/{args.campaign}/out/pages.parquet",
+        "--file", f"/var/lib/usnm-quality-feed/results/{args.campaign}/snapshots/{snapshot}/out/pages.parquet",
     ]
     script = ('set -eu; exec ' + shlex.join(load) +
               ' --dsn "$(cat /etc/usnm/quality-db/dsn)"')
     subprocess.run(["pct", "exec", str(args.ctid), "--",
                     "timeout", "--signal=TERM", "--kill-after=30s", "10m",
                     "sh", "-c", script], check=True, timeout=660)
+    subprocess.run(["pct", "exec", str(args.ctid), "--", "rm", "-rf",
+                    f"/var/lib/usnm-quality-feed/results/{args.campaign}/snapshots/{snapshot}"],
+                   check=True, timeout=30)
     return {"campaign": args.campaign, "loaded_at": time.time(),
             "snapshot": f"{root}/out/pages.parquet"}
 
