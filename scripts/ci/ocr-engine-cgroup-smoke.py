@@ -19,6 +19,13 @@ def run(argv, *, check=True, **kwargs):
     return subprocess.run(argv, check=check, text=True, capture_output=True, timeout=30, **kwargs)
 
 
+def cleanup_run(argv):
+    try:
+        return run(argv, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def cgroup_for(pid):
     entries = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
     unified = next((line.split(":", 2)[2] for line in entries if line.startswith("0::")), None)
@@ -126,6 +133,7 @@ def main():
     scratch = work / "scratch"
     scratch.mkdir(exist_ok=True)
     logfile = (work / "podman-service.log").open("wb")
+    log_path = work / "podman-service.log"
     service = None
     worker = None
     try:
@@ -260,6 +268,7 @@ def main():
         )
         print(json.dumps({"engine": "tesseract-5.5.0 cgroup test adapter", "passed": True, "failed": []}))
     finally:
+        failed = sys.exc_info()[0] is not None
         if worker is not None and worker.poll() is None:
             worker.terminate()
             try:
@@ -267,29 +276,43 @@ def main():
             except subprocess.TimeoutExpired:
                 worker.kill()
                 worker.wait()
-        if service is not None and service.poll() is None:
-            ids = run(
+        if service is not None:
+            ids = cleanup_run(
                 ["podman", "--remote", "--url", url, "ps", "-aq", "--filter", "label=usnm.engine=contract"],
-                check=False,
             )
-            for container_id in ids.stdout.split():
-                run(
-                    ["podman", "--remote", "--url", url, "rm", "--force", "--ignore", "--time", "0", container_id],
-                    check=False,
-                )
-            run(
-                ["podman", "rmi", "--force", "localhost/usnm-ocr/tesseract-contract-check:ci"],
-                check=False,
-            )
-            service.send_signal(signal.SIGTERM)
-            try:
-                service.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                service.kill()
-                service.wait()
+            if ids is not None:
+                for container_id in ids.stdout.split():
+                    cleanup_run(
+                        [
+                            "podman",
+                            "--remote",
+                            "--url",
+                            url,
+                            "rm",
+                            "--force",
+                            "--ignore",
+                            "--time",
+                            "0",
+                            container_id,
+                        ]
+                    )
+            if service.poll() is None:
+                service.send_signal(signal.SIGTERM)
+                try:
+                    service.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    service.kill()
+                    service.wait()
+        cleanup_run(
+            ["podman", "rmi", "--force", "localhost/usnm-ocr/tesseract-contract-check:ci"]
+        )
         logfile.close()
         import shutil
 
+        if failed and log_path.exists():
+            service_log = log_path.read_text(errors="replace").strip()
+            if service_log:
+                print(f"Podman service log:\n{service_log}", file=sys.stderr)
         shutil.rmtree(work)
 
 
