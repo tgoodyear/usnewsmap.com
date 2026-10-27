@@ -252,7 +252,7 @@ Visitors can limit a search to newspapers printed in chosen languages, for examp
 
 **Wording.** Plain headings in sentence case, no em dashes, and no internal terms (batch, split, overlay, delta) before "In progress"; copy goes through the house no-slop review before it ships. The page never shows search text (the status document has none).
 
-**Tests.** `web/src/status/now.test.ts` (each "Right now" state, the step states, the headline), `datasets.test.ts` (pages by decade, the reasons, what a version changed), `StatusPage.test.tsx` (the order of the sections, no internal terms before "In progress", each dataset's numbers from the document, the versions, list semantics, the current step, the collapsed details), `web/e2e/app.spec.ts` (the fixture API without pipeline state, the old path's redirect, and the same document with a paused titles-sync routed in, with axe, on desktop and mobile) and `web/e2e/seo.spec.ts` (`noindex` on `/datasets`, the redirect from `/status`).
+**Tests.** `web/src/status/now.test.ts` (each "Right now" state, the step states, the headline), `datasets.test.ts` (pages by decade, the reasons, what a version changed), `StatusPage.test.tsx` (the order of the sections, no internal terms before "In progress", each dataset's numbers from the document, the versions, list semantics, the current step, the collapsed details), `web/e2e/app.spec.ts` (the fixture API without pipeline state, the old path's redirect, and the same document with a paused titles-sync routed in, with axe, on desktop and mobile) and `web/e2e/seo.spec.ts` (indexable `/datasets` in the sitemap, the redirect from `/status`).
 
 ## 7.11 Japanese pages
 
