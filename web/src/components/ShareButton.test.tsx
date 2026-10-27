@@ -33,7 +33,7 @@ describe("Share preview preparation", () => {
     expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Share" }));
     expect(copy).toHaveBeenCalledWith(window.location.href);
-    expect(fetch).toHaveBeenCalledWith(window.location.href, { signal: expect.any(AbortSignal) });
+    expect(fetch).toHaveBeenCalledWith(window.location.href, { signal: expect.any(AbortSignal), cache: "no-store" });
     await waitFor(() => expect(screen.getByRole("button").textContent).toBe("Link copied"));
     expect(screen.getByRole("status").textContent).toBe("Preparing preview…");
     fireEvent.click(screen.getByRole("button"));
@@ -42,6 +42,7 @@ describe("Share preview preparation", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Preview ready for copied link"));
     expect(fetch).toHaveBeenLastCalledWith(new URL(image, window.location.href).href, {
       signal: expect.any(AbortSignal),
+      cache: "no-store",
     });
   });
 

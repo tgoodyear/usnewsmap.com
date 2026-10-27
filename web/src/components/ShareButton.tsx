@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 async function preparePreview(link: string, signal: AbortSignal) {
   // Read fresh server metadata: the SPA's initial tags may describe another view.
-  const page = await fetch(link, { signal });
+  const page = await fetch(link, { signal, cache: "no-store" });
   if (!page.ok) throw new Error("Could not load sharing metadata");
   const html = new DOMParser().parseFromString(await page.text(), "text/html");
   const image = html.querySelector('meta[property="og:image"]')?.getAttribute("content");
@@ -15,7 +15,8 @@ async function preparePreview(link: string, signal: AbortSignal) {
   const url = new URL(advertised.pathname + advertised.search, link);
   for (;;) {
     signal.throwIfAborted();
-    const response = await fetch(url.href, { signal });
+    // A browser-cached PNG does not prove the server's screenshot cache is warm.
+    const response = await fetch(url.href, { signal, cache: "no-store" });
     if (!response.ok || response.headers.get("content-type")?.split(";")[0] !== "image/png") {
       throw new Error("Could not prepare sharing preview");
     }

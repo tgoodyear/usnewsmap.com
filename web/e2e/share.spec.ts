@@ -22,12 +22,20 @@ test("Share copies immediately and warms the actual current view before reportin
   await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&state=IL&bucket=week");
   const share = page.getByRole("button", { name: "Share", exact: true });
   await expect(share).toBeVisible();
-  await expect(page.getByTestId("map")).toHaveAttribute("data-basemap-ready", "true");
-  const link = page.url();
+  await share.evaluate((button) => {
+    button.addEventListener(
+      "click",
+      () => {
+        document.documentElement.dataset.shareClickUrl = window.location.href;
+      },
+      { once: true },
+    );
+  });
   expect(requests).toEqual([]);
   await share.click();
   await expect(page.getByRole("button", { name: "Link copied", exact: true })).toBeVisible();
-  await expect(page.locator("html")).toHaveAttribute("data-copied-link", link);
+  const link = await page.locator("html").getAttribute("data-share-click-url");
+  await expect(page.locator("html")).toHaveAttribute("data-copied-link", link!);
   await expect(page.locator(".share-status")).toHaveText("Preview ready for copied link", { timeout: 50_000 });
   expect(requests.length).toBeGreaterThan(0);
   expect(new URL(requests[0]!).searchParams.get("state")).toBe("IL");
