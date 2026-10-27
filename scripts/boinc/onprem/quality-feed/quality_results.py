@@ -23,8 +23,8 @@ def run(args):
     command = [
         "pct", "exec", str(args.server_ct), "--",
         "flock", "-n", "/run/usnm-boinc-step.lock",
-        "timeout", "--signal=TERM", "--kill-after=30s", "20m",
         "podman", "exec", "usnm-boinc-server",
+        "timeout", "--signal=TERM", "--kill-after=30s", "20m",
         "usnm-boinc", "quality", "collect", "--campaign", args.campaign,
         "--root", root, "--spool", "/project/usnmocr/results/0",
         "--qwen-root", root + "/no-qwen", "--qwen-spool", root + "/no-qwen",

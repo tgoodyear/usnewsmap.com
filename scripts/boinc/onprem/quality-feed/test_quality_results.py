@@ -32,7 +32,8 @@ class ResultsTest(unittest.TestCase):
             self.assertEqual(calls[:3], calls[3:])
             collect, pull, load = [c.args[0] for c in calls[:3]]
             self.assertIn("flock -n /run/usnm-boinc-step.lock", collect[-1])
-            self.assertIn("timeout --signal=TERM --kill-after=30s 20m", collect[-1])
+            self.assertIn("podman exec usnm-boinc-server timeout --signal=TERM --kill-after=30s 20m",
+                          collect[-1])
             self.assertIn("--spool /project/usnmocr/results/0", collect[-1])
             self.assertIn("--snapshot-only", pull)
             self.assertEqual(load[:4], ["pct", "exec", "215", "--"])
