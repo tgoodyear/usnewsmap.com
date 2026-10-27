@@ -26,6 +26,7 @@
 //! - [`text_layout`]: a searched field per text, or one for both (05 §5.5.7, #283)
 
 pub mod american_stories;
+pub mod catalog;
 pub mod common_grams;
 pub mod cube;
 #[cfg(feature = "damage")]

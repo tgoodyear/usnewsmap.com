@@ -366,7 +366,7 @@ mod tests {
                     );
                 }
                 // The pickup takes it, as it took main's.
-                usnm_ingest::ocr_local::checks::check_alto(new.alto.as_bytes()).unwrap();
+                usnm_ocr_local::checks::check_alto(new.alto.as_bytes()).unwrap();
                 assert!(new
                     .alto
                     .contains("<softwareVersion>5.5.1</softwareVersion>"));
@@ -432,7 +432,7 @@ mod tests {
                 "damage_before=0.25".into(),
             ]
         );
-        usnm_ingest::ocr_local::checks::check_alto(stored.alto.as_bytes()).unwrap();
+        usnm_ocr_local::checks::check_alto(stored.alto.as_bytes()).unwrap();
     }
 
     /// An engine's ALTO with a word broken at a line end four ways: the

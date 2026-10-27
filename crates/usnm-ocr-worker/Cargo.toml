@@ -51,7 +51,7 @@ standin = []
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower.workspace = true
 tracing-subscriber.workspace = true
-usnm-ingest = { path = "../usnm-ingest" }
+usnm-ocr-local.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
 
 [lints]

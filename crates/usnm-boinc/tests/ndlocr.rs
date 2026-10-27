@@ -166,7 +166,8 @@ async fn canonical_collection_uses_release_overlay_and_replays_accepted_bytes() 
     )
     .unwrap();
     atomic(&unit.join("submitted"), b"yes").unwrap();
-    // A long English column with too few Japanese characters stays out of the Japanese index.
+    // The collector marks an English-heavy reading as mixed; ingest tests
+    // separately cover the Japanese index's mixed-text acceptance gate.
     let text = format!(
         "{} 一",
         vec!["English advertisements and community news."; 30].join("\n")
@@ -183,16 +184,19 @@ async fn canonical_collection_uses_release_overlay_and_replays_accepted_bytes() 
     ndlocr::collect(&root, &spool, doc, &store).await.unwrap();
     let parts = store.list("ocr-ja/pages").await.unwrap();
     assert_eq!(parts.len(), 1);
-    let pages = usnm_ingest::ocr_ja::read_part(
-        store.get(&parts[0]).await.unwrap().unwrap().into(),
-        &parts[0],
-    )
-    .unwrap();
-    assert_eq!(pages[0].ocr_source, "usnm-ndlocr-lite");
-    assert_eq!(pages[0].loc_text, "mixed");
-    assert!(!pages[0].indexable());
     let raw = store.get(&parts[0]).await.unwrap().unwrap();
     let row = usnm_overlay::read_part(raw.into()).unwrap().remove(0);
+    assert_eq!(row.ocr_source, "usnm-ndlocr-lite");
+    assert_eq!(row.loc_text, "mixed");
+    assert_eq!(
+        row.text
+            .as_deref()
+            .unwrap()
+            .chars()
+            .filter(|&c| usnm_core::ja::is_ja(c))
+            .count(),
+        1
+    );
     let accepted_at = chrono::DateTime::parse_from_rfc3339(
         &std::fs::read_to_string(unit.join("accepted/accepted-at.txt")).unwrap(),
     )

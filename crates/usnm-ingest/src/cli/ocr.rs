@@ -1,12 +1,12 @@
 //! The `ocr-*` commands that exchange work with the OCR nodes (12 §12.5): `ocr-damage`,
 //! `ocr-prefetch-manifest`, `ocr-sync`, `ocr-seed`, `ocr-enqueue` and `ocr-requeue`; and
 //! `ocr-agreement` (#962), LoC's text against American Stories' with no OCR at all. The OCR
-//! pipeline itself is `usnm_ingest::ocr_local` (the `usnm-ocr-local` crate).
+//! pipeline itself is `usnm_ocr_local` (the `usnm-ocr-local` crate).
 use anyhow::Context;
 use clap::Args;
-use usnm_ingest::owner_id;
 use usnm_ingest::release::Published;
 use usnm_ingest::state::State;
+use usnm_state::owner_id;
 
 use super::common::deadline;
 use crate::Cli;
@@ -48,7 +48,7 @@ struct SeedArgs {
     #[arg(long, env = "USNM_OCR_SEED_YEARS")]
     seed_years: Option<String>,
     /// The least damage a page needs to be queued.
-    #[arg(long, env = "USNM_OCR_SEED_MIN_DAMAGE", default_value_t = usnm_ingest::ocr_local::seed::MIN_DAMAGE)]
+    #[arg(long, env = "USNM_OCR_SEED_MIN_DAMAGE", default_value_t = usnm_ocr_local::seed::MIN_DAMAGE)]
     seed_min_damage: f64,
     /// The plan's budget: the most distinct pages it ever queues.
     #[arg(long, env = "USNM_OCR_SEED_MAX_PAGES")]
@@ -74,7 +74,7 @@ struct SeedArgs {
     /// fetcher's order, only pages whose scans are on pve-big, from the
     /// newest list a node published to `ocr-out/fetched/`; 12 Step 11).
     #[arg(long, env = "USNM_OCR_SEED_SOURCE", default_value = "damage")]
-    seed_source: usnm_ingest::ocr_local::seed::Source,
+    seed_source: usnm_ocr_local::seed::Source,
     /// With `--seed-source fetched`: the prefetch manifest's index version.
     /// Default: the published version.
     #[arg(long, env = "USNM_OCR_SEED_MANIFEST")]
@@ -82,8 +82,8 @@ struct SeedArgs {
 }
 
 impl SeedArgs {
-    fn options(&self, dry_run: bool) -> anyhow::Result<usnm_ingest::ocr_local::seed::Options> {
-        let opts = usnm_ingest::ocr_local::seed::Options {
+    fn options(&self, dry_run: bool) -> anyhow::Result<usnm_ocr_local::seed::Options> {
+        let opts = usnm_ocr_local::seed::Options {
             plan: self.seed_plan.clone().unwrap_or_default().trim().to_owned(),
             batches: self
                 .seed_batches
@@ -97,7 +97,7 @@ impl SeedArgs {
                 .map(|l| l.trim().to_owned())
                 .filter(|l| !l.is_empty())
                 .collect(),
-            years: usnm_ingest::ocr_local::seed::parse_years(
+            years: usnm_ocr_local::seed::parse_years(
                 self.seed_years.as_deref().unwrap_or_default(),
             )?,
             min_damage: self.seed_min_damage,
@@ -359,7 +359,7 @@ pub(crate) async fn ocr_damage_command(
         max_runtime_secs,
         parallel,
     } = args;
-    let opts = usnm_ingest::ocr_local::ocr_damage::Options {
+    let opts = usnm_ocr_local::ocr_damage::Options {
         index_version: index_version.clone().unwrap_or_default(),
         batches: batches.clone(),
         sample_pct: *sample_pct,
@@ -372,7 +372,7 @@ pub(crate) async fn ocr_damage_command(
     };
     let curated = usnm_store::open(&cli.stores.curated)?;
     let reference = usnm_store::open(&cli.stores.reference)?;
-    usnm_ingest::ocr_local::ocr_damage::run(curated, reference.as_ref(), &opts)
+    usnm_ocr_local::ocr_damage::run(curated, reference.as_ref(), &opts)
         .await
         .map(|()| None)
 }
@@ -384,7 +384,7 @@ pub(crate) async fn ocr_agreement_command(
 ) -> anyhow::Result<Option<Published>> {
     let sample_cut = args
         .sample_pct
-        .map(usnm_ingest::ocr_local::ocr_damage::sample_cut)
+        .map(usnm_ocr_local::ocr_damage::sample_cut)
         .transpose()?;
     let opts = usnm_ingest::text_agreement::Options {
         index_version: args.index_version.clone(),
@@ -416,12 +416,12 @@ pub(crate) async fn ocr_prefetch_manifest_command(
     let curated = usnm_store::open(&cli.stores.curated)?;
     let reference = usnm_store::open(&cli.stores.reference)?;
     let exchange = exchange_url.as_deref().map(usnm_store::open).transpose()?;
-    let opts = usnm_ingest::ocr_local::ocr_prefetch::Options {
+    let opts = usnm_ocr_local::ocr_prefetch::Options {
         index_version: index_version.clone(),
         partial: *partial,
         min_damage: *min_damage,
     };
-    usnm_ingest::ocr_local::ocr_prefetch::run(
+    usnm_ocr_local::ocr_prefetch::run(
         curated.as_ref(),
         reference.as_ref(),
         exchange.as_deref(),
@@ -455,13 +455,13 @@ pub(crate) async fn ocr_sync_command(
     let seed = seed.options(false)?;
     let curated = usnm_store::open(&cli.stores.curated)?;
     if *report {
-        usnm_ingest::ocr_local::report::run(curated.as_ref()).await?;
+        usnm_ocr_local::report::run(curated.as_ref()).await?;
         return Ok(None);
     }
     let need = |v: &Option<String>, flag: &str| {
         v.clone().with_context(|| format!("ocr-sync needs {flag}"))
     };
-    let stores = usnm_ingest::ocr_local::sync::Stores {
+    let stores = usnm_ocr_local::sync::Stores {
         curated,
         reference: usnm_store::open(&cli.stores.reference)?,
         out: usnm_store::open(&need(out_url, "--out-url")?)?,
@@ -469,7 +469,7 @@ pub(crate) async fn ocr_sync_command(
         requests: requests_url.as_deref().map(usnm_store::open).transpose()?,
         queue: usnm_store::queue::open(&need(queue_url, "--queue-url")?)?,
     };
-    let opts = usnm_ingest::ocr_local::sync::Options {
+    let opts = usnm_ocr_local::sync::Options {
         max_parts: *max_parts,
         chunk: *chunk,
         max_dead_letters: *max_dead_letters,
@@ -482,7 +482,7 @@ pub(crate) async fn ocr_sync_command(
             usnm_ingest::american_stories::SeedTexts::default(),
         )),
     };
-    usnm_ingest::ocr_local::sync::run(&state, &owner_id(), &stores, &opts)
+    usnm_ocr_local::sync::run(&state, &owner_id(), &stores, &opts)
         .await
         .map(|_| None)
 }
@@ -500,7 +500,7 @@ pub(crate) async fn ocr_seed_command(
         dry_run,
         max_runtime_secs,
     } = args;
-    let opts = usnm_ingest::ocr_local::seed::Options {
+    let opts = usnm_ocr_local::seed::Options {
         deadline: deadline(start, *max_runtime_secs),
         ..seed.options(*dry_run)?
     };
@@ -509,14 +509,14 @@ pub(crate) async fn ocr_seed_command(
     let queue = usnm_store::queue::open(queue_url)?;
     let out = out_url.as_deref().map(usnm_store::open).transpose()?;
     let american_stories = usnm_ingest::american_stories::SeedTexts::default();
-    let stores = usnm_ingest::ocr_local::seed::Stores {
+    let stores = usnm_ocr_local::seed::Stores {
         curated: curated.as_ref(),
         reference: reference.as_ref(),
         queue: &queue,
         out: out.as_deref(),
         american_stories: Some(&american_stories),
     };
-    let report = usnm_ingest::ocr_local::seed::run(&state, &owner_id(), &stores, &opts).await?;
+    let report = usnm_ocr_local::seed::run(&state, &owner_id(), &stores, &opts).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(None)
 }
@@ -535,7 +535,7 @@ pub(crate) async fn ocr_enqueue_command(
         include_outstanding,
         dry_run,
     } = args;
-    let opts = usnm_ingest::ocr_local::enqueue::EnqueueOptions {
+    let opts = usnm_ocr_local::enqueue::EnqueueOptions {
         pages: pages.clone(),
         reason: (*reason).into(),
         plan: plan.clone(),
@@ -543,7 +543,7 @@ pub(crate) async fn ocr_enqueue_command(
         include_outstanding: *include_outstanding,
         dry_run: *dry_run,
     };
-    usnm_ingest::ocr_local::enqueue::enqueue(
+    usnm_ocr_local::enqueue::enqueue(
         &state,
         usnm_store::open(&cli.stores.curated)?.as_ref(),
         usnm_store::open(&cli.stores.reference)?.as_ref(),
@@ -568,7 +568,7 @@ pub(crate) async fn ocr_requeue_command(
         max_pages,
         dry_run,
     } = args;
-    let opts = usnm_ingest::ocr_local::enqueue::RequeueOptions {
+    let opts = usnm_ocr_local::enqueue::RequeueOptions {
         cause: cause.clone(),
         kind: kind.clone(),
         since: *since,
@@ -576,7 +576,7 @@ pub(crate) async fn ocr_requeue_command(
         max_pages: *max_pages,
         dry_run: *dry_run,
     };
-    usnm_ingest::ocr_local::enqueue::requeue(
+    usnm_ocr_local::enqueue::requeue(
         &state,
         usnm_store::open(&cli.stores.curated)?.as_ref(),
         usnm_store::open(&cli.stores.reference)?.as_ref(),

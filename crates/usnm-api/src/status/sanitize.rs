@@ -268,7 +268,7 @@ fn is_guid(s: &str) -> bool {
             .all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Contains `…-{pid}-{8 hex}`, the tail of [`usnm_ingest::owner_id`]-style ids.
+/// Contains `…-{pid}-{8 hex}`, the tail of [`usnm_state::owner_id`]-style ids.
 fn has_worker_id(segment: &str) -> bool {
     let parts: Vec<&str> = segment.split('-').collect();
     parts.windows(2).any(|w| {

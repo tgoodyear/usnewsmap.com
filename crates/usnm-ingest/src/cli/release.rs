@@ -7,10 +7,10 @@ use anyhow::{bail, Context};
 use clap::Args;
 use usnm_ingest::activity::Reporter;
 use usnm_ingest::merges::{self, MergeWait};
-use usnm_ingest::owner_id;
 use usnm_ingest::release::{self, Published, Release};
 use usnm_ingest::sink::{IndexSink, IngestApi, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::state::State;
+use usnm_state::owner_id;
 
 use super::common::{root, IndexTarget, Stores};
 use crate::Cli;

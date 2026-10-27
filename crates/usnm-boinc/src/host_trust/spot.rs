@@ -223,8 +223,7 @@ fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Stri
     let text = read(&file("text.txt"), boinc::MAX_TEXT)?;
     let alto = read(&file("layout.xml"), boinc::MAX_ALTO)?;
     manifest.matches(job, &text, &alto)?;
-    usnm_ingest::ocr_local::checks::check_alto(&alto)
-        .map_err(|r| anyhow::anyhow!("{}", r.code()))?;
+    usnm_ocr_local::checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
     crate::normalized_text(job, &text)
 }
 

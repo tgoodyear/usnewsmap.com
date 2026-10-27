@@ -120,7 +120,7 @@ async fn curates_a_real_loc_archive() {
     );
     let mut rows = Vec::new();
     let part = e.curated.get(&c.parts[0]).await.unwrap().unwrap();
-    usnm_ingest::curated::read_part(part.into(), true, |r| {
+    usnm_overlay::curated::read_part(part.into(), true, |r| {
         rows.push(r);
         Ok(())
     })

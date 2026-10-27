@@ -44,7 +44,7 @@ use crate::worker::Counts;
 
 /// Where the writer puts the pages (a directory: stores list it without the
 /// trailing slash).
-pub const PAGES: &str = "american-stories/pages";
+pub const PAGES: &str = usnm_core::american_stories::PAGES;
 
 /// Where the writer marks the years it has finished.
 pub const YEARS: &str = "american-stories/years";

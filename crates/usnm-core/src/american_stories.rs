@@ -12,6 +12,9 @@
 //! leaving the version out of `current.json` switches them off without a
 //! rebuild.
 
+/// Curated American Stories page shards shared by producers and readers.
+pub const PAGES: &str = "american-stories/pages";
+
 /// Bumped whenever what `text_as` holds changes: which American Stories
 /// scans a page takes, or how their text is put together. A release then
 /// rebuilds every index.

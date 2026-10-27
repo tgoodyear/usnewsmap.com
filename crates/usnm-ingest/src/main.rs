@@ -11,10 +11,10 @@ use cli::{
     batches, congress, curate, ocr, onprem, pictures, prune, release, run, searchlog_copy, titles,
 };
 use usnm_ingest::activity::{self, Reporter};
-use usnm_ingest::owner_id;
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
 use usnm_ingest::state::{Outcome, State, Step};
 use usnm_ingest::telemetry;
+use usnm_state::owner_id;
 
 /// US News Map ingest pipeline (docs/design/04 §4.4).
 #[derive(Parser)]
@@ -93,7 +93,7 @@ async fn main() -> std::process::ExitCode {
     // it again as plain text after that line.
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(e) if e.is::<usnm_ingest::congress::fetch::Stopped>() => {
+        Err(e) if e.is::<usnm_congress::fetch::Stopped>() => {
             tracing::info!(command = cli.command.name(), "{e}");
             std::process::ExitCode::from(EXIT_SIGTERM)
         }

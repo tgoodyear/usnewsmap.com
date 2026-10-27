@@ -515,7 +515,7 @@ pub(crate) mod tests {
 
     #[test]
     fn places_from_the_catalog_are_names_and_variants() {
-        let places: Vec<usnm_ingest::catalog::Place> = serde_json::from_str(
+        let places: Vec<usnm_core::catalog::Place> = serde_json::from_str(
             r#"[{"id":"a","ordinal":1,"name":"Troy","state":"NY","lat":1.0,"lon":2.0,"precision":"city",
                  "variants":[{"name":"Troy City","rule":"x_city"}]},
                 {"id":"b","ordinal":2,"name":"Albany","state":"NY","lat":1.0,"lon":2.0,"precision":"city"}]"#,
