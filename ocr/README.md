@@ -1,6 +1,6 @@
 # OCR
 
-Data, locks, templates and image definitions for the OCR pipeline: the engine catalog and routes, the engine contract's JSON Schemas, the BOINC app definitions, and the OCR benchmark. The Rust that uses them is in [`crates/usnm-ocr-*`](../crates/README.md) and [`crates/usnm-boinc`](../crates/README.md), and the scripts that build, release and operate the pipeline are in [`scripts/ocr-*`](../scripts/README.md), [`boinc/scripts/`](../scripts/README.md) and [`scripts/ocr-node/`](../scripts/README.md). The Python that runs inside the Iris, Surya and training worker images is in `boinc/`. The design is in [12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md).
+Data, locks, templates and image definitions for the OCR pipeline: the engine catalog and routes, the engine contract's JSON Schemas, and the OCR benchmark. The BOINC app definitions and worker Python now live in [`boinc/apps/`](../boinc/apps), with operations in [`boinc/scripts/`](../boinc/README.md). The Rust that uses them is in [`crates/usnm-ocr-*`](../crates/README.md) and [`crates/usnm-boinc`](../crates/README.md), and the other pipeline scripts are in [`scripts/ocr-*`](../scripts/README.md) and [`scripts/ocr-node/`](../scripts/README.md). The design is in [12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md).
 
 | Directory                 | What it holds                                                                                                                                                     | Status                                                                       |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -45,7 +45,7 @@ A test in `usnm-ocr-contract` fails when the files differ from the types. A chan
 
 ## `boinc/`
 
-The files that define the volunteer apps. The stock BOINC server runs them; `usnm-boinc` stages, validates and collects them.
+Moved to [`boinc/apps/`](../boinc/apps). The files define the volunteer apps. The stock BOINC server runs them; `usnm-boinc` stages, validates and collects them.
 
 | Path                                 | What                                                                                                                                                                                                                                                     |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

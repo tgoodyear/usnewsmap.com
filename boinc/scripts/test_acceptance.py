@@ -445,7 +445,7 @@ class ReleaseIntegration(Workspace):
     def test_release_ready_is_gated_on_acceptance_exit_status(self):
         text = (ROOT / 'boinc/scripts/boinc-app-release.sh').read_text()
         tail = text.partition('echo "   $appver_image"\n')[2]
-        scripts = self.root / 'scripts' / 'boinc'
+        scripts = self.root / 'boinc' / 'scripts'
         scripts.mkdir(parents=True)
         provision = scripts / 'provision-boinc.sh'
         provision.write_text('#!/bin/sh\nexit 0\n')
