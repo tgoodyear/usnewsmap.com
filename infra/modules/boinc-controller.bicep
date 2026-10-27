@@ -1,7 +1,7 @@
 // The on-prem BOINC batch controller (#866, docs/boinc-batch-scheduler.md): the scan
-// fetcher's identity (CT 211's Arc machine identity) runs scripts/boinc/batch_scheduler.py,
+// fetcher's identity (CT 211's Arc machine identity) runs boinc/scripts/batch_scheduler.py,
 // which starts the hand-off job (main group) and the bridge job (BOINC group) through
-// scripts/boinc/start-boinc-bridge.sh. That launcher writes each run's settings into the job
+// boinc/scripts/start-boinc-bridge.sh. That launcher writes each run's settings into the job
 // (`az containerapp job update`) and starts it, so the runner needs:
 // - Reader on the subscription: the launcher reads the main stack's outputs (a
 //   subscription deployment stack), the BOINC stack's, both groups, the jobs and their

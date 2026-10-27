@@ -1,15 +1,15 @@
 # OCR
 
-Data, locks, templates and image definitions for the OCR pipeline: the engine catalog and routes, the engine contract's JSON Schemas, the BOINC app definitions, and the OCR benchmark. The Rust that uses them is in [`crates/usnm-ocr-*`](../crates/README.md) and [`crates/usnm-boinc`](../crates/README.md), and the scripts that build, release and operate the pipeline are in [`scripts/ocr-*`](../scripts/README.md), [`scripts/boinc/`](../scripts/README.md) and [`scripts/ocr-node/`](../scripts/README.md). The Python that runs inside the Iris, Surya and training worker images is in `boinc/`. The design is in [12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md).
+Data, locks, templates and image definitions for the OCR pipeline: the engine catalog and routes, the engine contract's JSON Schemas, the BOINC app definitions, and the OCR benchmark. The Rust that uses them is in [`crates/usnm-ocr-*`](../crates/README.md) and [`crates/usnm-boinc`](../crates/README.md), and the scripts that build, release and operate the pipeline are in [`scripts/ocr-*`](../scripts/README.md), [`boinc/scripts/`](../scripts/README.md) and [`scripts/ocr-node/`](../scripts/README.md). The Python that runs inside the Iris, Surya and training worker images is in `boinc/`. The design is in [12](../docs/design/12-onprem-ocr-pipeline.md) and [13](../docs/design/13-ocr-engines.md).
 
-| Directory                | What it holds                                                                                                                                                     | Status                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [`engines/`](engines/)   | The engine catalog with each engine's and model's licence, and the Containerfiles and model locks of the Tesseract and NDLOCR-Lite engine images                  | live                                                                         |
-| [`routing/`](routing/)   | `routes.toml`: which engine and profile a page goes to                                                                                                            | live; the file is the minimal Tesseract route, full matching is a later step |
-| [`contract/`](contract/) | The JSON Schemas of the engine contract `usnm-ocr-engine/1` and the fixtures the conformance suite uses                                                           | live                                                                         |
-| [`boinc/`](boinc/)       | The BOINC apps: the worker image, job files, server daemons, input and output templates, and one directory per app image                                          | status: see [docs/boinc/README.md](../docs/boinc/README.md)                  |
-| [`ja-ocr/`](ja-ocr/)     | The Python job that reads Japanese pages LoC ships without text, plus the OCR quality audit and its measurement commands; built into the `usnewsmap-ja-ocr` image | live; see its [README](ja-ocr/README.md)                                     |
-| [`bench/`](bench/)       | The OCR benchmark: release recipes and index, audits, adapter locks, recorded results and the Serial Set pilot                                                    | live (the `ocr-bench` workflow); see below for the trial records             |
+| Directory                 | What it holds                                                                                                                                                     | Status                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [`engines/`](engines)     | The engine catalog with each engine's and model's licence, and the Containerfiles and model locks of the Tesseract and NDLOCR-Lite engine images                  | live                                                                         |
+| [`routing/`](routing)     | `routes.toml`: which engine and profile a page goes to                                                                                                            | live; the file is the minimal Tesseract route, full matching is a later step |
+| [`contract/`](contract/)  | The JSON Schemas of the engine contract `usnm-ocr-engine/1` and the fixtures the conformance suite uses                                                           | live                                                                         |
+| [`boinc/`](../boinc/apps) | The BOINC apps: the worker image, job files, server daemons, input and output templates, and one directory per app image                                          | status: see [boinc/docs/README.md](../boinc/docs/README.md)                  |
+| [`ja-ocr/`](ja-ocr)       | The Python job that reads Japanese pages LoC ships without text, plus the OCR quality audit and its measurement commands; built into the `usnewsmap-ja-ocr` image | live; see its [README](ja-ocr/README.md)                                     |
+| [`bench/`](bench)         | The OCR benchmark: release recipes and index, audits, adapter locks, recorded results and the Serial Set pilot                                                    | live (the `ocr-bench` workflow); see below for the trial records             |
 
 ## `engines/`
 
@@ -25,7 +25,7 @@ Read by:
 
 - `usnm-ocr-route` embeds `engines.toml` and checks it. The on-prem worker (`usnm-ocr-worker`) embeds a copy and `tesseract/models.lock`; `usnm-ocr-adapter` embeds `ndlocr-lite/models.lock`.
 - The web app parses `engines.toml` at build time for the credits page (`web/vite.config.ts`, `web/src/credits/data.ts`). `docker/Dockerfile.api` and `docker/Dockerfile.ingest` copy it into their builds.
-- The image builds: `ci.yml` and `.github/actions/boinc-worker-build` build `tesseract/Containerfile`, and `.github/workflows/boinc-ndlocr-lite.yml` builds `ndlocr-lite/Containerfile`. `scripts/boinc/boinc-app-release.sh` builds the Tesseract image in ACR.
+- The image builds: `ci.yml` and `.github/actions/boinc-worker-build` build `tesseract/Containerfile`, and `.github/workflows/boinc-ndlocr-lite.yml` builds `ndlocr-lite/Containerfile`. `boinc/scripts/boinc-app-release.sh` builds the Tesseract image in ACR.
 
 ## `routing/`
 
@@ -58,11 +58,11 @@ The files that define the volunteer apps. The stock BOINC server runs them; `usn
 | `surya/`                             | `usnm_surya`: Surya 2 on llama.cpp, with CPU, NVIDIA and Intel job files; `engine.lock` holds the image's pins (surya-ocr, the llama.cpp images, the weights digest) and `weights.lock` the weights. See [docs/boinc-surya.md](../docs/boinc-surya.md).  |
 | `train/`                             | `usnm_qwen_train`: bounded LoRA transcription trials. See [the transcription note](../docs/notes/2026-10-16-boinc-transcription.md).                                                                                                                     |
 
-Status of each app: see the document in its row, and [docs/boinc/README.md](../docs/boinc/README.md) for the pilot as a whole.
+Status of each app: see the document in its row, and [boinc/docs/README.md](../boinc/docs/README.md) for the pilot as a whole.
 
 Read by:
 
-- `scripts/boinc/install.py` installs templates and job files into a project; `scripts/boinc/boinc-app-release.sh` builds the worker image and stages the files; `contrib-compute/images/bridge/Containerfile` copies templates and the Iris and training helpers into the bridge image.
+- `boinc/scripts/install.py` installs templates and job files into a project; `boinc/scripts/boinc-app-release.sh` builds the worker image and stages the files; `boinc/images/bridge/Containerfile` copies templates and the Iris and training helpers into the bridge image.
 - `usnm-boinc` and `usnm-qwen-app` embed the Qwen locks, the disk policy and the benchmark template.
 - One workflow builds each image: `boinc-worker.yml`, `boinc-ndlocr-lite.yml`, `boinc-qwen.yml`, `boinc-surya.yml`, `boinc-iris.yml` and `boinc-train.yml`. Each builds without publishing on a pull request that touches what it is built from, and publishes only from a manual run on `main`.
 
@@ -85,7 +85,7 @@ The page images and the raw native result archives are not tracked. They are the
 Read by:
 
 - `usnm-ocr-survey` (`bench-build`, `bench-verify`, `bench-select`, `bench-score`) builds and verifies releases from `spec.json`, `inputs.sha256` and `releases.json`, and scores outputs against a release.
-- `scripts/ocr-bench/fetch` downloads and verifies a release from the entry in `releases.json`; `scripts/ocr-bench/release-ci.sh` builds, checks and publishes them; `scripts/ocr-bench/serialset-pilot.py` works on `serialset-pilot/`; `scripts/boinc/surya-benchmark.py` reads `releases.json`.
+- `scripts/ocr-bench/fetch` downloads and verifies a release from the entry in `releases.json`; `scripts/ocr-bench/release-ci.sh` builds, checks and publishes them; `scripts/ocr-bench/serialset-pilot.py` works on `serialset-pilot/`; `boinc/scripts/surya-benchmark.py` reads `releases.json`.
 - The `ocr-bench` workflow runs on a pull request that touches this directory, `scripts/ocr-bench/` or `crates/usnm-ocr-survey/`, and publishes a release on `main` when its GitHub release does not exist yet.
 - `adapters/` and `results/` are cited by [the candidate feasibility note](../docs/notes/2026-10-18-ocr-bench-candidate-feasibility.md). The scripts that produced them are in [`scripts/archive/2026-10/`](../scripts/archive/README.md).
 

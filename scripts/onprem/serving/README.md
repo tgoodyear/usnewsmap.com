@@ -1,6 +1,6 @@
 # On-prem serving
 
-These files run usnewsmap.com from one unprivileged container on an on-prem Proxmox host, behind a Cloudflare Tunnel ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955); the plan is in [its architecture comment](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6331553520)). They follow the BOINC server's pattern ([`scripts/boinc/onprem/`](../../boinc/onprem/), [docs/boinc-onprem.md](../../../docs/boinc-onprem.md)).
+These files run usnewsmap.com from one unprivileged container on an on-prem Proxmox host, behind a Cloudflare Tunnel ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955); the plan is in [its architecture comment](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6331553520)). They follow the BOINC server's pattern ([`boinc/scripts/onprem/`](../../../boinc/scripts/onprem), [docs/boinc-onprem.md](../../../docs/boinc-onprem.md)).
 
 This is Phase 0. The files are written and tested, but nothing runs them yet. Phase 2 builds the container and runs them on a private test hostname. Azure serves the public until Phase 3.
 

@@ -1,6 +1,6 @@
 # JP2 against IIIF JPEG on BOINC
 
-Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](../reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc/README.md](../boinc/README.md); the server hosting is in [contrib-compute/docs](../../contrib-compute/docs/design.md).
+Issue: [#456](https://github.com/tgoodyear/usnewsmap.com/issues/456). Background: the [#435 report](../reports/2026-10-jp2-vs-jpeg-ocr/report.md), which compared the two formats on 80 pages that were not a random sample. This page covers the second BOINC app, `usnm_assess`, which runs the same comparison on a stratified random sample of the corpus on volunteer hosts, and the server steps around it. The OCR pilot (`usnm_ocr`) is described in [boinc/README.md](../../boinc/docs/README.md); the server hosting is in [boinc/docs](../../boinc/docs/design.md).
 
 Status: written and unit-tested. No assessment campaign has run; the production server
 deployment is recorded in #470.
@@ -20,12 +20,12 @@ The engine's exit is a result, not an error. A JP2 that makes Tesseract exit wit
 
 ## Engine and profile
 
-The host runs `usnm-boinc work` in the same worker image as the OCR pilot (`ocr/boinc/Containerfile`); the presence of `assess.json` in the slot selects the assessment. Tesseract runs with the production worker's arguments: `<image> page -l <profile> --psm 3 --dpi 300 txt alto`, one thread, the language profile the worker's router picks (`frak2021` for German), inside the Docker wrapper's 1536 MiB, one-CPU container (`ocr/boinc/job.toml`).
+The host runs `usnm-boinc work` in the same worker image as the OCR pilot (`boinc/apps/Containerfile`); the presence of `assess.json` in the slot selects the assessment. Tesseract runs with the production worker's arguments: `<image> page -l <profile> --psm 3 --dpi 300 txt alto`, one thread, the language profile the worker's router picks (`frak2021` for German), inside the Docker wrapper's 1536 MiB, one-CPU container (`boinc/apps/job.toml`).
 
 The engine build is pinned and can be swapped. Each job carries the worker image's full digest, the digest of the Tesseract image it was built on, the Tesseract version, the profile and the model digest. The worker image records its Tesseract image as `USNM_TESSERACT_IMAGE` at build time; the host refuses a unit staged for another one, or whose installed version or model files differ, and the validator refuses to pair results from different engines. The worker image cannot read its own digest, so that field is the operator's record of which app version the units were staged for. To test another engine build (for example a fix from #455):
 
 1. Build the worker image `FROM` the new Tesseract image (`--build-arg TESSERACT_IMAGE=...`).
-2. Install it as a new `usnm_assess` app version (`scripts/boinc/install.py --app usnm_assess --version 2.0 --image ...`), sign it, and run `bin/update_versions`.
+2. Install it as a new `usnm_assess` app version (`boinc/scripts/install.py --app usnm_assess --version 2.0 --image ...`), sign it, and run `bin/update_versions`.
 3. Stage with `--engine-image` and `--engine-base` set to the new digests (and `--engine-version` if the version changed) into a fresh `--root` (a new `ASSESS_CAMPAIGN` on the bridge job). Job ids include the engine, so the two campaigns never mix.
 
 ## Sample
@@ -67,7 +67,7 @@ Staging finds the JP2 through the batch's bag manifest and checks its md5, then,
 
 `batch_collect_assimilator --app usnm_assess` copies the canonical result into the spool.
 
-The validator needs `usnm-boinc` in the server container. The server image does not carry it, so a server that runs the assessment uses the bridge image: set `assessment: true` in `contrib-compute/infra/boinc/env/<env>.json` and deploy with `scripts/provision-boinc.sh --env <env>`. `images/server/lib.sh` then adds the two daemons and links the scripts into the project's `bin/`.
+The validator needs `usnm-boinc` in the server container. The server image does not carry it, so a server that runs the assessment uses the bridge image: set `assessment: true` in `boinc/infra/boinc/env/<env>.json` and deploy with `scripts/provision-boinc.sh --env <env>`. `images/server/lib.sh` then adds the two daemons and links the scripts into the project's `bin/`.
 
 ## Scoring
 
@@ -85,7 +85,7 @@ usnm-boinc assess sample --manifest manifest.parquet --seed 456 \
   --out-ocr sample-ocr.jsonl --out-crash sample-crash.jsonl
 # Copy both to <share>/assess/<campaign>/ on the project share.
 
-# Bridge job runs (docs/boinc/bridge-steps.md#start-a-bridge-step), repeated until stage reports nothing left (each run is bounded).
+# Bridge job runs (boinc/docs/bridge-steps.md#start-a-bridge-step), repeated until stage reports nothing left (each run is bounded).
 scripts/start-boinc-bridge.sh --env prod --step assess-stage --var ASSESS_MODE=crash --var ASSESS_CAMPAIGN=tess550 \
   --var ASSESS_ENGINE_IMAGE=sha256:... --var ASSESS_ENGINE_BASE=sha256:...
 scripts/start-boinc-bridge.sh --env prod --step assess-submit --var ASSESS_MODE=crash --var ASSESS_CAMPAIGN=tess550

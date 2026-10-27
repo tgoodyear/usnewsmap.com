@@ -81,12 +81,12 @@
     },
     "USNM_BOINC_SERVER_ONPREM": {
       "x-usnm-visibility": "public",
-      "description": "The BOINC server runs on-prem (#942): skip the scan fetcher's reader grant on the BOINC Log Analytics workspace, which the on-prem server mode removes. Match \"server\" in contrib-compute/infra/boinc/env/<env>.json.",
+      "description": "The BOINC server runs on-prem (#942): skip the scan fetcher's reader grant on the BOINC Log Analytics workspace, which the on-prem server mode removes. Match \"server\" in boinc/infra/boinc/env/<env>.json.",
       "type": "boolean"
     },
     "USNM_BOINC_HANDOFF_IMAGE": {
       "x-usnm-visibility": "public",
-      "description": "The BOINC hand-off job's image (#469): images.bridge from contrib-compute/infra/boinc/env/<env>.json. Empty or unset: no hand-off job.",
+      "description": "The BOINC hand-off job's image (#469): images.bridge from boinc/infra/boinc/env/<env>.json. Empty or unset: no hand-off job.",
       "type": "string",
       "pattern": "^$|^[a-z0-9]+\\.azurecr\\.io/usnm-boinc-bridge@sha256:[0-9a-f]{64}$"
     },

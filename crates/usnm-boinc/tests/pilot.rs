@@ -1193,7 +1193,7 @@ sys.exit({exit_code})
             // Supply the dependency so this regression does not depend on host groups.
             executable(&bin.join("chgrp"), "#!/bin/sh\nexit 0\n");
             let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../contrib-compute/images/server/bridge-job.sh");
+                .join("../../boinc/images/server/bridge-job.sh");
             let script = std::fs::read_to_string(source).unwrap();
             let include = ". /usr/local/lib/usnm-boinc/lib.sh";
             assert!(script.contains(include));

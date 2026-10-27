@@ -17,7 +17,7 @@ runs:
       env:
         TAG: ${{ inputs.tag }}
       run: |
-        docker build -f ocr/boinc/train/Containerfile \
+        docker build -f boinc/apps/train/Containerfile \
           --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
           --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
           -t "$TAG" .

@@ -262,14 +262,14 @@ class BoincPages(unittest.TestCase):
         return dict(re.findall(r"^(\w+)=(\w+)$", out.read_text(), re.M))
 
     def test_a_page_alone_runs_only_the_page_check(self):
-        self.change = lambda: self.touch("contrib-compute/boinc/html/user/about.php")
+        self.change = lambda: self.touch("boinc/project/html/user/about.php")
         on = {k for k, v in self.outputs().items() if v == "true"}
         self.assertEqual(on, {"boinc_pages"})
 
     def test_a_page_with_the_entrypoint_runs_the_contrib_jobs(self):
         def change():
-            self.touch("contrib-compute/boinc/html/user/about.php")
-            self.touch("contrib-compute/images/server/entrypoint.sh")
+            self.touch("boinc/project/html/user/about.php")
+            self.touch("boinc/images/server/entrypoint.sh")
         self.change = change
         o = self.outputs()
         self.assertEqual((o["boinc_pages"], o["contrib"], o["code"]), ("true", "true", "true"))
@@ -437,6 +437,7 @@ class BuildInputs(unittest.TestCase):
 
     def test_docs_only_change_runs_only_the_markdown_check(self):
         self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
+        self.assertEqual(self.select("boinc/docs/README.md", "boinc/docs/example.json"), {"markdown"})
 
     def test_shared_well_known_metadata_runs_both_site_and_boinc_image_checks(self):
         on = self.select("web/public/.well-known/security.txt")
@@ -496,22 +497,22 @@ class BuildInputs(unittest.TestCase):
         on = self.select("fixtures/ocr-gold/bundle-v1.lock.json")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         # usnm-boinc embeds the Qwen benchmark input, which no workflow's paths listed before #739.
-        on = self.select("ocr/boinc/usnm_qwen_benchmark_in")
+        on = self.select("boinc/apps/usnm_qwen_benchmark_in")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
         # usnm-boinc embeds the Surya image's pins (the default of `surya stage --engine-surya`),
-        # so it rebuilds every image that links it; the rest of ocr/boinc/surya/ is the Surya image's alone.
-        on = self.select("ocr/boinc/surya/engine.lock")
+        # so it rebuilds every image that links it; the rest of boinc/apps/surya/ is the Surya image's alone.
+        on = self.select("boinc/apps/surya/engine.lock")
         self.assertGreaterEqual(on, BOINC_IMAGES)
         self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
 
     def test_an_images_own_recipe_runs_that_image_only(self):
         for path, image in [
-            ("ocr/boinc/Containerfile", "boinc_worker"),
-            ("scripts/boinc/smoke-worker.py", "boinc_worker"),
-            ("ocr/boinc/qwen/Containerfile", "boinc_qwen"),
-            ("scripts/boinc/qwen_disk.py", "boinc_qwen"),
-            ("ocr/boinc/surya/run.py", "boinc_surya"),
+            ("boinc/apps/Containerfile", "boinc_worker"),
+            ("boinc/scripts/smoke-worker.py", "boinc_worker"),
+            ("boinc/apps/qwen/Containerfile", "boinc_qwen"),
+            ("boinc/scripts/qwen_disk.py", "boinc_qwen"),
+            ("boinc/apps/surya/run.py", "boinc_surya"),
             ("ocr/engines/ndlocr-lite/Containerfile", "boinc_ndlocr"),
             ("ocr/ja-ocr/jaocr.py", "boinc_ndlocr"),
         ]:
@@ -529,7 +530,7 @@ class BuildInputs(unittest.TestCase):
             ("scripts/dev/quickwit-fixtures.sh", {"quickwit", "rust", "e2e"}),
             ("scripts/data/build-page-language-words.py", {"image", "page_language"}),
             ("scripts/data/page-language-samples.py", {"page_language"}),
-            ("scripts/boinc/boinc-app-release.sh", {"contrib"}),
+            ("boinc/scripts/boinc-app-release.sh", {"contrib"}),
         ]:
             with self.subTest(path=path):
                 self.assertGreaterEqual(self.select(path), jobs)
@@ -603,8 +604,8 @@ class BuildInputs(unittest.TestCase):
                 self.assertNotIn("boinc_native", self.select(path))
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
-        for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
-                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py"]:
+        for path in ["boinc/apps/qwen/llama.lock", "boinc/apps/qwen/weights.lock", "ocr/contract/v1/schema.json",
+                     "boinc/apps/qwen/amd-device-map.cpp", "boinc/scripts/test_amd_device_map.py"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.

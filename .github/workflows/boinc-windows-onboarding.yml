@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/boinc-windows-onboarding.yml
-      - scripts/boinc/*windows_volunteer.ps1
+      - boinc/scripts/*windows_volunteer.ps1
 
 permissions:
   contents: read

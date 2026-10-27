@@ -9,7 +9,7 @@ coordinated in #529.
 
 ## Read-only download origin
 
-`scripts/boinc/file-host.conf` is an nginx site for a dedicated, isolated file
+`boinc/scripts/file-host.conf` is an nginx site for a dedicated, isolated file
 host. Install it under `/etc/nginx/sites-enabled/` on a dedicated Debian container,
 remove that container's default nginx site, and run `nginx -t` before reloading.
 The container must have a **read-only** bind mount at

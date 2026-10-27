@@ -10,10 +10,10 @@ on:
       - rust-toolchain.toml
       # What its tests read and its crates embed (scripts/ci/changes.sh finds the embedded files).
       - ocr/contract/**
-      - ocr/boinc/qwen/llama.lock
-      - ocr/boinc/qwen/weights.lock
-      - ocr/boinc/qwen/amd-device-map.cpp
-      - scripts/boinc/test_amd_device_map.py
+      - boinc/apps/qwen/llama.lock
+      - boinc/apps/qwen/weights.lock
+      - boinc/apps/qwen/amd-device-map.cpp
+      - boinc/scripts/test_amd_device_map.py
       - "!**/*.md"
 
 permissions:
@@ -125,7 +125,7 @@ jobs:
         shell: bash
         run: |
           out=boinc-native-x86_64-pc-linux-gnu
-          g++ -std=c++17 -O2 -Wall -Wextra -Werror ocr/boinc/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror boinc/apps/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
           "$out/usnm-amd-device-map" --self-test
           python3 -m unittest scripts.boinc.test_amd_device_map
           (cd "$out" && sha256sum usnm-amd-device-map >> SHA256SUMS)

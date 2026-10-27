@@ -1,0 +1,46 @@
+# Interface to PR #441
+
+What the Azure-hosted server and the files in this directory assume about #441's client and bridge, and what #441 can assume about the server. Prod's server has run on an on-prem host, from the same server and bridge images, since 21 October 2026 ([boinc-onprem.md](../../docs/boinc-onprem.md)); the Azure rows below describe the Azure deployment. Design reasons are in [design.md](design.md). The production deployment in Azure and its checks are recorded in #470; this interface page does not imply a fresh live check.
+
+Where this page and #441 differ, #441 wins; it is the client base.
+
+## Names (all from #441)
+
+| Item             | Value                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App name         | `usnm_ocr` (`boinc/project.xml` registers it with `target_nresults` 1); `usnm_assess` for #456, redundancy 2 ([docs/notes/2026-10-16-boinc-assessment.md](../../docs/notes/2026-10-16-boinc-assessment.md)); `usnm_gold` for #462, one result per unit ([boinc/docs/gold-check.md](gold-check.md#gold-check))                                                       |
+| App type         | Docker wrapper; the worker image is built from `boinc/apps/Containerfile` and runs `usnm-boinc work`                                                                                                                                                                                                                                                                |
+| App version      | installed by `boinc/scripts/install.py --project --wrapper --image --version --app <app>` (`usnm_ocr` when `--app` is left out; `usnm_assess`, `usnm_gold`) into `apps/<app>/<version>/x86_64-pc-linux-gnu__docker`                                                                                                                                                 |
+| Plan class       | `docker`, from `boinc/plan_class_spec.xml` here (minimum client 8.2.13)                                                                                                                                                                                                                                                                                             |
+| Workunit shape   | one page per task; templates `usnm_ocr_in` and `usnm_ocr_out` in `boinc/apps/`; inputs `page` and `request.json`. A plan with `pages_per_unit` bundles 2–32 pages per task instead, with `usnm_ocr_bundle_in`/`usnm_ocr_bundle_out`, workunit `usnm_ocrb_<id>`, inputs `pages` and `ocr_bundle.json` ([docs/boinc-ocr-bundles.md](../../docs/boinc-ocr-bundles.md)) |
+| Daemons          | `sample_trivial_validator` and `batch_collect_assimilator`, from `boinc/apps/daemons.xml`, in place of `@APP_DAEMONS@` in `boinc/config.xml.template`                                                                                                                                                                                                               |
+| Spool            | `<project>/results/<batch>/<workunit>__file_<logical name>`, written by `batch_collect_assimilator`                                                                                                                                                                                                                                                                 |
+| Submission       | `usnm-boinc submit --root --project --job`, which runs `bin/dir_hier_path` and `bin/create_work`                                                                                                                                                                                                                                                                    |
+| Publication      | `usnm-boinc collect --root --spool --job --curated-url --out-url`                                                                                                                                                                                                                                                                                                   |
+| Task limits      | `delay_bound` 259200 s (86400 s and workunit priority 10 for `reason` `user`, #866); `rsc_memory_bound` 1.5 GiB; `rsc_disk_bound` 1 GiB; container capped at 1536 MiB and one CPU by `job.toml`                                                                                                                                                                     |
+| File size limits | scan 128 MiB, ALTO 32 MiB, text 512 KiB, JSON 16 KiB (`usnm-ocr-contract/src/boinc.rs`)                                                                                                                                                                                                                                                                             |
+| Client needs     | BOINC 8.2.13 or later, Docker, outbound HTTPS to the project URL, and to the registry holding the worker image. No inbound ports                                                                                                                                                                                                                                    |
+
+## What this directory provides to #441
+
+| Item                               | Where                                                                                                                   |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| A stock server in Azure            | `infra/boinc/` (Container App, MySQL, Files share, Key Vault, Log Analytics, static site)                               |
+| The `docker` plan class            | `boinc/plan_class_spec.xml`                                                                                             |
+| Project and daemon configuration   | `boinc/config.xml.template` and `boinc/project.xml`                                                                     |
+| Where `submit` and `reconcile` run | the manual-trigger Container Apps Job in `infra/boinc/modules/bridge-job.bicep`                                         |
+| The set-up plan and deployment     | `boinc/scripts/provision-boinc.sh` and `boinc/scripts/build-boinc-images.sh`; secrets and project init run in VNet jobs |
+| The server and bridge images       | `images/server`, `images/bridge` ([images.md](images.md))                                                               |
+
+## Paths on the share
+
+| Path                                  | Content                                                              |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `/project/usnmocr/download`, `upload` | BOINC's fan-out trees: staged scans and volunteers' uploads          |
+| `/project/usnmocr/results/<batch>`    | the assimilator's spool; keep until `collect` reports `published`    |
+| `/project/usnmocr/apps/usnm_ocr`      | app versions written by `install.py`, then signed                    |
+| `/project/handoff/jobs/<id>`          | an exported job, copied here for `submit`; its record is copied back |
+
+## Account creation and privacy
+
+Create an account with `boinccmd --create_account URL email password name`, or attach with an existing key: `boinccmd --project_attach URL key`. Whether account creation is open or needs an invite code is the maintainer's choice (design.md 5.2). Do not share one account key across unrelated deployments.

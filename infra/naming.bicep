@@ -257,7 +257,7 @@ type Names = {
   backfillJob: string
   backfillReplicaSilentAlert: string
   backfillStalledAlert: string
-  @description('The BOINC stack\'s app and bridge identity (contrib-compute/infra/boinc/main.bicep names it the same way).')
+  @description('The BOINC stack\'s app and bridge identity (boinc/infra/boinc/main.bicep names it the same way).')
   boincBridgeIdentity: string
   boincControllerRole: string
   boincHandoffIdentity: string
@@ -265,7 +265,7 @@ type Names = {
   boincHandoffJob: string
   boincLedgerRole: string
   boincRg: string
-  @description('The BOINC stack\'s VNet (contrib-compute/infra/boinc/main.bicep names it the same way).')
+  @description('The BOINC stack\'s VNet (boinc/infra/boinc/main.bicep names it the same way).')
   boincVnet: string
   boincWorkspace: string
   budget: string

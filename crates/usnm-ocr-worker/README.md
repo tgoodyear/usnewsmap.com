@@ -2,7 +2,7 @@
 
 The on-prem OCR worker for [#296](https://github.com/tgoodyear/usnewsmap.com/issues/296). It runs on a local machine, takes one page at a time from a queue, fetches the page's scan from the Library of Congress, reads it with Tesseract, and writes ALTO and an overlay Parquet part to the exchange storage account. It keeps no LoC text and doesn't decide whether its text replaces LoC's. A cloud job checks the parts, and the release decides.
 
-No node runs `run` as a queue worker any more: local OCR runs through BOINC only (#966). The systemd unit and the installers that ran it on the nodes are retired. The crate stays: `usnm-boinc` reads pages with its engine code (`usnm_ocr_worker::engine`), the scan archive and fetch hosts use its other commands, and the LAN dashboard depends on it. See the [BOINC pages](../../docs/boinc/README.md).
+No node runs `run` as a queue worker any more: local OCR runs through BOINC only (#966). The systemd unit and the installers that ran it on the nodes are retired. The crate stays: `usnm-boinc` reads pages with its engine code (`usnm_ocr_worker::engine`), the scan archive and fetch hosts use its other commands, and the LAN dashboard depends on it. See the [BOINC pages](../../boinc/docs/README.md).
 
 ## Commands
 
@@ -286,7 +286,7 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 
 ## Optional BOINC batch pool
 
-The [BOINC pilot](../../docs/boinc/README.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
+The [BOINC pilot](../../boinc/docs/README.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
 
 ## Engine catalog and production licences
 

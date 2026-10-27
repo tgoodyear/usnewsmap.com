@@ -19,7 +19,7 @@ on:
     paths:
       - ".github/workflows/boinc-surya.yml"
       - ".github/actions/boinc-surya-build/**"
-      - "ocr/boinc/surya/**"
+      - "boinc/apps/surya/**"
       # The image builds usnm-boinc from this checkout.
       - "crates/**"
       - "Cargo.toml"
@@ -28,9 +28,9 @@ on:
       - ".dockerignore"
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
       - "fixtures/ocr-gold/bundle-v1.lock.json"
-      - "ocr/boinc/qwen/disk-policy.json"
-      - "ocr/boinc/qwen/weights.lock"
-      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "boinc/apps/qwen/disk-policy.json"
+      - "boinc/apps/qwen/weights.lock"
+      - "boinc/apps/usnm_qwen_benchmark_in"
       - "ocr/engines/engines.toml"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"

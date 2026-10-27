@@ -17,7 +17,7 @@ The native binaries and AMD PCI helpers came from reviewed main `88593bab`,
 [native workflow 40259318615](https://github.com/tgoodyear/usnewsmap.com/actions/runs/40259318615).
 All five target builds/tests passed. Both downloaded artifact commit identities
 and all artifact checksums matched. Vulkan archives matched the committed
-`ocr/boinc/qwen/llama.lock` b8799 hashes; Windows app-local CRT files came from
+`boinc/apps/qwen/llama.lock` b8799 hashes; Windows app-local CRT files came from
 the same CI artifact with its verified Microsoft-signature manifest.
 These versions include #903's bounded failure diagnostics and #908's Windows
 embedded-lock/PCI-refusal fixes, absent from the earlier AMD release source.

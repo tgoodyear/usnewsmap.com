@@ -29,7 +29,7 @@ runs:
         MODEL: ${{ inputs.model }}
       shell: bash
       run: |
-        docker build -f ocr/boinc/qwen/Containerfile \
+        docker build -f boinc/apps/qwen/Containerfile \
           --build-arg "QWEN_MODEL=$MODEL" \
           --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
           --label "org.opencontainers.image.revision=$GITHUB_SHA" \
@@ -46,7 +46,7 @@ runs:
         MODEL: ${{ inputs.model }}
       shell: bash
       run: |
-        python3 scripts/boinc/qwen_cold_cache.py --image "$IMAGE:$SHA" --model "$MODEL" --state ".qwen-cold-$MODEL"
+        python3 boinc/scripts/qwen_cold_cache.py --image "$IMAGE:$SHA" --model "$MODEL" --state ".qwen-cold-$MODEL"
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always()
       with:

@@ -1,0 +1,8 @@
+ARG SERVER_IMAGE
+FROM ${SERVER_IMAGE}
+RUN mkdir -p /fixture /checks /opt \
+ && ln -s /usr/local/boinc /opt/boinc
+COPY boinc/scripts/db-tls/ /checks/
+WORKDIR /fixture
+ENV TMPDIR=/fixture
+ENTRYPOINT ["python3", "/checks/full.py"]

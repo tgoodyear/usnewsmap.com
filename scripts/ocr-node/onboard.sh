@@ -631,4 +631,4 @@ echo "A token the node fetched for storage before it joined the group lacks the 
 echo "until it expires (up to about 24 hours for a managed identity; ADR-0015)."
 echo "Its heartbeat and counters reach the nodes' workspace within about 10 minutes:"
 echo "  scripts/azure/logs.sh --env $ENV_NAME --query-name ocr-node-health"
-echo "No direct queue worker is installed: local OCR runs through BOINC only (#966; docs/boinc/README.md)."
+echo "No direct queue worker is installed: local OCR runs through BOINC only (#966; boinc/docs/README.md)."

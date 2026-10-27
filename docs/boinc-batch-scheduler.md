@@ -22,7 +22,7 @@ override, client attachment, or retry of terminal failures.
 The controller uses a single approved execution host with Python 3.9+, Azure
 CLI, `jq`, Bash, an existing Azure login, the checkout's existing environment
 outputs, and the existing hand-off job. Its bridge steps run through
-`scripts/boinc/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
+`boinc/scripts/start-boinc-bridge.sh` (the Azure bridge job) or, with `step_command` in
 the configuration, on the on-prem BOINC host through `usnm-boinc-step`, which is how
 the on-prem server's bridge steps are reached ([boinc-onprem.md](boinc-onprem.md), cutover
 step 5). The server and bridge images
@@ -109,7 +109,7 @@ By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff c
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
 ([boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)). `claim` takes its `release`
-with it. `texts-export` runs with `scripts/boinc/texts-export-onprem.sh` on the host with a local copy of curated. With `--onprem-handoff export`, the controller's push
+with it. `texts-export` runs with `boinc/scripts/texts-export-onprem.sh` on the host with a local copy of curated. With `--onprem-handoff export`, the controller's push
 sends the claimed pages' scans straight to the BOINC host (`usnm-boinc-step --target scans
 --step receive`, a tar over the step key into `/srv/usnm-boinc/project/handoff-scans`), not to
 the hand-off container. Export reads them there, and the bridge's `submit-remote` takes each
@@ -686,11 +686,11 @@ evidence that all outstanding work has completed.
 Offline validation makes no Azure or SSH calls and creates no state:
 
 ```sh
-python3 scripts/boinc/batch_scheduler.py \
+python3 boinc/scripts/batch_scheduler.py \
   --config /opt/usnm-controller/cohort.json \
   --state-dir /opt/usnm-controller/state
-python3 -m unittest -v scripts/boinc/test_batch_scheduler.py \
-  contrib-compute/images/server/test_batch_inventory.py
+python3 -m unittest -v boinc/scripts/test_batch_scheduler.py \
+  boinc/images/server/test_batch_inventory.py
 ```
 
 Only after the serialized operator has approved deployment and activation, run

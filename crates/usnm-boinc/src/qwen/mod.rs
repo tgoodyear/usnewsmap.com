@@ -37,7 +37,7 @@ pub const APP: &str = "usnm_qwen";
 pub const ENV_LLAMA_IMAGE: &str = "USNM_QWEN_LLAMA_IMAGE";
 pub const ENV_WEIGHTS: &str = "USNM_QWEN_WEIGHTS";
 pub const ENV_MODEL: &str = "USNM_QWEN_MODEL";
-/// Where the image keeps the models (`ocr/boinc/qwen/weights.lock`).
+/// Where the image keeps the models (`boinc/apps/qwen/weights.lock`).
 pub const MODEL_DIR: &str = "/opt/qwen/models";
 
 /// GPU memory, in MB, free on the host's GPU for the 8B model to be chosen.

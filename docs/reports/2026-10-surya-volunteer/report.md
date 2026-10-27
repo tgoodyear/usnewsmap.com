@@ -161,7 +161,7 @@ output stream was scored as if it were the returned OCR.
 For each campaign, export with the reviewed helper and the existing validator:
 
 ```sh
-python3 scripts/boinc/surya-benchmark.py collect \
+python3 boinc/scripts/surya-benchmark.py collect \
   --root CAMPAIGN --seen SEEN --out EXPORT --binary USNM_BOINC \
   --intended-device cpu  # use cuda for the GPU-target campaign
 usnm-ocr-survey bench-score --release VERIFIED_V1_0_0 \

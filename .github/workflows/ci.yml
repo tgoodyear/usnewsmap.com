@@ -147,7 +147,7 @@ jobs:
           --health-interval=5s --health-timeout=5s --health-retries=30
     defaults:
       run:
-        working-directory: contrib-compute
+        working-directory: boinc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -155,25 +155,25 @@ jobs:
       - name: Project templates are well-formed XML
         run: |
           # config.xml.template carries @NAME@ placeholders, which are valid XML text.
-          for f in boinc/project.xml boinc/plan_class_spec.xml boinc/config.xml.template; do
+          for f in project/project.xml project/plan_class_spec.xml project/config.xml.template; do
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
       - name: project.xml has no quotes or backslashes in its text
         # xadd (BoincApp::insert) puts user_friendly_name into SQL unescaped; an apostrophe
         # failed register-apps on prod (#469). Checks parsed text, so &apos; / &#39; count too.
         run: |
-          python3 - boinc/project.xml <<'PY'
+          python3 - project/project.xml <<'PY'
           import sys, xml.etree.ElementTree as ET
           bad = [(e.tag, e.text) for e in ET.parse(sys.argv[1]).iter() if e.text and any(c in e.text for c in "'\\\"")]
           for tag, text in bad:
-              print(f"error: <{tag}> in boinc/project.xml has a quote or backslash, which xadd inserts into SQL unescaped: {text!r}")
+              print(f"error: <{tag}> in project/project.xml has a quote or backslash, which xadd inserts into SQL unescaped: {text!r}")
           sys.exit(1 if bad else 0)
           PY
       - run: shellcheck -x -S warning images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
       - name: The server daemon configuration tests pass
-        run: python3 -m unittest -v boinc/test_config.py
+        run: python3 -m unittest -v project/test_config.py
       - name: The daemon runner keeps bin/start's pid directory off the share
         run: python3 -m unittest -v images/server/test_boinc_daemons.py
       - name: The Arc token path sends its key only to a loopback endpoint
@@ -188,21 +188,21 @@ jobs:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       - name: The bounded volunteer batch inventory tests pass
         working-directory: .
-        run: python3 -m unittest -v contrib-compute/images/server/test_batch_inventory.py
+        run: python3 -m unittest -v boinc/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: Install scheduler gate test headers
         run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
-      # The other scripts/boinc tests run in the infra job (scripts/ci/run-unit-tests.py), which
+      # The other boinc/scripts tests run in the infra job (scripts/ci/run-unit-tests.py), which
       # every contrib change also triggers. The gold-routing test is left out of that run: it
       # compiles C++ against the header installed above.
       - name: The app version checks' tests pass
         working-directory: .
         run: |
-          python3 -m unittest -v scripts/boinc/test_patch_server_gold_routing.py
-          python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
-          python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
+          python3 -m unittest -v boinc/scripts/test_patch_server_gold_routing.py
+          python3 -m unittest -v boinc/images/appver/test_check_appver.py
+          python3 -m unittest -v boinc/images/appver/test_publish_appver.py
       - name: Install Bicep
         working-directory: .
         run: scripts/ci/install-bicep.sh
@@ -220,8 +220,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: find contrib-compute/boinc/html -name '*.php' -print0 | xargs -0 -n1 php -l
-      - run: python3 -m unittest -v contrib-compute/images/server/test_work_summary.py
+      - run: find boinc/project/html -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: python3 -m unittest -v boinc/images/server/test_work_summary.py
 
   boinc-db-tls:
     name: BOINC actual database TLS (private disposable fixture)
@@ -233,9 +233,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py
-      - run: shellcheck -x -S warning scripts/boinc/check-db-tls.sh
-      - run: scripts/boinc/check-db-tls.sh
+      - run: python3 -m unittest -v boinc/scripts/test_db_tls_fixture.py
+      - run: shellcheck -x -S warning boinc/scripts/check-db-tls.sh
+      - run: boinc/scripts/check-db-tls.sh
 
   boinc-mysql84-db-tls:
     name: BOINC actual database TLS (private MySQL 8.4)
@@ -247,9 +247,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: python3 -m unittest -v scripts/boinc/test_db_tls_fixture.py scripts/boinc/test_mysql84_db_tls.py
-      - run: shellcheck -x -S warning scripts/boinc/check-mysql84-db-tls.sh
-      - run: scripts/boinc/check-mysql84-db-tls.sh
+      - run: python3 -m unittest -v boinc/scripts/test_db_tls_fixture.py boinc/scripts/test_mysql84_db_tls.py
+      - run: shellcheck -x -S warning boinc/scripts/check-mysql84-db-tls.sh
+      - run: boinc/scripts/check-mysql84-db-tls.sh
 
   boinc-node-client:
     name: BOINC stable node client (EL9 build, no host installation)
@@ -263,9 +263,9 @@ jobs:
           persist-credentials: false
       - name: Build the actual pinned client away from production
         run: |
-          python3 -m unittest -v scripts/boinc/test_node_client.py scripts/boinc/test_observe_node.py
-          shellcheck -x -S warning scripts/boinc/build-node-client-container.sh
-          scripts/boinc/build-node-client-container.sh --out "$PWD/target/boinc-node-client"
+          python3 -m unittest -v boinc/scripts/test_node_client.py boinc/scripts/test_observe_node.py
+          shellcheck -x -S warning boinc/scripts/build-node-client-container.sh
+          boinc/scripts/build-node-client-container.sh --out "$PWD/target/boinc-node-client"
       - name: Archive and re-extract the retained executable bundle
         run: |
           tar -C target -czf target/boinc-node-client.tar.gz boinc-node-client
@@ -290,7 +290,7 @@ jobs:
           retention-days: 7
           path: target/boinc-node-client.tar.gz
 
-  # The BOINC server image and the bridge job image (contrib-compute/images). Built, smoke-tested
+  # The BOINC server image and the bridge job image (boinc/images). Built, smoke-tested
   # and not pushed: where they are published is the maintainer's step (docs/images.md).
   contrib-images:
     name: contrib-compute (server and bridge images)
@@ -304,7 +304,7 @@ jobs:
       # Every base image in these Containerfiles is pinned by digest.
       - name: Base images are pinned by digest
         run: |
-          bad=$(grep -nE '^(FROM|ARG BASE=)' contrib-compute/images/*/Containerfile | grep -vE '@sha256:[0-9a-f]{64}|FROM \$\{|FROM scratch$' || true)
+          bad=$(grep -nE '^(FROM|ARG BASE=)' boinc/images/*/Containerfile | grep -vE '@sha256:[0-9a-f]{64}|FROM \$\{|FROM scratch$' || true)
           [ -z "$bad" ] || { echo "::error::base image without a digest:"; echo "$bad"; exit 1; }
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # BuildKit follows the dependency graph: base/server and Rust bridge-bin
@@ -312,7 +312,7 @@ jobs:
       - uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7
         with:
           source: .
-          files: contrib-compute/images/ci.hcl
+          files: boinc/images/ci.hcl
           targets: ci
         env:
           CI_CACHE_WRITE: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
@@ -323,15 +323,15 @@ jobs:
       - name: The actual server installs and restarts a full private TLS-required project
         timeout-minutes: 15
         run: |
-          python3 -m unittest -v scripts/boinc/test_full_db_tls.py contrib-compute/images/server/test_refresh_project_code.py
-          shellcheck -x -S warning scripts/boinc/check-full-db-tls.sh
-          scripts/boinc/check-full-db-tls.sh --local-server-image usnm-boinc-server:check
+          python3 -m unittest -v boinc/scripts/test_full_db_tls.py boinc/images/server/test_refresh_project_code.py
+          shellcheck -x -S warning boinc/scripts/check-full-db-tls.sh
+          boinc/scripts/check-full-db-tls.sh --local-server-image usnm-boinc-server:check
       # crates/usnm-boinc arrives with PR #441; until then there is no bridge binary to build.
       - name: The bridge image builds
         if: hashFiles('crates/usnm-boinc/Cargo.toml') != ''
         run: |
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
-          # The gold-bundle step's tools (docs/boinc/gold-check.md#build-the-gold-bundle).
+          # The gold-bundle step's tools (boinc/docs/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
             bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"13.0.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&
@@ -813,7 +813,7 @@ jobs:
         run: scripts/ci/no-shared-keys.sh
       - name: Scripts and CLIs take named arguments, not positional ones (#277)
         run: scripts/ci/no-positional-args.py
-      # The Surya image's pins live in ocr/boinc/surya/engine.lock and the NDLOCR-Lite commit in its
+      # The Surya image's pins live in boinc/apps/surya/engine.lock and the NDLOCR-Lite commit in its
       # models.lock; this checks the places that can't read them (the Containerfiles, the adapter's
       # COMMIT, the engine catalog). Its unit test runs with the others below.
       - name: Engine pins written in more than one place agree
@@ -840,8 +840,8 @@ jobs:
       - name: The BOINC scripts pass shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
-          shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh \
-            scripts/boinc/onprem/image-security-check.sh
+          shellcheck -x -S warning boinc/scripts/start-boinc-bridge.sh boinc/scripts/provision-boinc.sh boinc/scripts/boinc-app-release.sh \
+            boinc/scripts/onprem/image-security-check.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json
@@ -871,7 +871,7 @@ jobs:
         if: needs.changes.outputs.infra == 'true'
         run: |
           scripts/ci/check-workbooks.py
-          scripts/ci/check-workbooks.py --module contrib-compute/infra/boinc/modules/workbook.bicep
+          scripts/ci/check-workbooks.py --module boinc/infra/boinc/modules/workbook.bicep
       - name: Build every Bicep template
         if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/build-bicep.sh

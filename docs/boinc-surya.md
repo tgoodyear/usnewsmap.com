@@ -1,6 +1,6 @@
 # Surya 2 on BOINC
 
-Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc/README.md](boinc/README.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
+Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516), [#842](https://github.com/tgoodyear/usnewsmap.com/issues/842). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU, on NVIDIA GPUs (CUDA), and on Intel Xe / Iris GPUs (Vulkan, #842), to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc/README.md](../boinc/docs/README.md) and [boinc-assessment.md](notes/2026-10-16-boinc-assessment.md).
 
 Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
 
@@ -20,28 +20,28 @@ Every result has five files: `text-tiled.txt`, `text-whole.txt`, `text-capped.tx
 
 ## The image
 
-`ocr/boinc/surya/Containerfile` builds two variants from the same pinned `llama.cpp` revision (`b11610`, commit `091b6a7fc561b78da90a0ed2d524ec995458c657`):
+`boinc/apps/surya/Containerfile` builds two variants from the same pinned `llama.cpp` revision (`b11610`, commit `091b6a7fc561b78da90a0ed2d524ec995458c657`):
 
 - `LLAMA_VARIANT=cuda` (default): on `ghcr.io/ggml-org/llama.cpp:server-cuda`, which loads its CUDA backend when the container can see an NVIDIA GPU and its CPU backends otherwise (`docker_mt` and `docker_nvidia_cuda`).
 - `LLAMA_VARIANT=vulkan` (#842): on `ghcr.io/ggml-org/llama.cpp:server-vulkan`, which runs the OCR model on Intel Xe / Iris GPUs via Vulkan (`docker_intel_vulkan`).
 
-On top of the base image are surya-ocr (the version in `ocr/boinc/surya/engine.lock`) in a Python virtual environment, with the CPU build of torch (`TORCH_DEVICE=cpu`; torch only runs Surya's layout fallback, while the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
+On top of the base image are surya-ocr (the version in `boinc/apps/surya/engine.lock`) in a Python virtual environment, with the CPU build of torch (`TORCH_DEVICE=cpu`; torch only runs Surya's layout fallback, while the OCR model runs in llama-server), and `usnm-boinc`, which runs the unit.
 
-The weights are in the image: Surya 2's GGUF model and vision projector, and the layout model, at the revisions round 1 used. `ocr/boinc/surya/weights.lock` pins each file's URL and sha256, and the build checks them. Datalab's licence (a modified Open RAIL-M) requires a copy with every distribution of the weights, and notice of its use-based restrictions, so the image carries `LICENSE` beside the weights (`/opt/surya/models/LICENSE`) and a `NOTICE`. The image records its llama.cpp base, Surya version and weights lock digest as `USNM_SURYA_LLAMA_IMAGE`, `USNM_SURYA_VERSION` and `USNM_SURYA_WEIGHTS`; a unit carries the same three values and the host refuses a unit staged for another build.
+The weights are in the image: Surya 2's GGUF model and vision projector, and the layout model, at the revisions round 1 used. `boinc/apps/surya/weights.lock` pins each file's URL and sha256, and the build checks them. Datalab's licence (a modified Open RAIL-M) requires a copy with every distribution of the weights, and notice of its use-based restrictions, so the image carries `LICENSE` beside the weights (`/opt/surya/models/LICENSE`) and a `NOTICE`. The image records its llama.cpp base, Surya version and weights lock digest as `USNM_SURYA_LLAMA_IMAGE`, `USNM_SURYA_VERSION` and `USNM_SURYA_WEIGHTS`; a unit carries the same three values and the host refuses a unit staged for another build.
 
-Each of those three values, and the Vulkan base, is written once, in `ocr/boinc/surya/engine.lock`: one `KEY=value` per line, the keys named as the Containerfile's build arguments. `SURYA_VERSION` is surya-ocr's version, `LLAMA_DIGEST` and `LLAMA_VULKAN_DIGEST` are the two llama.cpp images, and `SURYA_WEIGHTS` is the sha256 of the lines of `weights.lock` that are not comments, which the build compares with the weights it fetched. The Containerfile gives those arguments no defaults, so a build that is not given them fails. `.github/actions/boinc-surya-build` passes each line of the lock to `docker build --build-arg`; by hand, `pins=$(sed -n 's/^[A-Z][A-Z_]*=/--build-arg &/p' ocr/boinc/surya/engine.lock)` gives the same flags. `usnm-boinc` compiles the lock in and uses `SURYA_VERSION` as the default of `--engine-surya` (`surya stage`, `stage-crops`, `stage-gold`, `benchmark-stage` and `local-unit`), so a unit is staged for the version the image installs. A pin that cannot read the lock is checked instead: `scripts/ci/check-engine-pins.py` (CI job `infra`) fails when `SURYA_WEIGHTS` is not the hash of `weights.lock`, or when the Containerfile gains a copy of a pin. To change a pin, edit `engine.lock` (and `weights.lock` for the weights) and nothing else. Because `usnm-boinc` embeds the file, the other BOINC image workflows build on that pull request too. The staging commands still take `--engine-llama` and `--engine-weights` (the bridge's `SURYA_ENGINE_LLAMA` and `SURYA_ENGINE_WEIGHTS`) as the operator's record of which build a unit is for: use `LLAMA_DIGEST` (`LLAMA_VULKAN_DIGEST` for a Vulkan image) and `SURYA_WEIGHTS`, and take `SURYA_ENGINE_IMAGE` from the summary of the run that published the image.
+Each of those three values, and the Vulkan base, is written once, in `boinc/apps/surya/engine.lock`: one `KEY=value` per line, the keys named as the Containerfile's build arguments. `SURYA_VERSION` is surya-ocr's version, `LLAMA_DIGEST` and `LLAMA_VULKAN_DIGEST` are the two llama.cpp images, and `SURYA_WEIGHTS` is the sha256 of the lines of `weights.lock` that are not comments, which the build compares with the weights it fetched. The Containerfile gives those arguments no defaults, so a build that is not given them fails. `.github/actions/boinc-surya-build` passes each line of the lock to `docker build --build-arg`; by hand, `pins=$(sed -n 's/^[A-Z][A-Z_]*=/--build-arg &/p' boinc/apps/surya/engine.lock)` gives the same flags. `usnm-boinc` compiles the lock in and uses `SURYA_VERSION` as the default of `--engine-surya` (`surya stage`, `stage-crops`, `stage-gold`, `benchmark-stage` and `local-unit`), so a unit is staged for the version the image installs. A pin that cannot read the lock is checked instead: `scripts/ci/check-engine-pins.py` (CI job `infra`) fails when `SURYA_WEIGHTS` is not the hash of `weights.lock`, or when the Containerfile gains a copy of a pin. To change a pin, edit `engine.lock` (and `weights.lock` for the weights) and nothing else. Because `usnm-boinc` embeds the file, the other BOINC image workflows build on that pull request too. The staging commands still take `--engine-llama` and `--engine-weights` (the bridge's `SURYA_ENGINE_LLAMA` and `SURYA_ENGINE_WEIGHTS`) as the operator's record of which build a unit is for: use `LLAMA_DIGEST` (`LLAMA_VULKAN_DIGEST` for a Vulkan image) and `SURYA_WEIGHTS`, and take `SURYA_ENGINE_IMAGE` from the summary of the run that published the image.
 
 The image is several GB (the weights alone are 1.6 GB), which a volunteer downloads once per image version. `.github/workflows/boinc-surya.yml` builds both `cuda` and `vulkan` variants, checks that each reads a rendered line on CPU, and, when started by hand on main, pushes them to the public package `ghcr.io/tgoodyear/usnm-boinc-worker` with the tags `surya-<commit>` and `surya-vulkan-<commit>`. The run's summary gives each digest and the values to stage with.
 
 ## App versions and plan classes
 
-| Version | Plan class            | Sent to                                                                                                                                                                      | Container                                                                                         |
-| ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| 1.4     | `docker_mt`           | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                                                       | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`)                  |
-| 1.5     | `docker_nvidia_cuda`  | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory                               | `--gpus all`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-gpu.toml`)                             |
-| 1.x     | `docker_intel_vulkan` | hosts with Docker or Podman whose client reports an Intel OpenCL GPU with at least 4,096 MB of memory (#842; closed by default with `min_wu_id=2, max_wu_id=1` until staged) | `use_gpu = false`, `--device=/dev/dri`, 2 CPUs, 8 GiB, no swap (`ocr/boinc/surya/job-intel.toml`) |
+| Version | Plan class            | Sent to                                                                                                                                                                      | Container                                                                                          |
+| ------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 1.4     | `docker_mt`           | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                                                       | `--cpus` from the thread count, 12 GiB, no swap (`boinc/apps/surya/job-cpu.toml`)                  |
+| 1.5     | `docker_nvidia_cuda`  | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory                               | `--gpus all`, 2 CPUs, 8 GiB, no swap (`boinc/apps/surya/job-gpu.toml`)                             |
+| 1.x     | `docker_intel_vulkan` | hosts with Docker or Podman whose client reports an Intel OpenCL GPU with at least 4,096 MB of memory (#842; closed by default with `min_wu_id=2, max_wu_id=1` until staged) | `use_gpu = false`, `--device=/dev/dri`, 2 CPUs, 8 GiB, no swap (`boinc/apps/surya/job-intel.toml`) |
 
-1.4 and 1.5 have been the active versions since 22 October 2026 (see the [Wave 1 runbook](#wave-1-runbook-22-october-2026)); 1.2 and 1.3 are deprecated, and 1.0 and 1.1 are retired. Both classes need client 8.2.13 or later and are in `contrib-compute/boinc/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
+1.4 and 1.5 have been the active versions since 22 October 2026 (see the [Wave 1 runbook](#wave-1-runbook-22-october-2026)); 1.2 and 1.3 are deprecated, and 1.0 and 1.1 are retired. Both classes need client 8.2.13 or later and are in `boinc/project/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
 
 ### How the GPU reaches the container
 
@@ -83,29 +83,29 @@ The ALTO staged with each page is retained so the Surya outputs can be scored ag
 
 ## Running a campaign
 
-The server must have the `usnm_surya` app (`register-apps`), the two plan classes and daemons (server and bridge images built from a commit that includes `usnm_surya` with `scripts/boinc/build-boinc-images.sh`, then `SERVER_IMAGE` in `/etc/usnm-boinc/server.env` on the on-prem host set to the result and `usnm-boinc-server.service` restarted, as in [boinc-onprem.md](boinc-onprem.md); `scripts/boinc/provision-boinc.sh` deploys only the Azure server), and both app versions. 1.4 and 1.5 are published; a new worker image needs an unused pair, and prod's server is on-prem, so the release takes `--onprem-host` and `--onprem-ct`:
+The server must have the `usnm_surya` app (`register-apps`), the two plan classes and daemons (server and bridge images built from a commit that includes `usnm_surya` with `boinc/scripts/build-boinc-images.sh`, then `SERVER_IMAGE` in `/etc/usnm-boinc/server.env` on the on-prem host set to the result and `usnm-boinc-server.service` restarted, as in [boinc-onprem.md](boinc-onprem.md); `boinc/scripts/provision-boinc.sh` deploys only the Azure server), and both app versions. 1.4 and 1.5 are published; a new worker image needs an unused pair, and prod's server is on-prem, so the release takes `--onprem-host` and `--onprem-ct`:
 
 ```sh
 gh workflow run boinc-surya.yml --ref main -f correlation="surya-$(date -u +%Y%m%dT%H%M%S)"
 # From the run's summary: the image, its digest, SURYA_ENGINE_LLAMA and SURYA_ENGINE_WEIGHTS.
-scripts/boinc/boinc-app-release.sh --env prod --app usnm_surya --version <N.M> --plan-class docker_mt \
+boinc/scripts/boinc-app-release.sh --env prod --app usnm_surya --version <N.M> --plan-class docker_mt \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST --onprem-host HOST --onprem-ct ID
-scripts/boinc/boinc-app-release.sh --env prod --app usnm_surya --version <N.M+1> --plan-class docker_nvidia_cuda \
+boinc/scripts/boinc-app-release.sh --env prod --app usnm_surya --version <N.M+1> --plan-class docker_nvidia_cuda \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST --onprem-host HOST --onprem-ct ID
 ```
 
-Then run the steps on the on-prem host; their files are under `<share>/surya/<campaign>/`. A step runs in a container that mounts the host's `/srv/usnm-boinc/project` at `/project` and gets its `--var` values unchanged, so a path in a `--var` (such as `SURYA_SAMPLE`) is `/project/...`; `/srv/usnm-boinc/project/...` is the same file when you touch it on the host directly. `scripts/boinc/onprem-step.sh` takes the arguments of `scripts/boinc/start-boinc-bridge.sh`, which starts the Azure bridge job that prod no longer has:
+Then run the steps on the on-prem host; their files are under `<share>/surya/<campaign>/`. A step runs in a container that mounts the host's `/srv/usnm-boinc/project` at `/project` and gets its `--var` values unchanged, so a path in a `--var` (such as `SURYA_SAMPLE`) is `/project/...`; `/srv/usnm-boinc/project/...` is the same file when you touch it on the host directly. `boinc/scripts/onprem-step.sh` takes the arguments of `boinc/scripts/start-boinc-bridge.sh`, which starts the Azure bridge job that prod no longer has:
 
 ```sh
 # Gets each page's JPEG from the scan archive, else from tile.loc.gov through its batch (see
 # below); a 403, 429 or 5xx, or an HTML challenge page, writes HOLD and stops.
-scripts/boinc/onprem-step.sh --env prod --target bridge --step surya-stage --var SURYA_CAMPAIGN=probe1 \
+boinc/scripts/onprem-step.sh --env prod --target bridge --step surya-stage --var SURYA_CAMPAIGN=probe1 \
   --var SURYA_PAGES=serbian:srp:sn85055101_1917-04-03_ed-1_seq-3:dlc_arlington_ver01,... \
   --var SURYA_ENGINE_IMAGE=sha256:... --var SURYA_ENGINE_LLAMA=sha256:... --var SURYA_ENGINE_WEIGHTS=sha256:... \
   --var SURYA_MAX=8 --wait-mins 15
-scripts/boinc/onprem-step.sh --env prod --target bridge --step surya-submit --var SURYA_CAMPAIGN=probe1 --var SURYA_MAX=8 --wait-mins 15
+boinc/scripts/onprem-step.sh --env prod --target bridge --step surya-submit --var SURYA_CAMPAIGN=probe1 --var SURYA_MAX=8 --wait-mins 15
 # As results come in:
-scripts/boinc/onprem-step.sh --env prod --target bridge --step surya-summary --var SURYA_CAMPAIGN=probe1 --wait-mins 15
+boinc/scripts/onprem-step.sh --env prod --target bridge --step surya-summary --var SURYA_CAMPAIGN=probe1 --wait-mins 15
 ```
 
 Each page is `group:lang:doc_id:batch[+batch...]`. Staging never asks www.loc.gov where a page is (its item API answers Azure with a Cloudflare challenge), so the page names the batches that may hold it, as `<name>_ver<NN>`. Take them from the published set's `batches.json` in the lake's `reference` container (the version `current.json` names): every batch whose `lccns` include the page's LCCN and whose `first` to `last` dates include its date. For example, with the file downloaded:
@@ -160,7 +160,7 @@ scripts/ocr-survey/gold.py score --crops fixtures/ocr-gold/cze-srp-pol-rus/crops
 
 ### Wave 1 runbook (22 October 2026)
 
-The first wave on the on-prem server, in order. Everything runs through `scripts/boinc/onprem-step.sh --env prod --target bridge` on the BOINC host (`--wait-mins 30` unless noted); the controller's ssh key may run only the two steps the [Surya plan](boinc-batch-scheduler.md#surya-waves) takes.
+The first wave on the on-prem server, in order. Everything runs through `boinc/scripts/onprem-step.sh --env prod --target bridge` on the BOINC host (`--wait-mins 30` unless noted); the controller's ssh key may run only the two steps the [Surya plan](boinc-batch-scheduler.md#surya-waves) takes.
 
 Before the first step, three things must hold:
 
@@ -169,7 +169,7 @@ Before the first step, three things must hold:
 3. A quality campaign `<Q>` is staged on the share with `quality/<Q>/sample.jsonl` and its units (the quality-wave staging of [#962](https://github.com/tgoodyear/usnewsmap.com/issues/962)); the Surya pages and crops are cut from those units, so nothing is staged for Surya before it.
 4. For the crop comparison against the vision-language reading, a Qwen campaign `<QW>` staged from the same `<Q>` units (`qwen-stage` with `QUALITY_CAMPAIGN=<Q>`), with results back. Without it `quality-collect` reads an empty Qwen root and the crop table has no `vlm` reader.
 
-The engine pins are the same for every CUDA Surya worker image published since 14 October, so units staged with them run on 1.4 and 1.5 alike (the worker checks the llama image, the Surya version and the weights against its own environment, not the image digest). `SURYA_ENGINE_LLAMA` and `SURYA_ENGINE_WEIGHTS` are `LLAMA_DIGEST` and `SURYA_WEIGHTS` in `ocr/boinc/surya/engine.lock` as of this wave; when a later image changes them, read them there:
+The engine pins are the same for every CUDA Surya worker image published since 14 October, so units staged with them run on 1.4 and 1.5 alike (the worker checks the llama image, the Surya version and the weights against its own environment, not the image digest). `SURYA_ENGINE_LLAMA` and `SURYA_ENGINE_WEIGHTS` are `LLAMA_DIGEST` and `SURYA_WEIGHTS` in `boinc/apps/surya/engine.lock` as of this wave; when a later image changes them, read them there:
 
 ```sh
 SURYA_ENGINE_IMAGE=sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494
@@ -289,7 +289,7 @@ its images. Prepare the same two v1.0.0 smoke subsets used by the candidate tria
 
 ```sh
 scripts/ocr-bench/fetch --version v1.0.0 --verify --dest benchmark
-python3 scripts/boinc/surya-benchmark.py prepare \
+python3 boinc/scripts/surya-benchmark.py prepare \
   --release benchmark/usnm-ocr-bench-v1.0.0 --out surya-inputs
 ```
 
@@ -306,7 +306,7 @@ prepare older bundles again. The SHA256 of its
 exact bytes, printed by prepare, is required by staging:
 
 ```sh
-scripts/boinc/onprem-step.sh --env prod --target bridge --step surya-benchmark-stage \
+boinc/scripts/onprem-step.sh --env prod --target bridge --step surya-benchmark-stage \
   --var SURYA_CAMPAIGN=probe-812-gpu --var SURYA_BENCHMARK_SHA256=MANIFEST_SHA256 \
   --var SURYA_ENGINE_IMAGE=sha256:WORKER --var SURYA_ENGINE_LLAMA=sha256:LLAMA \
   --var SURYA_ENGINE_WEIGHTS=sha256:WEIGHTS --wait-mins 15
@@ -354,7 +354,7 @@ submission. A prepared bundle or passing CI is not dispatch authorization.
 Export only validator-kept results for the existing scorers:
 
 ```sh
-python3 scripts/boinc/surya-benchmark.py collect --root CAMPAIGN \
+python3 boinc/scripts/surya-benchmark.py collect --root CAMPAIGN \
   --seen PROJECT/surya/seen --out collected --binary usnm-boinc --intended-device cuda
 usnm-ocr-survey bench-score --release RELEASE --subset overproof-en/smoke-10 \
   --outputs collected/cuda-tiled-english.jsonl --rule legacy-ws-v1
@@ -379,7 +379,7 @@ with the normal `boinc-app-release.sh` commands above.
 
 This section is the Azure publish-job procedure from the time of the probe. Prod's
 server moved on-prem on 21 October 2026, where there is no publish job:
-`scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the app version
+`boinc/scripts/boinc-app-release.sh --onprem-host --onprem-ct` builds the app version
 image on the host and runs `usnm-boinc-step --target publish`, whose one input,
 `APPVER_REUSE_PROJECT`, is 0 or 1 ([boinc-onprem.md](boinc-onprem.md)). What
 follows applies to a server with `"server": "azure"`.
@@ -387,7 +387,7 @@ follows applies to a server with `"server": "azure"`.
 When reviewed main differs from the deployed stack, do not run a full-stack
 provision to release this probe. Under the #529 claim and ordinary local mutex /
 controller lease, first verify **all six lifecycle jobs idle**. Prepare each new
-version with `scripts/boinc/boinc-app-release.sh --prepare-only` and the normal signing
+version with `boinc/scripts/boinc-app-release.sh --prepare-only` and the normal signing
 host. Review and merge the resulting immutable appver pin before publication.
 Do not reuse a locked signer or change existing signed payloads.
 

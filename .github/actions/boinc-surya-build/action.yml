@@ -1,6 +1,6 @@
 name: boinc-surya-build
 description: >-
-  Builds the usnm_surya worker image (ocr/boinc/surya/Containerfile) and checks that, without a
+  Builds the usnm_surya worker image (boinc/apps/surya/Containerfile) and checks that, without a
   GPU, it runs a unit and returns all five outputs (.github/workflows/boinc-surya.yml). Pushes
   nothing.
 inputs:
@@ -34,9 +34,9 @@ runs:
       run: |
         # The pins are in engine.lock, one KEY=value per line named as the Containerfile's build arguments.
         pins=()
-        while IFS= read -r pin; do pins+=(--build-arg "$pin"); done < <(grep -E '^[A-Z][A-Z_]*=' ocr/boinc/surya/engine.lock)
-        [[ ${#pins[@]} -gt 0 ]] || { echo "::error::no pins in ocr/boinc/surya/engine.lock"; exit 1; }
-        docker build -f ocr/boinc/surya/Containerfile \
+        while IFS= read -r pin; do pins+=(--build-arg "$pin"); done < <(grep -E '^[A-Z][A-Z_]*=' boinc/apps/surya/engine.lock)
+        [[ ${#pins[@]} -gt 0 ]] || { echo "::error::no pins in boinc/apps/surya/engine.lock"; exit 1; }
+        docker build -f boinc/apps/surya/Containerfile \
           "${pins[@]}" \
           --build-arg "LLAMA_VARIANT=$VARIANT" \
           --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \

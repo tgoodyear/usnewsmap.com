@@ -2,7 +2,7 @@
 
 [Design issue #438](https://github.com/tgoodyear/usnewsmap.com/issues/438) adds a
 file-based batch transport alongside the existing on-prem queue workers. See the
-[setup and recovery guide](../boinc/README.md).
+[setup and recovery guide](../../boinc/docs/README.md).
 
 The first pilot shares the Tesseract 5.5.0 Containerfile, model lock, and routing.
 The central bridge checks the published reference snapshot and reserves native

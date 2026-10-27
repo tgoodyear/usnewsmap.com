@@ -505,11 +505,11 @@ cargo run --release -p usnm-ocr-survey -- bundle-build --version 1 --per-source 
 cargo run --release -p usnm-ocr-survey -- bundle-verify --bundle OUT/bundle/usnm-ocr-gold-v1.tar
 ```
 
-The BOINC server can run the same build and check it against the lock, on the on-prem host with `usnm-boinc-step --step gold-bundle` ([boinc-onprem.md](boinc-onprem.md)); the Azure server ran it inside its VNet: [Build the gold bundle](boinc/gold-check.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
+The BOINC server can run the same build and check it against the lock, on the on-prem host with `usnm-boinc-step --step gold-bundle` ([boinc-onprem.md](boinc-onprem.md)); the Azure server ran it inside its VNet: [Build the gold bundle](../boinc/docs/gold-check.md#build-the-gold-bundle). `--original` is the downloaded archive of a reference-only source; the builder checks it against `SOURCE.json` and reads the members to record their checksums, and copies nothing from it. No dataset content is committed. The repository holds only the lock, `fixtures/ocr-gold/bundle-v1.lock.json`: version, seed, crop ids, file checksums, remotes, the manifest's and the tar's sha256.
 
 **Version 1** (built 2026-10-13, seed 457, 30 per source): 142 crops, 30 BLN600, 30 Overproof CA (from 18 LoC pages), 24 NewsEye BnF, 18 NewsEye NLF Finnish, 10 NewsEye NLF Swedish and 30 NZZ lines. The tar is 9.6 MB (9.1 MB of shipped crops, a 140 KB manifest, 128 KB of licence files). A client also downloads 19 remotes: the 68 MB BLN600 zip and 18 page images. All 18 LoC page images matched the checksums recorded at conversion when fetched again on the same day.
 
-**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc/gold-check.md](boinc/gold-check.md#gold-check). For `usnm_gold` (#462), the server-side prepare step fetches each original once into its cache; submission verifies the MD5 and SHA-256 from `prepared.json` and stages ordinary sticky project downloads. Volunteers receive the unchanged archive and image files from the project server, then cut crops locally; the run step stays offline ([boinc/gold-check.md](boinc/gold-check.md#as-boinc-work-usnm_gold)). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
+**Client.** `usnm-boinc gold-stage` (network) and `usnm-boinc gold-run` (offline), in [boinc/gold-check.md](../boinc/docs/gold-check.md#gold-check). For `usnm_gold` (#462), the server-side prepare step fetches each original once into its cache; submission verifies the MD5 and SHA-256 from `prepared.json` and stages ordinary sticky project downloads. Volunteers receive the unchanged archive and image files from the project server, then cut crops locally; the run step stays offline ([boinc/gold-check.md](../boinc/docs/gold-check.md#as-boinc-work-usnm_gold)). A run with Tesseract 5.5.1 and only `eng` installed scored the 60 English crops (CER 0.0932 on BLN600, 0.0276 on Overproof CA) and reported the other 82 as skipped for lack of a model.
 
 ### Current-worker observations, 16 October 2026
 
@@ -717,7 +717,7 @@ staged `<job-id>_gold_json`, including for work queued before the hook was
 deployed. Before dispatch, it requires the selected app's registered
 Dockerfile to pin that job's exact worker image, and requires the job's base
 to match the reviewed image/platform entry in
-`contrib-compute/boinc/gold-engine-platforms.json`. Missing or malformed
+`boinc/project/gold-engine-platforms.json`. Missing or malformed
 metadata, anonymous app versions, unknown bindings, and mismatches refuse
 dispatch with an explicit `[Gold routing]` scheduler log. Filesystem reads
 run only in the unlocked slow check, assignment, locality, and lost-work

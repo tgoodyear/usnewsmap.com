@@ -13,7 +13,7 @@ use usnm_ocr_contract::{
     qwen::{Job, MAX_JOB_JSON},
 };
 
-const EMBEDDED_WEIGHTS_LOCK: &str = include_str!("../../../../ocr/boinc/qwen/weights.lock");
+const EMBEDDED_WEIGHTS_LOCK: &str = include_str!("../../../../boinc/apps/qwen/weights.lock");
 
 /// Execution target and input template routing for `usnm_qwen` workunits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -99,7 +99,7 @@ impl Target {
     /// shared payload, slot workspace and reserve. Never discounts unproven caches.
     pub fn disk_bound(self) -> u64 {
         let policy: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../ocr/boinc/qwen/disk-policy.json"))
+            serde_json::from_str(include_str!("../../../../boinc/apps/qwen/disk-policy.json"))
                 .expect("valid embedded Qwen disk policy");
         let (model, kind) = match self {
             Self::Container => ("2b", "container_cold_bytes"),
@@ -132,7 +132,7 @@ pub struct Summary {
 pub const FPOPS_EST: &str = "1e13";
 pub const FPOPS_BOUND: &str = "1e16";
 /// 6 GiB: the 8B model at Q4 needs about 7 GB of GPU memory and 4 GiB of
-/// RAM; the 2B model at Q8 about 3 GiB of RAM (`ocr/boinc/qwen/`).
+/// RAM; the 2B model at Q8 about 3 GiB of RAM (`boinc/apps/qwen/`).
 pub const MEMORY_BOUND: &str = "6442450944";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
@@ -463,7 +463,7 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
             ));
             atomic(
                 &project.join("templates/usnm_qwen_benchmark_in"),
-                include_bytes!("../../../../ocr/boinc/usnm_qwen_benchmark_in"),
+                include_bytes!("../../../../boinc/apps/usnm_qwen_benchmark_in"),
             )?;
         }
         if !models_staged {
