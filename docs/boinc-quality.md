@@ -465,6 +465,19 @@ no LoC request:
    ranking views; a successful BOINC result is not a loaded result until the loader
    succeeds. The installer enables collection once the loader DSN exists.
 
+   Native Qwen requires a separate scheduled join, not just the image-pass campaign:
+   install and enable `usnm-qwen-results.{service,timer}` on the preparation host.
+   It uses the same locked driver with `--campaign qwen-nonenglish-v1
+--qwen-campaign qwen-nonenglish-v1`, joining QUALITY canonical outputs from batch 0
+   with `/project/qwen/<campaign>` and native batch-8 canonical readings from
+   `/project/usnmocr/results/8`. Override `NATIVE_QWEN_CAMPAIGN` (and, if needed, the
+   QUALITY scorer's `ENGINE_IMAGE`) in `/etc/usnm/quality-results-qwen.env`, never by
+   modifying feeder settings. Each pass archives fresh `pages.parquet`, `crops.parquet`
+   and summary on the server, then certificate-loads page/reader scores. Readings
+   pending quorum remain pending and join on a later pass; they are not reported as
+   loaded Qwen science. The two collectors share the host pass lock and server bridge
+   lock. Neither changes work identities, submission, source selection or quorum.
+
 ```sh
 # On pve-laptop, once: the trust and the mounts (home-infra).
 scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi
