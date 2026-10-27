@@ -6,7 +6,6 @@ docs
 !docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py
 web/node_modules
 web/dist
-web/public/basemap
 web/test-results
 web/playwright-report
 web/*.tsbuildinfo

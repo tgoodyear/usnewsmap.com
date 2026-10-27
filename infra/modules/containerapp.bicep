@@ -176,7 +176,11 @@ var backendEnv = quickwit
 var apiContainer = {
   name: 'api'
   image: image
-  resources: { cpu: json('0.25'), memory: '0.5Gi' }
+  // Two Chromium captures miss their deadline at the old 0.25 CPU limit.
+  // Keep the legacy sidecar replica within Consumption's 4 CPU / 8 GiB cap.
+  resources: sidecar
+    ? { cpu: json('0.25'), memory: '0.5Gi' }
+    : { cpu: json('1.0'), memory: '2Gi' }
   env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv, computeEnv)
   probes: [
     {
