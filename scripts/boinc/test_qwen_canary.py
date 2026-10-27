@@ -806,7 +806,11 @@ foreach ($after->plan_class as $node) {
                 # Distinct-host replication is the scheduler's; without it the mode refuses.
                 *((setting, ["--plan-class", "intel_vulkan_8b", "--tiebreaker", "--workunit", "300"],
                    "one_result_per_host_per_wu") for setting in (
-                    empty, "<boinc><config><one_result_per_host_per_wu>0</one_result_per_host_per_wu>"
+                    empty, *(f"<boinc><config><one_result_per_host_per_wu>{value}"
+                             "</one_result_per_host_per_wu></config></boinc>"
+                             for value in ("0", "", "<![CDATA[]]>", "<![CDATA[1]]>", "<disabled/>")),
+                    "<boinc><one_result_per_host_per_wu/><config/></boinc>",
+                    "<boinc><config><one_result_per_host_per_wu/><one_result_per_host_per_wu/>"
                     "</config></boinc>")),
             ):
                 with self.subTest(config=config, arguments=arguments):

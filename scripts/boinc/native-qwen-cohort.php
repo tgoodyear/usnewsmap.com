@@ -149,6 +149,37 @@ function native_qwen_tiebreaker_validate($workunit, $results, $plan_class, $assi
     }
 }
 
+// BOINC enables <one_result_per_host_per_wu> only as a self-closing flag or a numeric true
+// value; empty pairs, CDATA and nested markup leave it off, so accept only <tag/> or <tag>1</tag>.
+function native_qwen_one_result_per_host($path) {
+    $reader = new XMLReader();
+    if (!$reader->open($path, null, LIBXML_NONET)) return false;
+    $enabled = 0;
+    $found = 0;
+    $stack = [];
+    while (@$reader->read()) {
+        if ($reader->nodeType === XMLReader::END_ELEMENT) {
+            array_pop($stack);
+        } elseif ($reader->nodeType === XMLReader::ELEMENT) {
+            $here = array_merge($stack, [$reader->name]);
+            if ($reader->name === "one_result_per_host_per_wu") {
+                $found++;
+                if ($here === ["boinc", "config", "one_result_per_host_per_wu"]) {
+                    if ($reader->isEmptyElement) {
+                        $enabled++;
+                    } else {
+                        $inner = $reader->readInnerXml();
+                        if (preg_match('/^\s*1\s*$/D', $inner)) $enabled++;
+                    }
+                }
+            }
+            if (!$reader->isEmptyElement) $stack = $here;
+        }
+    }
+    $reader->close();
+    return $found === 1 && $enabled === 1;
+}
+
 function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary_canary = false, $assignments = 0) {
     if (!in_array($plan_class, NATIVE_QWEN_CLASSES, true)) {
         throw new RuntimeException("Unsupported native class");
@@ -287,11 +318,7 @@ function native_qwen_cohort_main() {
     if (!$stop && !$general) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
         if ($tiebreaker) {
-            $config = new DOMDocument();
-            $flags = $config->load("$db_project/config.xml", LIBXML_NONET)
-                ? (new DOMXPath($config))->query("/boinc/config/one_result_per_host_per_wu") : null;
-            // BOINC reads <tag/> as true and a numeric value as its truth; require an enabled flag.
-            if (!$flags || $flags->length !== 1 || !in_array(trim($flags->item(0)->nodeValue), ["", "1"], true)) {
+            if (!native_qwen_one_result_per_host("$db_project/config.xml")) {
                 throw new RuntimeException("Tiebreaker requires one_result_per_host_per_wu");
             }
         }
