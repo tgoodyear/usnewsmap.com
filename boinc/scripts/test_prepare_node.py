@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from scripts.boinc import prepare_node as node
+from boinc.scripts import prepare_node as node
 
 
 class PrepareNodeTests(unittest.TestCase):

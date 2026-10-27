@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
-from scripts.boinc import client_account as account
+from boinc.scripts import client_account as account
 
 
 def state(**changes):

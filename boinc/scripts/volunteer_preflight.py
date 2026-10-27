@@ -22,7 +22,7 @@ import uuid
 try:
     import qwen_disk
 except ModuleNotFoundError:
-    from scripts.boinc import qwen_disk
+    from boinc.scripts import qwen_disk
 
 try:
     import tomllib  # type: ignore[import-not-found]

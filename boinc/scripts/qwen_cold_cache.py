@@ -20,7 +20,7 @@ import time
 try:
     from qwen_disk import policy
 except ModuleNotFoundError:
-    from scripts.boinc.qwen_disk import policy
+    from boinc.scripts.qwen_disk import policy
 
 
 def daemon_command(state, host):

@@ -9,9 +9,9 @@ import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
-from scripts.boinc import qwen_disk as disk
-from scripts.boinc import qwen_cold_cache as cold
-from scripts.boinc import volunteer_preflight as pre
+from boinc.scripts import qwen_disk as disk
+from boinc.scripts import qwen_cold_cache as cold
+from boinc.scripts import volunteer_preflight as pre
 
 ROOT = Path(__file__).resolve().parents[2]
 

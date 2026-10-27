@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 try:
     from volunteer_preflight import check_ocr_groups, limits_from_job_toml, PreflightError
 except ModuleNotFoundError:
-    from scripts.boinc.volunteer_preflight import check_ocr_groups, limits_from_job_toml, PreflightError
+    from boinc.scripts.volunteer_preflight import check_ocr_groups, limits_from_job_toml, PreflightError
 
 SERVICE = re.compile(r"[A-Za-z0-9_-]{1,80}\.service\Z")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")

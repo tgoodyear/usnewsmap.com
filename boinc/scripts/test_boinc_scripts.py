@@ -23,8 +23,8 @@ from unittest import mock
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.dirname(HERE)
-ROOT = os.path.dirname(SCRIPTS)
+ROOT = os.path.dirname(os.path.dirname(HERE))
+SCRIPTS = os.path.join(ROOT, "scripts")
 SCRIPT = os.path.join(HERE, "start-boinc-bridge.sh")
 SUB = json.load(open(os.path.join(ROOT, "boinc/infra/boinc/env/prod.json")))["subscriptionId"]
 
@@ -314,10 +314,10 @@ echo verified
                 self.assert_failed(**env)
 
     def test_all_build_wrappers_use_shared_helper(self):
-        expected = {"boinc/build-boinc-images.sh": 4, "boinc/boinc-app-release.sh": 3,
-                    "azure/build-quickwit.sh": 1, "azure/stand-up.sh": 1}
+        expected = {"boinc/scripts/build-boinc-images.sh": 4, "boinc/scripts/boinc-app-release.sh": 3,
+                    "scripts/azure/build-quickwit.sh": 1, "scripts/azure/stand-up.sh": 1}
         for name, count in expected.items():
-            text = Path(SCRIPTS, name).read_text()
+            text = Path(ROOT, name).read_text()
             self.assertIn(". scripts/lib/acr-build.sh", text)
             self.assertEqual(text.count("acr_build_verified "), count, name)
             # --only-show-errors would hide the queued run id (Azure CLI 2.90).

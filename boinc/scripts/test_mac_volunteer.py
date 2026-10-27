@@ -18,7 +18,7 @@ try:
         setup_mac,
     )
 except ModuleNotFoundError:
-    from scripts.boinc.setup_mac_volunteer import (
+    from boinc.scripts.setup_mac_volunteer import (
         DEFAULT_PROJECT_URL,
         MAC_PREFS,
         MacSetupError,
