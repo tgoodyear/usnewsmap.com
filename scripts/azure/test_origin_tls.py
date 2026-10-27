@@ -221,6 +221,40 @@ class OriginTlsTests(unittest.TestCase):
         self.assertIn("/diagnosticSettings/usnm-origin-tls?", diagnostic.args[1])
         self.assertEqual(diagnostic.args[3]["properties"]["workspaceId"], bootstrap.WORKSPACE)
 
+    def test_bootstrap_waits_for_rbac_then_accepts_missing_secret(self):
+        with patch.object(tls, "azure_token", return_value="vault-token"), \
+                patch.object(tls, "request", side_effect=[
+                    RuntimeError("GET vault: HTTP 403"), RuntimeError("GET vault: HTTP 404"),
+                ]) as request, \
+                patch.object(bootstrap.time, "monotonic", side_effect=[0, 0, 0]), \
+                patch.object(bootstrap.time, "sleep") as sleep:
+            self.assertEqual(bootstrap.read_existing_token(), {})
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(10)
+
+    def test_bootstrap_rbac_wait_is_bounded_and_preserves_error(self):
+        denied = RuntimeError("GET vault: HTTP 403")
+        with patch.object(tls, "azure_token", return_value="vault-token"), \
+                patch.object(tls, "request", side_effect=denied) as request, \
+                patch.object(bootstrap.time, "monotonic", side_effect=[0, 0, 0, 300]), \
+                patch.object(bootstrap.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError) as raised:
+                bootstrap.read_existing_token()
+        self.assertIs(raised.exception, denied)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(10)
+
+    def test_bootstrap_does_not_retry_other_vault_errors(self):
+        failure = RuntimeError("GET vault: HTTP 500")
+        with patch.object(tls, "azure_token", return_value="vault-token"), \
+                patch.object(tls, "request", side_effect=failure) as request, \
+                patch.object(bootstrap.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError) as raised:
+                bootstrap.read_existing_token()
+        self.assertIs(raised.exception, failure)
+        request.assert_called_once()
+        sleep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,10 @@ the operator's selected CLI default. Bootstrap idempotently enables the vault's
 `AuditEvent` diagnostic category in `log-usnm-prod` for new and existing
 vaults, recording secret access, mutations and denied requests without secret
 values, consistent with the production diagnostic-settings convention.
+After provisioning, bootstrap retries initial secret-read HTTP 403 responses
+for up to five minutes while the operator RBAC grant propagates. HTTP 404
+means the vault is accessible but the token has not been created; other errors
+and a persistent 403 fail without creating or replacing credentials.
 
 Staging exercises all DNS challenges without changing stored production state,
 uploading an untrusted staging certificate, or binding hostnames. Production

@@ -113,14 +113,22 @@ def operator_token():
     return tls.secret("cloudflare-api-token", vault=tls.OPERATOR_VAULT)
 
 
-def bootstrap_credentials():
+def read_existing_token(timeout=300):
     url = f"https://{tls.VAULT}.vault.azure.net/secrets/{tls.TOKEN_SECRET}?api-version=7.4"
-    try:
-        existing = tls.request("GET", url, tls.azure_token("https://vault.azure.net"))
-    except RuntimeError as error:
-        if not str(error).endswith("HTTP 404"):
-            raise
-        existing = {}
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return tls.request("GET", url, tls.azure_token("https://vault.azure.net"))
+        except RuntimeError as error:
+            if str(error).endswith("HTTP 404"):
+                return {}
+            if not str(error).endswith("HTTP 403") or time.monotonic() >= deadline:
+                raise
+            time.sleep(min(10, max(0, deadline - time.monotonic())))
+
+
+def bootstrap_credentials():
+    existing = read_existing_token()
     if not existing or existing.get("attributes", {}).get("exp", 0) < time.time() + 30 * 86400:
         expires = int(time.time()) + 90 * 86400
         # The IP-restricted operator token never leaves this process or reaches CI.
