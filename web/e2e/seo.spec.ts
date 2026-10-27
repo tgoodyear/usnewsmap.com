@@ -178,7 +178,7 @@ test("the API's OpenAPI document is served on the site's origin too", async ({ r
   expect(Object.keys(doc.paths)).toContain("/v1/aggregate");
 });
 
-test("sitemap.xml lists the home page, privacy and curated base searches", async ({ request }) => {
+test("sitemap.xml lists canonical site pages and curated base searches", async ({ request }) => {
   const res = await request.get("/sitemap.xml");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/xml/);
@@ -186,6 +186,8 @@ test("sitemap.xml lists the home page, privacy and curated base searches", async
   expect(locs).toEqual([
     `${SITE}/`,
     `${SITE}/privacy`,
+    `${SITE}/datasets`,
+    `${SITE}/credits`,
     ...[...new Set(examples.map(({ view }) => searchPath(view.q)))].map((path) => `${SITE}${path}`),
   ]);
   if (withApi) {
@@ -244,14 +246,16 @@ test.describe("what the API tells crawlers", () => {
     expect((await request.get("/status")).url()).toMatch(/\/datasets$/);
   });
 
-  test("search permalinks and the dataset details are noindex; the home page is not", async ({ request }) => {
-    for (const url of ["/search/x", "/search/whigs?tab=table", "/datasets"]) {
+  test("uncurated searches and filtered permalinks are noindex; site pages are not", async ({ request }) => {
+    for (const url of ["/search/x", "/search/whigs?tab=table"]) {
       const res = await request.get(url);
       expect(res.status(), url).toBe(200);
       expect(res.headers()["x-robots-tag"], url).toBe("noindex");
     }
-    const home = await request.get("/");
-    expect(home.headers()["x-robots-tag"]).toBeUndefined();
+    for (const url of ["/", "/datasets", "/credits", "/privacy"]) {
+      const page = await request.get(url);
+      expect(page.headers()["x-robots-tag"], url).toBeUndefined();
+    }
   });
 
   test("legacy searches redirect without losing filters", async ({ request }) => {

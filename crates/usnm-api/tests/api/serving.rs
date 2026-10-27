@@ -614,12 +614,12 @@ async fn the_apps_pages_revalidate_with_an_etag() {
     tags.sort();
     tags.dedup();
     assert_eq!(tags.len(), 3);
-    // The dataset page's 304 keeps its noindex.
+    // The dataset page remains indexable on revalidation.
     let (_, h, _) = get_site(&s, "/datasets", None).await;
     let (_, h304, _) = get_if_none_match(&s, "/datasets", header_str(&h, header::ETAG)).await;
     assert_eq!(
         header_str(&h304, header::HeaderName::from_static("x-robots-tag")),
-        "noindex"
+        ""
     );
 
     // A release changes the shell, and with it the tag.
@@ -640,7 +640,7 @@ async fn the_apps_pages_revalidate_with_an_etag() {
 }
 
 #[tokio::test]
-async fn search_permalinks_and_dataset_details_are_noindex() {
+async fn uncurated_searches_are_noindex_and_site_pages_are_indexable() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("noindex"));
     let s = Arc::new(AppState::new(
@@ -649,11 +649,7 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
         refdata().await,
     ));
     let robots = header::HeaderName::from_static("x-robots-tag");
-    for uri in [
-        "/search/x",
-        "/search/cross-of-gold?from=1896-06-01",
-        "/datasets",
-    ] {
+    for uri in ["/search/x", "/search/cross-of-gold?from=1896-06-01"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "noindex", "{uri}");
@@ -662,7 +658,14 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     let (status, h, _) = get_site(&s, "/status", None).await;
     assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
     assert_eq!(header_str(&h, robots.clone()), "noindex");
-    for uri in ["/", "/?t=1896-07-01", "/favicon.svg", "/search/whigs"] {
+    for uri in [
+        "/",
+        "/?t=1896-07-01",
+        "/favicon.svg",
+        "/search/whigs",
+        "/datasets",
+        "/credits",
+    ] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "", "{uri}");
