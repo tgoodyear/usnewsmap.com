@@ -143,7 +143,7 @@ matches '^\.github/workflows/ci\.yml$' && {
       END { for (j in hitjob) if (hitjob[j]) { if (j == "ALL") print "ALL"; else print flags[j] } }' .github/workflows/ci.yml | tr -s ' \n' ' ')
   rm -f "$lines"
   case " $forced " in *" ALL "*) ops=true; all "workflow changed" ;; esac
-  for flag in markdown ops provision; do
+  for flag in markdown ops provision boinc_pages; do
     if [[ " $forced " == *" $flag "* ]]; then printf -v "$flag" true; fi
   done
   echo "workflow jobs changed, forcing:$forced"
