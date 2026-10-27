@@ -196,7 +196,8 @@ same rules.
 4. Verify the actual deployed alert inventory and queries, the site web
    test, the `usnm-core-ag-prod` receivers and short name `usnm-prod`, the
    `usnm-core-budget-prod` start/notifications, and workbook titles
-   `usnm pipeline (prod)` and `usnm API (prod)`. Do not use the issue's old
+   `usnm OCR nodes (prod)` and `usnm API (prod)`. The pipeline workbook is
+   retired; do not recreate it for this verification. Do not use the issue's old
    alert count: later changes added and consolidated rules. The three OCR
    alert names also become conventional. The old history of fired alerts
    and availability results remains in the same workspace; the recreated

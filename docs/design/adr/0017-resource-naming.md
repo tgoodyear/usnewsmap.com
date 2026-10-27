@@ -293,7 +293,7 @@ There is no API revision in prod, and running cost is unchanged or slightly lowe
 
 Phase 2 runs now rather than at a rebuild, decided by the maintainer on 10 October 2026. It runs as soon as Phase 0 has landed, alongside Phase 1, because it needs `names()` and the status sanitizer's new forms. These resources hold no state, so each rename costs one provision.
 
-- Recreate the alert inventory actually declared by the current modules (the original count predates added capacity rules and consolidated job failures), the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the workbook titles in place to `usnm pipeline (prod)` and `usnm API (prod)`. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
+- Recreate the alert inventory actually declared by the current modules (the original count predates added capacity rules and consolidated job failures), the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the live workbook titles in place to `usnm OCR nodes (prod)` and `usnm API (prod)`; `usnm pipeline (prod)` is historical and retired. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
 - `id-usnm-ci-prod` becomes `usnm-ci-id-prod`; run `bootstrap.sh` straight after the provision so `USNM_CI_CLIENT_ID` is rewritten.
 - Old fired-alert and availability history stays queryable in the workspace. CI deploys fail between the provision and `bootstrap.sh`; serving is unaffected.
 - The registry is not part of this phase; it stays in Phase 4.
