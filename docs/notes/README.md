@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                                             |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------- |
+| 2026-10-27 | [Iris performance experiment: no-change decision](2026-10-27-iris-performance-decision.md)                      | ocr, operations      | All24 retained trials, human-reference scores, timing/telemetry and cold-memory audit   |
 | 2026-10-27 | [LoC package audit and repair join](2026-10-27-loc-package-audit.md)                                            | ocr, coverage        | Actual 1,706-page package; full 1,922,826-page frozen repair manifest                   |
 | 2026-10-27 | [Iris Xe pilot closeout](2026-10-27-iris-pilot-closeout.md)                                                     | ocr, operations      | Original inspected pilot, all 1,000 crop outcomes and retained 20,000-page source stage |
 | 2026-10-26 | [100 additional historical search examples](2026-10-26-100-more-historical-examples.md)                         | coverage             | `pages-v20261022-1`; 100 live queries and institutional sources                         |
