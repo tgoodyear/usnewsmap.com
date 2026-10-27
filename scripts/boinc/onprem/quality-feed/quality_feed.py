@@ -131,8 +131,6 @@ def read_lines(path):
 
 
 def cmd_select(a):
-    import pyarrow.parquet as pq
-
     staged = read_lines(a.staged)
     cand = {}
     with open(a.index) as f:
@@ -144,13 +142,36 @@ def cmd_select(a):
     by_batch = {}
     for r in cand.values():
         by_batch.setdefault((r["batch"], int(r.get("batch_version") or 1)), []).append(r)
+    db_damage = None
+    if getattr(a, "damage_dsn_file", None):
+        import csv
+        import subprocess
+
+        if any(not DOC_RE.fullmatch(doc) for doc in cand):
+            raise ValueError("invalid indexed document identity")
+        query = ("CREATE TEMP TABLE feed_candidates(doc_id text PRIMARY KEY);\n"
+                 "COPY feed_candidates FROM STDIN;\n"
+                 + "".join(doc + "\n" for doc in sorted(cand))
+                 + "\\.\nCOPY (SELECT s.doc_id,s.lang,s.damage_rate FROM quality.page_summary s "
+                 "JOIN feed_candidates c USING(doc_id)) TO STDOUT WITH (FORMAT csv);\n")
+        with open(a.damage_dsn_file) as f:
+            dsn = f.read().strip()
+        result = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=query,
+                                capture_output=True, text=True, timeout=1800)
+        if result.returncode:
+            raise RuntimeError(f"page-damage metadata query failed: {result.stderr.strip()[-300:]}")
+        db_damage = {doc: {"doc_id": doc, "lang": lang, "damage_rate": float(rate) if rate else None}
+                     for doc, lang, rate in csv.reader(io.StringIO(result.stdout))}
     out = []
     for (batch, bv), rows in sorted(by_batch.items()):
-        dmg = {}
+        dmg = db_damage if db_damage is not None else {}
         path = os.path.join(a.curated, "audit/damage/v2", f"{batch}_ver{bv:02d}.parquet")
-        if os.path.exists(path):
+        if db_damage is None and os.path.exists(path):
+            import pyarrow.parquet as pq
+
             want = {r["doc_id"] for r in rows}
-            t = pq.read_table(path, columns=["doc_id", "lang", "damage_rate"]).to_pylist()
+            t = pq.read_table(path, columns=["doc_id", "lang", "damage_rate"],
+                              filters=[("doc_id", "in", sorted(want))]).to_pylist()
             dmg = {x["doc_id"]: x for x in t if x["doc_id"] in want}
         for r in rows:
             m = DOC_RE.match(r["doc_id"])
@@ -391,8 +412,8 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
                 log("page failed; will retry", doc_id=p["doc_id"], error=str(e)[:200])
     if getattr(a, "alto_cache", None):
         # A corrupt source receipt is an integrity failure, not a permanently skipped page.
-        for doc, (jpg, _, tx, ours) in list(prepared.items()):
-            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours)
+        for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
+            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours_alto_path)
     ok = [p for p in usable if p["doc_id"] in prepared]
     if ok:
         name = f"c{seq:05d}"
@@ -637,6 +658,7 @@ def main(argv=None):
     s.add_argument("--order", choices=["damage", "fetched"], default="damage")
     s.add_argument("--non-english", action="store_true", help="only pages explicitly scored as non-English")
     s.add_argument("--scan-server", help="check actual scan availability before taking --count pages")
+    s.add_argument("--damage-dsn-file", help="query indexed quality.page_summary instead of rereading corpus Parquet")
     r = sub.add_parser("run")
     r.add_argument("--campaign", required=True)
     r.add_argument("--pages", required=True)

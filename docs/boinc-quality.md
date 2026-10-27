@@ -485,7 +485,9 @@ one service execution and its authoritative workunit audit, then enable the time
 
 Each tick excludes all retained Qwen single-page/bundle documents and the campaign's
 completed source chunks, selects explicitly non-English **available** scans by descending
-individual-page damage, and prepares at most 100 pages. Original ALTO is read from the
+individual-page damage, and prepares at most 100 pages. The live indexed
+`quality.page_summary` supplies language/damage (`select --damage-dsn-file`); the
+standalone selector retains its Parquet mode. Original ALTO is read from the
 retained bulk archives into `/tank/locstats/qwen-alto`, exposed through the preparation
 CT's existing read-only `/srv/locstats` mount. Each XML has a SHA256 receipt naming its
 archive, member and archive signature; receipts travel in the checksummed source chunks.
@@ -498,11 +500,18 @@ incorrect database routing/quorum, more than 1,000 ready Qwen replicas (includin
 per-chunk reservation), or less than 50 GiB free in either the project filesystem or
 the host thin pool. Up to three unshipped chunks are buffered. Failures retain READY
 chunks and submission journals; never delete `submitting` to replay work.
+Successful native workunit audits are retained in `audit.json`, bound to the exact job
+SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
+new or changed jobs always require a fresh authoritative audit.
 
 An independent `build-quality --non-english` scan manifest checkpoint requests missing
 non-English corpus scans in descending page-damage order, retaining the real language
-(and therefore the keep set). Already-fetched or already-requested pages are excluded
-through a temporary SQL table, not a command-line-sized `IN` list. Only the normal scan
+(and therefore the keep set). Already-retained or already-requested pages are excluded
+through a temporary SQL table, not a command-line-sized `IN` list. Consumed fetch-history
+entries are not evidence of retained scans: they are re-requested as true-language keep
+pages through the normal fetcher. Its buffer-only `.done` markers remain untouched.
+Confirmed keep scans are cached for a day; manifest completion checks actual keep-side
+availability. Only the normal scan
 fetcher performs these downloads, under its existing global budget, holds and failure
 limits. User OCR keeps its existing priority.
 

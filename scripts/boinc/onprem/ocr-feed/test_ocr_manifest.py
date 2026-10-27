@@ -123,18 +123,34 @@ class NonEnglishTest(unittest.TestCase):
             rows = ("sn1_1900-01-02_ed-1_seq-3,xx_test,1,detected,0.8,sn1,1900,srp\n"
                     "sn2_1900-01-02_ed-1_seq-1,xx_other,1,detected,0.6,sn2,1900,rus\n")
             run = types.SimpleNamespace(returncode=0, stdout=rows)
-            with mock.patch.object(m, "staged_pairs", return_value={("xx_test", "sn3_1900-01-02_ed-1_seq-1"): {}}), \
+            with mock.patch.object(m, "staged_pairs", return_value={
+                ("xx_test", "sn1_1900-01-02_ed-1_seq-3"): {"doc_id": "sn1_1900-01-02_ed-1_seq-3"}}), \
+                    mock.patch.object(m, "available", return_value=False) as availability, \
                     mock.patch("subprocess.run", return_value=run) as psql, \
                     mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest:
                 m.cmd_build_quality(a)
             query = psql.call_args.kwargs["input"]
             self.assertIn("ORDER BY s.damage_rate DESC NULLS LAST, s.doc_id", query)
             self.assertNotIn("has_image_features", query)
-            self.assertIn("sn3_1900-01-02_ed-1_seq-1\n\\.", query)
+            self.assertNotIn("sn1_1900-01-02_ed-1_seq-3\n\\.", query)
+            self.assertEqual(availability.call_args.kwargs["sets"], ("keep",))
             self.assertNotIn("-c", psql.call_args.args[0])
             self.assertEqual([r["lang"] for r in manifest.call_args.args[0]], ["srp", "rus"])
             self.assertEqual([r["damage_rate"] for r in manifest.call_args.args[0]], [0.8, 0.6])
             self.assertFalse(Path(folder, "last-quality.json").exists())
+
+    def test_consumed_history_does_not_count_as_recovered_keep_scan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            doc = "sn1_1900-01-02_ed-1_seq-3"
+            Path(folder, "last-quality.json").write_text(json.dumps({
+                "name": "queue-quality-qwen-test", "at": dt.datetime.now(UTC).isoformat(),
+                "pairs": [["xx_test", doc]]}))
+            a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan",
+                                      non_english=True)
+            with mock.patch.object(m, "staged_pairs", return_value={("xx_test", doc): {}}), \
+                    mock.patch.object(m, "available", return_value=False), \
+                    mock.patch("subprocess.run", side_effect=AssertionError("queued ahead of recovery")):
+                m.cmd_build_quality(a)
 
 
 if __name__ == "__main__":

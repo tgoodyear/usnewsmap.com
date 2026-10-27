@@ -7,6 +7,7 @@ Only named regular XML members are read; nothing is extracted as a filesystem pa
 Missing pages are reported, not replaced with empty ALTO.
 """
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -21,13 +22,26 @@ MAX_ALTO = 32 * 1024 * 1024
 
 
 def member_doc(name):
-    fields = name.removeprefix("./").split("/")
-    if len(fields) != 7:
+    while name.startswith("./"):
+        name = name[2:]
+    fields = name.split("/")
+    if name.startswith("/") or any(p in ("", ".", "..") for p in fields) or len(fields) < 5:
         return None
-    title, year, month, day, ed, seq, filename = fields
+    ed, seq, filename = fields[-3:]
     if filename != "ocr.xml" or not ed.startswith("ed-") or not seq.startswith("seq-"):
         return None
-    doc = f"{title}_{year}-{month}-{day}_{ed}_{seq}"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields[-4]):
+        title, date = fields[-5:-3]
+    elif len(fields) >= 7:
+        title = fields[-7]
+        date = "-".join(fields[-6:-3])
+    else:
+        return None
+    try:
+        dt.date.fromisoformat(date)
+    except ValueError:
+        return None
+    doc = f"{title}_{date}_{ed}_{seq}"
     return doc if DOC.fullmatch(doc) else None
 
 

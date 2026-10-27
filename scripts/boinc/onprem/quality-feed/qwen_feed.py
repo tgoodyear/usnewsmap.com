@@ -72,6 +72,7 @@ def _tick(a):
     command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
                      "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(count),
                      "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
+                     "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
                      "--scan-server", a.scan_server])
     raw = command(ct + ["cat", work + "/selected.jsonl"])
     pages = [json.loads(line) for line in raw.splitlines() if line]

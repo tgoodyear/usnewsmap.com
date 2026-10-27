@@ -151,7 +151,7 @@ def staged_pairs(scan_server):
     return out
 
 
-def available(scan_server, row):
+def available(scan_server, row, sets=("keep", "buffer")):
     """Whether the scan an index line names is still on the scan server: its sidecar
     (`<scan>.json`, a few hundred bytes) is there, keep set then buffer set, since the line
     doesn't say which. A read buffer scan's sidecar is renamed `.done` before the scan goes,
@@ -161,7 +161,7 @@ def available(scan_server, row):
         return False
     ext = "jp2" if row.get("format") == "jp2" else "jpg"
     rel = f"{row['batch']}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}.json"
-    for s in ("keep", "buffer"):
+    for s in sets:
         req = urllib.request.Request(f"{scan_server.rstrip('/')}/scans/{s}/{rel}", headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -486,7 +486,8 @@ def cmd_build_quality(a):
         with open(last_path) as f:
             last = json.load(f)
         pairs = [tuple(p) for p in last["pairs"]]
-        on = sum(1 for p in pairs if p in index)
+        on = sum(1 for p in pairs if p in index and (
+            not getattr(a, "non_english", False) or available(a.scan_server, index[p], sets=("keep",))))
         age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
         if on < 0.9 * len(pairs) and age < dt.timedelta(days=2):
             log("the last quality manifest is still being fetched; nothing new", manifest=last["name"],
@@ -500,7 +501,17 @@ def cmd_build_quality(a):
     # Each stratum is read --slack issues deep, so an issue left out below (all its pages
     # already queued, or already in the index) gives way to the stratum's next one.
     if getattr(a, "non_english", False):
-        excluded = queued | {doc for _, doc in index}
+        retained_path = os.path.join(a.state, "retained-qwen.json")
+        retained = {}
+        if os.path.exists(retained_path):
+            with open(retained_path) as f:
+                retained = json.load(f)
+        now = dt.datetime.now(dt.timezone.utc).timestamp()
+        excluded = queued | {
+            doc for (batch, doc), row in index.items()
+            if (retained.get(doc, {}).get("batch") == batch
+                and retained[doc].get("fetched_at") == row.get("fetched_at")
+                and now - retained[doc].get("checked_at", 0) < 86400)}
         if any(not DOC_RE.fullmatch(doc) for doc in excluded):
             raise ValueError("invalid doc id in manifest exclusions")
         query = NON_ENGLISH_SQL.format(excluded="".join(doc + "\n" for doc in sorted(excluded)),
@@ -514,14 +525,33 @@ def cmd_build_quality(a):
     if p.returncode:
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
     candidates = list(csv.reader(io.StringIO(p.stdout)))
-    picked = candidates if getattr(a, "non_english", False) else pick_issues(candidates, queued, index, a.strata, a.max_pages)
+    if getattr(a, "non_english", False):
+        picked = []
+        for row in candidates:
+            doc, batch = row[:2]
+            old = index.get((batch, doc))
+            if old and available(a.scan_server, old, sets=("keep",)):
+                retained[doc] = {"batch": batch, "fetched_at": old.get("fetched_at"), "checked_at": now}
+            else:
+                # True-language keep paths do not consult consumed buffer .done markers.
+                # Re-fetch through the normal pacer; never remove a consumption marker.
+                picked.append(row)
+        if not a.what_if:
+            with open(retained_path + ".tmp", "w") as f:
+                json.dump(retained, f, sort_keys=True)
+            os.replace(retained_path + ".tmp", retained_path)
+    else:
+        picked = pick_issues(candidates, queued, index, a.strata, a.max_pages)
     rows = []
     for doc, batch, bv, decision, rate, *rest in picked:
         lang = rest[-1] if getattr(a, "non_english", False) else "eng"
         rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": lang},
                            {doc: {"lang": lang, "decision": decision, "damage_rate": float(rate)}}))
     if not rows:
-        log("no quality pages left in these strata", strata=a.strata)
+        if getattr(a, "non_english", False):
+            log("no missing scans in this candidate slice; retained scans checkpointed", checked=len(candidates))
+        else:
+            log("no quality pages left in these strata", strata=a.strata)
         return
     body = manifest_bytes(rows)
     name = "queue-quality-" + ("qwen-" if getattr(a, "non_english", False) else "")

@@ -28,6 +28,16 @@ DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
 class ArchiveTest(unittest.TestCase):
+    def test_supported_batch_prefix_and_both_date_layouts(self):
+        for prefix in ("", "./", "xx_test_ver01/", "./xx_test_ver01/"):
+            for date in ("1900/01/02", "1900-01-02"):
+                with self.subTest(prefix=prefix, date=date):
+                    self.assertEqual(archive.member_doc(prefix + "sn1/" + date + "/ed-1/seq-3/ocr.xml"), DOC)
+        for path in ("../sn1/1900-01-02/ed-1/seq-3/ocr.xml",
+                     "/sn1/1900-01-02/ed-1/seq-3/ocr.xml",
+                     "sn1/1900-02-31/ed-1/seq-3/ocr.xml"):
+            self.assertIsNone(archive.member_doc(path))
+
     def test_exact_member_cache_receipt_corruption_and_missing_page(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -61,6 +71,47 @@ class ArchiveTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
+    def test_original_alto_chunk_finishes_without_shadowing_reader_map(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            camp = root / "camp"
+            camp.mkdir()
+            alto = b"<alto>original</alto>"
+            (root / (DOC + ".xml")).write_bytes(alto)
+            (root / (DOC + ".provenance.json")).write_text(json.dumps({
+                "doc_id": DOC, "sha256": hashlib.sha256(alto).hexdigest()}))
+            p = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1, "lccn": "sn1",
+                 "date": "1900-01-02", "lang": "rus", "scan": "keep/test.jpg", "damage_rate": 0.9}
+            tx = mock.Mock()
+            tx.loc.return_value = ({DOC: "original text"}, True)
+            tx.american_stories.return_value = {}
+            tx.ours.return_value = {DOC: ("tesseract", "source", "ours")}
+            args = types.SimpleNamespace(workers=1, scan_server="http://scan", alto_cache=folder)
+            with mock.patch.object(quality, "prepare_page", return_value=(b"jpg", b"empty", {}, None)):
+                self.assertEqual(quality.process_chunk(args, tx, [p], str(camp), folder, 1,
+                                                       str(root / "done.txt"), str(root / "skipped.txt")),
+                                 (1, 0, 2))
+            self.assertEqual((camp / "c00001/scans" / (DOC + ".xml")).read_bytes(), alto)
+            self.assertIn(".loc-provenance.json", (camp / "c00001/SHA256SUMS").read_text())
+
+    def test_audited_history_survives_database_purge_but_changed_jobs_do_not(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            unit = root / "units" / DOC
+            unit.mkdir(parents=True)
+            path = unit / "qwen.json"
+            job_id = "a" * 64
+            path.write_text(json.dumps({"id": job_id, "doc_id": DOC}))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            response = json.dumps({job_id: {"job_sha256": digest, "workunit_id": 42}})
+            with mock.patch.object(submit.subprocess, "check_output", return_value=response):
+                self.assertEqual(submit.audit(root, root)["verified_new"], 1)
+            with mock.patch.object(submit.subprocess, "check_output", side_effect=RuntimeError("workunit purged")):
+                self.assertEqual(submit.audit(root, root), {"verified_new": 0, "verified_total": 1})
+                path.write_text(path.read_text() + "\n")
+                with self.assertRaisesRegex(RuntimeError, "purged"):
+                    submit.audit(root, root)
+
     def test_nonenglish_damage_order_and_real_scan_availability(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

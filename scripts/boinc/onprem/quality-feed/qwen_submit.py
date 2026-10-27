@@ -6,11 +6,13 @@ uses the existing Rust stage/submit commands and shared pinned models, never a n
 quorum, retry identity or manually generated BOINC result.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 
 
 def jobs(root):
@@ -47,11 +49,23 @@ def assert_submitted(root):
 
 
 def audit(root, project):
+    receipt = root / "audit.json"
+    verified = json.loads(receipt.read_text()) if receipt.exists() else {}
+    pending = {}
+    expected = {}
+    for path, job in jobs(root / "units"):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if verified.get(job["id"], {}).get("job_sha256") != digest:
+            pending[str(path)] = digest
+            expected[job["id"]] = digest
+    if not pending:
+        return {"verified_new": 0, "verified_total": len(verified)}
     php = """
 chdir(%s);
 require_once("boinc_db.inc");
-$ids = [];
-foreach (glob(%s) as $path) {
+$verified = [];
+foreach (json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR) as $path => $sha) {
+    if (hash_file("sha256", $path) !== $sha) throw new RuntimeException("Job changed during audit");
     $job = json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
     if (!preg_match('/^[a-f0-9]{64}$/D', $job["id"])) throw new RuntimeException("Bad identity");
     $rows = BoincWorkunit::enum("name='usnm_qwen_".$job["id"]."'");
@@ -59,11 +73,26 @@ foreach (glob(%s) as $path) {
     $wu = $rows[0];
     if (intval($wu->batch) !== 8 || intval($wu->min_quorum) !== 2 || intval($wu->target_nresults) !== 2)
         throw new RuntimeException("Unexpected native routing or quorum");
-    $ids[] = intval($wu->id);
+    $verified[$job["id"]] = ["job_sha256"=>$sha, "workunit_id"=>intval($wu->id), "batch"=>8,
+                             "min_quorum"=>2, "target_nresults"=>2];
 }
-echo json_encode(["verified_workunits"=>count($ids), "first"=>min($ids ?: [0]), "last"=>max($ids ?: [0])]);
-""" % (json.dumps(str(project / "html/inc")), json.dumps(str(root / "units/*/qwen.json")))
-    return json.loads(subprocess.check_output(["php", "-r", php], text=True))
+echo json_encode($verified);
+""" % json.dumps(str(project / "html/inc"))
+    new = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(pending), text=True))
+    if set(new) != set(expected) or any(row["job_sha256"] != expected[job] for job, row in new.items()):
+        raise RuntimeError("Incomplete or changed scientific audit receipt")
+    for result in new.values():
+        result["audited_at"] = time.time()
+    verified.update(new)
+    tmp = receipt.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        json.dump(verified, f, sort_keys=True)
+        f.flush()
+        import os
+        os.fsync(f.fileno())
+    tmp.replace(receipt)
+    return {"verified_new": len(new), "verified_total": len(verified),
+            "workunit_ids": [v["workunit_id"] for v in new.values()]}
 
 
 def main():
