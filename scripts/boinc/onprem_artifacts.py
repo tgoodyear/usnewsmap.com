@@ -96,6 +96,14 @@ def host_image(conf):
     return image_id(pins[0]), lines
 
 
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def verify_runtime(value, conf=Path("/etc/usnm-boinc")):
     validate(value)
     for key in ("base", "bin", "server", "bridge"):
@@ -128,6 +136,7 @@ def install(value, conf=Path("/etc/usnm-boinc")):
                 stream.write(original)
                 stream.flush()
                 os.fsync(stream.fileno())
+            sync_directory(conf)
         staged = conf / "server.env.bootstrap-new"
         fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as stream:
@@ -136,6 +145,7 @@ def install(value, conf=Path("/etc/usnm-boinc")):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(staged, conf / "server.env")
+        sync_directory(conf)
     # Also reconciles interruption after env replacement but before restart.
     call("systemctl", "restart", "usnm-boinc-server.service", timeout=300)
     wait_for_runtime(value, conf)

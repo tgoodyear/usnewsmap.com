@@ -305,6 +305,31 @@ with open({str(lock_path)!r}, 'a') as lock:
                 with self.assertRaisesRegex(ValueError, "running server"):
                     artifacts.verify_runtime(value, conf)
 
+    def test_bad_local_artifact_cannot_replace_privileged_runtime_config(self):
+        conf = self.directory / "etc"
+        conf.mkdir()
+        env = conf / "server.env"
+        original = "SERVER_IMAGE=sha256:" + "f" * 64 + "\nOTHER=preserved\n"
+        env.write_text(original)
+        with patch.object(artifacts, "inspect", side_effect=ValueError("source mismatch")), patch.object(artifacts, "call") as call:
+            with self.assertRaisesRegex(ValueError, "source mismatch"):
+                artifacts.install(manifest(), conf)
+        call.assert_not_called()
+        self.assertEqual(env.read_text(), original)
+        self.assertEqual(list(conf.iterdir()), [env])
+
+    def test_rollback_and_new_pin_are_durable_before_restart_submission(self):
+        conf = self.directory / "etc"
+        conf.mkdir()
+        (conf / "server.env").write_text("SERVER_IMAGE=sha256:" + "f" * 64 + "\n")
+        synced = []
+        def restart(*argv, **kwargs):
+            self.assertEqual(synced, [conf, conf])
+            self.assertTrue((conf / ("server.env.before-" + manifest()["source_commit"])).exists())
+        with patch.object(artifacts, "inspect"), patch.object(artifacts, "sync_directory", side_effect=synced.append), patch.object(
+                artifacts, "call", side_effect=restart), patch.object(artifacts, "verify_runtime"):
+            artifacts.install(manifest(), conf)
+
     def test_partial_image_build_reuses_only_source_verified_ids(self):
         source = self.directory / "build/source"
         source.mkdir(parents=True)

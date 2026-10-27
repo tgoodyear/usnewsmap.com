@@ -75,6 +75,8 @@ commands, so a lost SSH/helper cannot release exclusion while an operation conti
 Installation waits for the expected container to be running. A submitted systemd job
 must finish before the supervisor releases its lock; if systemd cannot confirm this,
 exclusion remains held for operator reconciliation rather than permitting overlap.
+The rollback receipt and replacement env pin are file- and directory-fsynced before
+restart submission; a failed artifact/source check cannot modify the privileged config.
 
 Two independent review checkpoints remain mandatory:
 
