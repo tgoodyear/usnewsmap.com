@@ -37,6 +37,11 @@ has no vault-management or firewall-write permission, only the two previously
 described secret-scoped roles. Only the operator gets vault-level Secrets
 Officer. The IP-restricted operator token remains in home-kv and is read from
 there solely by bootstrap on the authorized operator network.
+All Azure CLI resource operations explicitly target the production subscription, not
+the operator's selected CLI default. Bootstrap idempotently enables the vault's
+`AuditEvent` diagnostic category in `log-usnm-prod` for new and existing
+vaults, recording secret access, mutations and denied requests without secret
+values, consistent with the production diagnostic-settings convention.
 
 Staging exercises all DNS challenges without changing stored production state,
 uploading an untrusted staging certificate, or binding hostnames. Production

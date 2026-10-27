@@ -169,13 +169,19 @@ class OriginTlsTests(unittest.TestCase):
         with patch.object(bootstrap, "az", side_effect=az) as azure, \
                 patch.object(tls, "azure_token", return_value="management-token"), \
                 patch.object(tls, "request", side_effect=[
-                    RuntimeError("GET management: HTTP 404"), {}, {},
+                    RuntimeError("GET management: HTTP 404"), {}, {}, {},
                 ]) as request:
             bootstrap.provision_vault()
         vault = created_templates[0]["resources"][0]
         self.assertEqual(vault["properties"]["publicNetworkAccess"], "Disabled")
         self.assertTrue(vault["properties"]["enableRbacAuthorization"])
-        exemption, enable_network = request.call_args_list[1:]
+        diagnostic, exemption, enable_network = request.call_args_list[1:]
+        self.assertIn(bootstrap.VAULT_SCOPE + "/providers/Microsoft.Insights/diagnosticSettings/",
+                      diagnostic.args[1])
+        self.assertEqual(diagnostic.args[3]["properties"], {
+            "workspaceId": bootstrap.WORKSPACE,
+            "logs": [{"category": "AuditEvent", "enabled": True}],
+        })
         self.assertIn(bootstrap.VAULT_SCOPE + "/providers/Microsoft.Authorization/policyExemptions/",
                       exemption.args[1])
         self.assertEqual(exemption.args[3]["properties"]["exemptionCategory"], "Mitigated")
@@ -186,6 +192,34 @@ class OriginTlsTests(unittest.TestCase):
                          "operator-object-id")
         self.assertEqual(role_call[role_call.index("--scope") + 1], bootstrap.VAULT_SCOPE)
         self.assertFalse(list(Path.cwd().glob(".origin-tls-vault-*.json")))
+
+    def test_bootstrap_cli_pins_subscription_for_resource_writes(self):
+        commands = (
+            ("deployment", "group", "create", "--resource-group", "rg-usnm-prod"),
+            ("role", "assignment", "create", "--scope", bootstrap.VAULT_SCOPE),
+            ("role", "definition", "create", "--role-definition", "public-role.json"),
+        )
+        with patch.object(bootstrap.subprocess, "check_output", return_value=b"{}") as run:
+            for args in commands:
+                bootstrap.az(*args)
+                argv = run.call_args.args[0]
+                self.assertEqual(argv[argv.index("--subscription") + 1], tls.SUBSCRIPTION)
+
+    def test_existing_vault_receives_audit_diagnostics_without_recreation(self):
+        officer = {"roleDefinitionId": "/providers/Microsoft.Authorization/roleDefinitions/"
+                   "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"}
+        with patch.object(bootstrap, "az", side_effect=[
+                b'"operator"', json.dumps([officer]).encode(),
+        ]) as azure, \
+                patch.object(tls, "azure_token", return_value="management-token"), \
+                patch.object(tls, "request", return_value={}) as request:
+            bootstrap.provision_vault()
+        self.assertFalse(any(call.args[:3] == ("deployment", "group", "create")
+                             for call in azure.call_args_list))
+        diagnostic = request.call_args_list[1]
+        self.assertEqual(diagnostic.args[0], "PUT")
+        self.assertIn("/diagnosticSettings/usnm-origin-tls?", diagnostic.args[1])
+        self.assertEqual(diagnostic.args[3]["properties"]["workspaceId"], bootstrap.WORKSPACE)
 
 
 if __name__ == "__main__":

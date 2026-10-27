@@ -19,10 +19,18 @@ VAULT_SCOPE = (
     f"/subscriptions/{tls.SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
     f"/providers/Microsoft.KeyVault/vaults/{tls.VAULT}"
 )
+WORKSPACE = (
+    f"/subscriptions/{tls.SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
+    "/providers/Microsoft.OperationalInsights/workspaces/log-usnm-prod"
+)
 
 
 def az(*args):
-    return subprocess.check_output(["az", *args, "-o", "json"], stderr=subprocess.PIPE)
+    subscription = [] if args[0] == "ad" else ["--subscription", tls.SUBSCRIPTION]
+    return subprocess.check_output(
+        ["az", *args, *subscription, "-o", "json"],
+        stderr=subprocess.PIPE,
+    )
 
 
 def provision_vault():
@@ -64,6 +72,15 @@ def provision_vault():
                "--only-show-errors")
     finally:
         path.unlink(missing_ok=True)
+    tls.request(
+        "PUT",
+        f"https://management.azure.com{VAULT_SCOPE}/providers/"
+        "Microsoft.Insights/diagnosticSettings/usnm-origin-tls"
+        "?api-version=2021-05-01-preview",
+        management_token,
+        {"properties": {"workspaceId": WORKSPACE,
+                        "logs": [{"category": "AuditEvent", "enabled": True}]}},
+    )
     # Never weaken the group policy or exempt any other vault. GitHub-hosted
     # runners need this endpoint; Entra secret-level RBAC remains enforced.
     exemption_url = (
