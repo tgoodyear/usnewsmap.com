@@ -113,7 +113,7 @@ def main():
 
     if not sys.platform.startswith("linux"):
         raise RuntimeError("this acceptance test requires Linux cgroup v2")
-    if not (ROOT / "ocr/engines/tesseract/contract-test-adapter.sh").is_file():
+    if not (ROOT / "scripts/ci/ocr-engine-contract/contract-test-adapter.sh").is_file():
         raise RuntimeError("the contract test adapter image source is missing")
 
     work = (ROOT / args.work_dir).resolve()
@@ -157,10 +157,10 @@ def main():
                 "--build-arg",
                 f"BASE_IMAGE={args.base_image}",
                 "-f",
-                str(ROOT / "ocr/engines/tesseract/ContractTest.Containerfile"),
+                str(ROOT / "scripts/ci/ocr-engine-contract/Containerfile"),
                 "-t",
                 image_tag,
-                str(ROOT / "ocr/engines/tesseract"),
+                str(ROOT / "scripts/ci/ocr-engine-contract"),
             ],
             cwd=ROOT,
         )
