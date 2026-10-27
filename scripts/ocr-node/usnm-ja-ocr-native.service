@@ -1,0 +1,25 @@
+[Unit]
+Description=usnewsmap bounded native Japanese OCR
+Wants=network-online.target himdsd.service
+After=network-online.target himdsd.service
+
+[Service]
+Type=oneshot
+User=usnm
+SupplementaryGroups=himds
+WorkingDirectory=/var/lib/usnm-ja-native
+StateDirectory=usnm-ja-native
+Environment=JAOCR_REPLICAS=1 JAOCR_LIMIT=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token IMDS_ENDPOINT=http://localhost:40342
+EnvironmentFile=/opt/usnm-ja-native/current/runtime.env
+EnvironmentFile=/etc/usnm/ja-ocr-native.env
+ExecStart=/opt/usnm-ja-native/current/venv/bin/python /opt/usnm-ja-native/current/jaocr/jaocr.py run --limit ${JAOCR_LIMIT}
+TimeoutStartSec=2h
+Nice=15
+CPUQuota=200%
+MemoryHigh=3G
+MemoryMax=4G
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes

@@ -6,6 +6,8 @@ import os
 import tempfile
 import unittest
 from datetime import timedelta
+from pathlib import Path
+from unittest.mock import patch
 
 import jaocr
 
@@ -17,6 +19,55 @@ except ImportError:  # the Parquet tests need it; the rest don't
 
 JP2 = ("https://tile.loc.gov/storage-services/service/sgp/sgpbatches/batch_dlc_ballston_ver01/data/"
        "sn83025517/00237288798/1945010101/0365.jp2")
+
+
+class PartialIssue(unittest.TestCase):
+    def test_explicit_undigitized_page_does_not_discard_successful_ocr(self):
+        self.check_issue(explicit=True, ocr_complete=True, expected=1)
+
+    def test_unknown_missing_image_still_holds_the_issue(self):
+        self.check_issue(explicit=False, ocr_complete=True, expected=0)
+
+    def test_incomplete_engine_output_still_holds_available_pages(self):
+        self.check_issue(explicit=True, ocr_complete=False, expected=0)
+
+    def check_issue(self, *, explicit, ocr_complete, expected):
+        item = {"resources": [{"files": [
+            [{"digitized": False}] if explicit else [],
+            [{"mimetype": "image/jp2", "url": JP2}],
+        ]}]}
+        pages = [
+            {"doc_id": f"sn1_1945-01-01_ed-1_seq-{seq}", "page_key": f"page-{seq}",
+             "lccn": "sn1", "date": "1945-01-01", "edition": 1,
+             "seq": seq, "batch": "batch", "loc_text": "missing"}
+            for seq in (1, 2)
+        ]
+
+        def fake_ocr(root, source, output):
+            output.mkdir()
+            if ocr_complete:
+                stem = next(source.glob("*.jpg")).stem
+                (output / f"{stem}.txt").write_text("recognized page text")
+                (output / f"{stem}.xml").write_text("<page/>")
+
+        with tempfile.TemporaryDirectory() as work:
+            curated = jaocr.LocalStore(work)
+            with patch.object(jaocr, "fetch", side_effect=[json.dumps(item).encode(), b"image"]), \
+                 patch.object(jaocr, "ndlocr", side_effect=fake_ocr), \
+                 patch.object(jaocr.alto, "ndlocr_to_alto", return_value=b"<alto/>"), \
+                 patch.object(jaocr, "write_part") as write, \
+                 patch.object(jaocr, "log") as log:
+                count = jaocr.ocr_issue(curated, Path(work), "issue", pages, None, None, "engine")
+            self.assertEqual(count, expected)
+            if expected:
+                self.assertEqual(write.call_args.args[2][0]["doc_id"], pages[1]["doc_id"])
+                self.assertEqual(len(write.call_args.args[2]), 1)
+                self.assertTrue(curated.exists(f"ocr-ja/alto/{pages[1]['doc_id']}.xml"))
+                self.assertFalse(curated.exists(f"ocr-ja/alto/{pages[0]['doc_id']}.xml"))
+                self.assertTrue(any("remain pending" in call.args[0] for call in log.call_args_list))
+            else:
+                write.assert_not_called()
+                self.assertEqual(curated.list("ocr-ja/alto"), [])
 
 
 class Classify(unittest.TestCase):
