@@ -84,6 +84,21 @@ fn backend(error: impl std::fmt::Display) -> crate::error::ApiError {
     crate::error::ApiError::Backend(format!("sitemap: {error}"))
 }
 
+fn search_policy(snap: &Snapshot) -> String {
+    format!(
+        "american_stories={}",
+        snap.refdata.searches_american_stories()
+    )
+}
+
+fn snapshot_identity(snap: &Snapshot) -> Result<String> {
+    Ok(fingerprint(format!(
+        "{}\0{}",
+        fingerprint(serde_json::to_vec(&snap.refdata.current).map_err(backend)?),
+        search_policy(snap),
+    )))
+}
+
 type Result<T> = std::result::Result<T, crate::error::ApiError>;
 
 async fn latest(store: &dyn ObjectStore) -> Result<Option<Checkpoint>> {
@@ -272,16 +287,20 @@ async fn generate(
         observed_at,
         pages: BTreeMap::new(),
         content_provenance: BTreeMap::new(),
-        snapshot: fingerprint(serde_json::to_vec(&snap.refdata.current).map_err(backend)?),
+        snapshot: snapshot_identity(&snap)?,
     };
     generation.check_freshness(state.sitemap.committed.load_full().as_deref())?;
     let mut pages = manifest.pages.clone();
+    let policy = search_policy(&snap);
     let shell = b"<title>US News Map</title><link rel=\"canonical\" href=\"https://usnewsmap.com/\" /><meta property=\"og:title\" content=\"US News Map\" /><meta property=\"og:url\" content=\"https://usnewsmap.com/\" />";
     for (path, content) in &mut pages {
         *content = fingerprint(format!(
             "{content}\0{}",
             fingerprint(super::shell_for(path, shell.to_vec()))
         ));
+        if path == "/datasets" {
+            *content = fingerprint(format!("{content}\0{policy}"));
+        }
         generation.content_provenance.insert(
             path.clone(),
             fingerprint(format!("{content}\0{}", renderer())),
@@ -303,10 +322,11 @@ async fn generate(
         }
         let query = super::search_query(path).expect("curated path");
         let html = super::search_preview_snapshot(state, snap.clone(), &query, true).await?;
-        pages.insert(path.clone(), fingerprint(html));
-        generation
-            .content_provenance
-            .insert(path.clone(), renderer().to_owned());
+        pages.insert(path.clone(), fingerprint(format!("{html}\0{policy}")));
+        generation.content_provenance.insert(
+            path.clone(),
+            fingerprint(format!("{}\0{policy}", renderer())),
+        );
         tokio::task::yield_now().await;
     }
     generation.pages = pages;
@@ -317,7 +337,7 @@ async fn refresh(
     state: &Arc<AppState>,
     store: &dyn ObjectStore,
     dir: &std::path::Path,
-    finished: &mut Option<(String, DateTime<Utc>)>,
+    finished: &mut Option<(String, DateTime<Utc>, String)>,
 ) -> Result<()> {
     if let Some(checkpoint) = latest(store).await? {
         state.sitemap.committed.store(Some(Arc::new(checkpoint)));
@@ -327,8 +347,12 @@ async fn refresh(
         .map_err(backend)?;
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(backend)?;
     let snap = state.snapshot.load_full();
-    let identity = (snap.refdata.version().to_owned(), manifest.generated_at);
-    let snapshot = fingerprint(serde_json::to_vec(&snap.refdata.current).map_err(backend)?);
+    let snapshot = snapshot_identity(&snap)?;
+    let identity = (
+        snap.refdata.version().to_owned(),
+        manifest.generated_at,
+        snapshot.clone(),
+    );
     let committed = state.sitemap.committed.load_full();
     if finished.as_ref() == Some(&identity)
         && committed.as_ref().is_some_and(|checkpoint| {
@@ -1185,5 +1209,132 @@ mod tests {
         let corrected = latest(&store).await.unwrap().unwrap();
         assert!(corrected.sequence > mismatched.sequence);
         assert_eq!(corrected.snapshot, rollback.snapshot);
+    }
+
+    #[tokio::test]
+    async fn same_image_search_policy_changes_refresh_dates_and_cannot_use_pending_publication_time(
+    ) {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let st = state(&dir, Some(Vec::new())).await;
+        let fixtures = LocalStore::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data"),
+        );
+        let snapshot = async |enabled: bool, version: &str, published_at| {
+            let mut refdata = crate::refdata::RefData::load(&fixtures).await.unwrap();
+            refdata.current.american_stories = Some(usnm_core::american_stories::VERSION);
+            refdata.current.index_version = version.to_owned();
+            refdata.current.published_at = published_at;
+            refdata.american_stories_search = enabled;
+            Arc::new(Snapshot {
+                refdata,
+                backend: st.snapshot.load_full().backend.clone(),
+                congress_dropped: false,
+            })
+        };
+        let on = snapshot(true, "same-image-version", at(1).to_rfc3339()).await;
+        st.snapshot.store(on.clone());
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut finished = None;
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            first.sequence
+        );
+
+        st.snapshot
+            .store(snapshot(false, "same-image-version", at(1).to_rfc3339()).await);
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        let off = latest(&store).await.unwrap().unwrap();
+        assert!(
+            off.sequence > first.sequence,
+            "finished marker must include policy"
+        );
+        assert_ne!(off.snapshot, first.snapshot);
+        for path in ["/datasets", "/search/whigs"] {
+            assert_ne!(off.pages[path].fingerprint, first.pages[path].fingerprint);
+            assert_ne!(
+                off.pages[path].content_provenance,
+                first.pages[path].content_provenance
+            );
+            assert_eq!(off.pages[path].lastmod, off.observed_at);
+        }
+        assert_eq!(
+            off.pages["/credits"].lastmod,
+            first.pages["/credits"].lastmod
+        );
+        assert_eq!(
+            off.pages["/privacy"].lastmod,
+            first.pages["/privacy"].lastmod
+        );
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            off.sequence
+        );
+
+        // The next policy switch coincides with a forward index publication
+        // which predates its observation. Neither affected page may inherit it.
+        let published_at = Utc::now();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        st.snapshot.store(
+            snapshot(
+                true,
+                "pending-forward-publication",
+                published_at.to_rfc3339(),
+            )
+            .await,
+        );
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        let pending = latest(&store).await.unwrap().unwrap();
+        for path in ["/datasets", "/search/whigs"] {
+            assert_eq!(pending.pages[path].lastmod, pending.observed_at);
+            assert!(pending.pages[path].lastmod > published_at);
+        }
+
+        // With a one-field layout, disabling the raw setting changes no
+        // effective policy and must not invent a content modification.
+        let mut ignored = snapshot(
+            false,
+            "pending-forward-publication",
+            published_at.to_rfc3339(),
+        )
+        .await;
+        Arc::get_mut(&mut ignored)
+            .unwrap()
+            .refdata
+            .current
+            .text_layout = Some(2);
+        let mut effective = snapshot(
+            true,
+            "pending-forward-publication",
+            published_at.to_rfc3339(),
+        )
+        .await;
+        Arc::get_mut(&mut effective)
+            .unwrap()
+            .refdata
+            .current
+            .text_layout = Some(2);
+        assert_eq!(
+            snapshot_identity(&ignored).unwrap(),
+            snapshot_identity(&effective).unwrap()
+        );
+        assert_eq!(search_policy(&ignored), search_policy(&effective));
+        st.snapshot.store(effective);
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        let unchanged_policy = latest(&store).await.unwrap().unwrap();
+        st.snapshot.store(ignored);
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        let ignored_setting = latest(&store).await.unwrap().unwrap();
+        assert_eq!(ignored_setting.sequence, unchanged_policy.sequence);
+        for path in ["/datasets", "/search/whigs"] {
+            assert_eq!(
+                ignored_setting.pages[path].lastmod,
+                unchanged_policy.pages[path].lastmod
+            );
+        }
     }
 }

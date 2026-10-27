@@ -348,7 +348,8 @@ endpoint returns a logged, retryable `503`, never an undated production success.
 unset, it defaults to `USNM_SEARCH_LOG_URL` when present. Fixtures with neither
 store setting still serve Vite's undated sitemap.
 
-Search fingerprints are the exact deterministic initial-HTML sample results:
+Search fingerprints include the exact deterministic initial-HTML sample results
+and effective runtime American Stories search policy:
 total matches, top city, its count, and up to ten earliest hits' dates, titles,
 snippets and citations (including the no-results case). Unchanged fingerprints
 retain their dates across index publishes, rebuilds and restarts. Changed
@@ -367,6 +368,9 @@ These are conservative source fingerprints, not generated JS chunks or asset
 filenames. Build timestamps alone do not change a page's date. Dataset details
 and OCR credits also include the pinned published index's provenance; transient health, queue and
 other live status counters are intentionally not sitemap change signals.
+Dataset details and search pages also track effective runtime search policy in
+their content and non-index provenance. Policy switches use observation time,
+even alongside a forward publication; ignored settings do not invent changes.
 
 Full immutable checkpoints live under `sitemap/state/{sequence:020}.json` in
 the selected store (Azure defaults to the existing **searches** container),
