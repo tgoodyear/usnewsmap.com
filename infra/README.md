@@ -225,6 +225,15 @@ same rules.
 
 ### Explicitly blocked later changes
 
+**Current production topology (27 October 2026, #309):** the #931 cutover
+retired the Azure ingest jobs, ingest identity, scratch account/file endpoint,
+Document Intelligence and pipeline workbook. Their Phase 3 naming entries
+below are historical fallback pins, not instructions to recreate those
+resources. A later proposal to reintroduce a retired workload must review its
+names and exception map before provisioning. The live OCR workbook is
+`usnm OCR nodes (prod)`; do not recreate `usnm pipeline (prod)` to complete the
+old checklist.
+
 - **OCR exchange:** the original window, when the account was empty and had
   no worker, has passed; `ocr-exchange.bicep` now also holds BOINC hand-off
   containers and grants. Do not remove the `ocrExchange` pin until an owner
@@ -255,9 +264,10 @@ same rules.
 - Phase 4 is intentionally deferred to an environment rebuild, not part of
   #283. Do not unpin the skeleton, lake or Cosmos just to complete naming.
 
-Keep #309 open until the applicable code changes and Phase 3 operator
-verification are complete. These instructions do not report any migration
-as performed.
+Keep #309 open until the applicable operator verification and the live
+exchange-account migration or an explicitly accepted deferral are complete.
+Retired Phase 3 resources require inventory reconciliation, not a rename.
+These instructions do not report the exchange migration as performed.
 
 ## Retired Spot resource group
 

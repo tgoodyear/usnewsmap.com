@@ -244,6 +244,16 @@ preconditions; the original empty-exchange window must not be assumed now
 that OCR and BOINC use it. The mapping below records legacy-to-target
 names, not a verified current Azure inventory.
 
+**Retired workloads (27 October 2026, #309):** #931 retired the Azure
+ingest/backfill/Japanese-OCR jobs and ingest identity, scratch account and
+endpoint, Document Intelligence and pipeline workbook after the index-account
+cutover. Do not recreate them solely to execute Phase 3. Their pinned fallback
+names remain in the map until a separately reviewed reintroduction or removal
+changes that code. The OCR workbook is `usnm OCR nodes (prod)`, not the retired
+pipeline workbook. The live exchange-account migration remains a separate,
+gated operation; retiring ingest does not authorize replacing its queues or
+BOINC hand-off data.
+
 ### Phase 0: write it down, make names come from one place
 
 No renames and no resource changes.
