@@ -31,7 +31,7 @@ joined PC can sit idle for a while. That is normal.
    and does not use the network:
 
    ```powershell
-   .\scripts\boinc\setup_windows_volunteer.ps1
+   .\boinc\scripts\setup_windows_volunteer.ps1
    ```
 
    If Windows refuses to run the script, run `Get-ExecutionPolicy -List`.
@@ -46,12 +46,12 @@ joined PC can sit idle for a while. That is normal.
    Any other policy was set on purpose: do not lower it; ask whoever manages
    the PC. If the script is still blocked because the ZIP came from the
    internet, unblock that one file:
-   `Unblock-File .\scripts\boinc\setup_windows_volunteer.ps1`.
+   `Unblock-File .\boinc\scripts\setup_windows_volunteer.ps1`.
 
 4. Run it for real:
 
    ```powershell
-   .\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+   .\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc
    ```
 
    The helper asks you to type `YES` before it downloads the official BOINC
@@ -83,7 +83,7 @@ If the PC is already attached, do not remove and re-add the project.
 Any time later, from the same folder:
 
 ```powershell
-.\scripts\boinc\setup_windows_volunteer.ps1 -Status
+.\boinc\scripts\setup_windows_volunteer.ps1 -Status
 ```
 
 It reports whether the PC is attached and how many usnewsmap tasks it holds,

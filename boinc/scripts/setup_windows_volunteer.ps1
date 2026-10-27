@@ -8,11 +8,11 @@ Credentials are entered only in BOINC Manager, never in this script or arguments
 Project participation includes production and experimental tasks. Operators phase
 campaigns server-side; attachment does not guarantee work. No WSL, Podman or CUDA toolkit needed.
 .EXAMPLE
-.\scripts\boinc\setup_windows_volunteer.ps1
+.\boinc\scripts\setup_windows_volunteer.ps1
 .EXAMPLE
-.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc
 .EXAMPLE
-.\scripts\boinc\setup_windows_volunteer.ps1 -Status
+.\boinc\scripts\setup_windows_volunteer.ps1 -Status
 #>
 [CmdletBinding()]
 param(

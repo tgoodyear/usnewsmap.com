@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - name: Windows PowerShell 5.1 contract (no host changes)
         shell: powershell
-        run: .\scripts\boinc\test_windows_volunteer.ps1
+        run: .\boinc\scripts\test_windows_volunteer.ps1
       - name: PowerShell 7 contract (no host changes)
         shell: pwsh
-        run: .\scripts\boinc\test_windows_volunteer.ps1
+        run: .\boinc\scripts\test_windows_volunteer.ps1

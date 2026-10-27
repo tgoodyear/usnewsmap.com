@@ -51,7 +51,7 @@ Every platform has a single onboarding script that validates prerequisites, conf
 | **Linux** (`x86_64` / `aarch64`)  | `boinc/scripts/setup_volunteer.py`               | `python3 boinc/scripts/setup_volunteer.py`                                                  | `sudo python3 boinc/scripts/setup_volunteer.py --apply`                                |
 | **Proxmox VE LXC** (Debian 12 CT) | `boinc/infra/proxmox/provision-pve-boinc-lxc.sh` | `DRY_RUN=1 ./boinc/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>` | `./boinc/infra/proxmox/provision-pve-boinc-lxc.sh 100 usnm-boinc-1 <ACCOUNT_KEY>`      |
 | **macOS** (Apple Silicon & Intel) | `boinc/scripts/setup_mac_volunteer.py`           | `python3 boinc/scripts/setup_mac_volunteer.py`                                              | `python3 boinc/scripts/setup_mac_volunteer.py --apply --authenticator <AUTHENTICATOR>` |
-| **Windows** (`windows_x86_64`)    | `boinc/scripts/setup_windows_volunteer.ps1`      | `.\scripts\boinc\setup_windows_volunteer.ps1`                                               | `.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                     |
+| **Windows** (`windows_x86_64`)    | `boinc/scripts/setup_windows_volunteer.ps1`      | `.\boinc\scripts\setup_windows_volunteer.ps1`                                               | `.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc`                     |
 
 ### Workunit Sizing & Per-Page / Per-Crop Checkpointing
 
@@ -299,7 +299,7 @@ your regular user**, and change to its root directory. Windows PowerShell 5.1
 (included with Windows) or PowerShell 7 is supported. First preview:
 
 ```powershell
-.\scripts\boinc\setup_windows_volunteer.ps1
+.\boinc\scripts\setup_windows_volunteer.ps1
 ```
 
 The default only reads local host and client information (including `nvidia-smi`
@@ -308,7 +308,7 @@ edit preferences, or attach a project. After reviewing the preview:
 
 ```powershell
 # Same command whether BOINC already exists or needs installing:
-.\scripts\boinc\setup_windows_volunteer.ps1 -Apply -InstallBoinc
+.\boinc\scripts\setup_windows_volunteer.ps1 -Apply -InstallBoinc
 ```
 
 Later, `-Status` is a read-only local check: it reports whether the PC is

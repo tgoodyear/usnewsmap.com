@@ -151,7 +151,7 @@ jobs:
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (!$vs) { throw 'MSVC installation not found' }
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS ocr\boinc\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
+          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS boinc\apps\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
           if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper build failed' }
           & .\boinc-native-windows_x86_64\usnm-amd-device-map.exe --self-test
           if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper tests failed' }
