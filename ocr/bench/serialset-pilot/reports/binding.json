@@ -27,7 +27,7 @@
       "sha256": "8501ebca89b85dd7ee057708b14212463c88342b1b6705fc4e9699e23949a854"
     }
   },
-  "score_implementation_sha256": "b46d598fae5764631da050941759c34ed920fa47ca98282e808a7ed5e6832ca5",
+  "score_implementation_sha256": "fb569e47b9ed5dc01e4ba631bac350973017ed10f72f1006ac0b889f4c990fda",
   "subset": "serialset/verified-3",
   "subset_digest": "a6cd647618f652b9cb1b563e8bfe6375ff4d86799bfca1e436e92884563bc2a9"
 }
