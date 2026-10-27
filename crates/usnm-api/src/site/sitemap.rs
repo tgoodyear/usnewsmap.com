@@ -41,6 +41,8 @@ struct Checkpoint {
     build_at: DateTime<Utc>,
     web_at: DateTime<Utc>,
     renderer: String,
+    #[serde(default)]
+    snapshot: String,
     observed_at: DateTime<Utc>,
     pages: BTreeMap<String, Page>,
 }
@@ -116,6 +118,7 @@ struct Generation {
     observed_at: DateTime<Utc>,
     pages: BTreeMap<String, String>,
     content_provenance: BTreeMap<String, String>,
+    snapshot: String,
 }
 
 impl Generation {
@@ -178,6 +181,7 @@ impl Generation {
             build_at: self.build_at,
             web_at: self.web_at,
             renderer: renderer().to_owned(),
+            snapshot: self.snapshot.clone(),
             observed_at: self.observed_at,
             pages,
         })
@@ -195,8 +199,13 @@ async fn still_current(state: &AppState, snap: &Arc<Snapshot>) -> Result<()> {
             .await
             .map_err(backend)?
             .ok_or_else(|| backend("published pointer missing"))?;
-        let published: crate::refdata::Current =
+        let mut published: crate::refdata::Current =
             serde_json::from_slice(&current).map_err(backend)?;
+        // Loader intentionally projects away an unavailable optional Congress
+        // set. Compare the pointer in that same serving projection.
+        if snap.congress_dropped {
+            published.congress = None;
+        }
         if serde_json::to_value(published).map_err(backend)?
             != serde_json::to_value(&snap.refdata.current).map_err(backend)?
         {
@@ -263,6 +272,7 @@ async fn generate(
         observed_at,
         pages: BTreeMap::new(),
         content_provenance: BTreeMap::new(),
+        snapshot: fingerprint(serde_json::to_vec(&snap.refdata.current).map_err(backend)?),
     };
     generation.check_freshness(state.sitemap.committed.load_full().as_deref())?;
     let mut pages = manifest.pages.clone();
@@ -303,6 +313,46 @@ async fn generate(
     Ok(generation)
 }
 
+async fn refresh(
+    state: &Arc<AppState>,
+    store: &dyn ObjectStore,
+    dir: &std::path::Path,
+    finished: &mut Option<(String, DateTime<Utc>)>,
+) -> Result<()> {
+    if let Some(checkpoint) = latest(store).await? {
+        state.sitemap.committed.store(Some(Arc::new(checkpoint)));
+    }
+    let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
+        .await
+        .map_err(backend)?;
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(backend)?;
+    let snap = state.snapshot.load_full();
+    let identity = (snap.refdata.version().to_owned(), manifest.generated_at);
+    let snapshot = fingerprint(serde_json::to_vec(&snap.refdata.current).map_err(backend)?);
+    let committed = state.sitemap.committed.load_full();
+    if finished.as_ref() == Some(&identity)
+        && committed.as_ref().is_some_and(|checkpoint| {
+            checkpoint.version == identity.0
+                && checkpoint.web_at == manifest.generated_at
+                && checkpoint.build_at == build_at()
+                && checkpoint.renderer == renderer()
+                && checkpoint.snapshot == snapshot
+        })
+    {
+        return Ok(());
+    }
+    let generation = generate(state, snap.clone(), &manifest).await?;
+    let checkpoint = commit(state, &snap, store, &generation).await?;
+    tracing::info!(
+        sequence = checkpoint.sequence,
+        pages = checkpoint.pages.len(),
+        "sitemap generation committed"
+    );
+    state.sitemap.committed.store(Some(Arc::new(checkpoint)));
+    *finished = Some(identity);
+    Ok(())
+}
+
 pub(crate) fn spawn(state: Arc<AppState>) {
     let (Some(url), Some(dir)) = (
         state.config.sitemap_state_url().map(str::to_owned),
@@ -315,28 +365,7 @@ pub(crate) fn spawn(state: Arc<AppState>) {
         loop {
             let refresh = async {
                 let store = usnm_store::open(&url).map_err(backend)?;
-                if let Some(checkpoint) = latest(store.as_ref()).await? {
-                    state.sitemap.committed.store(Some(Arc::new(checkpoint)));
-                }
-                let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
-                    .await
-                    .map_err(backend)?;
-                let manifest: Manifest = serde_json::from_slice(&bytes).map_err(backend)?;
-                let snap = state.snapshot.load_full();
-                let identity = (snap.refdata.version().to_owned(), manifest.generated_at);
-                if finished.as_ref() == Some(&identity) {
-                    return Ok::<_, crate::error::ApiError>(());
-                }
-                let generation = generate(&state, snap.clone(), &manifest).await?;
-                let checkpoint = commit(&state, &snap, store.as_ref(), &generation).await?;
-                tracing::info!(
-                    sequence = checkpoint.sequence,
-                    pages = checkpoint.pages.len(),
-                    "sitemap generation committed"
-                );
-                state.sitemap.committed.store(Some(Arc::new(checkpoint)));
-                finished = Some(identity);
-                Ok(())
+                refresh(&state, store.as_ref(), &dir, &mut finished).await
             };
             if let Err(error) = refresh.await {
                 tracing::warn!(?error, "sitemap refresh failed; retaining committed dates");
@@ -434,6 +463,7 @@ mod tests {
             .into_iter()
             .map(|p| (p.to_owned(), "same renderer and copy".to_owned()))
             .collect(),
+            snapshot: String::new(),
         }
     }
 
@@ -1017,5 +1047,143 @@ mod tests {
             assert_eq!(rolled_back.pages[path].lastmod, first.pages[path].lastmod);
         }
         assert!(commit(&st, &newer, &store, &g).await.is_err());
+    }
+
+    fn write_manifest(dir: &Directory) {
+        std::fs::write(
+            dir.0.join("sitemap-pages.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "generated_at": Utc::now() - chrono::Duration::hours(1),
+                "pages": STATIC.into_iter().map(|p| (p, fingerprint(p))).collect::<BTreeMap<_, _>>()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_optional_congress_does_not_prevent_sitemap_bootstrap() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let fixtures =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data");
+        let mut current: crate::refdata::Current =
+            serde_json::from_slice(&std::fs::read(fixtures.join("current.json")).unwrap()).unwrap();
+        let reference = dir.0.join("reference");
+        std::fs::create_dir_all(reference.join(&current.reference)).unwrap();
+        for entry in std::fs::read_dir(fixtures.join(&current.reference)).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(
+                entry.path(),
+                reference.join(&current.reference).join(entry.file_name()),
+            )
+            .unwrap();
+        }
+        current.congress = Some(crate::refdata::CongressIndexes {
+            indexes: vec!["optional-congress-unavailable".into()],
+            common_grams: None,
+            series: vec![crate::refdata::CongressSeries {
+                series: "globe".into(),
+                pages: 78,
+                from: "1850-01-07".parse().unwrap(),
+                to: "1850-09-30".parse().unwrap(),
+            }],
+        });
+        std::fs::write(
+            reference.join("current.json"),
+            serde_json::to_vec(&current).unwrap(),
+        )
+        .unwrap();
+        let loader = crate::Loader {
+            reference: Arc::new(LocalStore::new(&reference)),
+            engine: crate::Engine::Memory {
+                indexes_dir: fixtures.join("indexes"),
+            },
+            congress_search: true,
+        };
+        let snap = loader.snapshot().await.unwrap();
+        assert!(snap.congress_dropped);
+        assert!(snap.refdata.current.congress.is_none());
+        let st = Arc::new(AppState::with_loader(
+            crate::config::Config::from_lookup(|_| None).unwrap(),
+            snap,
+            Some(loader),
+        ));
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut finished = None;
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().pages.len(),
+            STATIC.len() + super::super::CURATED_SEARCHES.len()
+        );
+        still_current(&st, &st.snapshot.load_full()).await.unwrap();
+        current.indexes.push("changed-newspaper-pointer".into());
+        std::fs::write(
+            reference.join("current.json"),
+            serde_json::to_vec(&current).unwrap(),
+        )
+        .unwrap();
+        assert!(still_current(&st, &st.snapshot.load_full()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn replica_rebuilds_after_adopting_peer_checkpoint_for_a_rolled_back_version() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let a = state(&dir, Some(Vec::new())).await;
+        let b = state(&dir, Some(Vec::new())).await;
+        let fixtures = LocalStore::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data"),
+        );
+        let mut refdata = crate::refdata::RefData::load(&fixtures).await.unwrap();
+        refdata.current.index_version = "peer-version-B".into();
+        b.snapshot.store(Arc::new(Snapshot {
+            refdata,
+            backend: b.snapshot.load_full().backend.clone(),
+            congress_dropped: false,
+        }));
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut a_finished = None;
+        refresh(&a, &store, &dir.0, &mut a_finished).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+        refresh(&b, &store, &dir.0, &mut None).await.unwrap();
+        let peer = latest(&store).await.unwrap().unwrap();
+        assert_eq!(peer.version, "peer-version-B");
+        assert!(peer.sequence > first.sequence);
+        // A still has its original completion marker; the publisher has rolled
+        // back to A, and the peer which computed B has stopped.
+        refresh(&a, &store, &dir.0, &mut a_finished).await.unwrap();
+        let rollback = latest(&store).await.unwrap().unwrap();
+        assert_eq!(rollback.version, first.version);
+        assert!(rollback.sequence > peer.sequence);
+        assert_eq!(
+            a.sitemap.committed.load_full().unwrap().version,
+            first.version
+        );
+        assert_eq!(
+            rollback.pages["/privacy"].lastmod,
+            first.pages["/privacy"].lastmod
+        );
+        refresh(&a, &store, &dir.0, &mut a_finished).await.unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            rollback.sequence,
+            "matching adopted checkpoint may skip recomputation"
+        );
+        let mut mismatched = rollback.clone();
+        mismatched.sequence += 1;
+        mismatched.snapshot = "different-serving-projection-of-the-same-version".into();
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", mismatched.sequence),
+                serde_json::to_vec(&mismatched).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        refresh(&a, &store, &dir.0, &mut a_finished).await.unwrap();
+        let corrected = latest(&store).await.unwrap().unwrap();
+        assert!(corrected.sequence > mismatched.sequence);
+        assert_eq!(corrected.snapshot, rollback.snapshot);
     }
 }
