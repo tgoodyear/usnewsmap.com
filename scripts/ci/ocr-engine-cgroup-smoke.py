@@ -4,6 +4,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -26,12 +27,37 @@ def cleanup_run(argv):
         return None
 
 
+def normalize_image_id(image_id):
+    digest = image_id.removeprefix("sha256:")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise RuntimeError(f"unexpected test image id: {image_id!r}")
+    return f"sha256:{digest}"
+
+
 def cgroup_for(pid):
     entries = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
     unified = next((line.split(":", 2)[2] for line in entries if line.startswith("0::")), None)
     if unified is None:
         raise RuntimeError(f"container PID {pid} has no cgroup v2 entry")
     return Path("/sys/fs/cgroup") / unified.lstrip("/")
+
+
+def process_start_time(pid):
+    stat = Path(f"/proc/{pid}/stat").read_bytes()
+    fields = stat[stat.rfind(b")") + 2 :].split()
+    return fields[19]
+
+
+def is_timeout_child(pid):
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        return (
+            len(command) > 1
+            and command[0].rsplit(b"/", 1)[-1] == b"sleep"
+            and command[1] == b"60"
+        )
+    except FileNotFoundError:
+        return False
 
 
 def inspect_containers(podman, url):
@@ -60,7 +86,15 @@ def inspect_containers(podman, url):
             processes = (group / "cgroup.procs").read_text().split()
         except FileNotFoundError:
             continue
-        found.append((container_id, group, memory, pids, processes))
+        timeout_children = []
+        for process in processes:
+            pid = int(process)
+            try:
+                if is_timeout_child(pid):
+                    timeout_children.append((pid, process_start_time(pid)))
+            except FileNotFoundError:
+                continue
+        found.append((container_id, group, memory, pids, processes, timeout_children))
     return found
 
 
@@ -175,8 +209,7 @@ def main():
         image_id = run(
             ["podman", "image", "inspect", "--format", "{{.Id}}", image_tag]
         ).stdout.strip()
-        if not image_id.startswith("sha256:") or len(image_id) != 71:
-            raise RuntimeError(f"unexpected test image id: {image_id!r}")
+        image_id = normalize_image_id(image_id)
 
         command = [
             str(args.worker.resolve()),
@@ -209,15 +242,13 @@ def main():
                 stderr=subprocess.STDOUT,
             )
             observed = {}
-            max_processes = {}
+            timeout_children = {}
             while worker.poll() is None:
-                for container_id, group, memory, pids, processes in inspect_containers(
+                for container_id, group, memory, pids, _, children in inspect_containers(
                     "podman", url
                 ):
                     observed[container_id] = (group, memory, pids)
-                    max_processes[container_id] = max(
-                        max_processes.get(container_id, 0), len(processes)
-                    )
+                    timeout_children.setdefault(container_id, set()).update(children)
                 time.sleep(0.2)
             returncode = worker.returncode
         stdout = output_path.read_text()
@@ -231,14 +262,25 @@ def main():
                 raise RuntimeError(f"{container_id} effective memory.max is {memory!r}")
             if pids == "max" or int(pids) > PIDS_LIMIT:
                 raise RuntimeError(f"{container_id} effective pids.max is {pids!r}")
-        timed_out = [container_id for container_id, count in max_processes.items() if count >= 2]
+        timed_out = [
+            container_id for container_id, children in timeout_children.items() if children
+        ]
         if not timed_out:
-            raise RuntimeError("no timed-out test container with a child process was observed")
+            raise RuntimeError("the deliberate sleep 60 timeout child was not observed")
         for container_id in timed_out:
             group = observed[container_id][0]
             remaining = (group / "cgroup.procs").read_text().split() if (group / "cgroup.procs").exists() else []
             if remaining:
                 raise RuntimeError(f"{container_id} left processes in {group}: {remaining}")
+            for pid, start_time in timeout_children[container_id]:
+                try:
+                    alive = process_start_time(pid) == start_time
+                except FileNotFoundError:
+                    alive = False
+                if alive:
+                    raise RuntimeError(
+                        f"timed-out child process {pid} is still running from {container_id}"
+                    )
         for _ in range(100):
             remaining = run(
                 ["podman", "--remote", "--url", url, "ps", "-aq", "--filter", "label=usnm.engine=contract"]
