@@ -32,6 +32,9 @@ class NativeSetup(unittest.TestCase):
                 (plan["commit"], "0" * 40),
                 ("grep -v '^flet'", "grep -v '^different'"),
                 ("-r /opt/jaocr/requirements.txt", "-r /tmp/other.txt"),
+                ("-r /opt/jaocr/requirements.txt", "-r /opt/jaocr/requirements.txt --no-deps"),
+                ("-r /opt/jaocr/requirements.txt", "-r /opt/jaocr/requirements.txt -r /tmp/extra.txt"),
+                ("USER usnm", "RUN pip install extra==1.0\nUSER usnm"),
             ]:
                 with self.subTest(change=old):
                     dockerfile.write_text(original.replace(old, new))

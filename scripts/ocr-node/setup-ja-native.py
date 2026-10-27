@@ -45,12 +45,19 @@ def recipe(root):
             if len(fields) != 3 or f"/ndlocr-lite/{commit}/" not in fields[1]:
                 raise ValueError("models.lock does not pin the same NDLOCR commit")
     requirements = "ocr/ja-ocr/requirements.txt"
-    required = [
-        f"COPY {requirements} /opt/jaocr/requirements.txt",
-        "grep -v '^flet' /opt/ndlocr-lite/requirements.txt > /tmp/ndlocr-requirements.txt",
-        "pip install --no-cache-dir -r /tmp/ndlocr-requirements.txt -r /opt/jaocr/requirements.txt",
+    expected_runs = [
+        "mkdir /opt/ndlocr-lite"
+        " && tar -xzf /tmp/ndlocr-lite.tar.gz -C /opt/ndlocr-lite --strip-components=1"
+        " && rm /tmp/ndlocr-lite.tar.gz"
+        " && rm -rf /opt/ndlocr-lite/train /opt/ndlocr-lite/ndlocr-lite-gui /opt/ndlocr-lite/resource",
+        "grep -v '^flet' /opt/ndlocr-lite/requirements.txt > /tmp/ndlocr-requirements.txt"
+        " && pip install --no-cache-dir -r /tmp/ndlocr-requirements.txt -r /opt/jaocr/requirements.txt"
+        " && rm /tmp/ndlocr-requirements.txt",
+        "useradd --system --uid 10001 --home-dir /work --create-home usnm",
     ]
-    if not all(line in text for line in required):
+    runs = re.findall(r"^RUN (.+)$", text, re.M)
+    if ([shlex.split(run) for run in runs] != [shlex.split(run) for run in expected_runs]
+            or f"COPY {requirements} /opt/jaocr/requirements.txt" not in text):
         raise ValueError("Dockerfile requirements recipe changed; review native parity")
     copies = re.findall(r"^COPY (.+) /opt/jaocr/$", text, re.M)
     if len(copies) != 1:
