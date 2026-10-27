@@ -14,6 +14,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <winternl.h>
 #include <d3dkmthk.h>
 #define CL_CALL __stdcall
 #else

@@ -125,7 +125,9 @@ git -C amd-llama-source checkout e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
 ```
 
 The builder rejects a dirty/wrong source checkout; the patcher also verifies the
-original Vulkan source SHA-256. It builds only the `ggml-vulkan` target and emits
+original Vulkan source SHA-256. It builds only the `ggml-vulkan` target with the
+upstream release's dynamic-backend mode and verifies the DLL's
+`ggml_backend_init` export before emitting
 `ggml-vulkan.dll` plus `AMD_RUNTIME_BUILD.json` (source commit, patch digest,
 output digest and local SDK provenance). These are **unsigned build artifacts**.
 The exact patched function is tested against synthetic Vulkan responses on both
