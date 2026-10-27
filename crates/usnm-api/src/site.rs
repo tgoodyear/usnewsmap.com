@@ -301,6 +301,11 @@ fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
     let query = search_query(path);
     let (title, canonical) = if path.trim_end_matches('/') == "/privacy" {
         ("Privacy · US News Map".to_owned(), "/privacy".to_owned())
+    } else if path.trim_end_matches('/') == "/datasets" {
+        (
+            "Dataset details · US News Map".to_owned(),
+            "/datasets".to_owned(),
+        )
     } else if path.trim_end_matches('/') == "/credits" {
         (
             "OCR credits · US News Map".to_owned(),
@@ -667,15 +672,15 @@ async fn cache_control(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Only curated, unfiltered searches are indexable. Dataset details and
-/// legacy search links also keep their noindex policy.
+/// Only curated, unfiltered searches are indexable. Legacy search links
+/// and the old dataset path keep their noindex policy.
 fn noindex(uri: &Uri) -> bool {
     if let Some(q) = search_query(uri.path()) {
         return !CURATED_SEARCHES.contains(&search_path(&q))
             || uri.query().is_some_and(|q| !q.is_empty());
     }
     match uri.path().trim_end_matches('/') {
-        "/datasets" | OLD_DATASETS_PATH => true,
+        OLD_DATASETS_PATH => true,
         "" | "/index.html" => uri
             .query()
             .is_some_and(|q| form_urlencoded::parse(q.as_bytes()).any(|(k, _)| k == "q")),
@@ -855,6 +860,15 @@ mod tests {
     }
 
     #[test]
+    fn the_datasets_page_names_itself_in_the_head() {
+        let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
+        let html = String::from_utf8(shell_for("/datasets/", index.to_vec())).unwrap();
+        assert!(html.contains("<title>Dataset details · US News Map</title>"));
+        assert!(html.contains(r#"href="https://usnewsmap.com/datasets""#));
+        assert!(html.contains(r#"content="https://usnewsmap.com/datasets""#));
+    }
+
+    #[test]
     fn the_credits_page_names_itself_in_the_head() {
         let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
         let html = String::from_utf8(shell_for("/credits/", index.to_vec())).unwrap();
@@ -886,8 +900,6 @@ mod tests {
         let yes = [
             "/?q=gold",
             "/?from=1896-06-01&q=%22cross+of+gold%22",
-            "/datasets",
-            "/datasets/?x=1",
             "/status",
             "/status/?x=1",
             "/search/whigs?tab=table",
@@ -903,6 +915,9 @@ mod tests {
             "/?qq=1",
             "/privacy",
             "/privacy?utm_source=x",
+            "/datasets",
+            "/datasets/?x=1",
+            "/credits",
             "/favicon.svg",
             "/search?q=gold",
             "/search/whigs",
