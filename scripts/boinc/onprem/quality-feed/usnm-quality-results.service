@@ -1,0 +1,16 @@
+# On pve-laptop: collect under CT230's bridge lock, pull to its preparation CT215,
+# and load using CT215's existing quality_loader certificate. Never runs on pve-big.
+[Unit]
+Description=usnewsmap canonical quality results into usnm_quality
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-ship.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/quality-ship.env
+Environment=CTID=215
+EnvironmentFile=-/etc/usnm/quality-results.env
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID}
+TimeoutStartSec=40min
+Nice=10
