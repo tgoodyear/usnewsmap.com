@@ -54,6 +54,32 @@ pages remain pending in the unchanged target list. Unknown missing images and
 missing engine outputs still prevent the issue's available output from being
 committed; neither is silently classified as undigitized.
 
+### Native acceptance receipt: 27 October 2026
+
+CT215's Debian Python 3.11.2 successfully installed the pinned source/models and
+requirements; all 33 runner tests passed with PyArrow, without skipped cases.
+As `usnm`, the existing headline fixture produced ALTO and Parquet in 9.15 s;
+a separate-process resume preserved both hashes and performed no further OCR.
+
+The actual residual `sn83025333_1943-01-30_ed-1_seq-6` full JPEG returned HTTP
+200 (1,444,637 bytes, SHA-256
+`48b4668bf2a337fbb7a6b31874b90b4ffd3eb2853d0795e222c395226a73f4a3`).
+Using that image, its saved official issue metadata and source ALTO geometry,
+the native runner wrote one local-store page while leaving its explicitly
+undigitized sequence-7 sibling pending: **one complete page, one pending page,
+zero complete issues**. A separate-process resume preserved the ALTO/Parquet
+hashes without repeating OCR.
+
+The real-page lifecycle was also repeated under the proposed service's exact
+`usnm`/`himds`, `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`,
+`ProtectHome`, state-directory and two-CPU/4-GiB controls. In that same sandbox,
+native Arc authentication read the existing 12,811-target production manifest
+and status without writing blobs. OCR plus local ALTO/Parquet completed in
+19.71 s. These receipts prove target-host compatibility, sandboxed identity
+reads and bounded native execution, not accuracy against human truth or
+production publication. No source requests were made by the replay harness;
+the real JPEG and geometry were fetched once beforehand at normal pace.
+
 ## Japanese OCR: mixed pages and English text
 
 **Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual:
