@@ -811,7 +811,10 @@ foreach ($after->plan_class as $node) {
                              for value in ("0", "", "<![CDATA[]]>", "<![CDATA[1]]>", "<disabled/>")),
                     "<boinc><one_result_per_host_per_wu/><config/></boinc>",
                     "<boinc><config><one_result_per_host_per_wu/><one_result_per_host_per_wu/>"
-                    "</config></boinc>")),
+                    "</config></boinc>",
+                    "<boinc><config><one_result_per_host_per_wu>&#49;</one_result_per_host_per_wu>"
+                    "</config></boinc>",
+                    "<boinc><config/><config><one_result_per_host_per_wu/></config></boinc>")),
             ):
                 with self.subTest(config=config, arguments=arguments):
                     (root / "config.xml").write_text(config)
@@ -830,6 +833,18 @@ foreach ($after->plan_class as $node) {
                                          "intel_vulkan_8b", "--tiebreaker", "--workunit", "300"],
                                         text=True, capture_output=True)
                 self.assertNotIn("one_result_per_host_per_wu", result.stderr + result.stdout)
+            # A private --db-project copy cannot stand in for the live scheduler config.
+            private = root / "private"
+            private.mkdir()
+            (private / "config.xml").write_text("<boinc><config><one_result_per_host_per_wu/></config></boinc>")
+            (root / "config.xml").write_text(empty)
+            before = target.read_bytes()
+            result = subprocess.run(["php", str(helper), "--project", str(root), "--db-project", str(private),
+                                     "--plan-class", "intel_vulkan_8b", "--tiebreaker", "--workunit", "300",
+                                     "--apply"], text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("one_result_per_host_per_wu", result.stderr)
+            self.assertEqual(target.read_bytes(), before)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell required")
     def test_windows_checksum_append_is_portable_ascii_lf(self):

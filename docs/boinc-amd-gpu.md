@@ -330,9 +330,11 @@ The flag is accepted only with `intel_vulkan_8b`, `nvidia_vulkan_8b` or
 8, 18 GiB disk bound, quorum 2, not canonical, no error, `need_validate=0`,
 `transitioner_flags=0`, `app_version_num=0`, no `assignment` rows), with
 `target_nresults` equal to its result count, exactly one unsent replica, and every
-other result successful and inconclusive (`validate_state=4`). The project
-`config.xml` must set `<one_result_per_host_per_wu/>` so the scheduler sends the
-replica to a host other than the inconclusive ones. The mode edits no result,
+other result successful and inconclusive (`validate_state=4`). The live
+project `config.xml` (and any private `--db-project` copy) must enable
+`<one_result_per_host_per_wu/>` (or `1`) exactly once in its single `<config>`
+block, so the scheduler sends the replica to a host other than the inconclusive
+ones. The mode edits no result,
 quorum or scientific row: the normal validator compares the new result with the
 existing ones. The plan XML change, lock and journal match the bounded window;
 the proof records `admission_mode: tiebreaker`. Close the class with `--stop` once

@@ -177,7 +177,13 @@ function native_qwen_one_result_per_host($path) {
         }
     }
     $reader->close();
-    return $found === 1 && $enabled === 1;
+    // BOINC reads the raw token in the first <config> block, without entity expansion.
+    $raw = file_get_contents($path);
+    return $found === 1 && $enabled === 1 && $raw !== false
+        && preg_match_all('/<one_result_per_host_per_wu[\s>\/]/', $raw) === 1
+        && preg_match_all('/<config[\s>\/]/', $raw) === 1
+        && preg_match('/<config>(?:(?!<\/config>).)*(?:<one_result_per_host_per_wu\s*\/>|'
+            .'<one_result_per_host_per_wu>\s*1\s*<\/one_result_per_host_per_wu>)/s', $raw) === 1;
 }
 
 function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary_canary = false, $assignments = 0) {
@@ -318,7 +324,9 @@ function native_qwen_cohort_main() {
     if (!$stop && !$general) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
         if ($tiebreaker) {
-            if (!native_qwen_one_result_per_host("$db_project/config.xml")) {
+            // The scheduler reads the live project's config; a private --db-project copy must agree.
+            if (!native_qwen_one_result_per_host("$project/config.xml")
+                || !native_qwen_one_result_per_host("$db_project/config.xml")) {
                 throw new RuntimeException("Tiebreaker requires one_result_per_host_per_wu");
             }
         }
