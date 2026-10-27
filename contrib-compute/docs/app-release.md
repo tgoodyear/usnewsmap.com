@@ -530,7 +530,10 @@ Use an existing administrator transport, **not** the controller's restricted
 key, and never bypass SSH host-key verification. The local image ID comes from
 the inspected running container, not a mutable tag or a registry manifest digest.
 All existing fixture isolation, independent quorum, canonical output and cleanup
-requirements still apply. A transport timeout is an uncertain outcome: reconcile
+requirements still apply. An in-container 90-second deadline (with a five-second
+termination grace) bounds the adapter even if its transport disconnects; killing
+the Podman client alone would not stop a container exec process.
+A transport timeout is an uncertain outcome: reconcile
 the durable reservation/dispatch journal before retrying; this transport never
 replays a request. Installing or running this adapter is not authorized by these
 instructions and needs a scoped coordination window.

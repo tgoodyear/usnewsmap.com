@@ -22,7 +22,7 @@ def execute(args, request, runner=subprocess.run):
         raise ValueError("expected one bounded JSON request")
     inspected = runner(
         ["podman", "container", "inspect", "usnm-boinc-server"],
-        check=True, capture_output=True, text=True, timeout=15)
+        check=True, capture_output=True, text=True, timeout=10)
     containers = json.loads(inspected.stdout)
     if (not isinstance(containers, list) or len(containers) != 1
             or not isinstance(containers[0], dict)
@@ -35,9 +35,10 @@ def execute(args, request, runner=subprocess.run):
     source = Path(__file__).with_name("acceptance_server.py").read_text()
     result = runner(
         ["podman", "exec", "--interactive", "--user", "1000:1000",
-         containers[0]["Id"], "python3", "-c", source,
+         containers[0]["Id"], "timeout", "--signal=TERM", "--kill-after=5s", "90s",
+         "python3", "-c", source,
          "--project", args.project, "--fixtures", args.project + "/acceptance"],
-        input=request, check=True, capture_output=True, text=True, timeout=120)
+        input=request, check=True, capture_output=True, text=True, timeout=105)
     receipt = json.loads(result.stdout)
     if not isinstance(receipt, dict):
         raise ValueError("invalid server receipt")

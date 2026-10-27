@@ -32,13 +32,14 @@ class OnpremAcceptance(unittest.TestCase):
         self.assertEqual(adapter.execute(self.args, self.request, self.runner),
                          {"state": "waiting"})
         argv = self.runner.call_args.args[0]
-        self.assertEqual(argv[:8], ["podman", "exec", "--interactive", "--user",
-                                   "1000:1000", "c" * 64, "python3", "-c"])
-        self.assertIn("def isolated_account(", argv[8])
-        self.assertEqual(argv[9:], ["--project", "/project/usnmocr",
+        self.assertEqual(argv[:12], ["podman", "exec", "--interactive", "--user",
+                                    "1000:1000", "c" * 64, "timeout", "--signal=TERM",
+                                    "--kill-after=5s", "90s", "python3", "-c"])
+        self.assertIn("def isolated_account(", argv[12])
+        self.assertEqual(argv[13:], ["--project", "/project/usnmocr",
                                    "--fixtures", "/project/usnmocr/acceptance"])
         self.assertEqual(self.runner.call_args.kwargs["input"], self.request)
-        self.assertEqual(self.runner.call_args.kwargs["timeout"], 120)
+        self.assertEqual(self.runner.call_args.kwargs["timeout"], 105)
 
     def test_changed_or_stopped_server_never_receives_request(self):
         for value in (None, {}, [None], [],
@@ -77,7 +78,7 @@ class OnpremAcceptance(unittest.TestCase):
         self.runner.side_effect = [
             subprocess.CompletedProcess([], 0, json.dumps([{
                 "Id": "c" * 64, "Image": self.args.expected_image, "State": {"Running": True}}])),
-            subprocess.TimeoutExpired("podman", 120),
+            subprocess.TimeoutExpired("podman", 105),
         ]
         with self.assertRaises(subprocess.TimeoutExpired):
             adapter.execute(self.args, self.request, self.runner)
