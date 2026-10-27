@@ -1007,6 +1007,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
         (None, None) => BTreeMap::new(),
         _ => anyhow::bail!("--surya-root and --surya-spool go together"),
     };
+    if let Some(cache) = &cache {
+        cache.verify_readings()?;
+    }
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = if dir.exists() {
         std::fs::read_dir(&dir)?
@@ -1036,6 +1039,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             .map(|c| c.key(&unit, &job, &files))
             .transpose()?;
         if let (Some(cache), Some(key)) = (&cache, &key) {
+            cache.track(&unit, &files, key);
             if let Some(part) = cache.load(key)? {
                 summary.add(&part.summary);
                 pages.extend(part.pages);
@@ -1203,6 +1207,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             }
         }
         if let (Some(cache), Some(key)) = (&cache, &key) {
+            cache.verify_readings()?;
             anyhow::ensure!(
                 &cache.key(&unit, &job, &files)? == key,
                 "{wu}: collection inputs changed; no part published"

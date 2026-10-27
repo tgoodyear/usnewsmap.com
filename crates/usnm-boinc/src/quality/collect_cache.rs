@@ -3,6 +3,7 @@ use super::collect::{CropRow, Options, PageRow, Summary};
 use anyhow::{ensure, Context};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     fs::File,
     io::{Read, Write},
@@ -34,6 +35,7 @@ pub(super) struct Cache {
     qwen_root: PathBuf,
     surya_root: Option<PathBuf>,
     inventory: Vec<PathBuf>,
+    included: RefCell<BTreeMap<PathBuf, (Vec<PathBuf>, String)>>,
 }
 
 struct Dependency {
@@ -112,6 +114,15 @@ fn jobs(root: &Path, name: &str) -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn surya_jobs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = crate::surya::unit_dirs(root)?
+        .into_iter()
+        .map(|unit| unit.join(crate::surya::JOB_FILE))
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
 impl Cache {
     pub fn new(dir: &Path, opts: &Options) -> anyhow::Result<Self> {
         let mut version = Sha256::new();
@@ -138,7 +149,7 @@ impl Cache {
         }
         let mut surya = Vec::new();
         if let (Some(root), Some(spool)) = (&opts.surya_root, &opts.surya_spool) {
-            let paths = jobs(root, crate::surya::JOB_FILE)?;
+            let paths = surya_jobs(root)?;
             inventory.extend(paths.clone());
             for path in paths {
                 let bytes = crate::read(&path, usnm_ocr_contract::surya::MAX_JSON)?;
@@ -150,6 +161,8 @@ impl Cache {
                     &job.workunit(),
                     &crate::surya::outputs(),
                 ));
+                surya.push(spool.join(format!("{}_error", job.workunit())));
+                surya.push(spool.join(format!("{}_no_output_files", job.workunit())));
             }
         }
         let qwen = qwen
@@ -171,6 +184,7 @@ impl Cache {
             qwen_root: opts.qwen_root.clone(),
             surya_root: opts.surya_root.clone(),
             inventory,
+            included: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -199,13 +213,15 @@ impl Cache {
             })
         });
         inputs.extend_from_slice(canonical);
+        if let Some(spool) = canonical.first().and_then(|p| p.parent()) {
+            inputs.push(spool.join(format!("{}_error", job.workunit())));
+            inputs.push(spool.join(format!("{}_no_output_files", job.workunit())));
+        }
         for doc in std::iter::once(&job.doc_id).chain(job.pages.iter().map(|p| &p.doc_id)) {
             if let Some(dep) = self.qwen.get(doc) {
-                dep.verify()?;
                 field(&mut hash, &dep.digest);
             }
         }
-        self.surya.verify()?;
         field(&mut hash, &self.surya.digest);
         inputs.sort();
         inputs.dedup();
@@ -215,10 +231,30 @@ impl Cache {
         Ok(hex(&hash.finalize()))
     }
 
+    pub fn track(&self, unit: &Path, canonical: &[PathBuf], key: &str) {
+        self.included
+            .borrow_mut()
+            .insert(unit.to_owned(), (canonical.to_vec(), key.to_owned()));
+    }
+
     pub fn verify(&self) -> anyhow::Result<()> {
+        for (unit, (canonical, key)) in self.included.borrow().iter() {
+            let job = serde_json::from_slice(&crate::read(
+                &unit.join(super::JOB_FILE),
+                usnm_ocr_contract::quality::MAX_JOB_JSON,
+            )?)?;
+            ensure!(
+                &self.key(unit, &job, canonical)? == key,
+                "QUALITY inputs changed before campaign publication"
+            );
+        }
+        self.verify_readings()
+    }
+
+    pub fn verify_readings(&self) -> anyhow::Result<()> {
         let mut inventory = jobs(&self.qwen_root, crate::qwen::JOB_FILE)?;
         if let Some(root) = &self.surya_root {
-            inventory.extend(jobs(root, crate::surya::JOB_FILE)?);
+            inventory.extend(surya_jobs(root)?);
         }
         ensure!(
             inventory == self.inventory,
@@ -268,6 +304,125 @@ impl Cache {
 mod tests {
     use super::*;
     use crate::quality::collect::{collect, run, tests::cached_fixture};
+
+    #[tokio::test]
+    async fn final_quality_guard_revalidates_earlier_hits_and_spool_markers() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        collect(&opts).unwrap();
+        let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let canonical = super::super::collect::spool_files(
+            &opts.spool,
+            &job.workunit(),
+            &super::super::outputs(),
+        );
+        let key = cache.key(&unit, &job, &canonical).unwrap();
+        assert!(cache.load(&key).unwrap().is_some());
+        cache.track(&unit, &canonical, &key);
+        std::fs::write(
+            unit.join("ours.xml"),
+            std::fs::read(unit.join("loc.xml")).unwrap(),
+        )
+        .unwrap();
+        assert!(cache
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("QUALITY inputs changed"));
+        let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let key = cache.key(&unit, &job, &canonical).unwrap();
+        cache.track(&unit, &canonical, &key);
+        std::fs::write(opts.spool.join(format!("{}_error", job.workunit())), b"").unwrap();
+        assert!(cache
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("QUALITY inputs changed"));
+    }
+
+    #[tokio::test]
+    async fn nested_surya_late_canonical_and_failure_markers_refresh_cached_joins() {
+        use usnm_ocr_contract::surya::{InputMode, Outcome};
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, job) = cached_fixture(dir.path()).await;
+        let sroot = dir.path().join("surya");
+        let spool = dir.path().join("surya-spool");
+        opts.surya_root = Some(sroot.clone());
+        opts.surya_spool = Some(spool.clone());
+        let crops = crate::qwen::stage::cut(
+            &std::fs::read(unit.join("page.jpg")).unwrap(),
+            &std::fs::read(unit.join("loc.xml")).unwrap(),
+            job.crop_seed,
+            job.k_crops,
+        )
+        .unwrap();
+        let mut base = crate::surya::work::tests::job();
+        base.doc_id = job.doc_id;
+        let crop = crate::surya::collect::tests::crop_job(
+            &base,
+            &crops[0].id,
+            crops[0].rect,
+            &crops[0].stratum,
+        );
+        crate::surya::collect::tests::unit_with_result(
+            &sroot,
+            &spool,
+            &crop,
+            &[(InputMode::Whole, Outcome::Ok, "a late Surya reading")],
+        );
+        let original = crate::surya::unit_dirs(&sroot).unwrap().remove(0);
+        let nested = super::super::units(&sroot).join("loc/moved-crop");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::rename(original, &nested).unwrap();
+        let missing = spool.join(format!(
+            "{}__file_{}",
+            crop.workunit(),
+            InputMode::Whole.text()
+        ));
+        let bytes = std::fs::read(&missing).unwrap();
+        std::fs::remove_file(&missing).unwrap();
+        let pending = collect(&opts).unwrap();
+        assert_eq!(pending.summary.with_surya, 0);
+        std::fs::write(missing, bytes).unwrap();
+        let joined = collect(&opts).unwrap();
+        assert_eq!(joined.summary.with_surya, 1);
+        assert!(joined
+            .crops
+            .iter()
+            .any(|r| r.reader == super::super::collect::SURYA));
+        for suffix in ["error", "no_output_files"] {
+            let marker = spool.join(format!("{}_{suffix}", crop.workunit()));
+            std::fs::write(&marker, b"").unwrap();
+            let skipped = collect(&opts).unwrap();
+            assert_eq!(skipped.summary.with_surya, 0);
+            assert!(skipped
+                .crops
+                .iter()
+                .all(|r| r.reader != super::super::collect::SURYA));
+            let fresh = collect(&Options {
+                cache: None,
+                ..opts.clone()
+            })
+            .unwrap();
+            assert_eq!(skipped.crops, fresh.crops);
+            std::fs::remove_file(marker).unwrap();
+            assert_eq!(collect(&opts).unwrap().crops, joined.crops);
+        }
+        let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let sample = super::super::units(&sroot).join("sample/synthetic/page");
+        std::fs::create_dir_all(&sample).unwrap();
+        std::fs::copy(
+            nested.join(crate::surya::JOB_FILE),
+            sample.join(crate::surya::JOB_FILE),
+        )
+        .unwrap();
+        assert!(cache
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("inventory changed"));
+        assert_eq!(surya_jobs(&sroot).unwrap().len(), 2);
+    }
 
     #[tokio::test]
     async fn input_canonical_and_collector_version_changes_invalidate_rows() {
