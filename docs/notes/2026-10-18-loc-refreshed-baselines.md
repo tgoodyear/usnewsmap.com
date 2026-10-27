@@ -6,7 +6,12 @@ Archived data-file links below download the [report-data archive](https://github
 
 A fresh official guide retrieval supersedes the historical latest-date and
 coverage totals below: **111 batches / 491,472 reported pages**, latest
-batch-added date **24 October 2026**. The saved HTML SHA-256 is
+batch-added date **24 October 2026**. The
+[immutable refresh release](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-loc-inventory-20261027-ceccea7)
+contains the saved `guide.html`, generated inventory, full benchmark inventory,
+compact summary and sampled official metadata. Its
+[SHA256SUMS](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-loc-inventory-20261027-ceccea7/SHA256SUMS)
+binds all five files. The saved HTML SHA-256 is
 `ceccea70c39fa69e1a4f4ce3b8a96d8ad9569c727b28b7c73b561fcaa5d7d511`.
 The parser checked the summed batch counts against the guide's stated total.
 NDNP-Open-OCR's latest software release remains `v1.2.1`, published
@@ -42,10 +47,24 @@ source-scan registration, embedded engine version or redistribution-rights
 clearance is claimed. #809 remains open for those gates; #810/#811 cannot
 use a newer guide date to justify replacement or skip recognition.
 
-Reproduce the coverage refresh with the existing `loc_inventory.py` command
-in the benchmark guide, using the saved guide bytes and verified `v1.0.0`
-manifest; use `--retrieved-at 2026-10-27` and fresh output paths. The 18 October
-snapshot and sample below remain historical, unchanged evidence.
+Reproduce the full benchmark inventory and compact summary with the existing
+`loc_inventory.py`, using the checksum-verified `v1.0.0` manifest described in
+the benchmark guide:
+
+```sh
+gh release download data-loc-inventory-20261027-ceccea7 \
+  --repo tgoodyear/usnewsmap.com --dir loc-refresh
+(cd loc-refresh && shasum -a 256 -c SHA256SUMS)
+python3 scripts/ocr-bench/loc_inventory.py \
+  --coverage-html loc-refresh/guide.html --benchmark /path/to/verified/manifest.json \
+  --retrieved-at 2026-10-27 --out loc-refresh/reproduced.json \
+  --summary-out loc-refresh/reproduced-summary.json
+cmp loc-refresh/benchmark-inventory.json loc-refresh/reproduced.json
+cmp loc-refresh/benchmark-summary.json loc-refresh/reproduced-summary.json
+```
+
+Use fresh output paths; the tool intentionally refuses to overwrite evidence.
+The 18 October snapshot and sample below remain historical, unchanged evidence.
 
 ## Original 18 October inventory
 
