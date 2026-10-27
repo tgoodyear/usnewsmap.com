@@ -295,7 +295,8 @@ AMD card is visible. There is no name-only or ordinal fallback. The Rust app
 also requires that exact device in the server listing with a real AMD/ATI/Radeon
 or Advanced Micro Devices name, skipping software and other vendors.
 
-The signed helper runs with a 30-second deadline and the same bundled backend
+The signed helper runs with the same bounded 300-second GPU-enumeration deadline
+as `llama-server --list-devices` and the same bundled backend
 and loader environment as the server. Its registry loader comes from
 `libggml.so` / `ggml.dll`, while device APIs come from
 `libggml-base.so` / `ggml-base.dll`. Both libraries and the Vulkan backend must
