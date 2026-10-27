@@ -91,12 +91,41 @@ jobs:
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           cmd /c "`"$(Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat')`" && cl /nologo /std:c++17 /EHsc /W4 /WX /D_CRT_SECURE_NO_WARNINGS amd-probe.cpp /Fe:amd-probe.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }
-          # The hosted runner has no GPU; the patched plugin must behave exactly like the
-          # signed baseline under the original pinned registry and base libraries.
+          # The hosted runner has no GPU, so matching device results alone do not prove
+          # compatibility; the plugin checks below must also pass.
           $baseline = & .\amd-probe.exe (Resolve-Path amd-baseline); $baselineCode = $LASTEXITCODE
           $patched = & .\amd-probe.exe (Resolve-Path amd-patched); $patchedCode = $LASTEXITCODE
           "baseline=$baselineCode $baseline"; "patched=$patchedCode $patched"
           if ($baselineCode -ne $patchedCode -or "$baseline" -ne "$patched") { throw 'Patched runtime changed pinned plugin loading' }
+          # Independent of GPU initialization: each plugin must load with its bundle and export
+          # the backend entry point, and the patched DLL must keep the signed ABI and imports.
+          @"
+          #include <windows.h>
+          #include <cstdio>
+          int wmain(int argc, wchar_t **argv) {
+              if (argc != 2) return 2;
+              HMODULE dll = LoadLibraryExW(argv[1], nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+              if (!dll) { std::printf("load failed %lu\n", GetLastError()); return 1; }
+              bool ok = GetProcAddress(dll, "ggml_backend_init") != nullptr;
+              FreeLibrary(dll);
+              std::puts(ok ? "plugin loaded" : "ggml_backend_init missing");
+              return ok ? 0 : 1;
+          }
+          "@ | Set-Content amd-load.cpp -Encoding ascii
+          cmd /c "`"$(Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat')`" && cl /nologo /EHsc /W4 /WX amd-load.cpp /Fe:amd-load.exe && dumpbin /nologo /exports amd-baseline\ggml-vulkan.dll > amd-baseline.exports && dumpbin /nologo /exports amd-patched\ggml-vulkan.dll > amd-patched.exports && dumpbin /nologo /dependents amd-baseline\ggml-vulkan.dll > amd-baseline.imports && dumpbin /nologo /dependents amd-patched\ggml-vulkan.dll > amd-patched.imports"
+          if ($LASTEXITCODE -ne 0) { throw 'Plugin inspection failed' }
+          foreach ($bundle in 'amd-baseline', 'amd-patched') {
+            $result = & .\amd-load.exe (Resolve-Path "$bundle\ggml-vulkan.dll"); "$bundle $result"
+            if ($LASTEXITCODE -ne 0) { throw "$bundle plugin did not load" }
+          }
+          function Get-Exports($file) { @(Get-Content $file | ForEach-Object { if ($_ -match '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)') { $Matches[1] } } | Sort-Object -Unique) }
+          function Get-Imports($file) { @(Get-Content $file | ForEach-Object { if ($_ -match '^\s+(\S+\.dll)\s*$') { $Matches[1].ToLowerInvariant() } } | Sort-Object -Unique) }
+          $baselineExports = Get-Exports amd-baseline.exports; $patchedExports = Get-Exports amd-patched.exports
+          if ($baselineExports -notcontains 'ggml_backend_init' -or (Compare-Object $baselineExports $patchedExports)) { throw 'Patched runtime changed plugin exports' }
+          $baselineImports = Get-Imports amd-baseline.imports; $patchedImports = Get-Imports amd-patched.imports
+          $extra = @($patchedImports | Where-Object { $baselineImports -notcontains $_ })
+          if (-not $patchedImports -or $extra) { throw "Patched runtime needs DLLs outside the signed bundle: $extra" }
+          "exports=$($patchedExports -join ',')"; "imports=$($patchedImports -join ',')"
           $hash = (Get-FileHash amd-vulkan-runtime\ggml-vulkan.dll -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  ggml-vulkan.dll" | Set-Content amd-vulkan-runtime\SHA256SUMS -Encoding ascii
           git rev-parse HEAD | Set-Content amd-vulkan-runtime\GIT_COMMIT -Encoding ascii
