@@ -8,8 +8,12 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-import origin_tls as tls
-import origin_tls_bootstrap as bootstrap
+if __package__:
+    from . import origin_tls as tls
+    from . import origin_tls_bootstrap as bootstrap
+else:
+    import origin_tls as tls
+    import origin_tls_bootstrap as bootstrap
 
 
 class OriginTlsTests(unittest.TestCase):
@@ -86,7 +90,9 @@ class OriginTlsTests(unittest.TestCase):
         previous = Path.cwd()
         os.chdir(self.root)
         try:
-            with patch.object(tls, "secret", side_effect=[None, RuntimeError("denied")]), \
+            with patch.object(tls, "secret", side_effect=[
+                    "dns-token", None, RuntimeError("denied"),
+            ]), \
                     patch.object(tls.subprocess, "run"), \
                     patch.object(tls, "certificate_current", return_value=True), \
                     patch.object(tls, "state_encode", return_value="private-state"), \
@@ -95,6 +101,40 @@ class OriginTlsTests(unittest.TestCase):
                     tls.renew("admin@example.com", no_bind=True)
                 upload.assert_not_called()
                 self.assertFalse((self.root / ".origin-tls-work").exists())
+        finally:
+            os.chdir(previous)
+
+    def test_current_certificate_still_checks_dns_token_expiry(self):
+        previous = Path.cwd()
+        os.chdir(self.root)
+        try:
+            with patch.object(tls, "secret", side_effect=RuntimeError(
+                    "DNS token expires within 14 days; run origin_tls_bootstrap.py",
+            )) as secret, \
+                    patch.object(tls, "state_restore", return_value=self.root), \
+                    patch.object(tls, "certificate_current", return_value=True), \
+                    patch.object(tls, "upload") as upload:
+                with self.assertRaisesRegex(RuntimeError, "origin_tls_bootstrap"):
+                    tls.renew("admin@example.com", no_bind=True)
+                secret.assert_called_once_with(tls.TOKEN_SECRET)
+                upload.assert_not_called()
+                self.assertFalse((self.root / ".origin-tls-work").exists())
+        finally:
+            os.chdir(previous)
+
+    def test_current_certificate_checks_token_without_reissuing(self):
+        previous = Path.cwd()
+        os.chdir(self.root)
+        try:
+            with patch.object(tls, "secret", side_effect=["dns-token", "saved-state"]) as secret, \
+                    patch.object(tls, "state_restore", return_value=self.root), \
+                    patch.object(tls, "certificate_current", return_value=True), \
+                    patch.object(tls.subprocess, "run") as certbot, \
+                    patch.object(tls, "upload") as upload:
+                tls.renew("admin@example.com", no_bind=True)
+                self.assertEqual(secret.call_args_list[0].args, (tls.TOKEN_SECRET,))
+                certbot.assert_not_called()
+                upload.assert_called_once_with(self.root)
         finally:
             os.chdir(previous)
 

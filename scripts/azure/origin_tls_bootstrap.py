@@ -7,7 +7,10 @@ from pathlib import Path
 import subprocess
 import time
 
-import origin_tls as tls
+if __package__:
+    from . import origin_tls as tls
+else:
+    import origin_tls as tls
 
 ACCOUNT = "14b06d73ae737d2512564c89dfb1e4a3"
 PRINCIPAL = "4d3deafd-dffb-4bc6-98ee-484b2bf61c89"

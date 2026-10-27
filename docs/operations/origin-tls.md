@@ -40,8 +40,8 @@ python3 scripts/azure/origin_tls.py renew
 
 This patches only ingress custom domains and verifies all three bindings; it
 never changes public DNS, Cloudflare settings, app secrets or revisions. Set
-the existing private prod `USNM_API_CERTIFICATE_ID`, `USNM_SITE_CERTIFICATE_ID`
-and `USNM_WWW_CERTIFICATE_ID` settings to the uploaded certificate ID using
+the existing private prod `USNM_API_CERT_ID`, `USNM_SITE_CERT_ID`
+and `USNM_WWW_CERT_ID` settings to the uploaded certificate ID using
 `scripts/azure/settings.sh`, so subsequent provisioning preserves the bindings.
 Do not delete the previous managed certificates until cutover is validated.
 
@@ -81,7 +81,10 @@ validation, while application trust of proxy headers must remain independent.
 Staging and production DNS-01 issuance succeeded. The production certificate
 expires **25 January 2027, 20:32:33 UTC**, and direct connections to the Azure
 origin passed system trust and SNI/hostname validation for all three names.
-All three private certificate-ID settings were read back successfully.
+All three actual private settings (`USNM_API_CERT_ID`, `USNM_SITE_CERT_ID`,
+`USNM_WWW_CERT_ID`, as consumed by `infra/main.bicepparam`) were repaired and
+read back successfully during review. The mistakenly named
+`USNM_*_CERTIFICATE_ID` entries were removed and verified absent.
 The prior managed bindings are retained in the ignored operator receipt
 `.azure/receipts/origin-tls-bindings-before-2026-10-27.json`; no managed
 certificate was deleted. The DNS token expires 25 January 2027: first operator

@@ -223,6 +223,7 @@ def renew(email, no_bind=False, staging=False):
     work.mkdir(mode=0o700)  # Fail closed if another process owns the working directory.
     os.umask(0o077)
     try:
+        secret(TOKEN_SECRET)
         config = work / "config"
         config.mkdir()
         saved = secret(STATE_SECRET, missing_ok=True)
