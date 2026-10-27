@@ -25,7 +25,7 @@ Build-time settings:
 | Variable             | Default                 | Meaning                                                                                                                                                              |
 | -------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VITE_API_BASE`      | same origin             | API origin. Production leaves it empty: the API serves the site                                                                                                      |
-| `VITE_BASEMAP_STYLE` | OpenFreeMap Positron    | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published             |
+| `VITE_BASEMAP_STYLE` | Self-hosted Positron    | MapLibre style URL. `none` gives a plain background (offline and tests). The default uses the versioned PMTiles overview bundle with OpenFreeMap detail fallback     |
 | `VITE_PAGE_VIEWS`    | unset                   | `1` sends page views from any origin (to try `POST /v1/beacon` against a local API), `0` never. Unset, only a production build on `https://usnewsmap.com` sends them |
 | `USNM_API_ORIGIN`    | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to                                                                                                                       |
 
@@ -355,7 +355,15 @@ The API sends immutable one-year caching, `Content-Length` and unencoded
 (tile payloads are already compressed). Styles/fonts also have versioned
 immutable URLs; JSON/PBF edge caching still requires an appropriate zone
 cache rule, so verify their actual `CF-Cache-Status` rather than assuming it.
-The archive alone requires no custom rule.
+`scripts/onprem/serving/basemap-cache-rule.json` is the apex-only rule:
+add it to the zone's `http_request_cache_settings` entrypoint without
+replacing existing rules. It respects origin TTLs and `no-store` errors,
+does not ignore query strings, and never matches searches or API calls.
+The archive alone requires no custom rule. Edge caching also requires proxied
+DNS. Production currently points directly to Azure; do not enable its proxy
+before the ADR-0027 serving cutover, because that would break Container Apps'
+managed-certificate renewal. Browser caching works independently of that
+cutover; no Cloudflare cache HIT or production CDN speedup is implied.
 
 To publish an update, use the pinned `go-pmtiles` CLI and
 `scripts/basemap/build.py --out OUTPUT --name VERSION --style STYLE_URL
@@ -377,7 +385,7 @@ also checks the archive's range/cache/compression contract.
 The standalone Azure API allocates **1 vCPU / 2 GiB** for the two Chromium
 slots. A local production-limit test at the previous 0.25 vCPU / 0.5 GiB
 failed its deadline even with local assets; two simultaneous captures at the
-new allocation completed in about 10 seconds each. This increases the
+new allocation completed in about 4 seconds each. This increases the
 standalone replica's allocated resources fourfold, not a measured billing
 estimate. The legacy Quickwit-sidecar layout keeps its prior API allocation
 to stay within the Consumption replica cap and may still use the static

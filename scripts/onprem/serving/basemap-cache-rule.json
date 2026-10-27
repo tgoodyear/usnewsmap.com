@@ -1,0 +1,16 @@
+{
+  "ref": "usnm_versioned_basemap",
+  "description": "usnewsmap.com: cache versioned basemap assets as their Cache-Control says",
+  "expression": "(http.host eq \"usnewsmap.com\" and starts_with(http.request.uri.path, \"/basemap/\"))",
+  "action": "set_cache_settings",
+  "action_parameters": {
+    "cache": true,
+    "edge_ttl": {
+      "mode": "respect_origin"
+    },
+    "browser_ttl": {
+      "mode": "respect_origin"
+    }
+  },
+  "enabled": true
+}
