@@ -6,7 +6,7 @@ Status: not executed against a BOINC server. [ADR-0020](../../design/adr/0020-bo
 
 An operator needs access to the server/bridge job, the offline signing host, a Linux test client and an arm64 Mac. Use a test project or a scheduled experimental revision of the existing server. Confirm the actual deployed BOINC commit; this procedure was reviewed against `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c`.
 
-Record the baseline app versions, active workunit counts and daemon configuration. Keep those observations locally; commit only aggregate test results without account, host or subscription identifiers. Use the [synthetic cached-page fixture](../../boinc/worker-image.md#local-synthetic-demonstration), fresh dispatch and state directories and directory-backed native stores. Do not publish the experimental outputs to the production OCR lake.
+Record the baseline app versions, active workunit counts and daemon configuration. Keep those observations locally; commit only aggregate test results without account, host or subscription identifiers. Use the [synthetic cached-page fixture](../../../boinc/docs/worker-image.md#local-synthetic-demonstration), fresh dispatch and state directories and directory-backed native stores. Do not publish the experimental outputs to the production OCR lake.
 
 Choose a released, anonymously pullable worker image by full GHCR digest. Verify its architecture and preserve the matching engine metadata used by `usnm-boinc export`. The `--image` argument to that exporter is the worker digest `sha256:<hex>`; the Dockerfile needs the full pullable reference `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<hex>`. Do not substitute the engine or base image digest for the worker digest.
 
@@ -59,7 +59,7 @@ In the BUDA Manage apps UI, create a uniquely named experimental science app, fo
 | Turnaround                 | 3 days                                                                 |
 | Output compression         | Off for this test                                                      |
 
-Upload a Dockerfile and the existing [job.toml](../../../ocr/boinc/job.toml) to the operator's file sandbox. The Dockerfile is a single `FROM` line containing the confirmed full GHCR worker digest. The image supplies the existing worker command; there is no need to copy executables or compile science code in the Dockerfile. Include `job.toml` as an application file, choose CPU type `intel` and plan class `docker`. At the pinned source the resulting variant name is `intel_docker`; let the UI generate `variant.json` and file metadata.
+Upload a Dockerfile and the existing [job.toml](../../../boinc/apps/job.toml) to the operator's file sandbox. The Dockerfile is a single `FROM` line containing the confirmed full GHCR worker digest. The image supplies the existing worker command; there is no need to copy executables or compile science code in the Dockerfile. Include `job.toml` as an application file, choose CPU type `intel` and plan class `docker`. At the pinned source the resulting variant name is `intel_docker`; let the UI generate `variant.json` and file metadata.
 
 Copy the two files from a freshly exported synthetic job into a scratch folder `fixture/`, then zip that directory as a BUDA batch. Upload it through the file sandbox and submit it from the BUDA Submit jobs page. Record the actual batch and workunit IDs locally. Run the same page through the current separate app as the baseline, keeping its image and engine metadata identical.
 

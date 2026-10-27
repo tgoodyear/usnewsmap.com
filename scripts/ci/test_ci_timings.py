@@ -18,6 +18,12 @@ rust = load("rust-test-times")
 
 
 class Shards(unittest.TestCase):
+    def test_migrated_boinc_scripts_are_discovered_and_exclusions_retained(self):
+        run, left_out = runner.selected()
+        self.assertIn(("boinc/scripts/test_batch_scheduler.py", None), run)
+        self.assertTrue(any(path == "boinc/scripts/test_patch_server_gold_routing.py"
+                            for path, _ in left_out))
+
     def test_every_selected_module_runs_in_exactly_one_balanced_shard(self):
         files = [(name, None) for name in runner.WEIGHTS]
         files += [(f"scripts/new/test_{i}.py", None) for i in range(40)]

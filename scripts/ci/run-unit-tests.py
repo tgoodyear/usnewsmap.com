@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every scripts/**/test_*.py unit test, so a new test file runs in CI with no list to edit.
+"""Run every scripts/**/test_*.py and boinc/scripts/**/test_*.py unit test.
 
 `python3 -m unittest discover -s scripts` reads only scripts/ itself: there is no __init__.py
 under scripts/, and discovery does not enter directories that are not packages (every test now
@@ -27,12 +27,12 @@ EXCLUDE = {
     "scripts/ocr-node/test_quality_jpeg_list.py": "needs Pillow; ci.yml's OCR nodes step installs it",
     "scripts/ops/test_check_index_history.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
     "scripts/ops/test_check_version_snapshots.py": "needs fastjsonschema; ci.yml's ops job runs it in its hash-pinned venv",
-    "scripts/boinc/test_patch_server_gold_routing.py": "compiles C++ against nlohmann-json3-dev; ci.yml's contrib job installs it",
+    "boinc/scripts/test_patch_server_gold_routing.py": "compiles C++ against nlohmann-json3-dev; ci.yml's contrib job installs it",
 }
 # Seconds in production run 40389690376; other/new modules have equal weight.
 WEIGHTS = {
     "scripts/ci/test_changes.py": 185,
-    "scripts/boinc/test_boinc_scripts.py": 109,
+    "boinc/scripts/test_boinc_scripts.py": 109,
     "scripts/azure/test_env_scripts.py": 90,
     "scripts/ci/test_head_of_main.py": 19,
 }
@@ -40,7 +40,9 @@ WEIGHTS = {
 
 def selected():
     run, left_out = [], []
-    for path in sorted(ROOT.joinpath("scripts").rglob("test_*.py")):
+    paths = (path for directory in ("scripts", "boinc/scripts")
+             for path in ROOT.joinpath(directory).rglob("test_*.py"))
+    for path in sorted(paths):
         rel = path.relative_to(ROOT).as_posix()
         why = next((r for p, r in EXCLUDE.items() if rel == p or rel.startswith(p + "/")), None)
         (left_out if why else run).append((rel, why))
@@ -58,7 +60,7 @@ def shard_files(files, index, count):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Run every scripts/**/test_*.py unit test.")
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="print the files to run and those left out, then stop")
     parser.add_argument("--shard-index", type=int, default=0, help="zero-based shard index")
     parser.add_argument("--shard-count", type=int, default=1, help="number of isolated CI shards")
@@ -73,7 +75,7 @@ def main(argv=None):
         print("\n".join(f"skip  {rel}  ({why})" for rel, why in left_out))
         return 0
     if not run:
-        print("error: no scripts/**/test_*.py found", file=sys.stderr)
+        print("error: no script test_*.py files found", file=sys.stderr)
         return 1
     total, failed, timings = 0, [], []
     for rel, _ in run:

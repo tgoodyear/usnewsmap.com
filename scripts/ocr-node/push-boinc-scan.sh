@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Push scans the fetcher already holds to the BOINC hand-off container (#469,
-# docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache), for the hand-off job's export. Runs in the
+# boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache), for the hand-off job's export. Runs in the
 # scan-fetch container (CT 211), signed in as its Arc machine identity
 # (az login --identity --allow-no-subscriptions), which has the hand-off writer role on the
 # container and nothing else there. It reads /tank/ocr and asks LoC for nothing.

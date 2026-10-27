@@ -4,7 +4,7 @@ Part of the [operations guide](README.md).
 
 ## On-prem OCR nodes
 
-**Local OCR runs through BOINC only** (#917, #942, #966): see the [BOINC pages](../boinc/README.md). No node runs `usnm-ocr-worker` as a direct queue worker any more, and the worker's systemd unit, its installers (`install-worker.sh`, `install-worker-node.sh`) and its nightly update (`update-worker.sh`) are removed. This section keeps what is still in use: the exchange account, whose queues and `ocr-out` container BOINC's hand-off uses, and the nodes' Arc lifecycle and monitoring, which offboarding the remaining nodes needs.
+**Local OCR runs through BOINC only** (#917, #942, #966): see the [BOINC pages](../../boinc/docs/README.md). No node runs `usnm-ocr-worker` as a direct queue worker any more, and the worker's systemd unit, its installers (`install-worker.sh`, `install-worker-node.sh`) and its nightly update (`update-worker.sh`) are removed. This section keeps what is still in use: the exchange account, whose queues and `ocr-out` container BOINC's hand-off uses, and the nodes' Arc lifecycle and monitoring, which offboarding the remaining nodes needs.
 
 Each node is an Azure Arc-enabled server running RHEL 10 (AlmaLinux 9 is also accepted), with a managed identity and no stored secret ([ADR-0015](../design/adr/0015-onprem-ocr-workers.md)). The exchange account is `stusnmo<suffix>`; a cloud job copies what lands in its `ocr-out` container into `curated`. This section sets up the account, and connects, monitors and removes a node.
 
@@ -102,7 +102,7 @@ It removes the machine's identity from the nodes' group and deletes its data col
 
 ### Prefetched scans (#368)
 
-Deploy the scan service and storage using infrastructure tooling. The application's `ocr-prefetch-manifest` command builds the manifest; `scripts/ocr-node/pull-manifest.sh` verifies and submits it to the configured scan-server URL. BOINC takes cached scans through the [scan-cache hand-off](../boinc/scan-cache-handoff.md); the direct workers that read the service with `--scan-cache-url` are retired. The scan-fetch service's `status-full.json`, `failures-full.jsonl` and journal explain buffer capacity, source cooldown and failures.
+Deploy the scan service and storage using infrastructure tooling. The application's `ocr-prefetch-manifest` command builds the manifest; `scripts/ocr-node/pull-manifest.sh` verifies and submits it to the configured scan-server URL. BOINC takes cached scans through the [scan-cache hand-off](../../boinc/docs/scan-cache-handoff.md); the direct workers that read the service with `--scan-cache-url` are retired. The scan-fetch service's `status-full.json`, `failures-full.jsonl` and journal explain buffer capacity, source cooldown and failures.
 
 ### The scan archive (#442)
 

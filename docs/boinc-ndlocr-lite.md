@@ -16,7 +16,7 @@ Build from the repository root:
 
 ```sh
 docker build -f ocr/engines/ndlocr-lite/Containerfile -t usnm-ndlocr-lite .
-python3 scripts/boinc/smoke-ndlocr.py --image usnm-ndlocr-lite --work "$PWD/ndlocr-smoke"
+python3 boinc/scripts/smoke-ndlocr.py --image usnm-ndlocr-lite --work "$PWD/ndlocr-smoke"
 ```
 
 The Python and Rust bases are pinned by digest. `NDLOCR_COMMIT` is
@@ -112,7 +112,7 @@ running container runtime, repeat the image parity and cost check on a full-size
 local image:
 
 ```sh
-python3 scripts/boinc/smoke-ndlocr.py --image IMAGE --work "$PWD/ndlocr-page-probe" --source "$PWD/page.jpg"
+python3 boinc/scripts/smoke-ndlocr.py --image IMAGE --work "$PWD/ndlocr-page-probe" --source "$PWD/page.jpg"
 ```
 
 Record the architecture, CPU quota, page dimensions and model and runtime
@@ -455,7 +455,7 @@ After merge:
    `xadd`, and restart daemons so its script validator and batch assimilator
    run. Install the input/output templates when publishing the app version.
 3. Publish a signed **x86_64 Linux container** app version with
-   `scripts/boinc/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
+   `boinc/scripts/boinc-app-release.sh --env prod --app usnm_ndlocr --version N.M
 --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_MANIFEST
 --signing-host HOST --onprem-host HOST --onprem-ct ID` (the last two because prod's
    server is on-prem). Its dedicated `job.toml` is selected automatically.

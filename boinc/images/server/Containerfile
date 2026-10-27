@@ -1,0 +1,50 @@
+# The stock BOINC server as ONE image: Apache with PHP, the scheduler and upload CGIs, and
+# the daemons, all in one container because the feeder and the scheduler share a System V
+# shared-memory segment (docs/design.md, section 2.1). BOINC itself comes from the base image
+# (images/base, built only when it changes); this layer adds our scripts and templates.
+#
+#   docker build -f boinc/images/server/Containerfile \
+#     --build-arg BASE_IMAGE=REGISTRY/usnm-boinc-base:<tag> .
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+# Debian security updates at build time (#969): the image this builds on is pinned, so its
+# packages are frozen at whatever it was built with. A new SECURITY_REFRESH (a date) makes a
+# cached build run this layer again. PHP_FLOOR and APACHE_FLOOR are the oldest php8.2 and
+# apache2 the image may ship: DLA-4848-1 (CVE-2026-109618, CVE-2026-109619, 21 October 2026)
+# and DSA-6323-1 (CVE-2026-49975, 6 June 2026). The build fails below either; raise it after
+# the next PHP or Apache advisory, here, in the other Containerfiles and in
+# boinc/scripts/onprem/usnm-image-security-check.service.
+ARG SECURITY_REFRESH=2026-10-21
+ARG PHP_FLOOR=8.2.35-1~deb12u1
+ARG APACHE_FLOOR=2.4.67-1~deb12u3
+RUN echo "security refresh $SECURITY_REFRESH" \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confold upgrade \
+ && rm -rf /var/lib/apt/lists/* \
+ && php_version="$(dpkg-query -W -f='${Version}' php8.2-common)" \
+ && if ! dpkg --compare-versions "$php_version" ge "$PHP_FLOOR"; then \
+      echo "php8.2-common $php_version is older than $PHP_FLOOR" >&2; exit 1; fi \
+ && apache_version="$(dpkg-query -W -f='${Version}' apache2)" \
+ && if ! dpkg --compare-versions "$apache_version" ge "$APACHE_FLOOR"; then \
+      echo "apache2 $apache_version is older than $APACHE_FLOOR" >&2; exit 1; fi
+COPY boinc/images/server/lib.sh boinc/images/server/secrets.sh boinc/images/server/entrypoint.sh \
+     boinc/images/server/work-volume.py boinc/images/server/apache-project.conf.template \
+     boinc/images/server/supervisord.conf boinc/images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
+COPY boinc/images/server/bridge-job.sh /usr/local/bin/bridge-job
+COPY boinc/images/server/gold-mirror-config.py /usr/local/lib/usnm-boinc/
+COPY boinc/images/server/batch-inventory.py /usr/local/lib/usnm-boinc/
+COPY boinc/project/config.xml.template boinc/project/project.xml boinc/project/plan_class_spec.xml /usr/local/lib/usnm-boinc/
+COPY boinc/project/gold-engine-platforms.json /usr/local/lib/usnm-boinc/
+COPY web/public/.well-known /usr/local/lib/usnm-boinc/well-known
+# Project web pages (about.php, the front-page description), installed by entrypoint.sh --serve
+COPY boinc/project/html /usr/local/lib/usnm-boinc/html
+COPY boinc/images/server/prepare-prefs.py boinc/images/server/refresh-scheduler.py \
+     boinc/images/server/refresh-plan-policy.py boinc/images/server/refresh-project-code.py \
+     /usr/local/lib/usnm-boinc/
+RUN python3 /usr/local/lib/usnm-boinc/prepare-prefs.py
+# Debian's default site sets its own DocumentRoot, which would serve its page at /.
+RUN a2dissite -q 000-default \
+ && chmod 0755 /usr/local/lib/usnm-boinc/entrypoint.sh /usr/local/lib/usnm-boinc/boinc-daemons.sh /usr/local/bin/bridge-job
+EXPOSE 80
+ENTRYPOINT ["/usr/local/lib/usnm-boinc/entrypoint.sh"]
+CMD ["--serve"]

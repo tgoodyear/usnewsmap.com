@@ -1,6 +1,6 @@
 # Archived scripts
 
-Scripts kept for the dated [notes](../../docs/notes/README.md) and [reports](../../docs/reports/) that cite them, so a number in one of those can still be traced to the code that produced it. Each subdirectory is the month the work was done (`2026-10/`).
+Scripts kept for the dated [notes](../../docs/notes/README.md) and [reports](../../docs/reports) that cite them, so a number in one of those can still be traced to the code that produced it. Each subdirectory is the month the work was done (`2026-10/`).
 
 They are **not maintained and not run by CI**: no workflow, Containerfile or live script uses them, and their tests are not discovered by any workflow's test step (the `ocr-bench` workflow discovers tests only under `scripts/ocr-bench/`). They worked when the note or report was written; later changes to the tools, schemas or data they read may have broken them. A script here may still read live files by repository-relative path (for example `ocr/bench/adapters/` or `scripts/ocr-bench/effocr-runtime.lock`), so it runs from the repository root, and each one resolves those paths from its new location.
 

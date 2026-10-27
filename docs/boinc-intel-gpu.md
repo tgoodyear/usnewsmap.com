@@ -2,12 +2,12 @@
 
 Plan class `intel_vulkan_8b` runs the same Qwen3-VL-8B Q4_K_M reading as the CUDA and Metal
 classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win-vulkan-x64` in
-`ocr/boinc/qwen/llama.lock`). It shares the batch-8 workunits of `nvidia_cuda_8b` and
+`boinc/apps/qwen/llama.lock`). It shares the batch-8 workunits of `nvidia_cuda_8b` and
 `apple_gpu_8b`, so its readings can join the same quorum
 ([#786](https://github.com/tgoodyear/usnewsmap.com/issues/786)). The class ships closed
 (`min_wu_id=2`, `max_wu_id=1`). An operator opens one audited workunit at a time with
-`scripts/boinc/native-qwen-cohort.php --plan-class intel_vulkan_8b`, as for the NVIDIA classes
-([app releases](../contrib-compute/docs/app-release.md)).
+`boinc/scripts/native-qwen-cohort.php --plan-class intel_vulkan_8b`, as for the NVIDIA classes
+([app releases](../boinc/docs/app-release.md)).
 
 `usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
 [docs/notes/2026-10-16-boinc-iris-pilot.md](notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
@@ -20,7 +20,7 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 - **Resource type.** Stock BOINC infers an app version's resource from its plan-class name and
   knows Intel only by `intel_gpu`, so it would tell clients this project has no Intel GPU apps
   (`no_rsc_apps intel_gpu`), and they would stop asking for Intel GPU work.
-  `scripts/boinc/patch-server-intel-proc-type.py` maps every plan class naming `intel` to the
+  `boinc/scripts/patch-server-intel-proc-type.py` maps every plan class naming `intel` to the
   Intel GPU. Each such class must therefore have `gpu_type intel` (#736).
 - **App.** The app lists the Vulkan devices with its own `llama-server --list-devices` and takes
   the Intel device BOINC assigned. BOINC numbers Intel GPUs among themselves, so device 0 is the
@@ -205,7 +205,7 @@ or that either ran inside the production image**. Backend binaries/source are pi
 in the receipt. Byte-identical result-manifest copies were given BOINC-safe upload filenames
 solely for validator logging; no job, engine or output metadata was rewritten.
 
-[All evidence](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1/) includes both
+[All evidence](../ocr/bench/results/qwen-b8799-cuda-vulkan-rtx2060s-100-v1) includes both
 100-row output files, both scorer rules/reports, timing/power traces, comparison summary,
 SHA-256 inventory and `raw-native-results.tar.gz` (the archive is in the `bench-assets` set: `scripts/ops/data-assets.sh --fetch --set bench-assets`). The archive preserves byte-exact native
 outputs, server logs, staged job metadata, validator-name copies, build receipts and the

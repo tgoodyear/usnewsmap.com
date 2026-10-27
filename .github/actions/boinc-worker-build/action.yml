@@ -39,7 +39,7 @@ runs:
         [[ $engine =~ ^sha256:[0-9a-f]{64}$ ]]
         args=(--platform "linux/$ARCH" --build-arg "TESSERACT_IMAGE=$engine"
           --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker --build-arg "RUST_IMAGE=$RUST_IMAGE"
-          -f ocr/boinc/Containerfile)
+          -f boinc/apps/Containerfile)
         docker build "${args[@]}" --target build -t usnm-boinc-build:worker .
         docker build "${args[@]}" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
           --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$WORKER_IMAGE:$TAG" .
@@ -49,5 +49,5 @@ runs:
         got=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$WORKER_IMAGE:$TAG" | sed -n 's/^USNM_TESSERACT_IMAGE=//p')
         [ "$got" = "$engine" ]
         echo "tesseract_image=$engine" >> "$GITHUB_OUTPUT"
-        python3 scripts/boinc/smoke-worker.py --image "$WORKER_IMAGE:$TAG" --build-image usnm-boinc-build:worker \
+        python3 boinc/scripts/smoke-worker.py --image "$WORKER_IMAGE:$TAG" --build-image usnm-boinc-build:worker \
           --arch "$ARCH" --dir "$RUNNER_TEMP/boinc-worker-smoke"

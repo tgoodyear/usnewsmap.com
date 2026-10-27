@@ -128,7 +128,7 @@ enum Commands {
         /// JSON Engine (image, llama and weights digests) with exactly one model.
         #[arg(long)]
         engine: PathBuf,
-        /// ocr/boinc/qwen/weights.lock, copied into each slot.
+        /// boinc/apps/qwen/weights.lock, copied into each slot.
         #[arg(long)]
         weights_lock: PathBuf,
         #[arg(long, default_value_t = 25)]

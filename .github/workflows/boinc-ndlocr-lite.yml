@@ -11,9 +11,9 @@ on:
     paths:
       - .github/workflows/boinc-ndlocr-lite.yml
       - ocr/engines/ndlocr-lite/**
-      - ocr/boinc/ndlocr-lite/**
-      - scripts/boinc/smoke-ndlocr-worker.py
-      - scripts/boinc/smoke-ndlocr.py
+      - boinc/apps/ndlocr-lite/**
+      - boinc/scripts/smoke-ndlocr-worker.py
+      - boinc/scripts/smoke-ndlocr.py
       - ocr/ja-ocr/testdata/**
       - ocr/ja-ocr/alto.py
       - ocr/ja-ocr/jaocr.py
@@ -24,10 +24,10 @@ on:
       - .dockerignore
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
       - "fixtures/ocr-gold/bundle-v1.lock.json"
-      - "ocr/boinc/qwen/disk-policy.json"
-      - "ocr/boinc/qwen/weights.lock"
-      - "ocr/boinc/surya/engine.lock"
-      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "boinc/apps/qwen/disk-policy.json"
+      - "boinc/apps/qwen/weights.lock"
+      - "boinc/apps/surya/engine.lock"
+      - "boinc/apps/usnm_qwen_benchmark_in"
       - "ocr/engines/engines.toml"
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"
@@ -76,7 +76,7 @@ jobs:
           cache-from: type=gha,scope=ndlocr-lite
           cache-to: type=gha,mode=max,scope=ndlocr-lite
       - name: Read Japanese headline with no network and read-only root
-        run: python3 scripts/boinc/smoke-ndlocr.py --image "$IMAGE:ndlocr-lite-$GITHUB_SHA" --work "$GITHUB_WORKSPACE/ndlocr-smoke"
+        run: python3 boinc/scripts/smoke-ndlocr.py --image "$IMAGE:ndlocr-lite-$GITHUB_SHA" --work "$GITHUB_WORKSPACE/ndlocr-smoke"
       - name: Resolve the engine base identity
         id: engine
         run: echo "image=$(docker image inspect --format '{{.Id}}' "$IMAGE:ndlocr-lite-$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
@@ -84,14 +84,14 @@ jobs:
         env:
           ENGINE_IMAGE: ${{ steps.engine.outputs.image }}
         run: |
-          docker buildx build --builder default --load -f ocr/boinc/ndlocr-lite/Containerfile \
+          docker buildx build --builder default --load -f boinc/apps/ndlocr-lite/Containerfile \
             --build-arg NDLOCR_IMAGE="$ENGINE_IMAGE" \
             --build-arg NDLOCR_FROM="$IMAGE:ndlocr-lite-$GITHUB_SHA" \
             -t "$IMAGE:ndlocr-lite-worker-$GITHUB_SHA" .
       - name: Read a BOINC unit and validate its results offline
         env:
           ENGINE_IMAGE: ${{ steps.engine.outputs.image }}
-        run: python3 scripts/boinc/smoke-ndlocr-worker.py --image "$IMAGE:ndlocr-lite-worker-$GITHUB_SHA" --engine-image "$ENGINE_IMAGE" --work "$GITHUB_WORKSPACE/ndlocr-worker-smoke"
+        run: python3 boinc/scripts/smoke-ndlocr-worker.py --image "$IMAGE:ndlocr-lite-worker-$GITHUB_SHA" --engine-image "$ENGINE_IMAGE" --work "$GITHUB_WORKSPACE/ndlocr-worker-smoke"
       - name: Publish reviewed engine
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:

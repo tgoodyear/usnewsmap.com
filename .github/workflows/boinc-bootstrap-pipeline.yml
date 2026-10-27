@@ -2,16 +2,16 @@ name: boinc-bootstrap-pipeline
 on:
   pull_request:
     paths:
-      - scripts/boinc/bootstrap_pipeline.py
-      - scripts/boinc/test_bootstrap_pipeline.py
+      - boinc/scripts/bootstrap_pipeline.py
+      - boinc/scripts/test_bootstrap_pipeline.py
       - .github/workflows/boinc-bootstrap-pipeline.yml
       - .github/workflows/boinc-worker.yml
       - .github/workflows/boinc-qwen.yml
   push:
     branches: [main]
     paths:
-      - scripts/boinc/bootstrap_pipeline.py
-      - scripts/boinc/test_bootstrap_pipeline.py
+      - boinc/scripts/bootstrap_pipeline.py
+      - boinc/scripts/test_bootstrap_pipeline.py
       - .github/workflows/boinc-bootstrap-pipeline.yml
       - .github/workflows/boinc-worker.yml
       - .github/workflows/boinc-qwen.yml
@@ -24,5 +24,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: python3 -m unittest -v scripts/boinc/test_bootstrap_pipeline.py
-      - run: python3 -m py_compile scripts/boinc/bootstrap_pipeline.py
+      - run: python3 -m unittest -v boinc/scripts/test_bootstrap_pipeline.py
+      - run: python3 -m py_compile boinc/scripts/bootstrap_pipeline.py

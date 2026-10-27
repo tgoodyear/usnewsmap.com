@@ -75,7 +75,7 @@ Every unit of computation requested from our volunteer BOINC population must sat
 
 ### 2.1 Codebase & PR Integration (PRs #503, #505, #506, #534, #544, #580, #646)
 1. **Volunteer Host Preflight & Native ARM64 / macOS Support:**
-   - Reviewed, fixed, and merged [PR #505](https://github.com/tgoodyear/usnewsmap.com/pull/505) (`scripts/boinc/check-volunteer-host.sh` for rootless Podman/SELinux/cgroup v2 preflight) and [PR #534](https://github.com/tgoodyear/usnewsmap.com/pull/534) (`usnm_quality` and `usnm_qwen` Rust binaries, `usnm-ocr-quality` crate, validator binaries `usnm_quality_check`/`usnm_quality_compare` and `usnm_qwen_check`/`usnm_qwen_compare`, and bridge collection pipeline).
+   - Reviewed, fixed, and merged [PR #505](https://github.com/tgoodyear/usnewsmap.com/pull/505) (`boinc/scripts/check-volunteer-host.sh` for rootless Podman/SELinux/cgroup v2 preflight) and [PR #534](https://github.com/tgoodyear/usnewsmap.com/pull/534) (`usnm_quality` and `usnm_qwen` Rust binaries, `usnm-ocr-quality` crate, validator binaries `usnm_quality_check`/`usnm_quality_compare` and `usnm_qwen_check`/`usnm_qwen_compare`, and bridge collection pipeline).
    - Evaluated PRs #503 and #506, diagnosed the macOS `Run_Podman` shell pipe-quoting bug in `docker_wrapper.cpp` (`get_container_state`), and merged [PR #506](https://github.com/tgoodyear/usnewsmap.com/pull/506) and [PR #544](https://github.com/tgoodyear/usnewsmap.com/pull/544) ([Issue #533](https://github.com/tgoodyear/usnewsmap.com/issues/533)) to ship native `usnm_quality` across all 5 desktop/server platforms (`windows_x86_64`, `x86_64-apple-darwin`, `arm64-apple-darwin`, `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`) and native `usnm_qwen` (`apple_gpu_8b` on macOS Metal and `nvidia_cuda_2b`/`nvidia_cuda_8b` on Windows/Linux).
 2. **Native BOINC Finish-File Contract:**
    - Confirmed in BOINC client source (`client/app_control.cpp`) that native (non-wrapped) BOINC executables that exit `0` without writing `boinc_finish_called` in the slot directory are treated as unexpected exits and restarted up to ~110 times before failing with `EXIT_CHILD_FAILED (195)`. Both `usnm_quality` and `usnm_qwen` explicitly write `boinc_finish_called` before exiting `0`.
@@ -85,8 +85,8 @@ During live onboarding of our Proxmox VE containers (`CT 100` and `CT 101` on `p
 
 | # | Blocker Encountered | Root Cause | Resolution Applied |
 |---|---|---|---|
-| 1 | `provision.sh` parallel SSH race condition | Concurrent runs rotated `boinc-secrets` (`SIGNING_KEY_PEM`) and overwrote `publish_manifest.json` mid-flight | Added remote `flock` lock (`/var/tmp/usnm-boinc-provision.lock`) and local mkdir lock in `contrib-compute/provision.sh` |
-| 2 | `Project requested delay of 86400 seconds` on clients | `<next_rpc_delay>86400</next_rpc_delay>` was set globally in `config.xml`, forcing a 24-hour client backoff after any RPC | Removed `<next_rpc_delay>` from `contrib-compute/images/server/setup-project.sh` and live `/project/config.xml` |
+| 1 | `provision.sh` parallel SSH race condition | Concurrent runs rotated `boinc-secrets` (`SIGNING_KEY_PEM`) and overwrote `publish_manifest.json` mid-flight | Added remote `flock` lock (`/var/tmp/usnm-boinc-provision.lock`) and local mkdir lock in `boinc/provision.sh` |
+| 2 | `Project requested delay of 86400 seconds` on clients | `<next_rpc_delay>86400</next_rpc_delay>` was set globally in `config.xml`, forcing a 24-hour client backoff after any RPC | Removed `<next_rpc_delay>` from `boinc/images/server/setup-project.sh` and live `/project/config.xml` |
 | 3 | `CT 101` reporting `p_ncpus=2` on an 8-core PVE host | Unprivileged LXC cgroup v2 `cpuset` defaulted to 2 cores (`4` cores required by `docker_mt` plan classes) | Upgraded `CT 100` and `CT 101` to `8 GiB` RAM, `128 GiB` rootfs, `6` LXC cores, and `<ncpus>5</ncpus>` in `cc_config.xml` |
 | 4 | `CT 101` `usnm_qwen` failing immediately with `unit_error` | Rootless Podman storage inside `CT 101` lacked the `usnm-boinc-qwen:1.0` image (`7.62 GB`) | Loaded `usnm-boinc-qwen:1.0` (`sha256:669e80ec...`) into `boinc`'s rootless Podman store on `CT 101` |
 | 5 | `usnm_quality` tasks starved behind `usnm_qwen` in scheduler | BOINC's `feeder` ran without `--allapps` and with default 100-slot shared memory cache, allowing `usnm_qwen` tasks to monopolize all 100 slots | Deployed `feeder -d 2 --allapps` and `<shmem_work_items>1000</shmem_work_items>` in `setup-project.sh` and live `/project/config.xml` ([PR #580](https://github.com/tgoodyear/usnewsmap.com/pull/580), [PR #646](https://github.com/tgoodyear/usnewsmap.com/pull/646)) |
@@ -157,7 +157,7 @@ In [`data/campaigns/v1-wave2/crops.csv`](https://github.com/tgoodyear/usnewsmap.
 
 ## 4. Gold-Set Calibration (`overproof-ca`, `bln600`, `reichsanzeiger`) & Qwen3-VL 2B vs. 8B Evaluation
 
-All gold-set score tables and `usnm-boinc quality calibrate` outputs are preserved in [`data/calibration/`](data/calibration/).
+All gold-set score tables and `usnm-boinc quality calibrate` outputs are preserved in [`data/calibration/`](data/calibration).
 
 ### 4.1 True CER & WER on Gold Benchmarks (`node3` + Local Metal GPU Calibration)
 
@@ -259,7 +259,7 @@ Single-page workunits were appropriate for the 4-to-23-page pilot waves, but are
 
 To address the pilot's primary data limitation—that `94.6%` (`35/37` unique pages) of `v1-wave1`–`v1-wave3` had only 1 or 2 OCR readers (`hat_determined = false`)—we curated, staged, and executed **`v1-wave4` (`50` workunits = `100` replica tasks)** from the 90-page multi-engine survey corpus (`0` page overlap with `v1-wave1`–`v1-wave3`), where **100% of pages (`50/50`) have 3 to 7 independent OCR readers** (`259` reader-page evaluations total) and full-page `ours.xml` across **6 languages** (`eng`, `deu`, `ces`, `pol`, `srp`, `rus`) and **7 survey strata** (`control`, `worst-english`, `german`, `czech`, `polish`, `serbian`, `russian`).
 
-Artifacts preserved in [`data/campaigns/v1-wave4/`](data/campaigns/v1-wave4/) (`pages.parquet`, `pages.csv`, `crops.parquet`, `crops.csv`, `summary.md`).
+Artifacts preserved in [`data/campaigns/v1-wave4/`](data/campaigns/v1-wave4) (`pages.parquet`, `pages.csv`, `crops.parquet`, `crops.csv`, `summary.md`).
 
 ### 6.1 Pickup, Execution Runtime, and Completion Rate (`v1-wave4` vs. Pilot)
 
@@ -388,7 +388,7 @@ Executing a 5,000-workunit campaign surfaced seven operational lessons that have
    - *Fix:* Raised `MAX_BUNDLE_PAGES` to `500` (`MAX_BUNDLE_SCAN = 1 GiB`, `MAX_BUNDLE_ALTO = 512 MiB`, `MAX_BUNDLE_TEXTS = 128 MiB`, `MAX_RESULT_JSON = 8 MiB`, `MAX_CONFUSIONS = 8 MiB`), scaled `create_work`'s `--rsc_fpops_est` (`N * 1e12`) and `--rsc_fpops_bound` (`N * 1e14`) proportionally with bundle page count `N`, and set `QUALITY_BUNDLE_SIZE` default to **`300` pages per workunit** in `bridge-job.sh`. Because `usnm_quality` packs all `N` pages into a single concatenated `page.jpg`, `loc.xml`, and `texts.json` indexed by `[offset, bytes, sha256]` slices (`BundleSlice`) and checkpoints `quality_checkpoint.json` after every single page (~1.8s granularity), a **300–500 page bundle runs for 10–15 minutes (`0.17–0.25 hours`)**, still downloads only 4 non-sticky files, and reduces workunit count, HTTP transfers, and SMB file operations by **300×–500×** (`5,000` pages = `10–17` workunits; `1,000,000` pages = `2,000–3,334` workunits).
 4. **High-Throughput Scheduler Dispatch Limits (`config.xml.template`):**
    - *Finding:* Fast tasks caused hosts to hit `daily_result_quota = 200` (`max_jobs_per_day` in `host_app_version`) within minutes and wait `31` seconds (`min_sendwork_interval = 30`) with only `4` tasks/CPU (`max_wus_in_progress = 4`).
-   - *Fix:* Updated `contrib-compute/boinc/config.xml.template` to `min_sendwork_interval = 2`, `max_wus_in_progress = 32`, `daily_result_quota = 50000`, and `max_wus_to_send = 64`.
+   - *Fix:* Updated `boinc/project/config.xml.template` to `min_sendwork_interval = 2`, `max_wus_in_progress = 32`, `daily_result_quota = 50000`, and `max_wus_to_send = 64`.
 5. **Multi-Host Account Contention Under `feeder --allapps` (`125` Slots/App):**
    - *Finding:* `feeder -d 2 --allapps` divides `<shmem_work_items>1000</shmem_work_items>` across all 8 registered apps (`125` shared-memory slots per app). When multiple volunteer hosts (`Host 1` macOS, `Host 8` `usnm-ocr-node4`, `Host 9` `boinc-laptop`) shared the same BOINC user ID (`USER#2`) while `<one_result_per_user_per_wu/>` was active, all 125 `usnm_quality` shared-memory slots filled with `_1` replicas whose `_0` replica had been completed by another `USER#2` host, stalling all `USER#2` hosts until another user (`USER#3` or `USER#5`) drained those slots.
    - *Fix:* Ensure each multi-node fleet host uses a distinct BOINC account (as `pve-onboard.sh --account-name <host>` does for `CT 100` and `CT 101`) or rely on BOINC's per-host workunit exclusion (`hostid_0 != hostid_1`) when multiple trusted hosts run under one operator account.
@@ -454,6 +454,6 @@ To scale evaluation to **10,000 additional workunits (`20,000` replica tasks)** 
    - Because ~62% of archived scans in `usnmscansstprodffapzy/scans/keep/` are stored as JPEG2000 (`.jp2`, up to `7688 × 10171` = `78 MP`), staging transcodes `.jp2` (and `>40 MP` RGB JPEGs) to 1-channel 8-bit grayscale JPEG (`L`, `quality=75`). This preserves 100% of the exact pixel dimensions (`WIDTH × HEIGHT` in `loc.xml`) required by `usnm-ocr-quality`'s crop and line-height geometry while keeping every image under `8 MB` and within `zune-jpeg`'s allocation limit.
 3. **Single-Command Campaign CLI (`scripts/boinc-quality-campaign.py`) & Server Config Safeguard (`lib.sh`):**
    - Added `scripts/boinc-quality-campaign.py` (`prepare`, `status`, `restore`) so preparing sharded campaigns, checking live shard + BOINC queue progress (`python3 scripts/boinc-quality-campaign.py status --campaign v1-wave6`), and restoring the canonical `usnm-boinc-bridge-caj-prod` job specification require a single quiet command with zero manual shell/SAS/YAML plumbing.
-   - Hardened `render_config` in `contrib-compute/images/server/lib.sh` so bridge executions preserve the live server replica's `<host>` and always maintain `$PROJ/config.xml` as a symlink to container-local tmpfs (`$SECRETS/config.xml`).
+   - Hardened `render_config` in `boinc/images/server/lib.sh` so bridge executions preserve the live server replica's `<host>` and always maintain `$PROJ/config.xml` as a symlink to container-local tmpfs (`$SECRETS/config.xml`).
 
 

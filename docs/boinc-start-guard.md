@@ -1,12 +1,12 @@
 # BOINC cross-host start guard
 
 Since 21 October 2026 prod's bridge steps run on the on-prem host through
-`scripts/boinc/onprem-step.sh`, which allows one step at a time with a host-local
+`boinc/scripts/onprem-step.sh`, which allows one step at a time with a host-local
 lock rather than this lease ([boinc-onprem.md](boinc-onprem.md)). The guard below
 covers the hand-off job, which stays in Azure, and the bridge job of a server with
 `"server": "azure"`.
 
-`scripts/boinc/start-boinc-bridge.sh` takes an infinite Azure blob lease around the
+`boinc/scripts/start-boinc-bridge.sh` takes an infinite Azure blob lease around the
 execution check, shared-template update, start and settings read-back. Both
 `--target bridge` and `--target handoff` use the helper in
 `scripts/lib/boinc-start-guard.sh`. A second cooperating launcher for the
@@ -69,8 +69,8 @@ They run before the lease is taken, so a hang there holds no lease.
     free it; a release with any other ID fails, so trying it is safe.
   - A timed-out lease release reports that the release failed, with the blob and the lease ID. The release may have taken effect, so the lease may still be held.
 
-These limits apply to `scripts/boinc/start-boinc-bridge.sh` and to the helper's use in
-`scripts/boinc/provision-boinc.sh`. In production the launcher still starts the hand-off job for its `export` and `texts-export`
+These limits apply to `boinc/scripts/start-boinc-bridge.sh` and to the helper's use in
+`boinc/scripts/provision-boinc.sh`. In production the launcher still starts the hand-off job for its `export` and `texts-export`
 steps (its `claim`, `release` and `collect` can run on the on-prem host instead,
 [boinc-onprem.md](boinc-onprem.md#hand-off-steps-on-prem)), and the bridge job of a
 `"server": "azure"` environment. The stack deployments and the ACR builds still call plain `baz`,

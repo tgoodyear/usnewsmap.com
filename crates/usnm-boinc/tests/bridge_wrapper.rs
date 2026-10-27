@@ -42,8 +42,8 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
         )
         .unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contrib-compute/images/server/bridge-job.sh");
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../boinc/images/server/bridge-job.sh");
         let script = std::fs::read_to_string(source)
             .unwrap()
             .replace(
@@ -91,11 +91,11 @@ fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
     let calls = root.join("calls");
     let library = root.join("lib.sh");
     let templates = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../contrib-compute/images/server")
+        .join("../../boinc/images/server")
         .canonicalize()
         .unwrap();
-    let config_template = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../contrib-compute/boinc/config.xml.template");
+    let config_template =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../boinc/project/config.xml.template");
     std::fs::create_dir_all(root.join("project")).unwrap();
     std::fs::create_dir_all(root.join("templates")).unwrap();
     std::fs::copy(
@@ -126,8 +126,7 @@ fn gold_mirror_loc_dispatch_never_fetches_secrets_or_submits_work() {
     .unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
     let script = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contrib-compute/images/server/bridge-job.sh"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../boinc/images/server/bridge-job.sh"),
     )
     .unwrap()
     .replace(

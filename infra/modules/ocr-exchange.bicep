@@ -17,7 +17,7 @@ param name string
 param nodeIps array = []
 @description('The Container Apps subnet, allowed through its service endpoint.')
 param subnetId string
-@description('The BOINC environment\'s `aca` subnet (contrib-compute/infra/boinc), allowed through its Microsoft.Storage.Global service endpoint, for the bridge\'s hand-off steps (#469). Empty: not allowed.')
+@description('The BOINC environment\'s `aca` subnet (boinc/infra/boinc), allowed through its Microsoft.Storage.Global service endpoint, for the bridge\'s hand-off steps (#469). Empty: not allowed.')
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
@@ -61,7 +61,7 @@ var outputContainer = 'ocr-out'
 // 8), with a reason record each. No node role; ocr-sync replays them after
 // a fix (--from-quarantine).
 var quarantineContainer = 'ocr-quarantine'
-// The BOINC hand-off (#469, docs/boinc/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
+// The BOINC hand-off (#469, boinc/docs/scan-cache-handoff.md#one-page-from-the-scan-cache): the scan fetcher's
 // scans and manifests, the hand-off job's dispatch root, the bridge's spool and trust list.
 var handoffContainer = 'boinc-handoff'
 
@@ -92,7 +92,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
       ]
       // The BOINC subnet is in another region and group, through its Global endpoint (the
       // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
-      // scripts/boinc/provision-boinc.sh goes first.
+      // boinc/scripts/provision-boinc.sh goes first.
       virtualNetworkRules: concat(
         [{ id: subnetId, action: 'Allow' }],
         empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]

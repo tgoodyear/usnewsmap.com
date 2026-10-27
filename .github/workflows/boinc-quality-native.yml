@@ -10,10 +10,10 @@ on:
       - rust-toolchain.toml
       # What its tests read and its crates embed (scripts/ci/changes.sh finds the embedded files).
       - ocr/contract/**
-      - ocr/boinc/qwen/llama.lock
-      - ocr/boinc/qwen/weights.lock
-      - ocr/boinc/qwen/amd-device-map.cpp
-      - scripts/boinc/test_amd_device_map.py
+      - boinc/apps/qwen/llama.lock
+      - boinc/apps/qwen/weights.lock
+      - boinc/apps/qwen/amd-device-map.cpp
+      - boinc/scripts/test_amd_device_map.py
       - "!**/*.md"
 
 permissions:
@@ -125,9 +125,9 @@ jobs:
         shell: bash
         run: |
           out=boinc-native-x86_64-pc-linux-gnu
-          g++ -std=c++17 -O2 -Wall -Wextra -Werror ocr/boinc/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror boinc/apps/qwen/amd-device-map.cpp -ldl -o "$out/usnm-amd-device-map"
           "$out/usnm-amd-device-map" --self-test
-          python3 -m unittest scripts.boinc.test_amd_device_map
+          python3 -m unittest boinc.scripts.test_amd_device_map
           (cd "$out" && sha256sum usnm-amd-device-map >> SHA256SUMS)
       - name: Verify pinned AMD runtime library split (Linux x86-64)
         if: matrix.boinc_platform == 'x86_64-pc-linux-gnu'
@@ -141,7 +141,7 @@ jobs:
           gh release download b8799 --repo ggml-org/llama.cpp \
             --pattern '*bin-ubuntu-vulkan-x64.tar.gz' --pattern '*bin-win-vulkan-x64.zip' \
             --dir .amd-pinned-archives
-          AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" python3 -m unittest scripts.boinc.test_amd_device_map
+          AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" python3 -m unittest boinc.scripts.test_amd_device_map
       - name: Build AMD PCI identity helper (Windows x64)
         if: matrix.boinc_platform == 'windows_x86_64'
         shell: pwsh
@@ -151,7 +151,7 @@ jobs:
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (!$vs) { throw 'MSVC installation not found' }
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS ocr\boinc\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
+          cmd /c "`"$vcvars`" && cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS boinc\apps\qwen\amd-device-map.cpp /Fo:boinc-native-windows_x86_64\amd-device-map.obj /Fe:boinc-native-windows_x86_64\usnm-amd-device-map.exe"
           if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper build failed' }
           & .\boinc-native-windows_x86_64\usnm-amd-device-map.exe --self-test
           if ($LASTEXITCODE -ne 0) { throw 'AMD identity helper tests failed' }

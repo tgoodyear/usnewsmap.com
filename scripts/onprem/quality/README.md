@@ -64,7 +64,7 @@ the client host (mode 0600). The loader's is in CT215 on pve-laptop, `/etc/usnm/
 
 `load.py` runs where the files are, on-prem: CT215, which mounts the curated copy read-only at
 `/srv/curated`. Campaign results come from the BOINC server first, host to host
-(`scripts/boinc/onprem/quality-feed/quality-results-pull.sh`, on pve-laptop). Each load is COPY
+(`boinc/scripts/onprem/quality-feed/quality-results-pull.sh`, on pve-laptop). Each load is COPY
 into a temporary table and then `INSERT ... ON CONFLICT`, so a rerun replaces what it loaded.
 
 ```sh

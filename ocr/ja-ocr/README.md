@@ -25,7 +25,7 @@ The job writes to the curated store under `ocr-ja/`: the page list (`targets-v3.
 | `wordlists/`                | Word lists for languages wordfreq lacks (Hawaiian, Yiddish). [README](wordlists/README.md).                                                                                              | yes          |
 | `requirements.txt`          | The job's own pinned dependencies                                                                                                                                                        | read by pip  |
 | `bench_quality.py`          | Times `quality.py`'s per-page scoring on synthetic pages, to compare changes to it                                                                                                       | no           |
-| `testdata/`                 | One Rocky Shimpo headline (1945-01-01, page 4), used by `scripts/ci/check-ja-ocr-image.sh` and `scripts/boinc/smoke-ndlocr.py`                                                           | no           |
+| `testdata/`                 | One Rocky Shimpo headline (1945-01-01, page 4), used by `scripts/ci/check-ja-ocr-image.sh` and `boinc/scripts/smoke-ndlocr.py`                                                           | no           |
 | `tools/`                    | Tools that work on the job from outside: the engine-choice scripts, `build-wordlists.py`, and the two operator scripts `start-quality.sh` and `quality-rows.sh`. [Below](#related-code). | no           |
 | `test_*.py`                 | Unit tests of the modules above                                                                                                                                                          | no           |
 
@@ -38,7 +38,7 @@ The job writes to the curated store under `ocr-ja/`: the page list (`targets-v3.
 
 ## Related code
 
-- [`tools/`](tools/) holds the four tools of the engine choice described in [the note](../../docs/notes/2026-10-05-japanese-ocr.md) (`sample.py`, `crops.py`, `run.py`, `score.py`; status: see the note), `build-wordlists.py`, which builds `wordlists/`, and the two operator scripts above. The Dockerfile copies the job's modules by name, so none of them is in the image, and they have no tests of their own.
+- [`tools/`](tools) holds the four tools of the engine choice described in [the note](../../docs/notes/2026-10-05-japanese-ocr.md) (`sample.py`, `crops.py`, `run.py`, `score.py`; status: see the note), `build-wordlists.py`, which builds `wordlists/`, and the two operator scripts above. The Dockerfile copies the job's modules by name, so none of them is in the image, and they have no tests of their own.
 - `scripts/data/build-damage-words.py` copies `wordlists/haw.txt` and `yi.txt` into `crates/usnm-core/data/damage-words/`.
 - The BOINC app `usnm_ndlocr` reads Japanese pages by a different path, the engine contract: `ocr/engines/ndlocr-lite/`, `crates/usnm-ocr-adapter` and [docs/boinc-ndlocr-lite.md](../../docs/boinc-ndlocr-lite.md). Its smoke test compares its ALTO conversion with `alto.py`.
 - [Check Japanese search](../../docs/operations/japanese-ocr.md#check-japanese-search) describes `scripts/ops/check-ja-search.py`, which tests the live site after a release.

@@ -19,9 +19,9 @@ on:
     paths:
       - ".github/workflows/boinc-qwen.yml"
       - ".github/actions/boinc-qwen-build/**"
-      - "ocr/boinc/qwen/**"
-      - "scripts/boinc/qwen_disk.py"
-      - "scripts/boinc/qwen_cold_cache.py"
+      - "boinc/apps/qwen/**"
+      - "boinc/scripts/qwen_disk.py"
+      - "boinc/scripts/qwen_cold_cache.py"
       # The image builds usnm-boinc from this checkout.
       - "crates/**"
       - "Cargo.toml"
@@ -30,8 +30,8 @@ on:
       - ".dockerignore"
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
       - "fixtures/ocr-gold/bundle-v1.lock.json"
-      - "ocr/boinc/surya/engine.lock"
-      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "boinc/apps/surya/engine.lock"
+      - "boinc/apps/usnm_qwen_benchmark_in"
       - "ocr/engines/engines.toml"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"
@@ -121,7 +121,7 @@ jobs:
           digest=$(docker buildx imagetools inspect "$IMAGE:qwen-$MODEL-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest after the push"; exit 1; }
           docker logout ghcr.io
-          python3 scripts/boinc/qwen_disk.py --image "$IMAGE@$digest" --model "$MODEL"
+          python3 boinc/scripts/qwen_disk.py --image "$IMAGE@$digest" --model "$MODEL"
           env=$(docker image inspect --format '{{json .Config.Env}}' "$IMAGE:qwen-$MODEL-$SHA")
           llama=$(jq -r '.[] | select(startswith("USNM_QWEN_LLAMA_IMAGE=")) | sub("^[^=]*="; "")' <<< "$env")
           weights=$(jq -r '.[] | select(startswith("USNM_QWEN_WEIGHTS=")) | sub("^[^=]*="; "")' <<< "$env")

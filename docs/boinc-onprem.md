@@ -2,7 +2,7 @@
 
 The BOINC server, its database and the bridge steps move from Azure Container Apps to an on-prem
 container host (#942, part of #917). This page covers what runs there and the cutover order.
-The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boinc/onprem-step.sh`.
+The scripts are in `boinc/scripts/onprem/`, and the step runner is `boinc/scripts/onprem-step.sh`.
 
 ## What runs on the host
 
@@ -11,7 +11,7 @@ The scripts are in `scripts/boinc/onprem/`, and the step runner is `scripts/boin
 | `usnm-boinc-mysql.service`         | MySQL 8.4 (the same major and minor as the Azure server), from `mysql-setup.sh`                                                                                     | Host network, `bind_address=127.0.0.1`, `mysqlx=OFF`, `require_secure_transport=ON`                                       |
 | `usnm-boinc-server.service`        | The bridge image running `entrypoint.sh --serve`: Apache and the BOINC daemons                                                                                      | `--entrypoint` set, because the bridge image's own entrypoint is `bridge-job`                                             |
 | `usnm-boinc-step`                  | `onprem-step.sh`: one bridge step at a time, in place of the Azure bridge job                                                                                       | The controller reaches it with `step_command` over ssh, using a forced command and `--from-ssh`                           |
-| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job                                                                               | Root on the host only; `scripts/boinc/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
+| `usnm-boinc-step --target publish` | Publishes an app version from a local appver image, in place of the Azure publish job                                                                               | Root on the host only; `boinc/scripts/boinc-app-release.sh --onprem-host --onprem-ct` builds the image and runs it (#961) |
 | `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job; `--target scans --step receive` takes the controller's scan push | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
 | `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                                                                                      | Public ingress with no inbound port                                                                                       |
 | `usnm-image-security-check.timer`  | A daily check of the server image against `bookworm-security`, and of the MySQL pin                                                                                 | A failed `usnm-image-security-check.service` is the alert ([Security updates](#security-updates), #969)                   |
@@ -26,7 +26,7 @@ read-only for the challenge file.
 
 **Database TLS.** `mysql-setup.sh` makes a private CA under `/srv/usnm-boinc/mysql-tls`. The
 server certificate's SANs are `usnm-boinc-mysql`, `localhost` and `127.0.0.1`. The containers mount `ca.pem` over
-`/usr/local/share/usnm/mysql-ca.pem`, so the TLS patch (`scripts/boinc/patch-server-db-tls.py`)
+`/usr/local/share/usnm/mysql-ca.pem`, so the TLS patch (`boinc/scripts/patch-server-db-tls.py`)
 verifies the server unchanged.
 
 **Credentials.** The admin and runtime passwords come from the BOINC Key Vault, the same ones the
@@ -42,7 +42,7 @@ include `bookworm-security`. The build then fails if `php8.2-common` or `apache2
 `PHP_FLOOR` or `APACHE_FLOOR`, now 8.2.35-1~deb12u1 from DLA-4848-1 (21 October 2026) and
 2.4.67-1~deb12u3 from DSA-6323-1 (6 June 2026). Each floor is the version of bookworm's last
 advisory for that package, so a newer build from bookworm's own suite passes it too.
-`test_security_updates.py` in `contrib-compute/images/server` checks that every one of them
+`test_security_updates.py` in `boinc/images/server` checks that every one of them
 upgrades and enforces both floors.
 
 After a Debian security advisory for a package in the image (PHP, Apache, OpenSSL, curl):
@@ -52,7 +52,7 @@ After a Debian security advisory for a package in the image (PHP, Apache, OpenSS
 3. Set `SERVER_IMAGE` in `server.env` to the new image and restart `usnm-boinc-server.service`. The step runner reads the same file, so the next step uses it too.
 4. Check the running image: `podman exec usnm-boinc-server php -v`, and `podman exec usnm-boinc-server dpkg-query -W php8.2-common apache2 openssl libcurl3-gnutls` against the advisory's fixed versions. `systemctl start usnm-image-security-check.service` runs the scheduled check now and exits clean when nothing is pending. It reads `SERVER_IMAGE`, not the container, so it only vouches for what runs after step 3's restart.
 
-A full rebuild from `main` (base, then server, then bridge, as `scripts/boinc/build-boinc-images.sh`
+A full rebuild from `main` (base, then server, then bridge, as `boinc/scripts/build-boinc-images.sh`
 orders them) also takes the updates, since the server and bridge stages upgrade.
 
 ### Scheduled check
@@ -80,8 +80,8 @@ Install, as root on the host, from a checkout of `main`. The floors are in the u
 same lines again after a floor changes:
 
 ```sh
-install -m 0755 scripts/boinc/onprem/image-security-check.sh /usr/local/bin/usnm-image-security-check
-install -m 0644 scripts/boinc/onprem/usnm-image-security-check.service scripts/boinc/onprem/usnm-image-security-check.timer /etc/systemd/system/
+install -m 0755 boinc/scripts/onprem/image-security-check.sh /usr/local/bin/usnm-image-security-check
+install -m 0644 boinc/scripts/onprem/usnm-image-security-check.service boinc/scripts/onprem/usnm-image-security-check.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now usnm-image-security-check.timer
 ```
@@ -141,12 +141,12 @@ than the images. After each pull, before the server starts:
 
 ## Cutover order
 
-1. On Azure, make the tree still, as for the share move (`docs/boinc/server-and-apps.md`, "Moving the project share"): stop the priority controller and wait for running bridge executions. Then, as `boincadm` in `/project/usnmocr`, run `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`, and wait a minute for requests in flight. The scheduler and the upload handler then refuse with errors that clients retry, so no result lands on Azure after the final copy. Keep these files on Azure through the cutover.
+1. On Azure, make the tree still, as for the share move (`boinc/docs/server-and-apps.md`, "Moving the project share"): stop the priority controller and wait for running bridge executions. Then, as `boincadm` in `/project/usnmocr`, run `touch stop_maintenance`, `bin/stop`, then `touch stop_sched stop_upload`, and wait a minute for requests in flight. The scheduler and the upload handler then refuse with errors that clients retry, so no result lands on Azure after the final copy. Keep these files on Azure through the cutover.
 2. Final `db-dump-job.sh`, then the five `RELAY_PART`s side by side, with `RELAY_UPLOADS_FILTER` set to that dump's filter. Each relay execution must log `RELAY complete`.
 3. On the host: `r2-pull.sh`, `db-import.sh --replace`, then the project tree steps above.
 4. On the host, remove `stop_maintenance`, `stop_sched` and `stop_upload` (they came over in the copy) and start the server. Point `boinc.usnewsmap.com` at the tunnel (proxied CNAME).
 5. Start the controller under a new plan whose `step_command` reaches `usnm-boinc-step` (plans are immutable, so the change needs a drain). End `step_command` with `--` after the host (`["ssh", "-i", "<key>", "-o", "BatchMode=yes", "root@<host>", "--"]`). Without it, ssh reads the step's `--env` as one of its own options.
-6. After it is verified, set `"server": "onprem"` in `contrib-compute/infra/boinc/env/<env>.json` and run `scripts/boinc/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
+6. After it is verified, set `"server": "onprem"` in `boinc/infra/boinc/env/<env>.json` and run `boinc/scripts/provision-boinc.sh`. It deletes the project storage accounts, their private endpoints and the rest of the Azure server (see below).
 
 The bridge steps read and write the hand-off container in the main environment's storage, so
 the on-prem group needs a role there before step 5.
@@ -181,7 +181,7 @@ The values are the job's environment: `az containerapp job show --name usnm-boin
 controller then sends the steps here with `--onprem-handoff claim --onprem-handoff collect`
 ([boinc-batch-scheduler.md](boinc-batch-scheduler.md#on-prem-claim-collect-and-export-967)), and
 `export` too with `--onprem-handoff export`: the controller then pushes the scans straight to this host (`--target scans --step receive`, into `/srv/usnm-boinc/project/handoff-scans`), export mounts them read-only, and `submit-remote` takes each page from them, so no scan goes through Azure (#1116).
-`texts-export` runs on the host with the local copy of curated (`scripts/boinc/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)). Once claim and collect have run cleanly here
+`texts-export` runs on the host with the local copy of curated (`boinc/scripts/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)). Once claim and collect have run cleanly here
 for a day, a separate Bicep change retires the job's claim and collect use.
 
 ## Azure after the cutover
@@ -196,7 +196,7 @@ Work that ran as Azure jobs, and where it runs now:
 | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Bridge steps (the controller's submit, spool-out, inventory) | `usnm-boinc-step`                                                                                                                                                                                         |
 | Gold bundle                                                  | `usnm-boinc-step --env prod --step gold-bundle --var GOLD_CAMPAIGN=<campaign> --wait-mins 360`, run as root on the host                                                                                   |
-| App version publish                                          | `scripts/boinc/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961)                         |
+| App version publish                                          | `boinc/scripts/boinc-app-release.sh --onprem-host <Proxmox host> --onprem-ct <id>`: builds the `appver` image in the container and runs `usnm-boinc-step --target publish` (#961)                         |
 | Quality wave                                                 | the on-prem feeder on pve-laptop (#962, [boinc-quality.md](boinc-quality.md#on-prem-feeder-v1-wave10-on)): staged inputs reach the server through `usnm-boinc-step`; the server reads no scan data itself |
 
 ## Cloudflare
