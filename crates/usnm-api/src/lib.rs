@@ -239,6 +239,7 @@ pub struct AppState {
     pub ocr_requests: Option<Arc<ocr_requests::OcrRequests>>,
     /// `/v1/openapi.json`'s body, built on its first request.
     pub(crate) openapi: std::sync::OnceLock<Arc<Vec<u8>>>,
+    pub(crate) sitemap: site::sitemap::Service,
 }
 
 impl AppState {
@@ -283,6 +284,7 @@ impl AppState {
             search_log: None,
             ocr_requests: None,
             openapi: std::sync::OnceLock::new(),
+            sitemap: site::sitemap::Service::default(),
         }
     }
 
@@ -613,6 +615,7 @@ pub fn spawn_searcher_warm_up(state: Arc<AppState>) -> Option<tokio::task::JoinH
 /// Poll `current.json` every `refresh_interval` (no-op without a loader), and
 /// prune idle rate-limit buckets.
 pub fn spawn_background(state: Arc<AppState>) {
+    site::sitemap::spawn(state.clone());
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(state.config.refresh_interval);
         tick.tick().await;

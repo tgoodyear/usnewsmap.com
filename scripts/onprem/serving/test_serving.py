@@ -467,6 +467,7 @@ class GenEnv(unittest.TestCase):
         self.assertEqual(api["USNM_REFERENCE_URL"], "https://stexampletest.blob.core.windows.net/reference")
         self.assertEqual(api["USNM_QUICKWIT_URL"], "http://127.0.0.1:7280")
         self.assertEqual(api["USNM_RESPONSE_CACHE_URL"], "/srv/usnm-serving/cache")
+        self.assertEqual(api["USNM_SITEMAP_STATE_URL"], "/srv/usnm-serving/sitemap-state")
         self.assertEqual(api["USNM_ALLOWED_ORIGINS"], "https://usnewsmap.com,https://www.usnewsmap.com")
         self.assertEqual(api["USNM_CONGRESS_SEARCH"], "false")
         self.assertEqual(api["USNM_BROWSE_PAGES"], "true")
@@ -515,7 +516,7 @@ class GenEnv(unittest.TestCase):
 
     def azure_app(self, **changes):
         api = dict(line.split("=", 1) for line in self.files(self.gen("--dry-run").stdout)["api.env"].splitlines())
-        for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_TRUST_CF_CONNECTING_IP",
+        for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP",
                   "USNM_READY_REQUIRES_PUBLISHED_INDEXES"):
             del api[k]
         api.update({"USNM_QUICKWIT_URL": "http://usnm-search-ca-prod", "USNM_RESPONSE_CACHE_URL": "https://x/cache",
@@ -581,6 +582,7 @@ class Install(Stubbed):
             self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/system", unit)), unit)
         self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/journald.conf.d/usnm-serving.conf")))
         self.assertIn("chown 65532:65532 %s/srv/usnm-serving/cache" % self.root, self.calls())
+        self.assertIn("chown 65532:65532 %s/srv/usnm-serving/sitemap-state" % self.root, self.calls())
         open(self.log, "w").close()
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -698,6 +700,9 @@ class Static(unittest.TestCase):
         for color in ("blue", "green"):
             self.assertIn("d /srv/usnm-serving/cache/%s 0750 65532 65532 mM:14d" % color, tmpfiles)
         self.assertIn("-v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache", self.read("usnm-api@.service"))
+        self.assertIn("-v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state",
+                      self.read("usnm-api@.service"))
+        self.assertIn("d /srv/usnm-serving/sitemap-state 0750 65532 65532 -", tmpfiles)
 
     @unittest.skipUnless(LINUX, "needs GNU sed")
     def test_cloudflared_lines_lose_their_query_strings(self):

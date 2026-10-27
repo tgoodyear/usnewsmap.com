@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
 import examples from "./src/examples.json" with { type: "json" };
 import { searchPath } from "./src/route";
+import { pageFingerprint } from "./sitemap";
+import { fileURLToPath } from "node:url";
 
 // In development the API runs locally (`cargo run -p usnm-api`) and is
 // proxied, so the app talks to a same-origin `/v1`. Production builds set
@@ -23,6 +25,20 @@ export default defineConfig({
     {
       name: "search-sitemap",
       generateBundle() {
+        const root = fileURLToPath(new URL(".", import.meta.url)).replace(/\/$/, "");
+        const pages = Object.fromEntries(
+          [
+            ["/", "src/App.tsx"],
+            ["/privacy", "src/privacy/PrivacyPage.tsx"],
+            ["/credits", "src/credits/CreditsPage.tsx"],
+            ["/datasets", "src/status/StatusPage.tsx"],
+          ].map(([path, entry]) => [path!, pageFingerprint(root, entry!)]),
+        );
+        this.emitFile({
+          type: "asset",
+          fileName: "sitemap-pages.json",
+          source: JSON.stringify({ generated_at: new Date().toISOString(), pages }),
+        });
         const paths = [
           "/",
           "/privacy",
