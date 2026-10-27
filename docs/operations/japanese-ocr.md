@@ -2,6 +2,58 @@
 
 Part of the [operations guide](README.md).
 
+## Native batch-host runtime
+
+For #919, `scripts/ocr-node/setup-ja-native.py` installs into a **new absolute
+prefix** without starting a service or claiming work. It reads the NDLOCR source
+commit/archive checksum, Python source set and requirements recipe directly from
+`docker/Dockerfile.ja-ocr`, checks the commit against `models.lock`, and verifies
+the downloaded archive and all four model files. The existing CI script-test
+runner executes `test_setup_ja_native.py`; incompatible image recipe changes fail
+the offline check instead of silently diverging.
+
+On the prepared Debian batch host, with Python and its venv package installed:
+
+```sh
+python3 scripts/ocr-node/setup-ja-native.py --check
+python3 scripts/ocr-node/setup-ja-native.py --prefix /opt/usnm-ja-native/REVIEWED_COMMIT
+```
+
+An incomplete installation has no `installation.json`; do not activate it. Keep
+the failed prefix for diagnosis and use a new prefix for a retry. The successful
+receipt records source/model/requirements hashes, installed application hashes
+and Python version; the native Python version is recorded, not asserted equal to
+the image's Python 3.12. Pip checks dependency consistency and all required
+runtime imports before writing that receipt.
+
+Before any production activation, run the existing headline fixture through the
+installed engine as `usnm`, convert its XML with the installed `alto.py`, and
+exercise the runner against **local** reference/curated stores, including a
+second run that must skip completed work. Preserve the text/ALTO hashes and
+resource/exit receipts. This does not publish an index.
+
+After acceptance and coordination with the other CT215 workloads, point
+`/opt/usnm-ja-native/current` at the accepted prefix and install the supplied
+`scripts/ocr-node/usnm-ja-ocr-native.service`. It is manual-only, defaults to one
+page per invocation, has no restart loop or enable-at-boot target, and limits
+CPU to two cores and memory to 4 GiB. Put the approved `USNM_CURATED_URL` and
+`USNM_REFERENCE_URL` in `/etc/usnm/ja-ocr-native.env`; an explicit `JAOCR_LIMIT`
+overrides the bounded default. The `usnm` account needs the existing `himds`
+group for Arc identity, not a stored credential. The page limit is soft: an issue
+is processed as a unit and can exceed it. Never run both the retired
+container replicas and this service. A source-rate hold remains a hold, not a
+reason to restart repeatedly.
+
+The [27 October residual-page audit](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-ja-availability-20261027)
+distinguishes 19 image-listed pages from 24 explicitly undigitized placeholders.
+Preserve sequence slots; image availability is not an OCR receipt. The latter
+pages need legitimate alternate scans or source correction, not an exclusion
+waiver. The runner retains completed image-available pages when other exact
+sequence slots are explicitly marked `digitized: false`, but those undigitized
+pages remain pending in the unchanged target list. Unknown missing images and
+missing engine outputs still prevent the issue's available output from being
+committed; neither is silently classified as undigitized.
+
 ## Japanese OCR: mixed pages and English text
 
 **Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual:
