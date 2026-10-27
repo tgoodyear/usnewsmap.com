@@ -648,6 +648,26 @@ class BuildInputs(unittest.TestCase):
         self.assertIn(marker, ci)
         self.assertEqual(self.select((path, ci.replace(marker, marker + "      # touched\n"))), {"edge"})
 
+    def test_an_edit_inside_the_worker_gate_exercises_every_child_selection(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "      - name: Every applicable worker and BOINC check must pass\n"
+        self.assertEqual(
+            self.select((path, ci.replace(marker, marker + "      # touched\n"))),
+            {"contrib", "boinc_pages", "ocr_worker", "ocr_dash"},
+        )
+
+    def test_an_edit_inside_the_boinc_pages_job_runs_php_check_only(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "    name: boinc pages (php lint)\n"
+        self.assertEqual(
+            self.select((path, ci.replace(marker, marker + "    # touched\n"))),
+            {"boinc_pages"},
+        )
+
     def test_an_edit_inside_a_script_shard_also_enables_its_required_gate(self):
         path = ".github/workflows/ci.yml"
         ci = (ROOT / path).read_text()
@@ -835,7 +855,8 @@ class Wiring(unittest.TestCase):
         # doesn't report at all, so none of these may sit behind one.
         required = ["changes", "rust (fmt, clippy, test)", "quickwit (parity, ingest release)",
                     "fixtures are reproducible", "container image builds", "infra (bicep lint, build)",
-                    "web (lint, typecheck, test, build)", "web end-to-end (Playwright + axe)"]
+                    "web (lint, typecheck, test, build)", "web end-to-end (Playwright + axe)",
+                    "worker and BOINC checks"]
         ci = self.workflow("ci.yml")
         triggers = ci.split("\npermissions:", 1)[0]
         self.assertNotIn("paths", triggers)
