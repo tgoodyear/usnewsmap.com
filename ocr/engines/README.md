@@ -118,3 +118,16 @@ prefers that copy over its build-time fallback for older releases. The Japanese
 per-engine counts cover the union of the serving Japanese search index and the
 main index's Latin replacements, deduplicated per page and engine, and are
 frozen with the credits. They do not come from the current OCR job.
+
+## Tesseract contract output
+
+`usnm-ocr-adapter-tesseract-text --contract 1 --alto` advertises word-level
+ALTO and invokes Tesseract's ALTO renderer. It validates that XML with
+`usnm-alto` and derives the accompanying text from the same layout; malformed
+output fails the page. Request DPI, profiles, model hashes, thread limits and
+process-group deadline cancellation work as in the default text mode.
+Without `--alto`, the existing page-sized text-box output is unchanged.
+
+This opt-in output mode does not upgrade the pinned Tesseract image, install
+an adapter in that image, or switch production workers to the engine contract.
+Those release and rollout requirements remain separate in #307.
