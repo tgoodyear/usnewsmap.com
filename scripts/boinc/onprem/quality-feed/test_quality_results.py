@@ -33,7 +33,8 @@ class ResultsTest(unittest.TestCase):
 
     def args(self):
         return types.SimpleNamespace(campaign="v1-test", engine_image="sha256:" + "a" * 64,
-                                     server_host="server.example", server_ct=230, ctid=216)
+                                     server_host="server.example", server_ct=230, ctid=216,
+                                     qwen_campaign=None)
 
     def test_collection_pull_then_certificate_load_with_bounded_locks_and_retry(self):
         with mock.patch.object(results.subprocess, "run") as run:
@@ -68,6 +69,22 @@ class ResultsTest(unittest.TestCase):
                         with self.assertRaises(type(error)):
                             results.run(self.args())
                         self.assertEqual(run.call_count, phase + 1)
+
+    def test_native_qwen_joins_matching_campaign_and_batch8_without_submission(self):
+        args = self.args()
+        args.campaign = args.qwen_campaign = "qwen-nonenglish-v1"
+        with mock.patch.object(results.subprocess, "run") as run:
+            report = results.run(args)
+            command = run.call_args_list[0].args[0][-1]
+            self.assertIn("--root /project/quality/qwen-nonenglish-v1", command)
+            self.assertIn("--qwen-root /project/qwen/qwen-nonenglish-v1", command)
+            self.assertIn("--qwen-spool /project/usnmocr/results/8", command)
+            self.assertIn("quality collect", command)
+            self.assertNotIn("submit", command)
+            self.assertEqual(report["qwen_campaign"], args.campaign)
+            load = run.call_args_list[2].args[0][-1]
+            self.assertIn("--campaign qwen-nonenglish-v1", load)
+            self.assertIn("/results/qwen-nonenglish-v1/snapshots/", load)
 
 
 class PullTest(unittest.TestCase):
@@ -126,6 +143,13 @@ raise SystemExit(int(os.environ.get("SSH_EXIT", "0")))
                     results.main(["--campaign", "v1-test", "--engine-image",
                                   "sha256:" + "a" * 64, "--lock", str(path)])
                 run.assert_not_called()
+
+    def test_invalid_native_campaign_never_reaches_a_host(self):
+        with mock.patch.object(results, "run") as run:
+            with self.assertRaises(SystemExit):
+                results.main(["--campaign", "v1-test", "--engine-image", "sha256:" + "a" * 64,
+                              "--qwen-campaign", "../wrong-campaign"])
+            run.assert_not_called()
 
     def test_timed_out_transfer_kills_children_even_when_parent_exits_on_term(self):
         late = self.root / "late-write"

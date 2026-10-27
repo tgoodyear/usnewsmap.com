@@ -44,6 +44,7 @@ def transfer(command, timeout=300):
 
 def run(args):
     root = f"/project/quality/{args.campaign}"
+    qwen_root = f"/project/qwen/{args.qwen_campaign}" if args.qwen_campaign else root + "/no-qwen"
     command = [
         "pct", "exec", str(args.server_ct), "--",
         "flock", "-n", "/run/usnm-boinc-step.lock",
@@ -51,7 +52,8 @@ def run(args):
         "timeout", "--signal=TERM", "--kill-after=30s", "20m",
         "usnm-boinc", "quality", "collect", "--campaign", args.campaign,
         "--root", root, "--spool", "/project/usnmocr/results/0",
-        "--qwen-root", root + "/no-qwen", "--qwen-spool", root + "/no-qwen",
+        "--qwen-root", qwen_root,
+        "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
         "--out-dir", root + "/out",
     ]
     subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
@@ -78,13 +80,14 @@ def run(args):
                     f"/var/lib/usnm-quality-feed/results/{args.campaign}/snapshots/{snapshot}"],
                    check=True, timeout=30)
     return {"campaign": args.campaign, "loaded_at": time.time(),
-            "snapshot": f"{root}/out/pages.parquet"}
+            "snapshot": f"{root}/out/pages.parquet", "qwen_campaign": args.qwen_campaign}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--engine-image", required=True)
+    parser.add_argument("--qwen-campaign", help="join this native Qwen campaign's canonical batch-8 readings")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)
@@ -95,6 +98,8 @@ def main(argv=None):
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
             or min(args.ctid, args.server_ct) < 1):
         parser.error("invalid campaign, engine image, server host or container id")
+    if args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign):
+        parser.error("invalid native Qwen campaign")
     with args.lock.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         print(json.dumps(run(args)), flush=True)
