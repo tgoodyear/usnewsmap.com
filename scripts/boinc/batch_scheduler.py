@@ -49,6 +49,15 @@ class FailureReceiptError(RuntimeError):
     """A failed command's private evidence could not be persisted."""
 
 
+def raise_transport_errors(errors):
+    receipt_errors = [error for error in errors if isinstance(error, FailureReceiptError)]
+    if receipt_errors:
+        raise FailureReceiptError("; ".join(dict.fromkeys(
+            str(error) for error in [errors[0], *receipt_errors]
+        )))
+    raise errors[0]
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -612,7 +621,12 @@ class Transport:
             raise FailureReceiptError(f"{label} failed; private command failure receipt could not be saved") from failure
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError as failure:
+                    raise FailureReceiptError(
+                        f"{label} failed; private command failure receipt cleanup failed"
+                    ) from failure
 
     def run(self, argv, label, timeout=2100, ok=(0,)):
         # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
@@ -842,9 +856,9 @@ class Transport:
             summary = self.blob("scheduler/claims.json")
             require(summary.get("schema_version") == 1 and summary.get("nonce") == nonce,
                     "stale/concurrent claim summary; another controller may be active")
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as error:
             if failure:
-                raise failure
+                raise_transport_errors([failure, error])
             raise
         if failure:
             raise ClaimFailed(str(failure), summary["claims"]) from failure
@@ -960,12 +974,7 @@ class Transport:
                 except RuntimeError as error:
                     errors.append(error)
         if errors:
-            receipt_errors = [error for error in errors if isinstance(error, FailureReceiptError)]
-            if receipt_errors:
-                raise FailureReceiptError("; ".join(dict.fromkeys(
-                    str(error) for error in [errors[0], *receipt_errors]
-                )))
-            raise errors[0]
+            raise_transport_errors(errors)
 
     @timed("status")
     def server_status(self, url=None, path=None):

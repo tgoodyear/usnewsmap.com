@@ -1549,6 +1549,29 @@ class TimingsTests(unittest.TestCase):
         self.assertNotIn("private", str(caught.exception).replace("private command", ""))
         self.assertEqual(list(directory.glob(".command-failure-*")), [])
 
+    def test_receipt_cleanup_failure_still_allows_remaining_batch_collection(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory, batch_spool_out=True)
+        failed = subprocess.CompletedProcess([], 1, "", "private-output")
+        unlink = Path.unlink
+        leftover = []
+
+        def refuse_cleanup(path, **kwargs):
+            leftover.append(path)
+            raise OSError("private-path")
+
+        with patch.object(batch.subprocess, "run", return_value=failed) as run, \
+                patch.object(batch.os, "replace", side_effect=OSError("private-path")), \
+                patch.object(Path, "unlink", refuse_cleanup), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        self.assertEqual(run.call_count, 3)
+        self.assertIn("receipt cleanup failed", str(caught.exception))
+        self.assertNotIn("private-path", str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        for path in leftover:
+            unlink(path)
+
     def test_the_tick_line_carries_the_timings(self):
         fake = Fake()
         self.assertNotIn("timings", batch.tick(config(), {}, fake, lambda: None, NOW))
@@ -1646,6 +1669,30 @@ class QueueTransportTests(unittest.TestCase):
                 patch.object(self.transport, "blob", return_value={**summary, "nonce": "other"}), \
                 self.assertRaisesRegex(ValueError, "stale/concurrent"):
             self.transport.claim(1)
+
+    def test_claim_recovery_preserves_later_receipt_write_warning(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        transport = batch.Transport(self.config, directory)
+        failed = subprocess.CompletedProcess([], 1, "", "private-output")
+        replace = batch.os.replace
+        replacements = []
+
+        def replace_receipt(source, target):
+            replacements.append(target)
+            if len(replacements) > 1:
+                raise OSError("private-path")
+            return replace(source, target)
+
+        with patch.object(batch.subprocess, "run", return_value=failed) as run, \
+                patch.object(batch.os, "replace", side_effect=replace_receipt), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            transport.claim(1)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("handoff/claim failed", str(caught.exception))
+        self.assertIn("receipt could not be saved", str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["label"], "handoff/claim")
 
     def test_claim_languages_reach_the_claim_step(self):
         sent = {}
