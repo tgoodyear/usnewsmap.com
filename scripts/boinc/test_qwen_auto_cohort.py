@@ -181,10 +181,26 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         with patch.object(R, "read_database", return_value=self.database), patch.object(R, "persist", side_effect=interrupt):
             with self.assertRaises(OSError):
                 R.run(self.args)
+        # A separate AMD canary must not turn a known NVIDIA/Intel publication into
+        # an unknown owner merely because the whole policy SHA changed.
+        root = ET.fromstring(self.policy.read_bytes())
+        amd = root.find("plan_class[name='amd_vulkan_8b']")
+        amd.find("min_wu_id").text = amd.find("max_wu_id").text = "200"
+        self.policy.write_bytes(ET.tostring(root))
         with patch.object(R, "read_database", side_effect=AssertionError("must not replay DB/publication")):
             recovered = R.run(self.args)
         self.assertEqual(recovered["status"], "reconciled-exact-published-intent")
         self.assertEqual(recovered["admitted_unique"], 2)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_external_resource_gate_change_is_not_silently_adopted(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        root = ET.fromstring(self.policy.read_bytes())
+        root.find("plan_class[name='intel_vulkan_8b']/min_gpu_ram_mb").text = "1"
+        self.policy.write_bytes(ET.tostring(root))
+        with self.assertRaisesRegex(ValueError, "resource gates changed"):
+            R.run(self.args)
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_expiry_closes_own_window_without_database_or_source_audit(self):

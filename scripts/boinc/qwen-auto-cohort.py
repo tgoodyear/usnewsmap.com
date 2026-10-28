@@ -13,6 +13,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 CLASSES = ("intel_vulkan_8b", "nvidia_vulkan_8b")
+MANAGED = (*CLASSES, "nvidia_cuda_2b", "nvidia_cuda_8b", "docker_nvidia_cuda_8b")
 ENGINE = {
     "image": "sha256:a25da41a10f266e5c2d02206bf9f0e40b54d476609f85d70a72e4e11792d0efe",
     "llama": "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309",
@@ -61,6 +62,30 @@ def policy_window(payload):
         require(match is not None, "Malformed AMD reservation")
         reserved = int(match[1])
     return ranges[0], reserved
+
+
+def class_scope(payload, without_bounds=False):
+    root = ET.fromstring(payload)
+    classes = {node.findtext("name"): node for node in root.findall("plan_class")}
+    fingerprints = {}
+    for name in MANAGED:
+        node = classes[name]
+        node.tail = None
+        if without_bounds:
+            for child in list(node):
+                if child.tag in ("min_wu_id", "max_wu_id"):
+                    node.remove(child)
+        canonical = ET.canonicalize(ET.tostring(node, encoding="unicode"), strip_text=True)
+        fingerprints[name] = sha(canonical.encode())
+    return fingerprints
+
+
+def target_scope(payload, target):
+    root = ET.fromstring(payload)
+    for name in CLASSES:
+        node = root.find(f"plan_class[name='{name}']")
+        node.find("min_wu_id").text, node.find("max_wu_id").text = map(str, target)
+    return class_scope(ET.tostring(root))
 
 
 def fresh(row):
@@ -231,9 +256,11 @@ def run(args):
         if state_path.exists():
             state = json.loads(state_path.read_bytes())
             require(state["controller"] == args.controller, "Another controller owns state")
+            require(state["resource_gates"] == class_scope(policy, without_bounds=True),
+                    "Reviewed GPU resource gates changed: refuse automatic adoption")
             pending = state.get("pending")
             if pending:
-                if window == pending["target"] and sha(policy) == pending["after_sha256"]:
+                if window == pending["target"] and class_scope(policy) == pending["after_scope"]:
                     state["window"] = window
                     state["admitted"] += pending["selected"]
                     del state["pending"]
@@ -241,13 +268,14 @@ def run(args):
                         persist(state_path, state)
                     return {"status": "reconciled-exact-published-intent", "window": window,
                             "admitted_unique": len(state["admitted"]), "apply": args.apply}
-                require(window == state["window"] and sha(policy) == pending["before_sha256"],
+                require(window == state["window"] and class_scope(policy) == pending["before_scope"],
                         "Uncertain publication differs from its owned intent: refuse overwrite")
                 del state["pending"]
             require(state["window"] == window, "Another operator changed the owned cohort: refuse overwrite")
         else:
             require(sha(policy) == args.initial_policy_sha256, "Initial operator policy changed")
-            state = {"controller": args.controller, "window": window, "admitted": []}
+            state = {"controller": args.controller, "window": window, "admitted": [],
+                     "resource_gates": class_scope(policy, without_bounds=True)}
         output = {"at": int(time.time()), "window": window, "reserved_amd": reserved,
                   "admitted_unique": len(state["admitted"]), "limit": args.max_admissions,
                   "apply": args.apply, "accuracy_established": False}
@@ -324,6 +352,7 @@ def run(args):
             persist(receipt_path, receipt, exclusive=True)
             state["pending"] = {
                 "target": target, "before_sha256": sha(policy), "after_sha256": preview["after_sha256"],
+                "before_scope": class_scope(policy), "after_scope": target_scope(policy, target),
                 "selected": [int(row["unit"]["id"]) for row in selected], "intent": str(receipt_path),
             }
             persist(state_path, state)
