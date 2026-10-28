@@ -513,9 +513,11 @@ no LoC request:
    filesystems fall back to content hashing. Job descriptors, canonical outputs,
    optional sidecars, and collector versions remain content-hashed each pass.
    Corrupt digest receipts fail closed and are retained, never silently rebuilt.
-   A warming pass stops at its first additional dirty unit after the configured
-   limit, rather than hashing every remaining cold input. Cold digest warming
-   can still require multiple bounded passes; successful
+   Once the dirty-unit limit is reached, a warming pass stops before reading or
+   hashing any further unit. It does not hash another cold bundle merely to
+   discover that it must defer it. Even cached or pending trailing units require
+   a subsequent pass; an all-clean pass can publish the complete campaign.
+   Cold digest warming can still require multiple bounded passes; successful
    publication still requires a complete current campaign and final dependency
    revalidation. File enumeration, metadata checks, table assembly, transfer and
    loading remain linear; measure end-to-end pass duration after warming before

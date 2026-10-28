@@ -1022,6 +1022,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     };
     unit_dirs.sort();
     for unit in unit_dirs {
+        if cache.is_some() && dirty >= opts.max_dirty_units {
+            deferred += 1;
+            break;
+        }
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("{}", unit.display()))?;
         let wu = job.workunit();
@@ -1045,10 +1049,6 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 pages.extend(part.pages);
                 crop_table.extend(part.crops);
                 continue;
-            }
-            if dirty >= opts.max_dirty_units {
-                deferred += 1;
-                break;
             }
             dirty += 1;
         }
@@ -1760,7 +1760,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn warming_stops_at_first_deferred_unit_without_hashing_remaining_cold_inputs() {
+    async fn warming_budget_stops_before_reading_any_further_unit() {
         let dir = tempfile::tempdir_in(".").unwrap();
         let (opts, unit, _) = cached_fixture(dir.path()).await;
         for name in ["zz-deferred", "zzz-not-visited"] {
@@ -1778,7 +1778,7 @@ pub(super) mod tests {
                 )
                 .unwrap();
             }
-            if name == "zzz-not-visited" {
+            if name == "zz-deferred" {
                 std::fs::remove_file(other.join(PAGE_FILE)).unwrap();
                 std::fs::create_dir(other.join(PAGE_FILE)).unwrap();
             }
@@ -1859,6 +1859,8 @@ pub(super) mod tests {
         uncached.cache = Some(dir.path().join("another-cache"));
         assert_eq!(collect(&uncached).unwrap().summary.pending, 1);
         canonical(&unit, &job, &uncached.spool);
+        let error = collect(&uncached).err().unwrap().to_string();
+        assert!(error.contains("1 deferred"), "{error}");
         assert_eq!(collect(&uncached).unwrap().summary.pages, 2);
     }
 
