@@ -495,15 +495,35 @@ no LoC request:
    lock.
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
    On the preparation host, `usnm-quality-results.timer` runs every 15 minutes:
-   `quality_results.py` collects the configured campaign's canonical spool into a fresh
-   `out/pages.parquet` under CT230's bridge lock, uses `quality-results-pull.sh
---snapshot-only` to copy it to the preparation CT215, then runs the existing
-   `load.py results` with that container's certificate-authenticated loader DSN.
-   The whole pass has its own host lock and bounded phase timeouts; any failed phase
-   prevents loading an old snapshot. A busy bridge retries at the next tick.
-   Transfers use a unique per-pass snapshot directory; timeout terminates the local
-   transfer process group and extraction is bounded inside CT215. Failed snapshots
-   remain for diagnosis; successful loads remove only their own redundant snapshot.
+   `quality_results_partial.py` collects **one submitted unit** under CT230's normal
+   nonblocking bridge lock. Collection is bounded to 120 seconds, with a 180-second
+   remote phase bound including metadata enumeration. It writes immutable per-pass
+   `out/{pages.parquet,crops.parquet,summary.md}` and `coverage.json` under
+   `/project/ops/quality-results/scoped/<campaign>/<unit-key>/snapshots/<snapshot>/`.
+   It never replaces `<campaign>/out` or claims a whole campaign is current.
+   Coverage explicitly says `campaign_complete=false`, identifies the selected job
+   and documents, and counts submitted and unvisited units for **this pass only**.
+   Table schemas and the existing complete-snapshot consumer contract are unchanged.
+   All three files are checksum-verified in preparation CT215; Parquet documents
+   and job identity must match coverage before the existing certificate-authenticated
+   `load.py results` is allowed to upsert. Missing or unvisited rows are never deleted.
+   A pending unit yields zero rows, not a loaded result. The host pass lock also
+   serializes collection, transfer and loading. A busy bridge retries next tick.
+   Source and preparation snapshots, coverage and host load receipts are retained.
+   The host cursor advances only after successful verification and loading. Failure
+   after a database commit but before cursor update safely repeats the same upserts.
+   Lexical round-robin selection fixes an upper-name fence for each finite cycle.
+   Continuous arrivals cannot postpone wrapping to earlier units; arrivals beyond
+   the fence join the next cycle. The fence is persisted in coverage and cursor
+   metadata, not a campaign freshness assertion. Selection revisits prior units, so newly canonical
+   QUALITY results and real late or changed Qwen readings are not permanently skipped.
+   Each visit invokes the collector's current dependency and content-addressed cache
+   checks; old parts are never published just because a receipt exists.
+   This is independent per-page science, not a globally consistent campaign snapshot
+   or a database-wide freshness guarantee. Old science stays queryable; consult
+   coverage/load receipts for what was freshly observed. Whole-campaign collectors
+   still refuse incomplete publication and must not consume these partial directories
+   as complete snapshots.
    The installer records its selected preparation container in
    `/etc/usnm/quality-results.env` (`CTID`, default 215), never pve-big's CT215.
    Collection does not submit work or alter quorum. Repeated loads upsert the same
@@ -513,7 +533,8 @@ no LoC request:
 
    Native Qwen requires a separate scheduled join, not just the image-pass campaign:
    install and enable `usnm-qwen-results.{service,timer}` on the preparation host.
-   It uses the same locked driver with `--campaign qwen-nonenglish-v1
+   It continues using the complete-snapshot `quality_results.py` driver with
+   `--campaign qwen-nonenglish-v1
 --qwen-campaign qwen-nonenglish-v1`, joining QUALITY canonical outputs from batch 0
    with `/project/qwen/<campaign>` and native batch-8 canonical readings from
    `/project/usnmocr/results/8`. Override `NATIVE_QWEN_CAMPAIGN` (and, if needed, the
@@ -524,15 +545,17 @@ no LoC request:
    loaded Qwen science. The two collectors share the host pass lock and server bridge
    lock. Neither changes work identities, submission, source selection or quorum.
 
-   Both services opt into native incremental collection (`--incremental` on the
-   host driver). Deploy the matching `usnm-boinc` collector binary at the
+   Both services use native content-addressed row parts; the partial driver passes
+   a single-unit root and its persistent isolated cache. Deploy the matching
+   `usnm-boinc` collector binary at the
    dedicated persistent `/project/ops/quality-results/usnm-boinc` path **before**
    installing these service units. Only collectors use this binary; do not
    replace the server's shared executable or restart the BOINC server container.
    `QUALITY_COLLECTOR` in the results environment selects a different path if
    needed (`--collector` on the driver). A missing or old binary rejects the cache flags and
    safely prevents pulling or loading a stale snapshot. Each campaign retains
-   immutable JSON row parts under `collected-parts/`. Keys include the collector
+   immutable JSON row parts (complete campaigns under `collected-parts/`, partial
+   unit scopes under `ops/quality-results/scoped/`). Keys include the collector
    executable and format version, staged scientific inputs and optional OCR
    sidecars, canonical QUALITY outputs, and the relevant Qwen jobs/canonical
    outputs (including missing-to-present transitions). Surya dependencies

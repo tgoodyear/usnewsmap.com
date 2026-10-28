@@ -77,7 +77,7 @@ stage=/root/usnm-quality-feed-install
 "${SSH[@]}" "rm -rf $stage && install -d -m 700 $stage"
 scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
-  "$HERE/quality_results.py" "$HERE/quality-results-pull.sh" \
+  "$HERE/quality_results.py" "$HERE/quality_results_partial.py" "$HERE/quality-results-pull.sh" \
   "$HERE/usnm-quality-results.service" "$HERE/usnm-quality-results.timer" \
   "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" \
   "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
@@ -144,7 +144,8 @@ install -d /opt/usnm-quality-feed /etc/usnm
 install -m 0755 "$stage/quality-ship.sh" /opt/usnm-quality-feed/quality-ship.sh
 install -m 0644 "$stage/quality_receive.py" /opt/usnm-quality-feed/quality_receive.py
 install -m 0644 "$stage/usnm-quality-ship.service" "$stage/usnm-quality-ship.timer" /etc/systemd/system/
-install -m 0755 "$stage/quality_results.py" "$stage/quality-results-pull.sh" /opt/usnm-quality-feed/
+install -m 0755 "$stage/quality_results.py" "$stage/quality_results_partial.py" \
+  "$stage/quality-results-pull.sh" /opt/usnm-quality-feed/
 install -m 0644 "$stage/usnm-quality-results.service" "$stage/usnm-quality-results.timer" /etc/systemd/system/
 printf 'CTID=%s\n' "$ct" > /etc/usnm/quality-results.env
 printf 'CAMPAIGN=%s\nENGINE_IMAGE=%s\nMAX_UNSENT=%s\nMAX_CHUNKS=%s\nBUNDLE_SIZE=%s\n' \
