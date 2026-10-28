@@ -9,7 +9,7 @@
 //! found to a JSON Lines file, so the threshold can be measured from every
 //! compared pair.
 use super::{DIAG_FILE, READINGS_FILE, RESULT_FILE};
-use crate::{atomic, read};
+use crate::read;
 use anyhow::{ensure, Context};
 use std::{
     io::Write as _,
@@ -48,15 +48,7 @@ pub fn load(files: &[PathBuf]) -> anyhow::Result<Loaded> {
 pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
     let l = load(files)?;
     if let Some(dir) = keep {
-        let name = crate::quality::validate::result_name(&files[1])?;
-        let to = dir.join(&name);
-        std::fs::create_dir_all(&to)?;
-        atomic(&to.join(READINGS_FILE), &l.readings_bytes)?;
-        atomic(
-            &to.join(RESULT_FILE),
-            &serde_json::to_vec_pretty(&l.result)?,
-        )?;
-        atomic(&to.join(DIAG_FILE), &l.diag)?;
+        super::retain::capture(files, &l, dir).map_err(super::retain::CaptureError)?;
     }
     Ok(())
 }
@@ -203,5 +195,98 @@ pub(crate) mod tests {
         assert_eq!(lines[1]["agree"], false);
         std::fs::write(&a[0], "tampered").unwrap();
         assert!(check(&a, None).is_err());
+    }
+
+    #[test]
+    fn retains_both_replicas_exact_bytes_metrics_and_replays() {
+        let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let keep = tmp.path().join("seen");
+        let a = write(
+            tmp.path(),
+            "canonical",
+            &[("c01", "one two"), ("c02", "three four")],
+        );
+        let b = write(tmp.path(), "alternative", &[("c01", "[?]"), ("c02", "[?]")]);
+        let original: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&a[1]).unwrap()).unwrap();
+        let raw = serde_json::to_vec_pretty(&original).unwrap();
+        std::fs::write(&a[1], &raw).unwrap();
+        for files in [&a, &b] {
+            check(files, Some(&keep)).unwrap();
+            let dir = keep.join(crate::quality::validate::result_name(&files[1]).unwrap());
+            for (file, source) in [READINGS_FILE, "result.raw.json", DIAG_FILE]
+                .iter()
+                .zip(files)
+            {
+                assert_eq!(
+                    std::fs::read(dir.join(file)).unwrap(),
+                    std::fs::read(source).unwrap()
+                );
+            }
+            let receipt = std::fs::read(dir.join("capture-v1.json")).unwrap();
+            check(files, Some(&keep)).unwrap();
+            assert_eq!(std::fs::read(dir.join("capture-v1.json")).unwrap(), receipt);
+            for file in files {
+                std::fs::remove_file(file).unwrap();
+            }
+            load(&[READINGS_FILE, RESULT_FILE, DIAG_FILE].map(|f| dir.join(f))).unwrap();
+        }
+        let alternative = keep.join(crate::quality::validate::result_name(&b[1]).unwrap());
+        let metrics: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(alternative.join("readings-metrics-v1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metrics["readings"][0]["uncertainty_only"], true);
+        assert_eq!(metrics["damage_rate"], serde_json::Value::Null);
+        assert_eq!(metrics["readings"][0]["accuracy_established"], false);
+    }
+
+    #[test]
+    fn completes_interrupted_legacy_capture_without_overwriting_evidence() {
+        let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let files = write(
+            tmp.path(),
+            "legacy",
+            &[("c01", "one two"), ("c02", "three four")],
+        );
+        let keep = tmp.path().join("seen");
+        let dir = keep.join(crate::quality::validate::result_name(&files[1]).unwrap());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(&files[0], dir.join(READINGS_FILE)).unwrap();
+        let manifest = serde_json::to_vec_pretty(&load(&files).unwrap().result).unwrap();
+        std::fs::write(dir.join(RESULT_FILE), &manifest).unwrap();
+        check(&files, Some(&keep)).unwrap();
+        assert_eq!(std::fs::read(dir.join(RESULT_FILE)).unwrap(), manifest);
+        assert!(dir.join("capture-v1.json").is_file());
+        let retained = std::fs::read(dir.join(READINGS_FILE)).unwrap();
+        std::fs::write(dir.join(DIAG_FILE), b"corrupt").unwrap();
+        let error = check(&files, Some(&keep)).unwrap_err();
+        assert!(error
+            .downcast_ref::<super::super::retain::CaptureError>()
+            .is_some());
+        assert_eq!(std::fs::read(dir.join(READINGS_FILE)).unwrap(), retained);
+        assert_eq!(std::fs::read(dir.join(DIAG_FILE)).unwrap(), b"corrupt");
+    }
+
+    #[test]
+    fn capture_failure_is_transient_but_invalid_science_is_not() {
+        let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let files = write(
+            tmp.path(),
+            "failure",
+            &[("c01", "one two"), ("c02", "three four")],
+        );
+        let blocked = tmp.path().join("not-a-directory");
+        std::fs::write(&blocked, b"blocked").unwrap();
+        let error = check(&files, Some(&blocked)).unwrap_err();
+        assert!(error
+            .downcast_ref::<super::super::retain::CaptureError>()
+            .is_some());
+        assert!(files.iter().all(|f| f.is_file()));
+        std::fs::write(&files[0], b"invalid").unwrap();
+        let error = check(&files, Some(&blocked)).unwrap_err();
+        assert!(error
+            .downcast_ref::<super::super::retain::CaptureError>()
+            .is_none());
     }
 }
