@@ -825,16 +825,20 @@ async fn put_same(
 }
 
 /// Why a workunit failed for good, from the assimilator's `_error` marker (its error mask, as
-/// `0x<hex>`; none means `_no_output_files`), with the page deadline the job gave, so a dead
-/// letter says what happened (#1159).
+/// `0x<hex>`; none means `_no_output_files`). A present but invalid marker has an unknown
+/// mask, not a missing-output diagnosis.
 pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
     let mask = marker
         .and_then(|b| std::str::from_utf8(b).ok())
         // The stock assimilator appends: the last mask written is the workunit's.
         .and_then(|s| s.lines().map(str::trim).rfind(|l| !l.is_empty()))
-        .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+        .and_then(|s| u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok());
     let Some(mask) = mask else {
-        return format!("BOINC workunit returned no output files (page deadline {timeout_secs} s)");
+        return if marker.is_some() {
+            format!("BOINC workunit failed for good: error mask unknown (invalid error marker); page deadline {timeout_secs} s")
+        } else {
+            format!("BOINC workunit returned no output files (page deadline {timeout_secs} s)")
+        };
     };
     let names: Vec<&str> = [
         (0x1, "couldn't send a result"),
@@ -850,7 +854,9 @@ pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
     .collect();
     format!(
         "BOINC workunit failed for good: error mask {mask:#x} ({}); page deadline {timeout_secs} s",
-        if names.is_empty() {
+        if mask == 0 {
+            "none".to_owned()
+        } else if names.is_empty() {
             "unknown".to_owned()
         } else {
             names.join(", ")
@@ -878,6 +884,23 @@ mod terminal_reason_tests {
         // Assimilated twice: the marker holds the mask twice.
         assert!(super::terminal_reason(Some(b"0x2\n0x2\n"), 600).contains("error mask 0x2 "));
     }
+
+    #[test]
+    fn invalid_error_markers_are_not_missing_output_or_zero_masks() {
+        for marker in [
+            &b""[..],
+            b"0x",
+            b"broken",
+            b"\xff",
+            b"0x0x2",
+            b"0x2\nbroken",
+        ] {
+            let reason = super::terminal_reason(Some(marker), 600);
+            assert!(reason.contains("error mask unknown"), "{reason}");
+            assert!(!reason.contains("no output files"), "{reason}");
+        }
+        assert!(super::terminal_reason(Some(b"0x0\n"), 600).contains("error mask 0x0 (none)"));
+    }
 }
 
 /// Match stock batch_collect_assimilator's canonical output names.
@@ -891,15 +914,21 @@ pub async fn collect(
     let job = load(root, id)?.job;
     let workunit = job.workunit();
     let error_marker = spool.join(format!("{workunit}_error"));
-    if error_marker.exists() || spool.join(format!("{workunit}_no_output_files")).exists() {
+    let marker = if error_marker.try_exists()? {
+        Some(read(&error_marker, boinc::MAX_JSON).context("reading BOINC terminal error marker")?)
+    } else {
+        None
+    };
+    if marker.is_some()
+        || spool
+            .join(format!("{workunit}_no_output_files"))
+            .try_exists()?
+    {
         let _lock = Lock::take(root)?;
         let mut record = load(root, id)?;
         ensure!(record.stage != Stage::Published, "already published");
         record.stage = Stage::Failed;
-        record.error = Some(terminal_reason(
-            std::fs::read(&error_marker).ok().as_deref(),
-            job.engine.timeout_secs,
-        ));
+        record.error = Some(terminal_reason(marker.as_deref(), job.engine.timeout_secs));
         save(root, &record)?;
         bail!("BOINC terminal failure");
     }
