@@ -108,4 +108,6 @@ Phase 2 (#1101) deploys the drill Worker on the private test hostname, then stop
 - `config.test.mjs` reads `wrangler.jsonc`: logs off, no `workers.dev`, the three routes, the empty Azure name and no drill flag.
 - `deploy.test.mjs` runs `deploy.sh` with `az` and `npx` replaced by stubs: argument checks, the dry run, and that the token reaches only Wrangler's environment.
 
-CI runs them in the `edge (fallback worker tests)` job when something under `edge/` changes, and shellchecks `deploy.sh`.
+`WRANGLER_SEND_METRICS=false npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'` additionally runs the actual workerd Cache API and HTMLRewriter. It warms a generic home shell, checks the GET outage banner, retained content, 503/no-store/Retry-After, removed validators and API CORS. Outbound network is disabled except exact local fetch mocks; the owned runtime is disposed even on failure. Fetching the pinned development tool requires npm access, but this test needs no account, token or Cloudflare deployment.
+
+CI runs both suites in the `edge (fallback worker tests)` job when something under `edge/` changes, and shellchecks `deploy.sh`.
