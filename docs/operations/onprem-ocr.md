@@ -2,6 +2,58 @@
 
 Part of the [operations guide](README.md).
 
+## Rebuilding the dashboard data-flow observer and catalog
+
+The read-only observer/catalog scripts and their three systemd units are installed
+separately from OCR workers. On the operator's checkout, select a reviewed full
+commit SHA, then stage an immutable Git archive (not dirty working-tree files):
+
+```sh
+COMMIT=<reviewed-40-character-commit>
+git archive --format=tar --output=data-flow.tar "$COMMIT" \
+  scripts/corpus/data_catalog.py scripts/corpus/data_flow_observer.py \
+  scripts/ocr-node/usnm-data-catalog.service \
+  scripts/ocr-node/usnm-data-flow-observer.service \
+  scripts/ocr-node/usnm-data-flow-observer.timer scripts/ocr-node/install-data-flow.py
+git show "$COMMIT:scripts/ocr-node/install-data-flow.py" > install-data-flow.py
+shasum -a 256 data-flow.tar
+```
+
+Transfer the archive and installer to the dashboard host, and independently record
+that digest. With Python 3.11+, validate before a maintenance window:
+
+```sh
+python3 install-data-flow.py --archive data-flow.tar --commit FULL_SHA --sha256 ARCHIVE_SHA256
+```
+
+`--apply` requires root, the existing `ocrdash` account, and the catalog service,
+observer service and observer timer all inactive. Coordinate a read-only dashboard
+maintenance window: stop only those units, wait for an in-flight observer to finish,
+and record their original active/enabled states. The installer does not stop, start
+or enable units. On first installation only, supply `--ocr-url` with the
+credential-free dashboard JSON endpoint (for example
+`http://127.0.0.1:8090/api/view.json`), not its HTML base URL; subsequent installations preserve the entire
+existing environment and reject an overwrite.
+
+Validation-only mode also stages and verifies the systemd units, so run it on a
+systemd host. The installer checks the archive digest, Git archive commit header,
+exact regular file set, Python syntax and systemd units. The header records the operator's
+selected source; it is not a signature or substitute for reviewing that commit.
+It atomically replaces code/units, records `COMMIT`, retains private rollback
+copies under `/var/lib/usnm-data-flow-install`, and restores old files if
+verification or daemon reload fails. Same-directory recovery hard links retain
+the original inodes, ownership and modes without allocating replacement file
+contents if the disk fills. If an individual restoration fails, the installer
+still attempts every remaining restoration and daemon reload, reports all errors
+and retains the needed recovery links. Restore the original unit activation after
+success or failure; enable the observer timer explicitly for a new installation.
+The catalog listener remains loopback-only (`127.0.0.1:8764`).
+
+No SQLite database, pipeline/catalog snapshot, retained evidence, producer timer,
+queue backend or source budget is migrated, deleted or reset. Restore/migrate a
+catalog copy through its separately reviewed procedure before starting the catalog
+on a rebuilt host; this installer never initializes or migrates it.
+
 ## On-prem OCR nodes
 
 **Local OCR runs through BOINC only** (#917, #942, #966): see the [BOINC pages](../boinc/README.md). No node runs `usnm-ocr-worker` as a direct queue worker any more, and the worker's systemd unit, its installers (`install-worker.sh`, `install-worker-node.sh`) and its nightly update (`update-worker.sh`) are removed. This section keeps what is still in use: the exchange account, whose queues and `ocr-out` container BOINC's hand-off uses, and the nodes' Arc lifecycle and monitoring, which offboarding the remaining nodes needs.
