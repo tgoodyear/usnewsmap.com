@@ -498,7 +498,8 @@ no LoC request:
    nothing while the server has more than 300 results unsent, and waits its turn on the step
    lock.
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
-   On the preparation host, `usnm-quality-results.timer` runs every 15 minutes:
+   On the preparation host, `usnm-quality-results.timer` runs two minutes after
+   the previous pass finishes, with up to 15 seconds of jitter:
    `quality_results_partial.py` collects **one submitted unit** under CT230's normal
    nonblocking bridge lock. Collection is bounded to 120 seconds, with a 180-second
    remote phase bound including metadata enumeration. It writes immutable per-pass
@@ -512,7 +513,12 @@ no LoC request:
    and job identity must match coverage before the existing certificate-authenticated
    `load.py results` is allowed to upsert. Missing or unvisited rows are never deleted.
    A pending unit yields zero rows, not a loaded result. The host pass lock also
-   serializes collection, transfer and loading. A busy bridge retries next tick.
+   serializes collection, transfer and loading. A busy bridge retries next tick;
+   no active producer is preempted. The shorter interval avoids a structural
+   backlog: one unit per 15 minutes cannot match the shipper's maximum two units
+   per 15-minute interval even without contention. Actual throughput still depends
+   on collection time and free lock windows; verify cursor and load receipts,
+   rather than treating the timer frequency as proof of campaign coverage.
    Source and preparation snapshots, coverage and host load receipts are retained.
    The host cursor advances only after successful verification and loading. Failure
    after a database commit but before cursor update safely repeats the same upserts.
