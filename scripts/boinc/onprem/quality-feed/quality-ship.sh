@@ -75,7 +75,11 @@ if [ -n "$QWEN_PLAN" ]; then
   flock -n 9 || exit 75
 fi
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SERVER")
-in_ct() { "${SSH[@]}" pct exec "$CT" -- "$@"; }
+in_ct() {
+  local quoted
+  printf -v quoted '%q ' "$@"
+  "${SSH[@]}" "pct exec $CT -- $quoted"
+}
 # One bridge step, waiting its turn: the host runs one step at a time, and the priority
 # controller's steps come every few minutes. Tries for up to 30 minutes.
 run_step() {
@@ -100,6 +104,10 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   [ -f "$dir/READY" ] || continue
   [ "$shipped" -lt "$MAX_CHUNKS" ] || break
   chunk=$(basename "$dir")
+  pages=$(cat "$dir/READY")
+  if [ -n "$QWEN_PLAN" ]; then
+    [[ $pages =~ ^[1-9][0-9]*$ && $pages -le 490 ]] || die "$chunk: invalid bounded READY page count"
+  fi
   unsent=native-fresh-pair-gated
   if [ -z "$QWEN_PLAN" ]; then
     unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
@@ -119,13 +127,13 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   fi
   if [ -n "$QWEN_PLAN" ]; then
     pool=$("${SSH[@]}" lvs --reportformat json --units b --nosuffix -o lv_size,data_percent pve/data |
-      python3 -c 'import json,sys; p=json.load(sys.stdin)["report"][0]["lv"][0]; print(int(float(p["lv_size"])*(1-float(p["data_percent"])/100)//1024**3))')
-    if [ "$pool" -lt "$MIN_FREE" ]; then
-      log "thin pool has $pool GiB free (under $MIN_FREE); $chunk waits"
+      python3 -c 'import json,sys; p=json.load(sys.stdin)["report"][0]["lv"][0]; print(int(float(p["lv_size"])*(1-float(p["data_percent"])/100)))')
+    need=$((MIN_FREE * 1024**3 + pages * 64 * 1024**2))
+    if [ "$pool" -lt "$need" ]; then
+      log "thin pool has $pool bytes free, needs $need including per-page reservation; $chunk waits"
       break
     fi
   fi
-  pages=$(cat "$dir/READY")
   log "$chunk: $pages pages, server unsent $unsent"
   if $WHAT_IF; then
     log "would copy $dir to CT $CT on $SERVER, stage it and submit it"
