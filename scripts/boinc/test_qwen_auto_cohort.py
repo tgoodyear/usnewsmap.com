@@ -418,6 +418,29 @@ class BoincDb {static $q=0;static function get(){return new self();}
         self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_policy_directory_is_durable_before_state_records_window(self):
+        events, opened = [], {}
+        original_open, original_fsync, original_persist = os.open, os.fsync, R.persist
+        def open_(path, *a, **kw):
+            fd = original_open(path, *a, **kw)
+            opened[fd] = Path(path)
+            return fd
+        def fsync(fd):
+            if opened.get(fd) == self.project.resolve():
+                events.append(("dir", R.policy_window(self.policy.read_bytes())[0]))
+            return original_fsync(fd)
+        def persist(path, value, **kw):
+            if path.name == "state.json":
+                events.append(("state", value["window"], "pending" in value))
+            return original_persist(path, value, **kw)
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(R.os, "fsync", side_effect=fsync), patch.object(R.os, "open", side_effect=open_), \
+                patch.object(R, "persist", side_effect=persist):
+            R.run(self.args)
+        final = events.index(("state", [100, 101], False))
+        self.assertIn(("dir", [100, 101]), events[:final])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_unpinned_non_linux_release_of_opened_class_closes_admission(self):
         with patch.object(R, "read_database", return_value=self.database):
             R.run(self.args)

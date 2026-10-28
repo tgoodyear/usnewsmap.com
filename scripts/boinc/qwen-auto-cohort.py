@@ -391,6 +391,14 @@ def run(args):
                 require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")
             applied = json.loads(subprocess.check_output(command + ["--apply"], timeout=15))
             require(applied["before_sha256"] == sha(policy), "Atomic policy precondition failed")
+            # The helper's rename is durable only once the directory entry is; never record a
+            # window in state that power loss could still revert.
+            fd = os.open(project, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            require(sha(policy_path.read_bytes()) == applied["after_sha256"], "Published policy readback mismatch")
             state["window"] = target
             state["admitted"] += [int(row["unit"]["id"]) for row in selected]
             state["last_intent"] = str(receipt_path)
