@@ -33,7 +33,7 @@ class RefreshTest(unittest.TestCase):
 
     def scan(self, batch, seq, ext="jp2", kept=True):
         doc = f"sn1_1900-01-01_ed-1_seq-{seq}"
-        path = f"keep/{batch}/sn1/1900-01-01/1/{seq}.{ext}"
+        path = f"keep/{batch}/sn1/1900-01-01/1/{seq}.{'jpg' if ext == 'jpeg' else ext}"
         if kept:
             target = self.scans / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +94,50 @@ class RefreshTest(unittest.TestCase):
         self.assertIn(fresh, sum(self.lists(), []))
         self.assertNotIn(old, sum(self.lists(), []))
 
+    def test_normal_jpeg_rows_do_not_block_mixed_index_or_rotation(self):
+        first = self.scan("a", 1)
+        jpeg = self.scan("jpeg-only", 1, ext="jpeg")
+        last = self.scan("b", 1)
+        self.assertEqual(self.read_index(), (3, True))
+        ordered = refresh.batch_order(self.db, [("a", 1, 1)],
+                                      ["audit/damage/v2/jpeg-only_ver01.parquet"])
+        self.assertIn(("jpeg-only", 1), [key for key, _ in ordered])
+        self.fill([("a", 1, 1), ("b", 1, 1)])
+        self.assertEqual(set(sum(self.lists(), [])), {first, last})
+        self.assertNotIn(jpeg, sum(self.lists(), []))
+
+    def test_manifest_versions_and_separate_damage_version_keep_distinct_membership(self):
+        first, second, tier1 = [self.scan("a", seq) for seq in range(1, 4)]
+        self.read_index()
+        self.db.executemany("INSERT INTO manifest_keys VALUES(?,?)", [("a", 1), ("a", 2)])
+        self.db.executemany("INSERT INTO manifest_pages VALUES(?,?,?)",
+                            [(first, "a", 1), (second, "a", 2)])
+        # Replay indexed rows after the frozen membership has been loaded.
+        for row in self.index.read_text().splitlines():
+            refresh.ingest_scan(self.db, row, self.scans)
+        ordered = refresh.batch_order(self.db, [("a", 1, 1), ("a", 2, 1)], [])
+        self.assertEqual(list(refresh.candidates(self.db, ordered, 2, 1,
+                                                {0: "a_ver01"}, 10)), [second])
+        with_damage = refresh.batch_order(self.db, [("a", 1, 1), ("a", 2, 1)],
+                                           ["audit/damage/v2/a_ver03.parquet"])
+        actual = list(refresh.candidates(self.db, with_damage, 2, 1,
+                                         {0: "a_ver02"}, 10))
+        rows = [("a", 1, first), ("a", 2, second)]
+        legacy_tier1 = refresh.ordering.tier1_batches(
+            [("a", 1), ("a", 2)], ["audit/damage/v2/a_ver03.parquet"],
+            [first, second, tier1])
+        legacy_order = refresh.ordering.ordered_batches(rows, legacy_tier1)
+        expected = refresh.ordering.interleave(refresh.ordering.shard_queues(
+            rows, 1, {}, set(), legacy_tier1,
+            remaining=refresh.ordering.resolve_current(legacy_order, 1, {0: "a_ver02"},
+                                                        n_manifest=2)))
+        self.assertEqual(actual, expected)
+        self.fill([("a", 1, 1), ("a", 2, 1)], ["audit/damage/v2/a_ver03.parquet"])
+        self.assertEqual(self.db.execute("SELECT count(*) FROM manifest_ready").fetchone()[0], 0)
+        refresh.ingest_done(self.db, first + "\tuploaded")
+        refresh.ingest_scan(self.db, self.index.read_text().splitlines()[0], self.scans)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM manifest_ready").fetchone()[0], 0)
+
     def test_cursor_is_bounded_partial_lines_retry_and_invalid_rows_rollback(self):
         self.scan("a", 1)
         self.scan("a", 2)
@@ -151,11 +195,18 @@ class RefreshTest(unittest.TestCase):
     def test_candidate_query_uses_keyed_pending_index(self):
         plan = self.db.execute("""
             EXPLAIN QUERY PLAN SELECT path FROM pending
-            WHERE owner IS NULL AND batch=? AND eligible=1
+            WHERE owner IS NULL AND batch=?
             ORDER BY doc,path LIMIT ?
         """, ("batch", 200)).fetchall()
         details = " ".join(row[-1] for row in plan)
         self.assertIn("USING COVERING INDEX pending_order", details)
+        self.assertNotIn("TEMP B-TREE", details)
+        plan = self.db.execute("""
+            EXPLAIN QUERY PLAN SELECT path FROM manifest_ready
+            WHERE batch=? AND version=? ORDER BY doc,path LIMIT ?
+        """, ("batch", 1, 200)).fetchall()
+        details = " ".join(row[-1] for row in plan)
+        self.assertIn("USING COVERING INDEX", details)
         self.assertNotIn("TEMP B-TREE", details)
 
     def test_manifest_is_read_once_until_its_identity_changes(self):
@@ -172,7 +223,7 @@ class RefreshTest(unittest.TestCase):
             if "count(*)" in query:
                 cursor.fetchmany.return_value = [("a", 1, 4)]
             else:
-                cursor.fetchmany.side_effect = [[(included,)], []]
+                cursor.fetchmany.side_effect = [[(included, "a", 1)], []]
             return cursor
 
         connection.execute.side_effect = execute

@@ -22,8 +22,10 @@ JPEG-only batches still retain their place in the damage batch order.
 The manifest is aggregated once per file identity, with DuckDB limited to
 64 MiB and one thread. Its bounded batch metadata and exact page membership
 are cached on disk; an unchanged manifest is not rescanned on the next tick.
-Manifest batches admit only their listed page paths, not every cached page
-in the same batch. A changed manifest requires a one-time streamed membership
+Manifest entries admit only their listed page paths for that **batch/version**,
+not every cached page in the same batch. A separate damage-index version retains
+the existing builder's tier-1 membership. Normal fetcher `format: "jpeg"` rows
+map to `.jpg` masters and do not block later JP2 rows. A changed manifest requires a one-time streamed membership
 rebuild and eligibility reconciliation; that bootstrap's work is proportional
 to the input, unlike ordinary cursor ticks.
 
@@ -52,11 +54,12 @@ refresh refusal, partial records, bounded cursor catch-up, full lists,
 restart, recipe mismatch, and interrupted atomic publication. They use
 temporary directories only.
 
-A separate CLI check used an actual four-row Parquet manifest, five indexed
-fixture scans and two real fixture completion files: the first tick assigned
-two pages; after appending those completions, the second assigned the other
-two while reading **zero** old index lines. The four published identities
-were distinct; the unlisted fifth page in that same batch was excluded.
+A separate CLI check used an actual two-version Parquet manifest, four indexed
+JP2 scans, a normal `jpeg` scan and two real fixture completion files. The first
+tick assigned only the two manifest members. After recording their completions
+and advancing to a separate damage-index version, the second assigned the other
+two JP2 pages while reading **zero** old index lines. All four identities were
+distinct; the JPEG master was consumed without entering a conversion list.
 
 A synthetic one-million-pending-page SQLite check on the local macOS host
 produced the following observations, not production throughput guarantees:
@@ -64,13 +67,16 @@ produced the following observations, not production throughput guarantees:
 | Observation                                              |           Result |
 | -------------------------------------------------------- | ---------------: |
 | Assigned pages, two bounded lists                        |            4,000 |
-| Allocation plus list publication                         |         0.0521 s |
-| Traced Python peak during that operation                 |    465,905 bytes |
-| Full-list/backpressure tick                              |         0.0002 s |
-| Whole fixture process maximum RSS, including DuckDB work | 66,076,672 bytes |
+| Allocation plus list publication                         |         0.1377 s |
+| Traced Python peak during that operation                 |    455,061 bytes |
+| Full-list/backpressure tick                              |         0.0001 s |
+| Whole fixture process maximum RSS, including DuckDB work | 68,763,648 bytes |
 
 `EXPLAIN QUERY PLAN` is regression-checked for a covering
-`pending_order(owner,batch,eligible,doc,path)` lookup without a temporary sort.
+`pending_order(owner,batch,doc,path)` lookup and the version-keyed
+`manifest_ready(batch,version,doc,path)` queue without temporary sorts.
+Assigned/completed pages leave that ready queue transactionally, including
+their membership under other versions.
 This is a one-million-row synthetic measurement plus indexed-query evidence,
 **not** an executed 20M-page live acceptance.
 

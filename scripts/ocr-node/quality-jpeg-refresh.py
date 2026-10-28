@@ -52,13 +52,18 @@ def connect(work, recipe, hosts):
         CREATE TABLE IF NOT EXISTS done(path TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS archived(batch TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS manifest_cache(signature TEXT, rows TEXT);
-        CREATE TABLE IF NOT EXISTS manifest_pages(path TEXT PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS manifest_keys(batch TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS manifest_pages(
+            path TEXT, batch TEXT, version INTEGER, PRIMARY KEY(path,batch,version));
+        CREATE TABLE IF NOT EXISTS manifest_keys(
+            batch TEXT, version INTEGER, PRIMARY KEY(batch,version));
+        CREATE TABLE IF NOT EXISTS manifest_ready(
+            batch TEXT, version INTEGER, doc TEXT, path TEXT,
+            PRIMARY KEY(batch,version,doc,path));
+        CREATE INDEX IF NOT EXISTS manifest_ready_path ON manifest_ready(path);
         CREATE TABLE IF NOT EXISTS inputs(binding TEXT);
         CREATE TABLE IF NOT EXISTS pending(
-            path TEXT PRIMARY KEY, batch TEXT, doc TEXT, owner INTEGER, position INTEGER,
-            eligible INTEGER NOT NULL DEFAULT 1);
-        CREATE INDEX IF NOT EXISTS pending_order ON pending(owner,batch,eligible,doc,path);
+            path TEXT PRIMARY KEY, batch TEXT, doc TEXT, owner INTEGER, position INTEGER);
+        CREATE INDEX IF NOT EXISTS pending_order ON pending(owner,batch,doc,path);
         CREATE INDEX IF NOT EXISTS pending_owner ON pending(owner,position);
     """)
     config = db.execute("SELECT recipe,hosts FROM config").fetchall()
@@ -114,6 +119,8 @@ def ingest_scan(db, raw, scans):
     if not match or not BATCH.fullmatch(batch):
         raise ValueError("invalid indexed page or batch")
     ext = row.get("format", "jpg")
+    if ext == "jpeg":
+        ext = "jpg"
     if ext not in ("jp2", "jpg"):
         raise ValueError("unsupported indexed scan format")
     lccn, date, edition, seq = match.groups()
@@ -123,12 +130,16 @@ def ingest_scan(db, raw, scans):
     db.execute("INSERT OR IGNORE INTO archived VALUES(?)", (batch,))
     if ext == "jp2":
         db.execute("""
-            INSERT OR IGNORE INTO pending(path,batch,doc,eligible)
-            SELECT ?,?,?, NOT(
-                EXISTS(SELECT 1 FROM manifest_keys WHERE batch=?)
-                AND NOT EXISTS(SELECT 1 FROM manifest_pages WHERE path=?))
+            INSERT OR IGNORE INTO pending(path,batch,doc)
+            SELECT ?,?,?
             WHERE NOT EXISTS(SELECT 1 FROM done WHERE path=?)
-        """, (path, batch, doc, batch, path, path))
+        """, (path, batch, doc, path))
+        db.execute("""
+            INSERT OR IGNORE INTO manifest_ready(batch,version,doc,path)
+            SELECT m.batch,m.version,p.doc,p.path FROM manifest_pages m
+            JOIN pending p ON p.path=m.path AND p.batch=m.batch
+            WHERE m.path=? AND p.owner IS NULL
+        """, (path,))
 
 
 def ingest_done(db, raw):
@@ -137,6 +148,7 @@ def ingest_done(db, raw):
         raise ValueError("empty completion identity")
     db.execute("INSERT OR IGNORE INTO done VALUES(?)", (path,))
     db.execute("DELETE FROM pending WHERE path=?", (path,))
+    db.execute("DELETE FROM manifest_ready WHERE path=?", (path,))
 
 
 def batch_order(db, manifest, damage):
@@ -173,11 +185,19 @@ def candidates(db, ordered, n_manifest, shards, current, limit):
         batches = remaining.get(shard)
         if batches is None:
             batches = ordering.remaining_batches(ordered, n_manifest, shards, shard, -1)
-        for (batch, _), _ in batches:
-            for (path,) in db.execute("""
-                SELECT path FROM pending WHERE owner IS NULL AND batch=? AND eligible=1
-                ORDER BY doc,path LIMIT ?
-            """, (batch, limit)):
+        for (batch, version), _ in batches:
+            if db.execute("SELECT 1 FROM manifest_keys WHERE batch=? AND version=?",
+                          (batch, version)).fetchone():
+                cursor = db.execute("""
+                    SELECT path FROM manifest_ready WHERE batch=? AND version=?
+                    ORDER BY doc,path LIMIT ?
+                """, (batch, version, limit))
+            else:
+                cursor = db.execute("""
+                    SELECT path FROM pending WHERE owner IS NULL AND batch=?
+                    ORDER BY doc,path LIMIT ?
+                """, (batch, limit))
+            for (path,) in cursor:
                 yield path
 
     seen = set()
@@ -214,6 +234,7 @@ def replenish(db, ordered, n_manifest, shards, current, hosts, low, high):
             position += 1
             db.execute("UPDATE pending SET owner=?,position=? WHERE path=? AND owner IS NULL",
                        (host, position, path))
+            db.execute("DELETE FROM manifest_ready WHERE path=?", (path,))
             need[host] -= 1
             assigned += 1
     return assigned
@@ -261,18 +282,20 @@ def manifest_batches(db, path):
             raise ValueError("too many manifest batches")
         db.execute("DELETE FROM manifest_pages")
         db.execute("DELETE FROM manifest_keys")
-        db.executemany("INSERT OR IGNORE INTO manifest_keys VALUES(?)",
-                       ((batch,) for batch, _, _ in rows))
+        db.executemany("INSERT OR IGNORE INTO manifest_keys VALUES(?,?)",
+                       ((batch, version) for batch, version, _ in rows))
         cursor = manifest_db.execute("""
-            SELECT blob_name FROM read_parquet(?)
+            SELECT blob_name,batch,batch_version FROM read_parquet(?)
             WHERE blob_name IS NOT NULL AND blob_name <> ''
         """, [str(path)])
         while chunk := cursor.fetchmany(10000):
-            db.executemany("INSERT OR IGNORE INTO manifest_pages VALUES(?)", chunk)
+            db.executemany("INSERT OR IGNORE INTO manifest_pages VALUES(?,?,?)", chunk)
+        db.execute("DELETE FROM manifest_ready")
         db.execute("""
-            UPDATE pending SET eligible=NOT(
-                EXISTS(SELECT 1 FROM manifest_keys m WHERE m.batch=pending.batch)
-                AND NOT EXISTS(SELECT 1 FROM manifest_pages m WHERE m.path=pending.path))
+            INSERT INTO manifest_ready(batch,version,doc,path)
+            SELECT m.batch,m.version,p.doc,p.path FROM manifest_pages m
+            JOIN pending p ON p.path=m.path AND p.batch=m.batch
+            WHERE p.owner IS NULL
         """)
         if identity(path.stat()) != identity(info):
             raise ValueError("manifest changed while reading")
