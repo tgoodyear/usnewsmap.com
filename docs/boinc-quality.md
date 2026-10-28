@@ -438,6 +438,10 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
      --var QWEN_MAX=20 --wait-mins 15
    ```
 
+   Crop source text has a separate, unchanged 8192-byte UTF-8 limit. If any selected crop exceeds it, staging retains the complete candidate as `rejected-qwen.json`, the original `loc.xml`, `quality.json`, `page.jpg` and available `sample.json`, then writes the existing `too_large` terminal marker. Its reason names every oversized crop, box, byte count, text hash and source hashes. No `qwen.json` is published, no text is truncated, and other pages continue within `--max-pages`. Repeats preserve that evidence; feed inventory remembers rejected documents without counting them as submitted work. Other schema errors still fail closed.
+
+   For an isolated reviewed staging-binary rollout, the native feed shipper accepts `USNM_QWEN_STAGE_BINARY` (container-visible path), passed to `qwen_submit.py --stage-binary`. The default remains `usnm-boinc`; submission and collectors continue using their existing binary. Install only an approved hash-bound artifact at an idle boundary under the normal project lock.
+
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
    ```sh

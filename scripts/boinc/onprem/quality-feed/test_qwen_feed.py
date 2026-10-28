@@ -91,6 +91,22 @@ class ArchiveTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
+    def test_inventory_remembers_rejected_source_without_counting_it_as_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            share = Path(folder)
+            for kind in ("units", "pages"):
+                unit = share / "qwen" / "campaign" / kind / DOC
+                unit.mkdir(parents=True)
+                (unit / "too_large").write_text("crop c01: 8193 UTF-8 bytes over 8192\n")
+                (unit / "rejected-qwen.json").write_text(json.dumps({"doc_id": DOC}))
+            with mock.patch.object(submit.subprocess, "check_output",
+                                   return_value='{"ready": 0, "dispatched": 0}'), \
+                    mock.patch.object(submit.shutil, "disk_usage",
+                                      return_value=types.SimpleNamespace(free=100)):
+                self.assertEqual(submit.inventory(share, share)["documents"], [DOC])
+                self.assertEqual(list(submit.jobs(share / "qwen")), [])
+                submit.assert_submitted(share / "qwen" / "campaign")
+
     def test_inventory_uses_lowest_space_across_project_and_bulk_mounts(self):
         with tempfile.TemporaryDirectory() as folder:
             share = Path(folder)

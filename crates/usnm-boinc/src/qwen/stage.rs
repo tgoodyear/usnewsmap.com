@@ -46,8 +46,8 @@ pub struct Summary {
     pub no_crops: usize,
     pub already: usize,
     pub bundles: usize,
-    /// Pages whose `qwen.json` (single-page, or a one-page bundle) would pass
-    /// `MAX_JOB_JSON`: marked `too_large` and never published.
+    /// Pages exceeding the crop-text or manifest limit: marked `too_large`
+    /// with retained evidence and never published.
     pub too_large: usize,
 }
 
@@ -184,6 +184,44 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             prompt_version: PROMPT_VERSION,
         };
         job.id = job.identity()?;
+        let oversized: Vec<_> = job
+            .crops
+            .iter()
+            .filter(|c| c.loc_text.len() > MAX_CROP_TEXT)
+            .map(|c| {
+                format!(
+                    "crop {} {:?}: loc_text is {} UTF-8 bytes, over the {MAX_CROP_TEXT}-byte limit; sha256={}",
+                    c.id, c.rect, c.loc_text.len(), usnm_ocr_contract::boinc::sha256(c.loc_text.as_bytes())
+                )
+            })
+            .collect();
+        if !oversized.is_empty() {
+            // Evidence is not a publishable qwen.json. Keep the exact candidate
+            // and source before the terminal marker makes retries skip this page.
+            atomic(
+                &unit.join("rejected-qwen.json"),
+                &serde_json::to_vec_pretty(&job)?,
+            )?;
+            atomic(&unit.join(crate::quality::ALTO_FILE), &alto)?;
+            atomic(
+                &unit.join(crate::quality::JOB_FILE),
+                &std::fs::read(page.join(crate::quality::JOB_FILE))?,
+            )?;
+            let why = format!(
+                "{}: {}\nquality.json sha256={}; loc.xml sha256={}; page.jpg sha256={}\n",
+                job.doc_id,
+                oversized.join("; "),
+                usnm_ocr_contract::boinc::sha256(&std::fs::read(
+                    page.join(crate::quality::JOB_FILE)
+                )?),
+                quality.inputs.alto.sha256,
+                quality.inputs.page.sha256,
+            );
+            eprintln!("{why}marked {TOO_LARGE}; source text retained without truncation");
+            atomic(&unit.join(TOO_LARGE), why.as_bytes())?;
+            summary.too_large += 1;
+            continue;
+        }
         job.validate()
             .with_context(|| format!("{name}: staged job"))?;
         let json = serde_json::to_vec_pretty(&job)?;
@@ -829,6 +867,108 @@ pub(crate) mod tests {
         assert!(units(&opts.root)
             .join("sn83045462_1890-05-04_ed-1_seq-1/no_crops")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn oversized_crop_retains_exact_evidence_and_does_not_block_valid_pages() {
+        for bundle_size in [1, 2] {
+            let tmp = tempfile::tempdir().unwrap();
+            let qroot = tmp.path().join("quality");
+            let bad = "sn83045838_1930-06-18_ed-1_seq-3";
+            let good = "sn99999999_1930-06-18_ed-1_seq-1";
+            let source = crate::quality::units(&qroot).join(bad);
+            crate::quality::work::tests::unit(&source);
+            let page = std::fs::read(source.join(PAGE_FILE)).unwrap();
+            let text = "יי".repeat(100);
+            let words: Vec<_> = (0..32)
+                .map(|i| (10 + i * 27, 10, 35 + i * 27, 40, text.as_str(), 0.9))
+                .collect();
+            let alto = crate::quality::alto_xml(1000, 1400, &[vec![words]]);
+            let texts =
+                serde_json::from_slice(&std::fs::read(source.join("texts.json")).unwrap()).unwrap();
+            crate::quality::stage::local_unit(&crate::quality::stage::LocalUnit {
+                page: &page,
+                alto: alto.as_bytes(),
+                texts: &texts,
+                places: "Albany\n",
+                dir: &source,
+                engine: usnm_ocr_contract::quality::Engine {
+                    image: format!("sha256:{}", "a".repeat(64)),
+                },
+                function_words: vec![],
+                crop_seed: 522,
+                k_crops: 12,
+            })
+            .unwrap();
+            let quality = std::fs::read(source.join("quality.json")).unwrap();
+            let valid = crate::quality::units(&qroot).join(good);
+            let mut good_job = crate::quality::work::tests::unit(&valid);
+            good_job.doc_id = good.into();
+            good_job.id = good_job.identity().unwrap();
+            std::fs::write(
+                valid.join("quality.json"),
+                serde_json::to_vec_pretty(&good_job).unwrap(),
+            )
+            .unwrap();
+            let opts = Options {
+                quality_root: qroot,
+                root: tmp.path().join("qwen"),
+                engine: engine(),
+                gpu_timeout_secs: 14400,
+                cpu_timeout_secs: 7200,
+                max_tokens_per_1000px2: 4,
+                max_pages: 1,
+                bundle_size,
+            };
+            let first = run(&opts).await.unwrap();
+            assert_eq!((first.too_large, first.staged), (1, 0));
+            let rejected = opts
+                .root
+                .join(if bundle_size == 1 { "units" } else { "pages" })
+                .join(bad);
+            let evidence = std::fs::read(rejected.join("rejected-qwen.json")).unwrap();
+            let candidate: Job = serde_json::from_slice(&evidence).unwrap();
+            assert_eq!(
+                candidate.crops,
+                cut(&page, alto.as_bytes(), 522, 12).unwrap()
+            );
+            assert!(candidate.crops.iter().any(|c| c.loc_text.contains(&text)));
+            assert!(candidate
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("crop text over size limit"));
+            assert!(!rejected.join(JOB_FILE).exists());
+            assert_eq!(
+                std::fs::read(rejected.join("loc.xml")).unwrap(),
+                alto.as_bytes()
+            );
+            assert_eq!(
+                std::fs::read(rejected.join("quality.json")).unwrap(),
+                quality
+            );
+            let reason = std::fs::read(rejected.join(TOO_LARGE)).unwrap();
+            assert!(String::from_utf8_lossy(&reason).contains("8192-byte limit"));
+            assert!(String::from_utf8_lossy(&reason)
+                .contains(&usnm_ocr_contract::boinc::sha256(alto.as_bytes())));
+            let second = run(&opts).await.unwrap();
+            assert_eq!((second.already, second.staged, second.too_large), (1, 1, 0));
+            for entry in std::fs::read_dir(units(&opts.root)).unwrap() {
+                let path = entry.unwrap().path().join(JOB_FILE);
+                if path.exists() {
+                    let job: Job = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                    job.validate().unwrap();
+                    assert!(job.crops.iter().all(|c| c.loc_text.len() <= MAX_CROP_TEXT));
+                }
+            }
+            let third = run(&opts).await.unwrap();
+            assert_eq!((third.already, third.staged, third.too_large), (2, 0, 0));
+            assert_eq!(
+                std::fs::read(rejected.join("rejected-qwen.json")).unwrap(),
+                evidence
+            );
+            assert_eq!(std::fs::read(rejected.join(TOO_LARGE)).unwrap(), reason);
+        }
     }
 
     #[tokio::test]
