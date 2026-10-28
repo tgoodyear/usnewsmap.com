@@ -502,9 +502,30 @@ no LoC request:
    clean pass assembles the complete current campaign and uses the existing
    idempotent certificate loader. Corrupt parts fail closed and remain available
    for operator diagnosis. No scientific inputs, historical parts or database rows
-   are deleted. This bounds recomputation, not the linear input hashing,
-   table assembly, transfer or loader costs; measure end-to-end pass duration
-   after warming before claiming capacity for a larger campaign.
+   are deleted. Large staged `page.jpg`, `loc.xml`, and `texts.json` blobs
+   additionally have immutable checksum-protected SHA-256 receipts under
+   `collected-parts/input-digests/`. On Unix, unchanged opened-file device,
+   inode, size, nanosecond mtime and ctime allow reuse of the digest; identity
+   is checked again after hashing or lookup and against a freshly opened path.
+   Rewrites (even same-size with restored mtime) and replacements invalidate it.
+   This requires normal filesystem change-time and close-to-open coherence
+   (including the production NFS mount); coarse whole-second ctime or non-Unix
+   filesystems fall back to content hashing. Job descriptors, canonical outputs,
+   optional sidecars, and collector versions remain content-hashed each pass.
+   Corrupt digest receipts fail closed and are retained, never silently rebuilt.
+   A warming pass stops at its first additional dirty unit after the configured
+   limit, rather than hashing every remaining cold input. Cold digest warming
+   can still require multiple bounded passes; successful
+   publication still requires a complete current campaign and final dependency
+   revalidation. File enumeration, metadata checks, table assembly, transfer and
+   loading remain linear; measure end-to-end pass duration after warming before
+   claiming capacity for a larger campaign.
+   Before deploying digest reuse on another filesystem, retain an isolated
+   fixture receipt from the actual mount/client: verify nonzero nanosecond ctime,
+   same-size rewrites with restored mtime, atomic replacement, and fresh-open
+   visibility. Mount version alone is not acceptance. Then verify cold progress,
+   a complete ordinary publication/load, clean-pass idempotence and late canonical
+   reading invalidation before restoring any paused results timer.
 
 ```sh
 # On pve-laptop, once: the trust and the mounts (home-infra).
