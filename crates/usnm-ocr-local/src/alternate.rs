@@ -105,10 +105,7 @@ fn checked(bytes: &[u8], expected: &str, max: usize, label: &str) -> anyhow::Res
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
         "{label}: invalid SHA256"
     );
-    ensure!(
-        !bytes.is_empty() && bytes.len() <= max,
-        "{label}: size bound"
-    );
+    ensure!(bytes.len() <= max, "{label}: size bound");
     ensure!(digest(bytes) == expected, "{label}: checksum mismatch");
     Ok(())
 }
@@ -425,7 +422,10 @@ pub async fn stage(
     binding: &Binding,
     input: &Inputs<'_>,
 ) -> anyhow::Result<Receipt> {
-    let receipt = validate(binding, input)?;
+    // XML parser diagnostics can contain source OCR. Keep them out of telemetry.
+    let receipt = validate(binding, input).map_err(|_| {
+        anyhow::anyhow!("alternate staging refused: invalid binding or source artifacts")
+    })?;
     let lease = Lease::take(state, owner).await?;
     let result: anyhow::Result<Receipt> = async {
         let prefix = format!("{ROOT}/alternates/{}/{}", binding.doc_id, receipt.candidate);
@@ -864,6 +864,40 @@ mod tests {
         let mut f = Fixture::new("reading");
         f.update_alto(b"not XML".to_vec());
         assert!(validate(&f.binding, &f.inputs()).is_err());
+    }
+
+    #[tokio::test]
+    async fn alternate_stage_accepts_empty_baseline_and_redacts_parser_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(temp.path().to_str().unwrap()).unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        let mut f = Fixture::new("reading");
+        f.baseline.clear();
+        f.binding.baseline_sha256 = digest(&f.baseline);
+        f.registration = serde_json::to_vec(&serde_json::json!({
+            "doc_id":f.binding.doc_id,
+            "source_image_sha256":f.binding.source_image_sha256,
+            "baseline_sha256":f.binding.baseline_sha256,
+            "orientation":"upright","evidence":"Synthetic empty-baseline fixture"
+        }))
+        .unwrap();
+        f.binding.registration_sha256 = digest(&f.registration);
+        let receipt = stage(&state, "stage", store.as_ref(), &f.binding, &f.inputs())
+            .await
+            .unwrap();
+        let path = format!(
+            "{ROOT}/alternates/{}/{}/baseline.txt",
+            f.binding.doc_id, receipt.candidate
+        );
+        assert_eq!(store.get(&path).await.unwrap().unwrap(), b"");
+        f.update_alto(
+            br#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><PRIVATE_OCR_SENTINEL></alto>"#.to_vec()
+        );
+        let error = stage(&state, "stage", store.as_ref(), &f.binding, &f.inputs())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("refused"));
+        assert!(!format!("{error:#}").contains("PRIVATE_OCR_SENTINEL"));
     }
 
     #[tokio::test]
