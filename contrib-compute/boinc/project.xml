@@ -58,7 +58,8 @@
         <min_version>0</min_version>
         <deprecated>0</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
-        <weight>1</weight>
+        <!-- 16 of 24 total weight: about 666 of 1000 feeder cache slots (see config.xml.template). -->
+        <weight>16</weight>
         <beta>0</beta>
         <target_nresults>2</target_nresults>
     </app>
