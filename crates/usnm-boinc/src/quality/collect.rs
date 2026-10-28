@@ -1048,7 +1048,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             }
             if dirty >= opts.max_dirty_units {
                 deferred += 1;
-                continue;
+                break;
             }
             dirty += 1;
         }
@@ -1224,7 +1224,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     }
     anyhow::ensure!(
         deferred == 0,
-        "collection cache warmed {dirty} dirty units; {deferred} deferred; no incomplete snapshot published"
+        "collection cache warmed {dirty} dirty units; at least {deferred} deferred; no incomplete snapshot published"
     );
     if let Some(cache) = &cache {
         cache.verify()?;
@@ -1753,9 +1753,45 @@ pub(super) mod tests {
         let mut files = std::fs::read_dir(opts.cache.as_ref().unwrap())
             .unwrap()
             .map(|p| p.unwrap().path())
+            .filter(|p| p.is_file())
             .collect::<Vec<_>>();
         files.sort();
         files
+    }
+
+    #[tokio::test]
+    async fn warming_stops_at_first_deferred_unit_without_hashing_remaining_cold_inputs() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, _) = cached_fixture(dir.path()).await;
+        for name in ["zz-deferred", "zzz-not-visited"] {
+            let other = units(&opts.root).join(name);
+            let mut job = crate::quality::work::tests::unit(&other);
+            job.doc_id = name.into();
+            job.id = job.identity().unwrap();
+            std::fs::write(other.join(JOB_FILE), serde_json::to_vec(&job).unwrap()).unwrap();
+            std::fs::write(other.join("submitted"), b"").unwrap();
+            for output in crate::quality::outputs() {
+                std::fs::copy(
+                    unit.join(output),
+                    opts.spool
+                        .join(format!("{}__file_{output}", job.workunit())),
+                )
+                .unwrap();
+            }
+            if name == "zzz-not-visited" {
+                std::fs::remove_file(other.join(PAGE_FILE)).unwrap();
+                std::fs::create_dir(other.join(PAGE_FILE)).unwrap();
+            }
+        }
+        let error = run(&opts).await.unwrap_err().to_string();
+        assert!(error.contains("deferred"), "{error}");
+        assert_eq!(parts(&opts).len(), 1);
+        assert!(!opts
+            .out_dir
+            .as_ref()
+            .unwrap()
+            .join("pages.parquet")
+            .exists());
     }
 
     #[tokio::test]

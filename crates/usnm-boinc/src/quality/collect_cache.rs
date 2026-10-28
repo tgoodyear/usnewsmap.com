@@ -13,6 +13,121 @@ use usnm_ocr_contract::{quality::Job, qwen};
 
 const FORMAT: &[u8] = b"quality-row-part-v1";
 
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+#[cfg(unix)]
+impl FileIdentity {
+    fn read(file: &File) -> anyhow::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let m = file.metadata()?;
+        ensure!(m.is_file(), "fingerprint input is not a regular file");
+        Ok(Self {
+            device: m.dev(),
+            inode: m.ino(),
+            size: m.size(),
+            modified: (m.mtime(), m.mtime_nsec()),
+            changed: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InputDigest {
+    identity: FileIdentity,
+    sha256: Vec<u8>,
+}
+
+fn contents(input: &mut File) -> anyhow::Result<Vec<u8>> {
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 65536];
+    loop {
+        let n = input.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buffer[..n]);
+    }
+    Ok(digest.finalize().to_vec())
+}
+
+#[cfg(unix)]
+fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec<u8>> {
+    let identity = FileIdentity::read(input)?;
+    // Coarse ctime cannot distinguish a same-size rewrite with restored mtime.
+    if identity.changed.1 == 0 {
+        return contents(input);
+    }
+    let mut key = Sha256::new();
+    field(&mut key, b"quality-input-digest-v1");
+    field(&mut key, path.as_os_str().as_encoded_bytes());
+    field(&mut key, &serde_json::to_vec(&identity)?);
+    let key = hex(&key.finalize());
+    let receipt = dir.join(format!("{key}.json"));
+    let digest = match std::fs::read(&receipt) {
+        Ok(bytes) => {
+            let envelope: Envelope = serde_json::from_slice(&bytes)?;
+            ensure!(
+                envelope.fingerprint == key,
+                "input digest identity mismatch"
+            );
+            ensure!(
+                envelope.rows_sha256 == hex(&Sha256::digest(envelope.rows.as_bytes())),
+                "input digest checksum mismatch; receipt retained"
+            );
+            let saved: InputDigest = serde_json::from_str(&envelope.rows)?;
+            ensure!(
+                saved.identity == identity && saved.sha256.len() == 32,
+                "invalid input digest receipt"
+            );
+            saved.sha256
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let digest = contents(input)?;
+            ensure!(
+                FileIdentity::read(input)? == identity,
+                "input changed while hashing"
+            );
+            let rows = serde_json::to_string(&InputDigest {
+                identity: identity.clone(),
+                sha256: digest.clone(),
+            })?;
+            let envelope = Envelope {
+                fingerprint: key,
+                rows_sha256: hex(&Sha256::digest(rows.as_bytes())),
+                rows,
+            };
+            std::fs::create_dir_all(dir)?;
+            let mut staged = tempfile::NamedTempFile::new_in(dir)?;
+            staged.write_all(&serde_json::to_vec(&envelope)?)?;
+            staged.as_file().sync_all()?;
+            staged.persist_noclobber(&receipt)?;
+            File::open(dir)?.sync_all()?;
+            digest
+        }
+        Err(e) => return Err(e).context("reading retained input digest"),
+    };
+    ensure!(
+        FileIdentity::read(input)? == identity
+            && FileIdentity::read(&File::open(path)?)? == identity,
+        "input changed while fingerprinting"
+    );
+    Ok(digest)
+}
+
+#[cfg(not(unix))]
+fn input_digest(_dir: &Path, _path: &Path, input: &mut File) -> anyhow::Result<Vec<u8>> {
+    contents(input)
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Part {
     pub summary: Summary,
@@ -79,6 +194,10 @@ fn field(hash: &mut Sha256, bytes: &[u8]) {
 }
 
 fn file(hash: &mut Sha256, path: &Path) -> anyhow::Result<()> {
+    fingerprint(hash, path, None)
+}
+
+fn fingerprint(hash: &mut Sha256, path: &Path, memo: Option<&Path>) -> anyhow::Result<()> {
     field(hash, path.as_os_str().as_encoded_bytes());
     let mut input = match File::open(path) {
         Ok(input) => input,
@@ -89,16 +208,11 @@ fn file(hash: &mut Sha256, path: &Path) -> anyhow::Result<()> {
         Err(e) => return Err(e).with_context(|| format!("fingerprinting {path:?}")),
     };
     field(hash, b"present");
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 65536];
-    loop {
-        let n = input.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        digest.update(&buffer[..n]);
-    }
-    field(hash, &digest.finalize());
+    let digest = match memo {
+        Some(dir) => input_digest(dir, path, &mut input)?,
+        None => contents(&mut input)?,
+    };
+    field(hash, &digest);
     Ok(())
 }
 
@@ -231,7 +345,11 @@ impl Cache {
         inputs.sort();
         inputs.dedup();
         for path in inputs {
-            file(&mut hash, &path)?;
+            let staged_blob = [super::PAGE_FILE, super::ALTO_FILE, super::TEXTS_FILE]
+                .iter()
+                .any(|name| path == unit.join(name));
+            let memo = self.dir.join("input-digests");
+            fingerprint(&mut hash, &path, staged_blob.then_some(memo.as_path()))?;
         }
         Ok(hex(&hash.finalize()))
     }
@@ -309,6 +427,103 @@ impl Cache {
 mod tests {
     use super::*;
     use crate::quality::collect::{collect, run, tests::cached_fixture};
+
+    #[cfg(unix)]
+    #[test]
+    fn input_digest_reuses_persistent_receipt_without_reading_unchanged_blob() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("page.jpg");
+        let memo = dir.path().join("digests");
+        std::fs::write(&path, b"staged scientific input").unwrap();
+        let first = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
+        let mut write_only = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert_eq!(input_digest(&memo, &path, &mut write_only).unwrap(), first);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_size_rewrite_with_restored_mtime_and_replacement_invalidate_input_digest() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("page.jpg");
+        let memo = dir.path().join("digests");
+        std::fs::write(&path, b"first").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let first = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&path, b"other").unwrap();
+        File::open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let changed = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
+        assert_ne!(changed, first);
+        let replacement = dir.path().join("replacement");
+        std::fs::write(&replacement, b"third").unwrap();
+        File::open(&replacement)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        let replaced = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
+        assert_ne!(replaced, changed);
+        assert_ne!(replaced, first);
+        assert_eq!(std::fs::read_dir(memo).unwrap().count(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_input_digest_fails_closed_and_is_retained() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("page.jpg");
+        let memo = dir.path().join("digests");
+        std::fs::write(&path, b"first").unwrap();
+        input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
+        let receipt = std::fs::read_dir(&memo)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let mut envelope: Envelope =
+            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+        envelope.rows.push(' ');
+        let corrupt = serde_json::to_vec(&envelope).unwrap();
+        std::fs::write(&receipt, &corrupt).unwrap();
+        assert!(input_digest(&memo, &path, &mut File::open(&path).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("checksum mismatch"));
+        assert_eq!(std::fs::read(receipt).unwrap(), corrupt);
+    }
+
+    #[tokio::test]
+    async fn final_guard_detects_same_size_input_change_despite_restored_mtime() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        collect(&opts).unwrap();
+        let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let canonical = super::super::collect::spool_files(
+            &opts.spool,
+            &job.workunit(),
+            &super::super::outputs(),
+        );
+        let key = cache.key(&unit, &job, &canonical).unwrap();
+        cache.track(&unit, &canonical, &key);
+        let path = unit.join(super::super::PAGE_FILE);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+        File::open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(cache
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("QUALITY inputs changed"));
+    }
 
     #[tokio::test]
     async fn bundled_qwen_dependencies_are_shared_and_invalidate_every_affected_page() {
@@ -539,7 +754,13 @@ mod tests {
         assert_ne!(updated, current);
         assert!(cache.load(&updated).unwrap().is_none());
         // All historical parts are retained, not replaced by the newest dependencies.
-        assert_eq!(std::fs::read_dir(opts.cache.unwrap()).unwrap().count(), 4);
+        assert_eq!(
+            std::fs::read_dir(opts.cache.unwrap())
+                .unwrap()
+                .filter(|entry| entry.as_ref().unwrap().path().is_file())
+                .count(),
+            4
+        );
         use usnm_ocr_contract::quality::{BundlePage, BundlePageInputs, BundleSlice};
         let slice = |input: &usnm_ocr_contract::quality::Input| BundleSlice {
             bytes: input.bytes,
