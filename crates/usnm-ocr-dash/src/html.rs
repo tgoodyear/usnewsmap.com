@@ -143,6 +143,39 @@ mod tests {
     }
 
     #[test]
+    fn publisher_details_distinguish_completion_failure_and_unknown() {
+        let mut v = summary_view();
+        v.fetch.publish.configured = true;
+        v.fetch.publish.value = Some(crate::fetch::PublishStatus {
+            schema: 1,
+            active_state: Some("inactive".into()),
+            finished_at: Some(v.generated_at - chrono::Duration::minutes(1)),
+            result: Some("success".into()),
+            exit_status: Some(0),
+            error: None,
+        });
+        let html = render(&v);
+        assert!(html.contains("Publish fetched"));
+        assert!(html.contains(" succeeded</span>"));
+        assert!(html.contains("Last completion: <time"));
+        assert!(html.contains("does not prove that new pages were published"));
+        let status = v.fetch.publish.value.as_mut().unwrap();
+        status.result = Some("exit-code".into());
+        status.exit_status = Some(1);
+        assert!(render(&v).contains(" failed</span>"));
+        v.fetch.publish.value.as_mut().unwrap().error = Some("<unavailable>".into());
+        let html = render(&v);
+        assert!(html.contains(" unknown</span>"));
+        assert!(html.contains("&lt;unavailable&gt;"));
+        v.fetch.publish.value = None;
+        v.fetch.publish.error = Some("cannot read /var/lib/private/publisher.json".into());
+        crate::public::redact(&mut v);
+        let html = render(&v);
+        assert!(html.contains("Publisher metadata unknown"));
+        assert!(!html.contains("/var/lib/private"));
+    }
+
+    #[test]
     fn ecosystem_summaries_do_not_expose_page_or_batch_identifiers() {
         let mut v = summary_view();
         v.fetch.status = Some(crate::fetch::FetchStatus {
