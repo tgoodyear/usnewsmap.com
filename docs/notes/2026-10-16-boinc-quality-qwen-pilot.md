@@ -1,5 +1,36 @@
 # BOINC OCR quality (`usnm_quality`) and vision-language crop (`usnm_qwen`) pilot and calibration
 
+## Native generation diagnostics (schema 1)
+
+New native workers retain per-crop generation metadata in the atomic checkpoint
+and upload it as JSON under `== generation_v1/<crop-id>` sections in `diag.txt`.
+The existing readings/result wire contract and scientific validator are unchanged.
+Old checkpoints without metadata still load; they do not acquire invented finish
+reasons. Older workers cannot resume checkpoints containing the new field.
+
+Each section records the server finish reason (missing means unknown), reported
+completion tokens, requested budget, exact response/content SHA-256 and byte
+counts, whether existing text cleaning changed content, longest identical-token
+run, and descriptive budget-exhaustion/duplicate-line/empty/uncertainty-only flags.
+Repetition metrics inspect the complete raw response content before existing
+8 KiB reading cleaning/truncation, including degeneration beyond the retained prefix.
+Unexpected non-string or oversized finish reasons are labeled invalid rather than
+successful stops; the complete response hash still identifies their source.
+Hashes are **not** copies of raw HTTP responses. The readings remain unchanged.
+Metadata follows existing diagnostic limits: 2 KiB per section, 64 KiB total with
+explicit cut notices; large bundles can have incomplete uploaded diagnostics,
+not inferred successful completion for missing sections.
+
+No stop strings or repetition penalty are explicitly requested; this does not
+assert that server defaults disable repetition controls. Prompt 1, area-based
+token budget, temperature 0, top-p 1, seed 42, cleaning and validation stay unchanged.
+Agreement, including high Dice on repeated text, is not accuracy evidence.
+Token exhaustion or repetition is a failure/uncertainty label requiring
+image-grounded review, not a reason to lower validation thresholds or discard a
+reading. For c07-like loops, compare crop/prompt/budget/stop/repetition variants
+against multilingual, damaged and clipped image-grounded examples before changing
+generation policy; simply raising the budget can prolong degeneration.
+
 **Status:** multi-platform BOINC pilot collected (5 `usnm_quality` campaigns, 61 canonical workunits, 0 failures); `usnm_qwen` multi-host quorum and `crops.parquet` join verified; gold-set calibration complete (`overproof-ca`, `bln600`, `reichsanzeiger`, `Qwen3-VL-2B-Q8_0`, `Qwen3VL-8B-Q4_K_M`) · **Date:** 2026-10-16 · **Measured on:** `boinc.usnewsmap.com` (CT 100/101 Linux x86_64 native & rootless Podman, macOS `arm64-apple-darwin` native), `usnm-ocr-node3-arcs-prod` (`overproof-ca`, `bln600`, `reichsanzeiger`), Apple Silicon Metal GPU (`llama-server`) · **Full report & preserved data:** [docs/reports/2026-10-boinc-quality-pilot/report.md](../reports/2026-10-boinc-quality-pilot/report.md) · **Issues:** [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#531](https://github.com/tgoodyear/usnewsmap.com/issues/531), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559)
 
 ## The question

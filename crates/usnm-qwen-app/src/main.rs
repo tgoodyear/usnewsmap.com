@@ -513,6 +513,7 @@ fn run_crops(
             model: model.name.clone(),
             device: gpu.device_label.clone(),
             readings: Vec::with_capacity(l.job.crops.len()),
+            generation_metadata: BTreeMap::new(),
         },
     };
     let mut outcome = Outcome::Ok;
@@ -552,7 +553,8 @@ fn run_crops(
         };
         let t_crop = Instant::now();
         match chat_completion(port, &png, l.job.max_tokens(crop), remaining) {
-            Ok((text, tokens)) => {
+            Ok((text, tokens, metadata)) => {
+                cp.generation_metadata.insert(crop.id.clone(), metadata);
                 cp.readings.push(Reading {
                     id: crop.id.clone(),
                     ms: ms(t_crop),
@@ -592,6 +594,9 @@ fn run_crops(
     let out_readings = cp.readings;
 
     let engine_ms = ms(started);
+    for (crop, metadata) in cp.generation_metadata {
+        diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
+    }
     if let Some(ref srv) = srv_guard {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
             diag.section(
@@ -1076,7 +1081,18 @@ mod tests {
                 text: "cached first page crop".into(),
                 tokens: 4,
             }],
+            generation_metadata: BTreeMap::from([(
+                "page_one:c01".into(),
+                r#"{"schema":1,"finish_reason":"stop"}"#.into(),
+            )]),
         };
+        let mut legacy = serde_json::to_value(&cp).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("generation_metadata");
+        let legacy: QwenCheckpoint = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.generation_metadata.is_empty());
         cp.save(&slot).unwrap();
         assert!(slot.join(CHECKPOINT_FILE).is_file());
 
@@ -1098,6 +1114,20 @@ mod tests {
         assert_eq!(readings.readings[1].id, "page_two:c01");
         assert_eq!(readings.readings[1].text, "fresh second page crop");
         let diag_str = String::from_utf8_lossy(&diag_bytes);
+        assert!(diag_str
+            .contains("== generation_v1/page_one:c01\n{\"schema\":1,\"finish_reason\":\"stop\"}"));
+        let fresh: serde_json::Value = serde_json::from_str(
+            diag_str
+                .split("== generation_v1/page_two:c01\n")
+                .nth(1)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(fresh["finish_reason"].is_null());
+        assert_eq!(fresh["schema"], 1);
         assert!(diag_str.contains("resumed from checkpoint: 1 of 2 crops already complete"));
     }
 
