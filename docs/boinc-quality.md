@@ -522,11 +522,56 @@ no LoC request:
    Source and preparation snapshots, coverage and host load receipts are retained.
    The host cursor advances only after successful verification and loading. Failure
    after a database commit but before cursor update safely repeats the same upserts.
-   Lexical round-robin selection fixes an upper-name fence for each finite cycle.
-   Continuous arrivals cannot postpone wrapping to earlier units; arrivals beyond
-   the fence join the next cycle. The fence is persisted in coverage and cursor
-   metadata, not a campaign freshness assertion. Selection revisits prior units, so newly canonical
-   QUALITY results and real late or changed Qwen readings are not permanently skipped.
+   The ordinary service explicitly enables `--completion-frontier`: three of every
+   four successful collections prioritize canonical-present units whose dependency
+   fingerprint has not been acknowledged by a verified, nonempty certificate load.
+   The fourth visit fairly revisits all submitted units, including pending, failed
+   and unchanged units. With no priority work, every visit is fair. Each lane fixes
+   an upper-name fence for its finite cycle; continuous arrivals cannot postpone
+   wrapping to earlier units. Thus a pending unit becoming canonical is immediately
+   priority-eligible rather than waiting for its fair visit. Priority selection is
+   cyclic, not newest-only. None of these scheduling hints constitutes scientific
+   validation, independent truth, quorum, or campaign completeness.
+   `usnm-boinc quality collect --inventory-only --cache ...` produces these hints
+   using the **same canonical dependency keys as the row cache**, including binary,
+   staged inputs, canonical QUALITY outputs and late/changed Qwen dependencies.
+   It computes no rows and publishes no Parquet. It examines only the configured
+   campaign and its reading dependencies, with at most 10,000 QUALITY directory
+   entries; larger campaigns fail explicitly. Retained large-blob digest receipts
+   avoid repeatedly reading unchanged staged scans/texts. The selected key is
+   rechecked after collection (`--inventory-unit`); inventory errors, missing
+   configured roots, corrupt metadata, or changed selected inputs fail closed,
+   without silently falling back to an old cursor. All inventory and collection
+   remain inside the unchanged nonblocking bridge lock and 180-second remote bound.
+   Cold digest warming can time out; completed digest receipts survive the retry.
+   No pass verifies/loads more than one scope.
+
+   **Migration:** install the matching collector binary before this driver/service;
+   old binaries reject inventory flags. Without `--completion-frontier`, the driver
+   retains its original frozen-prefix cursor behavior, including programmatic
+   `host_pass(Namespace(...))` reconciliation callers. Do not enable the flag for
+   explicit isolated prefix reconciliation. Existing host `after`/`through` fields
+   remain compatible; frontier progress is separate schema-1
+   `scoped/<campaign>/frontier.json`, bounded by the campaign limit. A host receipt
+   carries the selected fingerprint; only after successful nonempty load does the
+   host cursor carry `frontier_ack`, applied idempotently next admission. A crash
+   before acknowledgement repeats safe upserts. Remote lane progress alone never
+   marks a scope loaded; zero-row visits remain pending/failed, not success.
+   Collector validation failures and collector timeouts persist scheduling-only
+   progress before failing the pass, so a poison canonical result cannot pin the
+   priority lane or suppress fair revisits. Its fingerprint remains unacknowledged
+   and is retried in later cycles. Inventory and selected-dependency recheck errors
+   still abort without advancing either lane.
+   Frontier inventory, collection and selected-key recheck share a 160-second
+   monotonic work budget inside the existing 180-second remote limit. Each native
+   invocation gets at most 120 seconds and at most the remaining budget, reserving
+   20 seconds for subprocess teardown and durable scheduling progress. A slow
+   inventory therefore reduces the collector's timeout rather than allowing outer
+   termination to interrupt its failure-progress write. This reserve is not a
+   guarantee against unavailable storage, process kill, or host failure.
+   No prior cursor, DB count, or output timestamp proves an exact dependency key
+   was loaded: the first opt-in conservatively re-verifies canonical-present units
+   once. Do not seed acknowledgements from guessed historical coverage.
    Each visit invokes the collector's current dependency and content-addressed cache
    checks; old parts are never published just because a receipt exists.
    This is independent per-page science, not a globally consistent campaign snapshot
@@ -534,6 +579,23 @@ no LoC request:
    coverage/load receipts for what was freshly observed. Whole-campaign collectors
    still refuse incomplete publication and must not consume these partial directories
    as complete snapshots.
+
+   **Native acceptance (not demonstrated by offline tests):** record installed
+   driver/binary hashes, timer settings, lock admissions/busy exits, inventory and
+   collection durations (including cold digest warming), and receipt/ack progression.
+   After conservative bootstrap, observe at least two hours spanning ordinary
+   two-chunk/15-minute arrivals and real competing producers; compare exact submitted
+   job/page IDs with certificate DB coverage and measure completion-to-verified-load
+   lag, not just cursor position. Observe a previously pending completion and a
+   genuine late independent-reading change reaching a new verified key, and show
+   unchanged jobs no longer consume priority slots while fair visits continue.
+   With a frozen fair fence of N units, revisitation takes at most N+1 fair visits
+   (at most four times that many successful collections), not a wall-clock guarantee.
+   Sustainability requires usable lock windows for arrivals plus the reserved fair
+   share: roughly eight arriving jobs/hour require at least 10.7 successful scopes/hour
+   under continuous priority demand. This selector cannot repair insufficient lock
+   availability; do not close #962 until measured lag stays bounded. No producer,
+   source budget, timer, quorum, floor, or shared lock should be weakened for acceptance.
    The installer records its selected preparation container in
    `/etc/usnm/quality-results.env` (`CTID`, default 215), never pve-big's CT215.
    Collection does not submit work or alter quorum. Repeated loads upsert the same
