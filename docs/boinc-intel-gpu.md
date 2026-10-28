@@ -15,8 +15,11 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 not general admission. The accompanying `usnm-qwen-cohort-auto.service` and
 `.timer` run one short operation per minute under the normal **nonblocking**
 project mutex. No collector, AMD acceptance, client restart or manual feed start
-is required. Lock contention exits 75 normally; the 30-second service budget
-bounds its own operation, not another owner's workload.
+is required. Lock contention exits 75 normally. An in-container 20-second
+timeout (five-second kill grace) bounds the Python/PHP process group independently
+of the host's 30-second service budget, rather than relying on killing only a
+`podman exec` client. These bound only this owned operation. Disable the timer
+and let any active oneshot finish before handing off ownership.
 
 Each refill admits at most **ten contiguous** newly produced native-8B workunits
 with two pristine ordinary replicas, quorum/target 2, no assignment, no app-version
