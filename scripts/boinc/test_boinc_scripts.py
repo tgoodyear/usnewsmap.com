@@ -1365,6 +1365,19 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn("--prefix claims", calls[1])
         self.assertIn("--prefix scheduler", calls[2])
 
+    def test_handoff_claim_passes_postgres_location_to_validating_rust_client(self):
+        url = ("postgres://queue.example/usnm_queue?user=boinc_claim"
+               "&sslcert=/etc/usnm/queue/client.crt&sslkey=/etc/usnm/queue/client.key"
+               "&sslrootcert=/etc/usnm/queue/ca.pem")
+        for location in (url, url.replace("postgres://", "postgresql://")):
+            with self.subTest(location=location):
+                r = self.handoff("claim", QUEUE_URL=location,
+                                 HANDOFF_MANIFEST="pages-v1/manifest.parquet",
+                                 CLAIM_NONCE="abcdefgh12")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(any(call.startswith("claim pull --queue-url " + location + " ")
+                                    for call in self.calls()))
+
     def test_handoff_claim_refuses_bad_settings(self):
         base = dict(QUEUE_URL="https://usnmst.queue.core.windows.net",
                     HANDOFF_MANIFEST="pages-v1/manifest.parquet", CLAIM_NONCE="abcdefgh12")
