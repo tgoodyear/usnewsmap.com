@@ -229,7 +229,14 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.database["gpu_inflight"] = [{"hostid": 10}]
         self.assertEqual(tick()["status"], "current-window-still-eligible")
         self.assertEqual(tick()["starved_hosts"], [9])
-        receipt = tick(age=1800)
+        # NVIDIA's one task plus the old replica it could still receive fill a two-task buffer:
+        # no rotation is reported or published.
+        held = tick(age=1800)
+        self.assertEqual(held["status"], "bounded-gpu-inflight-buffer-full")
+        self.assertNotIn("rotated_past_window", held)
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [100, 101])
+        self.args.max_inflight_per_host = 3
+        receipt = tick()
         self.assertEqual((receipt["status"], receipt["target"], receipt["rotated_past_window"],
                           receipt["left_unsent_replicas"]), ("refilled-finite-window", [102, 102], [100, 101], 1))
         state = json.loads(state_path.read_bytes())

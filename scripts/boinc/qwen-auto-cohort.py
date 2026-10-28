@@ -350,7 +350,10 @@ def run(args):
         else:
             inflight = {host: sum(int(row["hostid"]) == host for row in database["gpu_inflight"])
                         for host in (args.intel_host, args.nvidia_host)}
-            capacity = max(0, args.max_inflight_per_host - max(inflight.values()))
+            # Old-window replicas stay dispatchable until the new policy is published, so each host's
+            # headroom also reserves every one it could still receive.
+            capacity = max(0, min(args.max_inflight_per_host - inflight[host]
+                                  - available_in_window(rows, window, (host,)) for host in inflight))
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
             scanned = set(ids)
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
@@ -371,16 +374,17 @@ def run(args):
                 return output | {"status": "current-window-still-eligible", "starved_hosts": starved,
                                  "window_held_seconds": held}
             if available:
-                # The left-behind replicas stay ordinary unsent work for every other eligible class;
-                # nothing is cancelled, reassigned or edited.
-                output |= {"rotated_past_window": window, "starved_hosts": starved,
-                           "window_held_seconds": held, "left_unsent_replicas": available}
+                output |= {"starved_hosts": starved, "window_held_seconds": held}
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
             selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
                               args.minimum_workunit, reserved, min(remaining, capacity))
             if not selected:
                 return output | {"status": "no-fresh-verified-pairs"}
+            if available:
+                # The left-behind replicas stay ordinary unsent work for every other eligible class;
+                # nothing is cancelled, reassigned or edited.
+                output |= {"rotated_past_window": window, "left_unsent_replicas": available}
             proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
                      for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
