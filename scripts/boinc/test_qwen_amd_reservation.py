@@ -46,7 +46,7 @@ class AmdReservation(unittest.TestCase):
                      "transitioner_flags": 0, "need_validate": 0, "app_version_num": 0},
             "app": {"name": "usnm_qwen"}, "newer": 0, "assignments": 0,
             "results": [dict(id=value, server_state=2, sent_time=0, hostid=0, outcome=0,
-                             validate_state=0, app_version_id=0) for value in (201, 202)],
+                             validate_state=0, app_version_id=0, received_time=0) for value in (201, 202)],
             "versions": [{"id": 68, "version_num": 114, "platformid": 5, "plan_class": R.AMD},
                          {"id": 37, "version_num": 105, "platformid": 2, "plan_class": R.APPLE}],
         }
@@ -159,7 +159,7 @@ class AmdReservation(unittest.TestCase):
         download.mkdir(exist_ok=True)
         page = b"immutable page bytes independently checked by the producer"
         job = {"doc_id": "ordinary-source-page", "input": {"bytes": len(page), "sha256": R.digest(page)},
-               "engine": dict(R.ENGINE, models=[R.MODEL]), "v": 1, "prompt_version": 1,
+               "engine": dict(R.ENGINE, models=R.MODELS), "v": 1, "prompt_version": 1,
                "max_tokens_per_1000px2": 4, "group": "qwen-nonenglish-v1", "language": "yid",
                "crops": [{"id": "c01", "loc_text": text}]}
         raw = json.dumps(job).encode()

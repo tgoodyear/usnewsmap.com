@@ -28,6 +28,10 @@ MODEL = {
     "file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf", "min_gpu_mb": 7000,
     "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf", "name": "qwen3-vl-8b-q4km",
 }
+MODELS = [MODEL, {
+    "file": "Qwen3-VL-2B-Instruct-Q8_0.gguf", "min_gpu_mb": 0,
+    "mmproj": "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf", "name": "qwen3-vl-2b-q8",
+}]
 
 
 def require(condition, message):
@@ -149,7 +153,7 @@ def strict_pair(snapshot, workunit, app_version, newest=True):
     for row in results:
         require(all(int(row[key]) == value for key, value in {
             "server_state": 2, "sent_time": 0, "hostid": 0, "outcome": 0, "validate_state": 0,
-            "app_version_id": 0,
+            "app_version_id": 0, "received_time": 0,
         }.items()), "A replica is already assigned, failed, or validated")
     versions = snapshot["versions"]
     require(all(row["plan_class"] in (AMD, APPLE, *COMPETITORS) for row in versions),
@@ -186,7 +190,7 @@ def validate_inputs(project, snapshot, expected):
     require(job["doc_id"] == expected["doc_id"] and job["input"]["sha256"] == digest(files["page"])
             and job["input"]["bytes"] == len(files["page"]), "Page/doc identity mismatch")
     require(all(job["engine"][key] == value for key, value in ENGINE.items())
-            and job["engine"]["models"] == [MODEL], "Engine/model contract changed")
+            and job["engine"]["models"] == MODELS, "Engine/model contract changed")
     require(job["v"] == job["prompt_version"] == 1 and job["max_tokens_per_1000px2"] == 4
             and job["group"] == "qwen-nonenglish-v1" and job["language"] == "yid",
             "Prompt/budget/cohort changed")
