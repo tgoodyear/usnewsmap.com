@@ -544,6 +544,15 @@ no LoC request:
    pending quorum remain pending and join on a later pass; they are not reported as
    loaded Qwen science. The two collectors share the host pass lock and server bridge
    lock. Neither changes work identities, submission, source selection or quorum.
+   The native service waits at most 60 seconds for the ordinary bridge lock
+   (`--step-lock-wait-secs 60`); the waiter holds no bridge lock until admitted.
+   Acquisition is explicitly logged, and only collection runs under that lock,
+   never transfer or loading. Exhausted admission remains a failed invocation
+   without pulling or loading; genuine collection errors are not retried as
+   contention. Collection stays bounded to 20 minutes and the service to 40 minutes.
+   The SSH phase allows only the configured admission budget in addition to its
+   existing collection bound; the maximum sequential phase budgets remain below
+   the service limit. Other callers retain nonblocking admission by default.
 
    Both services use native content-addressed row parts; the partial driver passes
    a single-unit root and its persistent isolated cache. Deploy the matching
