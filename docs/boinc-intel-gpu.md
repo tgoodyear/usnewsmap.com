@@ -25,8 +25,13 @@ Each refill admits at most **ten contiguous** newly produced native-8B workunits
 with two pristine ordinary replicas, quorum/target 2, no assignment, no app-version
 binding and zero error/transition/HR flags. The existing pinned Windows/Linux
 GPU artifacts, model/engine hashes, generation budgets, distinct-host gate and
-validator are not relaxed. Only the already published Linux Intel67/NVIDIA66
-1.14 pair is authorized. A superseding release on any platform (including a
+validator are not relaxed. Only one reviewed Linux Intel/NVIDIA release pair is
+authorized: `--app-version-num`, `--intel-app-version` and `--nvidia-app-version`
+(default the published 1.14 pair, Intel67/NVIDIA66) name it, and redeploying with a
+successor pair is a reviewed step. `--prompt-version` (default 1) is the one request
+version admitted; 2 (`--image-min-tokens 1024`, [quality](boinc-quality.md)) needs
+1.15 or later. A job of another request version fails the tick rather than being
+admitted. A superseding release on any platform (including a
 Windows release of either opened class) or changed project config closes the
 owned window instead of silently adopting a new release. The guard checks the
 complete non-deprecated version set the feeder would dispatch: with the app's

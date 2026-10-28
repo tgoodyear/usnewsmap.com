@@ -128,7 +128,7 @@ def choose(rows, floor, reserved, remaining):
     return result
 
 
-def bind_inputs(project, row, job_id, audit):
+def bind_inputs(project, row, job_id, audit, prompt_version=1):
     wu = row["unit"]
     require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
     require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
@@ -155,7 +155,7 @@ def bind_inputs(project, row, job_id, audit):
     require(all(job["engine"][key] == value for key, value in ENGINE.items())
             and job["engine"]["models"] == MODELS, "Unreviewed engine/models")
     require(type(job["v"]) is int and job["v"] == 1 and type(job["prompt_version"]) is int
-            and job["prompt_version"] == 1 and job["max_tokens_per_1000px2"] == 4
+            and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
             and job["group"] == "qwen-nonenglish-v1" and job["language"] in ("yid", "srp"),
             "Unreviewed prompt/budget/cohort")
     crops = job["crops"]
@@ -322,7 +322,8 @@ def run(args):
             require(database["app"]["name"] == "usnm_qwen"
                     and int(database["app"]["homogeneous_redundancy"]) == 0, "Qwen app/HR changed")
             allowed = {}
-            for plan, expected in (("intel_vulkan_8b", 67), ("nvidia_vulkan_8b", 66)):
+            for plan, expected in (("intel_vulkan_8b", args.intel_app_version),
+                                   ("nvidia_vulkan_8b", args.nvidia_app_version)):
                 # shared_8b opens these classes on every platform: any non-Linux release closes admission.
                 # The feeder loads only the newest version per platform/plan class unless app.min_version
                 # is set, in which case every version >= min_version is dispatchable.
@@ -333,7 +334,7 @@ def run(args):
                                       for row in versions if (int(row["version_num"]) >= minimum if minimum
                                                               else int(row["version_num"]) == newest))
                 allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
-                    and dispatchable == [(1, 114, expected)]
+                    and dispatchable == [(1, args.app_version_num, expected)]
             release = int(time.time()) >= args.enabled_until or not all(allowed.values())
         if release:
             command = ["--stop"]
@@ -363,7 +364,8 @@ def run(args):
                               args.minimum_workunit, reserved, min(remaining, capacity))
             if not selected:
                 return output | {"status": "no-fresh-verified-pairs"}
-            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])]) for row in selected]
+            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+                     for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
             command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair",
                        "--admit-until", str(args.enabled_until)]
@@ -386,7 +388,8 @@ def run(args):
             }
             persist(state_path, state)
             if selected:
-                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])]) for row in selected] == proof,
+                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+                         for row in selected] == proof,
                         "Input/source provenance changed before apply")
                 require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")
             applied = json.loads(subprocess.check_output(command + ["--apply"], timeout=15))
@@ -422,8 +425,18 @@ def main(argv=None):
     parser.add_argument("--enabled-until", type=int, required=True)
     parser.add_argument("--intel-host", type=int, default=9)
     parser.add_argument("--nvidia-host", type=int, default=10)
+    # The one reviewed Linux release per opened class; any other dispatchable version closes admission.
+    parser.add_argument("--app-version-num", type=int, default=114)
+    parser.add_argument("--nvidia-app-version", type=int, default=66)
+    parser.add_argument("--intel-app-version", type=int, default=67)
+    # Request version 2 (--image-min-tokens 1024) is read only by app versions 1.15 and later.
+    parser.add_argument("--prompt-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
+    require(args.app_version_num >= 114 and args.nvidia_app_version > 0 and args.intel_app_version > 0
+            and args.nvidia_app_version != args.intel_app_version, "Expected reviewed app versions")
+    require(args.prompt_version == 1 or args.app_version_num >= 115,
+            "Request version 2 needs app versions that read it")
     require(re.fullmatch("[a-f0-9]{32}", args.controller) is not None, "Expected controller identity")
     require(all(re.fullmatch("[a-f0-9]{64}", value) for value in
                 (args.helper_sha256, args.config_sha256, args.initial_policy_sha256)), "Expected SHA256 guards")
