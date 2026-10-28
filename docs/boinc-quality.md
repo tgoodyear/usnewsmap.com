@@ -634,10 +634,17 @@ scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
 
 ### Sustained non-English Qwen crop feed
 
-The opt-in `usnm-qwen-feed.timer` runs on the quality shipper host every ten minutes
-after the previous run finishes. It does not replace the ordinary quality feeder.
-Install `qwen_feed.py` and the updated `quality-ship.sh` beside that host's existing
-`quality_receive.py`; install the updated `quality_feed.py` and `ocr_manifest.py` in
+The opt-in `usnm-qwen-feed.timer` prepares sources on the quality shipper host every
+ten minutes after preparation finishes. The separate `usnm-qwen-ship.timer` drains
+at most two immutable READY chunks every minute after shipping finishes. Neither
+unit orders itself after the other: archive extraction, scan preparation or their
+failure cannot hold already-READY native work behind preparation. A campaign-local
+ship lock also prevents an old inline shipper and the independent shipper from
+copying/cleaning the same chunk concurrently; normal project mutexes still serialize
+server staging/submission. This does not replace the ordinary quality feeder.
+Install `qwen_feed.py`, `quality-ship.sh` and `quality_receive.py` into a Qwen-owned
+`/opt/usnm-quality-feed/qwen-throughput/` directory, leaving other campaigns'
+installed shared helpers unchanged. Install the updated `quality_feed.py` and `ocr_manifest.py` in
 the preparation CT's `/opt/usnm-quality-feed/`. Install `archive_alto.py` on the archive
 host at `/opt/usnm-quality-feed/`, and `qwen_submit.py` inside the server container at
 `/project/ops/qwen-feed/`. The existing pinned preparation venv suffices; no new
@@ -648,8 +655,15 @@ Configure `/etc/usnm/qwen-feed.env` on the shipper host with `CAMPAIGN` (a new c
 `SERVER_HOST`, `ARCHIVE_HOST`, `SCAN_SERVER`, the existing quality `ENGINE_IMAGE`,
 `QWEN_ENGINE_PLAN` (a reviewed `/project/.../plan.json` containing the pinned `engine`),
 and `QWEN_MODELS` (the existing checksum-pinned shared-model directory, not another
-model copy). Install the service/timer from `scripts/boinc/onprem/quality-feed/`, verify
-one service execution and its authoritative workunit audit, then enable the timer.
+model copy). `QWEN_MAX_READY` defaults to 1000 **fresh original replicas** (500
+untouched native pairs); it is not the global unsent-replica headline. Install both
+service/timer pairs from `scripts/boinc/onprem/quality-feed/` at an actual old
+Qwen-service idle boundary, after the old inline invocation completes. Do not start
+a competing consumer while an old unguarded shipper is active. Enable the new
+ship timer without manually invoking feed/ship; verify its genuine ordinary run
+and authoritative native audit. The preparation timer and source/archive budgets
+are unchanged. Phase JSON distinguishes inventory, selection, original ALTO and
+READY preparation; native shipping logs normal mutex acquisition.
 
 Each tick excludes all retained Qwen single-page/bundle documents and the campaign's
 completed source chunks, selects explicitly non-English **available** scans by descending
@@ -669,9 +683,18 @@ pages remain eligible immediately; only confirmed missing sources get the daily 
 The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
 staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.
 It refuses submission uncertainty, cross-campaign duplicate documents, changed hashes,
-incorrect database routing/quorum, more than 1,000 ready Qwen replicas (including a
-per-chunk reservation), or less than 50 GiB free in either the project filesystem or
-the host thin pool. Up to three unshipped chunks are buffered. Failures retain READY
+incorrect database routing/quorum, the configured fresh-original-replica target
+(including a per-chunk reservation), or more than 2000 unresolved native workunits
+(including retries, counted separately). A fresh pair is batch 8, quorum/target two,
+canonical/error zero, exactly two total results, both unsent/host zero/outcome zero/
+unvalidated, and no assignment row. Retry replicas and unrelated applications never
+masquerade as useful fresh supply or block it via a global ready headline. The
+ordinary non-Qwen shipper's global unsent ceiling is unchanged.
+
+The 50 GiB project/bulk/thin-pool floors remain; native admission additionally
+reserves at least 64 MiB **per candidate page** before staging on the least-free
+backing filesystem. Preparation uses the same conservative per-page reservation to
+bound its selection. Up to three unshipped chunks are buffered. Failures retain READY
 chunks and submission journals; never delete `submitting` to replay work.
 The filesystem floor uses the minimum available space across the project root,
 `quality/`, and `usnmocr/download/`, so a separate bulk-data mount or NFS quota
@@ -679,6 +702,21 @@ cannot be hidden by free space on the local root filesystem.
 Successful native workunit audits are retained in `audit.json`, bound to the exact job
 SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
 new or changed jobs always require a fresh authoritative audit.
+
+Ramp the configured target only after measured automatic runs, not to manufacture
+10,000 via a number change. For example, start at 200 fresh replicas (100 pairs),
+verify new app-6/batch-8 original jobs, zero uncertain submissions, immutable inputs,
+phase/rate receipts and post-cleanup floors, then use 1000 replicas (500 pairs).
+A later 2000-replica stage is still only 1000 fresh pairs and must fit the unresolved
+ceiling plus the existing jobs. At the 28 October measurement, 189 unique READY
+sources occupied 523,298,131 bytes, worst page 4,708,052 bytes; 19 native download
+page/job inputs occupied 42,208,871 bytes and the two shared models 5,780,074,528 bytes
+once. This supports a conservative 64-MiB/page incremental budget, not an assertion
+that all source candidates are input-valid or scientifically accepted.
+The indexed scan ceiling was 262,920 unique pages, **not** a count of non-English,
+original-ALTO-available, crop-valid pages. Language/source/crop checks still decide
+eligibility. A measured 19-job arrival is not 10,000 useful jobs, and a trailing
+zero-job hour must be reported as zero even when old replicas remain ready.
 
 The separate `usnm-qwen-manifest.timer` in the preparation CT runs
 `build-quality --non-english` every ten minutes after its previous execution finishes.
@@ -688,8 +726,8 @@ database DSN, and `/var/lib/usnm-ocr-manifest/qwen-nonenglish` state. When upgra
 let the old Qwen feed's inline manifest finish before starting this timer, so the two
 versions never write that checkpoint concurrently. Verify one manifest pass, then
 enable its timer independently of `usnm-qwen-feed.timer`.
-Manifest failure or slowness cannot prevent the feed service's `ExecStartPost` from
-shipping already-ready native work. Its separate service lock prevents concurrent
+Manifest or source-preparation failure/slowness cannot prevent the separate ship
+timer from shipping already-ready native work. Its separate service lock prevents concurrent
 manifest runs.
 
 This checkpoint requests missing

@@ -8,7 +8,7 @@
 #     [--readers loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract]
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
-#     [--qwen-max-ready 1000]
+#     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while the server has more than --max-unsent results ready to send (the public
@@ -69,13 +69,19 @@ if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
   [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
     die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
 fi
+if [ -n "$QWEN_PLAN" ]; then
+  # Migration-safe: old inline and new independent ship units cannot copy/clean one chunk concurrently.
+  exec 9>"$OUTBOX/.qwen-ship-$CAMPAIGN.lock"
+  flock -n 9 || exit 75
+fi
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SERVER")
 in_ct() { "${SSH[@]}" pct exec "$CT" -- "$@"; }
 # One bridge step, waiting its turn: the host runs one step at a time, and the priority
 # controller's steps come every few minutes. Tries for up to 30 minutes.
 run_step() {
   local i err
-  err=$(mktemp)
+  err="$OUTBOX/.step-$CAMPAIGN-$$.err"
+  (set -o noclobber; : > "$err") || die "step log already exists"
   for i in $(seq 60); do
     if in_ct "$STEP" --env prod --target bridge "$@" > /dev/null 2> "$err"; then
       rm -f "$err"
@@ -97,7 +103,7 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
     sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
   [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
-  if [ "$unsent" -gt "$MAX_UNSENT" ]; then
+  if [ -z "$QWEN_PLAN" ] && [ "$unsent" -gt "$MAX_UNSENT" ]; then
     log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
     break
   fi
@@ -141,10 +147,12 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   if [ -n "$QWEN_PLAN" ]; then
     # Native admission, shared models, scientific identities and DB quorum are checked
     # before cleanup; failures leave the original READY chunk and receipts intact.
-    in_ct flock -n /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
-      python3 /project/ops/qwen-feed/qwen_submit.py --campaign "$CAMPAIGN" \
-      --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" --max-pages "$((n + 10))" \
-      --max-ready "$QWEN_MAX_READY"
+    log "$chunk: native submission waiting for normal project mutex"
+    in_ct flock -w 900 -E 75 /run/usnm-boinc-step.lock sh -c \
+      'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
+      podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
+      --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --max-pages "$((n + 10))" --max-ready "$QWEN_MAX_READY"
   fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30

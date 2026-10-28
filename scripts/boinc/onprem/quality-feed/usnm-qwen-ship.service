@@ -1,0 +1,18 @@
+[Unit]
+Description=Ship immutable READY Qwen sources independently of archive preparation
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/qwen-feed.env
+
+[Service]
+Type=oneshot
+Environment=QWEN_MAX_READY=1000
+EnvironmentFile=/etc/usnm/qwen-feed.env
+ExecStart=/opt/usnm-quality-feed/qwen-throughput/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
+  --server-host ${SERVER_HOST} --max-chunks 2 --min-free-gb 50 \
+  --qwen-engine-plan ${QWEN_ENGINE_PLAN} --qwen-models ${QWEN_MODELS} \
+  --qwen-max-ready ${QWEN_MAX_READY}
+SuccessExitStatus=75
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=3h

@@ -106,7 +106,8 @@ class SourceTest(unittest.TestCase):
                 with mock.patch.object(submit, "__file__", str(root / "qwen_submit.py")), \
                         mock.patch.object(sys, "argv", argv), \
                         mock.patch.object(submit, "inventory", return_value={
-                            "ready": 0, "free_bytes": 100 * 1024**3}), \
+                            "ready": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                            "free_bytes": 100 * 1024**3}), \
                         mock.patch.object(submit.subprocess, "run") as run, \
                         mock.patch.object(submit, "assert_submitted"), \
                         mock.patch.object(submit, "audit", return_value={}):
@@ -235,8 +236,10 @@ class SourceTest(unittest.TestCase):
             with self.subTest(pool_pct=pool_pct, ready=ready), tempfile.TemporaryDirectory() as folder:
                 a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
                                           server_host="boinc.example", server_ct=230, prep_ct=215,
-                                          outbox=Path(folder), min_free_gb=50, max_ready=1000, max_pending=3)
-                inv = {"ready": ready, "documents": [], "free_bytes": 100 * 1024**3}
+                                          outbox=Path(folder), min_free_gb=50, max_ready=1000, max_pending=3,
+                                          max_unresolved=2000, reserve_mib=64)
+                inv = {"ready": ready, "fresh_pairs": ready // 2, "unresolved_native": ready // 2,
+                       "documents": [], "free_bytes": 100 * 1024**3}
                 pool = {"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": str(pool_pct)}]}]}
                 with mock.patch.object(driver, "remote", side_effect=[json.dumps(inv), json.dumps(pool)]) as remote, \
                         mock.patch.object(driver, "command", side_effect=AssertionError("preparation started")):
@@ -250,9 +253,10 @@ class SourceTest(unittest.TestCase):
                                       archive_host="archive.example", archives="/archives",
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
-                                      max_pending=3, chunk_pages=100)
+                                      max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64)
             page = {"doc_id": DOC, "damage_rate": 0.9}
-            inv = {"ready": 0, "documents": [], "free_bytes": 100 * 1024**3}
+            inv = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
+                   "documents": [], "free_bytes": 100 * 1024**3}
             pool = {"report": [{"lv": [{"lv_size": str(200 * 1024**3), "data_percent": "50"}]}]}
             receipt = {"cached": [DOC], "missing": [], "pending": []}
 
@@ -275,6 +279,31 @@ class SourceTest(unittest.TestCase):
                         if "run" in call.args[0] and any(
                             arg.endswith("/quality_feed.py") for arg in call.args[0])]
             self.assertEqual(len(prepared), 1)
+
+    def test_native_gate_uses_fresh_original_pairs_but_retains_capacity_and_unresolved_bounds(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
+            argv = ["qwen_submit.py", "--share", str(root), "--project", str(root),
+                    "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root)]
+            base = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
+                    "free_bytes": 100 * 1024**3}
+            for change, error in (({}, None), ({"fresh_pairs": 401}, "fresh-original"),
+                                  ({"unresolved_native": 1901}, "unresolved-native"),
+                                  ({"free_bytes": 51 * 1024**3}, "reserved-input")):
+                with self.subTest(change=change), mock.patch.object(sys, "argv", argv), \
+                        mock.patch.object(submit, "inventory", return_value={**base, **change}), \
+                        mock.patch.object(submit.subprocess, "run") as run, \
+                        mock.patch.object(submit, "assert_submitted"), \
+                        mock.patch.object(submit, "audit", return_value={}):
+                    if error:
+                        with self.assertRaisesRegex(RuntimeError, error):
+                            submit.main()
+                        run.assert_not_called()
+                    else:
+                        submit.main()
+                        self.assertEqual(run.call_count, 2)
 
 
 if __name__ == "__main__":
