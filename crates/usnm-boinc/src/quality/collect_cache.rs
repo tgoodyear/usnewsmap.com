@@ -472,6 +472,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn replaced_path_cannot_reuse_an_old_open_descriptor_digest() {
+        use std::io::Seek;
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("page.jpg");
+        let memo = dir.path().join("digests");
+        std::fs::write(&path, b"first").unwrap();
+        let mut original = File::open(&path).unwrap();
+        input_digest(&memo, &path, &mut original).unwrap();
+        let replacement = dir.path().join("replacement");
+        std::fs::write(&replacement, b"other").unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        original.rewind().unwrap();
+        assert!(input_digest(&memo, &path, &mut original)
+            .unwrap_err()
+            .to_string()
+            .contains("input changed while fingerprinting"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn corrupt_input_digest_fails_closed_and_is_retained() {
         let dir = tempfile::tempdir_in(".").unwrap();
         let path = dir.path().join("page.jpg");

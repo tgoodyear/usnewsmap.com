@@ -520,6 +520,12 @@ no LoC request:
    revalidation. File enumeration, metadata checks, table assembly, transfer and
    loading remain linear; measure end-to-end pass duration after warming before
    claiming capacity for a larger campaign.
+   Before deploying digest reuse on another filesystem, retain an isolated
+   fixture receipt from the actual mount/client: verify nonzero nanosecond ctime,
+   same-size rewrites with restored mtime, atomic replacement, and fresh-open
+   visibility. Mount version alone is not acceptance. Then verify cold progress,
+   a complete ordinary publication/load, clean-pass idempotence and late canonical
+   reading invalidation before restoring any paused results timer.
 
 ```sh
 # On pve-laptop, once: the trust and the mounts (home-infra).
