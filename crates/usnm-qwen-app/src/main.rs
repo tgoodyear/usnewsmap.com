@@ -46,7 +46,7 @@ use usnm_ocr_contract::{
     quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{
         image_min_tokens, Crop, Engine, Job, Outcome, Reading, Readings, ResultManifest, MAX_ERROR,
-        MAX_JOB_JSON, PROMPT_VERSION, VERSION,
+        MAX_JOB_JSON, PROMPT_VERSION, SUPPORTED_PROMPT_VERSIONS, VERSION,
     },
     surya::Host,
 };
@@ -357,6 +357,11 @@ pub fn run_slot_with(
                     models: vec![],
                     weights: z,
                 });
+            let prompt_version = raw
+                .as_ref()
+                .and_then(|j| u32::try_from(j.get("prompt_version")?.as_u64()?).ok())
+                .filter(|v| SUPPORTED_PROMPT_VERSIONS.contains(v))
+                .unwrap_or(PROMPT_VERSION);
             let crops = raw
                 .and_then(|j| u32::try_from(j.get("crops")?.as_array()?.len()).ok())
                 .unwrap_or(1);
@@ -366,7 +371,7 @@ pub fn run_slot_with(
                 crops,
                 Outcome::UnitError,
                 Some(tail(&msg, MAX_ERROR).to_owned()),
-                PROMPT_VERSION,
+                prompt_version,
             )
         }
     };
@@ -623,14 +628,21 @@ fn run_crops(
 
     let engine_ms = ms(started);
     let mut loop_crops = Vec::new();
-    for (crop, metadata) in cp.generation_metadata {
-        if serde_json::from_str::<serde_json::Value>(&metadata)
+    let mut loop_bits = vec![0u8; l.job.crops.len().div_ceil(8)];
+    for (i, crop) in l.job.crops.iter().enumerate() {
+        let Some(metadata) = cp.generation_metadata.get(&crop.id) else {
+            continue;
+        };
+        if serde_json::from_str::<serde_json::Value>(metadata)
             .ok()
             .and_then(|m| m.get("generation_flags")?.as_array().cloned())
             .is_some_and(|f| f.iter().any(|f| f == "repetition_loop_at_token_budget"))
         {
-            loop_crops.push(crop.clone());
+            loop_crops.push(crop.id.clone());
+            loop_bits[i / 8] |= 1 << (i % 8);
         }
+    }
+    for (crop, metadata) in cp.generation_metadata {
         diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
     }
     if let Some(ref srv) = srv_guard {
@@ -655,6 +667,14 @@ fn run_crops(
     r_diag.insert(
         "repetition_loop_crops".into(),
         bounded_list(&loop_crops, 256),
+    );
+    // Complete even when the names do not fit: bit i%8 of byte i/8 is the job's crop i.
+    r_diag.insert(
+        "repetition_loop_crop_bits".into(),
+        loop_bits
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
     );
     r_diag.insert(
         "n_gpu_layers".into(),
@@ -758,6 +778,28 @@ mod tests {
             }
         });
         port
+    }
+
+    #[test]
+    fn a_unit_error_keeps_the_jobs_supported_request_version() {
+        for (raw, want) in [
+            (2, usnm_ocr_contract::qwen::PROMPT_VERSION_IMAGE_MIN_TOKENS),
+            (3, PROMPT_VERSION),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let job = serde_json::json!({
+                "id": "b".repeat(64),
+                "prompt_version": raw,
+                "crops": [{}, {}],
+            });
+            std::fs::write(tmp.path().join(JOB_FILE), job.to_string()).unwrap();
+            run_slot_with(tmp.path(), None, None).unwrap();
+            let readings: Readings =
+                serde_json::from_slice(&std::fs::read(tmp.path().join(READINGS_FILE)).unwrap())
+                    .unwrap();
+            assert_eq!(readings.job_id, "b".repeat(64));
+            assert_eq!(readings.prompt_version, want);
+        }
     }
 
     #[test]
@@ -1168,6 +1210,7 @@ mod tests {
         assert_eq!(readings.prompt_version, PROMPT_VERSION_IMAGE_MIN_TOKENS);
         assert_eq!(readings.diag["image_min_tokens"], "1024");
         assert_eq!(readings.diag["repetition_loop_crops"], "page_one:c01");
+        assert_eq!(readings.diag["repetition_loop_crop_bits"], "01");
         let fresh: serde_json::Value = serde_json::from_str(
             diag_str
                 .split("== generation_v1/page_two:c01\n")

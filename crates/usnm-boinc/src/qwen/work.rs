@@ -59,6 +59,12 @@ use usnm_ocr_quality::qwen_pages::QwenPages;
 pub fn prepare(work: &Path) -> anyhow::Result<(Job, Vec<u8>)> {
     let job: Job = serde_json::from_slice(&read(&work.join(JOB_FILE), MAX_JOB_JSON)?)?;
     job.validate()?;
+    // This worker starts llama-server with request version 1's encoding only.
+    ensure!(
+        job.prompt_version == PROMPT_VERSION,
+        "unsupported prompt version {} in this worker",
+        job.prompt_version
+    );
     let max_scan = if job.pages.is_empty() {
         MAX_SCAN
     } else {
@@ -988,6 +994,18 @@ mod tests {
         assert_eq!(l.result.outcome, Outcome::UnitError);
         assert_eq!(l.result.crops, 2);
         assert!(l.result.unit_error.unwrap().contains(ENV_LLAMA_IMAGE));
+
+        // A request version this worker cannot encode is refused before anything runs.
+        let mut v2 = j.clone();
+        v2.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_IMAGE_MIN_TOKENS;
+        v2.id = v2.identity().unwrap();
+        v2.validate().unwrap();
+        std::fs::write(dir.join(JOB_FILE), serde_json::to_vec(&v2).unwrap()).unwrap();
+        let e = prepare(&dir).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("unsupported prompt version 2"),
+            "{e:#}"
+        );
     }
 
     /// A one-shot HTTP server on the loopback that answers one request
