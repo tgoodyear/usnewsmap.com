@@ -261,18 +261,29 @@ fn mark_too_large(unit: &Path, doc_id: &str, what: &str, len: usize) -> anyhow::
 /// `MAX_READINGS` (the limit the output upload and the validator allow). A
 /// page whose one-page bundle would not fit gets a `too_large` marker and is
 /// never published. Returns the bundles written and the pages marked.
+fn bundle_lock(units_dir: &Path) -> anyhow::Result<PathBuf> {
+    Ok(units_dir
+        .parent()
+        .context("units directory has no root")?
+        .join(".bundle-lock"))
+}
+
 fn pack_bundles(
     page_dir: &Path,
     units_dir: &Path,
     bundle_size: usize,
 ) -> anyhow::Result<(usize, usize)> {
+    // One staging run bundles a root at a time, from finding the pages
+    // already bundled to publishing the new bundles' `qwen.json`.
+    let _lock = crate::Lock::take(&bundle_lock(units_dir)?)
+        .context("another staging run is bundling this root")?;
     let mut bundled_docs = BTreeSet::new();
     let mut existing_bundles = 0usize;
     if units_dir.exists() {
         for entry in std::fs::read_dir(units_dir)?.filter_map(|e| e.ok()) {
             let p = entry.path();
-            // A bundle left without its `qwen.json` (a crash, or another
-            // run still writing it) keeps its number: the next is never reused.
+            // A bundle a crashed run left without its `qwen.json` keeps
+            // its number: the next is never reused.
             let partial = !p.join(JOB_FILE).exists()
                 && p.is_dir()
                 && p.file_name()
@@ -1288,6 +1299,10 @@ pub(crate) mod tests {
 
         // A rerun publishes nothing more.
         assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (0, 0));
+        {
+            let _other = crate::Lock::take(&bundle_lock(&units_dir).unwrap()).unwrap();
+            assert!(pack_bundles(&page_dir, &units_dir, 16).is_err());
+        }
     }
 
     #[test]
