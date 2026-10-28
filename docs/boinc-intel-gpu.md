@@ -29,6 +29,14 @@ validator are not relaxed. Only the already published Linux Intel67/NVIDIA66
 1.14 pair is authorized. A superseding release or changed project config closes
 the owned window instead of silently adopting a new release.
 
+Refill also reads actual native-8B **in-progress tasks across all windows** for
+both pilot hosts. New window size is reduced to the smaller remaining headroom
+of a ten-task-per-host buffer; a full buffer waits for actual completions.
+Thus a 500-job ramp is not permission to queue 500 unvalidated GPU tasks at once.
+This is conservative admission backpressure, not a client preference/quota
+change; report measured per-host backlog and rates rather than claiming the
+admission budget is completed work.
+
 The controller reads the producer's durable
 `/project/qwen/qwen-nonenglish-v1/audit.json` directly, not a human handoff or a
 headline count of stale ready work. It binds each WU/job identity to the actual

@@ -163,18 +163,21 @@ def bind_inputs(project, row, job_id, audit):
             "accuracy_established": False}
 
 
-def read_database(project, ids):
+def read_database(project, ids, hosts=(9, 10)):
     require(ids and len(ids) <= 1010, "Bounded snapshot requires 1..1010 workunits")
     code = """
 require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true);$clause=implode(',',array_map('intval',$ids));
+$hosts=implode(',',array_map('intval',json_decode($argv[2],true)));
 $all=BoincResult::enum("workunitid IN ($clause)"); $group=[];foreach($all as $r)$group[$r->workunitid][]=$r;
-$out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum('appid=6 AND deprecated=0')];
+$out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum('appid=6 AND deprecated=0'),
+ 'gpu_inflight'=>BoincResult::enum("appid=6 AND server_state=4 AND hostid IN ($hosts) AND workunitid IN "
+ ."(SELECT id FROM workunit WHERE appid=6 AND batch=8 AND rsc_disk_bound=19327352832)")];
 foreach(BoincWorkunit::enum("id IN ($clause) ORDER BY id") as $w) {
  $rs=$group[$w->id]??[];$n=0;foreach($rs as $r)if($r->server_state==2)$n++;
  $out['rows'][]=['unit'=>$w,'results'=>$rs,'assignments'=>$n==2?BoincDb::get()->count('assignment',"workunitid=$w->id"):0];
 } echo json_encode($out);
 """
-    proc = subprocess.run(["php", "-r", code, json.dumps(ids)], cwd=project / "html/inc",
+    proc = subprocess.run(["php", "-r", code, json.dumps(ids), json.dumps(hosts)], cwd=project / "html/inc",
                           text=True, capture_output=True, check=True, timeout=15)
     return json.loads(proc.stdout)
 
@@ -272,7 +275,7 @@ def run(args):
             wanted = sorted(set(ids + current_ids))
             if not wanted:
                 return output | {"status": "no-audited-fresh-inputs", "fresh_pairs": 0}
-            database = read_database(project, wanted)
+            database = read_database(project, wanted, (args.intel_host, args.nvidia_host))
             rows = database["rows"]
             require(database["app"]["name"] == "usnm_qwen"
                     and int(database["app"]["homogeneous_redundancy"]) == 0, "Qwen app/HR changed")
@@ -289,13 +292,19 @@ def run(args):
             status = "closed-expired-budget-or-release-change"
             target = [2, 1]
         else:
+            inflight = {host: sum(int(row["hostid"]) == host for row in database["gpu_inflight"])
+                        for host in (args.intel_host, args.nvidia_host)}
+            capacity = max(0, args.max_inflight_per_host - max(inflight.values()))
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) >= args.minimum_workunit)
             output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs": fresh_count,
-                       "producer_audit_sha256": sha(audit_raw)}
+                       "producer_audit_sha256": sha(audit_raw), "native_gpu_inflight": inflight,
+                       "per_host_buffer_limit": args.max_inflight_per_host}
             if available:
                 return output | {"status": "current-window-still-eligible"}
-            selected = choose(rows, args.minimum_workunit, reserved, remaining)
+            if not capacity:
+                return output | {"status": "bounded-gpu-inflight-buffer-full"}
+            selected = choose(rows, args.minimum_workunit, reserved, min(remaining, capacity))
             if not selected:
                 return output | {"status": "no-fresh-verified-pairs"}
             proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])]) for row in selected]
@@ -342,6 +351,7 @@ def main(argv=None):
     parser.add_argument("--controller", required=True)
     parser.add_argument("--minimum-workunit", type=int, required=True)
     parser.add_argument("--max-admissions", type=int, default=500)
+    parser.add_argument("--max-inflight-per-host", type=int, default=10)
     parser.add_argument("--enabled-until", type=int, required=True)
     parser.add_argument("--intel-host", type=int, default=9)
     parser.add_argument("--nvidia-host", type=int, default=10)
@@ -351,6 +361,7 @@ def main(argv=None):
     require(all(re.fullmatch("[a-f0-9]{64}", value) for value in
                 (args.helper_sha256, args.config_sha256, args.initial_policy_sha256)), "Expected SHA256 guards")
     require(1 <= args.max_admissions <= 10000 and args.minimum_workunit > 1, "Invalid finite budget/floor")
+    require(1 <= args.max_inflight_per_host <= 10, "Keep at most ten native GPU tasks buffered per pilot host")
     require(args.intel_host > 0 and args.nvidia_host > 0 and args.intel_host != args.nvidia_host,
             "Independent distinct GPU hosts required")
     require(args.enabled_until <= int(time.time()) + 86400, "Enable at most 24 hours per reviewed ramp")

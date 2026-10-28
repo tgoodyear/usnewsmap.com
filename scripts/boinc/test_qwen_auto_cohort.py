@@ -36,6 +36,7 @@ class AutomaticCohort(unittest.TestCase):
         audit_path = self.root / "qwen/qwen-nonenglish-v1/audit.json"
         audit_path.write_text(json.dumps(self.audit))
         self.database = {"rows": self.rows, "app": {"name": "usnm_qwen", "homogeneous_redundancy": 0},
+                         "gpu_inflight": [],
                          "versions": [{"id": 66, "version_num": 114, "platformid": 1,
                                        "plan_class": "nvidia_vulkan_8b"},
                                       {"id": 67, "version_num": 114, "platformid": 1,
@@ -56,7 +57,8 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.args = SimpleNamespace(
             project=self.project, helper=HELPER, helper_sha256=R.sha(HELPER.read_bytes()),
             config_sha256=R.sha(self.config.read_bytes()), initial_policy_sha256=R.sha(self.policy.read_bytes()),
-            controller="a" * 32, minimum_workunit=100, max_admissions=500, enabled_until=10000000000,
+            controller="a" * 32, minimum_workunit=100, max_admissions=500, max_inflight_per_host=10,
+            enabled_until=10000000000,
             intel_host=9, nvidia_host=10, apply=True,
         )
 
@@ -217,6 +219,18 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         with self.assertRaises(FileExistsError):
             R.persist(path, {"wrong": True}, exclusive=True)
         self.assertEqual(json.loads(path.read_bytes()), {"original": True})
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_refill_does_not_accumulate_a_500_task_unvalidated_gpu_backlog(self):
+        self.database["gpu_inflight"] = [{"hostid": 9} for _ in range(10)]
+        before = self.policy.read_bytes()
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "bounded-gpu-inflight-buffer-full")
+            self.assertEqual(self.policy.read_bytes(), before)
+            self.database["gpu_inflight"].pop()
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["target"], [100, 100])
+        self.assertEqual(receipt["native_gpu_inflight"][9], 9)
 
 
 if __name__ == "__main__":
