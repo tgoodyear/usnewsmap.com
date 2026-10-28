@@ -60,6 +60,7 @@ enum Command {
     OcrAgreement(ocr::OcrAgreementArgs),
     OcrPrefetchManifest(ocr::OcrPrefetchManifestArgs),
     OcrSync(ocr::OcrSyncArgs),
+    OcrAlternateStage(ocr::OcrAlternateStageArgs),
     OcrSeed(ocr::OcrSeedArgs),
     OcrEnqueue(ocr::OcrEnqueueArgs),
     OcrRequeue(ocr::OcrRequeueArgs),
@@ -142,6 +143,7 @@ impl Command {
             Command::OcrAgreement { .. } => "ocr-agreement",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
+            Command::OcrAlternateStage { .. } => "ocr-alternate-stage",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
@@ -180,6 +182,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrAgreement { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
+        | Command::OcrAlternateStage { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
@@ -262,6 +265,9 @@ async fn command(
         Command::OcrAgreement(args) => ocr::ocr_agreement_command(cli, start, args).await,
         Command::OcrPrefetchManifest(args) => ocr::ocr_prefetch_manifest_command(cli, args).await,
         Command::OcrSync(args) => ocr::ocr_sync_command(cli, state, start, args).await,
+        Command::OcrAlternateStage(args) => {
+            ocr::ocr_alternate_stage_command(cli, state, args).await
+        }
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,
         Command::OcrEnqueue(args) => ocr::ocr_enqueue_command(cli, state, args).await,
         Command::OcrRequeue(args) => ocr::ocr_requeue_command(cli, state, args).await,

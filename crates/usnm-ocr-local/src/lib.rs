@@ -48,6 +48,7 @@
 //! The reference store gets `status/ocr-local.json` ([`sync::Status`]).
 //! Logs carry page ids, paths, counts and reason codes, never text.
 
+pub mod alternate;
 pub mod checks;
 pub mod enqueue;
 pub mod ledger;

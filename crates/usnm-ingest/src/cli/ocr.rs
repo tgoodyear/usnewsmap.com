@@ -345,6 +345,60 @@ pub(crate) struct OcrRequeueArgs {
     dry_run: bool,
 }
 
+/// Stage exactly one third-party whole-page reading, never selected or queued.
+#[derive(Args)]
+pub(crate) struct OcrAlternateStageArgs {
+    /// Directory holding binding.json, source-image, baseline.txt,
+    /// source.alto.xml, source.txt, registration and rights.
+    #[arg(long)]
+    input: std::path::PathBuf,
+}
+
+pub(crate) async fn ocr_alternate_stage_command(
+    cli: &Cli,
+    state: State,
+    args: &OcrAlternateStageArgs,
+) -> anyhow::Result<Option<Published>> {
+    use std::io::Read;
+    let read = |name: &str, max: u64| -> anyhow::Result<Vec<u8>> {
+        let file = std::fs::File::open(args.input.join(name))?;
+        anyhow::ensure!(file.metadata()?.len() <= max, "{name}: size bound");
+        let mut bytes = Vec::new();
+        file.take(max + 1).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() as u64 <= max, "{name}: size bound");
+        Ok(bytes)
+    };
+    let binding: usnm_ocr_local::alternate::Binding =
+        serde_json::from_slice(&read("binding.json", 65536)?)?;
+    let image = read("source-image", 128 << 20)?;
+    let baseline = read(
+        "baseline.txt",
+        usnm_ocr_local::checks::MAX_TEXT_BYTES as u64,
+    )?;
+    let alto = read("source.alto.xml", usnm_ocr_local::checks::MAX_ALTO_BYTES)?;
+    let text = read("source.txt", usnm_ocr_local::checks::MAX_TEXT_BYTES as u64)?;
+    let registration = read("registration", 1 << 20)?;
+    let rights = read("rights", 1 << 20)?;
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let receipt = usnm_ocr_local::alternate::stage(
+        &state,
+        &owner_id(),
+        curated.as_ref(),
+        &binding,
+        &usnm_ocr_local::alternate::Inputs {
+            image: &image,
+            baseline: &baseline,
+            alto: &alto,
+            text: &text,
+            registration: &registration,
+            rights: &rights,
+        },
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(None)
+}
+
 pub(crate) async fn ocr_damage_command(
     cli: &Cli,
     start: tokio::time::Instant,
