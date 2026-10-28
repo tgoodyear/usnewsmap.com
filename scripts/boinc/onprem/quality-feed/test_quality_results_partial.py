@@ -202,6 +202,125 @@ class PartialTest(unittest.TestCase):
         self.assertEqual(selected, ["b", "c", "a"])
         self.assertEqual(through, "f")
 
+    def test_completion_frontier_prioritizes_changes_and_fairly_revisits_pending(self):
+        ready = lambda key: {"status": "canonical-present", "fingerprint": key * 64}
+        inventory = {f"old-{i:03}": ready("a") for i in range(125)}
+        inventory["pending"] = {"status": "pending", "fingerprint": None}
+        state = {"schema": 1, "loaded": {n: v["fingerprint"] for n, v in inventory.items()
+                                        if v["fingerprint"]}}
+        inventory["new"] = ready("b")
+        selected, _, lane, state = partial.select_frontier(inventory, state)
+        self.assertEqual((selected, lane), ("new", "priority"))
+        state["loaded"][selected] = inventory[selected]["fingerprint"]
+        inventory["pending"] = ready("c")
+        selected, _, lane, state = partial.select_frontier(inventory, state)
+        self.assertEqual((selected, lane), ("pending", "priority"))
+        state["loaded"][selected] = inventory[selected]["fingerprint"]
+        inventory["old-010"] = ready("d")  # Late independent readings invalidate the same key.
+        selected, _, lane, state = partial.select_frontier(inventory, state)
+        self.assertEqual((selected, lane), ("old-010", "priority"))
+        # An endless stream of dirty arrivals cannot displace the finite fair lane.
+        seen = []
+        for i in range(4 * len(inventory)):
+            inventory[f"z-{i:04}"] = ready("e")
+            selected, _, lane, state = partial.select_frontier(inventory, state)
+            if lane == "fair":
+                seen.append(selected)
+            state = json.loads(json.dumps(state))  # Restart at every pass.
+        self.assertIn("old-124", seen)
+        self.assertIn("pending", seen)
+
+    def test_frontier_ack_is_only_persisted_after_verified_nonempty_load(self):
+        self.args.completion_frontier = True
+        self.receipt["frontier"] = {
+            "schema": 1, "lane": "priority", "status": "canonical-present", "fingerprint": "f" * 64,
+        }
+        cursor = self.args.state_dir / "test/cursor.json"
+        partial.atomic_json(cursor, {"after": "old", "through": "old", "coverage": "legacy"})
+        with mock.patch.object(partial.uuid, "uuid4",
+                               return_value=types.SimpleNamespace(hex=self.snapshot)):
+            responses = self.responses()
+            responses[-1] = subprocess.CalledProcessError(1, ["load"])
+            with mock.patch.object(partial.subprocess, "run", side_effect=responses):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    partial.host_pass(self.args)
+            self.assertNotIn("frontier_ack", json.loads(cursor.read_bytes()))
+            with mock.patch.object(partial.subprocess, "run", side_effect=self.responses()) as run:
+                partial.host_pass(self.args)
+            self.assertIn("--completion-frontier", run.call_args_list[0].args[0][-1])
+            self.assertEqual(json.loads(cursor.read_bytes())["frontier_ack"],
+                             {"unit": "bundle-a", "fingerprint": "f" * 64})
+            with mock.patch.object(partial.subprocess, "run", side_effect=self.responses()) as run:
+                partial.host_pass(self.args)
+            self.assertIn("--frontier-ack", run.call_args_list[0].args[0][-1])
+        # Programmatic reconciliation callers without the explicit gate keep their frozen cursor.
+        del self.args.completion_frontier
+        del self.receipt["frontier"]
+        with mock.patch.object(partial.uuid, "uuid4",
+                               return_value=types.SimpleNamespace(hex=self.snapshot)), \
+                mock.patch.object(partial.subprocess, "run", side_effect=self.responses()) as run:
+            partial.host_pass(self.args)
+        self.assertNotIn("--completion-frontier", run.call_args_list[0].args[0][-1])
+        self.assertIn("--through bundle-b", run.call_args_list[0].args[0][-1])
+
+    def test_frontier_inventory_failure_never_falls_back_to_cursor(self):
+        self.args.completion_frontier = True
+        units = self.root / "quality/test/units/bundle-a"
+        units.mkdir(parents=True)
+        (units / "submitted").touch()
+        (units / "quality.json").write_text("{}")
+        with mock.patch.object(partial, "completion_inventory",
+                               side_effect=subprocess.CalledProcessError(1, ["inventory"])), \
+                mock.patch.object(partial, "select_unit") as legacy:
+            with self.assertRaises(subprocess.CalledProcessError):
+                partial.scoped_collect(self.args, self.root)
+        legacy.assert_not_called()
+        self.assertFalse((self.root / "ops/quality-results/scoped/test/frontier.json").exists())
+
+    def test_scoped_frontier_acknowledgement_restart_and_change_guard(self):
+        self.args.completion_frontier = True
+        self.args.after, self.args.through = "pending", "pending"  # Legacy cursor is not a load key.
+        inventory = {
+            "pending": {"status": "pending", "fingerprint": None},
+            "ready": {"status": "canonical-present", "fingerprint": "a" * 64},
+        }
+        for name in inventory:
+            unit = self.root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        Path(self.args.collector).write_bytes(b"test collector")
+
+        def collect(command, **_kwargs):
+            out = Path(command[command.index("--out-dir") + 1])
+            for name in partial.FILES:
+                (out / name).write_bytes(b"verified test output")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        frontier_path = self.root / "ops/quality-results/scoped/test/frontier.json"
+        with mock.patch.object(partial, "completion_inventory", return_value=inventory), \
+                mock.patch.object(partial.subprocess, "run", side_effect=collect) as run:
+            first = partial.scoped_collect(self.args, self.root)
+            self.assertEqual(first["selected_unit"], "ready")
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(json.loads(frontier_path.read_bytes())["loaded"], {})
+            self.args.snapshot = "b" * 32
+            self.args.frontier_ack = json.dumps({"unit": "ready", "fingerprint": "a" * 64})
+            second = partial.scoped_collect(self.args, self.root)
+            self.assertEqual(second["selected_unit"], "pending")
+            self.assertEqual(json.loads(frontier_path.read_bytes())["loaded"], {"ready": "a" * 64})
+            self.args.snapshot = "c" * 32
+            third = partial.scoped_collect(self.args, self.root)  # Identical ack is idempotent.
+            self.assertEqual(third["selected_unit"], "ready")
+        previous = frontier_path.read_bytes()
+        self.args.snapshot = "d" * 32
+        changed = {**inventory, "pending": {"status": "canonical-present", "fingerprint": "e" * 64}}
+        with mock.patch.object(partial, "completion_inventory", side_effect=[inventory, changed]), \
+                mock.patch.object(partial.subprocess, "run", side_effect=collect):
+            with self.assertRaisesRegex(ValueError, "changed during collection"):
+                partial.scoped_collect(self.args, self.root)
+        self.assertEqual(frontier_path.read_bytes(), previous)
+
     def load_fixture(self, rows):
         root = self.args.snapshot_dir
         (root / "out").mkdir(parents=True)
