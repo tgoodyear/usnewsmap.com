@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::time::Duration;
 
@@ -15,19 +15,21 @@ use usnm_ingest::telemetry;
 /// in the local journal, not Application Insights. Requires telemetry enabled.
 #[derive(Args)]
 pub(crate) struct JaOcrRunArgs {
-    /// Trusted runner executable and arguments, after --. The executable must be absolute.
-    #[arg(last = true, required = true, allow_hyphen_values = true)]
-    command: Vec<OsString>,
+    /// Trusted runner executable. The path must be absolute.
+    #[arg(long)]
+    executable: PathBuf,
+    /// One runner argument; repeat --arg=VALUE, including for flags.
+    #[arg(long = "arg", allow_hyphen_values = true)]
+    args: Vec<OsString>,
 }
 
 pub(crate) async fn ja_ocr_run(args: &JaOcrRunArgs) -> anyhow::Result<Option<Published>> {
-    let executable = &args.command[0];
     ensure!(
-        Path::new(executable).is_absolute(),
+        args.executable.is_absolute(),
         "Japanese OCR runner executable must be absolute"
     );
-    let mut command = Command::new(executable);
-    command.args(&args.command[1..]);
+    let mut command = Command::new(&args.executable);
+    command.args(&args.args);
     let status = supervise(command, Duration::from_secs(60), || {
         telemetry::metrics().ja_ocr_heartbeat.record(1, &[]);
     })
@@ -70,10 +72,10 @@ mod tests {
             "--reference",
             "/nonexistent/usnm-test-reference",
             "ja-ocr-run",
-            "--",
+            "--executable",
             "/bin/sh",
-            "-c",
-            "exit 0",
+            "--arg=-c",
+            "--arg=exit 0",
         ])
         .unwrap();
         crate::run(&cli).await.unwrap();

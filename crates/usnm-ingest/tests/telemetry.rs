@@ -24,12 +24,13 @@ fn japanese_supervision_refuses_to_launch_without_telemetry() {
         ])
         .args([
             "ja-ocr-run",
-            "--",
+            "--executable",
             "/bin/sh",
-            "-c",
-            "touch \"$1\"",
-            "runner",
+            "--arg=-c",
+            "--arg=touch \"$1\"",
+            "--arg=runner",
         ])
+        .arg("--arg")
         .arg(&marker)
         .output()
         .unwrap();

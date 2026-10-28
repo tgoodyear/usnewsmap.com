@@ -56,7 +56,8 @@ committed; neither is silently classified as undigitized.
 
 ### Opt-in native-run monitoring
 
-For #1164, `usnm-ingest ja-ocr-run -- /absolute/runner args...` supervises exactly
+For #1164, `usnm-ingest ja-ocr-run --executable /absolute/runner --arg=VALUE`
+supervises exactly
 one invocation without retrying it. It requires configured Application Insights,
 exports `jaocr.run_heartbeat` every minute only while the child is active, and
 uses the existing `ingest.command_failures` metric with command `ja-ocr-run` on
@@ -86,7 +87,7 @@ binary. Write only `APPLICATIONINSIGHTS_CONNECTION_STRING` to the root-owned
 component and Arc Monitoring Metrics Publisher grant, as OCR pickup does.
 Do not grant all on-prem hosts write access to the shared component or use a
 local-auth key. Verify an actual Entra-authenticated heartbeat from
-`ja-ocr-run -- /bin/true` before installing
+`ja-ocr-run --executable /bin/true` before installing
 `scripts/ocr-node/usnm-ja-ocr-native-monitor.conf` as
 `/etc/systemd/system/usnm-ja-ocr-native.service.d/10-monitor.conf` and running
 `systemctl daemon-reload`. The original unit/runtime is unchanged without this
