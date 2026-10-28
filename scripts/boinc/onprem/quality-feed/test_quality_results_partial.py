@@ -198,7 +198,7 @@ class PartialTest(unittest.TestCase):
         self.assertIn(str(self.args.snapshot_dir / "out/pages.parquet"), command)
         self.assertNotIn("delete", command)
 
-    def test_loader_timeout_kills_psql_like_child_after_parent_exits(self):
+    def loader_orphan_case(self, parent_exit=None):
         late = self.root / "late-commit"
         ready = self.root / "child-ready"
         child = (
@@ -212,13 +212,21 @@ class PartialTest(unittest.TestCase):
             f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
             f"p=Path({str(ready)!r});"
             "\nwhile not p.exists():time.sleep(0.01)\n"
-            "time.sleep(30)"
+            + ("time.sleep(30)" if parent_exit is None else f"sys.exit({parent_exit})")
         )
-        with self.assertRaises(subprocess.TimeoutExpired):
-            partial.run_loader([sys.executable, "-c", parent], timeout=0.3)
+        error = subprocess.TimeoutExpired if parent_exit is None else subprocess.CalledProcessError
+        with self.assertRaises(error):
+            partial.run_loader([sys.executable, "-c", parent],
+                               timeout=0.3 if parent_exit is None else 5)
         self.assertTrue(ready.exists())
         time.sleep(0.8)
         self.assertFalse(late.exists())
+
+    def test_loader_timeout_kills_psql_like_child_after_parent_exits(self):
+        self.loader_orphan_case()
+
+    def test_failed_loader_kills_psql_like_child_after_parent_exits(self):
+        self.loader_orphan_case(parent_exit=7)
 
 
 if __name__ == "__main__":

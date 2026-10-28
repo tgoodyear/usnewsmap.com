@@ -51,6 +51,8 @@ def run_loader(command, timeout=120):
     with subprocess.Popen(command, start_new_session=True, stdout=sys.stderr) as process:
         try:
             code = process.wait(timeout=timeout)
+            if code:
+                raise subprocess.CalledProcessError(code, command)
         except BaseException:
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
@@ -64,8 +66,6 @@ def run_loader(command, timeout=120):
                         pass
             process.wait()
             raise
-        if code:
-            raise subprocess.CalledProcessError(code, command)
 
 
 def scoped_collect(args, project=Path("/project")):
