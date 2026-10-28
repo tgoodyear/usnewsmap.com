@@ -452,6 +452,7 @@ mod tests {
             batch: "batch_a".into(),
             ocr_source: "usnm-tesseract".into(),
             ocr_engine: "tesseract/5.5.1 profile=eng".into(),
+            ocr_reason: "bulk".into(),
             node: "node1".into(),
             metric_version: usnm_core::damage::VERSION,
             ocred_at: at,
@@ -561,15 +562,15 @@ mod tests {
         assert_eq!(now[0].metric_version, usnm_core::damage::VERSION);
         assert!(now[0].ours.damage_rate.is_some());
         // The same part as an older metric wrote it.
-        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)
-            .unwrap()
-            .build()
-            .unwrap();
+        let builder =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes).unwrap();
+        let schema = builder.schema().clone();
+        let reader = builder.build().unwrap();
         let batch = reader.into_iter().next().unwrap().unwrap();
         let i = batch.schema().index_of("metric_version").unwrap();
         let mut cols = batch.columns().to_vec();
         cols[i] = Arc::new(arrow_array::Int32Array::from(vec![1]));
-        let old = arrow_array::RecordBatch::try_new(batch.schema(), cols).unwrap();
+        let old = arrow_array::RecordBatch::try_new(schema, cols).unwrap();
         let mut w = parquet::arrow::ArrowWriter::try_new(Vec::new(), old.schema(), None).unwrap();
         w.write(&old).unwrap();
         let rows = pages::read_scores(Bytes::from(w.into_inner().unwrap())).unwrap();
