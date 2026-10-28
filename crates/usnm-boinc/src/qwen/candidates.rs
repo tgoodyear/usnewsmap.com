@@ -19,12 +19,21 @@ fn text_metrics(text: &str, language: &str) -> Value {
     let words = usnm_core::page_language::text_words(text);
     let tokens: Vec<_> = text.split_whitespace().collect();
     let distinct: BTreeSet<_> = tokens.iter().copied().collect();
+    let mut previous = "";
+    let mut run = 0usize;
+    let mut longest_run = 0usize;
+    for token in &tokens {
+        run = if *token == previous { run + 1 } else { 1 };
+        longest_run = longest_run.max(run);
+        previous = token;
+    }
     json!({
         "chars": text.chars().count(),
         "whitespace_tokens": tokens.len(),
         "word_tokens": words.words.len(),
         "uncertainty_markers": text.matches("[?]").count(),
         "distinct_token_share": (!tokens.is_empty()).then(|| distinct.len() as f64 / tokens.len() as f64),
+        "longest_identical_token_run": longest_run,
         "forced_language": language,
         "damage_rate": score.and_then(|s| s.damage_rate),
         "damage_head": score.map(|s| s.damage.head),
@@ -34,6 +43,26 @@ fn text_metrics(text: &str, language: &str) -> Value {
         "damage_model_available": score.is_some(),
         "damage_is_ground_truth": false,
     })
+}
+
+fn generation_flags(text: &str, tokens: u32, budget: u32) -> Vec<&'static str> {
+    let mut flags = Vec::new();
+    if text.trim().is_empty() {
+        flags.push("empty_reading");
+    } else if text.replace("[?]", "").trim().is_empty() {
+        flags.push("uncertainty_only");
+    }
+    if tokens >= budget {
+        flags.push("completion_token_budget_exhausted");
+    }
+    if text
+        .lines()
+        .zip(text.lines().skip(1))
+        .any(|(a, b)| !a.trim().is_empty() && a.trim() == b.trim())
+    {
+        flags.push("consecutive_duplicate_lines");
+    }
+    flags
 }
 
 pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyhow::Result<()> {
@@ -147,6 +176,8 @@ pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyho
                 "completion_tokens": r.map(|r| r.tokens),
                 "token_budget": job.max_tokens(crop),
                 "at_token_budget": r.map(|r| r.tokens >= job.max_tokens(crop)),
+                "generation_flags": r.map(|r| generation_flags(&r.text, r.tokens, job.max_tokens(crop))),
+                "scientific_acceptance": "not_established_by_this_report",
             }));
             for (other, b) in loaded.iter().skip(i + 1) {
                 let rb = b.readings.readings.iter().find(|r| r.id == crop.id);
@@ -180,6 +211,7 @@ pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyho
             "LoC text and forced-language damage are fallible diagnostics, not transcription truth.",
             "Image features describe pixels, not annotated physical damage or legibility.",
             "No acceptance threshold, canonical selection, or validator state is changed."
+            ,"Generation flags are observations requiring review, not calibrated failure probabilities or a new BOINC verdict."
         ],
     });
     atomic(out, &serde_json::to_vec_pretty(&report)?)
@@ -316,5 +348,28 @@ mod tests {
         let bytes = std::fs::read(&readings).unwrap();
         assert!(run(&job, &page, &[a], &readings).is_err());
         assert_eq!(std::fs::read(readings).unwrap(), bytes);
+    }
+
+    #[test]
+    fn labels_generation_failures_without_treating_agreement_as_accuracy() {
+        let repeated = "CIGARETTES\nספרים\nספרים\nספרים\nספרים";
+        assert_eq!(usnm_ocr_contract::boinc::dice(repeated, repeated), 1.0);
+        assert_eq!(
+            generation_flags(repeated, 1304, 1304),
+            [
+                "completion_token_budget_exhausted",
+                "consecutive_duplicate_lines"
+            ]
+        );
+        assert_eq!(
+            generation_flags("[?] [?]\n[?]", 7, 100),
+            ["uncertainty_only"]
+        );
+        assert_eq!(generation_flags(" \n ", 0, 100), ["empty_reading"]);
+        assert!(generation_flags("real printed text", 4, 100).is_empty());
+        assert_eq!(
+            text_metrics(repeated, "yid")["longest_identical_token_run"],
+            4
+        );
     }
 }

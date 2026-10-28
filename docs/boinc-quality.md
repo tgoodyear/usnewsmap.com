@@ -362,6 +362,28 @@ cache lasts one workunit.
   stratified by language and legibility; this command changes neither BOINC
   validation nor class admission.
 
+  **Generation failure investigation (WU21128).** All three platforms consumed
+  the full 1,304-token budget on c07. AMD and Intel repeated a word over many
+  lines; Apple emitted 643 `[?]` markers. Their raw readings remain retained.
+  The report labels token-budget exhaustion, consecutive duplicate lines,
+  uncertainty-only and empty readings independently of pair agreement, and
+  records the longest identical-token run. No unflagged output is labeled
+  scientifically accepted. These flags describe observations, not calibrated
+  failure probabilities; repeated lines can also exist in the source.
+
+  The native request uses prompt v1, temperature 0, seed 42, `top_p=1` and
+  an area-derived completion budget (4 tokens per 1,000 crop pixels). There
+  is no explicit request-level stop or repetition penalty. The response reader
+  currently ignores `finish_reason` and retains completion count plus cleaned
+  text; a successful request is not proof of an accurate crop. Increasing the
+  budget could prolong this loop, and arbitrary stop strings or a repeat penalty
+  could truncate real print. Before a generation-policy release, retain stop/
+  length metadata in a versioned compatible contract and compare bounded
+  alternatives on the same image-grounded multilingual/legibility benchmark.
+  Treat length-limited or degenerating generations as uncertain observations,
+  preserve their raw text, and require independent legible transcription for
+  accuracy—not a lower Dice floor or another agreeing repetitive replica.
+
 ## Running a campaign
 
 ### Local smoke test without LoC or BOINC
