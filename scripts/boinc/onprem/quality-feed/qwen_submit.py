@@ -86,11 +86,17 @@ def admission(a, state, root):
     raw = receipt.read_bytes() if receipt.exists() else None
     verified = json.loads(raw) if raw is not None else {}
     pending = 0
+    seen = set()
     for path, job in jobs(root / "units"):
+        if job["id"] in seen:
+            raise RuntimeError(f"Duplicate staged Qwen identity: {job['id']}; reconcile, never replay")
+        seen.add(job["id"])
         previous = verified.get(job["id"])
         if previous is not None and previous["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest():
             raise RuntimeError(f"Previously audited Qwen job changed: {path}; reconcile, never replay")
         pending += not (path.parent / "submitted").exists()
+    if set(verified) - seen:
+        raise RuntimeError("Previously audited Qwen job missing or identity changed; reconcile, never replay")
     reason = None
     if 2 * (state["fresh_pairs"] + a.max_pages) > a.max_ready:
         reason = "fresh_original_watermark"

@@ -399,6 +399,15 @@ class SourceTest(unittest.TestCase):
                     mock.patch.object(sys, "argv", [*argv, "--preflight"]), \
                     self.assertRaisesRegex(RuntimeError, "Previously audited"):
                 submit.main()
+            (submitted / "qwen.json").write_text(json.dumps({**job, "id": "c" * 64}))
+            for preflight in (False, True):
+                with mock.patch.object(submit.subprocess, "run") as run, \
+                        mock.patch.object(submit, "inventory", return_value={**state, "fresh_pairs": 100}), \
+                        mock.patch.object(sys, "argv", [*argv, *(["--preflight"] if preflight else [])]), \
+                        self.assertRaisesRegex(RuntimeError, "missing or identity changed"):
+                    submit.main()
+                run.assert_not_called()
+                self.assertEqual((root / "audit.json").read_bytes(), old_audit)
             (submitted / "qwen.json").write_bytes(old_raw)
             sample = share / "sample.jsonl"
             sample.write_text(json.dumps({"doc_id": DOC}) + "\n")
