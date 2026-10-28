@@ -61,7 +61,7 @@ def run_loader(command, timeout=120):
                     pass
                 if sig == signal.SIGTERM:
                     try:
-                        process.wait(timeout=10)
+                        process.wait(timeout=1)
                     except subprocess.TimeoutExpired:
                         pass
             process.wait()

@@ -228,6 +228,31 @@ class PartialTest(unittest.TestCase):
     def test_failed_loader_kills_psql_like_child_after_parent_exits(self):
         self.loader_orphan_case(parent_exit=7)
 
+    def test_term_ignoring_loader_is_reaped_before_preparation_kill_grace(self):
+        late = self.root / "late-commit"
+        ready = self.root / "child-ready"
+        child = (
+            "import signal,time;from pathlib import Path;"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+            f"Path({str(ready)!r}).touch();time.sleep(2);"
+            f"Path({str(late)!r}).touch()"
+        )
+        parent = (
+            "import signal,subprocess,sys,time;from pathlib import Path;"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+            f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
+            f"p=Path({str(ready)!r});"
+            "\nwhile not p.exists():time.sleep(0.01)\n"
+            "time.sleep(30)"
+        )
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            partial.run_loader([sys.executable, "-c", parent], timeout=0.3)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertTrue(ready.exists())
+        time.sleep(2)
+        self.assertFalse(late.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
