@@ -85,15 +85,24 @@ impl Service {
             .await?;
         if let Some((store, path)) = persistent {
             if !image.stored.load(Ordering::Acquire) {
-                match tokio::time::timeout(
-                    STORE_TIMEOUT,
-                    store.put_new(&path, image.body.clone(), "image/png"),
-                )
+                match tokio::time::timeout(STORE_TIMEOUT, async {
+                    if store
+                        .put_new(&path, image.body.clone(), "image/png")
+                        .await?
+                        || read(store.as_ref(), &path).await.is_some()
+                        || store
+                            .put_new(&path, image.body.clone(), "image/png")
+                            .await?
+                    {
+                        image.stored.store(true, Ordering::Release);
+                    } else {
+                        tracing::warn!("example preview persistence conflict remains unresolved");
+                    }
+                    Ok::<_, usnm_store::StoreError>(())
+                })
                 .await
                 {
-                    Ok(Ok(_)) => {
-                        image.stored.store(true, Ordering::Release);
-                    }
+                    Ok(Ok(())) => {}
                     Ok(Err(error)) => {
                         tracing::warn!(%error, "example preview persistence failed");
                     }
@@ -102,6 +111,40 @@ impl Service {
             }
         }
         Ok(image.body.clone())
+    }
+}
+
+fn valid(body: &[u8]) -> bool {
+    body.starts_with(b"\x89PNG\r\n\x1a\n")
+        && body.get(16..20) == Some(1200_u32.to_be_bytes().as_slice())
+        && body.get(20..24) == Some(630_u32.to_be_bytes().as_slice())
+        && resvg::tiny_skia::Pixmap::decode_png(body)
+            .is_ok_and(|image| image.width() == 1200 && image.height() == 630)
+}
+
+async fn remove_invalid(store: &dyn ObjectStore, path: &str) {
+    let repair = async {
+        let prefix = path.rsplit_once('/').map_or("", |(prefix, _)| prefix);
+        let objects = store.list_info(prefix).await?;
+        if let Some(object) = objects.iter().find(|object| object.path == path) {
+            let invalid = if object.size > MAX_PNG_BYTES as u64 {
+                true
+            } else {
+                store
+                    .get_if_match(path, &object.etag, MAX_PNG_BYTES as u64)
+                    .await?
+                    .is_some_and(|body| !valid(&body))
+            };
+            if invalid && !store.delete_if_match(path, &object.etag).await? {
+                tracing::warn!("invalid example preview changed before removal");
+            }
+        }
+        Ok::<_, usnm_store::StoreError>(())
+    };
+    match tokio::time::timeout(STORE_TIMEOUT, repair).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "invalid example preview removal failed"),
+        Err(_) => tracing::warn!("invalid example preview removal timed out"),
     }
 }
 
@@ -123,41 +166,20 @@ async fn read(store: &dyn ObjectStore, path: &str) -> Option<Vec<u8>> {
     .await;
     match result {
         Ok(Ok(Some(body))) => {
-            let dimensions = body.starts_with(b"\x89PNG\r\n\x1a\n")
-                && body.get(16..20) == Some(1200_u32.to_be_bytes().as_slice())
-                && body.get(20..24) == Some(630_u32.to_be_bytes().as_slice());
-            let valid = dimensions
-                && resvg::tiny_skia::Pixmap::decode_png(&body)
-                    .is_ok_and(|image| image.width() == 1200 && image.height() == 630);
-            if valid {
+            if valid(&body) {
                 Some(body)
             } else {
                 tracing::warn!("persisted example preview is invalid; ignoring it");
-                let repair = async {
-                    let prefix = path.rsplit_once('/').map_or("", |(prefix, _)| prefix);
-                    let objects = store.list_info(prefix).await?;
-                    if let Some(object) = objects.iter().find(|object| object.path == path) {
-                        if store
-                            .get_if_match(path, &object.etag, MAX_PNG_BYTES as u64)
-                            .await?
-                            .is_some_and(|current| current == body)
-                        {
-                            store.delete_if_match(path, &object.etag).await?;
-                        }
-                    }
-                    Ok::<_, usnm_store::StoreError>(())
-                };
-                match tokio::time::timeout(STORE_TIMEOUT, repair).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, "invalid example preview removal failed")
-                    }
-                    Err(_) => tracing::warn!("invalid example preview removal timed out"),
-                }
+                remove_invalid(store, path).await;
                 None
             }
         }
         Ok(Ok(None)) => None,
+        Ok(Err(error @ usnm_store::StoreError::TooLarge(_))) => {
+            tracing::warn!(%error, "persisted example preview is oversized");
+            remove_invalid(store, path).await;
+            None
+        }
         Ok(Err(error)) => {
             tracing::warn!(%error, "example preview read failed");
             None
@@ -209,6 +231,47 @@ mod tests {
             body
         );
         assert_eq!(store.get(path).await.unwrap().unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn create_only_conflicts_repair_oversized_objects_instead_of_marking_them_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(usnm_store::LocalStore::new(dir.path()));
+        let path = "previews/example.png";
+        let service = Service::default();
+        let body = image();
+        assert_eq!(
+            service
+                .get(
+                    path.to_owned(),
+                    Some((store.clone(), path.to_owned())),
+                    false,
+                    async {
+                        store
+                            .put(path, vec![0; MAX_PNG_BYTES + 1], "image/png")
+                            .await
+                            .unwrap();
+                        Ok(body.clone())
+                    }
+                )
+                .await
+                .unwrap(),
+            body
+        );
+        assert_eq!(store.get(path).await.unwrap().unwrap(), body);
+        let restarted = Service::default();
+        assert_eq!(
+            restarted
+                .get(
+                    path.to_owned(),
+                    Some((store.clone(), path.to_owned())),
+                    false,
+                    async { panic!("repaired PNG must survive restart") }
+                )
+                .await
+                .unwrap(),
+            body
+        );
     }
 
     #[tokio::test]

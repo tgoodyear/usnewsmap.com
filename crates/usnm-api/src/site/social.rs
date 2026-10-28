@@ -433,13 +433,7 @@ fn overview_key(image: &str) -> String {
     if default_zoom && default_center {
         params.retain(|(k, _)| k != "z" && k != "c");
     }
-    // Explicit phrase/month defaults render exactly as omitted defaults.
-    params.retain(|(k, v)| {
-        !matches!(
-            (k.as_str(), v.as_str()),
-            ("mode", "phrase") | ("bucket", "month")
-        )
-    });
+    params.retain(|(k, v)| !(k == "mode" && v == "phrase"));
     form_urlencoded::Serializer::new(String::new())
         .extend_pairs(params)
         .finish()
@@ -616,7 +610,22 @@ mod tests {
         assert_eq!(
             overview_key(&example.1.image),
             overview_key(
-                &Card::new("/search/whigs", "from=1834-01-01&to=1856-12-31")
+                &Card::new(
+                    "/search/whigs",
+                    "from=1834-01-01&to=1856-12-31&bucket=month"
+                )
+                .unwrap()
+                .image
+            )
+        );
+        let abolitionists = EXAMPLE_CARDS
+            .iter()
+            .find(|(id, _)| id == "abolitionists")
+            .unwrap();
+        assert_ne!(
+            overview_key(&abolitionists.1.image),
+            overview_key(
+                &Card::new("/search/abolitionists", "from=1830-01-01&to=1860-12-31")
                     .unwrap()
                     .image
             )
