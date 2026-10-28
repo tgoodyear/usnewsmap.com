@@ -397,6 +397,10 @@ def main(argv=None):
                     if not reason:
                         strict_pair(current, intent["workunit"], intent["app_version"], newest=False)
                         guarded = True
+            now = int(time.time())
+            if now >= intent["expires"] and reason is None:
+                reason = "lease_expired"
+                guarded = False
             updated = release_policy(original, args.lease, intent["workunit"],
                                      intent["original_xml"].encode()) if reason else original
             output = {"lease": args.lease, "workunit": intent["workunit"], "reason": reason,

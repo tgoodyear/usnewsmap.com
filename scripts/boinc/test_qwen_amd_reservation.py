@@ -198,8 +198,7 @@ class AmdReservation(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), self.policy)
                 self.assertEqual(list(self.root.glob(".amd-reservation-*")), [])
 
-    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
-    def test_real_policy_journal_tick_and_db_independent_deadline_release(self):
+    def install_cli_lease(self):
         expected = self.input_fixture()
         (self.root / "plan_class_spec.xml").write_bytes(self.policy)
         (self.root / "config.xml").write_text(
@@ -216,6 +215,14 @@ class AmdReservation(unittest.TestCase):
                 patch.object(R, "scheduler_processes", return_value={}), \
                 patch.object(R.time, "time", return_value=1000), contextlib.redirect_stdout(io.StringIO()):
             R.main(reserve)
+        return common
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_real_policy_journal_tick_and_db_independent_deadline_release(self):
+        common = self.install_cli_lease()
+        with patch.object(R, "snapshot", return_value=self.snapshot), \
+                patch.object(R, "scheduler_processes", return_value={}), \
+                patch.object(R.time, "time", return_value=1000):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 R.main(["tick", *common])
@@ -227,6 +234,25 @@ class AmdReservation(unittest.TestCase):
         with patch.object(R, "snapshot", side_effect=RuntimeError("DB unavailable")), \
                 contextlib.redirect_stdout(io.StringIO()):
             R.main(["release", *common])
+        _, nodes = R.parse_policy((self.root / "plan_class_spec.xml").read_bytes())
+        self.assertIsNone(nodes[R.APPLE].find("max_wu_id"))
+        self.assertEqual(R.bounds(nodes[R.AMD]), (2, 1))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_db_read_crossing_deadline_closes_instead_of_qualifying_stale_lease(self):
+        common = self.install_cli_lease()
+        clock = [1999]
+        def delayed_snapshot(*_):
+            clock[0] = 2001
+            return self.snapshot
+        output = io.StringIO()
+        with patch.object(R, "snapshot", side_effect=delayed_snapshot), \
+                patch.object(R, "scheduler_processes", return_value={}), \
+                patch.object(R.time, "time", side_effect=lambda: clock[0]), contextlib.redirect_stdout(output):
+            R.main(["tick", *common])
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["reason"], "lease_expired")
+        self.assertFalse(receipt["old_schedulers_drained_and_pair_untouched"])
         _, nodes = R.parse_policy((self.root / "plan_class_spec.xml").read_bytes())
         self.assertIsNone(nodes[R.APPLE].find("max_wu_id"))
         self.assertEqual(R.bounds(nodes[R.AMD]), (2, 1))
