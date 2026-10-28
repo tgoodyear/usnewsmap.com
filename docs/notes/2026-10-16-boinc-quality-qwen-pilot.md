@@ -12,6 +12,8 @@ Each section records the server finish reason (missing means unknown), reported
 completion tokens, requested budget, exact response/content SHA-256 and byte
 counts, whether existing text cleaning changed content, longest identical-token
 run, and descriptive budget-exhaustion/duplicate-line/empty/uncertainty-only flags.
+Repetition metrics inspect the complete raw response content before existing
+8 KiB reading cleaning/truncation, including degeneration beyond the retained prefix.
 Unexpected non-string or oversized finish reasons are labeled invalid rather than
 successful stops; the complete response hash still identifies their source.
 Hashes are **not** copies of raw HTTP responses. The readings remain unchanged.

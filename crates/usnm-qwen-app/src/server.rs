@@ -216,14 +216,14 @@ fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32
     let mut previous = None;
     let mut run = 0;
     let mut longest_run = 0;
-    for token in cleaned.split_whitespace() {
+    for token in text.split_whitespace() {
         run = if previous == Some(token) { run + 1 } else { 1 };
         longest_run = longest_run.max(run);
         previous = Some(token);
     }
-    let duplicate_lines = cleaned
+    let duplicate_lines = text
         .lines()
-        .zip(cleaned.lines().skip(1))
+        .zip(text.lines().skip(1))
         .any(|(a, b)| !a.trim().is_empty() && a.trim() == b.trim());
     if duplicate_lines {
         flags.push("consecutive_duplicate_lines");
@@ -241,6 +241,7 @@ fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32
         "raw_content_bytes": text.len(),
         "cleaning_changed_content": text != cleaned,
         "longest_identical_token_run": longest_run,
+        "repetition_scope": "raw_content_before_cleaning",
         "generation_flags": flags,
         "scientific_acceptance": "not_established_by_generation_metadata",
     }))?;
@@ -443,5 +444,28 @@ mod completion_tests {
             m["response_sha256"],
             usnm_ocr_contract::boinc::sha256(&response)
         );
+    }
+
+    #[test]
+    fn repetition_after_reading_size_limit_is_still_diagnosed() {
+        let prefix: String = (0..2000).map(|i| format!("word{i} ")).collect();
+        assert!(prefix.len() > MAX_CROP_TEXT);
+        let raw = format!("{prefix}\n{}", "tailword\n".repeat(50));
+        let response = serde_json::to_vec(&serde_json::json!({
+            "choices": [{"message": {"content": raw}, "finish_reason": "stop"}]
+        }))
+        .unwrap();
+        let (reading, _, metadata) = parse_completion(&response, 20000).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(reading, clean_reading(&raw));
+        assert!(!reading.contains("tailword"));
+        assert_eq!(m["longest_identical_token_run"], 50);
+        assert_eq!(m["repetition_scope"], "raw_content_before_cleaning");
+        assert_eq!(
+            m["generation_flags"],
+            serde_json::json!(["consecutive_duplicate_lines"])
+        );
+        assert_eq!(m["raw_content_bytes"], raw.len());
+        assert_eq!(m["cleaning_changed_content"], true);
     }
 }
