@@ -79,6 +79,55 @@ struct Comparison {
     raw_v1: Counts,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Head {
+    count: usize,
+    id: String,
+}
+
+fn expected_head(records: &[Record]) -> Option<Head> {
+    records.last().map(|r| Head {
+        count: records.len(),
+        id: r.id.clone(),
+    })
+}
+
+async fn committed_head(
+    curated: &dyn ObjectStore,
+    subject: &Subject,
+) -> anyhow::Result<Option<Head>> {
+    let prefix = format!("{}/commit", prefix(subject)?);
+    let objects = curated.list_info(&prefix).await?;
+    ensure!(objects.len() <= 1, "foreign decision commit object");
+    let Some(object) = objects.first() else {
+        return Ok(None);
+    };
+    ensure!(
+        object.path == format!("{prefix}/head.json"),
+        "foreign decision head"
+    );
+    Ok(Some(serde_json::from_slice(
+        &read_retained(curated, object, 65536).await?,
+    )?))
+}
+
+async fn commit(
+    curated: &dyn ObjectStore,
+    subject: &Subject,
+    records: &[Record],
+) -> anyhow::Result<()> {
+    let head = expected_head(records).context("cannot commit empty decision history")?;
+    curated
+        .put(
+            &format!("{}/commit/head.json", prefix(subject)?),
+            serde_json::to_vec(&head)?,
+            "application/json",
+        )
+        .await?;
+    Ok(())
+}
+
 fn hash_ok(hash: &str) -> bool {
     hash.len() == 64
         && hash
@@ -181,7 +230,11 @@ async fn validate_action(
             return Ok(());
         }
     };
-    let staged = alternate::read(curated, &decision.subject.doc_id, candidate).await?;
+    let staged = if matches!(decision.action, Action::Select { .. }) {
+        alternate::read(curated, &decision.subject.doc_id, candidate).await?
+    } else {
+        alternate::read_identity(curated, &decision.subject.doc_id, candidate).await?
+    };
     ensure!(
         staged.binding.source_image_sha256 == decision.subject.source_image_sha256
             && staged.binding.baseline_sha256 == decision.subject.baseline_sha256,
@@ -238,7 +291,12 @@ async fn validate_action(
 /// Return the current preview only after revalidating selected artifacts and
 /// comparison. Corruption/missing evidence errors rather than falling back.
 pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Result<Option<Record>> {
+    let head = committed_head(curated, subject).await?;
     let (records, _) = history(curated, subject).await?;
+    ensure!(
+        head == expected_head(&records),
+        "decision history does not match committed head"
+    );
     let latest = records.last().cloned();
     if let Some(selected) = latest.as_ref().and_then(|r| r.selected.as_ref()) {
         let selection = records.iter().rev().find(|r| {
@@ -258,11 +316,16 @@ pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Resul
             validate_action(curated, &selection.decision, Some(&bytes)).await?;
         }
     }
+    ensure!(
+        committed_head(curated, subject).await? == head,
+        "decision head changed during preview; retry"
+    );
     Ok(latest)
 }
 
 /// Append an explicit decision under the existing OCR lock. Its receipt is the
-/// commit point; exact retry returns the prior receipt without another event.
+/// written before the separate authoritative head, which commits the decision.
+/// An exact retry can finish an interrupted head update without a second event.
 pub async fn decide(
     state: &State,
     owner: &str,
@@ -281,8 +344,26 @@ pub async fn decide(
     validate_action(curated, decision, comparison).await?;
     let lease = Lease::take(state, owner).await?;
     let result: anyhow::Result<Record> = async {
-        let (records, mut preview) = history(curated, &decision.subject).await?;
+        let (mut records, mut preview) = history(curated, &decision.subject).await?;
+        let head = committed_head(curated, &decision.subject).await?;
+        if head != expected_head(&records) {
+            ensure!(
+                !records.is_empty()
+                    && head == expected_head(&records[..records.len() - 1])
+                    && records.last().is_some_and(|r| {
+                        r.decision == *decision
+                            && (records.len() < MAX_DECISIONS || r.selected.is_none())
+                    }),
+                "decision history does not match committed head; recover only the exact pending decision"
+            );
+            lease.check()?;
+            commit(curated, &decision.subject, &records).await?;
+            return read(curated, &decision.subject)
+                .await?
+                .context("recovered decision missing");
+        }
         if let Some(prior) = records.last().filter(|r| r.decision == *decision) {
+            read(curated, &decision.subject).await?;
             return Ok(prior.clone());
         }
         ensure!(
@@ -294,6 +375,10 @@ pub async fn decide(
             "stale decision head; read current history before retrying"
         );
         preview.apply(&decision.action)?;
+        ensure!(
+            records.len() + 1 < MAX_DECISIONS || preview.selected.is_none(),
+            "final decision slot is reserved for returning to baseline"
+        );
         if let (
             Action::Select {
                 comparison_sha256, ..
@@ -323,6 +408,9 @@ pub async fn decide(
             "application/json",
         )
         .await?;
+        records.push(record.clone());
+        lease.check()?;
+        commit(curated, &decision.subject, &records).await?;
         tracing::info!(
             doc_id = %decision.subject.doc_id,
             decision = %record.id,

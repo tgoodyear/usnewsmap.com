@@ -34,13 +34,25 @@ contiguous records under:
 ocr-local/alternate-decisions/<doc_id>/<scan hash>/<baseline hash>/
   history/000000.json
   evidence/<comparison hash>.json
+  commit/head.json
 ```
 
-The create-only history record commits last, after any comparison evidence.
+Comparison evidence and the create-only history record are written first.
+The separately stored, atomically replaced `commit/head.json` binds the expected
+history count and final hash. A missing/truncated history, including an empty
+listing under a nonempty committed head, fails closed. An interrupted append
+leaves one uncommitted record: preview refuses it; resubmitting that exact
+decision finishes the head update. A different request cannot discard or adopt
+it. Missing commit metadata alongside existing records also fails preview.
+The final history slot must return to baseline, so the bound cannot strand an
+active selection without a rollback slot.
+
 Reject/revoke permanently block that candidate for this subject. If it was
 selected, the preview returns to the baseline, not an earlier alternate.
 `retain-baseline` also clears selection without deleting or rejecting anything.
 Original staging artifacts, baseline bytes and earlier decisions are retained.
+Negative actions validate the committed receipt identity, not healthy payload
+bytes: damaged text/ALTO/rights cannot prevent rejection or revocation.
 
 ## Selection requirements and boundaries
 
@@ -77,11 +89,13 @@ independently cleared rights, genuine human reference, reproducible paired
 scoring under the named rules, and reviewed release/queue integration. Merely
 setting these fields does not satisfy those requirements or close #811.
 
-Readers verify the complete history chain and derived selection. They reread
+Readers verify the committed head, complete history chain and derived selection. They reread
 the selected candidate and its comparison, refusing missing/corrupt evidence
 rather than returning a successful baseline fallback. Store metadata and
 conditional bounded reads prevent oversized or concurrently changed artifacts
 from being used. JSON inputs and comparisons are bounded to 64 KiB.
+Exact decision retries also revalidate persisted selected evidence, not merely
+the replacement comparison supplied with the retry.
 
 ## Evidence
 

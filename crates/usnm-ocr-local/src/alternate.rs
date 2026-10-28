@@ -528,6 +528,37 @@ pub async fn read(
     Ok(receipt)
 }
 
+pub(super) async fn read_identity(
+    curated: &dyn ObjectStore,
+    doc_id: &str,
+    candidate: &str,
+) -> anyhow::Result<Receipt> {
+    ensure!(
+        PageKey::from_doc_id(doc_id)?.doc_id() == doc_id
+            && candidate.len() == 64
+            && candidate
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "invalid candidate identity"
+    );
+    let prefix = format!("{ROOT}/alternates/{doc_id}/{candidate}");
+    let objects = curated.list_info(&prefix).await?;
+    let object = objects
+        .iter()
+        .find(|o| o.path == format!("{prefix}/receipt.json"))
+        .context("candidate has no committed staging receipt")?;
+    let receipt: Receipt = serde_json::from_slice(&read_retained(curated, object, 65536).await?)?;
+    ensure!(
+        receipt.binding.doc_id == doc_id
+            && receipt.candidate == candidate
+            && receipt.candidate == digest(&serde_json::to_vec(&receipt.binding)?)
+            && receipt.format == "usnm-ocr-alternate-stage/1"
+            && !receipt.selected,
+        "candidate receipt identity mismatch"
+    );
+    Ok(receipt)
+}
+
 pub(super) async fn read_retained(
     curated: &dyn ObjectStore,
     object: &usnm_store::ObjectInfo,
@@ -1047,6 +1078,15 @@ mod tests {
             .await
             .unwrap();
         assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a),
+        )
+        .await
+        .is_err());
         store
             .put(&evidence_path, evidence_a.clone(), "application/json")
             .await
@@ -1084,6 +1124,99 @@ mod tests {
                 .parts(),
             0
         );
+        let history_path = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/history",
+            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
+        );
+        let objects = store.list_info(&history_path).await.unwrap();
+        let last = objects.last().unwrap();
+        let last_bytes = store.get(&last.path).await.unwrap().unwrap();
+        assert!(store.delete_if_match(&last.path, &last.etag).await.unwrap());
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        store
+            .put_new(&last.path, last_bytes, "application/json")
+            .await
+            .unwrap();
+        let predecessor: decisions::Record = serde_json::from_slice(
+            &store
+                .get(&objects[objects.len() - 2].path)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let head_path = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/commit/head.json",
+            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
+        );
+        store
+            .put(
+                &head_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "count": objects.len()-1, "id": predecessor.id
+                }))
+                .unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        let mut wrong_recovery = request.clone();
+        wrong_recovery.reason = "not the pending decision".into();
+        assert!(
+            decisions::decide(&state, "decide", store.as_ref(), &wrong_recovery, None)
+                .await
+                .is_err()
+        );
+        let recovered = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(recovered.selected, None);
+        request.previous = Some(recovered.id);
+        for index in objects.len()..254 {
+            request.reason = format!("Synthetic bounded-history event {index}");
+            let record = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+                .await
+                .unwrap();
+            request.previous = Some(record.id);
+        }
+        request.action = Action::Select {
+            candidate: a.candidate.clone(),
+            comparison_sha256: digest(&evidence_a),
+        };
+        let penultimate = decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a),
+        )
+        .await
+        .unwrap();
+        request.previous = Some(penultimate.id);
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a)
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("final decision slot"));
+        request.action = Action::RetainBaseline;
+        let final_baseline = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(final_baseline.selected, None);
+        for object in store.list_info(&history_path).await.unwrap() {
+            assert!(store
+                .delete_if_match(&object.path, &object.etag)
+                .await
+                .unwrap());
+        }
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
     }
 
     #[tokio::test]
@@ -1156,14 +1289,6 @@ mod tests {
                 .unwrap()
                 .is_none());
         }
-        request.action = Action::Reject {
-            candidate: a.candidate.clone(),
-        };
-        let rejected = decisions::decide(&state, "decide", store.as_ref(), &request, None)
-            .await
-            .unwrap();
-        assert_eq!(rejected.selected, None);
-        // A missing retained artifact is an error, never a successful baseline fallback.
         let prefix = format!("{ROOT}/alternates/{}/{}", subject.doc_id, a.candidate);
         store
             .put(
@@ -1176,6 +1301,13 @@ mod tests {
         assert!(read(store.as_ref(), &subject.doc_id, &a.candidate)
             .await
             .is_err());
+        request.action = Action::Reject {
+            candidate: a.candidate.clone(),
+        };
+        let rejected = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(rejected.selected, None);
         let history_gap = format!(
             "{ROOT}/alternate-decisions/{}/{}/{}/history/000002.json",
             subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
