@@ -1,10 +1,13 @@
 """Pinned data-flow archive verification and failure-safe host installation."""
 import hashlib
+import errno
 import importlib.util
 import io
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -51,6 +54,7 @@ class InstallerTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute("CREATE TABLE retained (value TEXT)")
                 db.execute("INSERT INTO retained VALUES ('fixture')")
+            db.close()
             env = root / installer.ENV
             env.parent.mkdir(parents=True)
             env.write_text("USNM_DATA_FLOW_OCR_URL=http://127.0.0.1:8090\n")
@@ -71,7 +75,8 @@ class InstallerTests(unittest.TestCase):
                 backup = installer.install(payload, "a" * 40, root=root)
                 self.assertTrue(backup.is_dir())
                 self.assertEqual([call.args[0][:2] for call in run.call_args_list],
-                                 [["systemd-analyze", "verify"], ["systemctl", "daemon-reload"]])
+                                 [["systemd-analyze", "verify"], ["systemd-analyze", "verify"],
+                                  ["systemctl", "daemon-reload"]])
             self.assertEqual((root / installer.STAMP).read_text(), "a" * 40 + "\n")
             for target, data in original.items():
                 self.assertEqual(target.read_bytes(), data)
@@ -79,10 +84,107 @@ class InstallerTests(unittest.TestCase):
     def test_first_install_requires_safe_explicit_url(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            for url in (None, "http://name:password@example.org", "http://example.org\nBAD=yes"):
+            path, digest = self.archive(root)
+            payload = installer.read_archive(path, "a" * 40, digest)
+            for url in (None, "http://name:password@example.org", "http://example.org\nBAD=yes",
+                        "http://127.0.0.1:8090"):
                 with self.assertRaises(ValueError):
-                    installer.install({}, "a" * 40, ocr_url=url, root=root)
+                    installer.install(payload, "a" * 40, ocr_url=url, root=root)
             with patch.object(installer.subprocess, "run"):
-                installer.install({}, "a" * 40, "http://127.0.0.1:8090", root=root)
+                installer.install(payload, "a" * 40,
+                                  "http://127.0.0.1:8090/api/view.json", root=root)
             with self.assertRaisesRegex(ValueError, "preserve"):
-                installer.install({}, "a" * 40, "http://127.0.0.1:8090", root=root)
+                installer.install(payload, "a" * 40,
+                                  "http://127.0.0.1:8090/api/view.json", root=root)
+
+    def test_disk_full_rollback_preserves_inodes_and_attempts_all_recovery(self):
+        for fail_restore in (False, True):
+            with self.subTest(fail_restore=fail_restore), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                path, digest = self.archive(root)
+                payload = installer.read_archive(path, "a" * 40, digest)
+                env = root / installer.ENV
+                env.parent.mkdir(parents=True)
+                env.write_text("USNM_DATA_FLOW_OCR_URL=http://127.0.0.1/api/view.json\n")
+                for relative in payload:
+                    target = root / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"old reviewed bytes\n")
+                first = root / next(iter(payload))
+                first.chmod(0o640)
+                other_group = next((gid for gid in os.getgroups() if gid != os.getgid()), os.getgid())
+                os.chown(first, -1, other_group)
+                original = first.stat()
+                write, replace = installer.atomic_write, os.replace
+                writes = 0
+
+                def disk_full(path, data, mode):
+                    nonlocal writes
+                    writes += 1
+                    if writes == 2:
+                        raise OSError(errno.ENOSPC, "fixture disk full")
+                    write(path, data, mode)
+
+                def restore(source, target):
+                    if fail_restore and str(source).endswith(".rollback") and target == first:
+                        raise OSError(errno.EIO, "fixture recovery failure")
+                    return replace(source, target)
+
+                with patch.object(installer.subprocess, "run") as run, \
+                        patch.object(installer, "atomic_write", side_effect=disk_full), \
+                        patch.object(installer.os, "replace", side_effect=restore):
+                    with self.assertRaises(ExceptionGroup if fail_restore else OSError):
+                        installer.install(payload, "a" * 40, root=root)
+                    self.assertEqual(run.call_args.args[0], ["systemctl", "daemon-reload"])
+                if fail_restore:
+                    recovery = list(first.parent.glob("." + first.name + ".*.rollback"))
+                    self.assertEqual(len(recovery), 1)
+                    self.assertEqual(recovery[0].read_bytes(), b"old reviewed bytes\n")
+                else:
+                    self.assertEqual(first.read_bytes(), b"old reviewed bytes\n")
+                    self.assertEqual((first.stat().st_ino, first.stat().st_gid, first.stat().st_mode),
+                                     (original.st_ino, original.st_gid, original.st_mode))
+                for relative in list(payload)[1:]:
+                    self.assertEqual((root / relative).read_bytes(), b"old reviewed bytes\n")
+
+    def test_main_requires_every_unit_inactive_and_validates_dry_run_units(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path, digest = self.archive(root)
+            payload = installer.read_archive(path, "a" * 40, digest)
+            argv = ["install-data-flow.py", "--archive", str(path),
+                    "--commit", "a" * 40, "--sha256", digest]
+            with patch.object(sys, "argv", argv), \
+                    patch.object(installer.subprocess, "run",
+                                 side_effect=subprocess.CalledProcessError(1, ["systemd-analyze"])), \
+                    patch.object(installer, "install") as install:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    installer.main()
+                install.assert_not_called()
+            real_open = os.open
+
+            def open_lock(path, flags, mode=0o777, **kwargs):
+                if path == "/run/usnm-data-flow-install.lock":
+                    path = root / "install.lock"
+                return real_open(path, flags, mode, **kwargs)
+
+            for active in (*installer.UNITS, "query-failure", None):
+                with self.subTest(active=active), patch.object(sys, "argv", [*argv, "--apply"]), \
+                        patch.object(installer.os, "geteuid", return_value=0), \
+                        patch.object(installer.os, "open", side_effect=open_lock), \
+                        patch.object(installer.pwd, "getpwnam"), \
+                        patch.object(installer, "install", return_value=root / "backup") as install, \
+                        patch.object(installer.subprocess, "run") as run:
+                    def state(command, **_kwargs):
+                        if active == "query-failure":
+                            raise subprocess.CalledProcessError(1, command)
+                        return subprocess.CompletedProcess(
+                            command, 0, stdout="active\n" if command[-1] == active else "inactive\n")
+                    run.side_effect = state
+                    if active is not None:
+                        with self.assertRaises((RuntimeError, subprocess.CalledProcessError)):
+                            installer.main()
+                        install.assert_not_called()
+                    else:
+                        installer.main()
+                        install.assert_called_once()

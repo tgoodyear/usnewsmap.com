@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import uuid
 from urllib.parse import urlsplit
 
 
@@ -95,6 +96,18 @@ def validate_url(value):
             or any(ord(c) < 33 or ord(c) > 126 or c in "\"'\\" for c in value)):
         raise ValueError("OCR URL must be a credential-free HTTP(S) URL without queries or quoting")
     _ = url.port
+    if not url.path.endswith("/api/view.json"):
+        raise ValueError("OCR URL must name the dashboard /api/view.json endpoint")
+
+
+def verify_units(payload):
+    with tempfile.TemporaryDirectory(prefix="usnm-data-flow-verify-") as temp:
+        paths = []
+        for unit in UNITS:
+            path = Path(temp) / unit
+            path.write_bytes(payload["etc/systemd/system/" + unit])
+            paths.append(str(path))
+        subprocess.run(["systemd-analyze", "verify", *paths], check=True)
 
 
 def install(payload, commit, ocr_url=None, root=Path("/")):
@@ -106,6 +119,7 @@ def install(payload, commit, ocr_url=None, root=Path("/")):
         changes[ENV] = ("USNM_DATA_FLOW_OCR_URL=" + ocr_url + "\n").encode()
     elif not (root / ENV).is_file():
         raise ValueError("first install requires --ocr-url")
+    verify_units(payload)
     for relative in changes:
         path = root / relative
         owned_parents(root, path.parent)
@@ -121,29 +135,54 @@ def install(payload, commit, ocr_url=None, root=Path("/")):
             or stat.S_IMODE(metadata.st_mode) != 0o700):
         raise ValueError("installation rollback directory must be owned and private")
     backup = Path(tempfile.mkdtemp(prefix=commit[:12] + "-", dir=backup_root))
-    for relative in changes:
-        path = root / relative
-        if path.exists():
-            saved = backup / relative
-            saved.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, saved)
+    originals = {}
+    modified = []
+    unrestored = set()
     try:
+        for relative in changes:
+            path = root / relative
+            originals[relative] = None
+            if path.exists():
+                saved = backup / relative
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, saved)
+                metadata = path.stat()
+                os.chown(saved, metadata.st_uid, metadata.st_gid)
+                link = path.with_name("." + path.name + "." + uuid.uuid4().hex + ".rollback")
+                os.link(path, link, follow_symlinks=False)
+                originals[relative] = link
         for relative, data in changes.items():
             path = root / relative
+            modified.append(relative)
             atomic_write(path, data, 0o755 if relative == FILES["scripts/ocr-node/install-data-flow.py"]
                          else 0o644)
         subprocess.run(["systemd-analyze", "verify", *[
             str(root / "etc/systemd/system" / unit) for unit in UNITS]], check=True)
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-    except BaseException:
-        for relative in changes:
-            path, saved = root / relative, backup / relative
-            if saved.exists():
-                atomic_write(path, saved.read_bytes(), stat.S_IMODE(saved.stat().st_mode))
-            else:
-                path.unlink(missing_ok=True)
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
+    except BaseException as original:
+        failures = []
+        for relative in reversed(modified):
+            try:
+                path, saved = root / relative, originals[relative]
+                if saved is not None:
+                    os.replace(saved, path)
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError as error:
+                failures.append(error)
+                unrestored.add(relative)
+        try:
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            failures.append(error)
+        if failures:
+            raise BaseExceptionGroup("installation failed and rollback requires operator recovery",
+                                     [original, *failures])
         raise
+    finally:
+        for relative, saved in originals.items():
+            if saved is not None and relative not in unrestored:
+                saved.unlink(missing_ok=True)
     return backup
 
 
@@ -159,7 +198,8 @@ def main():
     if args.ocr_url is not None:
         validate_url(args.ocr_url)
     if not args.apply:
-        print("Validated commit " + args.commit + "; no files or services changed")
+        verify_units(payload)
+        print("Validated commit " + args.commit + "; no installed files or services changed")
         return
     if os.geteuid() != 0:
         raise PermissionError("apply as root inside the dashboard host")

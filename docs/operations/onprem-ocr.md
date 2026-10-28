@@ -31,15 +31,21 @@ observer service and observer timer all inactive. Coordinate a read-only dashboa
 maintenance window: stop only those units, wait for an in-flight observer to finish,
 and record their original active/enabled states. The installer does not stop, start
 or enable units. On first installation only, supply `--ocr-url` with the
-credential-free dashboard base URL; subsequent installations preserve the entire
+credential-free dashboard JSON endpoint (for example
+`http://127.0.0.1:8090/api/view.json`), not its HTML base URL; subsequent installations preserve the entire
 existing environment and reject an overwrite.
 
-The installer checks the archive digest, Git archive commit header, exact regular
-file set, Python syntax and systemd units. The header records the operator's
+Validation-only mode also stages and verifies the systemd units, so run it on a
+systemd host. The installer checks the archive digest, Git archive commit header,
+exact regular file set, Python syntax and systemd units. The header records the operator's
 selected source; it is not a signature or substitute for reviewing that commit.
 It atomically replaces code/units, records `COMMIT`, retains private rollback
 copies under `/var/lib/usnm-data-flow-install`, and restores old files if
-verification or daemon reload fails. Restore the original unit activation after
+verification or daemon reload fails. Same-directory recovery hard links retain
+the original inodes, ownership and modes without allocating replacement file
+contents if the disk fills. If an individual restoration fails, the installer
+still attempts every remaining restoration and daemon reload, reports all errors
+and retains the needed recovery links. Restore the original unit activation after
 success or failure; enable the observer timer explicitly for a new installation.
 The catalog listener remains loopback-only (`127.0.0.1:8764`).
 
