@@ -345,7 +345,9 @@ cache lasts one workunit.
   hashes, with per-crop pixel features, pairwise CER/WER/Dice, comparisons to
   LoC, forced-language damage counts, uncertainty markers, repetition indicators
   and token-budget saturation. Missing readings remain distinct from empty
-  readings. These are **noncanonical observations**, not replacements for the
+  readings. Quality pair metrics use NFC, joined line-end hyphens and collapsed
+  whitespace; the separate `validator_dice` uses the validator's unmodified
+  word-bag computation. These are **noncanonical observations**, not replacements for the
   canonical spool or inputs to `quality collect`. Keep the original `seen`
   files; supplying selected results is not proof of database completeness.
 

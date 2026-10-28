@@ -41,6 +41,28 @@ pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyho
         (1..=16).contains(&candidates.len()),
         "expected 1 to 16 candidates"
     );
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let destination = parent
+        .canonicalize()?
+        .join(out.file_name().context("output file name")?);
+    let destination = if destination.exists() {
+        destination.canonicalize()?
+    } else {
+        destination
+    };
+    ensure!(
+        destination != job.canonicalize()? && destination != page.canonicalize()?,
+        "report must not overwrite an input"
+    );
+    for dir in candidates {
+        ensure!(
+            !destination.starts_with(dir.canonicalize()?),
+            "report must not overwrite retained evidence"
+        );
+    }
     let job_bytes = read(job, MAX_JOB_JSON)?;
     let job: Job = serde_json::from_slice(&job_bytes)?;
     job.validate()?;
@@ -132,6 +154,7 @@ pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyho
                     "a": name, "b": other,
                     "same_model": l.result.model == b.result.model,
                     "metrics": r.zip(rb).map(|(a,b)| align::pair(&a.text, &b.text)),
+                    "validator_dice": r.zip(rb).map(|(a,b)| usnm_ocr_contract::boinc::dice(&a.text, &b.text)),
                     "exact_text": r.zip(rb).map(|(a,b)| a.text == b.text),
                 }));
             }
@@ -147,6 +170,8 @@ pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyho
     let report = json!({
         "schema": "usnm_qwen_candidates_v1",
         "status": "diagnostic_only_not_canonical",
+        "pair_metrics_normalization": "NFC, joined line-end hyphens, collapsed whitespace",
+        "validator_dice_normalization": "validator word bags without quality text normalization",
         "job": job, "job_file_sha256": sha256(&job_bytes),
         "candidates": observations, "crops": crops,
         "limitations": [
@@ -258,5 +283,38 @@ mod tests {
             .to_string()
             .contains("job or engine"));
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn keeps_validator_dice_separate_from_normalized_quality_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fixture(dir.path(), "a", &[("c01", "inter-\nnational")]);
+        let b = fixture(dir.path(), "b", &[("c01", "international")]);
+        let out = dir.path().join("evidence.json");
+        run(
+            &dir.path().join("unit_a/qwen.json"),
+            &dir.path().join("unit_a/page.jpg"),
+            &[a, b],
+            &out,
+        )
+        .unwrap();
+        let report: Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+        assert_eq!(report["crops"][0]["pairs"][0]["metrics"]["dice"], 1.0);
+        assert_eq!(report["crops"][0]["pairs"][0]["validator_dice"], 0.0);
+    }
+
+    #[test]
+    fn refuses_to_overwrite_job_or_retained_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fixture(dir.path(), "a", &[("c01", "text")]);
+        let job = dir.path().join("unit_a/qwen.json");
+        let page = dir.path().join("unit_a/page.jpg");
+        let bytes = std::fs::read(&job).unwrap();
+        assert!(run(&job, &page, std::slice::from_ref(&a), &job).is_err());
+        assert_eq!(std::fs::read(&job).unwrap(), bytes);
+        let readings = a.join(READINGS_FILE);
+        let bytes = std::fs::read(&readings).unwrap();
+        assert!(run(&job, &page, &[a], &readings).is_err());
+        assert_eq!(std::fs::read(readings).unwrap(), bytes);
     }
 }
