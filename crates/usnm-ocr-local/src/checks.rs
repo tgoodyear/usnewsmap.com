@@ -289,8 +289,10 @@ pub fn check_part(name: &PartName, bytes: Vec<u8>, ctx: &Context) -> Result<Node
     if queued.reason != row.loc_text {
         return Err(Reject::ReasonMismatch);
     }
-    if queued.retry_message_at.is_some()
-        && queued.retry_run.as_deref() != Some(name.run_id().as_str())
+    if queued
+        .retry_run
+        .as_deref()
+        .is_some_and(|run| run != name.run_id())
     {
         return Err(Reject::RetryAttempt);
     }

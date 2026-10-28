@@ -53,9 +53,9 @@ class RegisteredVersionRouting(unittest.TestCase):
             files.assert_not_called()
         db.close.assert_called_once()
 
-    def test_retry_binds_signed_worker_configuration_to_engine_digest(self):
+    def test_retry_binds_registered_signed_worker_not_tesseract_base(self):
         worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64
-        engine = "sha256:" + "a" * 64
+        image = "sha256:" + "b" * 64
         db = MagicMock()
         version = dict(id=1, xml_doc="signed", plan_class="docker", platform="x86_64-pc-linux-gnu")
         with patch.object(S, "db_connect", return_value=db), \
@@ -63,17 +63,11 @@ class RegisteredVersionRouting(unittest.TestCase):
                 patch.object(S, "registered_version"), \
                 patch.object(S, "verify_version_files", return_value=worker) as files, \
                 patch.object(S.subprocess, "check_output") as inspect:
-            for value, accepted in [(engine, True), ("sha256:" + "c" * 64, False)]:
-                inspect.return_value = json.dumps([dict(
-                    RepoDigests=[worker], Config=dict(Env=["USNM_TESSERACT_IMAGE=" + value]))])
-                if accepted:
-                    S.verify_retry_worker(Path("/unused"), 27, engine)
-                else:
-                    with self.assertRaisesRegex(ValueError, "engine differs"):
-                        S.verify_retry_worker(Path("/unused"), 27, engine)
-            inspect.return_value = json.dumps([dict(RepoDigests=[], Config=dict(Env=[]))])
-            with self.assertRaisesRegex(ValueError, "preload"):
-                S.verify_retry_worker(Path("/unused"), 27, engine)
+            S.verify_retry_worker(Path("/unused"), 27, image)
+            for other in ["sha256:" + "a" * 64, "sha256:" + "c" * 64]:
+                with self.assertRaisesRegex(ValueError, "worker digest differs"):
+                    S.verify_retry_worker(Path("/unused"), 27, other)
+            inspect.assert_not_called()
             files.assert_called_with(Path("/unused"), None, "signed")
         self.assertEqual(db.close.call_count, 3)
 

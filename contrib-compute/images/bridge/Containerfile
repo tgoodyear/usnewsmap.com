@@ -48,9 +48,11 @@ COPY ocr/boinc/usnm_ndlocr_in ocr/boinc/usnm_ndlocr_out /usr/local/lib/usnm-boin
 COPY ocr/boinc/usnm_ocr_bundle_in ocr/boinc/usnm_ocr_bundle_out /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/usnm_qwen_train_in ocr/boinc/usnm_qwen_train_out /usr/local/lib/usnm-boinc/
 COPY ocr/boinc/usnm_iris_in ocr/boinc/usnm_iris_out ocr/boinc/usnm_iris_bundle_in ocr/boinc/usnm_iris_bundle_out contrib-compute/images/bridge/usnm_iris_check /usr/local/lib/usnm-boinc/
-COPY ocr/boinc/iris/contract.py ocr/boinc/iris/bundle.py scripts/boinc/iris-campaign.py scripts/boinc/iris-bundle-campaign.py scripts/boinc/iris-check.py /usr/local/lib/usnm-boinc/iris/
+COPY ocr/boinc/iris/contract.py ocr/boinc/iris/bundle.py scripts/boinc/iris-campaign.py scripts/boinc/iris-bundle-campaign.py scripts/boinc/iris-check.py scripts/boinc/acceptance_server.py /usr/local/lib/usnm-boinc/iris/
 RUN mv /usr/local/lib/usnm-boinc/iris/iris-check.py /usr/local/lib/usnm-boinc/iris/check.py \
- && chmod 0755 /usr/local/lib/usnm-boinc/usnm_iris_check
+ && chmod 0755 /usr/local/lib/usnm-boinc/usnm_iris_check \
+ && python3 /usr/local/lib/usnm-boinc/iris/iris-campaign.py --help >/dev/null \
+ && python3 /usr/local/lib/usnm-boinc/iris/iris-bundle-campaign.py --help >/dev/null
 RUN chmod 0755 /usr/local/lib/usnm-boinc/usnm_qwen_train_check
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/

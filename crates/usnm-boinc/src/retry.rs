@@ -262,7 +262,7 @@ pub async fn prepare(
     Ok(id)
 }
 
-/// Retry reservations have no new queue claim to release. Publish their own
+/// Explicit cohorts and retries have no queue claim to release. Publish their own
 /// terminal event, never end or delete the parent's (possibly newer) claim.
 pub async fn dead_letter(
     record: &Record,
@@ -272,8 +272,11 @@ pub async fn dead_letter(
     record.job.validate()?;
     validate(record)?;
     ensure!(
-        record.retry.is_some() && record.stage == Stage::Failed && record.terminal.is_some(),
-        "retry has no collected terminal failure"
+        (record.retry.is_some() || record.ledger.is_none())
+            && record.bundle.is_none()
+            && record.stage == Stage::Failed
+            && record.terminal.is_some(),
+        "claimless single-page job has no collected terminal failure"
     );
     let error = record.error.as_deref().context("missing terminal error")?;
     let from = match record.job.message.reason {
@@ -384,6 +387,30 @@ mod tests {
         .unwrap();
         let original = std::fs::read(parent_path.join("record.json")).unwrap();
         let previous = parent.queued().unwrap();
+        let parent_events = usnm_store::queue::LocalQueue::new(temp.path().join("parent-events"));
+        assert_eq!(
+            dead_letter(&parent, curated.as_ref(), &parent_events)
+                .await
+                .unwrap(),
+            crate::claim::DeadLettered::Done
+        );
+        assert_eq!(
+            dead_letter(&parent, curated.as_ref(), &parent_events)
+                .await
+                .unwrap(),
+            crate::claim::DeadLettered::Already
+        );
+        assert_eq!(
+            parent_events.approximate_count(DEADLETTER).await.unwrap(),
+            1
+        );
+        let envelope = parent_events
+            .receive(DEADLETTER, std::time::Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let event = usnm_ocr_contract::message::decode_dead_letter(&envelope.text).unwrap();
+        assert_eq!(event.message.as_ref(), Some(&parent.job.message));
         ledger::write_queued(
             curated.as_ref(),
             std::slice::from_ref(&previous),
@@ -557,6 +584,56 @@ mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         assert!(crate::submit::submit(&root, &project, &id).await.is_err());
+        assert_eq!(load(&root, &id).unwrap().stage, Stage::Reserved);
+        assert!(!project.join("attempted-args").exists());
+        let expected = child.queued().unwrap();
+        let locked_state = &state;
+        let guarded = usnm_ocr_local::boinc::with_retry_reservation(
+            &state,
+            curated.as_ref(),
+            &expected,
+            |lease| async move {
+                lease.check()?;
+                assert!(locked_state
+                    .lock(
+                        "ocr-sync",
+                        "competing-enqueue",
+                        chrono::Duration::seconds(60)
+                    )
+                    .await
+                    .is_err());
+                Err::<(), _>(anyhow::anyhow!("test submission failed"))
+            },
+        )
+        .await;
+        assert!(format!("{:#}", guarded.unwrap_err()).contains("test submission failed"));
+        state
+            .lock("ocr-sync", "after-failure", chrono::Duration::seconds(60))
+            .await
+            .unwrap();
+        state.unlock("ocr-sync", "after-failure").await.unwrap();
+        let mut replacement = previous.clone();
+        replacement.queued_at = expected.queued_at + chrono::Duration::seconds(1);
+        replacement.retry_message_at = Some(replacement.queued_at);
+        ledger::write_queued(
+            curated.as_ref(),
+            &[replacement.clone()],
+            replacement.queued_at,
+            "ordinary-replacement",
+        )
+        .await
+        .unwrap();
+        let native = crate::submit::RetryNative {
+            state: &state,
+            curated: curated.as_ref(),
+        };
+        let error = crate::submit::submit_checked(&root, &project, &id, None, Some(&native))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("exact outstanding reservation"),
+            "{error:#}"
+        );
         assert_eq!(load(&root, &id).unwrap().stage, Stage::Reserved);
         assert!(!project.join("attempted-args").exists());
         interrupted.stage = Stage::Submitting;

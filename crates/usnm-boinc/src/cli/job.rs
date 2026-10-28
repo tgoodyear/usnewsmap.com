@@ -120,7 +120,7 @@ pub struct RetryArgs {
     /// Already signed and installed usnm_ocr worker version supporting retry contract v2.
     #[arg(long)]
     app_version_num: u32,
-    /// Full TESSERACT_IMAGE configuration digest of that supporting signed worker.
+    /// Full released BOINC worker image digest, not its Tesseract base digest.
     #[arg(long)]
     image: String,
     #[arg(long)]
@@ -223,6 +223,13 @@ pub struct SubmitArgs {
     /// Existing local directory mapped to download-base-url (no symlinks).
     #[arg(long, requires = "download_base_url")]
     download_root: Option<PathBuf>,
+    /// Native stores are mandatory for retry jobs; ordinary submissions stay compatible.
+    #[arg(long)]
+    curated_url: Option<String>,
+    #[arg(long, conflicts_with = "cosmos")]
+    state_file: Option<PathBuf>,
+    #[arg(long)]
+    cosmos: Option<String>,
 }
 
 pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
@@ -232,6 +239,9 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         job,
         download_base_url,
         download_root,
+        curated_url,
+        state_file,
+        cosmos,
     } = args;
     let download = match (download_base_url, download_root) {
         (Some(base), Some(root)) => Some(crate::submit::Download::new(&base, &root)?),
@@ -239,7 +249,29 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         (None, None) => None,
         (None, Some(_)) => anyhow::bail!("download-root requires download-base-url"),
     };
-    crate::submit::submit_with_download(&root, &project, &job, download.as_ref()).await?;
+    let native = match (curated_url, state_file, cosmos) {
+        (None, None, None) => None,
+        (Some(curated), Some(file), None) => Some((
+            State::new(Arc::new(FileDocs::open(file)?)),
+            usnm_store::open(&curated)?,
+        )),
+        (Some(curated), None, Some(endpoint)) => Some((
+            State::new(Arc::new(CosmosDocs::new(
+                &endpoint, usnm_state::DATABASE,
+                usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
+            )?)),
+            usnm_store::open(&curated)?,
+        )),
+        _ => anyhow::bail!("submission native stores require --curated-url and exactly one of --state-file/--cosmos"),
+    };
+    let sources = native
+        .as_ref()
+        .map(|(state, curated)| crate::submit::RetryNative {
+            state,
+            curated: curated.as_ref(),
+        });
+    crate::submit::submit_checked(&root, &project, &job, download.as_ref(), sources.as_ref())
+        .await?;
     Ok(())
 }
 

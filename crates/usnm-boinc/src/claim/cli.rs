@@ -255,7 +255,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                     "job {job} has not failed; nothing to dead-letter"
                 );
                 let doc_id = record.job.message.key()?.doc_id();
-                if record.retry.is_some() {
+                if record.retry.is_some() || record.ledger.is_none() {
                     let done = crate::retry::dead_letter(&record, handoff.as_ref(), queue.as_ref())
                         .await?;
                     println!("{doc_id} {done:?}");

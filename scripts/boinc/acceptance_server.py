@@ -314,15 +314,8 @@ def verify_retry_worker(project, version_num, engine):
         registered_version(db, dict(app='usnm_ocr', version_num=version_num,
                                    platform=version['platform'], plan_class=version['plan_class']))
         worker = verify_version_files(project, None, version['xml_doc'])
-        # Inspect only a preloaded immutable image: never pull a worker on submission.
-        info = json.loads(subprocess.check_output(
-            ['podman', 'image', 'inspect', worker], text=True, timeout=30))
-        if len(info) != 1 or worker not in info[0].get('RepoDigests', []):
-            raise ValueError('preload the exact signed worker image before retry submission')
-        engines = [value.split('=', 1)[1] for value in info[0]['Config'].get('Env', [])
-                   if value.startswith('USNM_TESSERACT_IMAGE=')]
-        if len(engines) != 1 or engines[0].split('@')[-1] != engine:
-            raise ValueError('signed worker engine differs from the requested retry image')
+        if worker.split('@')[-1] != engine:
+            raise ValueError('signed worker digest differs from the requested retry image')
     finally:
         db.close()
 

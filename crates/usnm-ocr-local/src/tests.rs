@@ -1652,6 +1652,17 @@ async fn enqueue_finds_the_page_and_writes_the_ledger_first() {
     assert_eq!(retry.queued, 1);
     let l = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
     assert_eq!(l.outstanding(&doc).unwrap().attempt, 2);
+    assert!(l.outstanding(&doc).unwrap().retry_message_at.is_some());
+    assert!(l.outstanding(&doc).unwrap().retry_run.is_none());
+    let mut answer = row(4, &GERMAN.repeat(4));
+    answer.loc_text = "user".into();
+    fx.node_writes(&answer, ALTO, &stamp(2)).await;
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    assert!(ledger::load(fx.stores.curated.as_ref())
+        .await
+        .unwrap()
+        .imported(&doc));
 }
 
 #[test]

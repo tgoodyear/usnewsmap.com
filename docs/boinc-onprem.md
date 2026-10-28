@@ -127,14 +127,15 @@ signed app version, journal, assimilator marker or accepted result to force a re
 Before activation, deploy the reviewed reader to **every** strict journal consumer
 (controller, server, bridge, native sync and seeder), and sign/install a matching `usnm_ocr` worker
 supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
-Record the supporting worker's full configuration digest (`TESSERACT_IMAGE`) and
+Record the supporting BOINC worker's full released image digest (not its separate
+Tesseract base image digest) and
 BOINC app version number. Existing trust, routing, source budgets and validation
 still apply. Do not retry a bundle or bypass its reconciliation.
-Preload the immutable signed worker image into the server's Podman image store.
 Submission verifies its registered Dockerfile signature, requires an unambiguous
-active app/version/platform/plan mapping, and checks the worker's immutable
-`USNM_TESSERACT_IMAGE` against the retry engine digest. Missing inspection
-dependencies, images or proof refuse submission before its uncertain state.
+active app/version/platform/plan mapping, and compares the signed Dockerfile's
+immutable worker `FROM` digest against `Job.engine.image`. No Podman socket or
+host image store is required. Missing registration or signature proof refuses
+submission before its uncertain state.
 
 After confirming BOINC's actual terminal disposition and that native sync has
 settled the exact previous native row as a permanent failure:
@@ -166,6 +167,13 @@ preserves the original scan, failed journal and request-day quota attribution.
 An identical invocation resumes its durable prepared/reserved child; it never
 creates another workunit for that parent. Submit that child through the existing
 single-page `submit` path, which pins `--app_version_num` from the retry journal.
+Pass `--curated-url` and exactly one of `--state-file` or `--cosmos` again on
+submission. For both `submit` and `submit-remote`, the on-prem bridge forwards
+host-owned `COSMOS_ENDPOINT` and `CURATED_URL` from `bridge.env`; configure its
+existing identity with the native lock/ledger permissions before activation.
+Submission holds the native lease while revalidating the exact outstanding
+child, verifying the signed worker, and crossing the write-ahead/create-work
+boundary. A replaced or settled child is refused without submission.
 Uncertain submission still requires authoritative BOINC lookup and explicit
 `reconcile`; never delete its journal and repeat. A retry of a failed child needs
 a fresh terminal review naming that child.

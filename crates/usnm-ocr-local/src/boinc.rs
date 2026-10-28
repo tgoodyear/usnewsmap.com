@@ -4,6 +4,7 @@
 //! that came off the work queues (`usnm-boinc claim`): their ledger rows
 //! exist already, so it only checks them and writes nothing.
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ledger, sync::Lease, LOCK};
@@ -335,6 +336,48 @@ where
     let next = result?;
     unlock?;
     Ok(next)
+}
+
+#[derive(Clone)]
+pub struct SubmissionLease(Arc<Lease>);
+
+impl SubmissionLease {
+    pub fn check(&self) -> anyhow::Result<()> {
+        self.0.check()
+    }
+}
+
+/// Hold the native lease across a deliberate retry's external submission.
+pub async fn with_retry_reservation<T, F: std::future::Future<Output = anyhow::Result<T>>>(
+    state: &State,
+    curated: &dyn ObjectStore,
+    expected: &ledger::Queued,
+    operation: impl FnOnce(SubmissionLease) -> F,
+) -> anyhow::Result<T> {
+    anyhow::ensure!(
+        expected.retry_run.is_some(),
+        "not a deliberate retry reservation"
+    );
+    let owner = usnm_state::owner_id();
+    let lease = SubmissionLease(Arc::new(take_waiting(state, &owner).await?));
+    let result = async {
+        let ledger = ledger::load(curated).await?;
+        anyhow::ensure!(
+            !ledger.imported(&expected.doc_id)
+                && ledger.outstanding(&expected.doc_id) == Some(expected),
+            "retry submission no longer owns the exact outstanding reservation"
+        );
+        lease.check()?;
+        let output = operation(lease.clone()).await?;
+        lease.check()?;
+        Ok(output)
+    }
+    .await;
+    drop(lease);
+    let unlocked = state.unlock(LOCK, &owner).await;
+    let output = result?;
+    unlocked?;
+    Ok(output)
 }
 
 /// Check, under the same lock, that every page's ledger row is still the

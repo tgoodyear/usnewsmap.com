@@ -178,6 +178,12 @@ fn judge(text: &str, src: &Sources<'_>) -> Verdict {
     if row.retry_run.is_some() {
         return Verdict::Skip("deliberate_retry");
     }
+    if row.retry_message_at.is_some_and(|expected| {
+        !chrono::DateTime::parse_from_rfc3339(&msg.queued_at)
+            .is_ok_and(|at| at.timestamp_micros() == expected.timestamp_micros())
+    }) {
+        return Verdict::Stale;
+    }
     if row.batch != msg.batch || row.reason != msg.reason.as_str() || row.language != msg.language {
         return Verdict::Skip("ledger_mismatch");
     }
