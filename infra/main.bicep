@@ -293,6 +293,12 @@ param jaOcrReplicas int = 2
 @description('Run the Japanese OCR on-prem (#917): the on-prem hosts\' group (onPremGroupId) gets read on the curated and reference containers and create-only writes under curated/ocr-ja/ (modules/jaocr-runner.bicep), and the data lake opens to the node IPs. Pair it with jaOcrJob false, so the Azure job goes. scripts/ocr-node/ja-ocr-onprem.sh runs it on a node.')
 param jaOcrOnPrem bool = false
 
+@description('Alert on supervised on-prem Japanese OCR runs (#1164), independently of ingestJobs; requires jaOcrOnPrem and alert emails.')
+param jaOcrAlerts bool = false
+
+@description('Explicitly arm Japanese run freshness only while a run is expected. False for intentional idle.')
+param jaOcrExpectActive bool = false
+
 @description('Let ocrDamageRunner, an on-prem host\'s own Arc machine identity (pve-laptop CT 215, usnm-batch), write the OCR damage tables (#296, `usnm-ingest ocr-damage`): create new blobs under curated/audit/damage/ only, with no read, overwrite or delete (modules/damage-writer.bicep). The role stays while ocrDamageRunner is set (modules/damage-writer-role.bicep). It reads curated and reference through the on-prem hosts\' group, so pair it with jaOcrOnPrem. Off removes the grant and keeps the role.')
 param ocrDamageOnPrem bool = false
 
@@ -1266,6 +1272,23 @@ module ocrSyncAlertRules 'modules/ocr-sync-alerts.bicep' = if (!empty(emails) &&
       stale: n.ocrSyncStaleAlert
       backlog: n.ocrSyncBacklogAlert
     }
+  }
+}
+
+module jaOcrAlertRules 'modules/jaocr-alerts.bicep' = if (!empty(emails) && jaOcrAlerts && jaOcrOnPrem) {
+  scope: rg
+  name: 'jaocr-alerts'
+  params: {
+    location: location
+    tags: tags
+    workspaceId: monitoring.outputs.workspaceId
+    appInsightsId: monitoring.outputs.appInsightsId
+    actionGroupId: monitoring.outputs.actionGroupId
+    alertNames: {
+      failed: n.jaocrFailedAlert
+      stale: n.jaocrStaleAlert
+    }
+    expectedActive: jaOcrExpectActive
   }
 }
 

@@ -54,6 +54,57 @@ pages remain pending in the unchanged target list. Unknown missing images and
 missing engine outputs still prevent the issue's available output from being
 committed; neither is silently classified as undigitized.
 
+### Opt-in native-run monitoring
+
+For #1164, `usnm-ingest ja-ocr-run -- /absolute/runner args...` supervises exactly
+one invocation without retrying it. It requires configured Application Insights,
+exports `jaocr.run_heartbeat` every minute only while the child is active, and
+uses the existing `ingest.command_failures` metric with command `ja-ocr-run` on
+spawn/wait/nonzero-exit failure. Child stdout/stderr stays in the local journal,
+not the exporter; no OCR text, command arguments, page identifiers or credentials
+are metric dimensions. A cancelled supervisor kills its owned child on drop;
+systemd's control-group stop/timeout remains the final bound.
+The ingest CLI's standard curated/reference arguments remain required (already
+present in the native unit's environment); supervision opens neither store nor
+pipeline state and requires no Cosmos permission.
+
+Install the reviewed Linux `usnm-ingest` **separately** at
+`/opt/usnm-ja-native/monitor/usnm-ingest`, never replacing CT215's shared ingest
+binary. Write only `APPLICATIONINSIGHTS_CONNECTION_STRING` to the root-owned
+`/etc/usnm/ja-ocr-monitor.env` (mode 0600), using CT215's existing environment
+component and Arc Monitoring Metrics Publisher grant, as OCR pickup does.
+Do not grant all on-prem hosts write access to the shared component or use a
+local-auth key. Verify an actual Entra-authenticated heartbeat from
+`ja-ocr-run -- /bin/true` before installing
+`scripts/ocr-node/usnm-ja-ocr-native-monitor.conf` as
+`/etc/systemd/system/usnm-ja-ocr-native.service.d/10-monitor.conf` and running
+`systemctl daemon-reload`. The original unit/runtime is unchanged without this
+drop-in. Installation does not start work or change source pacing.
+
+`USNM_JA_OCR_ALERTS` opts into `jaocr-alerts.bicep`, independently of
+`USNM_INGEST_JOBS`, with `USNM_JA_OCR_ONPREM` and the existing action group.
+It reports supervised failures in the last 30 minutes. Separately,
+`USNM_JA_OCR_EXPECT_ACTIVE` explicitly arms a 30-minute missing-heartbeat alert:
+arm it only after the bootstrap heartbeat is visible and a run is planned;
+disarm on completion, before intentional stop, idle, or a source-rate hold.
+An installed runtime, old heartbeat or on-prem permission alone never implies
+expected activity. With expectation armed, missing all data remains an alert,
+not a success-shaped fallback when history expires. Both settings default off;
+neither production settings nor alert resources are changed by the code alone.
+Rules evaluate every 15 minutes and use the existing stateful action-group
+pattern, about $0.50/month per enabled rule, with no new compute or ingestion key.
+
+Before acceptance, install only the reviewed monitor/drop-in on the accepted
+host, verify the existing grant and real heartbeat, exercise a controlled failed
+invocation and successful recovery, and retain actual notification receipts.
+Exercise expected-active stale detection and confirm disabled/intentional-idle
+does not alarm. Read back only these two alert resources; avoid a broad provision
+or shared-binary replacement. Retired container units are not automatically
+instrumented: keep them stopped, or explicitly wrap their trusted invocation
+with the same supervisor and verify that host's own existing telemetry grant.
+Rollback removes only the monitor drop-in, reloads systemd and disarms the
+settings; preserve the accepted OCR runtime and immutable outputs.
+
 ### Native acceptance receipt: 27 October 2026
 
 CT215's Debian Python 3.11.2 successfully installed the pinned source/models and

@@ -190,6 +190,8 @@ var nameTypes = {
   ocrNodeVolumeAlert: 'alert'
   ocrNodeWriterRole: 'role'
   ocrNodesWorkbookTitle: 'title'
+  jaocrFailedAlert: 'alert'
+  jaocrStaleAlert: 'alert'
   ocrSyncBacklogAlert: 'alert'
   ocrSyncFailedAlert: 'alert'
   ocrSyncStaleAlert: 'alert'
@@ -302,6 +304,8 @@ type Names = {
   ocrNodeVolumeAlert: string
   ocrNodeWriterRole: string
   ocrNodesWorkbookTitle: string
+  jaocrFailedAlert: string
+  jaocrStaleAlert: string
   ocrSyncBacklogAlert: string
   ocrSyncFailedAlert: string
   ocrSyncStaleAlert: string
@@ -402,6 +406,8 @@ func names(env string, sfx string, pinned bool) Names => {
   ocrNodeVolumeAlert: usnmName('ocr-node-volume', 'alert', env)
   ocrNodeWriterRole: usnmName('ocr-nodewriter', 'role', env)
   ocrNodesWorkbookTitle: 'usnm OCR nodes (${env})'
+  jaocrFailedAlert: usnmName('jaocr-failed', 'alert', env)
+  jaocrStaleAlert: usnmName('jaocr-stale', 'alert', env)
   // 'ocrs', not 'ocrsync', the pickup job's first name (#386, ADR-0017).
   ocrSyncBacklogAlert: usnmName('ocrs-backlog', 'alert', env)
   ocrSyncFailedAlert: usnmName('ocrs-failed', 'alert', env)
