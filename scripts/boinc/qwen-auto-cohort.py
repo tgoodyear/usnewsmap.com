@@ -111,6 +111,16 @@ def available_in_window(rows, window, hosts):
     )
 
 
+def assignable_units(rows, window, host):
+    # One result per host per workunit: a host can receive at most one replica of each unit.
+    return sum(
+        1 for row in rows if window[0] <= int(row["unit"]["id"]) <= window[1]
+        and int(row["unit"]["canonical_resultid"]) == 0 and int(row["unit"]["error_mask"]) == 0
+        and any(int(result["server_state"]) == 2 for result in row["results"])
+        and host not in {int(result["hostid"]) for result in row["results"]}
+    )
+
+
 def choose(rows, floor, reserved, remaining):
     if remaining <= 0:
         return []
@@ -266,6 +276,7 @@ def run(args):
             if pending:
                 if window == pending["target"] and class_scope(policy) == pending["after_scope"]:
                     state["window"] = window
+                    state["window_since"] = int(time.time())
                     state["admitted"] += pending["selected"]
                     del state["pending"]
                     if args.apply:
@@ -279,10 +290,15 @@ def run(args):
                             "Uncertain publication differs from its owned intent: refuse overwrite")
                     del state["pending"]
             require(state["window"] == window, "Another operator changed the owned cohort: refuse overwrite")
+            if "window_since" not in state:
+                # State from before this field: start the hold clock now, never backdate it.
+                state["window_since"] = int(time.time())
+                if args.apply:
+                    persist(state_path, state)
         else:
             require(sha(policy) == args.initial_policy_sha256, "Initial operator policy changed")
             state = {"controller": args.controller, "window": window, "admitted": [],
-                     "resource_gates": class_scope(policy, without_bounds=True)}
+                     "resource_gates": class_scope(policy, without_bounds=True), "window_since": int(time.time())}
             if args.apply:
                 # Persist the validated baseline before any early return so later ticks use the
                 # scope-aware ownership checks rather than the whole-policy SHA.
@@ -344,7 +360,10 @@ def run(args):
         else:
             inflight = {host: sum(int(row["hostid"]) == host for row in database["gpu_inflight"])
                         for host in (args.intel_host, args.nvidia_host)}
-            capacity = max(0, args.max_inflight_per_host - max(inflight.values()))
+            # Old-window replicas stay dispatchable until the new policy is published, so each host's
+            # headroom also reserves every one it could still receive.
+            capacity = max(0, min(args.max_inflight_per_host - inflight[host]
+                                  - assignable_units(rows, window, host) for host in inflight))
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
             scanned = set(ids)
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
@@ -356,14 +375,26 @@ def run(args):
                        "audited_candidates_total": len(candidates), "scanned_candidates": len(ids),
                        "producer_audit_sha256": sha(audit_raw), "native_gpu_inflight": inflight,
                        "per_host_buffer_limit": args.max_inflight_per_host}
+            # A host holding a replica of every remaining window unit can never take the rest: if it
+            # has no native work left while the peer holds the window, it starves behind the peer.
+            starved = [host for host in (args.intel_host, args.nvidia_host) if not inflight[host]
+                       and not assignable_units(rows, window, host)]
+            held = int(time.time()) - int(state["window_since"])
+            if available and not (starved and held >= args.rotate_after_seconds):
+                return output | {"status": "current-window-still-eligible", "starved_hosts": starved,
+                                 "window_held_seconds": held}
             if available:
-                return output | {"status": "current-window-still-eligible"}
+                output |= {"starved_hosts": starved, "window_held_seconds": held}
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
             selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
                               args.minimum_workunit, reserved, min(remaining, capacity))
             if not selected:
                 return output | {"status": "no-fresh-verified-pairs"}
+            if available:
+                # The left-behind replicas stay ordinary unsent work for every other eligible class;
+                # nothing is cancelled, reassigned or edited.
+                output |= {"rotated_past_window": window, "left_unsent_replicas": available}
             proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
                      for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
@@ -403,6 +434,7 @@ def run(args):
                 os.close(fd)
             require(sha(policy_path.read_bytes()) == applied["after_sha256"], "Published policy readback mismatch")
             state["window"] = target
+            state["window_since"] = int(time.time())
             state["admitted"] += [int(row["unit"]["id"]) for row in selected]
             state["last_intent"] = str(receipt_path)
             del state["pending"]
@@ -422,6 +454,8 @@ def main(argv=None):
     parser.add_argument("--minimum-workunit", type=int, required=True)
     parser.add_argument("--max-admissions", type=int, default=500)
     parser.add_argument("--max-inflight-per-host", type=int, default=10)
+    # Several native task times: a host that is merely slow keeps its window.
+    parser.add_argument("--rotate-after-seconds", type=int, default=1800)
     parser.add_argument("--enabled-until", type=int, required=True)
     parser.add_argument("--intel-host", type=int, default=9)
     parser.add_argument("--nvidia-host", type=int, default=10)
@@ -442,6 +476,7 @@ def main(argv=None):
                 (args.helper_sha256, args.config_sha256, args.initial_policy_sha256)), "Expected SHA256 guards")
     require(1 <= args.max_admissions <= 10000 and args.minimum_workunit > 1, "Invalid finite budget/floor")
     require(1 <= args.max_inflight_per_host <= 10, "Keep at most ten native GPU tasks buffered per pilot host")
+    require(args.rotate_after_seconds >= 600, "Rotate a held window only after several native task times")
     require(args.intel_host > 0 and args.nvidia_host > 0 and args.intel_host != args.nvidia_host,
             "Independent distinct GPU hosts required")
     require(args.enabled_until <= int(time.time()) + 86400, "Enable at most 24 hours per reviewed ramp")

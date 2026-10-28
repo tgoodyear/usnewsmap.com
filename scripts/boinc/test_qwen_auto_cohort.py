@@ -66,7 +66,7 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             controller="a" * 32, minimum_workunit=100, max_admissions=500, max_inflight_per_host=10,
             enabled_until=10000000000,
             intel_host=9, nvidia_host=10, app_version_num=114, nvidia_app_version=66, intel_app_version=67,
-            prompt_version=1, apply=True,
+            prompt_version=1, rotate_after_seconds=1800, apply=True,
         )
 
     def input(self, number, language="yid"):
@@ -146,6 +146,12 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 0)
         rows[0]["results"][0]["hostid"] = 1
         self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 1)
+        # A replacement leaves two unsent replicas, but host 10 can receive only one of them.
+        rows[1]["results"] = [dict(id=1, hostid=9, server_state=5), dict(id=2, hostid=0, server_state=2),
+                              dict(id=3, hostid=0, server_state=2)]
+        self.assertEqual(R.available_in_window(rows[1:], [100, 101], (9, 10)), 2)
+        self.assertEqual((R.assignable_units(rows[1:], [100, 101], 10),
+                          R.assignable_units(rows[1:], [100, 101], 9)), (1, 0))
 
     def test_existing_two_model_metadata_does_not_admit_new_models_or_oversize_utf8(self):
         for mutation in (
@@ -206,6 +212,48 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(third["status"], "closed-expired-budget-or-release-change")
         self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
         self.assertTrue(R.fresh(self.rows[12]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_host_starved_behind_a_stalled_peer_rotates_only_after_the_hold_bound(self):
+        self.rows[:] = [self.input(number) for number in range(100, 104)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.args.max_inflight_per_host = 2
+        state_path = self.project / "ops-issue-559/qwen-auto-cohort/state.json"
+        def tick(age=0):
+            state = json.loads(state_path.read_bytes())
+            state["window_since"] -= age
+            state_path.write_text(json.dumps(state))
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["target"], [100, 101])
+        # Intel returned both of its replicas; NVIDIA took one and stalled on it.
+        for row in self.rows[:2]:
+            row["results"][0].update(server_state=5, hostid=9, sent_time=1, received_time=2, outcome=1)
+        self.rows[0]["results"][1].update(server_state=4, hostid=10, sent_time=1)
+        self.database["gpu_inflight"] = [{"hostid": 10}]
+        self.assertEqual(tick()["status"], "current-window-still-eligible")
+        self.assertEqual(tick()["starved_hosts"], [9])
+        # NVIDIA's one task plus the old replica it could still receive fill a two-task buffer:
+        # no rotation is reported or published.
+        held = tick(age=1800)
+        self.assertEqual(held["status"], "bounded-gpu-inflight-buffer-full")
+        self.assertNotIn("rotated_past_window", held)
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [100, 101])
+        self.args.max_inflight_per_host = 3
+        receipt = tick()
+        self.assertEqual((receipt["status"], receipt["target"], receipt["rotated_past_window"],
+                          receipt["left_unsent_replicas"]), ("refilled-finite-window", [102, 102], [100, 101], 1))
+        state = json.loads(state_path.read_bytes())
+        self.assertEqual(state["admitted"], [100, 101, 102])
+        self.assertLessEqual(int(time.time()) - state["window_since"], 5)
+        # The left-behind replica is untouched, and a host that still has native work never rotates.
+        self.assertEqual(self.rows[1]["results"][1]["server_state"], 2)
+        for row in self.rows[2:3]:
+            row["results"][0].update(server_state=5, hostid=9, sent_time=1, received_time=2, outcome=1)
+        self.database["gpu_inflight"] = [{"hostid": 10}, {"hostid": 9}]
+        self.assertEqual(tick(age=7200)["status"], "current-window-still-eligible")
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_uncertain_publication_reconciles_exact_intent_without_double_admission(self):

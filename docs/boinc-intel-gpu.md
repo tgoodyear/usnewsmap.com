@@ -47,6 +47,17 @@ This is conservative admission backpressure, not a client preference/quota
 change; report measured per-host backlog and rates rather than claiming the
 admission budget is completed work.
 
+A window normally refills only once neither pilot host can take any replica of it.
+One-result-per-host makes that a head-of-line hazard: when a host already holds a
+replica of every remaining window unit and has no native task left, it can take
+nothing until its peer drains the rest, and a stalled peer starves it indefinitely.
+After the window has been held `--rotate-after-seconds` (default 1800, at least
+600: several native task times, so a merely slow peer keeps its window), such a
+starved host lets the controller open the next fresh window. The left-behind
+replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
+for every other eligible class, and the receipt records them
+(`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
+
 The controller reads the producer's durable
 `/project/qwen/qwen-nonenglish-v1/audit.json` directly, not a human handoff or a
 headline count of stale ready work. It binds each WU/job identity to the actual
