@@ -456,6 +456,7 @@ async fn imports_a_page_it_asked_for() {
         assert_eq!(stored.len(), 1);
         let s = &stored[0];
         assert_eq!(s.doc_id, doc);
+        assert_eq!(s.ocr_reason, "bulk");
         assert_eq!(s.ours.lang.as_deref(), Some("ger"));
         assert_eq!(s.loc.lang.as_deref(), Some("ger"));
         let (ours, loc) = (s.ours.damage_rate.unwrap(), s.loc.damage_rate.unwrap());
