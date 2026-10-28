@@ -163,7 +163,11 @@ fn strict_geometry(xml: &[u8]) -> anyhow::Result<()> {
                     for attr in e.attributes().with_checks(true) {
                         let attr = attr?;
                         if attr.key.as_ref() == name {
-                            found = Some(attr.value.parse::<f64>()?);
+                            found = Some(
+                                attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                                    .trim()
+                                    .parse::<f64>()?,
+                            );
                         }
                     }
                     let n = found.context("ALTO geometry attribute missing")?;
@@ -499,7 +503,8 @@ pub async fn read(
         }
     };
     let bytes = get("receipt.json", 65536).await?;
-    let receipt: Receipt = serde_json::from_slice(&bytes)?;
+    let receipt: Receipt = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("invalid retained staging receipt JSON"))?;
     ensure!(
         receipt.binding.doc_id == doc_id && receipt.candidate == candidate,
         "candidate receipt identity mismatch"
@@ -550,7 +555,8 @@ pub(super) async fn read_identity(
         .iter()
         .find(|o| o.path == format!("{prefix}/receipt.json"))
         .context("candidate has no committed staging receipt")?;
-    let receipt: Receipt = serde_json::from_slice(&read_retained(curated, object, 65536).await?)?;
+    let receipt: Receipt = serde_json::from_slice(&read_retained(curated, object, 65536).await?)
+        .map_err(|_| anyhow::anyhow!("invalid retained staging receipt JSON"))?;
     ensure!(
         receipt.binding.doc_id == doc_id
             && receipt.candidate == candidate
@@ -893,6 +899,17 @@ mod tests {
             f.binding.doc_id, receipt.candidate
         );
         assert_eq!(store.get(&path).await.unwrap().unwrap(), b"");
+        f.update_alto(
+            String::from_utf8(f.alto.clone())
+                .unwrap()
+                .replace("HPOS=\"1\"", "HPOS=\" &#32;1&#x20; \"")
+                .into_bytes(),
+        );
+        assert!(
+            stage(&state, "stage", store.as_ref(), &f.binding, &f.inputs())
+                .await
+                .is_ok()
+        );
         f.update_alto(
             br#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><PRIVATE_OCR_SENTINEL></alto>"#.to_vec()
         );

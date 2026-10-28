@@ -107,9 +107,10 @@ async fn committed_head(
         object.path == format!("{prefix}/head.json"),
         "foreign decision head"
     );
-    Ok(Some(serde_json::from_slice(
-        &read_retained(curated, object, 65536).await?,
-    )?))
+    Ok(Some(
+        serde_json::from_slice(&read_retained(curated, object, 65536).await?)
+            .map_err(|_| anyhow::anyhow!("invalid decision commit JSON"))?,
+    ))
 }
 
 async fn commit(
@@ -196,7 +197,8 @@ async fn history(
             "decision history gap or foreign object"
         );
         let bytes = read_retained(curated, object, 65536).await?;
-        let record: Record = serde_json::from_slice(&bytes)?;
+        let record: Record = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("invalid decision history JSON"))?;
         ensure!(
             record.decision.subject == *subject
                 && record.decision.previous.as_ref() == records.last().map(|r| &r.id)
@@ -262,7 +264,8 @@ async fn validate_action(
                 && digest(bytes) == *comparison_sha256,
             "comparison size/checksum mismatch"
         );
-        let report: Comparison = serde_json::from_slice(bytes)?;
+        let report: Comparison = serde_json::from_slice(bytes)
+            .map_err(|_| anyhow::anyhow!("invalid paired comparison JSON"))?;
         ensure!(
             report.subject == decision.subject
                 && report.candidate == *candidate
