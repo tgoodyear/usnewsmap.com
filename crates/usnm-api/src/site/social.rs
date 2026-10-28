@@ -483,6 +483,24 @@ async fn cached(
     card: Card,
     background: bool,
 ) -> Result<Vec<u8>, Arc<RenderError>> {
+    let browser = card.url.starts_with(&format!("{SITE}/?"))
+        || card.url.starts_with(&format!("{SITE}/search/"));
+    if !browser {
+        return state
+            .previews
+            .get(
+                format!("static/{}", digest(&card.image)),
+                None,
+                background,
+                async {
+                    tokio::task::spawn_blocking(move || png(&card))
+                        .await
+                        .map_err(|_| RenderError::Failed("share card task failed".to_owned()))?
+                        .map_err(RenderError::Failed)
+                },
+            )
+            .await;
+    }
     let identity = identity(state).await.map_err(Arc::new)?;
     let normalized = overview_key(&card.image);
     let key = format!("previews/{identity}/{}.png", digest(&normalized));
@@ -495,16 +513,7 @@ async fn cached(
     state
         .previews
         .get(key, persistent, background, async {
-            let body = if card.url.starts_with(&format!("{SITE}/?"))
-                || card.url.starts_with(&format!("{SITE}/search/"))
-            {
-                screenshot(&card).await.map_err(RenderError::Failed)?
-            } else {
-                tokio::task::spawn_blocking(move || png(&card))
-                    .await
-                    .map_err(|_| RenderError::Failed("share card task failed".to_owned()))?
-                    .map_err(RenderError::Failed)?
-            };
+            let body = screenshot(&card).await.map_err(RenderError::Failed)?;
             if self::identity(state).await? != identity {
                 return Err(RenderError::Failed(
                     "share snapshot changed during capture".to_owned(),
@@ -877,7 +886,9 @@ mod tests {
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
-        let state = state().await;
+        let mut state = state().await;
+        Arc::get_mut(&mut state).unwrap().config.site_dir = None;
+        assert!(identity(&state).await.is_err());
         let app = axum::Router::new().route(
             "/share-image.png",
             axum::routing::get(move |uri| image(uri, state.clone())),
@@ -896,8 +907,15 @@ mod tests {
             .unwrap();
         assert_eq!(image.status(), StatusCode::OK);
         assert_eq!(image.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            image.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
         let body = image.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            body.as_ref(),
+            png(&Card::new("/datasets", "").unwrap()).unwrap()
+        );
         for uri in [
             "/share-image.png",
             "/share-image.png?page=%2Funknown&q=gold",
