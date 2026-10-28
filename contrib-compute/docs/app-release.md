@@ -8,6 +8,25 @@ paths.
 
 ### Feeder visibility
 
+The feeder also uses stock `--purge_stale 5`: the pinned implementation multiplies
+this argument by **60**, so cached slots rotate after five minutes, not five
+seconds despite upstream's help text. Enumeration headroom alone cannot replace
+occupied slots. On 28 October, all 111 Qwen slots remained occupied for over six
+hours while an audited, untouched two-replica bounded unit was absent from the
+cache and ordinary eligible host requests received zero work.
+
+This expires cache entries, not tasks, and does not widen any plan-class window,
+change validator thresholds or cancel assignments. The current project uses no
+homogeneous redundancy (HR); verify all live app HR fields and workunit HR classes
+remain zero before rollout. Stock stale purging can otherwise uncommit an HR
+workunit and increment its target replicas, which is outside this operation's
+authority. Preserve resource/quorum gates and the exact bounded policy SHA.
+Rollout needs a separately coordinated feeder-only inactive boundary and proof
+that the intended unit enters shared memory and is actually assigned; registration
+or an unchanged ready count alone is not acceptance. Do not restart the whole
+server, stop clients, or gate dispatch on a collector. The rotation does not create
+new paired work; a drained production feed remains a separate failure.
+
 `shmem_work_items` sizes the cache, **not** the database enumeration. In the
 [pinned BOINC feeder](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp),
 the default query budget is independently `MAX_WU_RESULTS * 2 = 200`.

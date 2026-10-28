@@ -86,7 +86,7 @@
     </tasks>
     <daemons>
         <daemon>
-            <cmd>feeder -d 2 --allapps</cmd>
+            <cmd>feeder -d 2 --allapps --purge_stale 5</cmd>
         </daemon>
         <daemon>
             <cmd>transitioner -d 2</cmd>

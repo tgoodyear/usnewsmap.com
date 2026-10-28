@@ -44,7 +44,7 @@ class DaemonConfig(unittest.TestCase):
         commands = [shlex.split(cmd.text) for cmd in root.findall("./daemons/daemon/cmd")]
         self.assertEqual(
             [cmd for cmd in commands if cmd[0] == "feeder"],
-            [["feeder", "-d", "2", "--allapps"]],
+            [["feeder", "-d", "2", "--allapps", "--purge_stale", "5"]],
         )
         self.assertEqual(root.findtext("./config/shmem_work_items"), "1000")
 
