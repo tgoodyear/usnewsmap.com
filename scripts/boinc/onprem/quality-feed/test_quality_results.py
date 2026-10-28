@@ -2,6 +2,7 @@
 import importlib.util
 import fcntl
 import json
+import io
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import shlex
 import sys
 import time
+import threading
 import types
 import unittest
 import uuid
@@ -35,7 +37,78 @@ class ResultsTest(unittest.TestCase):
         return types.SimpleNamespace(campaign="v1-test", engine_image="sha256:" + "a" * 64,
                                      server_host="server.example", server_ct=230, ctid=216,
                                      qwen_campaign=None, incremental=False, max_dirty_units=8,
-                                     collector="usnm-boinc")
+                                     collector="usnm-boinc", step_lock_wait_secs=0)
+
+    def test_invalid_lock_wait_is_rejected_before_remote_work(self):
+        for bound in ("-1", "61"):
+            with self.subTest(bound=bound), mock.patch.object(results, "run") as run:
+                with self.assertRaises(SystemExit):
+                    results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64,
+                                  "--step-lock-wait-secs", bound])
+                run.assert_not_called()
+
+    @unittest.skipUnless(shutil.which("flock"), "real util-linux flock requires Linux")
+    def test_real_bounded_admission_busy_then_free_timeout_and_collect_failure(self):
+        root = HERE / (".results-admission-" + uuid.uuid4().hex)
+        root.mkdir()
+        self.addCleanup(shutil.rmtree, root)
+        lock_path, ran = root / "step.lock", root / "collected"
+        actual_run = subprocess.run
+        args = self.args()
+        args.step_lock_wait_secs = 1
+        for outcome in ("released", "busy", "error", "error75"):
+            with self.subTest(outcome=outcome), lock_path.open("a") as lock:
+                if ran.exists():
+                    ran.unlink()
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                timer = None
+                if outcome != "busy":
+                    timer = threading.Timer(0.1, lambda: fcntl.flock(lock, fcntl.LOCK_UN))
+                    timer.start()
+
+                def transport(command, **kwargs):
+                    if command[0] != "ssh":
+                        return subprocess.CompletedProcess(command, 0)
+                    remote = shlex.split(command[-1])[4:]
+                    remote[remote.index("/run/usnm-boinc-step.lock")] = str(lock_path)
+                    start = remote.index("podman")
+                    code = 75 if outcome == "error75" else 7 if outcome == "error" else 0
+                    remote[start:] = [
+                        sys.executable, "-c",
+                        f"from pathlib import Path;Path({str(ran)!r}).touch();raise SystemExit({code})",
+                    ]
+                    self.assertLessEqual(kwargs["timeout"], 1320)
+                    return actual_run(remote, **kwargs)
+
+                try:
+                    with mock.patch.object(results.subprocess, "run", side_effect=transport) as run, \
+                            mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+                        if outcome == "released":
+                            self.assertEqual(results.run(args)["campaign"], args.campaign)
+                            self.assertEqual(run.call_count, 4)
+                        else:
+                            with self.assertRaises(subprocess.CalledProcessError) as error:
+                                results.run(args)
+                            self.assertEqual(error.exception.returncode,
+                                             75 if outcome in ["busy", "error75"] else 7)
+                            self.assertEqual(run.call_count, 1)
+                        self.assertEqual(ran.exists(), outcome != "busy")
+                        self.assertEqual('"phase": "step_lock_timeout"' in log.getvalue(),
+                                         outcome == "busy")
+                        self.assertEqual('"phase": "collection_failed"' in log.getvalue(),
+                                         outcome in ["error", "error75"])
+                finally:
+                    if timer:
+                        timer.join()
+
+    def test_missing_admission_receipt_never_transfers_even_after_remote_success(self):
+        args = self.args()
+        args.step_lock_wait_secs = 1
+        with mock.patch.object(results.subprocess, "run",
+                               return_value=subprocess.CompletedProcess(["ssh"], 0, stderr="")) as run:
+            with self.assertRaises(RuntimeError):
+                results.run(args)
+            self.assertEqual(run.call_count, 1)
 
     def test_incremental_forwarding_and_incomplete_warming_never_pulls_stale_snapshot(self):
         args = self.args()

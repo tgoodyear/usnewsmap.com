@@ -15,10 +15,35 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import time
 import uuid
 
 HERE = Path(__file__).resolve().parent
+LOCK_ACQUIRED = "USNM_QUALITY_STEP_LOCK_ACQUIRED"
+
+
+def collect(args, command):
+    wait = args.step_lock_wait_secs
+    ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+           f"root@{args.server_host}", shlex.join(command)]
+    if not wait:
+        subprocess.run(ssh, check=True, timeout=1260)
+        return
+    print(json.dumps({"phase": "step_lock_wait", "budget_seconds": wait}), file=sys.stderr, flush=True)
+    result = subprocess.run(ssh, stderr=subprocess.PIPE, text=True, timeout=1260 + wait)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="", flush=True)
+    acquired = any(line.startswith(LOCK_ACQUIRED + " ") for line in result.stderr.splitlines())
+    if result.returncode == 75 and not acquired:
+        print(json.dumps({"phase": "step_lock_timeout", "budget_seconds": wait}),
+              file=sys.stderr, flush=True)
+    elif result.returncode:
+        print(json.dumps({"phase": "collection_failed" if acquired else "remote_admission_failed",
+                          "exit": result.returncode}), file=sys.stderr, flush=True)
+    result.check_returncode()
+    if not acquired:
+        raise RuntimeError("Missing step-lock acquisition receipt; refusing snapshot transfer")
 
 
 def transfer(command, timeout=300):
@@ -47,7 +72,18 @@ def run(args):
     qwen_root = f"/project/qwen/{args.qwen_campaign}" if args.qwen_campaign else root + "/no-qwen"
     command = [
         "pct", "exec", str(args.server_ct), "--",
-        "flock", "-n", "/run/usnm-boinc-step.lock",
+        "flock",
+    ]
+    if args.step_lock_wait_secs:
+        command += [
+            "-w", str(args.step_lock_wait_secs), "-E", "75", "/run/usnm-boinc-step.lock",
+            "sh", "-c",
+            'printf "%s %s\\n" ' + LOCK_ACQUIRED + ' "$(date -u +%FT%TZ)" >&2; exec "$@"',
+            "sh",
+        ]
+    else:
+        command += ["-n", "/run/usnm-boinc-step.lock"]
+    command += [
         "podman", "exec", "usnm-boinc-server",
         "timeout", "--signal=TERM", "--kill-after=30s", "20m",
         args.collector, "quality", "collect", "--campaign", args.campaign,
@@ -59,9 +95,7 @@ def run(args):
     if args.incremental:
         command.extend(["--cache", root + "/collected-parts",
                         "--max-dirty-units", str(args.max_dirty_units)])
-    subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-                    f"root@{args.server_host}", shlex.join(command)],
-                   check=True, timeout=1260)
+    collect(args, command)
     snapshot = uuid.uuid4().hex
     transfer(["bash", str(HERE / "quality-results-pull.sh"),
               "--campaign", args.campaign, "--server-host", args.server_host,
@@ -94,6 +128,8 @@ def main(argv=None):
     parser.add_argument("--incremental", action="store_true",
                         help="reuse native content-addressed rows; incomplete warming never loads")
     parser.add_argument("--max-dirty-units", type=int, default=8)
+    parser.add_argument("--step-lock-wait-secs", type=int, default=0,
+                        help="bounded collection-only step-lock admission, 0 (nonblocking) to 60 seconds")
     parser.add_argument("--collector", default="usnm-boinc",
                         help="native collector executable inside the server (dedicated persistent path in services)")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
@@ -104,8 +140,9 @@ def main(argv=None):
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign)
             or not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image)
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
-            or min(args.ctid, args.server_ct, args.max_dirty_units) < 1):
-        parser.error("invalid campaign, engine image, server host, container id or dirty-unit bound")
+            or min(args.ctid, args.server_ct, args.max_dirty_units) < 1
+            or not 0 <= args.step_lock_wait_secs <= 60):
+        parser.error("invalid campaign, engine image, server host, container id, dirty-unit or lock-wait bound")
     if args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign):
         parser.error("invalid native Qwen campaign")
     with args.lock.open("a") as lock:
