@@ -7,7 +7,12 @@
 //! looks at two results of one unit (per-crop word-bag Dice of at least
 //! the threshold, both read or neither) and, with `--log`, appends what it
 //! found to a JSON Lines file, so the threshold can be measured from every
-//! compared pair.
+//! compared pair. A bundle unit's pair is also judged page by page
+//! (`qwen::agree_pages`); with `--pages`, each page's verdict and both
+//! hosts' readings of it are written once under
+//! `<pages>/<job_id>/<doc_id>/<pair>.json`, so a page both hosts agree on is
+//! kept even while another page leaves the unit inconclusive. The unit's
+//! verdict, and so BOINC's validate and canonical state, is unchanged.
 use super::{DIAG_FILE, READINGS_FILE, RESULT_FILE};
 use crate::read;
 use anyhow::{ensure, Context};
@@ -58,10 +63,25 @@ pub fn compare(
     b: &[PathBuf],
     min_dice: f64,
     log: Option<&Path>,
+    pages: Option<&Path>,
 ) -> anyhow::Result<()> {
     let (la, lb) = (load(a)?, load(b)?);
     let (crops, verdict) =
         qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
+    let page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
+    if let Some(dir) = pages {
+        let names = [
+            crate::quality::validate::result_name(&a[1])?,
+            crate::quality::validate::result_name(&b[1])?,
+        ];
+        for page in &page_verdicts {
+            // A page record that cannot be written leaves that page unkept;
+            // it must not change the unit's verdict.
+            if let Err(e) = record_page(dir, page, min_dice, [(&names[0], &la), (&names[1], &lb)]) {
+                eprintln!("{}: page record not written: {e:#}", page.doc_id);
+            }
+        }
+    }
     if let Some(log) = log {
         let line = serde_json::json!({
             "a": {"result": crate::quality::validate::result_name(&a[1])?, "device": la.result.device, "model": la.result.model, "gpu": la.result.host.gpu, "plan_class": la.result.host.plan_class},
@@ -72,6 +92,7 @@ pub fn compare(
             "job_id": la.result.job_id,
             "min_dice": min_dice,
             "outcomes": [la.result.outcome, lb.result.outcome],
+            "pages": page_verdicts.iter().map(|p| serde_json::json!({"doc_id": p.doc_id, "agree": p.agree, "reason": p.reason})).collect::<Vec<_>>(),
             "reason": verdict.as_ref().err(),
         });
         if let Some(parent) = log.parent() {
@@ -84,6 +105,68 @@ pub fn compare(
         writeln!(f, "{line}")?;
     }
     verdict.map_err(|e| anyhow::anyhow!(e))
+}
+
+/// What a page record says: `page_agreed` when both hosts read the page
+/// alike, else `page_disagreed`. Neither establishes accuracy.
+pub const PAGE_AGREED: &str = "page_agreed";
+pub const PAGE_DISAGREED: &str = "page_disagreed";
+
+/// Writes one bundle page's verdict and both hosts' readings of it, once:
+/// the record holds no time, so the same pair compared again writes the
+/// same bytes, and a record already there is never replaced.
+fn record_page(
+    dir: &Path,
+    page: &qwen::PageAgreement,
+    min_dice: f64,
+    results: [(&String, &Loaded); 2],
+) -> anyhow::Result<()> {
+    let mut results = results;
+    results.sort_by(|x, y| x.0.cmp(y.0));
+    let job_id = &results[0].1.result.job_id;
+    usnm_ocr_contract::quality::check_doc_id(&page.doc_id)?;
+    let prefix = format!("{}:", page.doc_id);
+    let sides: Vec<serde_json::Value> = results
+        .iter()
+        .map(|(name, l)| {
+            serde_json::json!({
+                "result": name,
+                "readings_sha256": l.result.readings_sha256,
+                "device": l.result.device,
+                "model": l.result.model,
+                "plan_class": l.result.host.plan_class,
+                "outcome": l.result.outcome,
+                "readings": l.readings.readings.iter().filter(|r| r.id.starts_with(&prefix)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let record = serde_json::json!({
+        "v": 1,
+        "job_id": job_id,
+        "doc_id": page.doc_id,
+        "status": if page.agree { PAGE_AGREED } else { PAGE_DISAGREED },
+        "reason": page.reason,
+        "min_dice": min_dice,
+        "crops": page.crops,
+        "results": sides,
+        "accuracy_established": false,
+    });
+    let bytes = serde_json::to_vec_pretty(&record)?;
+    let pair =
+        usnm_ocr_contract::boinc::sha256(format!("{}\n{}", results[0].0, results[1].0).as_bytes());
+    let path = dir
+        .join(job_id)
+        .join(&page.doc_id)
+        .join(format!("{}.json", &pair[..16]));
+    match std::fs::read(&path) {
+        Ok(existing) if existing == bytes => Ok(()),
+        Ok(_) => anyhow::bail!("{} already holds another record", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(path.parent().context("page record directory")?)?;
+            crate::atomic(&path, &bytes)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -183,8 +266,8 @@ pub(crate) mod tests {
         check(&a, Some(&keep)).unwrap();
         assert!(keep.join("usnm_qwen_x_a_r/readings.json").exists());
         let log = tmp.path().join("pairs.jsonl");
-        compare(&a, &b, 0.7, Some(&log)).unwrap();
-        assert!(compare(&a, &b, 0.9, Some(&log)).is_err());
+        compare(&a, &b, 0.7, Some(&log), None).unwrap();
+        assert!(compare(&a, &b, 0.9, Some(&log), None).is_err());
         let lines: Vec<serde_json::Value> = std::fs::read_to_string(&log)
             .unwrap()
             .lines()

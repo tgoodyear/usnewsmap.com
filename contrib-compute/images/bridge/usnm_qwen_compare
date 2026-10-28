@@ -6,4 +6,5 @@
 # <project>/qwen/pairs.jsonl. Linked into bin/.
 [ "$#" -eq 6 ] || { echo "usnm_qwen_compare: expected 6 files, got $#" >&2; exit 2; }
 exec /usr/local/bin/usnm-boinc qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
-  --log "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/pairs.jsonl"
+  --log "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/pairs.jsonl" \
+  --pages "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/pages"

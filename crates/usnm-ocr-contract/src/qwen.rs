@@ -30,6 +30,8 @@ pub const MAX_BUNDLE_PAGES: usize = 32;
 /// Maximum total crops across a multi-page `usnm_qwen` bundle workunit.
 pub const MAX_BUNDLE_CROPS: usize = 256;
 pub const MAX_MODELS: usize = 4;
+/// The longest deadline a unit, single page or bundle, may carry.
+pub const MAX_DEADLINE_SECS: u32 = 14_400;
 /// One crop's text, LoC's or the model's.
 pub const MAX_CROP_TEXT: usize = 8 * 1024;
 /// The transcription request version new jobs are staged with. A job's
@@ -342,7 +344,7 @@ impl Job {
             "unsupported prompt version"
         );
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
-            ensure!((60..=14_400).contains(&t), "invalid deadline");
+            ensure!((60..=MAX_DEADLINE_SECS).contains(&t), "invalid deadline");
         }
         ensure!(
             (1..=4096).contains(&self.max_tokens_per_1000px2),
@@ -584,6 +586,73 @@ pub fn agree(
     (out, verdict)
 }
 
+/// One page of a bundle unit, judged on its own from a pair's per-crop
+/// agreement (#529): the unit's own verdict still needs every page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageAgreement {
+    pub doc_id: String,
+    pub agree: bool,
+    pub crops: Vec<CropAgreement>,
+    pub reason: Option<String>,
+}
+
+/// Splits a bundle pair's `crops` (from [`agree`]) by page, the
+/// `<doc_id>:` prefix of each crop id, and judges each page by the rule
+/// [`agree`] applies to a whole unit. A page is only judged when both
+/// results are for the same job and engine, both ran to the end
+/// (`Outcome::Ok`, so every crop of every page was read or left blank),
+/// and neither is a unit error; a timed-out or failed result leaves every
+/// page unjudged, since which of its pages were complete is not in the
+/// result. Single-page units have no pages.
+pub fn agree_pages(
+    a: &ResultManifest,
+    b: &ResultManifest,
+    crops: &[CropAgreement],
+    min_dice: f64,
+) -> Vec<PageAgreement> {
+    if a.job_id != b.job_id
+        || a.engine != b.engine
+        || a.outcome != Outcome::Ok
+        || b.outcome != Outcome::Ok
+        || a.unit_error.is_some()
+        || b.unit_error.is_some()
+        || crops.is_empty()
+        || !crops.iter().all(|c| c.id.contains(':'))
+    {
+        return Vec::new();
+    }
+    let mut pages: BTreeMap<&str, Vec<CropAgreement>> = BTreeMap::new();
+    for c in crops {
+        let (doc, _) = c.id.split_once(':').expect("checked above");
+        pages.entry(doc).or_default().push(c.clone());
+    }
+    pages
+        .into_iter()
+        .map(|(doc, crops)| {
+            let mut reason = None;
+            for c in &crops {
+                if c.read.0 != c.read.1 {
+                    reason = Some(format!("{}: read by one host only", c.id));
+                    break;
+                }
+                if let Some(d) = c.dice.filter(|d| *d < min_dice) {
+                    reason = Some(format!("{}: reading agreement {d:.4}", c.id));
+                    break;
+                }
+            }
+            if reason.is_none() && !crops.iter().any(|c| c.read.0) {
+                reason = Some("no crop read".into());
+            }
+            PageAgreement {
+                doc_id: doc.to_owned(),
+                agree: reason.is_none(),
+                crops,
+                reason,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -787,5 +856,45 @@ pub(crate) mod tests {
         let (mut short, _, sb) = result(Outcome::Ok, &[("c01", "x")]);
         short.crops = 2;
         assert!(short.check(&sb, b"").is_err());
+    }
+
+    #[test]
+    fn bundle_pages_are_judged_apart_while_the_unit_stays_inconclusive() {
+        let a_texts = [
+            ("p1:c01", "one two three four"),
+            ("p1:c02", "five six seven eight"),
+            ("p2:c01", "the ship sailed"),
+            ("p2:c02", "for england"),
+            ("p3:c01", ""),
+        ];
+        let b_texts = [
+            ("p1:c01", "one two three five"),
+            ("p1:c02", "five six seven eight"),
+            ("p2:c01", "the ship sailed"),
+            ("p2:c02", "[?] [?] [?] [?] [?] [?]"),
+            ("p3:c01", ""),
+        ];
+        let (a, ar, _) = result(Outcome::Ok, &a_texts);
+        let (b, br, _) = result(Outcome::Ok, &b_texts);
+        let (crops, unit) = agree(&a, &ar, &b, &br, 0.5);
+        assert!(
+            unit.is_err(),
+            "one disagreeing page keeps the unit inconclusive"
+        );
+        let pages = agree_pages(&a, &b, &crops, 0.5);
+        let verdicts: Vec<(&str, bool)> =
+            pages.iter().map(|p| (p.doc_id.as_str(), p.agree)).collect();
+        assert_eq!(verdicts, [("p1", true), ("p2", false), ("p3", false)]);
+        assert_eq!(pages[0].crops.len(), 2);
+        assert!(pages[1].reason.as_deref().unwrap().starts_with("p2:c02"));
+        assert_eq!(pages[2].reason.as_deref(), Some("no crop read"));
+        // A timed-out result says nothing about which of its pages were whole.
+        let (t, tr, _) = result(Outcome::Timeout, &a_texts[..2]);
+        let (crops, _) = agree(&a, &ar, &t, &tr, 0.5);
+        assert!(agree_pages(&a, &t, &crops, 0.5).is_empty());
+        // Single-page units have no pages to judge.
+        let (s, sr, _) = result(Outcome::Ok, &[("c01", "x"), ("c02", "y")]);
+        let (crops, _) = agree(&s, &sr, &s, &sr, 0.5);
+        assert!(agree_pages(&s, &s, &crops, 0.5).is_empty());
     }
 }
