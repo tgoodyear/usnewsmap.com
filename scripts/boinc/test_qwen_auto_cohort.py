@@ -373,6 +373,24 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(closed.returncode, 0, closed.stderr)
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_database_scan_reads_assignments_in_one_bounded_query(self):
+        (self.project / "html/inc/boinc_db.inc").write_text("""<?php
+function row($v){return (object)$v;}
+class BoincResult {static function enum_fields($f,$w){$o=[];foreach(range(100,1099) as $id)
+ foreach([0,1] as $i)$o[]=row(['workunitid'=>$id,'server_state'=>2]);return $o;}}
+class BoincApp {static function lookup_id($id){return row(['name'=>'usnm_qwen']);}}
+class BoincAppVersion {static function enum($w){return [];}}
+class BoincWorkunit {static function enum_fields($f,$w){return array_map(fn($id)=>row(['id'=>$id]),range(100,1099));}}
+class BoincDb {static $q=0;static function get(){return new self();}
+ function count($t,$w){throw new Exception('per-workunit query');}
+ function enum_fields($t,$c,$f,$w,$o){if(++self::$q>1||$t!=='assignment'||!str_contains($w,'IN ('))throw new Exception('unbounded');
+  return [row(['workunitid'=>100]),row(['workunitid'=>100]),row(['workunitid'=>205])];}}
+""")
+        snapshot = R.read_database(self.project, list(range(100, 1100)))
+        counts = {int(row["unit"]["id"]): row["assignments"] for row in snapshot["rows"]}
+        self.assertEqual((len(counts), counts[100], counts[205], counts[101]), (1000, 2, 1, 0))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_first_idle_tick_persists_baseline_before_unrelated_amd_change(self):
         self.args.minimum_workunit = 1000
         self.assertEqual(R.run(self.args)["status"], "no-audited-fresh-inputs")

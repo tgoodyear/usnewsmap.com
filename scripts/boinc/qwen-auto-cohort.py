@@ -199,10 +199,11 @@ $out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum
  'gpu_inflight'=>BoincResult::enum_fields('id,hostid,workunitid,app_version_id',
  "appid=6 AND server_state=4 AND hostid IN ($hosts) AND workunitid IN "
  ."(SELECT id FROM workunit WHERE appid=6 AND batch=8 AND rsc_disk_bound=19327352832)")];
+$assigned=[];foreach(BoincDb::get()->enum_fields('assignment','StdClass','workunitid',"workunitid IN ($clause)",'') as $a)
+ $assigned[$a->workunitid]=($assigned[$a->workunitid]??0)+1;
 foreach(BoincWorkunit::enum_fields('id,name,appid,batch,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
  .'transitioner_flags,need_validate,app_version_num,hr_class,xml_doc', "id IN ($clause)") as $w) {
- $rs=$group[$w->id]??[];$n=0;foreach($rs as $r)if($r->server_state==2)$n++;
- $out['rows'][]=['unit'=>$w,'results'=>$rs,'assignments'=>$n==2?BoincDb::get()->count('assignment',"workunitid=$w->id"):0];
+ $out['rows'][]=['unit'=>$w,'results'=>$group[$w->id]??[],'assignments'=>$assigned[$w->id]??0];
 } echo json_encode($out);
 """
     proc = subprocess.run(["php", "-r", code, json.dumps(ids), json.dumps(hosts)], cwd=project / "html/inc",
