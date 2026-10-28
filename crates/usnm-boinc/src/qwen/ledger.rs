@@ -491,4 +491,44 @@ mod tests {
             .collect();
         assert_eq!(status, ["accepted", "accepted", "pending"]);
     }
+
+    #[test]
+    fn page_setup_failures_leave_the_unit_verdict_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("pages");
+        // Names the page records cannot use (a dot): the unit still agrees.
+        let named = |files: Vec<PathBuf>, tag: &str| -> Vec<PathBuf> {
+            files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let to = f.with_file_name(format!("{tag}.{i}.json"));
+                    std::fs::rename(f, &to).unwrap();
+                    to
+                })
+                .collect()
+        };
+        let a = named(
+            result(tmp.path(), &job, "a", |d, c| format!("{d} {c} words")),
+            "a",
+        );
+        let b = named(
+            result(tmp.path(), &job, "b", |d, c| format!("{d} {c} words")),
+            "b",
+        );
+        validate::compare(&a, &b, 0.5, None, Some(&pages)).unwrap();
+        assert!(!pages.exists());
+
+        // A second staging run cannot write over a bundle already there.
+        let dir = units(&root).join("bundle-00001");
+        let before = std::fs::read(dir.join(MEMBERSHIP_FILE)).unwrap();
+        let dirs: Vec<PathBuf> = DOCS[..2]
+            .iter()
+            .map(|d| root.join("pages").join(d))
+            .collect();
+        assert!(stage::write_bundle(&dir, &dirs).is_err());
+        assert_eq!(std::fs::read(dir.join(MEMBERSHIP_FILE)).unwrap(), before);
+    }
 }

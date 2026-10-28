@@ -69,11 +69,24 @@ pub fn compare(
     let (crops, verdict) =
         qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
     let page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
-    if let Some(dir) = pages {
-        let names = [
-            crate::quality::validate::result_name(&a[1])?,
-            crate::quality::validate::result_name(&b[1])?,
-        ];
+    let names = pages.filter(|_| !page_verdicts.is_empty()).and_then(|dir| {
+        match (
+            crate::quality::validate::result_name(&a[1]),
+            crate::quality::validate::result_name(&b[1]),
+        ) {
+            (Ok(x), Ok(y)) => Some((dir, [x, y])),
+            (x, y) => {
+                // Like a record that cannot be written: no page is kept,
+                // and the unit's verdict is unchanged.
+                eprintln!(
+                    "page records not written: {:#}",
+                    x.err().or(y.err()).expect("one name failed")
+                );
+                None
+            }
+        }
+    });
+    if let Some((dir, names)) = names {
         for page in &page_verdicts {
             // A page record that cannot be written leaves that page unkept;
             // it must not change the unit's verdict.

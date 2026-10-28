@@ -271,7 +271,16 @@ fn pack_bundles(
     if units_dir.exists() {
         for entry in std::fs::read_dir(units_dir)?.filter_map(|e| e.ok()) {
             let p = entry.path();
-            if p.join(JOB_FILE).exists() {
+            // A bundle left without its `qwen.json` (a crash, or another
+            // run still writing it) keeps its number: the next is never reused.
+            let partial = !p.join(JOB_FILE).exists()
+                && p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("bundle-"));
+            if partial {
+                existing_bundles += 1;
+            } else if p.join(JOB_FILE).exists() {
                 existing_bundles += 1;
                 if let Ok(job) =
                     serde_json::from_slice::<Job>(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
@@ -630,7 +639,11 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
         pages: members,
     };
     membership.check(&job)?;
-    std::fs::create_dir_all(dir)?;
+    // Claims the directory, so two staging runs never interleave one
+    // bundle's page, membership and job files.
+    std::fs::create_dir_all(dir.parent().context("bundle directory")?)?;
+    std::fs::create_dir(dir)
+        .with_context(|| format!("{} already exists: another staging run", dir.display()))?;
     atomic(&dir.join(PAGE_FILE), &page_blob)?;
     atomic(
         &dir.join(MEMBERSHIP_FILE),
