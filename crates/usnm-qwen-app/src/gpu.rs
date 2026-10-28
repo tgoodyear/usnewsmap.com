@@ -101,6 +101,11 @@ fn vulkan_device(list: &str, vendor: &str, wanted: u32) -> Option<VulkanDevice> 
 /// model-load deadline instead of misreporting a slow but healthy GPU as `no_gpu`.
 pub(crate) const DEVICE_PROBE_DEADLINE: Duration = crate::server::LOAD_DEADLINE;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_PROBE_DEADLINE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
 const PROBE_TIMEOUT: &str = "GPU device probe: no answer in";
 
 /// Whether a probe error is the bounded deadline (a slow, cold driver load) rather than an answer.
@@ -119,7 +124,13 @@ fn list_devices(server_bin: &Path) -> Result<String, String> {
 }
 
 fn device_probe(cmd: &mut Command, server_bin: &Path) -> Result<std::process::Output, String> {
-    device_probe_within(cmd, server_bin, DEVICE_PROBE_DEADLINE)
+    #[cfg(test)]
+    let deadline = TEST_PROBE_DEADLINE
+        .with(|d| d.get())
+        .unwrap_or(DEVICE_PROBE_DEADLINE);
+    #[cfg(not(test))]
+    let deadline = DEVICE_PROBE_DEADLINE;
+    device_probe_within(cmd, server_bin, deadline)
 }
 
 fn device_probe_within(

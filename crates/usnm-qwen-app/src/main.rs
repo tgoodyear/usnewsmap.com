@@ -759,6 +759,66 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn slot_preserves_probe_retry_budget_and_finishes_only_after_fourth_timeout() {
+        use crate::boinc::{MAX_PROBE_POSTPONES, PROBE_TIMEOUTS_FILE};
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path();
+        write_qwen_unit(slot);
+        std::fs::write(
+            slot.join("init_data.xml"),
+            "<app_init_data><plan_class>nvidia_vulkan_8b</plan_class><gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num></app_init_data>",
+        ).unwrap();
+        let server = slot.join("llama-server");
+        std::fs::write(&server, "#!/bin/sh\nexec sleep 1\n").unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        gpu::TEST_PROBE_DEADLINE.with(|deadline| {
+            let previous = deadline.replace(Some(Duration::ZERO));
+            for attempt in 1..=MAX_PROBE_POSTPONES {
+                std::fs::write(slot.join(TEMPORARY_EXIT_FILE), "stale temporary exit\n").unwrap();
+                std::fs::write(slot.join(FINISH_FILE), "1\n").unwrap();
+                run_slot_with(slot, None, None).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(slot.join(PROBE_TIMEOUTS_FILE)).unwrap(),
+                    format!("{attempt}\n")
+                );
+                let request = std::fs::read_to_string(slot.join(TEMPORARY_EXIT_FILE)).unwrap();
+                assert!(request.starts_with("120\nGPU driver still loading"));
+                assert!(request.contains(&format!("{attempt}/3")));
+                assert!(!slot.join(FINISH_FILE).exists());
+                assert!(!slot.join(RESULT_FILE).exists());
+                assert!(!slot.join(READINGS_FILE).exists());
+            }
+            run_slot_with(slot, None, None).unwrap();
+            deadline.set(previous);
+        });
+        assert!(
+            !slot.join(TEMPORARY_EXIT_FILE).exists(),
+            "stale restart request survived final refusal"
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join(PROBE_TIMEOUTS_FILE)).unwrap(),
+            "3\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join(FINISH_FILE)).unwrap(),
+            "1\n"
+        );
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::NoGpu);
+        assert_eq!(result.read, 0);
+        result
+            .check(
+                &std::fs::read(slot.join(READINGS_FILE)).unwrap(),
+                &std::fs::read(slot.join(DIAG_FILE)).unwrap(),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn early_slot_io_error_uses_the_same_boinc_failure_transport() {
         let tmp = tempfile::tempdir().unwrap();
