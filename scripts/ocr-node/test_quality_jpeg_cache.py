@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
@@ -43,6 +44,46 @@ class Resp:
 
 
 class Recipe(unittest.TestCase):
+    def test_keyed_completion_filter_catches_up_and_restarts_without_replay(self):
+        with tempfile.TemporaryDirectory() as root:
+            ledger = Path(root) / f"done-{qjc.RECIPE}.txt"
+            ledger.write_text("first\tuploaded\n")
+            self.assertEqual(qjc.keyed_todo(["first", "second"], ledger, root), ["second"])
+            with ledger.open("a") as out:
+                out.write("second\talready-there\n")
+            self.assertEqual(qjc.keyed_todo(["first", "second"], ledger, root), [])
+            with ledger.open("a") as out:
+                out.write("partial")
+            with self.assertRaisesRegex(qjc.Refused, "partial record"):
+                qjc.keyed_todo(["partial"], ledger, root)
+            with ledger.open("a") as out:
+                out.write("\tuploaded\n")
+            self.assertEqual(qjc.keyed_todo(["partial"], ledger, root), [])
+
+    @mock.patch.object(PIL, "__version__", qjc.PILLOW_VERSION)
+    def test_follow_list_rechecks_without_restarting_or_changing_defaults(self):
+        args = ["--account", "testaccount", "--list", "synthetic.txt"]
+        with mock.patch.object(qjc, "run_list") as run:
+            qjc.main(args)
+            self.assertEqual(run.call_count, 1)
+        with mock.patch.object(qjc, "run_list", side_effect=[None, RuntimeError("stop fixture")]) as run:
+            with mock.patch.object(qjc.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "stop fixture"):
+                    qjc.main(args + ["--keyed-completions", "--follow-list", "--poll-secs", "60"])
+                self.assertEqual(run.call_count, 2)
+                sleep.assert_called_once_with(60)
+        with self.assertRaises(SystemExit):
+            qjc.main(args + ["--follow-list"])
+
+    @mock.patch.object(PIL, "__version__", qjc.PILLOW_VERSION)
+    def test_keyed_list_has_a_hard_input_bound(self):
+        with tempfile.TemporaryDirectory() as root:
+            pages = Path(root) / "pages.txt"
+            pages.write_text("keep/a/sn1/1900-01-01/1/1.jp2\n" * 10001)
+            with self.assertRaisesRegex(qjc.Refused, "exceeds 10000"):
+                qjc.main(["--account", "testaccount", "--list", str(pages),
+                          "--state", root, "--keyed-completions"])
+
     def test_feeder_and_cache_make_identical_page_jpegs(self):
         path = os.path.join(HERE, "../boinc/onprem/quality-feed/quality_feed.py")
         spec = importlib.util.spec_from_file_location("quality_feed", path)
