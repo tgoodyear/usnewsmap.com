@@ -17,6 +17,13 @@ impl std::fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
+fn staging_directory(root: &Path, name: &str) -> anyhow::Result<tempfile::TempDir> {
+    let parent = root.join(".capture-locks").join(name);
+    Ok(tempfile::Builder::new()
+        .prefix(".capture-")
+        .tempdir_in(parent)?)
+}
+
 pub fn capture(files: &[PathBuf], loaded: &Loaded, root: &Path) -> anyhow::Result<()> {
     capture_with_sync(files, loaded, root, |dir| {
         std::fs::File::open(dir)?.sync_all()?;
@@ -30,6 +37,8 @@ fn capture_with_sync(
     root: &Path,
     mut sync: impl FnMut(&Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
+    std::fs::create_dir_all(root)?;
+    let root = root.canonicalize()?;
     let name = crate::quality::validate::result_name(&files[1])?;
     let _lock = Lock::take(&root.join(".capture-locks").join(&name))?;
     let manifest = read(&files[1], MAX_RESULT_JSON)?;
@@ -115,9 +124,7 @@ fn capture_with_sync(
             atomic(&to.join("capture-v1.json"), &provenance)?;
         }
     } else {
-        let staged = tempfile::Builder::new()
-            .prefix(".capture-")
-            .tempdir_in(root)?;
+        let staged = staging_directory(&root, &name)?;
         for (logical, bytes) in outputs {
             atomic(&staged.path().join(logical), bytes)?;
         }
@@ -127,7 +134,10 @@ fn capture_with_sync(
         std::fs::rename(staged.path(), &to).context("commit Qwen evidence directory")?;
     }
     sync(&to)?;
-    sync(root)?;
+    // A prior failed attempt may have created any of these entries without syncing its parent.
+    for ancestor in root.ancestors() {
+        sync(ancestor)?;
+    }
     Ok(())
 }
 
@@ -144,9 +154,14 @@ mod tests {
             &[("c01", "one two"), ("c02", "three four")],
         );
         let loaded = super::super::validate::load(&files).unwrap();
-        let root = tmp.path().join("seen");
+        let root = tmp.path().join("new/archive/seen");
         let to = root.join(crate::quality::validate::result_name(&files[1]).unwrap());
-        for fail_at in [&root, &to, &root] {
+        for fail_at in [
+            root.as_path(),
+            to.as_path(),
+            root.parent().unwrap(),
+            root.parent().unwrap(),
+        ] {
             let result = capture_with_sync(&files, &loaded, &root, |dir| {
                 ensure!(dir != fail_at, "injected directory sync failure");
                 Ok(())
@@ -161,6 +176,32 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(synced, vec![to, root]);
+        let expected: Vec<_> = std::iter::once(to)
+            .chain(root.ancestors().map(Path::to_path_buf))
+            .collect();
+        assert_eq!(synced, expected);
+    }
+
+    #[test]
+    fn interrupted_staging_is_not_discovered_as_an_extra_replica() {
+        let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let files = super::super::validate::tests::write(
+            tmp.path(),
+            "interrupted",
+            &[("c01", "one two"), ("c02", "three four")],
+        );
+        let loaded = super::super::validate::load(&files).unwrap();
+        let root = tmp.path().join("seen");
+        capture(&files, &loaded, &root).unwrap();
+        let name = crate::quality::validate::result_name(&files[1]).unwrap();
+        let orphan = staging_directory(&root, &name).unwrap();
+        std::fs::copy(&files[1], orphan.path().join(RESULT_FILE)).unwrap();
+        let orphan = orphan.keep();
+        capture(&files, &loaded, &root).unwrap();
+        let summary =
+            super::super::summary::run(tmp.path(), &root, &tmp.path().join("no-pairs")).unwrap();
+        assert_eq!(summary.matches(&format!("| {name} |")).count(), 1);
+        assert!(!summary.contains(".capture-"));
+        assert!(orphan.join(RESULT_FILE).is_file());
     }
 }
