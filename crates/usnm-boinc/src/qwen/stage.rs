@@ -94,6 +94,17 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         opts.root.display()
     );
     std::fs::create_dir_all(&units_dir)?;
+    // A bundling run holds its root from staging the page units to
+    // publishing the last bundle, so no other run rewrites a page unit a
+    // bundle's membership names or bundles the same pages.
+    let bundling = if bundle_size > 1 {
+        Some(
+            crate::Lock::take(&bundle_lock(&units_dir)?)
+                .context("another staging run is bundling this root")?,
+        )
+    } else {
+        None
+    };
     let page_dir = if bundle_size > 1 {
         std::fs::create_dir_all(&bundled_root)?;
         bundled_root
@@ -237,8 +248,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         atomic(&unit.join(JOB_FILE), &json)?;
         summary.staged += 1;
     }
-    if bundle_size > 1 {
-        let (bundles, too_large) = pack_bundles(&page_dir, &units_dir, bundle_size)?;
+    if let Some(held) = &bundling {
+        let (bundles, too_large) = pack_bundles(&page_dir, &units_dir, bundle_size, held)?;
         summary.bundles = bundles;
         summary.too_large += too_large;
     }
@@ -272,11 +283,9 @@ fn pack_bundles(
     page_dir: &Path,
     units_dir: &Path,
     bundle_size: usize,
+    // The root's bundle lock (see `run`), held for the whole call.
+    _held: &crate::Lock,
 ) -> anyhow::Result<(usize, usize)> {
-    // One staging run bundles a root at a time, from finding the pages
-    // already bundled to publishing the new bundles' `qwen.json`.
-    let _lock = crate::Lock::take(&bundle_lock(units_dir)?)
-        .context("another staging run is bundling this root")?;
     let mut bundled_docs = BTreeSet::new();
     let mut existing_bundles = 0usize;
     if units_dir.exists() {
@@ -1103,6 +1112,16 @@ pub(crate) mod tests {
                 assert!(!rejected.join(TOO_LARGE).exists());
                 assert!(!rejected.join(JOB_FILE).exists());
             }
+            if bundle_size > 1 {
+                // Another run bundling the root: nothing is staged.
+                let other = held(&units(&opts.root));
+                assert!(run(&opts).await.is_err());
+                let page = opts.root.join("pages").join(bad);
+                assert!(
+                    !page.join(TOO_LARGE).exists() && !page.join("rejected-qwen.json").exists()
+                );
+                drop(other);
+            }
             let first = run(&opts).await.unwrap();
             assert_eq!((first.too_large, first.staged), (1, 0));
             let rejected = opts
@@ -1235,6 +1254,10 @@ pub(crate) mod tests {
 
     /// A staged single-page unit in `page_dir` with `crops` crops, each with
     /// the longest LoC text a crop may carry.
+    fn held(units_dir: &Path) -> crate::Lock {
+        crate::Lock::take(&bundle_lock(units_dir).unwrap()).unwrap()
+    }
+
     pub(crate) fn page_unit(page_dir: &Path, doc_id: &str, crops: usize) {
         let (jpeg, _) = synthetic_page();
         let u = page_dir.join(doc_id);
@@ -1284,7 +1307,10 @@ pub(crate) mod tests {
         let big = "sn83045462_1890-05-03_ed-1_seq-9";
         page_unit(&page_dir, big, 40);
 
-        assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (2, 1));
+        assert_eq!(
+            pack_bundles(&page_dir, &units_dir, 16, &held(&units_dir)).unwrap(),
+            (2, 1)
+        );
         assert!(page_dir.join(big).join(TOO_LARGE).exists());
         let mut pages = 0;
         for e in std::fs::read_dir(&units_dir).unwrap() {
@@ -1298,11 +1324,10 @@ pub(crate) mod tests {
         assert_eq!(pages, 6);
 
         // A rerun publishes nothing more.
-        assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (0, 0));
-        {
-            let _other = crate::Lock::take(&bundle_lock(&units_dir).unwrap()).unwrap();
-            assert!(pack_bundles(&page_dir, &units_dir, 16).is_err());
-        }
+        assert_eq!(
+            pack_bundles(&page_dir, &units_dir, 16, &held(&units_dir)).unwrap(),
+            (0, 0)
+        );
     }
 
     #[test]
@@ -1325,7 +1350,10 @@ pub(crate) mod tests {
             job.id = job.identity().unwrap();
             std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
         }
-        assert_eq!(pack_bundles(&page_dir, &units_dir, 32).unwrap(), (3, 0));
+        assert_eq!(
+            pack_bundles(&page_dir, &units_dir, 32, &held(&units_dir)).unwrap(),
+            (3, 0)
+        );
         let mut sizes = Vec::new();
         for e in std::fs::read_dir(&units_dir).unwrap() {
             let job: Job =
@@ -1394,7 +1422,10 @@ pub(crate) mod tests {
                 std::fs::write(&path, serde_json::to_vec_pretty(&job).unwrap()).unwrap();
             }
         }
-        assert_eq!(pack_bundles(&page_dir, &units_dir, 16).unwrap(), (2, 0));
+        assert_eq!(
+            pack_bundles(&page_dir, &units_dir, 16, &held(&units_dir)).unwrap(),
+            (2, 0)
+        );
         let mut seen = Vec::new();
         for e in std::fs::read_dir(&units_dir).unwrap() {
             let job: Job =
