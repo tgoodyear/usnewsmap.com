@@ -88,6 +88,22 @@ class InstallerTests(unittest.TestCase):
             for target, data in original.items():
                 self.assertEqual(target.read_bytes(), data)
 
+    def test_archive_mutation_after_hash_cannot_change_verified_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path, digest = self.archive(Path(temp))
+            sha256 = hashlib.sha256
+
+            def mutate_after_hash(data):
+                result = sha256(data)
+                path.write_bytes(path.read_bytes().replace(b"# fixture\n", b"# changed\n"))
+                return result
+
+            with patch.object(installer.hashlib, "sha256", side_effect=mutate_after_hash):
+                payload = installer.read_archive(path, "a" * 40, digest)
+            self.assertEqual(payload[installer.FILES["scripts/corpus/data_catalog.py"]],
+                             b"# fixture\n")
+            self.assertNotEqual(sha256(path.read_bytes()).hexdigest(), digest)
+
     def test_first_install_requires_safe_explicit_url(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

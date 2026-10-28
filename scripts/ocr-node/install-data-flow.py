@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import hashlib
+import io
 import os
 from pathlib import Path
 import pwd
@@ -38,10 +39,12 @@ def read_archive(path, commit, sha256):
     with path.open("rb") as stream:
         if os.fstat(stream.fileno()).st_size > 8 * 1024 * 1024:
             raise ValueError("archive exceeds 8 MiB")
-        if hashlib.file_digest(stream, "sha256").hexdigest() != sha256:
+        snapshot = stream.read(8 * 1024 * 1024 + 1)
+        if len(snapshot) > 8 * 1024 * 1024:
+            raise ValueError("archive exceeds 8 MiB")
+        if hashlib.sha256(snapshot).hexdigest() != sha256:
             raise ValueError("archive SHA-256 differs")
-        stream.seek(0)
-        with tarfile.open(fileobj=stream, mode="r:") as archive:
+        with tarfile.open(fileobj=io.BytesIO(snapshot), mode="r:") as archive:
             if archive.pax_headers.get("comment") != commit:
                 raise ValueError("git archive commit differs")
             payload = {}
