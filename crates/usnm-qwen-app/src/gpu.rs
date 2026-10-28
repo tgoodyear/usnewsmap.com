@@ -101,6 +101,13 @@ fn vulkan_device(list: &str, vendor: &str, wanted: u32) -> Option<VulkanDevice> 
 /// model-load deadline instead of misreporting a slow but healthy GPU as `no_gpu`.
 pub(crate) const DEVICE_PROBE_DEADLINE: Duration = crate::server::LOAD_DEADLINE;
 
+const PROBE_TIMEOUT: &str = "GPU device probe: no answer in";
+
+/// Whether a probe error is the bounded deadline (a slow, cold driver load) rather than an answer.
+pub(crate) fn probe_timed_out(error: &str) -> bool {
+    error.starts_with(PROBE_TIMEOUT)
+}
+
 /// `llama-server --list-devices`, bounded by [`DEVICE_PROBE_DEADLINE`].
 fn list_devices(server_bin: &Path) -> Result<String, String> {
     let mut cmd = Command::new(server_bin);
@@ -136,7 +143,7 @@ fn device_probe_within(
             Ok(None) if started.elapsed() > deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("GPU device probe: no answer in {deadline:?}"));
+                return Err(format!("{PROBE_TIMEOUT} {deadline:?}"));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
@@ -228,6 +235,8 @@ pub(crate) struct GpuState {
     pub(crate) used_before_mb: Option<u64>,
     pub(crate) use_gpu: bool,
     pub(crate) device_label: String,
+    /// The device probe hit its deadline without answering, so the GPU is unknown, not absent.
+    pub(crate) probe_timed_out: bool,
 }
 
 pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuState {
@@ -245,6 +254,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             used_before_mb: None,
             use_gpu: false,
             device_label: "cpu".into(),
+            probe_timed_out: false,
         };
     }
 
@@ -255,6 +265,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             .map_err(|e| format!("{e:#}"))
             .and_then(|bin| list_devices(&bin));
         let wanted = u32::try_from(host.gpu_device_num.unwrap_or(0)).ok();
+        let mut probe_timeout = false;
         let (vulkan_device, free_mb) = match &devices {
             Ok(text) => {
                 let _ = writeln!(body, "llama-server --list-devices:\n{}", text.trim());
@@ -271,6 +282,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
                     match assigned_amd_device(work, host, text) {
                         Ok(d) => Some(d),
                         Err(error) => {
+                            probe_timeout = probe_timed_out(&error);
                             let _ = writeln!(body, "AMD PCI identity mapping refused: {error}");
                             None
                         }
@@ -291,6 +303,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
                 }
             }
             Err(e) => {
+                probe_timeout = probe_timed_out(e);
                 let _ = writeln!(body, "listing Vulkan devices failed: {e}");
                 (None, None)
             }
@@ -304,6 +317,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             used_before_mb: None,
             use_gpu: vulkan_device.is_some(),
             device_label: "vulkan".into(),
+            probe_timed_out: probe_timeout,
         };
     }
 
@@ -345,6 +359,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
                     used_before_mb,
                     use_gpu: true,
                     device_label: "cuda".into(),
+                    probe_timed_out: false,
                 };
             }
         }
@@ -364,6 +379,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             used_before_mb: None,
             use_gpu: true,
             device_label: "metal".into(),
+            probe_timed_out: false,
         };
     }
 
@@ -376,6 +392,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
         used_before_mb: None,
         use_gpu: false,
         device_label: "cpu".into(),
+        probe_timed_out: false,
     }
 }
 
@@ -470,6 +487,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "GPU device probe: no answer in 300ms");
+        assert!(probe_timed_out(&err));
+        assert!(!probe_timed_out("GPU device probe failed: no device"));
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(DEVICE_PROBE_DEADLINE > Duration::from_secs(65));
         assert!(DEVICE_PROBE_DEADLINE <= crate::server::LOAD_DEADLINE);

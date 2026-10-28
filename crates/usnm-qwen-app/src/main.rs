@@ -24,7 +24,10 @@ mod server;
 mod test_support;
 
 use crate::{
-    boinc::{boinc_info, runtime_info, start_boinc_control},
+    boinc::{
+        boinc_info, postpone_probe_timeout, runtime_info, start_boinc_control, PROBE_POSTPONE_SECS,
+        TEMPORARY_EXIT_FILE,
+    },
     checkpoint::{QwenCheckpoint, CHECKPOINT_FILE},
     gpu::{detect_gpu, gpu_used_mib, vulkan_refusal, GpuState},
     locks::{check_engine, resolve_model},
@@ -185,6 +188,7 @@ pub fn run_slot_with(
     let diag_out = resolve_slot_file(work, DIAG_FILE);
     let fraction_out = work.join(FRACTION_FILE);
     let finish_out = work.join(FINISH_FILE);
+    let temporary_exit_out = work.join(TEMPORARY_EXIT_FILE);
 
     for p in [
         &readings_out,
@@ -192,6 +196,7 @@ pub fn run_slot_with(
         &diag_out,
         &fraction_out,
         &finish_out,
+        &temporary_exit_out,
     ] {
         if p.exists() {
             std::fs::remove_file(p)?;
@@ -205,6 +210,28 @@ pub fn run_slot_with(
     boinc_info(work, &mut host, &mut diag);
     runtime_info(&mut host, &mut diag);
     let gpu = detect_gpu(work, &mut host, &mut diag);
+    if gpu.probe_timed_out {
+        // A slow cold driver load is not a missing GPU: retry it a bounded number of times.
+        match postpone_probe_timeout(work)? {
+            Some(attempt) => {
+                diag.section(
+                    "boinc control",
+                    &format!(
+                        "GPU device probe timed out; postponed {PROBE_POSTPONE_SECS} s \
+                         (attempt {attempt}), exiting without boinc_finish_called"
+                    ),
+                    256,
+                );
+                write_atomic(&diag_out, &diag.finish())?;
+                return Ok(());
+            }
+            None => diag.section(
+                "gpu",
+                "device probe timed out on every allowed attempt",
+                256,
+            ),
+        }
+    }
 
     if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
         diag.section(

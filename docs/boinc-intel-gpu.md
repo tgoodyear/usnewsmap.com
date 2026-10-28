@@ -29,6 +29,14 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
   with `--device VulkanN` for that device.
 - **No CPU fallback.** With no hardware Vulkan device, or less free device memory than the model
   needs (7,000 MiB), the unit ends `no_gpu` with the reason in `diag.txt` and reads nothing.
+- **Slow device probe.** The listing has a 300 s deadline. A probe that answers without a usable
+  device ends `no_gpu` at once. A probe that does not answer in time is a cold driver load, not a
+  missing GPU: on the RTX 2060 SUPER host the same signed listing took 242 s cold and 9.4 s warm
+  under heavy disk load (#1252). The app then writes BOINC's `boinc_temporary_exit` file and
+  exits without finishing, as `boinc_temporary_exit()` does. The client restarts the same task
+  120 s later, with the driver libraries now in the page cache. A counter in the slot allows
+  three such postponements, after which the timeout ends `no_gpu`. The deadline and device
+  matching are unchanged.
 
 OpenCL is not a reliable memory gate for integrated GPUs. On Computer 9, OpenCL reported
 15,135,723,520 bytes (nearly all system RAM), while Vulkan reported a 7,917 MiB heap with
