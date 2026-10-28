@@ -95,7 +95,7 @@ pub fn compare(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use usnm_ocr_contract::{
@@ -103,7 +103,7 @@ mod tests {
         qwen::{Outcome, Reading, PROMPT_VERSION, VERSION},
     };
 
-    fn write(dir: &Path, tag: &str, texts: &[(&str, &str)]) -> Vec<PathBuf> {
+    pub(crate) fn write(dir: &Path, tag: &str, texts: &[(&str, &str)]) -> Vec<PathBuf> {
         let tmp = dir.join(format!("unit_{tag}"));
         let unit = dir.join(format!("q_{tag}"));
         crate::quality::work::tests::unit(&unit);

@@ -337,6 +337,28 @@ cache lasts one workunit.
 - `check`: `script_validator`'s `--init_script` (`--files <readings.json> <result.json> <diag.txt>`, optional `--keep <dir>`).
 - `compare`: `script_validator`'s `--compare_script` (`--files <r1...> --files2 <r2...>`, `--min-dice` default `0.5`, optional `--log <pairs.jsonl>`).
 - `summary`: reads `<root>/units/`, `<project>/qwen/seen` (`--seen`), and `<project>/qwen/pairs.jsonl` (`--pairs`) and prints a Markdown summary table of kept results and compared pairs.
+- `candidates --job <qwen.json> --page <page.jpg> --candidate <seen/result-a> <seen/result-b> ... --out <report.json>`:
+  a bounded offline audit of up to 16 explicitly selected retained results from
+  one single-page job. It verifies the input hash, job/engine/prompt identity,
+  model membership and crop IDs before publishing. The report retains every
+  candidate's text, manifest, client-reported host metadata, diagnostics and
+  hashes, with per-crop pixel features, pairwise CER/WER/Dice, comparisons to
+  LoC, forced-language damage counts, uncertainty markers, repetition indicators
+  and token-budget saturation. Missing readings remain distinct from empty
+  readings. These are **noncanonical observations**, not replacements for the
+  canonical spool or inputs to `quality collect`. Keep the original `seen`
+  files; supplying selected results is not proof of database completeness.
+
+  Damage estimates with few head/near words are weak evidence; unsupported
+  language models and zero denominators remain null, not zero damage. A
+  mixed-language crop may not fit the job language. LoC is another fallible
+  reader; pixel blur/contrast are not annotated physical damage. Exact text
+  equality is not required by the existing validator, which already uses
+  per-crop Dice. Do not lower that floor to accept token-limit repetition,
+  shared hallucinations or agreed `[?]` as accurate transcription. Calibrate
+  any new acceptance margin on independent, image-grounded transcriptions
+  stratified by language and legibility; this command changes neither BOINC
+  validation nor class admission.
 
 ## Running a campaign
 
