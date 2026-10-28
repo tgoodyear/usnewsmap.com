@@ -193,11 +193,14 @@ def read_database(project, ids, hosts=(9, 10)):
     code = """
 require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true);$clause=implode(',',array_map('intval',$ids));
 $hosts=implode(',',array_map('intval',json_decode($argv[2],true)));
-$all=BoincResult::enum("workunitid IN ($clause)"); $group=[];foreach($all as $r)$group[$r->workunitid][]=$r;
+$all=BoincResult::enum_fields('id,workunitid,hostid,server_state,sent_time,received_time,outcome,validate_state,app_version_id',
+ "workunitid IN ($clause)"); $group=[];foreach($all as $r)$group[$r->workunitid][]=$r;
 $out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum('appid=6 AND deprecated=0'),
- 'gpu_inflight'=>BoincResult::enum("appid=6 AND server_state=4 AND hostid IN ($hosts) AND workunitid IN "
+ 'gpu_inflight'=>BoincResult::enum_fields('id,hostid,workunitid,app_version_id',
+ "appid=6 AND server_state=4 AND hostid IN ($hosts) AND workunitid IN "
  ."(SELECT id FROM workunit WHERE appid=6 AND batch=8 AND rsc_disk_bound=19327352832)")];
-foreach(BoincWorkunit::enum("id IN ($clause) ORDER BY id") as $w) {
+foreach(BoincWorkunit::enum_fields('id,name,appid,batch,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
+ .'transitioner_flags,need_validate,app_version_num,hr_class,xml_doc', "id IN ($clause)") as $w) {
  $rs=$group[$w->id]??[];$n=0;foreach($rs as $r)if($r->server_state==2)$n++;
  $out['rows'][]=['unit'=>$w,'results'=>$rs,'assignments'=>$n==2?BoincDb::get()->count('assignment',"workunitid=$w->id"):0];
 } echo json_encode($out);
