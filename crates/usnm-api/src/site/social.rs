@@ -327,19 +327,27 @@ fn png(card: &Card) -> Result<Vec<u8>, String> {
     pixels.encode_png().map_err(|e| e.to_string())
 }
 
+fn script() -> std::path::PathBuf {
+    std::env::var_os("USNM_SHARE_SCRIPT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../web/scripts/render-share.mjs")
+        })
+}
+
 async fn screenshot(card: &Card) -> Result<Vec<u8>, String> {
     let bind = std::env::var("USNM_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
     let port = bind.rsplit_once(':').ok_or("USNM_BIND has no port")?.1;
     let port: u16 = port.parse().map_err(|_| "USNM_BIND has an invalid port")?;
     // Only our own server is navigated, never an origin supplied by a visitor.
     let url = format!("http://127.0.0.1:{port}{}", &card.url[SITE.len()..]);
-    let script = std::env::var_os("USNM_SHARE_SCRIPT").unwrap_or_else(|| {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../web/scripts/render-share.mjs")
-            .into_os_string()
-    });
     let mut command = tokio::process::Command::new("node");
-    command.arg(script).arg("--url").arg(url).kill_on_drop(true);
+    command
+        .arg(script())
+        .arg("--url")
+        .arg(url)
+        .kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(40), command.output())
         .await
         .map_err(|_| "share screenshot timed out")?
@@ -391,16 +399,7 @@ async fn identity(state: &AppState) -> Result<String, RenderError> {
                 state.config.site_dir.as_ref().ok_or_else(|| {
                     RenderError::Failed("share site is not configured".to_owned())
                 })?;
-            let index = tokio::fs::read(dir.join("index.html"))
-                .await
-                .map_err(|_| RenderError::Failed("share site index cannot be read".to_owned()))?;
-            Ok(digest(
-                [
-                    index,
-                    include_bytes!("../../../../web/scripts/render-share.mjs").to_vec(),
-                ]
-                .concat(),
-            ))
+            frontend_identity(dir, &script()).await
         })
         .await?;
     let snap = state.snapshot.load();
@@ -413,6 +412,19 @@ async fn identity(state: &AppState) -> Result<String, RenderError> {
         state.config.congress_search,
         state.config.page_language_filter
     )))
+}
+
+async fn frontend_identity(
+    dir: &std::path::Path,
+    script: &std::path::Path,
+) -> Result<String, RenderError> {
+    let index = tokio::fs::read(dir.join("index.html"))
+        .await
+        .map_err(|_| RenderError::Failed("share site index cannot be read".to_owned()))?;
+    let renderer = tokio::fs::read(script)
+        .await
+        .map_err(|_| RenderError::Failed("share renderer script cannot be read".to_owned()))?;
+    Ok(digest([index, renderer].concat()))
 }
 
 /// Default overview camera parameters are added to the URL after MapLibre
@@ -503,6 +515,13 @@ async fn cached(
         .await
 }
 
+fn can_warm(state: &AppState) -> bool {
+    !state.warming.load(std::sync::atomic::Ordering::Acquire)
+        && state.warm_ups.turn.try_lock().is_ok()
+        && state.flights.visitor_searches() == 0
+        && state.previews.idle()
+}
+
 pub(crate) fn spawn(state: Arc<AppState>) {
     if state.config.site_dir.is_none() {
         return;
@@ -516,10 +535,7 @@ pub(crate) fn spawn(state: Arc<AppState>) {
         let mut previous = String::new();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            if state.warming.load(std::sync::atomic::Ordering::Acquire)
-                || state.flights.visitor_searches() > 0
-                || !state.previews.idle()
-            {
+            if !can_warm(&state) {
                 continue;
             }
             let current = match identity(&state).await {
@@ -590,6 +606,36 @@ mod tests {
 
     static IMAGES: LazyLock<moka::future::Cache<String, Vec<u8>>> =
         LazyLock::new(|| moka::future::Cache::new(1024));
+
+    #[tokio::test]
+    async fn changing_the_selected_renderer_invalidates_persisted_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let renderer = dir.path().join("renderer.mjs");
+        tokio::fs::write(dir.path().join("index.html"), b"same frontend")
+            .await
+            .unwrap();
+        tokio::fs::write(&renderer, b"renderer version one")
+            .await
+            .unwrap();
+        let before = frontend_identity(dir.path(), &renderer).await.unwrap();
+        tokio::fs::write(&renderer, b"renderer version two")
+            .await
+            .unwrap();
+        assert_ne!(
+            before,
+            frontend_identity(dir.path(), &renderer).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_warm_up_blocks_previews_even_after_readiness_is_released() {
+        let state = state().await;
+        let turn = state.warm_ups.claim().turn().await;
+        assert!(!state.warming.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!can_warm(&state));
+        drop(turn);
+        assert!(can_warm(&state));
+    }
 
     #[test]
     fn every_example_has_an_exact_preview_and_only_default_camera_aliases_share_it() {
@@ -810,11 +856,7 @@ mod tests {
         assert_eq!(lines(&"x".repeat(256), 24, 3).len(), 3);
     }
 
-    #[tokio::test]
-    async fn static_card_endpoint_serves_png_and_rejects_invalid_views() {
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-
+    async fn state() -> Arc<AppState> {
         let fixtures =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data");
         let refdata = crate::refdata::RefData::load(&usnm_store::LocalStore::new(fixtures))
@@ -823,11 +865,19 @@ mod tests {
         let mut config = crate::config::Config::from_lookup(|_| None).unwrap();
         config.site_dir =
             Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web"));
-        let state = Arc::new(AppState::new(
+        Arc::new(AppState::new(
             config,
             Arc::new(usnm_search::memory::MemoryBackend::new()),
             refdata,
-        ));
+        ))
+    }
+
+    #[tokio::test]
+    async fn static_card_endpoint_serves_png_and_rejects_invalid_views() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let state = state().await;
         let app = axum::Router::new().route(
             "/share-image.png",
             axum::routing::get(move |uri| image(uri, state.clone())),
