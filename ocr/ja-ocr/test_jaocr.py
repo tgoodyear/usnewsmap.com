@@ -31,7 +31,22 @@ class PartialIssue(unittest.TestCase):
     def test_incomplete_engine_output_still_holds_available_pages(self):
         self.check_issue(explicit=True, ocr_complete=False, expected=0)
 
-    def check_issue(self, *, explicit, ocr_complete, expected):
+    def test_monitored_incomplete_output_fails_but_undigitized_does_not(self):
+        for explicit, complete in ((False, True), (True, False)):
+            with self.subTest(explicit=explicit, complete=complete):
+                with self.assertRaisesRegex(RuntimeError, "outputs incomplete"):
+                    self.check_issue(explicit=explicit, ocr_complete=complete, expected=0, monitored=True)
+        self.check_issue(explicit=True, ocr_complete=True, expected=1, monitored=True)
+
+    def test_monitored_item_http_failure_is_not_silently_successful(self):
+        error = jaocr.urllib.error.HTTPError("https://www.loc.gov/item/test", 503, "unavailable", {}, None)
+        pages = [{"lccn": "sn1", "date": "1945-01-01", "edition": 1}]
+        with error, patch.object(jaocr, "fetch", side_effect=error):
+            with self.assertRaises(jaocr.urllib.error.HTTPError):
+                jaocr.ocr_issue(None, Path("/unused"), "issue", pages, None, None, "engine",
+                                fail_on_incomplete=True)
+
+    def check_issue(self, *, explicit, ocr_complete, expected, monitored=False):
         item = {"resources": [{"files": [
             [{"digitized": False}] if explicit else [],
             [{"mimetype": "image/jp2", "url": JP2}],
@@ -57,7 +72,8 @@ class PartialIssue(unittest.TestCase):
                  patch.object(jaocr.alto, "ndlocr_to_alto", return_value=b"<alto/>"), \
                  patch.object(jaocr, "write_part") as write, \
                  patch.object(jaocr, "log") as log:
-                count = jaocr.ocr_issue(curated, Path(work), "issue", pages, None, None, "engine")
+                count = jaocr.ocr_issue(curated, Path(work), "issue", pages, None, None, "engine",
+                                       fail_on_incomplete=monitored)
             self.assertEqual(count, expected)
             if expected:
                 self.assertEqual(write.call_args.args[2][0]["doc_id"], pages[1]["doc_id"])
@@ -68,6 +84,39 @@ class PartialIssue(unittest.TestCase):
             else:
                 write.assert_not_called()
                 self.assertEqual(curated.list("ocr-ja/alto"), [])
+
+
+class MonitoredRun(unittest.TestCase):
+    def test_failure_contract_continues_once_and_handles_idle(self):
+        cases = [
+            ("all failed", [ConnectionError("failed"), ConnectionError("failed")], True, True),
+            ("partial failure", [ConnectionError("failed"), 1], True, True),
+            ("all complete", [1, 1], True, False),
+            ("undigitized only", [0, 0], True, False),
+            ("legacy failures", [ConnectionError("failed"), 1], False, False),
+        ]
+        for label, results, monitored, fails in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as work:
+                curated = jaocr.LocalStore(work)
+                rows = [{"doc_id": f"sn1_1945-01-0{i}_ed-1_seq-1", "page_key": "k", "lccn": "sn1",
+                         "date": f"1945-01-0{i}", "edition": 1, "seq": 1} for i in (1, 2)]
+                curated.write(f"ocr-ja/{jaocr.TARGETS}.jsonl",
+                              "\n".join(json.dumps(row) for row in rows).encode())
+                with patch.object(jaocr, "done_pages", return_value=set()), \
+                     patch.object(jaocr, "ndlocr_version", return_value="test"), \
+                     patch.object(jaocr, "ocr_issue", side_effect=results) as ocr:
+                    if fails:
+                        with self.assertRaisesRegex(RuntimeError, "failed issues"):
+                            jaocr.run(curated, curated, Path(work), None, "test",
+                                      fail_on_issue_error=monitored)
+                    else:
+                        jaocr.run(curated, curated, Path(work), None, "test",
+                                  fail_on_issue_error=monitored)
+                    self.assertEqual(ocr.call_count, 2)
+                    # The existing claims prevent a second invocation from retrying.
+                    jaocr.run(curated, curated, Path(work), None, "test", fail_on_issue_error=True)
+                    self.assertEqual(ocr.call_count, 2)
+                    self.assertTrue(curated.exists(jaocr.STATUS))
 
 
 class Classify(unittest.TestCase):

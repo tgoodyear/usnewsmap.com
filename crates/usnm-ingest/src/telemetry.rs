@@ -41,6 +41,8 @@ pub struct Metrics {
     /// host's journal; this is how a failed one reaches Application
     /// Insights (the ocr-sync failure alert, #1139).
     pub command_failures: Counter<u64>,
+    /// Emitted only while a supervised Japanese OCR invocation is active.
+    pub ja_ocr_heartbeat: Gauge<u64>,
 }
 
 /// The instruments, created on first use from the global meter provider
@@ -88,6 +90,10 @@ pub fn metrics() -> &'static Metrics {
             command_failures: m
                 .u64_counter("ingest.command_failures")
                 .with_description("Commands that ended in error, by command and outcome")
+                .build(),
+            ja_ocr_heartbeat: m
+                .u64_gauge("jaocr.run_heartbeat")
+                .with_description("A supervised Japanese OCR invocation is active")
                 .build(),
         }
     })

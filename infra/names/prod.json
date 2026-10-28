@@ -57,6 +57,8 @@
   "ocrNodeVolumeAlert": "usnm-ocr-node-volume-alert-prod",
   "ocrNodeWriterRole": "usnm-ocr-nodewriter-role-prod",
   "ocrNodesWorkbookTitle": "usnm OCR nodes (prod)",
+  "jaocrFailedAlert": "usnm-jaocr-failed-alert-prod",
+  "jaocrStaleAlert": "usnm-jaocr-stale-alert-prod",
   "ocrSyncBacklogAlert": "usnm-ocrs-backlog-alert-prod",
   "ocrSyncFailedAlert": "usnm-ocrs-failed-alert-prod",
   "ocrSyncStaleAlert": "usnm-ocrs-stale-alert-prod",
