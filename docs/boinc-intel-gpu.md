@@ -26,8 +26,9 @@ with two pristine ordinary replicas, quorum/target 2, no assignment, no app-vers
 binding and zero error/transition/HR flags. The existing pinned Windows/Linux
 GPU artifacts, model/engine hashes, generation budgets, distinct-host gate and
 validator are not relaxed. Only the already published Linux Intel67/NVIDIA66
-1.14 pair is authorized. A superseding release or changed project config closes
-the owned window instead of silently adopting a new release.
+1.14 pair is authorized. A superseding release on any platform (including a
+Windows release of either opened class) or changed project config closes the
+owned window instead of silently adopting a new release.
 
 Refill also reads actual native-8B **in-progress tasks across all windows** for
 both pilot hosts. New window size is reduced to the smaller remaining headroom
@@ -86,7 +87,8 @@ Verify the real ordinary timer's immutable input receipt and actual signed
 assignments/returns afterwards; a policy change alone is not throughput.
 
 The helper rechecks pristine DB state **inside the policy lock** and accepts an
-expected policy SHA, so a stale preview cannot overwrite a concurrent operator.
+expected policy SHA and `--admit-until` deadline (checked under the lock and again
+just before the atomic rename; closing remains allowed), so a stale preview cannot overwrite a concurrent operator.
 Durable intent precedes publication; exact interrupted publications reconcile
 without duplicate admission. Unknown ownership stops rather than clobbers.
 Expiry/budget shutdown needs neither the producer audit nor DB. Rollback is to

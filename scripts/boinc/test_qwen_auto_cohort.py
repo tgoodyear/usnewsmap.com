@@ -1,4 +1,6 @@
 import copy
+import fcntl
+import os
 import configparser
 import importlib.util
 import json
@@ -6,6 +8,7 @@ from pathlib import Path
 import shutil
 import shlex
 import subprocess
+import time
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -52,7 +55,8 @@ class BoincWorkunit {
  static function lookup_id($id) {foreach($GLOBALS['fixture'] as $r)if($r->unit->id==$id)return $r->unit;return null;}
 }
 class BoincApp {static function lookup_id($id){return (object)['name'=>'usnm_qwen'];}}
-class BoincResult {static function enum($where){preg_match('/workunitid=(\\d+)/',$where,$m);
+class BoincResult {static function enum($where){if(getenv('FIXTURE_DB_DELAY'))sleep((int)getenv('FIXTURE_DB_DELAY'));
+ preg_match('/workunitid=(\\d+)/',$where,$m);
  foreach($GLOBALS['fixture'] as $r)if($r->unit->id==$m[1])return $r->results;return [];}}
 class BoincDb {static function get(){return new self();}function count($table,$where){return 0;}}
 """)
@@ -345,6 +349,39 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(self.policy.read_bytes(), before)
         with patch.object(R, "read_database", side_effect=AssertionError("DB unavailable")):
             self.assertEqual(R.run(self.args)["status"], "closed-expired-budget-or-release-change")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_helper_lock_wait_or_db_revalidation_crossing_deadline_never_publishes(self):
+        before = self.policy.read_bytes()
+        command = ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+                   "--fresh-pair", "--workunit", "100", "--workunit-end", "101", "--apply"]
+        with (self.project / ".native-qwen-cohort.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            waiting = subprocess.Popen(command + ["--admit-until", str(int(time.time()) + 2)],
+                                       stderr=subprocess.PIPE, text=True)
+            time.sleep(3)
+        self.assertNotEqual(waiting.wait(timeout=10), 0)
+        self.assertIn("deadline passed", waiting.stderr.read())
+        self.assertEqual(self.policy.read_bytes(), before)
+        slow = subprocess.run(command + ["--admit-until", str(int(time.time()) + 2)], capture_output=True,
+                              text=True, env=os.environ | {"FIXTURE_DB_DELAY": "1"}, timeout=20)
+        self.assertNotEqual(slow.returncode, 0)
+        self.assertIn("deadline passed", slow.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        closed = subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+                                 "--stop", "--apply"], capture_output=True, text=True)
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_unpinned_non_linux_release_of_opened_class_closes_admission(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        self.database["versions"].append({"id": 69, "version_num": 100, "platformid": 5,
+                                          "plan_class": "intel_vulkan_8b"})
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_standalone_fresh_pair_helper_also_requires_distinct_host_gate(self):

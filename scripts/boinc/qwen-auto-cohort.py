@@ -318,10 +318,10 @@ def run(args):
                     and int(database["app"]["homogeneous_redundancy"]) == 0, "Qwen app/HR changed")
             allowed = {}
             for plan, expected in (("intel_vulkan_8b", 67), ("nvidia_vulkan_8b", 66)):
-                versions = [row for row in database["versions"] if row["plan_class"] == plan
-                            and int(row["platformid"]) == 1]
-                allowed[plan] = bool(versions) and max((int(row["version_num"]), int(row["id"]))
-                                                      for row in versions) == (114, expected)
+                # shared_8b opens these classes on every platform: any non-Linux release closes admission.
+                versions = [row for row in database["versions"] if row["plan_class"] == plan]
+                allowed[plan] = bool(versions) and all(int(row["platformid"]) == 1 for row in versions) \
+                    and max((int(row["version_num"]), int(row["id"])) for row in versions) == (114, expected)
             release = int(time.time()) >= args.enabled_until or not all(allowed.values())
         if release:
             command = ["--stop"]
@@ -353,7 +353,8 @@ def run(args):
                 return output | {"status": "no-fresh-verified-pairs"}
             proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])]) for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
-            command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair"]
+            command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair",
+                       "--admit-until", str(args.enabled_until)]
             status = "refilled-finite-window"
         if target == window:
             return output | {"status": status, "changed": False}

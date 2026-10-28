@@ -269,7 +269,8 @@ function native_qwen_fresh_pair_validate($workunit, $results, $assignments) {
 }
 
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
-        $ordinary_canary = false, $tiebreaker = false, $expected_sha256 = null, $revalidate = null) {
+        $ordinary_canary = false, $tiebreaker = false, $expected_sha256 = null, $revalidate = null,
+        $admit_until = null) {
     if ($tiebreaker && (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true) || $general || $ordinary_canary
             || $workunit_id <= 1 || ($last_id !== null && $last_id !== $workunit_id))) {
         throw new RuntimeException("Tiebreaker is one intel_vulkan_8b, nvidia_vulkan_8b, or shared_8b workunit");
@@ -296,6 +297,13 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             throw new RuntimeException("Policy changed since reviewed preview");
         }
         if ($revalidate !== null) $revalidate();
+        // Lock waits/DB revalidation can cross an automatic admission deadline; closing stays allowed.
+        $admission_expired = function() use ($admit_until, $workunit_id) {
+            if ($admit_until !== null && $workunit_id > 1 && time() >= $admit_until) {
+                throw new RuntimeException("Admission deadline passed under the policy lock");
+            }
+        };
+        $admission_expired();
         $updated = $general ? native_qwen_general_xml($original, $plan_class)
             : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
         native_qwen_reservation_guard($original, $updated);
@@ -334,6 +342,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             fclose($stream);
             if (!chmod($staged, fileperms($path) & 0777)) throw new RuntimeException("Cannot preserve plan permissions");
             if (hash_file("sha256", $path) !== $proof["before_sha256"]) throw new RuntimeException("Concurrent plan change");
+            $admission_expired();
             if (!rename($staged, $path)) throw new RuntimeException("Cannot replace cohort policy");
             $staged = null;
             if (hash_file("sha256", $path) !== $proof["after_sha256"]) throw new RuntimeException("Policy readback mismatch");
@@ -348,7 +357,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
 }
 
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:", "admit-until:"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
     $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
@@ -358,6 +367,7 @@ function native_qwen_cohort_main() {
     $tiebreaker = array_key_exists("tiebreaker", $options);
     $fresh_pair = array_key_exists("fresh-pair", $options);
     $expected_sha256 = $options["expected-policy-sha256"] ?? null;
+    $admit_until = $options["admit-until"] ?? null;
     if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
         || (!in_array($plan_class, NATIVE_QWEN_CLASSES, true) && $plan_class !== "shared_8b")
         || (!$stop && !$general && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
@@ -372,8 +382,9 @@ function native_qwen_cohort_main() {
             || !isset($options["workunit"]) || isset($options["workunit-end"])))
         || ($fresh_pair && ($stop || $general || $ordinary_canary || $tiebreaker
             || !in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)))
-        || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--apply]");
+        || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))
+        || ($admit_until !== null && ($stop || $general || !preg_match('/^[1-9][0-9]*$/D', $admit_until)))) {
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
@@ -417,7 +428,8 @@ function native_qwen_cohort_main() {
     }
     echo json_encode(native_qwen_cohort_write(
         $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general, $ordinary_canary,
-        $tiebreaker, $expected_sha256, $fresh_pair ? $revalidate : null
+        $tiebreaker, $expected_sha256, $fresh_pair ? $revalidate : null,
+        $admit_until === null ? null : intval($admit_until)
     ), JSON_PRETTY_PRINT)."\n";
 }
 
