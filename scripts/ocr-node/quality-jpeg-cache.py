@@ -36,9 +36,11 @@ delete) and nothing else there.
 import argparse
 import base64
 import hashlib
+import importlib.util
 import io
 import json
 import os
+from pathlib import Path
 import re
 import sys
 import time
@@ -231,6 +233,29 @@ def _work(args):
     return process(*args)
 
 
+def keyed_todo(names, ledger, state):
+    """Replay only new completion bytes; membership stays in a recipe-specific SQLite index."""
+    spec = importlib.util.spec_from_file_location(
+        "jpeg_refresh", Path(__file__).with_name("quality-jpeg-refresh.py"))
+    refresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(refresh)
+    work = Path(state) / f"keyed-{RECIPE}"
+    with refresh.locked(work):
+        db = refresh.connect(work, RECIPE, 1)
+        try:
+            while True:
+                count, caught_up = refresh.consume(
+                    db, ledger, 10000, lambda raw: refresh.ingest_done(db, raw))
+                if caught_up:
+                    break
+                if not count:
+                    raise Refused("completion ledger ends in a partial record; retry after it is complete")
+            return [name for name in names if not db.execute(
+                "SELECT 1 FROM done WHERE path=?", (name,)).fetchone()]
+        finally:
+            db.close()
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--account", required=True)
@@ -243,25 +268,57 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--blob-base", help=argparse.SUPPRESS)
     p.add_argument("--what-if", action="store_true")
+    p.add_argument("--keyed-completions", action="store_true",
+                   help="incrementally index completions on disk (install the refresh/list helpers too)")
+    p.add_argument("--follow-list", action="store_true",
+                   help="recheck the bounded refreshed list after each pass; requires --keyed-completions")
+    p.add_argument("--poll-secs", type=int, default=300)
     a = p.parse_args(argv)
     if not re.fullmatch(r"[a-z0-9]{3,24}", a.account):
         p.error("--account is a storage account name")
     if a.scan_server and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]+)?/?", a.scan_server):
         p.error("--scan-server is http://<host>[:port]")
+    if a.follow_list and (not a.keyed_completions or not 60 <= a.poll_secs <= 3600):
+        p.error("--follow-list requires --keyed-completions and --poll-secs between 60 and 3600")
     source = a.scan_server or a.scans_root
     from PIL import __version__ as pil
 
     if pil != PILLOW_VERSION:
         sys.exit(f"error: Pillow {pil}; the runner's recipe is pinned to {PILLOW_VERSION}")
+    while True:
+        run_list(a, source)
+        if not a.follow_list:
+            return
+        time.sleep(a.poll_secs)
+
+
+def run_list(a, source):
     os.makedirs(a.state, exist_ok=True)
     ledger = os.path.join(a.state, f"done-{RECIPE}.txt")
-    done = set()
-    if os.path.exists(ledger):
-        with open(ledger) as f:
-            done = {line.rstrip("\n").split("\t")[0] for line in f}
     with open(a.list) as f:
-        names = [validate_blob_name(n.strip()) for n in f if n.strip()]
-    todo = [n for n in names if n not in done]
+        if a.keyed_completions:
+            names = []
+            for _ in range(10001):
+                raw = f.readline(1025)
+                if not raw:
+                    break
+                if len(raw) > 1024:
+                    raise Refused("bounded converter list has an oversized line")
+                if raw.strip():
+                    names.append(validate_blob_name(raw.strip()))
+            if len(names) > 10000 or f.read(1):
+                raise Refused("bounded converter list exceeds 10000 lines")
+        else:
+            names = [validate_blob_name(n.strip()) for n in f if n.strip()]
+    if a.keyed_completions:
+        Path(ledger).touch(exist_ok=True)
+        todo = keyed_todo(names, ledger, a.state)
+    else:
+        done = set()
+        if os.path.exists(ledger):
+            with open(ledger) as f:
+                done = {line.rstrip("\n").split("\t")[0] for line in f}
+        todo = [n for n in names if n not in done]
     if a.limit:
         todo = todo[: a.limit]
     print(f"{len(names)} listed, {len(names) - len(todo)} done before, {len(todo)} to go", flush=True)
