@@ -20,6 +20,7 @@ mod recurring;
 const PREFIX: &str = "sitemap/state";
 const STATIC: [&str; 4] = ["/", "/privacy", "/credits", "/datasets"];
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
+const ORIGIN: &str = "https://usnewsmap.com";
 const XML_START: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
 const XML_END: &str = "</urlset>\n";
 
@@ -272,6 +273,9 @@ async fn commit(
             ));
         }
         let next = generation.checkpoint(previous.as_ref())?;
+        if next.pages.keys().any(|path| !valid_url(path)) {
+            return Err(backend("sitemap URL must be shorter than 2,048 characters"));
+        }
         if next.pages.len() > 50_000 || xml_size(&next) > MAX_SITEMAP_BYTES {
             return Err(backend(
                 "sitemap exceeds the 50,000 URL or 50 MiB protocol limit",
@@ -402,6 +406,10 @@ fn query_key(snap: &Snapshot, path: &str) -> Result<String> {
     let query = super::search_query(path).ok_or_else(|| backend("invalid saved search path"))?;
     let raw = usnm_core::params::RawParams::parse(&super::preview_query(&query))?;
     Ok(snap.refdata.search_request(&raw)?.query.to_string())
+}
+
+fn valid_url(path: &str) -> bool {
+    ORIGIN.len() + path.len() < 2048
 }
 
 async fn refresh(
@@ -541,7 +549,7 @@ fn xml(checkpoint: &Checkpoint) -> String {
 
 fn xml_entry(path: &str, page: &Page) -> String {
     format!(
-        "  <url><loc>https://usnewsmap.com{}</loc><lastmod>{}</lastmod></url>\n",
+        "  <url><loc>{ORIGIN}{}</loc><lastmod>{}</lastmod></url>\n",
         super::escape_html(path),
         page.lastmod
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -1178,8 +1186,8 @@ mod tests {
         let first = commit(&st, &snap, &store, &g).await.unwrap();
         assert_eq!(xml_size(&first), xml(&first).len());
         g.observed_at = at(3);
-        let encoded = "%E6%96%87".repeat(240);
-        for n in 0..24_000 {
+        let encoded = "%E6%96%87".repeat(215);
+        for n in 0..27_000 {
             g.pages
                 .insert(format!("/search/{encoded}{n}"), "results".into());
         }

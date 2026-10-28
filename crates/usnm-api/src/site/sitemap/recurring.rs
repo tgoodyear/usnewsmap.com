@@ -26,6 +26,9 @@ fn identity(record: &Record, snap: &Snapshot) -> Option<(String, String)> {
         .search_request(&RawParams::parse(&canonical).ok()?)
         .ok()?;
     let path = super::super::search_path(&record.query);
+    if !super::valid_url(&path) {
+        return None;
+    }
     let query = super::super::search_query(&path)?;
     let base = snap
         .refdata
@@ -181,6 +184,7 @@ pub(super) mod tests {
         );
 
         for variant in ["filter", "import", "version", "source", "phrase-vs-and"] {
+            write(&store, one, &[record(&snap, one, "\"cobalt jubilee\"")]).await;
             let mut other = second.clone();
             match variant {
                 "filter" => other.state.push("NY".into()),
@@ -189,30 +193,30 @@ pub(super) mod tests {
                 "source" => other.corpus = Some("congress".into()),
                 _ => other.query = "cobalt AND jubilee".into(),
             }
-            let mut filtered_one = record(&snap, one, "\"cobalt jubilee\"");
-            filtered_one.state.push("NY".into());
-            filtered_one.to = filtered_one.from;
-            let mut filtered_two = filtered_one.clone();
-            filtered_two.day = two;
-            write(&store, one, &[filtered_one]).await;
-            write(&store, two, std::slice::from_ref(&filtered_two)).await;
-            assert_eq!(
-                candidates(&store, &snap, today).await.unwrap(),
-                BTreeSet::from(["/search/cobalt-jubilee".into()]),
-                "a repeated filtered search promotes only its base term"
-            );
-            filtered_two.state = vec!["CA".into()];
-            write(&store, two, &[filtered_two]).await;
-            assert!(
-                candidates(&store, &snap, today).await.unwrap().is_empty(),
-                "different filter combinations cannot pool their days"
-            );
             write(&store, two, &[other]).await;
             assert!(
                 candidates(&store, &snap, today).await.unwrap().is_empty(),
                 "{variant}"
             );
         }
+        let mut filtered_one = record(&snap, one, "\"cobalt jubilee\"");
+        filtered_one.state.push("NY".into());
+        filtered_one.to = filtered_one.from;
+        let mut filtered_two = filtered_one.clone();
+        filtered_two.day = two;
+        write(&store, one, &[filtered_one]).await;
+        write(&store, two, std::slice::from_ref(&filtered_two)).await;
+        assert_eq!(
+            candidates(&store, &snap, today).await.unwrap(),
+            BTreeSet::from(["/search/cobalt-jubilee".into()]),
+            "a repeated filtered search promotes only its base term"
+        );
+        filtered_two.state = vec!["CA".into()];
+        write(&store, two, &[filtered_two]).await;
+        assert!(
+            candidates(&store, &snap, today).await.unwrap().is_empty(),
+            "different filter combinations cannot pool their days"
+        );
         // Staging is not a second day of evidence.
         store
             .put(
@@ -227,6 +231,29 @@ pub(super) mod tests {
             .await
             .unwrap();
         assert!(candidates(&store, &snap, today).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn encoded_unicode_urls_must_be_shorter_than_2048_characters() {
+        let snap = snapshot().await;
+        let day = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let words = (0..7)
+            .map(|i| "\u{0e01}".repeat(if i == 6 { 31 } else { 32 }))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for (tail, length, admitted) in [
+            ("aaaa", 2047, true),
+            ("aaaaa", 2048, false),
+            ("aaaaaa", 2049, false),
+        ] {
+            let query = format!("\"{words} {tail}\"");
+            let path = super::super::super::search_path(&query);
+            assert_eq!(super::super::ORIGIN.len() + path.len(), length);
+            assert_eq!(
+                identity(&record(&snap, day, &query), &snap).is_some(),
+                admitted
+            );
+        }
     }
 
     #[tokio::test]
