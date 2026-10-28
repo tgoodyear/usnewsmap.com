@@ -122,7 +122,8 @@ class Gates(unittest.TestCase):
         self.assertIn('test "$SCRIPTS_RESULT" = skipped', infra)
 
     def test_suites_are_isolated_and_publication_still_waits_for_aggregates(self):
-        self.assertIn("suite: [parity, pipeline]", job("quickwit-tests"))
+        self.assertIn("suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}",
+                      job("quickwit-tests"))
         self.assertIn("if: matrix.suite == 'parity'", job("quickwit-tests"))
         self.assertIn("image: [api, ingest, ja-ocr]", job("image-tests"))
         self.assertIn("shard: [0, 1, 2]", job("script-tests"))
