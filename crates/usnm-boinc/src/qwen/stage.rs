@@ -184,6 +184,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             prompt_version: PROMPT_VERSION,
         };
         job.id = job.identity()?;
+        job.validate_source_candidate()
+            .with_context(|| format!("{name}: staged source candidate"))?;
         let oversized: Vec<_> = job
             .crops
             .iter()
@@ -920,6 +922,25 @@ pub(crate) mod tests {
                 max_pages: 1,
                 bundle_size,
             };
+            for invalid in [
+                Options {
+                    cpu_timeout_secs: 1,
+                    ..opts.clone()
+                },
+                Options {
+                    max_tokens_per_1000px2: 0,
+                    ..opts.clone()
+                },
+            ] {
+                let error = run(&invalid).await.unwrap_err();
+                assert!(format!("{error:#}").contains("invalid"), "{error:#}");
+                let rejected = invalid
+                    .root
+                    .join(if bundle_size == 1 { "units" } else { "pages" })
+                    .join(bad);
+                assert!(!rejected.join(TOO_LARGE).exists());
+                assert!(!rejected.join(JOB_FILE).exists());
+            }
             let first = run(&opts).await.unwrap();
             assert_eq!((first.too_large, first.staged), (1, 0));
             let rejected = opts
