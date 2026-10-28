@@ -41,6 +41,9 @@ jobs:
     outputs:
       rust: ${{ steps.f.outputs.rust }}
       quickwit: ${{ steps.f.outputs.quickwit }}
+      quickwit_parity: ${{ steps.f.outputs.quickwit_parity }}
+      quickwit_pipeline: ${{ steps.f.outputs.quickwit_pipeline }}
+      quickwit_suites: ${{ steps.f.outputs.quickwit_suites }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
       e2e: ${{ steps.f.outputs.e2e }}
@@ -381,7 +384,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [parity, pipeline]
+        suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}
     # Upstream's v0.9.1 release binary, not our build (ADR-0013): our one
     # commit changes only the Azure Blob client, which these tests don't
     # reach (they index and search local files), and building ours takes an
@@ -431,7 +434,7 @@ jobs:
     if: always() && needs.changes.outputs.quickwit == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Both isolated suites must pass
+      - name: All selected isolated suites must pass
         env:
           RESULT: ${{ needs.quickwit-tests.result }}
         run: test "$RESULT" = success

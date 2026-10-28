@@ -5,6 +5,7 @@ changes.sh on it as a push. The lock-file cases resolve packages with cargo
 (the registry index, over the network), so they skip without it.
 """
 
+import json
 import os
 import re
 import shutil
@@ -49,7 +50,8 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
                          {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 24)
+        self.assertEqual(len(flags), 26)
+        self.assertIn("quickwit_suites=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
@@ -65,6 +67,9 @@ class Dispatch(unittest.TestCase):
                 self.assertEqual(flags["rust"], "true")
                 self.assertEqual(flags["contrib"], "true")
                 self.assertEqual(flags["edge"], "true")
+                self.assertEqual(flags["quickwit_parity"], "true")
+                self.assertEqual(flags["quickwit_pipeline"], "true")
+                self.assertIn('quickwit_suites=["parity","pipeline"]', result.stdout)
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -113,7 +118,8 @@ class Quickwit(unittest.TestCase):
         self.repo = self.tmp / "repo"
         subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(ROOT), str(self.repo)], check=True)
         # The working tree's changes.sh and Cargo manifests, committed or not.
-        for rel in ["scripts/ci/changes.sh", "Cargo.toml", "Cargo.lock"]:
+        for rel in ["scripts/ci/changes.sh", ".github/workflows/ci.yml",
+                    "Cargo.toml", "Cargo.lock"]:
             shutil.copy(ROOT / rel, self.repo / rel)
         for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
             rel_dir = manifest.parent.relative_to(ROOT)
@@ -226,7 +232,9 @@ class Quickwit(unittest.TestCase):
             with (self.repo / "Cargo.toml").open("a") as h:
                 h.write("\n[profile.test]\noverflow-checks = false\n")
         self.change = change
-        self.assertTrue(self.quickwit())
+        flags = self.outputs()
+        self.assertTrue(flags["quickwit_parity"])
+        self.assertTrue(flags["quickwit_pipeline"])
 
     @unittest.skipUnless(CARGO, "no cargo")
     def test_a_dependency_bump_under_usnm_search_runs_it(self):
@@ -237,7 +245,22 @@ class Quickwit(unittest.TestCase):
             subprocess.run([CARGO, "update", "-q", "-p", f"thiserror@{version.group(1)}",
                             "--precise", older], cwd=self.repo, check=True, capture_output=True)
         self.change = change
-        self.assertTrue(self.quickwit())
+        flags = self.outputs()
+        self.assertTrue(flags["quickwit_parity"])
+        self.assertTrue(flags["quickwit_pipeline"])
+
+    @unittest.skipUnless(CARGO, "no cargo")
+    def test_api_only_lockfile_bump_runs_pipeline_not_parity(self):
+        def change():
+            subprocess.run(
+                [CARGO, "update", "-q", "-p", "resvg", "--precise", "0.45.0"],
+                cwd=self.repo, check=True, capture_output=True,
+            )
+            self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
+        self.change = change
+        flags = self.outputs()
+        self.assertTrue(flags["quickwit_pipeline"])
+        self.assertFalse(flags["quickwit_parity"])
 
 
 if __name__ == "__main__":
@@ -419,7 +442,13 @@ class BuildInputs(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.log = result.stdout + result.stderr
-        return {k for k, v in re.findall(r"^(\w+)=(\w+)$", out.read_text(), re.M) if v == "true"}
+        output = out.read_text()
+        on = {k for k, v in re.findall(r"^(\w+)=(\w+)$", output, re.M) if v == "true"}
+        suites = json.loads(re.search(r"^quickwit_suites=(.*)$", output, re.M)[1])
+        self.assertEqual(suites, [s for s in ("parity", "pipeline")
+                                  if f"quickwit_{s}" in on])
+        self.assertEqual("quickwit" in on, bool(suites))
+        return on
 
     def stub_tool(self, name: str) -> dict:
         """An environment whose `name` fails, as when the tool is broken or missing."""
@@ -440,9 +469,10 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 on = self.select((path, "// presentation-only change\n"))
                 self.assertNotIn("quickwit", on)
+                self.assertFalse(on & {"quickwit_parity", "quickwit_pipeline"})
                 self.assertGreaterEqual(on, {"rust", "image", "e2e"})
 
-    def test_preview_appstate_changes_still_run_quickwit(self):
+    def test_preview_appstate_changes_run_pipeline_not_parity(self):
         # #1285 also changed AppState initialization and background startup in
         # lib.rs. A file selector cannot prove that shared code is site-only.
         on = self.select(
@@ -451,6 +481,8 @@ class BuildInputs(unittest.TestCase):
             "crates/usnm-api/src/site/social/cache.rs",
         )
         self.assertGreaterEqual(on, {"quickwit", "rust", "image", "e2e"})
+        self.assertIn("quickwit_pipeline", on)
+        self.assertNotIn("quickwit_parity", on)
 
     def test_shared_api_inputs_remain_conservative_quickwit_triggers(self):
         for path in [
@@ -466,7 +498,25 @@ class BuildInputs(unittest.TestCase):
             "crates/usnm-api/Cargo.toml",
         ]:
             with self.subTest(path=path):
-                self.assertIn("quickwit", self.select(path))
+                on = self.select(path)
+                self.assertGreaterEqual(on, {"quickwit", "quickwit_pipeline"})
+                self.assertNotIn("quickwit_parity", on)
+
+    def test_independent_quickwit_roots_select_only_the_affected_suites(self):
+        for path, suites in [
+            ("crates/usnm-search/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-core/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/src/lib.rs", {"pipeline"}),
+            ("crates/usnm-state/src/lib.rs", {"pipeline"}),
+            ("crates/usnm-search/Cargo.toml", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/Cargo.toml", {"pipeline"}),
+            ("crates/usnm-search/tests/quickwit_parity.rs", {"parity"}),
+            ("crates/usnm-ingest/tests/pipeline/writer.rs", {"pipeline"}),
+        ]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertEqual(on & {"quickwit_parity", "quickwit_pipeline"},
+                                 {f"quickwit_{s}" for s in suites})
 
     def test_quickwit_runtime_inputs_still_run_for_site_changes(self):
         for path in [
@@ -483,15 +533,19 @@ class BuildInputs(unittest.TestCase):
             "rust-toolchain.toml",
         ]:
             with self.subTest(path=path):
-                self.assertIn("quickwit", self.select(
+                on = self.select(
                     "crates/usnm-api/src/site/social.rs", path,
-                ))
+                )
+                self.assertIn("quickwit", on)
+                if not path.startswith("crates/"):
+                    self.assertGreaterEqual(on, {"quickwit_parity", "quickwit_pipeline"})
 
     def test_site_changes_fail_open_when_metadata_is_unavailable(self):
         on = self.select("crates/usnm-api/src/site/social.rs",
                          env=self.stub_tool("cargo"))
-        self.assertIn("quickwit", on)
-        self.assertIn("cargo metadata failed: running quickwit", self.log)
+        self.assertGreaterEqual(on, {"quickwit", "quickwit_parity", "quickwit_pipeline"})
+        self.assertIn("cargo metadata failed: running quickwit_parity", self.log)
+        self.assertIn("cargo metadata failed: running quickwit_pipeline", self.log)
 
     def test_quickwit_workflow_changes_still_force_its_gate(self):
         path = ".github/workflows/ci.yml"
@@ -502,7 +556,17 @@ class BuildInputs(unittest.TestCase):
             (path, workflow.replace("name: quickwit (${{ matrix.suite }})",
                                     "name: quickwit (${{ matrix.suite }}) # changed")),
         )
-        self.assertIn("quickwit", on)
+        self.assertGreaterEqual(on, {"quickwit", "quickwit_parity", "quickwit_pipeline"})
+
+    def test_selected_quickwit_matrix_keeps_required_aggregate(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        child = workflow.split("\n  quickwit-tests:\n", 1)[1].split("\n  quickwit:\n", 1)[0]
+        self.assertIn("suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}", child)
+        self.assertIn("if: needs.changes.outputs.quickwit == 'true'", child)
+        gate = workflow.split("\n  quickwit:\n", 1)[1].split("\n  fixtures:\n", 1)[0]
+        self.assertIn("needs: [changes, quickwit-tests]", gate)
+        self.assertIn("if: always() && needs.changes.outputs.quickwit == 'true'", gate)
+        self.assertIn('test "$RESULT" = success', gate)
 
     def test_dashboard_renderer_and_markdown_change_runs_only_the_dashboard_checks(self):
         # The change #734 makes: html.rs and docs/operations/onprem-ocr.md.
