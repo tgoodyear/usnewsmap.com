@@ -324,9 +324,16 @@ def run(args):
             allowed = {}
             for plan, expected in (("intel_vulkan_8b", 67), ("nvidia_vulkan_8b", 66)):
                 # shared_8b opens these classes on every platform: any non-Linux release closes admission.
+                # The feeder loads only the newest version per platform/plan class unless app.min_version
+                # is set, in which case every version >= min_version is dispatchable.
                 versions = [row for row in database["versions"] if row["plan_class"] == plan]
-                allowed[plan] = bool(versions) and all(int(row["platformid"]) == 1 for row in versions) \
-                    and max((int(row["version_num"]), int(row["id"])) for row in versions) == (114, expected)
+                minimum = int(database["app"].get("min_version") or 0)
+                newest = max((int(row["version_num"]) for row in versions), default=None)
+                dispatchable = sorted((int(row["platformid"]), int(row["version_num"]), int(row["id"]))
+                                      for row in versions if (int(row["version_num"]) >= minimum if minimum
+                                                              else int(row["version_num"]) == newest))
+                allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
+                    and dispatchable == [(1, 114, expected)]
             release = int(time.time()) >= args.enabled_until or not all(allowed.values())
         if release:
             command = ["--stop"]

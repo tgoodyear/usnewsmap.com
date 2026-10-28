@@ -360,8 +360,9 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             waiting = subprocess.Popen(command + ["--admit-until", str(int(time.time()) + 2)],
                                        stderr=subprocess.PIPE, text=True)
             time.sleep(3)
-        self.assertNotEqual(waiting.wait(timeout=10), 0)
-        self.assertIn("deadline passed", waiting.stderr.read())
+        stderr = waiting.communicate(timeout=10)[1]
+        self.assertNotEqual(waiting.returncode, 0)
+        self.assertIn("deadline passed", stderr)
         self.assertEqual(self.policy.read_bytes(), before)
         slow = subprocess.run(command + ["--admit-until", str(int(time.time()) + 2)], capture_output=True,
                               text=True, env=os.environ | {"FIXTURE_DB_DELAY": "1"}, timeout=20)
@@ -401,6 +402,20 @@ class BoincDb {static $q=0;static function get(){return new self();}
         self.args.minimum_workunit = 100
         with patch.object(R, "read_database", return_value=self.database):
             self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_older_linux_release_closes_admission_only_when_feeder_would_dispatch_it(self):
+        self.database["versions"].append({"id": 46, "version_num": 106, "platformid": 1,
+                                          "plan_class": "intel_vulkan_8b"})
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+        self.database["app"]["min_version"] = 100
+        for row in self.rows:
+            row["results"][0].update(server_state=4, hostid=9)
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_unpinned_non_linux_release_of_opened_class_closes_admission(self):

@@ -28,7 +28,11 @@ GPU artifacts, model/engine hashes, generation budgets, distinct-host gate and
 validator are not relaxed. Only the already published Linux Intel67/NVIDIA66
 1.14 pair is authorized. A superseding release on any platform (including a
 Windows release of either opened class) or changed project config closes the
-owned window instead of silently adopting a new release.
+owned window instead of silently adopting a new release. The guard checks the
+complete non-deprecated version set the feeder would dispatch: with the app's
+`min_version` at 0 the stock feeder loads only the newest version per
+platform/plan class, so older reviewed Linux rows stay superseded; a nonzero
+`min_version` that would make an older Linux row dispatchable also closes it.
 
 Refill also reads actual native-8B **in-progress tasks across all windows** for
 both pilot hosts. New window size is reduced to the smaller remaining headroom
