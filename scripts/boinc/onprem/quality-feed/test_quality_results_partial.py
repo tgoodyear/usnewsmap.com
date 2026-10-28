@@ -1,6 +1,7 @@
 """Partial publication: current inputs, explicit coverage, fail-closed loads and replay."""
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shlex
@@ -50,7 +51,9 @@ class PartialTest(unittest.TestCase):
         loaded = {"snapshot": self.snapshot, "campaign": self.campaign,
                   "campaign_complete": False, "selected_unit": "bundle-a", "pages": 1, "reader_rows": 1}
         return [
-            types.SimpleNamespace(stdout=json.dumps(self.receipt).encode()),
+            subprocess.CompletedProcess(
+                ["ssh"], 0, stdout=json.dumps(self.receipt).encode(),
+                stderr=(partial.LOCK_ACQUIRED + "\n").encode()),
             None, types.SimpleNamespace(stdout=b"archive"), None,
             types.SimpleNamespace(stdout=json.dumps(loaded).encode()),
         ]
@@ -128,6 +131,7 @@ class PartialTest(unittest.TestCase):
             self.assertEqual(state["after"], "bundle-a")
             self.assertEqual(state["through"], "bundle-b")
             self.assertIn("flock -n", run.call_args_list[0].args[0][-1])
+            self.assertIn("-E 75", run.call_args_list[0].args[0][-1])
             self.assertIn("180s", run.call_args_list[0].args[0][-1])
             for call in run.call_args_list[2:4]:
                 command = call.args[0]
@@ -138,6 +142,42 @@ class PartialTest(unittest.TestCase):
                 grace = float(command[inner + 2].removeprefix("--kill-after=").removesuffix("s"))
                 self.assertLess(seconds + grace, call.kwargs["timeout"])
                 self.assertEqual(command[inner + 4], "tar")
+
+    def test_remote_failure_diagnostics_distinguish_lock_conflicts_without_advancing(self):
+        for code, acquired, phase in [(75, False, "step_lock_busy"),
+                                      (75, True, "collection_failed"),
+                                      (255, False, "remote_admission_failed")]:
+            stderr = (partial.LOCK_ACQUIRED + "\n" if acquired else "") + "remote diagnostic\n"
+            response = subprocess.CompletedProcess(["ssh"], code, b"", stderr.encode())
+            with self.subTest(phase=phase), mock.patch.object(
+                    partial.subprocess, "run", return_value=response) as run, \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    partial.host_pass(self.args)
+                self.assertEqual(run.call_count, 1)
+                self.assertIn("remote diagnostic", log.getvalue())
+                self.assertIn(phase, log.getvalue())
+                self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+
+    def test_success_without_lock_receipt_never_transfers_or_loads(self):
+        response = subprocess.CompletedProcess(["ssh"], 0, b"{}", b"")
+        with mock.patch.object(partial.subprocess, "run", return_value=response) as run:
+            with self.assertRaisesRegex(RuntimeError, "Missing step-lock acquisition receipt"):
+                partial.host_pass(self.args)
+            self.assertEqual(run.call_count, 1)
+        self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+
+    def test_collection_timeout_preserves_received_diagnostics_without_loading(self):
+        error = subprocess.TimeoutExpired(
+            ["ssh"], 210, stderr=(partial.LOCK_ACQUIRED + "\nremote timeout\n").encode())
+        with mock.patch.object(partial.subprocess, "run", side_effect=error) as run, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                partial.host_pass(self.args)
+            self.assertEqual(run.call_count, 1)
+            self.assertIn("remote timeout", log.getvalue())
+            self.assertIn('"step_lock_acquired": true', log.getvalue())
+        self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
 
     def test_coverage_cannot_claim_completeness_or_cross_snapshot(self):
         for key, value in [("campaign_complete", True), ("snapshot", "f" * 32),
