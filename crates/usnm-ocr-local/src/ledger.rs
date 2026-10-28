@@ -356,6 +356,28 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    /// Lease-serialized reservation/settlement order, independent of request day
+    /// and robust to clock rollback and equal-microsecond writes.
+    pub fn next_event_time(
+        &self,
+        doc_id: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        let mut micros = at.timestamp_micros();
+        let previous = self
+            .queued
+            .get(doc_id)
+            .map(|q| q.queued_at)
+            .into_iter()
+            .chain(self.outcomes.get(doc_id).map(|o| o.at))
+            .map(|at| at.timestamp_micros())
+            .max();
+        if let Some(previous) = previous.filter(|previous| *previous >= micros) {
+            micros = previous.checked_add(1).context("ledger order exhausted")?;
+        }
+        DateTime::from_timestamp_micros(micros).context("ledger time is out of range")
+    }
+
     pub fn add_queued(&mut self, q: Queued) {
         self.add_queued_from_run(q, "");
     }

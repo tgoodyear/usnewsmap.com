@@ -207,17 +207,22 @@ impl Lease {
         let renewer = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(LOCK_RENEW).await;
+                if let Err(error) = Self::valid_until(&flag, &renewed_until).map(drop) {
+                    tracing::error!(%error, "ocr-sync lease expired before renewal");
+                    break;
+                }
                 let next_until = Instant::now() + ttl;
                 if let Err(e) = state.lock(super::LOCK, &owner, LOCK_TTL).await {
                     tracing::error!(error = %format!("{e:#}"), "ocr-sync lock renewal failed");
                     flag.store(true, Ordering::SeqCst);
                     break;
                 }
-                match renewed_until.lock() {
+                // Check and advance under the same guard: a late successful RPC
+                // must never revive a snapshot whose old lease already expired.
+                match Self::valid_until(&flag, &renewed_until) {
                     Ok(mut deadline) => *deadline = next_until,
                     Err(error) => {
-                        tracing::error!(%error, "ocr-sync lease deadline unavailable");
-                        flag.store(true, Ordering::SeqCst);
+                        tracing::error!(%error, "ocr-sync lease could not accept renewal");
                         break;
                     }
                 }
@@ -231,17 +236,26 @@ impl Lease {
     }
 
     pub(super) fn check(&self) -> anyhow::Result<()> {
-        if self.lost.load(Ordering::SeqCst) {
+        drop(Self::valid_until(&self.lost, &self.until)?);
+        Ok(())
+    }
+
+    fn valid_until<'a>(
+        lost: &AtomicBool,
+        until: &'a Mutex<Instant>,
+    ) -> anyhow::Result<std::sync::MutexGuard<'a, Instant>> {
+        let until = until.lock().map_err(|error| {
+            lost.store(true, Ordering::SeqCst);
+            anyhow::anyhow!("ocr-sync lease deadline unavailable: {error}")
+        })?;
+        if lost.load(Ordering::SeqCst) {
             bail!("the ocr-sync lock could not be renewed; stopping before the next write");
         }
-        let until = self
-            .until
-            .lock()
-            .map_err(|error| anyhow::anyhow!("ocr-sync lease deadline unavailable: {error}"))?;
         if Instant::now() >= *until {
+            lost.store(true, Ordering::SeqCst);
             bail!("the ocr-sync lock expired; stopping before the next write");
         }
-        Ok(())
+        Ok(until)
     }
 }
 
@@ -589,7 +603,7 @@ async fn drain_batch(
                         cause: d.cause.map(|c| c.as_str().to_owned()),
                         kind: d.kind.clone(),
                         source: msg.id.clone(),
-                        at: now,
+                        at: ledger.next_event_time(&key.doc_id(), now)?,
                         run: run.to_owned(),
                         message_sha256: Some(usnm_ocr_contract::boinc::sha256(
                             &serde_json::to_vec(m)?,
@@ -1118,17 +1132,19 @@ async fn import(
     let now = Utc::now();
     let outcomes: Vec<Outcome> = accepted
         .iter()
-        .map(|(i, _)| Outcome {
-            doc_id: i.row.key.doc_id(),
-            outcome: IMPORTED.into(),
-            cause: None,
-            kind: None,
-            source: i.source_part.clone(),
-            at: now,
-            run: run.to_owned(),
-            message_sha256: None,
+        .map(|(i, _)| {
+            Ok(Outcome {
+                doc_id: i.row.key.doc_id(),
+                outcome: IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: i.source_part.clone(),
+                at: ctx.ledger.next_event_time(&i.row.key.doc_id(), now)?,
+                run: run.to_owned(),
+                message_sha256: None,
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
     let outcomes_path =
         ledger::write_outcomes(stores.curated.as_ref(), &outcomes, now, run).await?;
     written_outcomes.extend(outcomes);
@@ -1388,5 +1404,18 @@ mod lease_tests {
         lease.check().unwrap();
         *lease.until.lock().unwrap() = Instant::now();
         assert!(lease.check().unwrap_err().to_string().contains("expired"));
+        assert!(lease.lost.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_late_renewal_cannot_revive_an_expired_lease() {
+        let lost = AtomicBool::new(false);
+        let until = Mutex::new(Instant::now() - Duration::from_secs(1));
+        let renewal = Lease::valid_until(&lost, &until);
+        assert!(renewal.is_err());
+        assert!(lost.load(Ordering::SeqCst));
+        // Even a later apparent acquisition cannot make the old operation valid.
+        *until.lock().unwrap() = Instant::now() + LOCK_TTL.to_std().unwrap();
+        assert!(Lease::valid_until(&lost, &until).is_err());
     }
 }

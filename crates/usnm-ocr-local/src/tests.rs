@@ -1268,9 +1268,8 @@ fn ordinary_message_fences_keep_history_and_request_day_without_reusing_legacy_s
 #[tokio::test]
 async fn same_tick_ordinary_dead_letter_cannot_settle_its_replacement() {
     let fx = fixture(false).await;
-    let at = DateTime::parse_from_rfc3339("2026-10-14T12:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc);
+    // The sync clock is behind the reservations, as after a wall-clock rollback.
+    let at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).unwrap();
     let mut ledger = ledger::Ledger::default();
     let mut previous = queued(&key(3).doc_id(), BATCH, "bulk");
     previous.queued_at = at;
@@ -1278,6 +1277,7 @@ async fn same_tick_ordinary_dead_letter_cannot_settle_its_replacement() {
     ledger.add_queued(previous.clone());
     let mut next = previous.clone();
     next.attempt += 1;
+    next.queued_at = ledger.next_event_time(&next.doc_id, at).unwrap();
     next.retry_message_at = Some(ledger.next_message_time(&next.doc_id, at).unwrap());
     fx.ask(&[previous.clone(), next.clone()]).await;
     for (id, fence, stale) in [
@@ -1317,6 +1317,69 @@ async fn same_tick_ordinary_dead_letter_cannot_settle_its_replacement() {
             assert!(loaded.outstanding(&next.doc_id).is_none());
         }
     }
+}
+
+#[test]
+fn reservation_and_settlement_order_survives_equal_ticks_and_clock_rollback() {
+    let at = DateTime::parse_from_rfc3339("2026-10-14T00:00:00.123456Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut ledger = ledger::Ledger::default();
+    let mut previous = queued(&key(3).doc_id(), BATCH, "user");
+    previous.queued_at = at;
+    previous.request_day = Some(at.date_naive());
+    ledger.add_queued(previous.clone());
+    let mut outcome = ledger::Outcome {
+        doc_id: previous.doc_id.clone(),
+        outcome: ledger::DEAD_LETTERED.into(),
+        cause: Some("permanent".into()),
+        kind: None,
+        source: "old-message".into(),
+        at: at + chrono::Duration::days(1),
+        run: "old".into(),
+        message_sha256: None,
+    };
+    ledger.add_outcome(outcome.clone());
+    let mut next = previous.clone();
+    next.attempt += 1;
+    next.queued_at = ledger.next_event_time(&next.doc_id, at).unwrap();
+    next.retry_message_at = Some(ledger.next_message_time(&next.doc_id, at).unwrap());
+    assert!(next.queued_at > outcome.at);
+    ledger.add_queued(next.clone());
+    assert_eq!(ledger.outstanding(&next.doc_id), Some(&next));
+    assert_eq!(next.request_day, previous.request_day);
+    outcome.at = ledger.next_event_time(&next.doc_id, at).unwrap();
+    ledger.add_outcome(outcome.clone());
+    assert!(ledger.outstanding(&next.doc_id).is_none());
+    let future = ledger
+        .next_event_time(&next.doc_id, at - chrono::Duration::days(2))
+        .unwrap();
+    assert!(future > outcome.at);
+    next.queued_at = future;
+    assert_eq!(
+        ledger::decode_queued(bytes::Bytes::from(
+            ledger::encode_queued(&[next.clone()]).unwrap()
+        ))
+        .unwrap(),
+        vec![next]
+    );
+}
+
+#[tokio::test]
+async fn ordinary_import_settles_a_reservation_ahead_of_the_wall_clock() {
+    let fx = fixture(false).await;
+    let mut reservation = queued(&key(3).doc_id(), BATCH, "bulk");
+    reservation.queued_at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).unwrap();
+    reservation.retry_message_at = Some(reservation.queued_at);
+    fx.ask(std::slice::from_ref(&reservation)).await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert!(ledger.imported(&reservation.doc_id));
+    assert!(ledger.outstanding(&reservation.doc_id).is_none());
+    assert!(ledger.outcomes[&reservation.doc_id].at > reservation.queued_at);
 }
 
 #[tokio::test]

@@ -390,7 +390,8 @@ async fn record_not_sent(
             cause: None,
             kind: None,
             source: run.to_owned(),
-            at,
+            // Anchor an unsent outcome to its reservation, not a delayed failure's wall time.
+            at: q.queued_at,
             run: run.to_owned(),
             message_sha256: None,
         })
@@ -839,7 +840,7 @@ async fn enqueue_with_policy(
                 plan: opts.plan.clone(),
                 attempt,
                 request_day: policy.request_day,
-                queued_at: now,
+                queued_at: ledger.next_event_time(doc_id, now)?,
                 retry_message_at: Some(
                     DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
                 ),
@@ -1054,7 +1055,7 @@ async fn requeue_locked(
                 plan: opts.plan.clone(),
                 attempt,
                 request_day: None,
-                queued_at: now,
+                queued_at: ledger.next_event_time(&doc_id, now)?,
                 retry_message_at: Some(
                     DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
                 ),

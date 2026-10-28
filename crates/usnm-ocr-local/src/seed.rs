@@ -1180,7 +1180,7 @@ pub(super) async fn seed(
                 plan: opts.plan.clone(),
                 attempt: attempt(&q.doc_id),
                 request_day: None,
-                queued_at: now,
+                queued_at: ledger.next_event_time(&q.doc_id, now)?,
                 retry_message_at: Some(
                     DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
                 ),
@@ -1295,7 +1295,7 @@ pub(super) async fn seed(
                     plan: opts.plan.clone(),
                     attempt: attempt(doc_id),
                     request_day: None,
-                    queued_at: now,
+                    queued_at: ledger.next_event_time(doc_id, now)?,
                     retry_message_at: Some(
                         DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
                     ),
@@ -1463,7 +1463,7 @@ pub(super) async fn seed(
                         plan: opts.plan.clone(),
                         attempt: attempt(doc_id),
                         request_day: None,
-                        queued_at: now,
+                        queued_at: ledger.next_event_time(doc_id, now)?,
                         retry_message_at: Some(
                             DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
                         ),
