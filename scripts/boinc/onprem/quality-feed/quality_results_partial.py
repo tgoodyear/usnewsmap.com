@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -44,6 +45,27 @@ def select_unit(units, after):
     if not names:
         raise ValueError("no submitted QUALITY units")
     return next((name for name in names if name > after), names[0])
+
+
+def run_loader(command, timeout=120):
+    with subprocess.Popen(command, start_new_session=True, stdout=sys.stderr) as process:
+        try:
+            code = process.wait(timeout=timeout)
+        except BaseException:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(process.pid, sig)
+                except ProcessLookupError:
+                    pass
+                if sig == signal.SIGTERM:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+            process.wait()
+            raise
+        if code:
+            raise subprocess.CalledProcessError(code, command)
 
 
 def scoped_collect(args, project=Path("/project")):
@@ -138,12 +160,11 @@ def verified_load(args):
     if docs and (docs != allowed or any(r["job_id"] != receipt["selected_job"] for r in rows)):
         raise ValueError("partial rows do not belong to selected unit")
     if rows:
-        subprocess.run(
+        run_loader(
             ["/opt/usnm-quality-feed/venv/bin/python", "/opt/usnm-quality-feed/load.py",
              "results", "--campaign", args.campaign, "--engine", args.engine_image,
              "--file", str(root / "out/pages.parquet"),
              "--dsn", Path("/etc/usnm/quality-db/dsn").read_text().strip()],
-            check=True, timeout=120, stdout=sys.stderr,
         )
     return {"snapshot": args.snapshot, "campaign": args.campaign, "campaign_complete": False,
             "pages": len(docs), "reader_rows": len(rows), "selected_unit": receipt["selected_unit"]}
@@ -188,10 +209,11 @@ def host_pass(args):
     subprocess.run(["pct", "exec", str(args.ctid), "--", "tar", "-x", "--no-same-owner", "-C", dest],
                    input=archive, check=True, timeout=60)
     load = ["pct", "exec", str(args.ctid), "--",
+            "timeout", "--signal=TERM", "--kill-after=10s", "150s",
             "/opt/usnm-quality-feed/venv/bin/python", "-", "--load", *common,
             "--snapshot-dir", dest, "--engine-image", args.engine_image]
     result = subprocess.run(load, input=Path(__file__).read_bytes(),
-                            capture_output=True, check=True, timeout=150)
+                            capture_output=True, check=True, timeout=180)
     loaded = json.loads(result.stdout)
     if (loaded.get("snapshot") != snapshot or loaded.get("campaign") != args.campaign
             or loaded.get("campaign_complete") is not False
@@ -237,6 +259,10 @@ def main(argv=None):
     if args.remote:
         report = scoped_collect(args)
     elif args.load:
+        def terminate(signum, _frame):
+            raise SystemExit(128 + signum)
+
+        signal.signal(signal.SIGTERM, terminate)
         report = verified_load(args)
     else:
         with args.lock.open("a") as lock:

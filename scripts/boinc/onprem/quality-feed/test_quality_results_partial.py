@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -152,20 +153,20 @@ class PartialTest(unittest.TestCase):
 
     def test_loader_rejects_stale_bytes_and_wrong_job_without_loading(self):
         rows = [{"doc_id": "doc-a", "job_id": self.job}]
-        with self.load_fixture(rows), mock.patch.object(partial.subprocess, "run") as load:
+        with self.load_fixture(rows), mock.patch.object(partial, "run_loader") as load:
             (self.args.snapshot_dir / "out/pages.parquet").write_bytes(b"stale snapshot")
             with self.assertRaises(ValueError):
                 partial.verified_load(self.args)
             load.assert_not_called()
         (self.args.snapshot_dir / "out").rename(self.args.snapshot_dir / "old-out")
         with self.load_fixture([{"doc_id": "doc-a", "job_id": "f" * 64}]), \
-                mock.patch.object(partial.subprocess, "run") as load:
+                mock.patch.object(partial, "run_loader") as load:
             with self.assertRaises(ValueError):
                 partial.verified_load(self.args)
             load.assert_not_called()
 
     def test_pending_scope_preserves_database_and_returns_zero_loaded_pages(self):
-        with self.load_fixture([]), mock.patch.object(partial.subprocess, "run") as load:
+        with self.load_fixture([]), mock.patch.object(partial, "run_loader") as load:
             report = partial.verified_load(self.args)
         self.assertEqual(report["pages"], 0)
         self.assertFalse(report["campaign_complete"])
@@ -175,7 +176,7 @@ class PartialTest(unittest.TestCase):
         rows = [{"doc_id": "doc-a", "job_id": self.job}]
         with self.load_fixture(rows), \
                 mock.patch.object(partial.Path, "read_text", return_value="certificate-only-dsn"), \
-                mock.patch.object(partial.subprocess, "run") as load:
+                mock.patch.object(partial, "run_loader") as load:
             first = partial.verified_load(self.args)
             second = partial.verified_load(self.args)
         self.assertEqual(first, second)
@@ -186,6 +187,28 @@ class PartialTest(unittest.TestCase):
         self.assertIn("/opt/usnm-quality-feed/load.py", command)
         self.assertIn(str(self.args.snapshot_dir / "out/pages.parquet"), command)
         self.assertNotIn("delete", command)
+
+    def test_loader_timeout_kills_psql_like_child_after_parent_exits(self):
+        late = self.root / "late-commit"
+        ready = self.root / "child-ready"
+        child = (
+            "import signal,time;from pathlib import Path;"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+            f"Path({str(ready)!r}).touch();time.sleep(0.7);"
+            f"Path({str(late)!r}).write_text('orphan commit')"
+        )
+        parent = (
+            "import subprocess,sys,time;from pathlib import Path;"
+            f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
+            f"p=Path({str(ready)!r});"
+            "\nwhile not p.exists():time.sleep(0.01)\n"
+            "time.sleep(30)"
+        )
+        with self.assertRaises(subprocess.TimeoutExpired):
+            partial.run_loader([sys.executable, "-c", parent], timeout=0.3)
+        self.assertTrue(ready.exists())
+        time.sleep(0.8)
+        self.assertFalse(late.exists())
 
 
 if __name__ == "__main__":
