@@ -63,6 +63,21 @@ def assert_submitted(root):
         raise RuntimeError(f"Qwen submission incomplete: {len(uncertain)} uncertain, {len(pending)} without receipts")
 
 
+def assert_processed(root, sample):
+    for line in sample.read_text().splitlines():
+        doc = json.loads(line)["doc_id"]
+        if not re.fullmatch(r"[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", doc):
+            raise RuntimeError("Invalid source document identity")
+        unit = root / "units" / doc
+        if (unit / "qwen.json").exists() and (unit / "submitted").exists():
+            continue
+        if (unit / "no_crops").exists():
+            continue
+        if (unit / "too_large").exists() and (unit / "rejected-qwen.json").exists():
+            continue
+        raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
+
+
 def audit(root, project):
     receipt = root / "audit.json"
     verified = json.loads(receipt.read_text()) if receipt.exists() else {}
@@ -118,6 +133,7 @@ def main():
     ap.add_argument("--campaign")
     ap.add_argument("--engine-plan", type=Path)
     ap.add_argument("--models", type=Path)
+    ap.add_argument("--sample", type=Path, help="READY chunk; every source needs a terminal native disposition")
     isolated_stage = Path(__file__).with_name("usnm-boinc-stage")
     ap.add_argument("--stage-binary", default=str(isolated_stage) if isolated_stage.is_file() else "usnm-boinc")
     ap.add_argument("--max-pages", type=int, default=100)
@@ -168,6 +184,8 @@ def main():
                    check=True)
     assert_submitted(root)
     print(json.dumps(audit(root, a.project), sort_keys=True))
+    if a.sample:
+        assert_processed(root, a.sample)
 
 
 if __name__ == "__main__":

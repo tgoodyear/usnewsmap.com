@@ -92,6 +92,27 @@ class ArchiveTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
+    def test_bounded_staging_cannot_acknowledge_unattempted_chunk_sources(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample = root / "sample.jsonl"
+            sample.write_text(json.dumps({"doc_id": DOC}) + "\n")
+            unit = root / "units" / DOC
+            unit.mkdir(parents=True)
+            for marker in (None, "too_large", "submitted"):
+                if marker:
+                    (unit / marker).touch()
+                with self.assertRaisesRegex(RuntimeError, "retain READY"):
+                    submit.assert_processed(root, sample)
+                if marker:
+                    (unit / marker).unlink()
+            for files in (("too_large", "rejected-qwen.json"), ("submitted", "qwen.json"), ("no_crops",)):
+                for name in files:
+                    (unit / name).touch()
+                submit.assert_processed(root, sample)
+                for name in files:
+                    (unit / name).unlink()
+
     def test_isolated_staging_artifact_never_replaces_submit_binary(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

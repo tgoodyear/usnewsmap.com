@@ -152,7 +152,7 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
       'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-      --max-pages "$((n + 10))" --max-ready "$QWEN_MAX_READY"
+      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY"
   fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30

@@ -69,6 +69,7 @@ elif "python3" in args and "-" in args:
                 calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
                 submit = next(c for c in reversed(calls) if "/project/ops/qwen-feed/qwen_submit.py" in c)
                 self.assertEqual(submit[submit.index("--max-ready") + 1], expected)
+                self.assertEqual(submit[submit.index("--max-pages") + 1], "1")
 
     def test_qwen_watermark_rejects_nonpositive_noninteger_and_missing_values(self):
         for value in ("0", "-1", "1.5", "oops", "", None):
