@@ -10,6 +10,7 @@ import fcntl
 import json
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -49,10 +50,13 @@ def _tick(a):
                                           "/project/ops/qwen-feed/qwen_submit.py", "--inventory"]))
     pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b", "--nosuffix",
                                             "-o", "lv_size,data_percent", "pve/data"]))["report"][0]["lv"][0]
-    free = float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)
+    pool_free = float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)
+    producer_free = shutil.disk_usage(a.outbox).free
+    free = min(pool_free, producer_free)
     phase("inventory", fresh_pairs=inv["fresh_pairs"], unresolved_native=inv["unresolved_native"])
     if min(free, inv["free_bytes"]) < a.min_free_gb * 1024**3:
-        print(json.dumps({"status": "storage_backpressure", "pool_free_bytes": int(free)}))
+        print(json.dumps({"status": "storage_backpressure", "pool_free_bytes": int(pool_free),
+                          "producer_free_bytes": producer_free}))
         return
     camp_dir = a.outbox / a.campaign
     pending = list(camp_dir.glob("c*/READY"))

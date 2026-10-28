@@ -232,7 +232,7 @@ class SourceTest(unittest.TestCase):
             submit.assert_submitted(root)
 
     def test_storage_and_queue_backpressure_do_not_prepare_or_fetch_sources(self):
-        for pool_pct, ready in [(90, 0), (50, 1000)]:
+        for pool_pct, ready, producer_gb in [(90, 0, 100), (50, 1000, 100), (0, 0, 39)]:
             with self.subTest(pool_pct=pool_pct, ready=ready), tempfile.TemporaryDirectory() as folder:
                 a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
                                           server_host="boinc.example", server_ct=230, prep_ct=215,
@@ -242,6 +242,8 @@ class SourceTest(unittest.TestCase):
                        "documents": [], "free_bytes": 100 * 1024**3}
                 pool = {"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": str(pool_pct)}]}]}
                 with mock.patch.object(driver, "remote", side_effect=[json.dumps(inv), json.dumps(pool)]) as remote, \
+                        mock.patch.object(driver.shutil, "disk_usage",
+                                          return_value=types.SimpleNamespace(free=producer_gb * 1024**3)), \
                         mock.patch.object(driver, "command", side_effect=AssertionError("preparation started")):
                     driver.tick(a)
                 self.assertEqual(remote.call_count, 2)
