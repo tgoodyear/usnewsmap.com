@@ -178,6 +178,35 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             self.assertEqual(R.run(self.args)["status"], "current-window-still-eligible")
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_drained_window_advances_with_cumulative_budget_then_closes(self):
+        self.rows[:] = [self.input(number) for number in range(100, 113)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.args.max_admissions = 12
+        def tick():
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        first = tick()
+        self.assertEqual((first["status"], first["target"]), ("refilled-finite-window", [100, 109]))
+        self.assertEqual(tick()["status"], "current-window-still-eligible")
+        for row in self.rows[:10]:
+            for result, host in zip(row["results"], (9, 10)):
+                result.update(server_state=5, hostid=host, sent_time=1, received_time=2, outcome=1)
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        second = tick()
+        self.assertEqual((second["status"], second["target"], second["admitted_unique"]),
+                         ("refilled-finite-window", [110, 111], 10))
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual(state["admitted"], list(range(100, 112)))
+        for row in self.rows[10:12]:
+            for result, host in zip(row["results"], (9, 10)):
+                result.update(server_state=5, hostid=host, sent_time=1, received_time=2, outcome=1)
+        third = tick()
+        self.assertEqual(third["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+        self.assertTrue(R.fresh(self.rows[12]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_uncertain_publication_reconciles_exact_intent_without_double_admission(self):
         original_persist = R.persist
         def interrupt(path, value, **kw):
