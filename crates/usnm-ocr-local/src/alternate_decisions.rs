@@ -84,12 +84,14 @@ struct Comparison {
 struct Head {
     count: usize,
     id: String,
+    previous: Option<String>,
 }
 
 fn expected_head(records: &[Record]) -> Option<Head> {
     records.last().map(|r| Head {
         count: records.len(),
         id: r.id.clone(),
+        previous: r.decision.previous.clone(),
     })
 }
 
@@ -99,18 +101,27 @@ async fn committed_head(
 ) -> anyhow::Result<Option<Head>> {
     let prefix = format!("{}/commit", prefix(subject)?);
     let objects = curated.list_info(&prefix).await?;
-    ensure!(objects.len() <= 1, "foreign decision commit object");
-    let Some(object) = objects.first() else {
-        return Ok(None);
-    };
     ensure!(
-        object.path == format!("{prefix}/head.json"),
-        "foreign decision head"
+        objects.len() <= MAX_DECISIONS,
+        "decision commit bound exceeded"
     );
-    Ok(Some(
-        serde_json::from_slice(&read_retained(curated, object, 65536).await?)
-            .map_err(|_| anyhow::anyhow!("invalid decision commit JSON"))?,
-    ))
+    let mut previous: Option<Head> = None;
+    for (i, object) in objects.iter().enumerate() {
+        ensure!(
+            object.path == format!("{prefix}/{:06}.json", i + 1),
+            "decision commit gap"
+        );
+        let head: Head = serde_json::from_slice(&read_retained(curated, object, 65536).await?)
+            .map_err(|_| anyhow::anyhow!("invalid decision commit JSON"))?;
+        ensure!(
+            head.count == i + 1
+                && hash_ok(&head.id)
+                && head.previous.as_ref() == previous.as_ref().map(|p| &p.id),
+            "decision commit chain mismatch"
+        );
+        previous = Some(head);
+    }
+    Ok(previous)
 }
 
 async fn commit(
@@ -119,14 +130,28 @@ async fn commit(
     records: &[Record],
 ) -> anyhow::Result<()> {
     let head = expected_head(records).context("cannot commit empty decision history")?;
-    curated
-        .put(
-            &format!("{}/commit/head.json", prefix(subject)?),
-            serde_json::to_vec(&head)?,
-            "application/json",
-        )
-        .await?;
+    put_exact(
+        curated,
+        &format!("{}/commit/{:06}.json", prefix(subject)?, head.count),
+        &serde_json::to_vec(&head)?,
+        "application/json",
+    )
+    .await?;
     Ok(())
+}
+
+fn rollback_of(pending: &Record, decision: &Decision) -> bool {
+    let Action::Select { candidate, .. } = &pending.decision.action else {
+        return false;
+    };
+    decision.previous.as_ref() == Some(&pending.id)
+        && match &decision.action {
+            Action::RetainBaseline => true,
+            Action::Reject { candidate: target } | Action::Revoke { candidate: target } => {
+                target == candidate
+            }
+            Action::Select { .. } => false,
+        }
 }
 
 fn hash_ok(hash: &str) -> bool {
@@ -327,8 +352,8 @@ pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Resul
 }
 
 /// Append an explicit decision under the existing OCR lock. Its receipt is the
-/// written before the separate authoritative head, which commits the decision.
-/// An exact retry can finish an interrupted head update without a second event.
+/// written before separate immutable commit markers. Exact retry or an explicit
+/// rollback can recover an interrupted selection without trusting its payloads.
 pub async fn decide(
     state: &State,
     owner: &str,
@@ -349,23 +374,36 @@ pub async fn decide(
     let result: anyhow::Result<Record> = async {
         let (mut records, mut preview) = history(curated, &decision.subject).await?;
         let head = committed_head(curated, &decision.subject).await?;
-        if head != expected_head(&records) {
+        let committed = head.as_ref().map_or(0, |h| h.count);
+        ensure!(
+            committed <= records.len() && head == expected_head(&records[..committed]),
+            "decision history does not match committed head"
+        );
+        let pending = records.len() - committed;
+        if pending > 0 {
             ensure!(
-                !records.is_empty()
-                    && head == expected_head(&records[..records.len() - 1])
-                    && records.last().is_some_and(|r| {
-                        r.decision == *decision
-                            && (records.len() < MAX_DECISIONS || r.selected.is_none())
-                    }),
-                "decision history does not match committed head; recover only the exact pending decision"
+                pending <= 2 && (records.len() < MAX_DECISIONS || preview.selected.is_none()),
+                "invalid pending decision history"
             );
-            lease.check()?;
-            commit(curated, &decision.subject, &records).await?;
-            return read(curated, &decision.subject)
-                .await?
-                .context("recovered decision missing");
-        }
-        if let Some(prior) = records.last().filter(|r| r.decision == *decision) {
+            let latest = records.last().context("pending decision missing")?;
+            if latest.decision == *decision {
+                ensure!(
+                    pending == 1 || rollback_of(&records[records.len() - 2], decision),
+                    "pending recovery is not a selection rollback"
+                );
+                for count in committed + 1..=records.len() {
+                    lease.check()?;
+                    commit(curated, &decision.subject, &records[..count]).await?;
+                }
+                return read(curated, &decision.subject)
+                    .await?
+                    .context("recovered decision missing");
+            }
+            ensure!(
+                pending == 1 && rollback_of(latest, decision),
+                "recover the exact pending decision or explicitly roll it back"
+            );
+        } else if let Some(prior) = records.last().filter(|r| r.decision == *decision) {
             read(curated, &decision.subject).await?;
             return Ok(prior.clone());
         }
@@ -412,8 +450,10 @@ pub async fn decide(
         )
         .await?;
         records.push(record.clone());
-        lease.check()?;
-        commit(curated, &decision.subject, &records).await?;
+        for count in committed + 1..=records.len() {
+            lease.check()?;
+            commit(curated, &decision.subject, &records[..count]).await?;
+        }
         tracing::info!(
             doc_id = %decision.subject.doc_id,
             decision = %record.id,
@@ -427,4 +467,45 @@ pub async fn decide(
     let record = result?;
     unlocked?;
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use usnm_state::docs::MemoryDocs;
+
+    #[tokio::test]
+    async fn stale_commit_cannot_regress_newer_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(temp.path().to_str().unwrap()).unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        let mut decision = Decision {
+            subject: Subject {
+                doc_id: "sn83045462_1890-05-03_ed-1_seq-7".into(),
+                source_image_sha256: "0".repeat(64),
+                baseline_sha256: "1".repeat(64),
+            },
+            previous: None,
+            action: Action::RetainBaseline,
+            reason: "Synthetic baseline fixture".into(),
+            evidence: "Synthetic evidence".into(),
+        };
+        let mut records = Vec::new();
+        for _ in 0..3 {
+            let record = decide(&state, "decide", store.as_ref(), &decision, None)
+                .await
+                .unwrap();
+            decision.previous = Some(record.id.clone());
+            records.push(record);
+        }
+        // A writer resumes its old commit after another owner advanced twice.
+        commit(store.as_ref(), &decision.subject, &records[..1])
+            .await
+            .unwrap();
+        assert_eq!(
+            read(store.as_ref(), &decision.subject).await.unwrap(),
+            records.last().cloned()
+        );
+    }
 }

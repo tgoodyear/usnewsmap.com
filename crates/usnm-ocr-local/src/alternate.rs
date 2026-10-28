@@ -1149,12 +1149,61 @@ mod tests {
             decisions::read(store.as_ref(), &subject).await.unwrap(),
             Some(restored.clone())
         );
+        let commit_prefix = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/commit",
+            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
+        );
+        let commits = store.list_info(&commit_prefix).await.unwrap();
+        let last_commit = commits.last().unwrap();
+        assert!(store
+            .delete_if_match(&last_commit.path, &last_commit.etag)
+            .await
+            .unwrap());
+        let source_path = format!(
+            "{ROOT}/alternates/{}/{}/source.txt",
+            subject.doc_id, a.candidate
+        );
+        store
+            .put(
+                &source_path,
+                b"damaged pending selection".to_vec(),
+                "text/plain",
+            )
+            .await
+            .unwrap();
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a)
+        )
+        .await
+        .is_err());
         request.previous = Some(restored.id);
         request.action = Action::RetainBaseline;
         let baseline = decisions::decide(&state, "decide", store.as_ref(), &request, None)
             .await
             .unwrap();
         assert_eq!(baseline.selected, None);
+        let commits = store.list_info(&commit_prefix).await.unwrap();
+        for object in commits.iter().rev().take(2) {
+            assert!(store
+                .delete_if_match(&object.path, &object.etag)
+                .await
+                .unwrap());
+        }
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        assert_eq!(
+            decisions::decide(&state, "decide", store.as_ref(), &request, None)
+                .await
+                .unwrap(),
+            baseline
+        );
+        store
+            .put(&source_path, f.text.clone(), "text/plain")
+            .await
+            .unwrap();
         assert_eq!(
             decisions::read(store.as_ref(), &subject).await.unwrap(),
             Some(baseline)
@@ -1191,29 +1240,12 @@ mod tests {
             .put_new(&last.path, last_bytes, "application/json")
             .await
             .unwrap();
-        let predecessor: decisions::Record = serde_json::from_slice(
-            &store
-                .get(&objects[objects.len() - 2].path)
-                .await
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-        let head_path = format!(
-            "{ROOT}/alternate-decisions/{}/{}/{}/commit/head.json",
-            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
-        );
-        store
-            .put(
-                &head_path,
-                serde_json::to_vec(&serde_json::json!({
-                    "count": objects.len()-1, "id": predecessor.id
-                }))
-                .unwrap(),
-                "application/json",
-            )
+        let commits = store.list_info(&commit_prefix).await.unwrap();
+        let last_commit = commits.last().unwrap();
+        assert!(store
+            .delete_if_match(&last_commit.path, &last_commit.etag)
             .await
-            .unwrap();
+            .unwrap());
         assert!(decisions::read(store.as_ref(), &subject).await.is_err());
         let mut wrong_recovery = request.clone();
         wrong_recovery.reason = "not the pending decision".into();

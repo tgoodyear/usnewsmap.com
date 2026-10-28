@@ -34,16 +34,22 @@ contiguous records under:
 ocr-local/alternate-decisions/<doc_id>/<scan hash>/<baseline hash>/
   history/000000.json
   evidence/<comparison hash>.json
-  commit/head.json
+  commit/000001.json
 ```
 
 Comparison evidence and the create-only history record are written first.
-The separately stored, atomically replaced `commit/head.json` binds the expected
-history count and final hash. A missing/truncated history, including an empty
+Separate create-only commit markers bind each expected history count, final hash
+and predecessor. The highest contiguous marker is authoritative; there is no
+overwritable head for an expired/stale lease holder to regress. A missing/truncated history, including an empty
 listing under a nonempty committed head, fails closed. An interrupted append
 leaves one uncommitted record: preview refuses it; resubmitting that exact
-decision finishes the head update. A different request cannot discard or adopt
-it. Missing commit metadata alongside existing records also fails preview.
+decision finishes the commit markers. Alternatively, an explicit `retain-baseline`
+or rejection/revocation of that pending candidate, naming its exact decision hash
+as `previous`, can append a rollback without trusting its damaged payloads.
+Both history records are retained before either missing marker is committed;
+an interrupted rollback is recoverable by exact retry even before the first
+marker. Other requests cannot discard or adopt pending history. Missing commit
+metadata alongside existing records also fails preview.
 The final history slot must return to baseline, so the bound cannot strand an
 active selection without a rollback slot.
 
