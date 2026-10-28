@@ -91,6 +91,7 @@ elif "python3" in args and "-" in args:
 
     def test_native_shipping_does_not_wait_for_unrelated_global_replicas(self):
         self.env["SHIP_TEST_READY"] = "5000"
+        self.stub("curl", "#!/bin/sh\nexit 1\n")
         result = self.run_ship([])
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]

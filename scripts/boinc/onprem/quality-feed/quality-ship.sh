@@ -100,12 +100,15 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   [ -f "$dir/READY" ] || continue
   [ "$shipped" -lt "$MAX_CHUNKS" ] || break
   chunk=$(basename "$dir")
-  unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
-    sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
-  [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
-  if [ -z "$QWEN_PLAN" ] && [ "$unsent" -gt "$MAX_UNSENT" ]; then
-    log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
-    break
+  unsent=native-fresh-pair-gated
+  if [ -z "$QWEN_PLAN" ]; then
+    unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
+      sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
+    [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
+    if [ "$unsent" -gt "$MAX_UNSENT" ]; then
+      log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
+      break
+    fi
   fi
   free=$(in_ct df --output=avail -B1G "$SHARE" "$SHARE/quality" "$SHARE/usnmocr/download" |
     tail -n +2 | sort -n | head -1 | tr -d ' G')

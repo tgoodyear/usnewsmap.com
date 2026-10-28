@@ -45,7 +45,8 @@ $unresolved = $db->count("workunit", $native);
 $fresh = $db->count("workunit", $native." AND min_quorum=2 AND target_nresults=2"
     ." AND (SELECT COUNT(*) FROM result r WHERE r.workunitid=workunit.id)=2"
     ." AND (SELECT COUNT(*) FROM result r WHERE r.workunitid=workunit.id"
-    ." AND r.server_state=2 AND r.hostid=0 AND r.outcome=0 AND r.validate_state=0)=2"
+    ." AND r.server_state=2 AND r.hostid=0 AND r.outcome=0 AND r.validate_state=0"
+    ." AND r.sent_time=0 AND r.received_time=0)=2"
     ." AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.workunitid=workunit.id)");
 echo json_encode(["ready"=>count($ready), "dispatched"=>count($running),
     "fresh_pairs"=>intval($fresh), "unresolved_native"=>intval($unresolved)]);
