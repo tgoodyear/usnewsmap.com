@@ -7,6 +7,11 @@ use axum::extract::OriginalUri;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use resvg::{tiny_skia, usvg};
+use sha2::{Digest, Sha256};
+
+mod cache;
+use crate::AppState;
+pub(crate) use cache::Service;
 
 const SITE: &str = "https://usnewsmap.com";
 const IMAGE: &str = "/share-image.png";
@@ -23,15 +28,7 @@ static FONTS: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
     Arc::new(fonts)
 });
 
-static IMAGES: LazyLock<moka::future::Cache<String, Vec<u8>>> = LazyLock::new(|| {
-    moka::future::Cache::builder()
-        .max_capacity(128)
-        .time_to_live(std::time::Duration::from_secs(3600))
-        .build()
-});
-static RENDERS: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
-
+#[derive(Clone)]
 struct Card {
     title: String,
     label: &'static str,
@@ -330,19 +327,27 @@ fn png(card: &Card) -> Result<Vec<u8>, String> {
     pixels.encode_png().map_err(|e| e.to_string())
 }
 
+fn script() -> std::path::PathBuf {
+    std::env::var_os("USNM_SHARE_SCRIPT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../web/scripts/render-share.mjs")
+        })
+}
+
 async fn screenshot(card: &Card) -> Result<Vec<u8>, String> {
     let bind = std::env::var("USNM_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
     let port = bind.rsplit_once(':').ok_or("USNM_BIND has no port")?.1;
     let port: u16 = port.parse().map_err(|_| "USNM_BIND has an invalid port")?;
     // Only our own server is navigated, never an origin supplied by a visitor.
     let url = format!("http://127.0.0.1:{port}{}", &card.url[SITE.len()..]);
-    let script = std::env::var_os("USNM_SHARE_SCRIPT").unwrap_or_else(|| {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../web/scripts/render-share.mjs")
-            .into_os_string()
-    });
     let mut command = tokio::process::Command::new("node");
-    command.arg(script).arg("--url").arg(url).kill_on_drop(true);
+    command
+        .arg(script())
+        .arg("--url")
+        .arg(url)
+        .kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(40), command.output())
         .await
         .map_err(|_| "share screenshot timed out")?
@@ -357,7 +362,7 @@ async fn screenshot(card: &Card) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
-pub(super) async fn image(OriginalUri(uri): OriginalUri) -> Response {
+pub(super) async fn image(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -> Response {
     let query = uri.query().unwrap_or_default();
     if query.len() > 8192 {
         return (StatusCode::BAD_REQUEST, "share image query is too long").into_response();
@@ -373,39 +378,215 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri) -> Response {
         )
             .into_response();
     };
-    let key = card.image.clone();
-    // Finish and cache a render even if the crawler stops waiting. The permit
-    // bounds both browsers and static-card rasterization until they finish.
-    let render = tokio::spawn(async move {
-        IMAGES
-            .try_get_with(key, async move {
-                let _permit = RENDERS
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| RenderError::Busy)?;
-                if card.url.starts_with(&format!("{SITE}/?"))
-                    || card.url.starts_with(&format!("{SITE}/search/"))
-                {
-                    screenshot(&card).await.map_err(RenderError::Failed)
-                } else {
+    // Continue warming if the crawler stops waiting, as before.
+    let render = tokio::spawn(async move { cached(&state, card, false).await });
+    render_response(render).await
+}
+
+fn digest(bytes: impl AsRef<[u8]>) -> String {
+    Sha256::digest(bytes.as_ref())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+async fn identity(state: &AppState) -> Result<String, RenderError> {
+    let frontend = state
+        .previews
+        .frontend
+        .get_or_try_init(|| async {
+            let dir =
+                state.config.site_dir.as_ref().ok_or_else(|| {
+                    RenderError::Failed("share site is not configured".to_owned())
+                })?;
+            frontend_identity(dir, &script()).await
+        })
+        .await?;
+    let snap = state.snapshot.load();
+    let current = serde_json::to_vec(&snap.refdata.current)
+        .map_err(|_| RenderError::Failed("share snapshot cannot be serialized".to_owned()))?;
+    Ok(digest(format!(
+        "{frontend}\0{}\0{}\0{}\0{:?}",
+        digest(current),
+        snap.refdata.searches_american_stories(),
+        state.config.congress_search,
+        state.config.page_language_filter
+    )))
+}
+
+async fn frontend_identity(
+    dir: &std::path::Path,
+    script: &std::path::Path,
+) -> Result<String, RenderError> {
+    let index = tokio::fs::read(dir.join("index.html"))
+        .await
+        .map_err(|_| RenderError::Failed("share site index cannot be read".to_owned()))?;
+    let renderer = tokio::fs::read(script)
+        .await
+        .map_err(|_| RenderError::Failed("share renderer script cannot be read".to_owned()))?;
+    Ok(digest([index, renderer].concat()))
+}
+
+/// Default overview camera parameters are added to the URL after MapLibre
+/// loads. They describe the same screenshot as a fresh example link.
+fn overview_key(image: &str) -> String {
+    let query = image.split_once('?').map_or("", |(_, query)| query);
+    let mut params: Vec<_> = form_urlencoded::parse(query.as_bytes())
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let default_zoom = params
+        .iter()
+        .find(|(k, _)| k == "z")
+        .is_none_or(|(_, v)| v == "3.30");
+    let default_center = params
+        .iter()
+        .find(|(k, _)| k == "c")
+        .is_none_or(|(_, v)| v == "-96.000,38.500");
+    if default_zoom && default_center {
+        params.retain(|(k, _)| k != "z" && k != "c");
+    }
+    params.retain(|(k, v)| !(k == "mode" && v == "phrase"));
+    form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(params)
+        .finish()
+}
+
+static EXAMPLE_CARDS: LazyLock<Vec<(String, Card)>> = LazyLock::new(|| {
+    crate::prewarm::examples()
+        .iter()
+        .filter_map(|example| {
+            let mut query = form_urlencoded::Serializer::new(String::new());
+            for (key, value) in &example.view {
+                let value = match value {
+                    serde_json::Value::String(value) => value.clone(),
+                    serde_json::Value::Array(values) => values
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    _ => {
+                        tracing::error!(example = example.id, "unsupported example preview view");
+                        return None;
+                    }
+                };
+                query.append_pair(key, &value);
+            }
+            let phrase = example.view.get("q")?.as_str()?;
+            let path = super::search_path_in_mode(phrase, true);
+            Card::new(&path, &query.finish()).map(|card| (example.id.clone(), card))
+        })
+        .collect()
+});
+
+async fn cached(
+    state: &AppState,
+    card: Card,
+    background: bool,
+) -> Result<Vec<u8>, Arc<RenderError>> {
+    let browser = card.url.starts_with(&format!("{SITE}/?"))
+        || card.url.starts_with(&format!("{SITE}/search/"));
+    if !browser {
+        return state
+            .previews
+            .get(
+                format!("static/{}", digest(&card.image)),
+                None,
+                background,
+                async {
                     tokio::task::spawn_blocking(move || png(&card))
                         .await
                         .map_err(|_| RenderError::Failed("share card task failed".to_owned()))?
                         .map_err(RenderError::Failed)
+                },
+            )
+            .await;
+    }
+    let identity = identity(state).await.map_err(Arc::new)?;
+    let normalized = overview_key(&card.image);
+    let key = format!("previews/{identity}/{}.png", digest(&normalized));
+    let persistent = EXAMPLE_CARDS
+        .iter()
+        .any(|(_, example)| overview_key(&example.image) == normalized)
+        .then(|| state.responses.clone())
+        .flatten()
+        .map(|store| (store, key.clone()));
+    state
+        .previews
+        .get(key, persistent, background, async {
+            let body = screenshot(&card).await.map_err(RenderError::Failed)?;
+            if self::identity(state).await? != identity {
+                return Err(RenderError::Failed(
+                    "share snapshot changed during capture".to_owned(),
+                ));
+            }
+            Ok(body)
+        })
+        .await
+}
+
+fn can_warm(state: &AppState) -> bool {
+    !state.warming.load(std::sync::atomic::Ordering::Acquire)
+        && state.warm_ups.turn.try_lock().is_ok()
+        && state.flights.visitor_searches() == 0
+        && state.previews.idle()
+}
+
+pub(crate) fn spawn(state: Arc<AppState>) {
+    if state.config.site_dir.is_none() {
+        return;
+    }
+    if state.responses.is_none() {
+        tracing::warn!("example screenshot warm-up disabled: no persistent response store");
+        return;
+    }
+    tokio::spawn(async move {
+        let mut cursor = 0;
+        let mut previous = String::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            if !can_warm(&state) {
+                continue;
+            }
+            let current = match identity(&state).await {
+                Ok(current) => current,
+                Err(error) => {
+                    tracing::warn!(%error, "example screenshot warm-up identity failed");
+                    continue;
                 }
-            })
-            .await
+            };
+            if previous != current {
+                previous = current;
+                cursor = 0;
+            }
+            let Some((id, card)) = EXAMPLE_CARDS.get(cursor) else {
+                cursor = 0;
+                continue;
+            };
+            match cached(&state, card.clone(), true).await {
+                Ok(_) => tracing::info!(example = id, "example screenshot warmed"),
+                Err(error) => {
+                    tracing::warn!(example = id, %error, "example screenshot warm-up deferred")
+                }
+            }
+            cursor += 1;
+        }
     });
-    render_response(render).await
 }
 
 async fn render_response(
     render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
 ) -> Response {
     // Dropping the timed-out JoinHandle detaches, rather than aborts, the render.
-    // Only successful renders enter IMAGES; a later request can get the screenshot.
+    // Only successful renders enter the cache; a later request can get the screenshot.
     match tokio::time::timeout(RESPONSE_TIMEOUT, render).await {
-        Ok(Ok(Ok(body))) => ([(header::CONTENT_TYPE, "image/png")], body).into_response(),
+        Ok(Ok(Ok(body))) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "public, max-age=86400"),
+            ],
+            body,
+        )
+            .into_response(),
         result => {
             tracing::warn!(?result, "serving static share image fallback");
             (
@@ -431,6 +612,80 @@ enum RenderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static IMAGES: LazyLock<moka::future::Cache<String, Vec<u8>>> =
+        LazyLock::new(|| moka::future::Cache::new(1024));
+
+    #[tokio::test]
+    async fn changing_the_selected_renderer_invalidates_persisted_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let renderer = dir.path().join("renderer.mjs");
+        tokio::fs::write(dir.path().join("index.html"), b"same frontend")
+            .await
+            .unwrap();
+        tokio::fs::write(&renderer, b"renderer version one")
+            .await
+            .unwrap();
+        let before = frontend_identity(dir.path(), &renderer).await.unwrap();
+        tokio::fs::write(&renderer, b"renderer version two")
+            .await
+            .unwrap();
+        assert_ne!(
+            before,
+            frontend_identity(dir.path(), &renderer).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_warm_up_blocks_previews_even_after_readiness_is_released() {
+        let state = state().await;
+        let turn = state.warm_ups.claim().turn().await;
+        assert!(!state.warming.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!can_warm(&state));
+        drop(turn);
+        assert!(can_warm(&state));
+    }
+
+    #[test]
+    fn every_example_has_an_exact_preview_and_only_default_camera_aliases_share_it() {
+        assert_eq!(EXAMPLE_CARDS.len(), crate::prewarm::examples().len());
+        for (_, card) in EXAMPLE_CARDS.iter() {
+            let key = overview_key(&card.image);
+            assert_eq!(
+                key,
+                overview_key(&format!("{}&z=3.30&c=-96.000%2C38.500", card.image))
+            );
+            assert_ne!(
+                key,
+                overview_key(&format!("{}&z=4.30&c=-96.000%2C38.500", card.image))
+            );
+            assert_ne!(key, overview_key(&format!("{}&state=IL", card.image)));
+        }
+        let example = EXAMPLE_CARDS.iter().find(|(id, _)| id == "whigs").unwrap();
+        assert_eq!(
+            overview_key(&example.1.image),
+            overview_key(
+                &Card::new(
+                    "/search/whigs",
+                    "from=1834-01-01&to=1856-12-31&bucket=month"
+                )
+                .unwrap()
+                .image
+            )
+        );
+        let abolitionists = EXAMPLE_CARDS
+            .iter()
+            .find(|(id, _)| id == "abolitionists")
+            .unwrap();
+        assert_ne!(
+            overview_key(&abolitionists.1.image),
+            overview_key(
+                &Card::new("/search/abolitionists", "from=1830-01-01&to=1860-12-31")
+                    .unwrap()
+                    .image
+            )
+        );
+    }
 
     #[tokio::test]
     async fn slow_render_falls_back_and_still_populates_the_screenshot_cache() {
@@ -510,25 +765,23 @@ mod tests {
 
     #[tokio::test]
     async fn identical_cache_misses_share_one_render_slot() {
-        use http_body_util::BodyExt;
-        let _reserved = RENDERS.clone().acquire_owned().await.unwrap();
-        let uri: Uri = "/share-image.png?page=%2Fdatasets".parse().unwrap();
-        IMAGES
-            .invalidate(&Card::new("/datasets", "").unwrap().image)
-            .await;
+        let service = Service::default();
+        let card = Card::new("/datasets", "").unwrap();
+        let key = card.image.clone();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let render = || async {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            png(&card).map_err(RenderError::Failed)
+        };
         let (a, b, c) = tokio::join!(
-            image(OriginalUri(uri.clone())),
-            image(OriginalUri(uri.clone())),
-            image(OriginalUri(uri)),
+            service.get(key.clone(), None, false, render()),
+            service.get(key.clone(), None, false, render()),
+            service.get(key, None, false, render()),
         );
-        assert_eq!(a.status(), StatusCode::OK);
-        assert_eq!(b.status(), StatusCode::OK);
-        assert_eq!(c.status(), StatusCode::OK);
-        let a = a.into_body().collect().await.unwrap().to_bytes();
-        let b = b.into_body().collect().await.unwrap().to_bytes();
-        let c = c.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(a, b);
-        assert_eq!(a, c);
+        assert_eq!(a.unwrap(), b.unwrap());
+        assert_eq!(c.unwrap(), png(&card).unwrap());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -612,12 +865,34 @@ mod tests {
         assert_eq!(lines(&"x".repeat(256), 24, 3).len(), 3);
     }
 
+    async fn state() -> Arc<AppState> {
+        let fixtures =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data");
+        let refdata = crate::refdata::RefData::load(&usnm_store::LocalStore::new(fixtures))
+            .await
+            .unwrap();
+        let mut config = crate::config::Config::from_lookup(|_| None).unwrap();
+        config.site_dir =
+            Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web"));
+        Arc::new(AppState::new(
+            config,
+            Arc::new(usnm_search::memory::MemoryBackend::new()),
+            refdata,
+        ))
+    }
+
     #[tokio::test]
     async fn static_card_endpoint_serves_png_and_rejects_invalid_views() {
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
-        let app = axum::Router::new().route("/share-image.png", axum::routing::get(image));
+        let mut state = state().await;
+        Arc::get_mut(&mut state).unwrap().config.site_dir = None;
+        assert!(identity(&state).await.is_err());
+        let app = axum::Router::new().route(
+            "/share-image.png",
+            axum::routing::get(move |uri| image(uri, state.clone())),
+        );
         let request = |method, uri: &str| {
             axum::http::Request::builder()
                 .method(method)
@@ -632,8 +907,15 @@ mod tests {
             .unwrap();
         assert_eq!(image.status(), StatusCode::OK);
         assert_eq!(image.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            image.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
         let body = image.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            body.as_ref(),
+            png(&Card::new("/datasets", "").unwrap()).unwrap()
+        );
         for uri in [
             "/share-image.png",
             "/share-image.png?page=%2Funknown&q=gold",

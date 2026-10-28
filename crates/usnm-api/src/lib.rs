@@ -241,6 +241,7 @@ pub struct AppState {
     /// `/v1/openapi.json`'s body, built on its first request.
     pub(crate) openapi: std::sync::OnceLock<Arc<Vec<u8>>>,
     pub(crate) sitemap: site::sitemap::Service,
+    pub(crate) previews: site::social::Service,
 }
 
 impl AppState {
@@ -286,6 +287,7 @@ impl AppState {
             ocr_requests: None,
             openapi: std::sync::OnceLock::new(),
             sitemap: site::sitemap::Service::default(),
+            previews: site::social::Service::default(),
         }
     }
 
@@ -619,6 +621,7 @@ pub fn spawn_searcher_warm_up(state: Arc<AppState>) -> Option<tokio::task::JoinH
 /// prune idle rate-limit buckets.
 pub fn spawn_background(state: Arc<AppState>) {
     site::sitemap::spawn(state.clone());
+    site::social::spawn(state.clone());
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(state.config.refresh_interval);
         tick.tick().await;

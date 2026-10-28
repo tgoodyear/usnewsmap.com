@@ -36,7 +36,7 @@ use crate::error::ApiError;
 use crate::AppState;
 
 pub(crate) mod sitemap;
-mod social;
+pub(crate) mod social;
 
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
@@ -89,6 +89,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     // suffix) can't name one of ours, and `ServeDir` answers the filesystem's
     // "file name too long" with a 500, so such paths skip it and are answered
     // like any other path with no file.
+    let sharing = state.clone();
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
         let state = state.clone();
@@ -126,7 +127,10 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         }
     };
     Router::new()
-        .route("/share-image.png", axum::routing::get(social::image))
+        .route(
+            "/share-image.png",
+            axum::routing::get(move |uri| social::image(uri, sharing.clone())),
+        )
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
         .layer(middleware::from_fn(cache_control))
