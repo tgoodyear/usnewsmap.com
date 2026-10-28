@@ -201,9 +201,15 @@ def scoped_collect(args, project=Path("/project")):
         "--out-dir", str(out), "--cache", str(scope / "parts"), "--max-dirty-units", "1",
     ]
     started = time.time()
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
-    (out.parent / "collector.log").write_text(result.stdout + result.stderr)
-    result.check_returncode()
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        (out.parent / "collector.log").write_text(result.stdout + result.stderr)
+        result.check_returncode()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        if frontier:
+            # A poison canonical result must not pin either lane. This is not a load ack.
+            atomic_json(frontier_path, frontier_state)
+        raise
     if frontier:
         # Reuse the canonical dependency key, not mtimes or a guessed completion filename.
         current = completion_inventory(args, project, base, selected)

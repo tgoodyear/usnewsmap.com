@@ -321,6 +321,43 @@ class PartialTest(unittest.TestCase):
                 partial.scoped_collect(self.args, self.root)
         self.assertEqual(frontier_path.read_bytes(), previous)
 
+    def test_collector_failure_advances_only_scheduler_and_cannot_starve_other_units(self):
+        self.args.completion_frontier = True
+        inventory = {
+            "a-poison": {"status": "canonical-present", "fingerprint": "a" * 64},
+            "b-ready": {"status": "canonical-present", "fingerprint": "b" * 64},
+            "c-pending": {"status": "pending", "fingerprint": None},
+        }
+        for name in inventory:
+            unit = self.root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        frontier_path = self.root / "ops/quality-results/scoped/test/frontier.json"
+        failures = [
+            subprocess.CompletedProcess(["collector"], 1, stdout="", stderr="invalid canonical"),
+            subprocess.TimeoutExpired(["collector"], 120),
+        ]
+        with mock.patch.object(partial, "completion_inventory", return_value=inventory):
+            for index in range(12):
+                self.args.snapshot = f"{index:032x}"
+                failure = failures[index % 2]
+                with mock.patch.object(partial.subprocess, "run", side_effect=[failure]):
+                    with self.assertRaises((subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+                        partial.scoped_collect(self.args, self.root)
+                state = json.loads(frontier_path.read_bytes())
+                self.assertEqual(state["loaded"], {})
+                self.assertEqual(state["turns"], (index + 1) % 4)
+                if index == 1:
+                    self.assertEqual(state["priority_after"], "b-ready")
+            self.assertEqual(state["fair_after"], "c-pending")
+        # A failed inventory is still fail-closed, without advancing either lane.
+        previous = frontier_path.read_bytes()
+        with mock.patch.object(partial, "completion_inventory", side_effect=ValueError("unknown")):
+            with self.assertRaisesRegex(ValueError, "unknown"):
+                partial.scoped_collect(self.args, self.root)
+        self.assertEqual(frontier_path.read_bytes(), previous)
+
     def load_fixture(self, rows):
         root = self.args.snapshot_dir
         (root / "out").mkdir(parents=True)

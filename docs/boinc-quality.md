@@ -557,6 +557,11 @@ no LoC request:
    host cursor carry `frontier_ack`, applied idempotently next admission. A crash
    before acknowledgement repeats safe upserts. Remote lane progress alone never
    marks a scope loaded; zero-row visits remain pending/failed, not success.
+   Collector validation failures and collector timeouts persist scheduling-only
+   progress before failing the pass, so a poison canonical result cannot pin the
+   priority lane or suppress fair revisits. Its fingerprint remains unacknowledged
+   and is retried in later cycles. Inventory and selected-dependency recheck errors
+   still abort without advancing either lane.
    No prior cursor, DB count, or output timestamp proves an exact dependency key
    was loaded: the first opt-in conservatively re-verifies canonical-present units
    once. Do not seed acknowledgements from guessed historical coverage.
