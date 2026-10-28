@@ -1,0 +1,192 @@
+"""Partial publication: current inputs, explicit coverage, fail-closed loads and replay."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location("quality_results_partial", HERE / "quality_results_partial.py")
+partial = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(partial)
+
+
+class PartialTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(dir=HERE)
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.snapshot = "a" * 32
+        self.campaign = "test"
+        self.job = "b" * 64
+        self.args = types.SimpleNamespace(
+            campaign=self.campaign, snapshot=self.snapshot, after="", qwen_campaign=None,
+            collector=str(self.root / "collector"), server_ct=230, ctid=215,
+            server_host="server.example", state_dir=self.root / "state",
+            engine_image="sha256:" + "c" * 64, snapshot_dir=self.root / "snapshot",
+        )
+        self.receipt = {
+            "schema": 1, "kind": "verified-quality-unit-partial",
+            "campaign": self.campaign, "snapshot": self.snapshot, "campaign_complete": False,
+            "coverage": "selected-unit-only-at-collection",
+            "submitted_units_observed": 2, "unvisited_units": 1,
+            "selected_unit": "bundle-a", "selected_job": self.job,
+            "selected_doc_ids": ["doc-a"], "collector_sha256": "d" * 64,
+            "files": {name: "e" * 64 for name in partial.FILES},
+            "snapshot_dir": "/project/ops/quality-results/scoped/test/"
+                            + hashlib.sha256(b"bundle-a").hexdigest()
+                            + "/snapshots/" + self.snapshot,
+        }
+
+    def responses(self):
+        loaded = {"snapshot": self.snapshot, "campaign": self.campaign,
+                  "campaign_complete": False, "selected_unit": "bundle-a", "pages": 1, "reader_rows": 1}
+        return [
+            types.SimpleNamespace(stdout=json.dumps(self.receipt).encode()),
+            None, types.SimpleNamespace(stdout=b"archive"), None,
+            types.SimpleNamespace(stdout=json.dumps(loaded).encode()),
+        ]
+
+    def test_scoped_collection_rechecks_real_dependencies_and_never_uses_old_snapshot(self):
+        root = self.root / "project"
+        units = root / "quality/test/units"
+        for name in ["bundle-a", "bundle-b"]:
+            unit = units / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        canonical = root / "usnmocr/results/8/real-canonical"
+        canonical.parent.mkdir(parents=True)
+        self.args.qwen_campaign = self.campaign
+        self.args.collector = str(self.root / "collector")
+        Path(self.args.collector).write_text(
+            "#!" + sys.executable + "\n"
+            "from pathlib import Path\nimport sys\n"
+            "out=Path(sys.argv[sys.argv.index('--out-dir')+1]);out.mkdir(exist_ok=True)\n"
+            f"source=Path({str(canonical)!r})\n"
+            "data=source.read_bytes() if source.exists() else b'pending'\n"
+            "for name in ['pages.parquet','crops.parquet','summary.md']:\n"
+            " (out/name).write_bytes(data)\n"
+        )
+        Path(self.args.collector).chmod(0o700)
+        first = partial.scoped_collect(self.args, root)
+        self.assertFalse(first["campaign_complete"])
+        self.assertEqual((first["submitted_units_observed"], first["unvisited_units"]), (2, 1))
+        self.assertFalse((root / "quality/test/out").exists())
+        old_snapshot = Path(first["snapshot_dir"]) / "out/pages.parquet"
+        self.assertEqual(old_snapshot.read_bytes(), b"pending")
+        canonical.write_bytes(b"actual late canonical")
+        self.args.snapshot = "f" * 32
+        late = partial.scoped_collect(self.args, root)
+        self.assertNotEqual(first["files"], late["files"])
+        self.assertEqual(old_snapshot.read_bytes(), b"pending")
+        canonical.write_bytes(b"changed canonical")
+        self.args.snapshot = "e" * 32
+        changed = partial.scoped_collect(self.args, root)
+        self.assertNotEqual(late["files"], changed["files"])
+        self.args.snapshot = "d" * 32
+        repeated = partial.scoped_collect(self.args, root)
+        self.assertEqual(changed["files"], repeated["files"])
+
+    def test_failed_phase_or_replayed_commit_never_advances_cursor(self):
+        fixed = mock.patch.object(partial.uuid, "uuid4",
+                                  return_value=types.SimpleNamespace(hex=self.snapshot))
+        with fixed:
+            for phase in range(5):
+                responses = self.responses()
+                responses[phase] = subprocess.CalledProcessError(1, ["phase"])
+                with self.subTest(phase=phase), mock.patch.object(
+                        partial.subprocess, "run", side_effect=responses) as run:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        partial.host_pass(self.args)
+                    self.assertEqual(run.call_count, phase + 1)
+                    self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+            actual_atomic = partial.atomic_json
+
+            def lost_cursor(path, value):
+                if path.name == "cursor.json":
+                    raise OSError("crash after successful database upsert")
+                actual_atomic(path, value)
+
+            with mock.patch.object(partial.subprocess, "run", side_effect=self.responses()), \
+                    mock.patch.object(partial, "atomic_json", side_effect=lost_cursor):
+                with self.assertRaises(OSError):
+                    partial.host_pass(self.args)
+            self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+            with mock.patch.object(partial.subprocess, "run", side_effect=self.responses()) as run:
+                report = partial.host_pass(self.args)
+            self.assertFalse(report["campaign_complete"])
+            state = json.loads((self.args.state_dir / "test/cursor.json").read_bytes())
+            self.assertEqual(state["after"], "bundle-a")
+            self.assertIn("flock -n", run.call_args_list[0].args[0][-1])
+            self.assertIn("180s", run.call_args_list[0].args[0][-1])
+
+    def test_coverage_cannot_claim_completeness_or_cross_snapshot(self):
+        for key, value in [("campaign_complete", True), ("snapshot", "f" * 32),
+                           ("selected_unit", "../wrong"), ("selected_job", "old"),
+                           ("snapshot_dir", "/project/quality/test/out"), ("unvisited_units", 0)]:
+            with self.subTest(key=key):
+                receipt = {**self.receipt, key: value}
+                with self.assertRaises(ValueError):
+                    partial.validate_receipt(receipt, self.campaign, self.snapshot)
+        self.assertEqual(partial.select_unit(["c", "a", "b"], "b"), "c")
+        self.assertEqual(partial.select_unit(["c", "a", "b"], "c"), "a")
+
+    def load_fixture(self, rows):
+        root = self.args.snapshot_dir
+        (root / "out").mkdir(parents=True)
+        for name in partial.FILES:
+            (root / "out" / name).write_bytes(b"verified " + name.encode())
+        self.receipt["files"] = {name: partial.digest(root / "out" / name) for name in partial.FILES}
+        (root / "coverage.json").write_text(json.dumps(self.receipt))
+        parquet = types.ModuleType("pyarrow.parquet")
+        parquet.read_table = lambda _: types.SimpleNamespace(to_pylist=lambda: rows)
+        arrow = types.ModuleType("pyarrow")
+        arrow.parquet = parquet
+        return mock.patch.dict(sys.modules, {"pyarrow": arrow, "pyarrow.parquet": parquet})
+
+    def test_loader_rejects_stale_bytes_and_wrong_job_without_loading(self):
+        rows = [{"doc_id": "doc-a", "job_id": self.job}]
+        with self.load_fixture(rows), mock.patch.object(partial.subprocess, "run") as load:
+            (self.args.snapshot_dir / "out/pages.parquet").write_bytes(b"stale snapshot")
+            with self.assertRaises(ValueError):
+                partial.verified_load(self.args)
+            load.assert_not_called()
+        (self.args.snapshot_dir / "out").rename(self.args.snapshot_dir / "old-out")
+        with self.load_fixture([{"doc_id": "doc-a", "job_id": "f" * 64}]), \
+                mock.patch.object(partial.subprocess, "run") as load:
+            with self.assertRaises(ValueError):
+                partial.verified_load(self.args)
+            load.assert_not_called()
+
+    def test_pending_scope_preserves_database_and_returns_zero_loaded_pages(self):
+        with self.load_fixture([]), mock.patch.object(partial.subprocess, "run") as load:
+            report = partial.verified_load(self.args)
+        self.assertEqual(report["pages"], 0)
+        self.assertFalse(report["campaign_complete"])
+        load.assert_not_called()
+
+    def test_verified_repeat_load_uses_only_existing_upsert_loader(self):
+        rows = [{"doc_id": "doc-a", "job_id": self.job}]
+        with self.load_fixture(rows), \
+                mock.patch.object(partial.Path, "read_text", return_value="certificate-only-dsn"), \
+                mock.patch.object(partial.subprocess, "run") as load:
+            first = partial.verified_load(self.args)
+            second = partial.verified_load(self.args)
+        self.assertEqual(first, second)
+        self.assertEqual(first["pages"], 1)
+        self.assertEqual(load.call_count, 2)
+        self.assertEqual(load.call_args_list[0], load.call_args_list[1])
+        command = load.call_args.args[0]
+        self.assertIn("/opt/usnm-quality-feed/load.py", command)
+        self.assertIn(str(self.args.snapshot_dir / "out/pages.parquet"), command)
+        self.assertNotIn("delete", command)
+
+
+if __name__ == "__main__":
+    unittest.main()
