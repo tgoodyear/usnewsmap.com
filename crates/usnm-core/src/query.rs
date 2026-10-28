@@ -236,9 +236,13 @@ pub fn parse_with(input: &str, analyzer: Analyzer) -> Result<Node, QueryError> {
 pub fn is_plain(q: &str) -> bool {
     !q.chars()
         .any(|c| matches!(c, '"' | '(' | ')' | '~' | '*' | ':'))
-        && !q
-            .split_whitespace()
-            .any(|w| w == "AND" || w == "OR" || w == "NOT" || w.starts_with('-') || has_wildcard(w))
+        && !q.split_whitespace().any(|w| {
+            w == "AND"
+                || w == "OR"
+                || w == "NOT"
+                || (w != "-" && w.starts_with('-'))
+                || has_wildcard(w)
+        })
 }
 
 fn exact(text: String) -> Node {
@@ -309,6 +313,11 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                     tok: Tok::RParen,
                     pos,
                 });
+                i += 1;
+            }
+            '-' if (i == 0 || chars[i - 1].is_whitespace())
+                && chars.get(i + 1).is_none_or(|c| c.is_whitespace()) =>
+            {
                 i += 1;
             }
             '-' if i + 1 < chars.len() && !chars[i + 1].is_whitespace() => {
@@ -1748,6 +1757,36 @@ mod tests {
                 slop: 0
             }
         );
+    }
+
+    #[test]
+    fn standalone_hyphens_are_separators_in_every_mode() {
+        for q in ["27 - 3", "- 27 - 3 -", "27\t-\n3"] {
+            assert!(is_plain(q));
+            for mode in [
+                None,
+                Some(Mode::All),
+                Some(Mode::Any),
+                Some(Mode::Phrase),
+                Some(Mode::Near),
+            ] {
+                assert_eq!(
+                    build(q, mode, 3, 0).unwrap(),
+                    build("27 3", mode, 3, 0).unwrap(),
+                    "{q:?}, {mode:?}"
+                );
+            }
+        }
+        assert_eq!(parse("\"27 - 3\"").unwrap(), parse("\"27 3\"").unwrap());
+        assert_eq!(
+            parse("27 -3").unwrap(),
+            Node::And(vec![Node::Not(Box::new(term("3"))), term("27")])
+        );
+        assert!(!is_plain("27 -3"));
+        assert!(parse("-").is_err());
+        assert!(parse("27 OR -").is_err());
+        assert!(parse("27 AND -").is_err());
+        assert_eq!(parse("27 - :3").unwrap_err().position, Some(5));
     }
 
     #[test]
