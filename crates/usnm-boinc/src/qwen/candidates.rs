@@ -214,7 +214,7 @@ pub fn run(job: &Path, page: &Path, candidates: &[PathBuf], out: &Path) -> anyho
             ,"Generation flags are observations requiring review, not calibrated failure probabilities or a new BOINC verdict."
         ],
     });
-    atomic(out, &serde_json::to_vec_pretty(&report)?)
+    atomic(&destination, &serde_json::to_vec_pretty(&report)?)
 }
 
 #[cfg(test)]
@@ -371,5 +371,22 @@ mod tests {
             text_metrics(repeated, "yid")["longest_identical_token_run"],
             4
         );
+    }
+
+    #[test]
+    fn publishes_bare_output_filename_without_error_after_persisting() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fixture(dir.path(), "a", &[("c01", "text")]);
+        let output = tempfile::NamedTempFile::new_in(".").unwrap();
+        let bare = Path::new(output.path().file_name().unwrap());
+        run(
+            &dir.path().join("unit_a/qwen.json"),
+            &dir.path().join("unit_a/page.jpg"),
+            &[a],
+            bare,
+        )
+        .unwrap();
+        let report: Value = serde_json::from_slice(&std::fs::read(bare).unwrap()).unwrap();
+        assert_eq!(report["candidates"].as_array().unwrap().len(), 1);
     }
 }
