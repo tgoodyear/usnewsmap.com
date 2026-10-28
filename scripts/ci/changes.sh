@@ -189,7 +189,9 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # cover; editing them doesn't change what Quickwit is asked to do. The job
 # targets only these integration tests; tests in crates that are merely
 # dependencies (such as usnm-api) are not built or run. The ingest pipeline
-# target is a module tree, not a single pipeline.rs file.
+# target is a module tree, not a single pipeline.rs file. Its API calls load
+# RefData and assemble status sources; they do not serve the site. Site-only
+# sources are excluded below, but shared API code and manifests still count.
 quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/(install-quickwit\.sh|rust-test-times\.py)$|crates/usnm-search/tests/quickwit_parity\.rs$|crates/usnm-ingest/tests/pipeline/)'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
@@ -366,7 +368,7 @@ _narrow() {
   elif {
     local crate_changes=$built
     if [ "$part" = quickwit ]; then
-      crate_changes=$(grep -Ev '^crates/[^/]+/tests/' <<< "$crate_changes" || true)
+      crate_changes=$(grep -Ev '^crates/[^/]+/tests/|^crates/usnm-api/src/(site\.rs$|site/)' <<< "$crate_changes" || true)
     fi
     [ -n "$crate_changes" ] && grep -Eq "^($(paste -sd'|' - <<< "$dirs"))" <<< "$crate_changes"
   }; then

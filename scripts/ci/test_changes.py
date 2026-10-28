@@ -430,6 +430,80 @@ class BuildInputs(unittest.TestCase):
         stub.chmod(0o755)
         return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
+    def test_api_site_changes_skip_quickwit_but_keep_serving_checks(self):
+        for path in [
+            "crates/usnm-api/src/site.rs",
+            "crates/usnm-api/src/site/social.rs",
+            "crates/usnm-api/src/site/social/cache.rs",
+            "crates/usnm-api/src/site/new-presentation.rs",
+        ]:
+            with self.subTest(path=path):
+                on = self.select((path, "// presentation-only change\n"))
+                self.assertNotIn("quickwit", on)
+                self.assertGreaterEqual(on, {"rust", "image", "e2e"})
+
+    def test_preview_appstate_changes_still_run_quickwit(self):
+        # #1285 also changed AppState initialization and background startup in
+        # lib.rs. A file selector cannot prove that shared code is site-only.
+        on = self.select(
+            "crates/usnm-api/src/lib.rs", "crates/usnm-api/src/site.rs",
+            "crates/usnm-api/src/site/social.rs",
+            "crates/usnm-api/src/site/social/cache.rs",
+        )
+        self.assertGreaterEqual(on, {"quickwit", "rust", "image", "e2e"})
+
+    def test_shared_api_inputs_remain_conservative_quickwit_triggers(self):
+        for path in [
+            "crates/usnm-api/src/refdata.rs",
+            "crates/usnm-api/src/status/assemble.rs",
+            "crates/usnm-api/src/status/assemble/published.rs",
+            "crates/usnm-api/src/error.rs",
+            "crates/usnm-api/src/routes.rs",
+            "crates/usnm-api/src/config.rs",
+            "crates/usnm-api/src/main.rs",
+            "crates/usnm-api/src/lib.rs",
+            "crates/usnm-api/src/site_shared.rs",
+            "crates/usnm-api/Cargo.toml",
+        ]:
+            with self.subTest(path=path):
+                self.assertIn("quickwit", self.select(path))
+
+    def test_quickwit_runtime_inputs_still_run_for_site_changes(self):
+        for path in [
+            "crates/usnm-search/src/lib.rs",
+            "crates/usnm-ingest/src/lib.rs",
+            "crates/usnm-core/src/lib.rs",
+            "crates/usnm-search/tests/quickwit_parity.rs",
+            "crates/usnm-ingest/tests/pipeline/writer.rs",
+            "fixtures/new-quickwit-input.txt",
+            "infra/quickwit/searcher.yaml",
+            "scripts/dev/quickwit-fixtures.sh",
+            "scripts/ci/install-quickwit.sh",
+            "scripts/ci/rust-test-times.py",
+            "rust-toolchain.toml",
+        ]:
+            with self.subTest(path=path):
+                self.assertIn("quickwit", self.select(
+                    "crates/usnm-api/src/site/social.rs", path,
+                ))
+
+    def test_site_changes_fail_open_when_metadata_is_unavailable(self):
+        on = self.select("crates/usnm-api/src/site/social.rs",
+                         env=self.stub_tool("cargo"))
+        self.assertIn("quickwit", on)
+        self.assertIn("cargo metadata failed: running quickwit", self.log)
+
+    def test_quickwit_workflow_changes_still_force_its_gate(self):
+        path = ".github/workflows/ci.yml"
+        workflow = (self.repo / path).read_text()
+        self.assertIn("name: quickwit (${{ matrix.suite }})", workflow)
+        on = self.select(
+            "crates/usnm-api/src/site/social.rs",
+            (path, workflow.replace("name: quickwit (${{ matrix.suite }})",
+                                    "name: quickwit (${{ matrix.suite }}) # changed")),
+        )
+        self.assertIn("quickwit", on)
+
     def test_dashboard_renderer_and_markdown_change_runs_only_the_dashboard_checks(self):
         # The change #734 makes: html.rs and docs/operations/onprem-ocr.md.
         on = self.select("crates/usnm-ocr-dash/src/html.rs", "docs/operations/onprem-ocr.md")
