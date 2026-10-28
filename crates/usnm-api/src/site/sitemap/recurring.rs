@@ -44,9 +44,10 @@ pub(super) async fn candidates(
     today: NaiveDate,
 ) -> Result<BTreeSet<String>> {
     let mut days: BTreeMap<(String, String), BTreeSet<NaiveDate>> = BTreeMap::new();
-    let mut paths = store.list("days").await.map_err(backend)?;
-    paths.sort();
-    for file in paths {
+    let mut objects = store.list_info("days").await.map_err(backend)?;
+    objects.sort_by(|a, b| a.path.cmp(&b.path));
+    for object in objects {
+        let file = object.path;
         let Some(day) = file
             .strip_prefix("days/")
             .and_then(|p| p.strip_suffix(".jsonl"))
@@ -55,14 +56,14 @@ pub(super) async fn candidates(
         else {
             continue;
         };
-        let body = store
-            .get(&file)
-            .await
-            .map_err(backend)?
-            .ok_or_else(|| backend("finalized search day disappeared"))?;
-        if body.len() > MAX_DAY_BYTES {
+        if object.size > MAX_DAY_BYTES as u64 {
             return Err(backend("finalized search day exceeds sitemap scan limit"));
         }
+        let body = store
+            .get_if_match(&file, &object.etag, MAX_DAY_BYTES as u64)
+            .await
+            .map_err(backend)?
+            .ok_or_else(|| backend("finalized search day disappeared or changed"))?;
         let snap = snap.clone();
         let terms = tokio::task::spawn_blocking(move || {
             let mut terms = BTreeSet::new();
@@ -263,5 +264,76 @@ pub(super) mod tests {
                 .unwrap_err()
         )
         .contains("day mismatch"));
+    }
+
+    #[tokio::test]
+    async fn size_metadata_is_checked_before_read_and_reads_are_conditionally_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use usnm_store::{ObjectInfo, StoreError};
+
+        #[derive(Debug)]
+        struct Store {
+            size: u64,
+            reads: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl ObjectStore for Store {
+            async fn get(&self, _: &str) -> std::result::Result<Option<Vec<u8>>, StoreError> {
+                panic!("unbounded reads are forbidden");
+            }
+            async fn put_new(
+                &self,
+                _: &str,
+                _: Vec<u8>,
+                _: &str,
+            ) -> std::result::Result<bool, StoreError> {
+                unreachable!()
+            }
+            async fn put(
+                &self,
+                _: &str,
+                _: Vec<u8>,
+                _: &str,
+            ) -> std::result::Result<(), StoreError> {
+                unreachable!()
+            }
+            async fn list(&self, _: &str) -> std::result::Result<Vec<String>, StoreError> {
+                unreachable!()
+            }
+            async fn list_info(
+                &self,
+                prefix: &str,
+            ) -> std::result::Result<Vec<ObjectInfo>, StoreError> {
+                assert_eq!(prefix, "days");
+                Ok(vec![ObjectInfo {
+                    path: "days/2026-10-01.jsonl".into(),
+                    size: self.size,
+                    etag: "listed".into(),
+                    created: None,
+                }])
+            }
+            async fn get_if_match(
+                &self,
+                path: &str,
+                etag: &str,
+                max_bytes: u64,
+            ) -> std::result::Result<Option<Vec<u8>>, StoreError> {
+                assert_eq!(etag, "listed");
+                assert_eq!(max_bytes, MAX_DAY_BYTES as u64);
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                // Simulate an oversized read despite a smaller listing.
+                Err(StoreError::TooLarge(path.into()))
+            }
+        }
+        let snap = snapshot().await;
+        let today = NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        for (size, expected_reads) in [(MAX_DAY_BYTES as u64 + 1, 0), (1, 1)] {
+            let store = Store {
+                size,
+                reads: AtomicUsize::new(0),
+            };
+            assert!(candidates(&store, &snap, today).await.is_err());
+            assert_eq!(store.reads.load(Ordering::SeqCst), expected_reads);
+        }
     }
 }

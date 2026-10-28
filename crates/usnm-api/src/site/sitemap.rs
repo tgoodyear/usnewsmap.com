@@ -19,6 +19,9 @@ mod recurring;
 
 const PREFIX: &str = "sitemap/state";
 const STATIC: [&str; 4] = ["/", "/privacy", "/credits", "/datasets"];
+const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
+const XML_START: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+const XML_END: &str = "</urlset>\n";
 
 #[derive(Default)]
 pub(crate) struct Service {
@@ -269,6 +272,11 @@ async fn commit(
             ));
         }
         let next = generation.checkpoint(previous.as_ref())?;
+        if next.pages.len() > 50_000 || xml_size(&next) > MAX_SITEMAP_BYTES {
+            return Err(backend(
+                "sitemap exceeds the 50,000 URL or 50 MiB protocol limit",
+            ));
+        }
         still_current(state, snap).await?;
         let path = format!("{PREFIX}/{:020}.json", next.sequence);
         if store
@@ -353,7 +361,15 @@ async fn generate(
     let retained = paths.clone();
     if let Some(url) = &state.config.search_log_url {
         let log = usnm_store::open(url).map_err(backend)?;
-        paths.extend(recurring::candidates(log.as_ref(), &snap, observed_at.date_naive()).await?);
+        let mut keys = paths
+            .iter()
+            .map(|path| query_key(&snap, path))
+            .collect::<Result<BTreeSet<_>>>()?;
+        for path in recurring::candidates(log.as_ref(), &snap, observed_at.date_naive()).await? {
+            if keys.insert(query_key(&snap, &path)?) {
+                paths.insert(path);
+            }
+        }
     }
     for path in paths {
         if !Arc::ptr_eq(&state.snapshot.load_full(), &snap) {
@@ -380,6 +396,12 @@ async fn generate(
     }
     generation.pages = pages;
     Ok(generation)
+}
+
+fn query_key(snap: &Snapshot, path: &str) -> Result<String> {
+    let query = super::search_query(path).ok_or_else(|| backend("invalid saved search path"))?;
+    let raw = usnm_core::params::RawParams::parse(&super::preview_query(&query))?;
+    Ok(snap.refdata.search_request(&raw)?.query.to_string())
 }
 
 async fn refresh(
@@ -417,9 +439,6 @@ async fn refresh(
         return Ok(());
     }
     let generation = generate(state, snap.clone(), &manifest).await?;
-    if generation.pages.len() > 50_000 {
-        return Err(backend("sitemap exceeds the 50,000 URL protocol limit"));
-    }
     if finished.as_ref().is_some_and(|previous| {
         previous.0 == identity.0 && previous.1 == identity.1 && previous.2 == identity.2
     }) && committed.as_ref().is_some_and(|checkpoint| {
@@ -512,19 +531,32 @@ pub(super) fn response(state: &AppState, req: &Request) -> Response {
 }
 
 fn xml(checkpoint: &Checkpoint) -> String {
-    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n".to_owned();
+    let mut xml = XML_START.to_owned();
     for (path, page) in &checkpoint.pages {
-        xml.push_str(&format!(
-            "  <url><loc>https://usnewsmap.com{}</loc><lastmod>{}</lastmod></url>\n",
-            super::escape_html(path),
-            page.lastmod
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        ));
+        xml.push_str(&xml_entry(path, page));
     }
-    xml.push_str("</urlset>\n");
+    xml.push_str(XML_END);
     xml
 }
 
+fn xml_entry(path: &str, page: &Page) -> String {
+    format!(
+        "  <url><loc>https://usnewsmap.com{}</loc><lastmod>{}</lastmod></url>\n",
+        super::escape_html(path),
+        page.lastmod
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
+}
+
+fn xml_size(checkpoint: &Checkpoint) -> usize {
+    XML_START.len()
+        + XML_END.len()
+        + checkpoint
+            .pages
+            .iter()
+            .map(|(path, page)| xml_entry(path, page).len())
+            .sum::<usize>()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,13 +998,13 @@ mod tests {
         let text = std::fs::read_to_string(fixtures).unwrap();
         let mut doc: usnm_search::PageDoc =
             serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        doc.text = "Cobalt jubilee and amber jubilee.".into();
+        doc.text = "Cobalt jubilee and amber jubilee. Gold diggings.".into();
         let documents: Vec<_> = (0..51)
             .map(|i| {
                 let mut doc = doc.clone();
                 doc.doc_id = format!("synthetic-promotion-{i}");
                 if i == 50 {
-                    doc.text = "Cobalt jubilee.".into();
+                    doc.text = "Cobalt jubilee. Gold diggings.".into();
                 }
                 doc
             })
@@ -1001,6 +1033,14 @@ mod tests {
         }));
         let snap = st.snapshot.load_full();
         let store = LocalStore::new(dir.0.join("searches"));
+        let curated_gold =
+            super::super::search_path("\"gold diggings\" OR \"gold region\" OR \"gold mines\"");
+        let canonical_gold = query_key(&snap, &curated_gold).unwrap();
+        let alternate_gold = super::super::search_path(&canonical_gold);
+        assert_ne!(
+            curated_gold, alternate_gold,
+            "canonical AST ordering differs from curated wording"
+        );
         let today = Utc::now().date_naive();
         for day in [
             today.pred_opt().unwrap(),
@@ -1013,6 +1053,7 @@ mod tests {
                     recurring::tests::record(&snap, day, "\"cobalt jubilee\""),
                     recurring::tests::record(&snap, day, "\"amber jubilee\""),
                     recurring::tests::record(&snap, day, "whigs"),
+                    recurring::tests::record(&snap, day, &canonical_gold),
                 ],
             )
             .await;
@@ -1035,6 +1076,11 @@ mod tests {
             STATIC.len() + super::super::CURATED_SEARCHES.len() + 1
         );
         assert!(first.pages["/search/cobalt-jubilee"].promoted);
+        assert!(first.pages.contains_key(&curated_gold));
+        assert!(
+            !first.pages.contains_key(&alternate_gold),
+            "keep the curated URL for equivalent normalized queries"
+        );
         assert!(
             !first.pages.contains_key("/search/amber-jubilee"),
             "exactly 50 is excluded"
@@ -1120,6 +1166,29 @@ mod tests {
         // Loading a peer's newer committed generation is allowed before a failed refresh.
         assert_eq!(http(&st, "/sitemap.xml").await.1, xml(&retained));
         assert!(before.contains("/search/cobalt-jubilee"));
+    }
+
+    #[tokio::test]
+    async fn oversized_xml_does_not_replace_the_committed_generation() {
+        let dir = Directory::new();
+        let st = state(&dir, Some(Vec::new())).await;
+        let snap = st.snapshot.load_full();
+        let store = LocalStore::new(dir.0.join("searches"));
+        let mut g = generation();
+        let first = commit(&st, &snap, &store, &g).await.unwrap();
+        assert_eq!(xml_size(&first), xml(&first).len());
+        g.observed_at = at(3);
+        let encoded = "%E6%96%87".repeat(240);
+        for n in 0..24_000 {
+            g.pages
+                .insert(format!("/search/{encoded}{n}"), "results".into());
+        }
+        assert!(g.pages.len() < 50_000, "URL count alone would allow this");
+        let error = commit(&st, &snap, &store, &g).await.unwrap_err();
+        assert!(
+            matches!(error, crate::error::ApiError::Backend(message) if message.contains("50 MiB"))
+        );
+        assert_eq!(xml(&latest(&store).await.unwrap().unwrap()), xml(&first));
     }
 
     #[tokio::test]
