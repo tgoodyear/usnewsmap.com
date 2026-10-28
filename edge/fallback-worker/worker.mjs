@@ -23,6 +23,10 @@
 //   ADD_DNT                "true" on the drill Worker only: sends `DNT: 1` to both origins,
 //                          so searches made during a drill stay out of the search log
 //                          (the API's admit() excludes DNT, crates/usnm-api/src/searchlog.rs).
+//   ERROR_LAYER            "true" only after the Phase 4 gate, or on an isolated drill.
+//   ALLOWED_ORIGINS        Exact comma-separated USNM_ALLOWED_ORIGINS from the API.
+//   FALLBACK_METRICS        Analytics Engine binding: fixed outcome/scope/count/status,
+//                          never URLs, search words, visitor headers or addresses.
 
 // 502: the tunnel's connector could not reach Caddy or the API. 530: the tunnel has no
 // connector. Phase 2's outage drills (#1101) confirm what a Worker receives in each case;
@@ -49,9 +53,22 @@ export default {
       tunnel = await fetch(toTunnel(request, env));
     } catch (error) {
       if (aborted(error, request)) throw error;
+      if (errorLayer(env)) return degraded(replay, env);
       return fallBack(replay, env, null, error);
     }
-    if (!RETRY_STATUSES.has(tunnel.status)) return tunnel;
+    if (!RETRY_STATUSES.has(tunnel.status)) {
+      return errorLayer(env) ? rememberShell(replay, tunnel) : tunnel;
+    }
+    if (errorLayer(env)) {
+      let cleanupFailed = false;
+      try {
+        await tunnel.body?.cancel();
+      } catch {
+        cleanupFailed = true;
+      }
+      const answer = await degraded(replay, env);
+      return cleanupFailed ? notified(answer, "X-USNM-Error-Layer-Cleanup", "cancel-failed") : answer;
+    }
     return fallBack(replay, env, tunnel, null);
   },
 };
@@ -72,7 +89,116 @@ async function fallBack(replay, env, tunnel, tunnelError) {
     throw error;
   }
   if (tunnel !== null) await tunnel.body?.cancel().catch(() => {});
+  return counted(answer, env, "azure");
+}
+
+function notified(answer, header, value) {
+  const copy = new Response(answer.body, answer);
+  copy.headers.set(header, value);
+  return copy;
+}
+
+function counted(answer, env, outcome) {
+  if (!env.FALLBACK_METRICS) {
+    return notified(answer, "X-USNM-Fallback-Metric", "unavailable");
+  }
+  try {
+    const scope = addDnt(env) ? "drill" : "production";
+    env.FALLBACK_METRICS.writeDataPoint({
+      blobs: [outcome, scope],
+      doubles: [1, answer.status],
+      indexes: [scope],
+    });
+  } catch {
+    return notified(answer, "X-USNM-Fallback-Metric", "write-failed");
+  }
   return answer;
+}
+
+function errorLayer(env) {
+  return env.ERROR_LAYER === "true" || env.ERROR_LAYER === "1";
+}
+
+function shellKey(request) {
+  return new Request(`${new URL(request.url).origin}/__usnm_fallback/shell-v1`);
+}
+
+async function rememberShell(request, answer) {
+  const url = new URL(request.url);
+  if (
+    request.method !== "GET" || url.pathname !== "/" || url.search !== "" ||
+    request.headers.has("authorization") || request.headers.has("cookie") ||
+    answer.status !== 200 || answer.headers.has("set-cookie") ||
+    !answer.headers.get("content-type")?.toLowerCase().startsWith("text/html") ||
+    /\b(private|no-store)\b/i.test(answer.headers.get("cache-control") ?? "")
+  ) return answer;
+  const stored = new Response(answer.clone().body, answer);
+  stored.headers.set("Cache-Control", "public, max-age=86400");
+  try {
+    await caches.default.put(shellKey(request), stored);
+  } catch {
+    return notified(answer, "X-USNM-Error-Layer", "cache-write-failed");
+  }
+  return answer;
+}
+
+async function degraded(request, env) {
+  const path = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
+  const api = path === "/v1" || path.startsWith("/v1/") ||
+    path === "/api/v1" || path.startsWith("/api/v1/");
+  const html = !api && (request.method === "GET" || request.method === "HEAD") &&
+    (path === "/" || ["/index.html", "/datasets", "/status", "/privacy", "/credits"].includes(path) ||
+      path.startsWith("/search/")) &&
+    request.headers.get("accept")?.toLowerCase().includes("text/html");
+  if (html) {
+    let shell;
+    try {
+      shell = await caches.default.match(shellKey(request));
+    } catch {
+      return counted(problem(request, "cache-read-failed", env), env, "degraded");
+    }
+    if (shell) {
+      const headers = new Headers(shell.headers);
+      headers.set("Cache-Control", "no-store");
+      headers.set("Retry-After", "30");
+      headers.set("X-USNM-Error-Layer", "cached-shell");
+      for (const header of ["etag", "last-modified", "content-length"]) headers.delete(header);
+      const answer = new Response(request.method === "HEAD" ? null : shell.body, { status: 503, headers });
+      if (request.method === "HEAD") return counted(answer, env, "degraded");
+      const marked = new HTMLRewriter().on("body", {
+        element(element) {
+          element.prepend(
+            '<div role="status">Search is temporarily unavailable. Please try again later.</div>',
+            { html: true },
+          );
+        },
+      }).transform(answer);
+      return counted(marked, env, "degraded");
+    }
+  }
+  return counted(problem(request, "unavailable", env), env, "degraded");
+}
+
+function problem(request, reason, env) {
+  const headers = new Headers({
+    "Content-Type": "application/problem+json",
+    "Cache-Control": "no-store",
+    "Retry-After": "30",
+    "X-USNM-Error-Layer": reason,
+    "Vary": "Origin",
+  });
+  const origin = request.headers.get("origin");
+  const allowed = typeof env.ALLOWED_ORIGINS === "string" ? env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()) : [];
+  if (origin && allowed.includes(origin)) headers.set("Access-Control-Allow-Origin", origin);
+  return new Response(request.method === "HEAD" ? null : JSON.stringify({
+    type: "about:blank",
+    title: "Service Unavailable",
+    status: 503,
+    detail: "The origin is temporarily unavailable. Please retry later.",
+  }), {
+    status: 503,
+    headers,
+  });
 }
 
 function toTunnel(request, env) {

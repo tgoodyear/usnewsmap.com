@@ -359,8 +359,8 @@ jobs:
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
   # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
-  # run offline on Node's own test runner with no dependencies, and shellcheck of its deploy
-  # script. No package.json and no npm cache, so it does not use setup-node-web.
+  # run offline on Node's own test runner, native Cache API/HTMLRewriter integration with
+  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache.
   edge:
     name: edge (fallback worker tests)
     needs: changes
@@ -374,6 +374,9 @@ jobs:
         with:
           node-version: 24
       - run: node --test edge/fallback-worker/*.test.mjs
+      - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
+        env:
+          WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
 
   quickwit-tests:
