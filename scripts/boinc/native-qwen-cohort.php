@@ -219,6 +219,39 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary
     }
 }
 
+function native_qwen_reservation_guard($original, $updated) {
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($original, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $xpath = new DOMXPath($doc);
+    $markers = $xpath->query("//comment()[contains(.,'usnm-amd-first-reservation-v1')]");
+    if ($markers->length === 0) return;
+    if ($markers->length !== 1 || $markers->item(0)->parentNode !== $doc->documentElement
+        || !preg_match('/^usnm-amd-first-reservation-v1:[a-f0-9]{32}:([1-9][0-9]*):[1-9][0-9]*$/D',
+            trim($markers->item(0)->nodeValue), $match)) {
+        throw new RuntimeException("Invalid AMD-first reservation marker");
+    }
+    $reserved = intval($match[1]);
+    $after = new DOMDocument();
+    if (!$after->loadXML($updated, LIBXML_NONET)) throw new RuntimeException("Invalid updated plan XML");
+    $new = new DOMXPath($after);
+    foreach (array_merge(NATIVE_QWEN_CLASSES, ["docker_nvidia_cuda_8b"]) as $name) {
+        $node = $new->query("//plan_class[name='$name']")->item(0);
+        $low = $node ? $new->query("min_wu_id", $node) : null;
+        $high = $node ? $new->query("max_wu_id", $node) : null;
+        if (!$low || $low->length !== 1 || $high->length !== 1
+            || !ctype_digit($low->item(0)->nodeValue) || !ctype_digit($high->item(0)->nodeValue)) {
+            throw new RuntimeException("AMD-first lease requires bounded native classes");
+        }
+        $a = intval($low->item(0)->nodeValue);
+        $b = intval($high->item(0)->nodeValue);
+        $allowed = $name === "amd_vulkan_8b"
+            ? (($a === 2 && $b === 1) || ($a === $reserved && $b === $reserved))
+            : (($a === 2 && $b === 1) || (2 <= $a && $a <= $b && $b - $a < 10
+                && !($a <= $reserved && $reserved <= $b)));
+        if (!$allowed) throw new RuntimeException("Release the AMD-first lease before opening competing work");
+    }
+}
+
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
         $ordinary_canary = false, $tiebreaker = false) {
     if ($tiebreaker && (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true) || $general || $ordinary_canary
@@ -244,6 +277,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         if ($original === false) throw new RuntimeException("Cannot read plan XML");
         $updated = $general ? native_qwen_general_xml($original, $plan_class)
             : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
+        native_qwen_reservation_guard($original, $updated);
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,

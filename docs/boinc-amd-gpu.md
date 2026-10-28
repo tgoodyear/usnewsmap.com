@@ -311,6 +311,92 @@ Acceptance still requires all of the following before any general reopening:
 If an older app version was chosen, or any evidence is bad, close AMD with
 `--plan-class amd_vulkan_8b --stop --apply` and leave general admission closed.
 
+#### AMD-first ordinary tail reservation
+
+Opening AMD and NVIDIA/Intel on the same pair does **not** reserve an AMD
+replica: two faster requesters can consume both before the AMD host polls.
+`scripts/boinc/qwen-amd-reservation.py` provides a separate, operator-reviewed
+lease for **one newest, untouched ordinary 8B pair**, currently the signed
+Windows 1.14 release. It never writes BOINC science, result or assignment rows.
+The existing two-unsent/quorum-2 gates remain mandatory, including zero host,
+sent time, outcome, validation and app-version IDs, no assignment rows, and
+`one_result_per_host_per_wu`. Unknown active Qwen plan classes fail closed.
+
+The lease requires AMD initially closed and all NVIDIA/Intel windows closed or
+bounded strictly **before** the reserved tail. It opens only that AMD workunit
+and temporarily adds `max_wu_id=ID-1` to the otherwise unbounded Apple class.
+All earlier eligible Apple work remains eligible; already assigned work is
+untouched. This also temporarily excludes **later newly produced work from
+Apple**, not just the reserved tail: it is not an arbitrary single-ID exclusion.
+Do not use it as an unattended permanent cap or while earlier Apple work is
+unavailable. The producer and other vendors are not paused.
+
+Before applying, record the exact workunit, policy SHA, independent input/model/
+source-quality/archive-provenance receipt, limits and rollback on #529. Install
+the reviewed refresh/helper versions in both the current server and persistent
+server image first. Prearm a **separate, durable host rollback unit** for this
+lease, scheduled within 60–7200 seconds, and independently read back its active
+state/deadline. Save that readback as JSON with `lease`, `active: true`,
+`deadline` (Unix seconds), and the actual unit/evidence details. The unit must
+call this helper's `release --apply --lease SAME_ID` at that deadline, retrying
+short normal project-lock admission; it must not depend on the observer, DB or
+collector. Do not pause, override or reuse another owner's timer.
+
+Run each operation under the normal **short-lived project mutex**; the helper
+also takes `.native-qwen-cohort.lock`. For example, inside the server container:
+
+```sh
+python3 scripts/boinc/qwen-amd-reservation.py reserve \
+  --project /project/usnmocr --lease LEASE_32_HEX --workunit ID \
+  --host 5 --app-version 68 --lease-seconds 5400 \
+  --expected-policy-sha256 REVIEWED_POLICY_SHA \
+  --cohort-helper /path/to/reviewed/native-qwen-cohort.php \
+  --cohort-helper-sha256 REVIEWED_HELPER_SHA \
+  --evidence /path/to/independent-per-workunit-receipt.json \
+  --rollback-receipt /path/to/active-rollback-readback.json
+# Add --apply only after the preview, review and live guards pass.
+python3 scripts/boinc/qwen-amd-reservation.py tick \
+  --project /project/usnmocr --lease LEASE_32_HEX --apply
+python3 scripts/boinc/qwen-amd-reservation.py release \
+  --project /project/usnmocr --lease LEASE_32_HEX --apply
+```
+
+The independent receipt uses the native feed handoff's `workunit_id`, `doc_id`,
+`job_sha256`, `page_sha256`, `quality_sha256`, `provenance_sha256` and
+`provenance.doc_id`. The helper rehashes the actual job/page and enforces the
+existing engine, model, prompt, token budget, 1–12 crops and 8192 UTF-8-byte
+contract. It retains the full receipt hash; this is **not** a fresh archive/GGUF
+byte verification or a scientific accuracy claim.
+
+The default 90-minute lease covers the observed AMD client's 3603-second normal
+request interval without forcing a client RPC. The hard maximum is two hours;
+the actual deadline and continuing Apple backlog must be justified on #529.
+New native production is allowed during the lease. Subsequent finite NVIDIA/
+Intel windows may be entirely before **or after**, but never cross, the reserved
+ID; AMD polling must not block their automatic refill.
+
+The initial policy publication is not itself an accepted reservation. In the
+single-project Linux CGI container, the helper records scheduler PID/start-time
+identities both before and after publication. Poll `tick` under separate short
+mutex operations. Only after those old CGI processes naturally exit and a
+**subsequent** DB read still finds the untouched pair can its receipt say
+`old_schedulers_drained_and_pair_untouched: true`. No CGI is killed or paused.
+If an old request wins instead, `tick` removes only its owned Apple ceiling and
+closes its AMD window; it never takes the assigned result back. A PID reuse is
+not mistaken for an old scheduler. FastCGI/persistent schedulers require a
+different reviewed drain mechanism; this procedure does not qualify them.
+
+On actual host/app assignment, collision, lease expiry or explicit release, the
+same helper restores Apple and closes its AMD window without reverting other
+vendors' newer finite windows. The independent deadline unit calls `release`,
+which does **not** require a working DB. Journals and staged policy writes are
+fsynced before atomic replacement. A startup refresh preserves an unexpired
+owned ceiling, or removes it and closes that AMD window when expired. Other
+cohort operations refuse to open competing windows while the lease is present.
+The normal peer is then free to run; all candidate capture, generation metrics,
+independent validation and image-grounded quality acceptance remain required.
+Assignment alone does not resolve home-infra#81 or authorize general admission.
+
 #### Inconclusive canary: one-replica tiebreaker
 
 If the canary and its peer are both successful but **inconclusive**, the
