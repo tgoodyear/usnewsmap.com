@@ -128,6 +128,26 @@ fn input_digest(_dir: &Path, _path: &Path, input: &mut File) -> anyhow::Result<V
     contents(input)
 }
 
+#[cfg(unix)]
+fn inventory_identity(path: &Path, input: &File) -> anyhow::Result<Option<Vec<u8>>> {
+    let identity = FileIdentity::read(input)?;
+    if identity.changed.1 == 0 {
+        return Ok(None);
+    }
+    let bytes = serde_json::to_vec(&identity)?;
+    ensure!(
+        FileIdentity::read(input)? == identity
+            && FileIdentity::read(&File::open(path)?)? == identity,
+        "input changed during scheduling inventory"
+    );
+    Ok(Some(bytes))
+}
+
+#[cfg(not(unix))]
+fn inventory_identity(_path: &Path, _input: &File) -> anyhow::Result<Option<Vec<u8>>> {
+    Ok(None)
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Part {
     pub summary: Summary,
@@ -151,7 +171,13 @@ pub(super) struct Cache {
     qwen_root: PathBuf,
     surya_root: Option<PathBuf>,
     inventory: Vec<PathBuf>,
-    included: RefCell<BTreeMap<PathBuf, (Vec<PathBuf>, String)>>,
+    included: RefCell<BTreeMap<PathBuf, TrackedUnit>>,
+}
+
+struct TrackedUnit {
+    canonical: Vec<PathBuf>,
+    key: String,
+    inventory: bool,
 }
 
 struct Dependency {
@@ -198,6 +224,15 @@ fn file(hash: &mut Sha256, path: &Path) -> anyhow::Result<()> {
 }
 
 fn fingerprint(hash: &mut Sha256, path: &Path, memo: Option<&Path>) -> anyhow::Result<()> {
+    fingerprint_input(hash, path, memo, false)
+}
+
+fn fingerprint_input(
+    hash: &mut Sha256,
+    path: &Path,
+    memo: Option<&Path>,
+    inventory: bool,
+) -> anyhow::Result<()> {
     field(hash, path.as_os_str().as_encoded_bytes());
     let mut input = match File::open(path) {
         Ok(input) => input,
@@ -208,6 +243,14 @@ fn fingerprint(hash: &mut Sha256, path: &Path, memo: Option<&Path>) -> anyhow::R
         Err(e) => return Err(e).with_context(|| format!("fingerprinting {path:?}")),
     };
     field(hash, b"present");
+    // Scheduling hints never authorize cache reuse or accepted scientific rows.
+    if inventory && memo.is_some() {
+        if let Some(identity) = inventory_identity(path, &input)? {
+            field(hash, b"inventory-identity-v1");
+            field(hash, &identity);
+            return Ok(());
+        }
+    }
     let digest = match memo {
         Some(dir) => input_digest(dir, path, &mut input)?,
         None => contents(&mut input)?,
@@ -315,8 +358,39 @@ impl Cache {
     }
 
     pub fn key(&self, unit: &Path, job: &Job, canonical: &[PathBuf]) -> anyhow::Result<String> {
+        self.key_for(unit, job, canonical, false)
+    }
+
+    pub fn inventory_key(
+        &self,
+        unit: &Path,
+        job: &Job,
+        canonical: &[PathBuf],
+    ) -> anyhow::Result<String> {
+        let key = self.key_for(unit, job, canonical, true)?;
+        self.included.borrow_mut().insert(
+            unit.to_owned(),
+            TrackedUnit {
+                canonical: canonical.to_vec(),
+                key: key.clone(),
+                inventory: true,
+            },
+        );
+        Ok(key)
+    }
+
+    fn key_for(
+        &self,
+        unit: &Path,
+        job: &Job,
+        canonical: &[PathBuf],
+        inventory: bool,
+    ) -> anyhow::Result<String> {
         let mut hash = Sha256::new();
         field(&mut hash, &self.version);
+        if inventory {
+            field(&mut hash, b"quality-scheduling-inventory-v1");
+        }
         ensure!(
             serde_json::from_slice::<Job>(&std::fs::read(unit.join(super::JOB_FILE))?)? == *job,
             "QUALITY job changed during collection"
@@ -361,25 +435,35 @@ impl Cache {
                 .iter()
                 .any(|name| path == unit.join(name));
             let memo = self.dir.join("input-digests");
-            fingerprint(&mut hash, &path, staged_blob.then_some(memo.as_path()))?;
+            fingerprint_input(
+                &mut hash,
+                &path,
+                staged_blob.then_some(memo.as_path()),
+                inventory,
+            )?;
         }
         Ok(hex(&hash.finalize()))
     }
 
     pub fn track(&self, unit: &Path, canonical: &[PathBuf], key: &str) {
-        self.included
-            .borrow_mut()
-            .insert(unit.to_owned(), (canonical.to_vec(), key.to_owned()));
+        self.included.borrow_mut().insert(
+            unit.to_owned(),
+            TrackedUnit {
+                canonical: canonical.to_vec(),
+                key: key.to_owned(),
+                inventory: false,
+            },
+        );
     }
 
     pub fn verify(&self) -> anyhow::Result<()> {
-        for (unit, (canonical, key)) in self.included.borrow().iter() {
+        for (unit, tracked) in self.included.borrow().iter() {
             let job = serde_json::from_slice(&crate::read(
                 &unit.join(super::JOB_FILE),
                 usnm_ocr_contract::quality::MAX_JOB_JSON,
             )?)?;
             ensure!(
-                &self.key(unit, &job, canonical)? == key,
+                self.key_for(unit, &job, &tracked.canonical, tracked.inventory)? == tracked.key,
                 "QUALITY inputs changed before campaign publication"
             );
         }
@@ -449,6 +533,58 @@ mod tests {
         assert!(jobs(dir.path(), "job.json").unwrap().is_empty());
         std::fs::create_dir_all(units.join("unit/job.json")).unwrap();
         assert!(jobs(dir.path(), "job.json").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scheduling_identity_does_not_read_blob_and_rejects_a_replaced_path() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("page.jpg");
+        std::fs::write(&path, b"staged scientific input").unwrap();
+        let write_only = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(inventory_identity(&path, &write_only).unwrap().is_some());
+        let replacement = dir.path().join("replacement");
+        std::fs::write(&replacement, b"staged scientific input").unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        assert!(inventory_identity(&path, &write_only).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cold_inventory_does_not_warm_row_cache_and_detects_restored_mtime_rewrites() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let canonical = super::super::collect::spool_files(
+            &opts.spool,
+            &job.workunit(),
+            &super::super::outputs(),
+        );
+        let hint = cache.inventory_key(&unit, &job, &canonical).unwrap();
+        assert!(!opts.cache.as_ref().unwrap().join("input-digests").exists());
+        assert!(cache.load(&hint).unwrap().is_none());
+        cache.verify().unwrap();
+        assert!(!opts.cache.as_ref().unwrap().join("input-digests").exists());
+        let rows = cache.key(&unit, &job, &canonical).unwrap();
+        assert_ne!(hint, rows);
+        assert!(opts.cache.as_ref().unwrap().join("input-digests").is_dir());
+        let path = unit.join(super::super::PAGE_FILE);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&path, bytes).unwrap();
+        File::open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(cache.verify().is_err());
+        let changed = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        assert_ne!(
+            changed.inventory_key(&unit, &job, &canonical).unwrap(),
+            hint
+        );
+        assert_ne!(changed.key(&unit, &job, &canonical).unwrap(), rows);
     }
 
     #[cfg(unix)]
