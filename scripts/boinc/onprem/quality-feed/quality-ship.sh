@@ -144,7 +144,7 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
     in_ct flock -n /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
       python3 /project/ops/qwen-feed/qwen_submit.py --campaign "$CAMPAIGN" \
       --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" --max-pages "$((n + 10))" \
-      --max-ready "$QWEN_MAX_READY" --stage-binary "${USNM_QWEN_STAGE_BINARY:-usnm-boinc}"
+      --max-ready "$QWEN_MAX_READY"
   fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
