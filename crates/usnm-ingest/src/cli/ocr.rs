@@ -354,6 +354,70 @@ pub(crate) struct OcrAlternateStageArgs {
     input: std::path::PathBuf,
 }
 
+/// Append a reviewed alternate preview decision; never change release or queues.
+#[derive(Args)]
+pub(crate) struct OcrAlternateDecideArgs {
+    #[arg(long)]
+    decision: std::path::PathBuf,
+    /// Checksummed, same-source paired human-reference review; select only.
+    #[arg(long)]
+    comparison: Option<std::path::PathBuf>,
+}
+
+/// Read the current alternate preview, revalidating selected artifacts/evidence.
+#[derive(Args)]
+pub(crate) struct OcrAlternatePreviewArgs {
+    #[arg(long)]
+    subject: std::path::PathBuf,
+}
+
+fn alternate_read_file(path: &std::path::Path, max: u64) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(file.metadata()?.len() <= max, "alternate input: size bound");
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() as u64 <= max, "alternate input: size bound");
+    Ok(bytes)
+}
+
+pub(crate) async fn ocr_alternate_decide_command(
+    cli: &Cli,
+    state: State,
+    args: &OcrAlternateDecideArgs,
+) -> anyhow::Result<Option<Published>> {
+    let decision = serde_json::from_slice(&alternate_read_file(&args.decision, 65536)?)
+        .map_err(|_| anyhow::anyhow!("alternate decision refused: invalid decision JSON"))?;
+    let comparison = args
+        .comparison
+        .as_ref()
+        .map(|p| alternate_read_file(p, 65536))
+        .transpose()?;
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let receipt = usnm_ocr_local::alternate_decisions::decide(
+        &state,
+        &owner_id(),
+        curated.as_ref(),
+        &decision,
+        comparison.as_deref(),
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(None)
+}
+
+pub(crate) async fn ocr_alternate_preview_command(
+    cli: &Cli,
+    args: &OcrAlternatePreviewArgs,
+) -> anyhow::Result<Option<Published>> {
+    let subject = serde_json::from_slice(&alternate_read_file(&args.subject, 65536)?)
+        .map_err(|_| anyhow::anyhow!("alternate preview refused: invalid subject JSON"))?;
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let receipt = usnm_ocr_local::alternate_decisions::read(curated.as_ref(), &subject).await?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(None)
+}
+
 fn alternate_binding(bytes: &[u8]) -> anyhow::Result<usnm_ocr_local::alternate::Binding> {
     serde_json::from_slice(bytes)
         .map_err(|_| anyhow::anyhow!("alternate binding refused: invalid binding JSON"))
@@ -364,15 +428,7 @@ pub(crate) async fn ocr_alternate_stage_command(
     state: State,
     args: &OcrAlternateStageArgs,
 ) -> anyhow::Result<Option<Published>> {
-    use std::io::Read;
-    let read = |name: &str, max: u64| -> anyhow::Result<Vec<u8>> {
-        let file = std::fs::File::open(args.input.join(name))?;
-        anyhow::ensure!(file.metadata()?.len() <= max, "{name}: size bound");
-        let mut bytes = Vec::new();
-        file.take(max + 1).read_to_end(&mut bytes)?;
-        anyhow::ensure!(bytes.len() as u64 <= max, "{name}: size bound");
-        Ok(bytes)
-    };
+    let read = |name: &str, max| alternate_read_file(&args.input.join(name), max);
     let binding = alternate_binding(&read("binding.json", 65536)?)?;
     let image = read("source-image", 128 << 20)?;
     let baseline = read(
