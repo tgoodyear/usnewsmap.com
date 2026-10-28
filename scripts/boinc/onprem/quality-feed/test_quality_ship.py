@@ -42,6 +42,14 @@ if "df" in args:
 elif "lvs" in args:
     print(json.dumps({"report": [{"lv": [{"lv_size": os.environ.get(
         "SHIP_TEST_POOL_FREE_BYTES", str(100 * 1024**3)), "data_percent": "0"}]}]}))
+elif "/project/ops/qwen-feed/qwen_submit.py" in args:
+    preflight = "--preflight" in args
+    phase = "preflight" if preflight else "locked_recheck"
+    code = int(os.environ.get("SHIP_TEST_PREFLIGHT_EXIT" if preflight
+                              else "SHIP_TEST_PUBLISH_EXIT", "0"))
+    print(json.dumps({"phase": phase, "status": "deferred" if code == 75 else "admitted",
+                      "reason": "fresh_original_watermark" if code == 75 else None}))
+    sys.exit(code)
 elif "python3" in args and "-" in args:
     sys.stdin.read()
     if "--after-submit" in args:
@@ -81,6 +89,48 @@ elif "python3" in args and "-" in args:
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(probe.returncode, 0, probe.stderr)
                 self.assertEqual(probe.stdout, "locked argv survives")
+
+    def test_full_watermark_defers_repeated_ticks_before_any_transfer_or_stage(self):
+        self.env["SHIP_TEST_PREFLIGHT_EXIT"] = "75"
+        for _ in range(2):
+            result = self.run_ship(["--qwen-max-ready", "200"])
+            self.assertEqual(result.returncode, 75, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "deferred")
+            self.assertIn("transferred 0 pages; READY retained", result.stderr)
+            self.assertNotIn("submitted,", result.stderr)
+            self.assertEqual((self.root / "outbox/test/c00001/READY").read_text(), "1\n")
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        preflights = [c for c in calls if "--preflight" in c]
+        self.assertEqual(len(preflights), 2)
+        self.assertTrue(all(c[c.index("--max-pages") + 1] == "1"
+                            and c[c.index("--max-ready") + 1] == "200" for c in preflights))
+        self.assertFalse(any("tar" in c or "--step" in c or "flock" in c
+                             or "--after-submit" in c for c in calls))
+
+    def test_capacity_change_under_project_lock_retains_ready_without_acknowledgement(self):
+        self.env["SHIP_TEST_PUBLISH_EXIT"] = "75"
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("native publication deferred; READY retained", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertTrue(any("tar" in c for c in calls))
+        self.assertTrue(any("--preflight" in c for c in calls))
+        self.assertTrue(any("flock" in c and "/run/usnm-boinc-step.lock" in c for c in calls))
+        self.assertFalse(any("quality-submit" in c or "--after-submit" in c for c in calls))
+        self.env["SHIP_TEST_PUBLISH_EXIT"] = "0"
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "outbox/test/c00001/READY").exists())
+
+    def test_uncertainty_is_not_misclassified_as_normal_preflight_backpressure(self):
+        self.env["SHIP_TEST_PREFLIGHT_EXIT"] = "1"
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("preflight deferred", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any("tar" in c or "--step" in c for c in calls))
 
     def test_qwen_watermark_rejects_nonpositive_noninteger_and_missing_values(self):
         for value in ("0", "-1", "1.5", "oops", "", None):
