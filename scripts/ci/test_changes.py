@@ -250,7 +250,7 @@ class Quickwit(unittest.TestCase):
         self.assertTrue(flags["quickwit_pipeline"])
 
     @unittest.skipUnless(CARGO, "no cargo")
-    def test_api_only_lockfile_bump_runs_pipeline_not_parity(self):
+    def test_api_lockfile_bump_runs_both_for_example_build_resolution(self):
         def change():
             subprocess.run(
                 [CARGO, "update", "-q", "-p", "resvg", "--precise", "0.45.0"],
@@ -260,7 +260,7 @@ class Quickwit(unittest.TestCase):
         self.change = change
         flags = self.outputs()
         self.assertTrue(flags["quickwit_pipeline"])
-        self.assertFalse(flags["quickwit_parity"])
+        self.assertTrue(flags["quickwit_parity"])
 
 
 if __name__ == "__main__":
@@ -506,10 +506,15 @@ class BuildInputs(unittest.TestCase):
         for path, suites in [
             ("crates/usnm-search/src/lib.rs", {"parity", "pipeline"}),
             ("crates/usnm-core/src/lib.rs", {"parity", "pipeline"}),
-            ("crates/usnm-ingest/src/lib.rs", {"pipeline"}),
-            ("crates/usnm-state/src/lib.rs", {"pipeline"}),
+            ("crates/usnm-ingest/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/src/sink/template.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/examples/decade_fixture.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/examples/single_field_fixture.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/examples/page_language_fixture.rs", {"parity", "pipeline"}),
+            ("crates/usnm-core/examples/add_text_cg.rs", {"parity", "pipeline"}),
+            ("crates/usnm-state/src/lib.rs", {"parity", "pipeline"}),
             ("crates/usnm-search/Cargo.toml", {"parity", "pipeline"}),
-            ("crates/usnm-ingest/Cargo.toml", {"pipeline"}),
+            ("crates/usnm-ingest/Cargo.toml", {"parity", "pipeline"}),
             ("crates/usnm-search/tests/quickwit_parity.rs", {"parity"}),
             ("crates/usnm-ingest/tests/pipeline/writer.rs", {"pipeline"}),
         ]:
@@ -567,6 +572,16 @@ class BuildInputs(unittest.TestCase):
         self.assertIn("needs: [changes, quickwit-tests]", gate)
         self.assertIn("if: always() && needs.changes.outputs.quickwit == 'true'", gate)
         self.assertIn('test "$RESULT" = success', gate)
+
+    def test_parity_fixture_generators_do_not_call_the_excluded_api(self):
+        setup = (ROOT / "scripts/dev/quickwit-fixtures.sh").read_text()
+        generators = set(re.findall(r"-p ([\w-]+) --example (\w+)", setup))
+        self.assertTrue(generators)
+        for crate, example in generators:
+            with self.subTest(crate=crate, example=example):
+                self.assertIn(crate, {"usnm-core", "usnm-ingest"})
+                source = (ROOT / f"crates/{crate}/examples/{example}.rs").read_text()
+                self.assertNotRegex(source, r"\busnm_api\b")
 
     def test_dashboard_renderer_and_markdown_change_runs_only_the_dashboard_checks(self):
         # The change #734 makes: html.rs and docs/operations/onprem-ocr.md.
@@ -729,6 +744,9 @@ class BuildInputs(unittest.TestCase):
         for job in re.findall(r"(?m)^  ([a-z0-9_-]+):$", ci.split("\njobs:\n", 1)[1]):
             text = job_text(ci, job)
             flags = set(re.findall(r"needs\.changes\.outputs\.(\w+)", text))
+            if "quickwit_suites" in flags:
+                flags.remove("quickwit_suites")
+                flags.update({"quickwit_parity", "quickwit_pipeline"})
             for action in re.findall(r"uses: \./\.github/actions/([\w-]+)", text):
                 called.setdefault(action, set()).update(flags)
         self.assertGreaterEqual(len(called), 3)

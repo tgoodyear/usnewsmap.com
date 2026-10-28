@@ -28,7 +28,7 @@
 # when its own files change (the snapshots, the index history, their schemas,
 # checkers and writers, its requirements, or ci.yml, which defines the job).
 # quickwit_parity / quickwit_pipeline: what each Quickwit test builds or loads:
-# the workspace crates usnm-search / usnm-ingest depend on (from cargo metadata), the
+# the workspace crates their tests and fixture generators depend on (from cargo metadata), the
 # workspace manifest and lock file only when the packages Cargo resolves for
 # those crates change, and the fixtures, index configs and Quickwit scripts.
 # quickwit is their union, gating the required aggregate; quickwit_suites is
@@ -193,8 +193,10 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # targets only these integration tests; tests in crates that are merely
 # dependencies (such as usnm-api) are not built or run. The ingest pipeline
 # target is a module tree, not a single pipeline.rs file. Its API calls load
-# RefData and assemble status sources; they do not serve the site. Site-only
-# sources are excluded below, but shared API code and manifests still count.
+# RefData and assemble status sources; they do not serve the site. Parity's
+# setup also runs core/ingest examples, but those do not call the API. Their
+# normal/build source closure excludes ingest's API dev-dependency; resolution
+# still includes dev-dependencies, which Cargo builds for examples.
 quickwit_common='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/(install-quickwit\.sh|rust-test-times\.py)$)'
 quickwit_parity="$quickwit_common|^crates/usnm-search/tests/quickwit_parity\.rs$"
 quickwit_pipeline="$quickwit_common|^crates/usnm-ingest/tests/pipeline/"
@@ -362,7 +364,13 @@ _narrow() {
   local kind=$1 part=$2 dirs='' embeds listed=true; shift 2
   matches_built "${!part}" && return 0
   case $kind in
-    test) dirs=$(closure_crates "$@") || listed=false ;;
+    test)
+      if [ "$part" = quickwit_parity ]; then
+        dirs=$(closure_build_crates false "$@") || listed=false
+      else
+        dirs=$(closure_crates "$@") || listed=false
+      fi
+      ;;
     release) dirs=$(closure_build_crates false "$@") || listed=false ;;
     examples) dirs=$(closure_build_crates true "$@") || listed=false ;;
   esac
@@ -396,14 +404,29 @@ _narrow() {
       return 0
     fi
   fi
-  if matches_built '^Cargo\.(toml|lock)$' && lock_changed "$kind" "$@"; then
+  local resolution_files='^Cargo\.(toml|lock)$'
+  # Example builds resolve the roots' dev-dependencies too, even though their
+  # unused source code cannot change fixture output. Recheck that resolution
+  # for manifests outside parity's normal/build source closure.
+  if [ "$part" = quickwit_parity ]; then
+    resolution_files="$resolution_files|^crates/[^/]+/Cargo\.toml$"
+  fi
+  if matches_built "$resolution_files" && {
+    if [ "$part" = quickwit_parity ]; then
+      # Parity tests and fixture examples run in separate Cargo invocations;
+      # a combined tree could hide a feature change through unification.
+      lock_changed "$kind" usnm-search || lock_changed "$kind" usnm-ingest
+    else
+      lock_changed "$kind" "$@"
+    fi
+  }; then
     echo "the packages resolved for $* changed: running $part"; printf -v "$part" '.'
   fi
 }
 narrow() { _narrow test "$@"; }
 narrow_release() { _narrow release "$@"; }
 narrow_examples() { _narrow examples "$@"; }
-narrow quickwit_parity usnm-search
+narrow quickwit_parity usnm-search usnm-ingest
 narrow quickwit_pipeline usnm-ingest
 narrow image usnm-api usnm-ingest
 narrow e2e usnm-api
