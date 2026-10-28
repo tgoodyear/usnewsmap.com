@@ -38,6 +38,7 @@ pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
 pub mod reject;
+pub mod retry;
 pub mod scans;
 pub mod submit;
 pub mod surya;
@@ -221,6 +222,10 @@ pub struct Record {
     /// Fixed once, so interrupted publishing uses the same native object paths.
     pub stamp: String,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<retry::Retry>,
     /// For a job that came off the work queues (`claim`): the ledger row the
     /// queue message was written with, which the result is imported against.
     /// An explicit cohort has none, and `queued` makes its row.
@@ -235,6 +240,33 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unbundled: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalFailure {
+    pub error_mask: Option<u32>,
+    pub no_output_files: bool,
+    pub marker_sha256: Option<String>,
+}
+
+impl TerminalFailure {
+    pub fn from_marker(marker: Option<&[u8]>) -> Self {
+        Self {
+            error_mask: terminal_mask(marker),
+            no_output_files: marker.is_none(),
+            marker_sha256: marker.map(boinc::sha256),
+        }
+    }
+
+    pub fn retryable(&self) -> bool {
+        if self.no_output_files {
+            self.error_mask.is_none() && self.marker_sha256.is_none()
+        } else {
+            self.error_mask.is_some_and(|mask| mask != 0)
+                && self.marker_sha256.as_deref().is_some_and(boinc::is_sha256)
+        }
+    }
+}
 /// A native ledger row as a claim carries it (`ledger::Queued` with its
 /// times as RFC 3339 text).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +279,8 @@ pub struct LedgerRow {
     pub attempt: u32,
     pub request_day: Option<String>,
     pub queued_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_message_at: Option<String>,
 }
 impl LedgerRow {
     pub fn from_queued(q: &Queued) -> Self {
@@ -257,6 +291,9 @@ impl LedgerRow {
             plan: q.plan.clone(),
             attempt: q.attempt,
             request_day: q.request_day.map(|d| d.to_string()),
+            retry_message_at: q
+                .retry_message_at
+                .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
             queued_at: q
                 .queued_at
                 .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
@@ -273,6 +310,12 @@ impl LedgerRow {
             attempt: self.attempt,
             request_day: self.request_day.as_deref().map(str::parse).transpose()?,
             queued_at: DateTime::parse_from_rfc3339(&self.queued_at)?.with_timezone(&Utc),
+            retry_message_at: self
+                .retry_message_at
+                .as_deref()
+                .map(DateTime::parse_from_rfc3339)
+                .transpose()?
+                .map(|at| at.with_timezone(&Utc)),
         })
     }
 }
@@ -289,8 +332,9 @@ impl Record {
             reason: self.job.message.reason.as_str().into(),
             language: self.job.message.language.clone(),
             plan: self.plan.clone(),
-            attempt: 1,
+            attempt: self.job.attempt + 1,
             request_day: None,
+            retry_message_at: None,
             queued_at: DateTime::parse_from_rfc3339(&self.job.message.queued_at)?
                 .with_timezone(&Utc),
         })
@@ -334,6 +378,7 @@ pub fn load(root: &Path, id: &str) -> anyhow::Result<Record> {
         boinc::MAX_JSON * 2,
     )?)?;
     record.job.validate()?;
+    retry::validate(&record)?;
     ensure!(record.job.id == id, "journal identity mismatch");
     Ok(record)
 }
@@ -591,6 +636,8 @@ pub async fn export(
         let mut job = Job {
             v: boinc::VERSION,
             id: String::new(),
+            attempt: 0,
+            retry_of: None,
             message,
             batch_version: row.batch_version,
             scan: boinc::Scan {
@@ -635,6 +682,8 @@ pub async fn export(
                 stage: Stage::Prepared,
                 stamp: now.format("%Y%m%dT%H%M%S%6fZ").to_string(),
                 error: None,
+                terminal: None,
+                retry: None,
                 ledger: ledger_row,
                 bundle: None,
                 unbundled: None,
@@ -806,6 +855,7 @@ pub async fn import(
     put_same(out, &part_name, part, "application/vnd.apache.parquet").await?;
     record.stage = Stage::Published;
     record.error = None;
+    record.terminal = None;
     save(root, &record)?;
     Ok(())
 }
@@ -827,13 +877,16 @@ async fn put_same(
 /// Why a workunit failed for good, from the assimilator's `_error` marker (its error mask, as
 /// `0x<hex>`; none means `_no_output_files`). A present but invalid marker has an unknown
 /// mask, not a missing-output diagnosis.
-pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
-    let mask = marker
+fn terminal_mask(marker: Option<&[u8]>) -> Option<u32> {
+    marker
         .and_then(|b| std::str::from_utf8(b).ok())
         // The stock assimilator appends: the last mask written is the workunit's.
         .and_then(|s| s.lines().map(str::trim).rfind(|l| !l.is_empty()))
-        .and_then(|s| u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok());
-    let Some(mask) = mask else {
+        .and_then(|s| u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok())
+}
+
+pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
+    let Some(mask) = terminal_mask(marker) else {
         return if marker.is_some() {
             format!("BOINC workunit failed for good: error mask unknown (invalid error marker); page deadline {timeout_secs} s")
         } else {
@@ -929,6 +982,7 @@ pub async fn collect(
         ensure!(record.stage != Stage::Published, "already published");
         record.stage = Stage::Failed;
         record.error = Some(terminal_reason(marker.as_deref(), job.engine.timeout_secs));
+        record.terminal = Some(TerminalFailure::from_marker(marker.as_deref()));
         save(root, &record)?;
         bail!("BOINC terminal failure");
     }

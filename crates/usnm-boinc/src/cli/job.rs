@@ -101,6 +101,79 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
 }
 
 #[derive(Args)]
+pub struct RetryArgs {
+    #[arg(long)]
+    root: PathBuf,
+    #[arg(long)]
+    spool: PathBuf,
+    #[arg(long)]
+    job: String,
+    /// Reviewed assimilator mask, in decimal (for example 2 for error mask 0x2).
+    #[arg(
+        long,
+        required_unless_present = "expected_no_output_files",
+        conflicts_with = "expected_no_output_files"
+    )]
+    expected_error_mask: Option<u32>,
+    #[arg(long)]
+    expected_no_output_files: bool,
+    /// Already signed and installed usnm_ocr worker version supporting retry contract v2.
+    #[arg(long)]
+    app_version_num: u32,
+    /// Full TESSERACT_IMAGE configuration digest of that supporting signed worker.
+    #[arg(long)]
+    image: String,
+    #[arg(long)]
+    reviewed_reason: String,
+    #[arg(long)]
+    curated_url: String,
+    #[arg(long)]
+    reference_url: String,
+    #[arg(long, required_unless_present = "cosmos", conflicts_with = "cosmos")]
+    state_file: Option<PathBuf>,
+    #[arg(long)]
+    cosmos: Option<String>,
+}
+
+pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
+    let docs: Arc<dyn DocStore> = if let Some(endpoint) = args.cosmos {
+        Arc::new(CosmosDocs::new(
+            &endpoint,
+            usnm_state::DATABASE,
+            usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
+        )?)
+    } else {
+        Arc::new(FileDocs::open(
+            args.state_file.context("--state-file required")?,
+        )?)
+    };
+    let expected = match (args.expected_error_mask, args.expected_no_output_files) {
+        (Some(mask), false) => crate::retry::ExpectedTerminal::Mask(mask),
+        (None, true) => crate::retry::ExpectedTerminal::NoOutputFiles,
+        _ => anyhow::bail!("review exactly one terminal error mask or no-output disposition"),
+    };
+    let curated = usnm_store::open(&args.curated_url)?;
+    let reference = usnm_store::open(&args.reference_url)?;
+    let id = crate::retry::prepare(
+        &crate::retry::Options {
+            root: &args.root,
+            spool: &args.spool,
+            previous_job: &args.job,
+            expected,
+            app_version_num: args.app_version_num,
+            image: &args.image,
+            reviewed_reason: &args.reviewed_reason,
+        },
+        &State::new(docs),
+        curated.as_ref(),
+        reference.as_ref(),
+    )
+    .await?;
+    println!("{id}");
+    Ok(())
+}
+
+#[derive(Args)]
 pub struct WorkArgs {
     #[arg(long, default_value = "/work")]
     dir: PathBuf,

@@ -344,6 +344,7 @@ fn queued(doc_id: &str, batch: &str, reason: &str) -> Queued {
         plan: "test".into(),
         attempt: 1,
         request_day: None,
+        retry_message_at: None,
         queued_at: Utc::now() - chrono::Duration::hours(1),
     }
 }
@@ -921,6 +922,171 @@ async fn a_run_stopped_before_its_deletes_is_finished_without_importing_again() 
         .await;
     let status = fx.sync().await;
     assert_eq!(status.last_run.imported, 1);
+}
+
+#[tokio::test]
+async fn deliberate_retry_requires_settlement_replays_and_keeps_original_request_day() {
+    let fx = fixture(false).await;
+    let mut previous = queued(&key(3).doc_id(), BATCH, "user");
+    previous.plan = "hit-results".into();
+    previous.queued_at = DateTime::from_timestamp(Utc::now().timestamp() - 86400, 0).unwrap();
+    fx.ask(std::slice::from_ref(&previous)).await;
+    let snapshot = super::boinc::Snapshot::load(&fx.state, fx.stores.reference.as_ref())
+        .await
+        .unwrap();
+    let next = super::boinc::next_attempt(&previous, Utc::now()).unwrap();
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &next,
+        "retry-one"
+    )
+    .await
+    .is_err());
+    let at = previous.queued_at + chrono::Duration::minutes(1);
+    ledger::write_outcomes(
+        fx.stores.curated.as_ref(),
+        &[ledger::Outcome {
+            doc_id: previous.doc_id.clone(),
+            outcome: ledger::DEAD_LETTERED.into(),
+            cause: Some("permanent".into()),
+            kind: None,
+            source: "terminal-dead-letter".into(),
+            at,
+            run: "prior-failure".into(),
+        }],
+        at,
+        "prior-failure",
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        super::boinc::retry(
+            &fx.state,
+            fx.stores.curated.as_ref(),
+            &snapshot,
+            &previous,
+            &next,
+            "retry-one",
+        )
+        .await
+        .unwrap();
+    }
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(loaded.outstanding(&previous.doc_id), Some(&next));
+    assert_eq!(next.attempt, 2);
+    assert_eq!(next.request_day, Some(previous.queued_at.date_naive()));
+    assert_eq!(
+        loaded.user_requests_for_day(previous.queued_at.date_naive()),
+        1
+    );
+    assert_eq!(loaded.user_requests_for_day(next.queued_at.date_naive()), 0);
+    let stale =
+        super::boinc::next_attempt(&previous, Utc::now() + chrono::Duration::seconds(1)).unwrap();
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &stale,
+        "retry-conflict"
+    )
+    .await
+    .is_err());
+}
+
+#[test]
+fn legacy_ledger_without_retry_timestamp_remains_readable() {
+    let row = queued(&key(3).doc_id(), BATCH, "bulk");
+    let encoded = ledger::encode_queued(std::slice::from_ref(&row)).unwrap();
+    let batch = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::from(encoded),
+    )
+    .unwrap()
+    .build()
+    .unwrap()
+    .next()
+    .unwrap()
+    .unwrap();
+    let columns: Vec<_> = (0..batch.num_columns())
+        .filter(|&i| batch.schema().field(i).name() != "retry_message_at")
+        .collect();
+    let legacy = batch.project(&columns).unwrap();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(Vec::new(), legacy.schema(), None).unwrap();
+    writer.write(&legacy).unwrap();
+    let loaded = ledger::decode_queued(bytes::Bytes::from(writer.into_inner().unwrap())).unwrap();
+    assert_eq!(loaded[0].retry_message_at, None);
+    assert_eq!(loaded[0].doc_id, row.doc_id);
+}
+
+#[tokio::test]
+async fn stale_dead_letter_is_archived_without_settling_a_new_attempt() {
+    let fx = fixture(false).await;
+    let mut previous = queued(&key(3).doc_id(), BATCH, "bulk");
+    previous.queued_at = DateTime::from_timestamp(Utc::now().timestamp() - 3600, 0).unwrap();
+    let next = super::boinc::next_attempt(&previous, Utc::now()).unwrap();
+    fx.ask(std::slice::from_ref(&next)).await;
+    let message = OcrMessage {
+        v: 1,
+        page: key(3).to_string(),
+        batch: BATCH.into(),
+        language: "deu".into(),
+        reason: Reason::Bulk,
+        score: None,
+        queued_at: previous.queued_at.to_rfc3339(),
+    };
+    let dead = DeadLetter::new(
+        BULK,
+        "old-attempt",
+        Some(&message),
+        Cause::Permanent,
+        None,
+        None,
+        "BOINC error mask 0x2",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    let status = fx.sync().await;
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(loaded.outstanding(&next.doc_id), Some(&next));
+    assert_eq!(
+        status.last_run.dead_letters_rejected.get("stale_attempt"),
+        Some(&1)
+    );
+    assert_eq!(fx.queue.approximate_count(DEADLETTER).await.unwrap(), 0);
+    assert_eq!(
+        fx.stores
+            .curated
+            .list(&format!("{ROOT}/deadletter"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let current = OcrMessage {
+        queued_at: next.retry_message_at.unwrap().to_rfc3339(),
+        ..message
+    };
+    let dead = DeadLetter::new(
+        BULK,
+        "current-attempt",
+        Some(&current),
+        Cause::Permanent,
+        None,
+        None,
+        "BOINC error mask 0x4",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    let status = fx.sync().await;
+    assert!(status.last_run.dead_letters_rejected.is_empty());
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert!(loaded.outstanding(&next.doc_id).is_none());
 }
 
 #[tokio::test]

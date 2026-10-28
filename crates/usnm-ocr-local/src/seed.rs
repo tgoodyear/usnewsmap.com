@@ -1176,6 +1176,7 @@ pub(super) async fn seed(
                 attempt: attempt(&q.doc_id),
                 request_day: None,
                 queued_at: now,
+                retry_message_at: None,
             },
             msg,
         ));
@@ -1285,6 +1286,7 @@ pub(super) async fn seed(
                     attempt: attempt(doc_id),
                     request_day: None,
                     queued_at: now,
+                    retry_message_at: None,
                 },
                 msg,
             ));
@@ -1447,6 +1449,7 @@ pub(super) async fn seed(
                         attempt: attempt(doc_id),
                         request_day: None,
                         queued_at: now,
+                        retry_message_at: None,
                     },
                     msg,
                 ));

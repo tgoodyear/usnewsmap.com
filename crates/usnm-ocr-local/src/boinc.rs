@@ -207,6 +207,94 @@ pub async fn reserve(
     unlock
 }
 
+pub fn next_attempt(
+    previous: &ledger::Queued,
+    at: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<ledger::Queued> {
+    let at = chrono::DateTime::from_timestamp_micros(at.timestamp_micros())
+        .ok_or_else(|| anyhow::anyhow!("retry time is not representable in the native ledger"))?;
+    let mut next = previous.clone();
+    next.attempt = previous
+        .attempt
+        .checked_add(1)
+        .filter(|n| *n <= i32::MAX as u32)
+        .ok_or_else(|| anyhow::anyhow!("native attempt overflow"))?;
+    anyhow::ensure!(
+        at > previous.queued_at,
+        "retry must follow previous queued row"
+    );
+    next.queued_at = at;
+    next.retry_message_at = Some(at);
+    if next.plan == "hit-results" && next.request_day.is_none() {
+        next.request_day = Some(previous.queued_at.date_naive());
+    }
+    Ok(next)
+}
+
+/// Reserve exactly the next attempt after a permanent terminal outcome.
+pub async fn retry(
+    state: &State,
+    curated: &dyn ObjectStore,
+    snapshot: &Snapshot,
+    previous: &ledger::Queued,
+    next: &ledger::Queued,
+    run: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        next_attempt(previous, next.queued_at)? == *next,
+        "retry changes more than attempt, time and original request-day attribution"
+    );
+    let owner = usnm_state::owner_id();
+    let lease = take_waiting(state, &owner).await?;
+    let result = async {
+        anyhow::ensure!(
+            state.current_version().await?.as_deref() == Some(&snapshot.version),
+            "published snapshot changed during retry"
+        );
+        anyhow::ensure!(
+            snapshot.batch_version(&next.batch) == Some(next.batch_version),
+            "retry batch version is not published"
+        );
+        let key = usnm_core::ids::PageKey::from_doc_id(&next.doc_id)?;
+        anyhow::ensure!(
+            snapshot.titles.contains_key(&key.lccn) && !snapshot.is_japanese(&key.lccn),
+            "retry title is unavailable or uses the Japanese OCR pipeline"
+        );
+        let ledger = ledger::load(curated).await?;
+        if ledger.queued.get(&next.doc_id) == Some(next) {
+            anyhow::ensure!(
+                ledger.outstanding(&next.doc_id) == Some(next),
+                "retry reservation already settled; reconcile"
+            );
+            lease.check()?;
+            return Ok(());
+        }
+        anyhow::ensure!(
+            ledger.queued.get(&next.doc_id) == Some(previous),
+            "previous attempt is no longer the latest ledger row"
+        );
+        let outcome = ledger
+            .outcomes
+            .get(&next.doc_id)
+            .ok_or_else(|| anyhow::anyhow!("previous attempt has no settled outcome"))?;
+        anyhow::ensure!(
+            outcome.outcome == ledger::DEAD_LETTERED
+                && outcome.cause.as_deref() == Some("permanent")
+                && outcome.at >= previous.queued_at
+                && outcome.at < next.queued_at,
+            "only a settled permanent failure may be retried"
+        );
+        lease.check()?;
+        ledger::write_queued(curated, std::slice::from_ref(next), next.queued_at, run).await?;
+        Ok(())
+    }
+    .await;
+    drop(lease);
+    let unlock = state.unlock(LOCK, &owner).await;
+    result?;
+    unlock
+}
+
 /// Check, under the same lock, that every page's ledger row is still the
 /// outstanding one a queue message carried, and write nothing: the row was
 /// written when the message was queued (`ocr-enqueue`, the seeder or the

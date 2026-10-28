@@ -114,7 +114,7 @@ pub(crate) async fn ocr_page(
     );
     usnm_alto::check(&output.alto, &usnm_alto::Limits::default())?;
     let result = ResultManifest {
-        v: boinc::VERSION,
+        v: job.v,
         job_id: job.id.clone(),
         scan_sha256: job.scan.sha256.clone(),
         engine: job.engine.clone(),

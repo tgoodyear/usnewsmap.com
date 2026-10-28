@@ -117,6 +117,52 @@ an ambiguous publication or acceptance reservation.
 Native binary/auxiliary inputs are rehashed after copying into private staging;
 only those verified copies are transferred for signing and appver construction.
 
+## Deliberate terminal OCR retry (#1159)
+
+`usnm-boinc retry` prepares **one explicitly reviewed single-page retry**, not an
+automatic recovery loop. Attempt 0 keeps its existing v1 JSON and job/workunit ID.
+Retry contract v2 binds a new attempt to its parent ID. Never edit an old request,
+signed app version, journal, assimilator marker or accepted result to force a replay.
+
+Before activation, deploy the reviewed reader to **every** strict journal consumer
+(server, bridge and native sync), and sign/install a matching `usnm_ocr` worker
+supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
+Record the supporting worker's full configuration digest (`TESSERACT_IMAGE`) and
+BOINC app version number. Existing trust, routing, source budgets and validation
+still apply. Do not retry a bundle or bypass its reconciliation.
+
+After confirming BOINC's actual terminal disposition and that native sync has
+settled the exact previous native row as a permanent failure:
+
+```sh
+usnm-boinc retry --root /private/jobs --spool /private/assimilated \
+  --job PARENT_JOB_ID --expected-error-mask 2 \
+  --image sha256:SUPPORTING_WORKER_DIGEST --app-version-num SUPPORTING_APP_VERSION \
+  --reviewed-reason 'Reviewed terminal 0x2; supporting worker release recorded' \
+  --state-file /private/state.json \
+  --curated-url /private/curated --reference-url /private/reference
+```
+
+Use `--expected-no-output-files` instead of `--expected-error-mask` only for an
+actual `_no_output_files` marker. Unknown and zero masks are refused, not treated
+as missing output. An error mask is decimal on the CLI (`2` reviews `0x2`).
+Accepted/canonical/partial output, changed terminal proof, nonterminal work and a
+newer native reservation all require reconciliation, not retry.
+
+The command prints the new child ID and reserves it without submission. It
+preserves the original scan, failed journal and request-day quota attribution.
+An identical invocation resumes its durable prepared/reserved child; it never
+creates another workunit for that parent. Submit that child through the existing
+single-page `submit` path, which pins `--app_version_num` from the retry journal.
+Uncertain submission still requires authoritative BOINC lookup and explicit
+`reconcile`; never delete its journal and repeat. A retry of a failed child needs
+a fresh terminal review naming that child.
+
+First acceptance is one reviewed failed-page canary: preserve its original real
+mask through collect/journal/dead letter, verify the one new workunit and supporting
+app version, collect/import via ordinary validation, verify native settlement,
+and record all identities. Code tests or a merged PR do not prove this live gate.
+
 ## What runs on the host
 
 | Unit                               | What                                                                                                                                                                | Notes                                                                                                                     |

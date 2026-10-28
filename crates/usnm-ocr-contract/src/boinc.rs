@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const VERSION: u32 = 1;
+pub const RETRY_VERSION: u32 = 2;
 pub const MAX_JSON: usize = 16 * 1024;
 pub const MAX_TEXT: usize = 512 * 1024;
 pub const MAX_ALTO: usize = 32 * 1024 * 1024;
@@ -89,15 +90,23 @@ pub struct Engine {
 pub struct Job {
     pub v: u32,
     pub id: String,
+    #[serde(default, skip_serializing_if = "is_first_attempt")]
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
     pub message: OcrMessage,
     pub batch_version: u16,
     pub scan: Scan,
     pub engine: Engine,
 }
 #[cfg(feature = "pipeline")]
+fn is_first_attempt(attempt: &u32) -> bool {
+    *attempt == 0
+}
+#[cfg(feature = "pipeline")]
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
-        Ok(sha256(&serde_json::to_vec(&(
+        let legacy = (
             self.v,
             &self.message.page,
             &self.message.batch,
@@ -107,13 +116,31 @@ impl Job {
             self.batch_version,
             &self.scan,
             &self.engine,
-        ))?))
+        );
+        if self.attempt == 0 {
+            Ok(sha256(&serde_json::to_vec(&legacy)?))
+        } else {
+            Ok(sha256(&serde_json::to_vec(&(
+                legacy,
+                self.attempt,
+                &self.retry_of,
+            ))?))
+        }
     }
     pub fn workunit(&self) -> String {
         format!("usnm_{}", self.id)
     }
     pub fn validate(&self) -> anyhow::Result<()> {
-        ensure!(self.v == VERSION, "unsupported BOINC job version");
+        ensure!(
+            (self.v == VERSION && self.attempt == 0 && self.retry_of.is_none())
+                || (self.v == RETRY_VERSION
+                    && (1..i32::MAX as u32).contains(&self.attempt)
+                    && self
+                        .retry_of
+                        .as_deref()
+                        .is_some_and(|id| is_sha256(id) && id != self.id)),
+            "unsupported BOINC job version or attempt"
+        );
         self.message.validate()?;
         ensure!(
             self.engine.kind == crate::routing::EngineKind::for_language(&self.message.language),
@@ -211,7 +238,7 @@ impl ResultManifest {
         job.validate()?;
         chrono::DateTime::parse_from_rfc3339(&self.completed_at)?;
         ensure!(
-            self.v == VERSION
+            self.v == job.v
                 && self.job_id == job.id
                 && self.scan_sha256 == job.scan.sha256
                 && self.engine == job.engine,
@@ -335,6 +362,10 @@ pub mod bundle {
             let mut offset = 0u64;
             for page in &self.pages {
                 page.job.validate()?;
+                ensure!(
+                    page.job.attempt == 0,
+                    "retry jobs use pinned single-page workunits"
+                );
                 ensure!(seen.insert(&page.job.id), "a page is in the bundle twice");
                 ensure!(
                     page.job.engine.kind == crate::routing::EngineKind::Tesseract,
@@ -536,6 +567,38 @@ pub mod bundle {
             job.id = job.identity().unwrap();
             job.validate().unwrap();
             job
+        }
+
+        #[test]
+        fn retries_preserve_legacy_identity_but_have_new_versioned_workunits() {
+            let original: Job =
+                serde_json::from_str(include_str!("fixtures/boinc-tesseract.json")).unwrap();
+            original.validate().unwrap();
+            assert_eq!(
+                original.id,
+                "05a1b237ca490126d365648bed704bd0e04c72979922ef98d86514e9b79de777"
+            );
+            assert!(serde_json::to_value(&original)
+                .unwrap()
+                .get("attempt")
+                .is_none());
+            let mut retry = original.clone();
+            retry.v = super::super::RETRY_VERSION;
+            retry.attempt = 1;
+            retry.retry_of = Some(original.id.clone());
+            retry.id = retry.identity().unwrap();
+            retry.validate().unwrap();
+            assert_ne!(retry.workunit(), original.workunit());
+            let id = retry.id.clone();
+            retry.message.queued_at = "2026-10-28T00:00:00Z".into();
+            assert_eq!(retry.identity().unwrap(), id);
+            retry.attempt = 2;
+            retry.id = retry.identity().unwrap();
+            retry.validate().unwrap();
+            assert_ne!(retry.id, id);
+            assert!(Bundle::new(vec![retry.clone(), job(2)]).is_err());
+            retry.v = super::super::VERSION;
+            assert!(retry.validate().is_err());
         }
 
         fn scans(b: &Bundle) -> Vec<u8> {

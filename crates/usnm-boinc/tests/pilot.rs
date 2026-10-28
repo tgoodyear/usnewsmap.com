@@ -2097,6 +2097,7 @@ mod queue_feed {
             plan: "seed-test".into(),
             attempt: 2,
             request_day: None,
+            retry_message_at: None,
             queued_at: chrono::DateTime::parse_from_rfc3339(&message.queued_at)
                 .unwrap()
                 .with_timezone(&Utc),

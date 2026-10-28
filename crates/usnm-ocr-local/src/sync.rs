@@ -457,6 +457,17 @@ fn dead_letter_key(d: &DeadLetter) -> String {
 /// [`DEAD_LETTER_HIDE`], so none comes back while the run holds it.
 const DEAD_LETTER_BATCH: usize = 100;
 
+fn same_attempt(message: &usnm_ocr_contract::message::OcrMessage, queued: &ledger::Queued) -> bool {
+    let Some(expected) = queued.retry_message_at else {
+        return true;
+    };
+    message.batch == queued.batch
+        && message.language == queued.language
+        && message.reason.as_str() == queued.reason
+        && DateTime::parse_from_rfc3339(&message.queued_at)
+            .is_ok_and(|at| at.timestamp_micros() == expected.timestamp_micros())
+}
+
 async fn drain_dead_letters(
     stores: &Stores,
     run: &str,
@@ -464,13 +475,14 @@ async fn drain_dead_letters(
     counts: &mut Counts,
     written: &mut Vec<Outcome>,
     lease: &Lease,
+    ledger: &ledger::Ledger,
 ) -> anyhow::Result<()> {
     let mut drained = 0;
     let mut n = 0;
     while drained < max {
         let limit = DEAD_LETTER_BATCH.min(max - drained);
         let tag = format!("{run}-dl{n:03}");
-        let got = drain_batch(stores, &tag, limit, counts, written, lease).await?;
+        let got = drain_batch(stores, &tag, limit, counts, written, lease, ledger).await?;
         drained += got;
         n += 1;
         if got < limit {
@@ -489,6 +501,7 @@ async fn drain_batch(
     counts: &mut Counts,
     written: &mut Vec<Outcome>,
     lease: &Lease,
+    ledger: &ledger::Ledger,
 ) -> anyhow::Result<usize> {
     let mut valid: Vec<(Received, DeadLetter)> = Vec::new();
     let mut rejected: Vec<Received> = Vec::new();
@@ -533,6 +546,19 @@ async fn drain_batch(
             if let Some(m) = &d.message {
                 // The message passed its checks, so its page parses.
                 if let Ok(key) = m.key() {
+                    if let Some(queued) = ledger.queued.get(&key.doc_id()) {
+                        if !same_attempt(m, queued) {
+                            tracing::warn!(
+                                message_id = %msg.id, doc_id = %key.doc_id(),
+                                "stale dead letter archived without settling the latest attempt"
+                            );
+                            *counts
+                                .dead_letters_rejected
+                                .entry("stale_attempt".into())
+                                .or_default() += 1;
+                            continue;
+                        }
+                    }
                     outcomes.push(Outcome {
                         doc_id: key.doc_id(),
                         outcome: DEAD_LETTERED.into(),
@@ -643,6 +669,7 @@ async fn run_locked(
         &mut counts,
         &mut written,
         lease,
+        &ctx.ledger,
     )
     .await?;
 

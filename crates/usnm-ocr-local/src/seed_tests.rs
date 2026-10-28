@@ -437,6 +437,7 @@ fn mine(doc_id: &str, attempt: u32, at: DateTime<Utc>) -> Queued {
         attempt,
         request_day: None,
         queued_at: at,
+        retry_message_at: None,
     }
 }
 

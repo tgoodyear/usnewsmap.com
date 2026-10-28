@@ -837,6 +837,7 @@ async fn enqueue_with_policy(
                 attempt,
                 request_day: policy.request_day,
                 queued_at: now,
+                retry_message_at: None,
             },
             msg,
         ));
@@ -1037,6 +1038,7 @@ async fn requeue_locked(
                 attempt,
                 request_day: None,
                 queued_at: now,
+                retry_message_at: None,
             },
             msg,
         ));

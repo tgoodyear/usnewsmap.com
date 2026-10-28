@@ -53,6 +53,9 @@ pub struct Queued {
     /// The UTC request day, for the daily cap. Queue ordering uses `queued_at`.
     pub request_day: Option<chrono::NaiveDate>,
     pub queued_at: DateTime<Utc>,
+    /// Exact message time for deliberate BOINC retries; legacy queues use
+    /// second precision or request-day midnight, not the ledger's queue time.
+    pub retry_message_at: Option<DateTime<Utc>>,
 }
 
 pub const IMPORTED: &str = "imported";
@@ -93,6 +96,11 @@ fn queued_schema() -> SchemaRef {
             "queued_at",
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             false,
+        ),
+        Field::new(
+            "retry_message_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
         ),
     ]))
 }
@@ -135,6 +143,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
     let mut attempt = Int32Builder::new();
     let mut request_day = StringBuilder::new();
     let mut at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
+    let mut retry_at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
     for r in rows {
         doc_id.append_value(&r.doc_id);
         batch.append_value(&r.batch);
@@ -145,6 +154,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
         attempt.append_value(i32::try_from(r.attempt).unwrap_or(i32::MAX));
         request_day.append_option(r.request_day.map(|d| d.format("%Y-%m-%d").to_string()));
         at.append_value(r.queued_at.timestamp_micros());
+        retry_at.append_option(r.retry_message_at.map(|at| at.timestamp_micros()));
     }
     write(
         queued_schema(),
@@ -158,6 +168,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
             Arc::new(attempt.finish()),
             Arc::new(request_day.finish()),
             Arc::new(at.finish()),
+            Arc::new(retry_at.finish()),
         ],
     )
 }
@@ -225,6 +236,15 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
             })
             .transpose()?;
         let at = col!(b, "queued_at", TimestampMicrosecondArray);
+        let retry_at = b
+            .column_by_name("retry_message_at")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .context("column `retry_message_at` has an unexpected type")
+            })
+            .transpose()?;
         for i in 0..b.num_rows() {
             let request_day = request_day
                 .filter(|days| !days.is_null(i))
@@ -243,6 +263,9 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
                 attempt: u32::try_from(attempt.value(i)).unwrap_or(0),
                 request_day,
                 queued_at: from_micros(at.value(i)),
+                retry_message_at: retry_at
+                    .filter(|times| !times.is_null(i))
+                    .map(|times| from_micros(times.value(i))),
             });
         }
     }

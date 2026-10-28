@@ -115,6 +115,9 @@ pub async fn submit_with_download(
             "--priority",
             priority,
         ]);
+        if let Some(retry) = &record.retry {
+            command.args(["--app_version_num", &retry.app_version_num.to_string()]);
+        }
         // Stock create_work inserts remote_file at this exact input position.
         // Template file 0 opens as page, file 1 as request.json.
         if let Some(remote) = &remote {

@@ -342,6 +342,8 @@ mod tests {
         };
         let coexisting = eng.merge(&deu).unwrap();
         let deu_job = boinc::Job {
+            retry_of: None,
+            attempt: 0,
             v: 1,
             id: id.clone(),
             message: usnm_ocr_contract::message::OcrMessage {
@@ -380,6 +382,8 @@ mod tests {
     /// A job as the bridge makes it for a page in `language` read with `profile`.
     fn job(language: &str, profile: &str) -> boinc::Job {
         let mut job = boinc::Job {
+            retry_of: None,
+            attempt: 0,
             v: 1,
             id: String::new(),
             message: usnm_ocr_contract::message::OcrMessage {
