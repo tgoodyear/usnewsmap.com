@@ -94,6 +94,9 @@ struct Cli {
     /// The global LoC pacer's `pacer.json`, read-only.
     #[arg(long, env = "USNM_OCRDASH_PACER")]
     pacer: Option<PathBuf>,
+    /// Read-only systemd completion metadata for publish-fetched.
+    #[arg(long, env = "USNM_OCRDASH_PUBLISH_STATUS")]
+    publish_status: Option<PathBuf>,
     /// Read-only PostgreSQL pgmq metrics, with a dash_reader client certificate.
     #[arg(long, env = "USNM_OCRDASH_QUEUE_URL")]
     queue_url: Option<String>,
@@ -198,7 +201,8 @@ async fn main() -> anyhow::Result<()> {
         fetch: Mutex::new(
             Fetch::new(cli.scans.clone(), cli.manifest.clone())
                 .with_manifests((cli.manifests != Path::new("none")).then(|| cli.manifests.clone()))
-                .with_files(cli.bulk_status.clone(), cli.pacer.clone()),
+                .with_files(cli.bulk_status.clone(), cli.pacer.clone())
+                .with_publish(cli.publish_status.clone()),
         ),
         nodes: Mutex::new(Nodes::open(cli.state_dir.clone(), &workers)?),
         hosts: Mutex::new(Hosts::new(cli.host_file.clone())),

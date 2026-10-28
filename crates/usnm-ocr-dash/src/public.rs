@@ -268,8 +268,14 @@ pub fn redact(v: &mut View) {
         &mut f.queue_error,
         &mut f.bulk.error,
         &mut f.pacer.error,
+        &mut f.publish.error,
     ] {
         scrub_opt(e);
+    }
+    if let Some(publish) = &mut f.publish.value {
+        scrub_opt(&mut publish.error);
+        scrub_opt(&mut publish.active_state);
+        scrub_opt(&mut publish.result);
     }
     for m in &mut f.queue {
         m.path = String::new();

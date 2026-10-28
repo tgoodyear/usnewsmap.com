@@ -7,7 +7,8 @@ use serde::Serialize;
 use usnm_ocr_contract::status::{Completion, Dataset, InFlight, Outcomes, Pool, QueueStats};
 
 use crate::fetch::{
-    BulkStatus, FailureLine, Fetch, FetchStatus, PacerState, QueuedManifest, Tally, Watched, GROUPS,
+    BulkStatus, FailureLine, Fetch, FetchStatus, PacerState, PublishStatus, QueuedManifest, Tally,
+    Watched, GROUPS,
 };
 use crate::hosts::Hosts;
 use crate::nodes::Nodes;
@@ -161,6 +162,7 @@ pub struct FetchView {
     pub queue_error: Option<String>,
     pub bulk: FileView<BulkStatus>,
     pub pacer: FileView<PacerState>,
+    pub publish: FileView<PublishStatus>,
     pub sets: Vec<SetView>,
     pub groups: Vec<GroupView>,
     pub last_hour: Rate,
@@ -466,6 +468,7 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         queue_error: f.queue_error.clone(),
         bulk: FileView::of(&f.bulk),
         pacer: FileView::of(&f.pacer),
+        publish: FileView::of(&f.publish),
         sets,
         groups,
         last_hour: hour,
