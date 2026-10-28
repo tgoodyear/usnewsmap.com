@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -1492,6 +1493,49 @@ class TimingsTests(unittest.TestCase):
         self.assertEqual(receipt["stdout_tail"], "partial")
         self.assertEqual(receipt["stderr_tail"], "timeout\ufffd")
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(directory.glob(".command-failure-*")), [])
+
+    def test_nonzero_child_with_invalid_utf8_retains_output(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        with self.assertRaisesRegex(RuntimeError, "handoff/collect failed"):
+            t.run([sys.executable, "-c",
+                   "import os; os.write(1,b'out\\xff'); os.write(2,b'err\\xfe'); raise SystemExit(7)"],
+                  "handoff/collect")
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["returncode"], 7)
+        self.assertEqual(receipt["stdout_tail"], "out\ufffd")
+        self.assertEqual(receipt["stderr_tail"], "err\ufffd")
+
+    def test_batch_keeps_collecting_and_reports_later_receipt_write_failure(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory, batch_spool_out=True)
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "private-output")
+
+        replace = batch.os.replace
+        replacements = []
+
+        def replace_receipt(source, target):
+            replacements.append(target)
+            if len(replacements) > 1:
+                raise OSError("private-path")
+            return replace(source, target)
+
+        with patch.object(batch.subprocess, "run", side_effect=run), \
+                patch.object(batch.os, "replace", side_effect=replace_receipt), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        self.assertEqual(len(calls), 3)
+        self.assertIn("bridge/spool-out failed", str(caught.exception))
+        self.assertIn("handoff/collect failed; private command failure receipt could not be saved",
+                      str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["label"], "bridge/spool-out")
         self.assertEqual(list(directory.glob(".command-failure-*")), [])
 
     def test_receipt_write_failure_is_explicit_and_does_not_expose_output(self):

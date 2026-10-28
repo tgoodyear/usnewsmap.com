@@ -45,6 +45,10 @@ class ConfigError(ValueError):
     """Invalid scheduler or cohort configuration."""
 
 
+class FailureReceiptError(RuntimeError):
+    """A failed command's private evidence could not be persisted."""
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -605,7 +609,7 @@ class Transport:
             finally:
                 os.close(fd)
         except OSError as failure:
-            raise RuntimeError(f"{label} failed; private command failure receipt could not be saved") from failure
+            raise FailureReceiptError(f"{label} failed; private command failure receipt could not be saved") from failure
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
@@ -615,7 +619,7 @@ class Transport:
         kind = f"storage {argv[3]}" if argv[:3] == ["az", "storage", "blob"] and len(argv) > 3 else label
         start, cpu, passed = self.timings.clock(), self.timings.cpu(), False
         try:
-            done = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE,
+            done = subprocess.run(argv, check=False, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
             passed = done.returncode in ok
         except (OSError, subprocess.SubprocessError) as error:
@@ -956,6 +960,11 @@ class Transport:
                 except RuntimeError as error:
                     errors.append(error)
         if errors:
+            receipt_errors = [error for error in errors if isinstance(error, FailureReceiptError)]
+            if receipt_errors:
+                raise FailureReceiptError("; ".join(dict.fromkeys(
+                    str(error) for error in [errors[0], *receipt_errors]
+                )))
             raise errors[0]
 
     @timed("status")
