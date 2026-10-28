@@ -427,6 +427,21 @@ test("an errored tunnel body cannot prevent the degraded API answer", async () =
   assert.equal(response.headers.get("x-usnm-error-layer-cleanup"), "cancel-failed");
 });
 
+test("generated API outage problems grant CORS only to the API's exact allowed origins", async () => {
+  const env = { ...ENV, ERROR_LAYER: "true", ALLOWED_ORIGINS: `${SITE},https://research.example` };
+  for (const path of ["/v1/meta", "/api/v1/hits"]) {
+    for (const origin of [SITE, "https://research.example", "https://usnewsmap.com.evil.example", "null"]) {
+      const { response } = await run(get(path, { origin }), env, [text(530)]);
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("content-type"), "application/problem+json");
+      assert.equal(response.headers.get("vary"), "Origin");
+      assert.equal(response.headers.get("access-control-allow-origin"),
+        [SITE, "https://research.example"].includes(origin) ? origin : null);
+      assert.equal(response.headers.has("access-control-allow-credentials"), false);
+    }
+  }
+});
+
 test("only an anonymous query-free successful home shell is cached, never search results", async () => {
   const original = globalThis.caches;
   const stored = new Map();

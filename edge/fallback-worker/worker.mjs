@@ -24,6 +24,7 @@
 //                          so searches made during a drill stay out of the search log
 //                          (the API's admit() excludes DNT, crates/usnm-api/src/searchlog.rs).
 //   ERROR_LAYER            "true" only after the Phase 4 gate, or on an isolated drill.
+//   ALLOWED_ORIGINS        Exact comma-separated USNM_ALLOWED_ORIGINS from the API.
 //   FALLBACK_METRICS        Analytics Engine binding: fixed outcome/scope/count/status,
 //                          never URLs, search words, visitor headers or addresses.
 
@@ -154,7 +155,7 @@ async function degraded(request, env) {
     try {
       shell = await caches.default.match(shellKey(request));
     } catch {
-      return counted(problem(request, "cache-read-failed"), env, "degraded");
+      return counted(problem(request, "cache-read-failed", env), env, "degraded");
     }
     if (shell) {
       const headers = new Headers(shell.headers);
@@ -175,10 +176,20 @@ async function degraded(request, env) {
       return counted(marked, env, "degraded");
     }
   }
-  return counted(problem(request, "unavailable"), env, "degraded");
+  return counted(problem(request, "unavailable", env), env, "degraded");
 }
 
-function problem(request, reason) {
+function problem(request, reason, env) {
+  const headers = new Headers({
+    "Content-Type": "application/problem+json",
+    "Cache-Control": "no-store",
+    "Retry-After": "30",
+    "X-USNM-Error-Layer": reason,
+    "Vary": "Origin",
+  });
+  const origin = request.headers.get("origin");
+  const allowed = typeof env.ALLOWED_ORIGINS === "string" ? env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()) : [];
+  if (origin && allowed.includes(origin)) headers.set("Access-Control-Allow-Origin", origin);
   return new Response(request.method === "HEAD" ? null : JSON.stringify({
     type: "about:blank",
     title: "Service Unavailable",
@@ -186,12 +197,7 @@ function problem(request, reason) {
     detail: "The origin is temporarily unavailable. Please retry later.",
   }), {
     status: 503,
-    headers: {
-      "Content-Type": "application/problem+json",
-      "Cache-Control": "no-store",
-      "Retry-After": "30",
-      "X-USNM-Error-Layer": reason,
-    },
+    headers,
   });
 }
 

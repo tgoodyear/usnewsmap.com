@@ -5,7 +5,7 @@
 #
 #   edge/fallback-worker/deploy.sh --account-id ID --azure-origin URL
 #     --wrangler-version X.Y.Z --vault NAME --token-secret NAME
-#     (--production | --drill-hostname NAME) [--error-layer] [--dry-run]
+#     (--production | --drill-hostname NAME) [--error-layer --allowed-origins CSV] [--dry-run]
 #
 # --account-id: the Cloudflare account id (32 hex digits).
 # --azure-origin: ca-usnm-prod's default name, https://<name>.azurecontainerapps.io. It is
@@ -24,6 +24,7 @@
 #   calling Cloudflare.
 # --error-layer: disable Azure fallback and enable the Phase 4 cached-shell/error mode.
 #   Production use requires the accepted Phase 4 gate; isolated drills can exercise it.
+# --allowed-origins: the API's exact USNM_ALLOWED_ORIGINS list; required for --error-layer.
 #
 # The route's failure mode (fail open) is a setting on the route in Cloudflare, not in
 # wrangler.jsonc; README.md has the steps, before and after a deploy.
@@ -32,13 +33,13 @@ usage() {
   cat >&2 << 'EOF'
 Usage: edge/fallback-worker/deploy.sh --account-id ID --azure-origin URL
          --wrangler-version X.Y.Z --vault NAME --token-secret NAME
-         (--production | --drill-hostname NAME) [--error-layer] [--dry-run]
+         (--production | --drill-hostname NAME) [--error-layer --allowed-origins CSV] [--dry-run]
 EOF
   exit 2
 }
 die() { echo "error: $*" >&2; exit 1; }
 
-ACCOUNT="" ORIGIN="" VERSION="" VAULT="" SECRET="" DRILL_HOST="" PRODUCTION=false DRY_RUN=false ERROR_LAYER=false
+ACCOUNT="" ORIGIN="" VERSION="" VAULT="" SECRET="" DRILL_HOST="" ALLOWED="" PRODUCTION=false DRY_RUN=false ERROR_LAYER=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --account-id) ACCOUNT=${2:-}; shift 2 || usage ;;
@@ -49,6 +50,7 @@ while [ $# -gt 0 ]; do
     --drill-hostname) DRILL_HOST=${2:-}; shift 2 || usage ;;
     --production) PRODUCTION=true; shift ;;
     --error-layer) ERROR_LAYER=true; shift ;;
+    --allowed-origins) ALLOWED=${2:-}; shift 2 || usage ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -59,6 +61,13 @@ done
   { echo "error: --azure-origin: https://<name>.azurecontainerapps.io, with no path" >&2; usage; }
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
   { echo "error: --wrangler-version: an exact release, such as 4.152.0" >&2; usage; }
+if $ERROR_LAYER && [ -z "$ALLOWED" ]; then
+  echo "error: --error-layer requires the API's exact --allowed-origins list" >&2; usage
+fi
+if [ -n "$ALLOWED" ]; then
+  node -e 'try { for (const s of process.argv[1].split(",")) { const u = new URL(s); if (!["http:", "https:"].includes(u.protocol) || u.origin !== s) process.exit(1); } } catch { process.exit(1); }' "$ALLOWED" ||
+    { echo "error: --allowed-origins: exact comma-separated HTTP(S) origins, no wildcards or paths" >&2; usage; }
+fi
 if $PRODUCTION && [ -n "$DRILL_HOST" ]; then
   echo "error: --production and --drill-hostname are alternatives" >&2; usage
 fi
@@ -78,6 +87,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 cmd=(npx --yes "wrangler@$VERSION" deploy --config "$HERE/wrangler.jsonc" --var "AZURE_FALLBACK_ORIGIN:$ORIGIN")
 if $ERROR_LAYER; then
   cmd+=(--var ERROR_LAYER:true)
+fi
+if [ -n "$ALLOWED" ]; then
+  cmd+=(--var "ALLOWED_ORIGINS:$ALLOWED")
 fi
 if [ -n "$DRILL_HOST" ]; then
   cmd+=(--name usnm-fallback-drill --route "$DRILL_HOST/*" --var ADD_DNT:true)

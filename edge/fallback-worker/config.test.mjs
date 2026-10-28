@@ -103,9 +103,10 @@ test("the routes are the apex, www and api, every path, nothing else", () => {
 });
 
 test("vars hold no secret, drill flag or Azure name; the Phase 4 mode stays off", () => {
-  assert.deepEqual(Object.keys(config.vars), ["AZURE_FALLBACK_ORIGIN", "ERROR_LAYER"]);
+  assert.deepEqual(Object.keys(config.vars), ["AZURE_FALLBACK_ORIGIN", "ERROR_LAYER", "ALLOWED_ORIGINS"]);
   assert.equal(config.vars.AZURE_FALLBACK_ORIGIN, "");
   assert.equal(config.vars.ERROR_LAYER, "false");
+  assert.equal(config.vars.ALLOWED_ORIGINS, "https://usnewsmap.com");
 });
 
 test("the Worker does not fall back to the empty name committed here", async () => {

@@ -36,6 +36,7 @@
     // not in the repository: it is the environment's random domain, which only Azure
     // can say. deploy.sh --azure-origin sets it. Empty turns the fallback off.
     "AZURE_FALLBACK_ORIGIN": "",
-    "ERROR_LAYER": "false"
+    "ERROR_LAYER": "false",
+    "ALLOWED_ORIGINS": "https://usnewsmap.com"
   }
 }
