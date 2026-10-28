@@ -537,17 +537,23 @@ no LoC request:
    cyclic, not newest-only. None of these scheduling hints constitutes scientific
    validation, independent truth, quorum, or campaign completeness.
    `usnm-boinc quality collect --inventory-only --cache ...` produces these hints
-   using the **same canonical dependency keys as the row cache**, including binary,
-   staged inputs, canonical QUALITY outputs and late/changed Qwen dependencies.
+   using a **separate scheduling namespace**, covering the binary, staged inputs,
+   canonical QUALITY outputs and late/changed Qwen dependencies. Fine-resolution
+   Unix staged PAGE/ALTO/TEXTS identities use device/inode/size/mtime/ctime hints,
+   rechecking both the descriptor and reopened path before publication. Coarse
+   timestamps and non-Unix inputs retain content hashing. Canonical outputs,
+   sidecars and reading dependencies remain content-checked; selected collection
+   still uses full content-validated row-cache keys. Scheduling hints cannot be
+   used as row keys or scientific acceptance.
    It computes no rows and publishes no Parquet. It examines only the configured
    campaign and its reading dependencies, with at most 10,000 QUALITY directory
-   entries; larger campaigns fail explicitly. Retained large-blob digest receipts
-   avoid repeatedly reading unchanged staged scans/texts. The selected key is
+   entries; larger campaigns fail explicitly. The selected scheduling key is
    rechecked after collection (`--inventory-unit`); inventory errors, missing
    configured roots, corrupt metadata, or changed selected inputs fail closed,
    without silently falling back to an old cursor. All inventory and collection
    remain inside the unchanged nonblocking bridge lock and 180-second remote bound.
-   Cold digest warming can time out; completed digest receipts survive the retry.
+   On filesystems requiring content fallback, cold digest warming can still time
+   out; completed digest receipts survive the retry.
    No pass verifies/loads more than one scope.
 
    **Migration:** install the matching collector binary before this driver/service;
@@ -583,6 +589,19 @@ no LoC request:
    coverage/load receipts for what was freshly observed. Whole-campaign collectors
    still refuse incomplete publication and must not consume these partial directories
    as complete snapshots.
+
+   **Read-only native inventory measurement (2026-10-28):** candidate source
+   `2a77f08223b21acd1623154456cf54c5ef0e18fc`, binary SHA256
+   `fefad24a826370e57f0c1e9f8fa4bc2976f4b0adf973cb2317605334d5936108`,
+   inventoried all 136 submitted native units in **10.093 seconds**, with 130
+   canonical-present and six pending. This used an initially empty private cache,
+   the real project mounted read-only, no network, one CPU and 2 GiB; its disposable
+   container was removed. It neither took the production bridge lock nor activated
+   the candidate; the installed collector and ordinary timer remained unchanged.
+   This passes the isolated 120-second inventory timing gate, **not** the real
+   collection/load or sustained priority/fair/late-reader acceptance below.
+   A scheduling namespace change conservatively invalidates old acknowledgements;
+   never rewrite them to claim historical coverage.
 
    **Native acceptance (not demonstrated by offline tests):** record installed
    driver/binary hashes, timer settings, lock admissions/busy exits, inventory and

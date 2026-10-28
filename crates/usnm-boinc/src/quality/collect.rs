@@ -1035,9 +1035,7 @@ pub fn inventory(
             Ok::<_, std::io::Error>(path.try_exists()? && present)
         })?;
         let fingerprint = if present && !failed {
-            let key = cache.key(&unit, &job, &files)?;
-            cache.track(&unit, &files, &key);
-            Some(key)
+            Some(cache.inventory_key(&unit, &job, &files)?)
         } else {
             None
         };
