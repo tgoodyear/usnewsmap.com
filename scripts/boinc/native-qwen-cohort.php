@@ -246,7 +246,8 @@ function native_qwen_reservation_guard($original, $updated) {
         $b = intval($high->item(0)->nodeValue);
         $allowed = $name === "amd_vulkan_8b"
             ? (($a === 2 && $b === 1) || ($a === $reserved && $b === $reserved))
-            : (($a === 2 && $b === 1) || (2 <= $a && $a <= $b && $b < $reserved && $b - $a < 10));
+            : (($a === 2 && $b === 1) || (2 <= $a && $a <= $b && $b - $a < 10
+                && !($a <= $reserved && $reserved <= $b)));
         if (!$allowed) throw new RuntimeException("Release the AMD-first lease before opening competing work");
     }
 }

@@ -126,12 +126,13 @@ def guarded_policy(payload, intent):
         return False
     for name in COMPETITORS:
         low, high = bounds(classes[name])
-        if (low, high) != (2, 1) and not (2 <= low <= high < workunit and high - low < 10):
+        if (low, high) != (2, 1) and not (
+                2 <= low <= high and high - low < 10 and not low <= workunit <= high):
             return False
     return True
 
 
-def strict_pair(snapshot, workunit, app_version):
+def strict_pair(snapshot, workunit, app_version, newest=True):
     wu, results = snapshot["unit"], snapshot["results"]
     expected = {
         "id": workunit, "appid": 6, "batch": 8, "min_quorum": 2, "target_nresults": 2,
@@ -140,8 +141,9 @@ def strict_pair(snapshot, workunit, app_version):
     }
     require(wu is not None and all(int(wu[key]) == value for key, value in expected.items()),
             "Not an untouched ordinary native 8B quorum-2 workunit")
-    require(snapshot["app"]["name"] == "usnm_qwen" and int(snapshot["newer"]) == 0,
-            "Only the newest Qwen tail workunit can be reserved")
+    require(snapshot["app"]["name"] == "usnm_qwen", "Not a Qwen workunit")
+    if newest:
+        require(int(snapshot["newer"]) == 0, "Only the newest Qwen tail workunit can be reserved")
     require(int(snapshot["assignments"]) == 0 and len(results) == 2, "Not two generic replicas")
     require(len({int(row["id"]) for row in results}) == 2, "Duplicate replica identity")
     for row in results:
@@ -297,7 +299,7 @@ def main(argv=None):
     parser.add_argument("--workunit", type=int)
     parser.add_argument("--host", type=int, default=5)
     parser.add_argument("--app-version", type=int, default=68)
-    parser.add_argument("--lease-seconds", type=int, default=1200)
+    parser.add_argument("--lease-seconds", type=int, default=5400)
     parser.add_argument("--expected-policy-sha256")
     parser.add_argument("--evidence", type=Path, help="independent immutable per-workunit download/provenance receipt")
     parser.add_argument("--cohort-helper", type=Path, help="reviewed native-qwen-cohort.php for the config guard")
@@ -324,8 +326,8 @@ def main(argv=None):
         now = int(time.time())
         if args.action == "reserve":
             require(args.workunit is not None and args.workunit > 1 and args.host > 0
-                    and args.app_version > 0 and 60 <= args.lease_seconds <= 1800,
-                    "One positive workunit/host/app version; lease must be 60..1800 seconds")
+                    and args.app_version > 0 and 60 <= args.lease_seconds <= 7200,
+                    "One positive workunit/host/app version; lease must be 60..7200 seconds")
             require(args.evidence is not None and args.rollback_receipt is not None,
                     "Independent input evidence and prearmed rollback receipt required")
             require(args.cohort_helper is not None
@@ -389,7 +391,7 @@ def main(argv=None):
                     current = snapshot(project, intent["workunit"])
                     reason = tick_reason(current, intent, now)
                     if not reason:
-                        strict_pair(current, intent["workunit"], intent["app_version"])
+                        strict_pair(current, intent["workunit"], intent["app_version"], newest=False)
                         guarded = True
             updated = release_policy(original, args.lease, intent["workunit"],
                                      intent["original_xml"].encode()) if reason else original

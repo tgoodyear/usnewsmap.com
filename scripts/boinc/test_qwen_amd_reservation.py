@@ -150,6 +150,9 @@ class AmdReservation(unittest.TestCase):
         root, nodes = R.parse_policy(self.reserved())
         nodes["nvidia_vulkan_8b"].find("max_wu_id").text = "100"
         self.assertNotEqual(guarded(R.serialize(root)).returncode, 0)
+        nodes["nvidia_vulkan_8b"].find("min_wu_id").text = "101"
+        nodes["nvidia_vulkan_8b"].find("max_wu_id").text = "110"
+        self.assertEqual(guarded(R.serialize(root)).returncode, 0)
 
     def input_fixture(self, text="א" * 4096):
         download = self.root / "download"
@@ -241,6 +244,16 @@ class AmdReservation(unittest.TestCase):
         root, nodes = R.parse_policy(self.reserved())
         nodes["intel_vulkan_8b"].find("max_wu_id").text = "100"
         self.assertFalse(R.guarded_policy(R.serialize(root), intent))
+        nodes["intel_vulkan_8b"].find("min_wu_id").text = "101"
+        nodes["intel_vulkan_8b"].find("max_wu_id").text = "110"
+        self.assertTrue(R.guarded_policy(R.serialize(root), intent))
+
+    def test_newer_feed_work_does_not_invalidate_an_existing_untouched_reservation(self):
+        current = copy.deepcopy(self.snapshot)
+        current["newer"] = 19
+        with self.assertRaisesRegex(ValueError, "newest"):
+            R.strict_pair(current, 100, 68)
+        R.strict_pair(current, 100, 68, newest=False)
 
 if __name__ == "__main__":
     unittest.main()

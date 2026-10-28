@@ -335,7 +335,7 @@ Before applying, record the exact workunit, policy SHA, independent input/model/
 source-quality/archive-provenance receipt, limits and rollback on #529. Install
 the reviewed refresh/helper versions in both the current server and persistent
 server image first. Prearm a **separate, durable host rollback unit** for this
-lease, scheduled within 60–1800 seconds, and independently read back its active
+lease, scheduled within 60–7200 seconds, and independently read back its active
 state/deadline. Save that readback as JSON with `lease`, `active: true`,
 `deadline` (Unix seconds), and the actual unit/evidence details. The unit must
 call this helper's `release --apply --lease SAME_ID` at that deadline, retrying
@@ -348,7 +348,7 @@ also takes `.native-qwen-cohort.lock`. For example, inside the server container:
 ```sh
 python3 scripts/boinc/qwen-amd-reservation.py reserve \
   --project /project/usnmocr --lease LEASE_32_HEX --workunit ID \
-  --host 5 --app-version 68 --lease-seconds 1200 \
+  --host 5 --app-version 68 --lease-seconds 5400 \
   --expected-policy-sha256 REVIEWED_POLICY_SHA \
   --cohort-helper /path/to/reviewed/native-qwen-cohort.php \
   --cohort-helper-sha256 REVIEWED_HELPER_SHA \
@@ -367,6 +367,13 @@ The independent receipt uses the native feed handoff's `workunit_id`, `doc_id`,
 existing engine, model, prompt, token budget, 1–12 crops and 8192 UTF-8-byte
 contract. It retains the full receipt hash; this is **not** a fresh archive/GGUF
 byte verification or a scientific accuracy claim.
+
+The default 90-minute lease covers the observed AMD client's 3603-second normal
+request interval without forcing a client RPC. The hard maximum is two hours;
+the actual deadline and continuing Apple backlog must be justified on #529.
+New native production is allowed during the lease. Subsequent finite NVIDIA/
+Intel windows may be entirely before **or after**, but never cross, the reserved
+ID; AMD polling must not block their automatic refill.
 
 The initial policy publication is not itself an accepted reservation. In the
 single-project Linux CGI container, the helper records scheduler PID/start-time
