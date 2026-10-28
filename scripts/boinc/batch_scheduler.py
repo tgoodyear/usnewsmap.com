@@ -670,15 +670,24 @@ class Transport:
             return
         name = "scheduler/controller.lock"
         lease = None
+        failure = None
         try:
             with self.timings.phase("lock"):
                 lease = self._acquire(name)
             yield
+        except RuntimeError as error:
+            failure = error
+            raise
         finally:
             # Released whenever it was taken, even if something after the acquire failed.
             if lease is not None:
-                with self.timings.phase("unlock"):
-                    self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+                try:
+                    with self.timings.phase("unlock"):
+                        self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+                except RuntimeError as error:
+                    if failure is not None:
+                        raise_transport_errors([error, failure])
+                    raise
 
     def _acquire(self, name):
         if self.az("exists", "--name", name, "--query", "exists", "-o", "tsv").strip() != "true":

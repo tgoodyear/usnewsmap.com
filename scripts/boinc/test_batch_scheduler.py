@@ -1572,6 +1572,33 @@ class TimingsTests(unittest.TestCase):
         for path in leftover:
             unlink(path)
 
+    def test_failed_lease_release_preserves_collection_receipt_loss_warning(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        replacements = []
+        replace = batch.os.replace
+
+        def replace_receipt(source, target):
+            replacements.append(target)
+            if len(replacements) == 1:
+                raise OSError("private-path")
+            return replace(source, target)
+
+        with patch.object(t, "_acquire", return_value="lease"), \
+                patch.object(batch.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 1, "", "private-output")) as run, \
+                patch.object(batch.os, "replace", side_effect=replace_receipt), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            with t.lock():
+                t.run([], "handoff/collect")
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("handoff/collect failed; private command failure receipt could not be saved",
+                      str(caught.exception))
+        self.assertIn("hand-off storage failed", str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["label"], "hand-off storage")
+
     def test_the_tick_line_carries_the_timings(self):
         fake = Fake()
         self.assertNotIn("timings", batch.tick(config(), {}, fake, lambda: None, NOW))
