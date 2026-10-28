@@ -681,6 +681,50 @@ async fn stock_spool_and_terminal_failure_are_recognized() {
 }
 
 #[tokio::test]
+async fn terminal_marker_corruption_is_preserved_and_read_errors_are_reported() {
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let workunit = usnm_boinc::load(&fx.options.root, &id)
+        .unwrap()
+        .job
+        .workunit();
+    let spool = fx.tmp.path().join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    let marker = spool.join(format!("{workunit}_error"));
+    std::fs::create_dir(&marker).unwrap();
+    let error = usnm_boinc::collect(
+        &fx.options.root,
+        &spool,
+        &id,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("reading BOINC terminal error marker"));
+    assert_eq!(
+        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
+        Stage::Reserved
+    );
+    std::fs::remove_dir(&marker).unwrap();
+    std::fs::write(&marker, b"0x2\nbroken").unwrap();
+    assert!(usnm_boinc::collect(
+        &fx.options.root,
+        &spool,
+        &id,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .is_err());
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(record.stage, Stage::Failed);
+    assert!(record.error.unwrap().contains("error mask unknown"));
+}
+
+#[tokio::test]
 async fn unpublished_batch_and_japanese_titles_are_not_reserved() {
     let fx = Fixture::new("eng").await;
     std::fs::write(fx.tmp.path().join("reference/v1/batches.json"), b"[]").unwrap();
