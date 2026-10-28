@@ -5,8 +5,10 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use usnm_ocr_contract::boinc;
+use usnm_ocr_contract::message::{Cause, DeadLetter};
 use usnm_ocr_local::boinc::Snapshot;
 use usnm_state::state::State;
+use usnm_store::queue::{Queue, BULK, DEADLETTER, PRIORITY};
 use usnm_store::ObjectStore;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +225,70 @@ pub async fn prepare(
     Ok(id)
 }
 
+/// Retry reservations have no new queue claim to release. Publish their own
+/// terminal event, never end or delete the parent's (possibly newer) claim.
+pub async fn dead_letter(
+    record: &Record,
+    handoff: &dyn ObjectStore,
+    queue: &dyn Queue,
+) -> anyhow::Result<crate::claim::DeadLettered> {
+    record.job.validate()?;
+    validate(record)?;
+    ensure!(
+        record.retry.is_some() && record.stage == Stage::Failed && record.terminal.is_some(),
+        "retry has no collected terminal failure"
+    );
+    let error = record.error.as_deref().context("missing terminal error")?;
+    let from = match record.job.message.reason {
+        usnm_ocr_contract::message::Reason::User => PRIORITY,
+        usnm_ocr_contract::message::Reason::Bulk => BULK,
+    };
+    let mut letter = DeadLetter::new(
+        from,
+        &record.job.id,
+        Some(&record.job.message),
+        Cause::Permanent,
+        None,
+        None,
+        error,
+        1,
+        "usnm-boinc",
+    );
+    letter.validate()?;
+    let path = format!("dispatch/jobs/{}/retry-deadletter.json", record.job.id);
+    if !handoff
+        .put_new(&path, serde_json::to_vec(&letter)?, "application/json")
+        .await?
+    {
+        let saved: DeadLetter = serde_json::from_slice(
+            &handoff
+                .get(&path)
+                .await?
+                .context("retry dead letter vanished")?,
+        )?;
+        letter.at = saved.at.clone();
+        ensure!(saved == letter, "retry dead letter changed");
+    }
+    letter.validate()?;
+    let text = letter.encode();
+    let digest = boinc::sha256(text.as_bytes()).into_bytes();
+    let sent = format!("{path}.sent");
+    if let Some(receipt) = handoff.get(&sent).await? {
+        ensure!(receipt == digest, "retry dead-letter receipt changed");
+        return Ok(crate::claim::DeadLettered::Already);
+    }
+    // Like claim dead letters, lost send acknowledgement can duplicate an event.
+    // The durable payload retains its identity and the native retry-time fence.
+    queue.send(DEADLETTER, &text).await?;
+    if !handoff.put_new(&sent, digest.clone(), "text/plain").await? {
+        ensure!(
+            handoff.get(&sent).await?.as_ref() == Some(&digest),
+            "retry dead-letter receipt differs"
+        );
+    }
+    Ok(crate::claim::DeadLettered::Done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +470,45 @@ mod tests {
         let args = std::fs::read_to_string(project.join("attempted-args")).unwrap();
         assert!(args.contains("--app_version_num\n27\n"));
         assert_eq!(args.matches("--wu_name\n").count(), 1);
+        atomic(
+            &spool.join(format!("{}_error", child.job.workunit())),
+            b"0x4\n",
+        )
+        .unwrap();
+        assert!(
+            crate::collect(&root, &spool, &id, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err()
+        );
+        let failed = load(&root, &id).unwrap();
+        let handoff = usnm_store::open(temp.path().join("handoff").to_str().unwrap()).unwrap();
+        let queue = usnm_store::queue::LocalQueue::new(temp.path().join("queue"));
+        assert_eq!(
+            dead_letter(&failed, handoff.as_ref(), &queue)
+                .await
+                .unwrap(),
+            crate::claim::DeadLettered::Done
+        );
+        assert_eq!(
+            dead_letter(&failed, handoff.as_ref(), &queue)
+                .await
+                .unwrap(),
+            crate::claim::DeadLettered::Already
+        );
+        assert_eq!(queue.approximate_count(DEADLETTER).await.unwrap(), 1);
+        let event = queue
+            .receive(DEADLETTER, std::time::Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let event = usnm_ocr_contract::message::decode_dead_letter(&event.text).unwrap();
+        assert!(event.error.contains("error mask 0x4 "));
+        assert_eq!(event.message, Some(child.job.message.clone()));
+        assert!(handoff
+            .get(&crate::claim::path(&previous.doc_id))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[test]

@@ -191,6 +191,7 @@ pub async fn pull_with(
     let request: boinc::Job = serde_json::from_slice(&got[1].1)?;
     let incoming: crate::Record = serde_json::from_slice(&got[2].1)?;
     incoming.job.validate()?;
+    crate::retry::validate(&incoming)?;
     ensure!(
         incoming.job.id == id && incoming.job.identity()? == id,
         "the container's record is not job {id}"

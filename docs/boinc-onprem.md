@@ -158,6 +158,12 @@ Uncertain submission still requires authoritative BOINC lookup and explicit
 `reconcile`; never delete its journal and repeat. A retry of a failed child needs
 a fresh terminal review naming that child.
 
+If that child fails, the existing handoff `claim dead-letter` step publishes the
+child's terminal mask and new message timestamp without touching the old claim.
+Its private durable payload/sent receipt makes a completed repeat a no-op; lost
+send acknowledgement retains at-least-once delivery. Native sync fences duplicate
+old-attempt events from subsequent retries.
+
 First acceptance is one reviewed failed-page canary: preserve its original real
 mask through collect/journal/dead letter, verify the one new workunit and supporting
 app version, collect/import via ordinary validation, verify native settlement,
