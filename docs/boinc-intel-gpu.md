@@ -44,7 +44,10 @@ downloaded job/page, native unit/submitted marker, source-quality page hash,
 archive ALTO hash/provenance, and original sampled damage metadata. Existing
 Yiddish and Serbian source cohorts are explicit bounded inputs; 1–12 crops and
 8192 UTF-8 bytes per crop remain enforced. Selection is the oldest contiguous
-eligible prefix, never easiest-page selection. Quality/provenance file hashes
+eligible prefix in each bounded scan, never easiest-page selection. A durable
+cursor advances past fully stale 1000-unit slices and wraps to revisit pending
+inputs, so an assigned prefix cannot starve later fresh work. Counts explicitly
+describe the scanned slice, not the global eligible backlog. Quality/provenance file hashes
 and damage metadata are journaled; this is not a new whole-archive/GGUF readback
 or a multilingual accuracy claim.
 

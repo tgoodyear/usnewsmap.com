@@ -266,11 +266,14 @@ def run(args):
                     del state["pending"]
                     if args.apply:
                         persist(state_path, state)
-                    return {"status": "reconciled-exact-published-intent", "window": window,
-                            "admitted_unique": len(state["admitted"]), "apply": args.apply}
-                require(window == state["window"] and class_scope(policy) == pending["before_scope"],
-                        "Uncertain publication differs from its owned intent: refuse overwrite")
-                del state["pending"]
+                    if (int(time.time()) < args.enabled_until and len(state["admitted"]) < args.max_admissions
+                            and not config_changed):
+                        return {"status": "reconciled-exact-published-intent", "window": window,
+                                "admitted_unique": len(state["admitted"]), "apply": args.apply}
+                else:
+                    require(window == state["window"] and class_scope(policy) == pending["before_scope"],
+                            "Uncertain publication differs from its owned intent: refuse overwrite")
+                    del state["pending"]
             require(state["window"] == window, "Another operator changed the owned cohort: refuse overwrite")
         else:
             require(sha(policy) == args.initial_policy_sha256, "Initial operator policy changed")
@@ -297,12 +300,14 @@ def run(args):
                 workunit = int(value["workunit_id"])
                 require(workunit not in by_wu, "Duplicate native producer workunit binding")
                 by_wu[workunit] = (key, value)
-            ids = sorted(workunit for workunit in by_wu
-                         if workunit >= args.minimum_workunit and workunit not in state["admitted"])[:1000]
+            candidates = sorted(workunit for workunit in by_wu
+                                if workunit >= args.minimum_workunit and workunit not in state["admitted"])
+            later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
+            ids = (later or candidates)[:1000]
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
             wanted = sorted(set(ids + current_ids))
             if not wanted:
-                return output | {"status": "no-audited-fresh-inputs", "fresh_pairs": 0}
+                return output | {"status": "no-audited-fresh-inputs", "fresh_pairs_in_scan": 0}
             database = read_database(project, wanted, (args.intel_host, args.nvidia_host))
             rows = database["rows"]
             require(database["app"]["name"] == "usnm_qwen"
@@ -324,15 +329,22 @@ def run(args):
                         for host in (args.intel_host, args.nvidia_host)}
             capacity = max(0, args.max_inflight_per_host - max(inflight.values()))
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
-            fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) >= args.minimum_workunit)
-            output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs": fresh_count,
+            scanned = set(ids)
+            fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
+            if not fresh_count and ids:
+                state["scan_after"] = ids[-1]
+                if args.apply:
+                    persist(state_path, state)
+            output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs_in_scan": fresh_count,
+                       "audited_candidates_total": len(candidates), "scanned_candidates": len(ids),
                        "producer_audit_sha256": sha(audit_raw), "native_gpu_inflight": inflight,
                        "per_host_buffer_limit": args.max_inflight_per_host}
             if available:
                 return output | {"status": "current-window-still-eligible"}
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
-            selected = choose(rows, args.minimum_workunit, reserved, min(remaining, capacity))
+            selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
+                              args.minimum_workunit, reserved, min(remaining, capacity))
             if not selected:
                 return output | {"status": "no-fresh-verified-pairs"}
             proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])]) for row in selected]

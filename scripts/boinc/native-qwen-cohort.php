@@ -384,11 +384,12 @@ function native_qwen_cohort_main() {
     $revalidate = null;
     if (!$stop && !$general) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
-        if ($tiebreaker) {
+        if ($tiebreaker || $fresh_pair) {
             // The scheduler reads the live project's config; a private --db-project copy must agree.
             if (!native_qwen_one_result_per_host("$project/config.xml")
                 || !native_qwen_one_result_per_host("$db_project/config.xml")) {
-                throw new RuntimeException("Tiebreaker requires one_result_per_host_per_wu");
+                throw new RuntimeException(($tiebreaker ? "Tiebreaker" : "Fresh pair")
+                    ." requires one_result_per_host_per_wu");
             }
         }
         chdir("$db_project/html/inc");

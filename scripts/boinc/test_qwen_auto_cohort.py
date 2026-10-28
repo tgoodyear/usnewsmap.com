@@ -1,8 +1,10 @@
 import copy
+import configparser
 import importlib.util
 import json
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 from types import SimpleNamespace
 import unittest
@@ -247,6 +249,70 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             receipt = R.run(self.args)
         self.assertEqual(receipt["target"], [100, 100])
         self.assertEqual(receipt["native_gpu_inflight"][9], 9)
+
+    def test_in_container_deadline_precedes_host_mutex_release_deadline(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(ROOT / "scripts/boinc/usnm-qwen-cohort-auto.service")
+        command = shlex.split(config["Service"]["ExecStart"])
+        podman, timeout = command.index("/usr/bin/podman"), command.index("/usr/bin/timeout")
+        self.assertEqual(timeout, podman + 3)
+        self.assertEqual(command[podman + 1], "exec")
+        inner = float(command[timeout + 3].removesuffix("s"))
+        grace = float(command[timeout + 2].split("=", 1)[1].removesuffix("s"))
+        self.assertLess(inner + grace, float(config["Service"]["TimeoutStartSec"]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_recovered_expired_publication_is_closed_in_same_tick_without_db(self):
+        original_persist = R.persist
+        def interrupt(path, value, **kw):
+            if path.name == "state.json" and value["window"] == [100, 101] and "pending" not in value:
+                raise OSError("observer lost after publication")
+            original_persist(path, value, **kw)
+        with patch.object(R, "read_database", return_value=self.database), patch.object(R, "persist", side_effect=interrupt):
+            with self.assertRaises(OSError):
+                R.run(self.args)
+        self.args.enabled_until = 1
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").unlink()
+        with patch.object(R, "read_database", side_effect=AssertionError("DB unavailable")):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_stale_thousand_unit_prefix_cannot_starve_later_fresh_input(self):
+        all_rows = {}
+        for number in [100, 101, *range(200, 1200)]:
+            row = copy.deepcopy(self.rows[0])
+            row["unit"]["id"] = number
+            row["results"][0].update(hostid=1, server_state=4)
+            all_rows[number] = row
+            self.audit[f"{number:064x}"] = {"workunit_id": number}
+        new = self.input(1300)
+        all_rows[1300] = new
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps([new]))
+        seen = []
+        def scan(project, ids, *hosts):
+            seen.append(ids)
+            return self.database | {"rows": [all_rows[i] for i in ids]}
+        with patch.object(R, "read_database", side_effect=scan):
+            self.assertEqual(R.run(self.args)["status"], "no-fresh-verified-pairs")
+            receipt = R.run(self.args)
+        self.assertEqual(len(seen[0]), 1000)
+        self.assertIn(1300, seen[1])
+        self.assertEqual(receipt["target"], [1300, 1300])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_standalone_fresh_pair_helper_also_requires_distinct_host_gate(self):
+        self.config.write_text("<boinc><config/></boinc>")
+        before = self.policy.read_bytes()
+        proc = subprocess.run(
+            ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+             "--fresh-pair", "--workunit", "100", "--workunit-end", "101", "--apply"],
+            capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires one_result_per_host", proc.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
 
 
 if __name__ == "__main__":
