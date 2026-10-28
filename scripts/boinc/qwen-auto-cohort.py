@@ -111,6 +111,16 @@ def available_in_window(rows, window, hosts):
     )
 
 
+def assignable_units(rows, window, host):
+    # One result per host per workunit: a host can receive at most one replica of each unit.
+    return sum(
+        1 for row in rows if window[0] <= int(row["unit"]["id"]) <= window[1]
+        and int(row["unit"]["canonical_resultid"]) == 0 and int(row["unit"]["error_mask"]) == 0
+        and any(int(result["server_state"]) == 2 for result in row["results"])
+        and host not in {int(result["hostid"]) for result in row["results"]}
+    )
+
+
 def choose(rows, floor, reserved, remaining):
     if remaining <= 0:
         return []
@@ -353,7 +363,7 @@ def run(args):
             # Old-window replicas stay dispatchable until the new policy is published, so each host's
             # headroom also reserves every one it could still receive.
             capacity = max(0, min(args.max_inflight_per_host - inflight[host]
-                                  - available_in_window(rows, window, (host,)) for host in inflight))
+                                  - assignable_units(rows, window, host) for host in inflight))
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
             scanned = set(ids)
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
@@ -368,7 +378,7 @@ def run(args):
             # A host holding a replica of every remaining window unit can never take the rest: if it
             # has no native work left while the peer holds the window, it starves behind the peer.
             starved = [host for host in (args.intel_host, args.nvidia_host) if not inflight[host]
-                       and not available_in_window(rows, window, (host,))]
+                       and not assignable_units(rows, window, host)]
             held = int(time.time()) - int(state["window_since"])
             if available and not (starved and held >= args.rotate_after_seconds):
                 return output | {"status": "current-window-still-eligible", "starved_hosts": starved,

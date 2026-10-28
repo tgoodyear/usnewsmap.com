@@ -146,6 +146,12 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 0)
         rows[0]["results"][0]["hostid"] = 1
         self.assertEqual(R.available_in_window(rows, [100, 101], (9, 10)), 1)
+        # A replacement leaves two unsent replicas, but host 10 can receive only one of them.
+        rows[1]["results"] = [dict(id=1, hostid=9, server_state=5), dict(id=2, hostid=0, server_state=2),
+                              dict(id=3, hostid=0, server_state=2)]
+        self.assertEqual(R.available_in_window(rows[1:], [100, 101], (9, 10)), 2)
+        self.assertEqual((R.assignable_units(rows[1:], [100, 101], 10),
+                          R.assignable_units(rows[1:], [100, 101], 9)), (1, 0))
 
     def test_existing_two_model_metadata_does_not_admit_new_models_or_oversize_utf8(self):
         for mutation in (
