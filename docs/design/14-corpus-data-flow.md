@@ -361,3 +361,41 @@ release selection and published `/v1/hits` replacement provenance are observed.
 When `/v1/hits` returns a page without replacement `ocr` metadata, `ingest-search`
 records `decision="unchanged_baseline"` and `selected_source="loc"` with a
 checksummed `search_receipt` and no raw OCR text.
+
+### Fixed-cohort delivery acceptance
+
+Freeze a JSON array of 1–100 unique pages with explicit candidate run IDs before
+checking delivery, for example
+`[{"page_id":"loc:sn123_1900-01-01_ed-1_seq-1","run_id":"node.20260101T000000Z"}]`.
+After importing the original producer receipts above, observe the currently served
+index version independently from `/v1/meta` and run:
+
+```bash
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite acceptance-report \
+  --cohort cohort.json --index-version pages-v20261018-1 \
+  --as-of 2026-10-18T13:00:00Z --max-receipt-age-seconds 3600 \
+  > delivery-report.json
+```
+
+This read-only report keeps every cohort page in the denominator, pins its run,
+reuses `trace`'s complete artifact/execution/import/release/search proof, and
+requires the search receipt to match the supplied index and freshness window.
+Missing, future-dated, stale or mismatched evidence cannot count as verified
+delivery. Receipt timestamps and response hashes remain visible; report generation
+does not refresh them. The cohort hash identifies the exact input denominator.
+Exit zero means a valid report was produced, not that acceptance passed: inspect
+`delivery_verified`, `delivery_incomplete` and each page's `delivery_blockers`.
+The command neither fetches live data nor establishes that the operator-supplied
+index is still current, and its individual page traces are not a transactional
+cross-page snapshot. Retain the cohort, catalog evidence and dated metadata
+response together; rerun after importing new search receipts or a version change.
+
+**Verified delivery is not independently verified better transcription.**
+`quality` remains `unknown` and `verified_better_published_searchable` remains
+zero until independent quality evidence is connected to these same candidate
+page/run identities. Release selection and damage scores are not human ground
+truth. Use the existing [evaluation measures](../ocr-evaluation-measures-v1.md)
+for paired reference-based accuracy and fixed-query retrieval comparisons;
+production search evaluation also needs a pinned production adapter.
+This bounded cohort report is not corpus-wide coverage or automatic acceptance,
+does not change publication pointers, and does not authorize scan reclamation.

@@ -1350,6 +1350,40 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(stages["indexed"]["state"], "observed")
         self.assertEqual(stages["indexed"]["count"], 0)
 
+    def test_acceptance_report_keeps_missing_pages_in_denominator(self):
+        self.cli("init")
+        cohort = [{"page_id": PAGE, "run_id": "unobserved-run"},
+                  {"page_id": "loc:sn124_1900-01-01_ed-1_seq-1", "run_id": "other-run"}]
+        path = self.work / "cohort.json"
+        path.write_text(json.dumps(cohort))
+        result = self.cli("acceptance-report", "--cohort", str(path),
+                          "--index-version", "pages-v1", "--as-of", T1,
+                          "--max-receipt-age-seconds", "3600")
+        self.assertEqual(result["pages_expected"], 2)
+        self.assertEqual(result["delivery_incomplete"], 2)
+        self.assertEqual(result["delivery_verified"], 0)
+        self.assertEqual(result["cohort_sha256"], c.digest(cohort))
+        for page in result["pages"]:
+            self.assertEqual(page["quality"], "unknown")
+            self.assertIn("incomplete_publication_chain", page["delivery_blockers"])
+            self.assertIn("missing_search_verification", page["delivery_blockers"])
+
+    def test_acceptance_report_rejects_invalid_cohorts_and_limits(self):
+        member = {"page_id": PAGE, "run_id": "r1"}
+        for cohort in ([], [member, member], [member] * 101,
+                       [{"page_id": PAGE}], [{"page_id": PAGE, "run_id": None}]):
+            with self.subTest(cohort=cohort), self.assertRaises(c.CatalogError):
+                c.acceptance_report(self.db, cohort, "pages-v1", T1, 3600)
+        for age in (0, -1, True):
+            with self.subTest(age=age), self.assertRaises(c.CatalogError):
+                c.acceptance_report(self.db, [member], "pages-v1", T1, age)
+        path = self.work / "cohort.json"
+        path.write_bytes(b" " * (c.MAX_LINE + 1))
+        failure = self.cli("acceptance-report", "--cohort", str(path),
+                           "--index-version", "pages-v1", "--as-of", T1,
+                           "--max-receipt-age-seconds", "3600", code=2)
+        self.assertIn("64 KiB", failure["error"])
+
     def test_two_runs_trace_resolution_and_publication_proof_completeness(self):
         doc_id = "sn83045462_1890-05-03_ed-1_seq-7"
         issue_id = "sn83045462_1890-05-03_ed-1"
@@ -1473,6 +1507,26 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(complete["accepted"])
         self.assertTrue(complete["published"])
         self.assertTrue(complete["publication_proof_complete"])
+
+        cohort = [{"page_id": page_id, "run_id": run_a}]
+        before_report = self.db.read_bytes()
+        report = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
+                                     "2026-10-18T03:01:00Z", 60)
+        self.assertEqual(report["delivery_verified"], 1)
+        self.assertEqual(report["quality_unknown"], 1)
+        self.assertEqual(report["verified_better_published_searchable"], 0)
+        self.assertEqual(report["pages"][0]["search_verified_at"], "2026-10-18T03:00:00.000000000Z")
+        self.assertEqual(before_report, self.db.read_bytes())
+        wrong_index = c.acceptance_report(self.db, cohort, "pages-new",
+                                          "2026-10-18T03:01:00Z", 60)
+        self.assertEqual(wrong_index["delivery_verified"], 0)
+        self.assertIn("different_or_unknown_index", wrong_index["pages"][0]["delivery_blockers"])
+        stale = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
+                                   "2026-10-18T03:01:01Z", 60)
+        self.assertIn("stale_search_verification", stale["pages"][0]["delivery_blockers"])
+        future = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
+                                    "2026-10-18T02:59:59Z", 60)
+        self.assertIn("future_search_verification", future["pages"][0]["delivery_blockers"])
 
         # Mismatch 1: search receipt from a different index/release leaves accepted=true & published=true,
         # but publication_proof_complete=false.
