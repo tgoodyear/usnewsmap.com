@@ -160,7 +160,7 @@ pub fn chat_completion(
     png: &[u8],
     max_tokens: u32,
     timeout: Duration,
-) -> anyhow::Result<(String, u32)> {
+) -> anyhow::Result<(String, u32, String)> {
     let url = format!("data:image/png;base64,{}", BASE64.encode(png));
     let body = serde_json::to_vec(&serde_json::json!({
         "messages": [{
@@ -182,17 +182,69 @@ pub fn chat_completion(
             redacted_tail(&String::from_utf8_lossy(&resp), 256)
         );
     }
-    let v: serde_json::Value = serde_json::from_slice(&resp).context("chat response JSON")?;
+    parse_completion(&resp, max_tokens)
+}
+
+fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32, String)> {
+    let v: serde_json::Value = serde_json::from_slice(resp).context("chat response JSON")?;
     let text = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
         .context("chat response has no choices[0].message.content")?;
-    let tokens = v
+    let tokens_reported = v
         .pointer("/usage/completion_tokens")
         .and_then(|t| t.as_u64())
-        .and_then(|t| u32::try_from(t).ok())
-        .unwrap_or(0);
-    Ok((clean_reading(text), tokens))
+        .and_then(|t| u32::try_from(t).ok());
+    let tokens = tokens_reported.unwrap_or(0);
+    let cleaned = clean_reading(text);
+    let finish_reason_raw = v.pointer("/choices/0/finish_reason");
+    let finish_reason = finish_reason_raw
+        .and_then(|v| v.as_str())
+        .filter(|s| s.len() <= 128);
+    let mut flags = Vec::new();
+    if finish_reason_raw.is_some_and(|v| !v.is_null()) && finish_reason.is_none() {
+        flags.push("invalid_or_oversized_finish_reason");
+    }
+    if tokens >= max_tokens || finish_reason == Some("length") {
+        flags.push("completion_token_budget_exhausted");
+    }
+    if cleaned.is_empty() {
+        flags.push("empty_reading");
+    } else if cleaned.replace("[?]", "").trim().is_empty() {
+        flags.push("uncertainty_only");
+    }
+    let mut previous = None;
+    let mut run = 0;
+    let mut longest_run = 0;
+    for token in cleaned.split_whitespace() {
+        run = if previous == Some(token) { run + 1 } else { 1 };
+        longest_run = longest_run.max(run);
+        previous = Some(token);
+    }
+    let duplicate_lines = cleaned
+        .lines()
+        .zip(cleaned.lines().skip(1))
+        .any(|(a, b)| !a.trim().is_empty() && a.trim() == b.trim());
+    if duplicate_lines {
+        flags.push("consecutive_duplicate_lines");
+    }
+    let metadata = serde_json::to_string(&serde_json::json!({
+        "schema": 1,
+        "finish_reason": finish_reason,
+        "completion_tokens_reported": tokens_reported,
+        "max_tokens_requested": max_tokens,
+        "stop_strings_requested": [],
+        "repetition_penalty_requested": null,
+        "response_sha256": usnm_ocr_contract::boinc::sha256(resp),
+        "response_bytes": resp.len(),
+        "raw_content_sha256": usnm_ocr_contract::boinc::sha256(text.as_bytes()),
+        "raw_content_bytes": text.len(),
+        "cleaning_changed_content": text != cleaned,
+        "longest_identical_token_run": longest_run,
+        "generation_flags": flags,
+        "scientific_acceptance": "not_established_by_generation_metadata",
+    }))?;
+    Ok((cleaned, tokens, metadata))
 }
 
 pub(crate) struct Server {
@@ -325,5 +377,71 @@ impl Server {
                 active_elapsed += step_start.elapsed();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_length_stop_and_labels_repetition_without_rewriting_reading() {
+        let response = br#"{"choices":[{"message":{"content":"word\nword\nword"},"finish_reason":"length"}],"usage":{"completion_tokens":12}}"#;
+        let (text, tokens, metadata) = parse_completion(response, 12).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(text, "word\nword\nword");
+        assert_eq!(tokens, 12);
+        assert_eq!(m["finish_reason"], "length");
+        assert_eq!(m["longest_identical_token_run"], 3);
+        assert_eq!(
+            m["response_sha256"],
+            usnm_ocr_contract::boinc::sha256(response)
+        );
+        assert_eq!(
+            m["generation_flags"],
+            serde_json::json!([
+                "completion_token_budget_exhausted",
+                "consecutive_duplicate_lines"
+            ])
+        );
+    }
+
+    #[test]
+    fn missing_finish_or_usage_stays_unknown_not_successful_stop() {
+        let (text, tokens, metadata) =
+            parse_completion(br#"{"choices":[{"message":{"content":" [?] [?] "}}]}"#, 20).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(text, "[?] [?]");
+        assert_eq!(tokens, 0);
+        assert!(m["finish_reason"].is_null());
+        assert!(m["completion_tokens_reported"].is_null());
+        assert_eq!(
+            m["generation_flags"],
+            serde_json::json!(["uncertainty_only"])
+        );
+        assert_eq!(m["cleaning_changed_content"], true);
+    }
+
+    #[test]
+    fn unexpected_metadata_is_bounded_and_not_a_successful_stop() {
+        let response = serde_json::to_vec(&serde_json::json!({
+            "choices": [{"message": {"content": "kept"}, "finish_reason": "x".repeat(8192)}],
+            "usage": {"completion_tokens": "x".repeat(8192)}
+        }))
+        .unwrap();
+        let (text, _, metadata) = parse_completion(&response, 20).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(text, "kept");
+        assert!(metadata.len() < 2048);
+        assert!(m["finish_reason"].is_null());
+        assert!(m["completion_tokens_reported"].is_null());
+        assert_eq!(
+            m["generation_flags"],
+            serde_json::json!(["invalid_or_oversized_finish_reason"])
+        );
+        assert_eq!(
+            m["response_sha256"],
+            usnm_ocr_contract::boinc::sha256(&response)
+        );
     }
 }
