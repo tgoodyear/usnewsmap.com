@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 import types
@@ -91,6 +92,45 @@ class ArchiveTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
+    def test_isolated_staging_artifact_never_replaces_submit_binary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
+            argv = ["qwen_submit.py", "--share", str(root), "--project", str(root),
+                    "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root)]
+            for isolated in (False, True):
+                artifact = root / "usnm-boinc-stage"
+                if isolated:
+                    artifact.touch()
+                with mock.patch.object(submit, "__file__", str(root / "qwen_submit.py")), \
+                        mock.patch.object(sys, "argv", argv), \
+                        mock.patch.object(submit, "inventory", return_value={
+                            "ready": 0, "free_bytes": 100 * 1024**3}), \
+                        mock.patch.object(submit.subprocess, "run") as run, \
+                        mock.patch.object(submit, "assert_submitted"), \
+                        mock.patch.object(submit, "audit", return_value={}):
+                    submit.main()
+                self.assertEqual(run.call_args_list[0].args[0][:3],
+                                 [str(artifact) if isolated else "usnm-boinc", "qwen", "stage"])
+                self.assertEqual(run.call_args_list[1].args[0][:3], ["usnm-boinc", "qwen", "submit"])
+
+    def test_inventory_remembers_rejected_source_without_counting_it_as_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            share = Path(folder)
+            for kind in ("units", "pages"):
+                unit = share / "qwen" / "campaign" / kind / DOC
+                unit.mkdir(parents=True)
+                (unit / "too_large").write_text("crop c01: 8193 UTF-8 bytes over 8192\n")
+                (unit / "rejected-qwen.json").write_text(json.dumps({"doc_id": DOC}))
+            with mock.patch.object(submit.subprocess, "check_output",
+                                   return_value='{"ready": 0, "dispatched": 0}'), \
+                    mock.patch.object(submit.shutil, "disk_usage",
+                                      return_value=types.SimpleNamespace(free=100)):
+                self.assertEqual(submit.inventory(share, share)["documents"], [DOC])
+                self.assertEqual(list(submit.jobs(share / "qwen")), [])
+                submit.assert_submitted(share / "qwen" / "campaign")
+
     def test_inventory_uses_lowest_space_across_project_and_bulk_mounts(self):
         with tempfile.TemporaryDirectory() as folder:
             share = Path(folder)

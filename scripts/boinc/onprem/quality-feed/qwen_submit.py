@@ -28,6 +28,10 @@ def inventory(share, project):
     seen = set()
     for _, job in jobs(share / "qwen"):
         seen.update(documents(job))
+    for marker in (share / "qwen").glob("*/*/*/too_large"):
+        evidence = marker.parent / "rejected-qwen.json"
+        if evidence.exists():
+            seen.update(documents(json.loads(evidence.read_text())))
     php = """
 chdir(%s);
 require_once("boinc_db.inc");
@@ -105,6 +109,8 @@ def main():
     ap.add_argument("--campaign")
     ap.add_argument("--engine-plan", type=Path)
     ap.add_argument("--models", type=Path)
+    isolated_stage = Path(__file__).with_name("usnm-boinc-stage")
+    ap.add_argument("--stage-binary", default=str(isolated_stage) if isolated_stage.is_file() else "usnm-boinc")
     ap.add_argument("--max-pages", type=int, default=100)
     ap.add_argument("--max-ready", type=int, default=1000)
     ap.add_argument("--min-free-gb", type=int, default=50)
@@ -135,7 +141,7 @@ def main():
         if job["language"] in ("eng", "", "und") or job["doc_id"] in elsewhere:
             raise RuntimeError(f"Refusing English, unclassified or duplicate page: {path}")
     engine = json.loads(a.engine_plan.read_text())["engine"]
-    stage = ["usnm-boinc", "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
+    stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1"]

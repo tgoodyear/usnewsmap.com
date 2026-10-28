@@ -170,6 +170,20 @@ impl Job {
         u32::try_from((crop.area_px2() * per).div_ceil(1000).max(16)).unwrap_or(u32::MAX)
     }
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.validate_source_candidate()?;
+        for c in &self.crops {
+            ensure!(
+                c.loc_text.len() <= MAX_CROP_TEXT,
+                "crop text over size limit"
+            );
+        }
+        Ok(())
+    }
+
+    /// Validate every invariant except source crop-text size. Staging uses
+    /// this before retaining oversized evidence; publishable jobs must still
+    /// pass [`Self::validate`].
+    pub fn validate_source_candidate(&self) -> anyhow::Result<()> {
         ensure!(self.v == VERSION, "unsupported qwen job version");
         ensure!(
             is_sha256(&self.id) && self.id == self.identity()?,
@@ -285,10 +299,6 @@ impl Job {
                     && c.rect[2] <= 1 << 16
                     && c.rect[3] <= 1 << 16,
                 "invalid crop box"
-            );
-            ensure!(
-                c.loc_text.len() <= MAX_CROP_TEXT,
-                "crop text over size limit"
             );
         }
         ensure!(
