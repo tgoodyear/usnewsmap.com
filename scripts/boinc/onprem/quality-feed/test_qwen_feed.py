@@ -294,6 +294,8 @@ class SourceTest(unittest.TestCase):
 
             with mock.patch.object(driver, "remote", side_effect=[
                     json.dumps(inv), json.dumps(pool), json.dumps(receipt)]), \
+                    mock.patch.object(driver.shutil, "disk_usage",
+                                      return_value=types.SimpleNamespace(free=100 * 1024**3)), \
                     mock.patch.object(driver, "command", side_effect=run) as command, \
                     mock.patch.object(driver.urllib.request, "urlopen") as source:
                 source.return_value.__enter__.return_value.read.return_value = b"index"
