@@ -59,8 +59,14 @@ export default {
       return errorLayer(env) ? rememberShell(replay, tunnel) : tunnel;
     }
     if (errorLayer(env)) {
-      await tunnel.body?.cancel();
-      return degraded(replay, env);
+      let cleanupFailed = false;
+      try {
+        await tunnel.body?.cancel();
+      } catch {
+        cleanupFailed = true;
+      }
+      const answer = await degraded(replay, env);
+      return cleanupFailed ? notified(answer, "X-USNM-Error-Layer-Cleanup", "cancel-failed") : answer;
     }
     return fallBack(replay, env, tunnel, null);
   },
@@ -136,11 +142,11 @@ async function rememberShell(request, answer) {
 }
 
 async function degraded(request, env) {
-  const path = new URL(request.url).pathname;
+  const path = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
   const api = path === "/v1" || path.startsWith("/v1/") ||
     path === "/api/v1" || path.startsWith("/api/v1/");
   const html = !api && (request.method === "GET" || request.method === "HEAD") &&
-    (path === "/" || ["/datasets", "/privacy", "/credits"].includes(path) ||
+    (path === "/" || ["/index.html", "/datasets", "/status", "/privacy", "/credits"].includes(path) ||
       path.startsWith("/search/")) &&
     request.headers.get("accept")?.toLowerCase().includes("text/html");
   if (html) {

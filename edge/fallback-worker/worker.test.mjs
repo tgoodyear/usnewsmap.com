@@ -414,6 +414,19 @@ test("the explicit error layer never asks Azure and gives APIs/assets a non-cach
   assert.equal((await run(get("/"), { ...ENV, ERROR_LAYER: "true" }, [timeout])).error, timeout);
 });
 
+test("an errored tunnel body cannot prevent the degraded API answer", async () => {
+  const body = new ReadableStream({
+    start(controller) { controller.error(new Error("body failed")); },
+  });
+  const { response, calls } = await run(get("/v1/hits"), { ...ENV, ERROR_LAYER: "true" }, [
+    new Response(body, { status: 530 }),
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("content-type"), "application/problem+json");
+  assert.equal(response.headers.get("x-usnm-error-layer-cleanup"), "cancel-failed");
+});
+
 test("only an anonymous query-free successful home shell is cached, never search results", async () => {
   const original = globalThis.caches;
   const stored = new Map();
@@ -444,16 +457,18 @@ test("only an anonymous query-free successful home shell is cached, never search
     await run(get("/"), env, [shell()]);
     assert.equal(stored.size, 1);
     assert.equal([...stored.keys()][0], `${SITE}/__usnm_fallback/shell-v1`);
-    const request = new Request(`${SITE}/search/whigs?q=private-marker`, {
-      method: "HEAD", headers: { accept: "text/html" },
-    });
-    const { response, calls } = await run(request, env, [text(530)]);
-    assert.equal(calls.length, 1);
-    assert.equal(response.status, 503);
-    assert.equal(response.headers.get("x-usnm-error-layer"), "cached-shell");
-    assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal(response.headers.has("etag"), false);
-    assert.equal(await response.text(), "");
+    for (const path of ["/search/whigs?q=private-marker", "/index.html", "/index.html/", "/privacy/", "/datasets/", "/status/"]) {
+      const request = new Request(`${SITE}${path}`, {
+        method: "HEAD", headers: { accept: "text/html" },
+      });
+      const { response, calls } = await run(request, env, [text(530)]);
+      assert.equal(calls.length, 1);
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("x-usnm-error-layer"), "cached-shell", path);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.has("etag"), false);
+      assert.equal(await response.text(), "");
+    }
   } finally {
     if (original === undefined) delete globalThis.caches;
     else globalThis.caches = original;
