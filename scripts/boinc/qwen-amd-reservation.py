@@ -112,6 +112,25 @@ def release_policy(payload, lease, workunit, original):
     return serialize(root)
 
 
+def guarded_policy(payload, intent):
+    root, classes = parse_policy(payload)
+    marker = reservation_marker(root)
+    if marker is None or marker[1:] != (intent["lease"], intent["workunit"], intent["expires"]):
+        return False
+    workunit = intent["workunit"]
+    if bounds(classes[AMD]) != (workunit, workunit):
+        return False
+    apple = classes[APPLE]
+    fields = apple.findall("max_wu_id")
+    if len(fields) != 1 or fields[0].text != str(workunit - 1) or apple.findall("min_wu_id"):
+        return False
+    for name in COMPETITORS:
+        low, high = bounds(classes[name])
+        if (low, high) != (2, 1) and not (2 <= low <= high < workunit and high - low < 10):
+            return False
+    return True
+
+
 def strict_pair(snapshot, workunit, app_version):
     wu, results = snapshot["unit"], snapshot["results"]
     expected = {
@@ -358,6 +377,8 @@ def main(argv=None):
             current = snapshot(project, intent["workunit"]) if args.action == "tick" else None
             reason = tick_reason(current, intent, now) if current else "operator_release"
             guarded = False
+            if current and not reason and not guarded_policy(original, intent):
+                reason = "reservation_policy_changed_no_exclusive_admission_claim"
             if current and not reason and guard_path.exists():
                 require(not guard_path.is_symlink(), "Refusing symlinked scheduler guard")
                 guard = json.loads(guard_path.read_bytes())

@@ -234,5 +234,13 @@ class AmdReservation(unittest.TestCase):
         with patch.object(R, "scheduler_processes", return_value={"123": "old-start"}):
             self.assertTrue(R.old_scheduler_alive(self.root, {"123": "old-start"}))
 
+    def test_drain_proof_also_requires_the_owned_policy_still_to_exclude_competitors(self):
+        intent = {"lease": LEASE, "workunit": 100, "expires": 2000}
+        self.assertTrue(R.guarded_policy(self.reserved(), intent))
+        self.assertFalse(R.guarded_policy(self.policy, intent))
+        root, nodes = R.parse_policy(self.reserved())
+        nodes["intel_vulkan_8b"].find("max_wu_id").text = "100"
+        self.assertFalse(R.guarded_policy(R.serialize(root), intent))
+
 if __name__ == "__main__":
     unittest.main()
