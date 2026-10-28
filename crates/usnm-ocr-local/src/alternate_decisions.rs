@@ -351,7 +351,16 @@ pub async fn read(curated: &dyn ObjectStore, subject: &Subject) -> anyhow::Resul
     Ok(latest)
 }
 
-/// Append an explicit decision under the existing OCR lock. Its receipt is the
+async fn validated_replay(
+    curated: &dyn ObjectStore,
+    subject: &Subject,
+    record: &Record,
+) -> anyhow::Result<Record> {
+    read(curated, subject).await?;
+    Ok(record.clone())
+}
+
+/// Append an explicit decision under the existing OCR lock. Its receipt is
 /// written before separate immutable commit markers. Exact retry or an explicit
 /// rollback can recover an interrupted selection without trusting its payloads.
 pub async fn decide(
@@ -387,6 +396,7 @@ pub async fn decide(
             );
             let latest = records.last().context("pending decision missing")?;
             if latest.decision == *decision {
+                let prior = latest.clone();
                 ensure!(
                     pending == 1 || rollback_of(&records[records.len() - 2], decision),
                     "pending recovery is not a selection rollback"
@@ -395,17 +405,14 @@ pub async fn decide(
                     lease.check()?;
                     commit(curated, &decision.subject, &records[..count]).await?;
                 }
-                return read(curated, &decision.subject)
-                    .await?
-                    .context("recovered decision missing");
+                return validated_replay(curated, &decision.subject, &prior).await;
             }
             ensure!(
                 pending == 1 && rollback_of(latest, decision),
                 "recover the exact pending decision or explicitly roll it back"
             );
         } else if let Some(prior) = records.last().filter(|r| r.decision == *decision) {
-            read(curated, &decision.subject).await?;
-            return Ok(prior.clone());
+            return validated_replay(curated, &decision.subject, prior).await;
         }
         ensure!(
             records.len() < MAX_DECISIONS,
@@ -506,6 +513,26 @@ mod tests {
         assert_eq!(
             read(store.as_ref(), &decision.subject).await.unwrap(),
             records.last().cloned()
+        );
+        assert_eq!(
+            validated_replay(store.as_ref(), &decision.subject, &records[0])
+                .await
+                .unwrap(),
+            records[0]
+        );
+        let commits = store
+            .list_info(&format!("{}/commit", prefix(&decision.subject).unwrap()))
+            .await
+            .unwrap();
+        let latest = commits.last().unwrap();
+        store
+            .put(&latest.path, b"{}".to_vec(), "application/json")
+            .await
+            .unwrap();
+        assert!(
+            validated_replay(store.as_ref(), &decision.subject, &records[0])
+                .await
+                .is_err()
         );
     }
 }
