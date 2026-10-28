@@ -234,11 +234,14 @@ pub fn redact(v: &mut View) {
     }
     v.ocred.workbook_url = None;
     v.azure.workbook_url = None;
-    v.azure.queues_from = v
-        .azure
-        .queues_from
-        .as_deref()
-        .map(|n| label_of(&mut names, n));
+    if !v.azure.queues_metrics_only {
+        v.azure.queues_from = v
+            .azure
+            .queues_from
+            .as_deref()
+            .map(|n| label_of(&mut names, n));
+    }
+    scrub_opt(&mut v.azure.queues_error);
     if let Some(q) = &mut v.azure.queues {
         scrub_opt(&mut q.error);
         for d in &mut q.dead_letters {

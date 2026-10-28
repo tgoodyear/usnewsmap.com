@@ -862,7 +862,9 @@ pub(super) fn queues(v: &View, o: &mut String) {
                 );
             }
             o.push_str("</table>");
-            if q.dead_letters.is_empty() {
+            if v.azure.queues_metrics_only {
+                o.push_str("<p class=\"muted\">Dead-letter message bodies are not read by this metrics-only source.</p>");
+            } else if q.dead_letters.is_empty() {
                 o.push_str("<p class=\"muted\">No dead letters visible.</p>");
             } else {
                 let _ = write!(
@@ -893,7 +895,19 @@ pub(super) fn queues(v: &View, o: &mut String) {
             }
         }
         _ => {
-            o.push_str("<p class=\"muted\">No queue counts: no configured worker reports them.</p>")
+            if let Some(error) = &v.azure.queues_error {
+                let _ = write!(
+                    o,
+                    "<p class=\"err\">Queue metrics unavailable: {}</p>",
+                    esc(error)
+                );
+            } else if v.azure.queues_metrics_only {
+                o.push_str("<p class=\"muted\">No successful pgmq observation yet.</p>");
+            } else {
+                o.push_str(
+                    "<p class=\"muted\">No queue counts: no configured worker reports them.</p>",
+                );
+            }
         }
     }
     let _ = write!(
