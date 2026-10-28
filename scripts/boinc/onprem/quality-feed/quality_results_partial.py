@@ -40,11 +40,15 @@ def atomic_json(path, value):
         os.close(fd)
 
 
-def select_unit(units, after):
+def select_unit(units, after, through=""):
     names = sorted(units)
     if not names:
         raise ValueError("no submitted QUALITY units")
-    return next((name for name in names if name > after), names[0])
+    through = through or names[-1]
+    selected = next((name for name in names if after < name <= through), None)
+    if selected is None:
+        selected, through = names[0], names[-1]
+    return selected, through
 
 
 def run_loader(command, timeout=120):
@@ -73,7 +77,7 @@ def scoped_collect(args, project=Path("/project")):
     names = [p.name for p in (root / "units").iterdir()
              if UNIT.fullmatch(p.name) and (p / "submitted").is_file()
              and (p / "quality.json").is_file()]
-    selected = select_unit(names, args.after)
+    selected, through = select_unit(names, args.after, args.through)
     source = root / "units" / selected
     job = json.loads((source / "quality.json").read_bytes())
     base = project / "ops/quality-results/scoped" / args.campaign
@@ -112,6 +116,7 @@ def scoped_collect(args, project=Path("/project")):
         "campaign_complete": False, "coverage": "selected-unit-only-at-collection",
         "submitted_units_observed": len(names), "unvisited_units": len(names) - 1,
         "selected_unit": selected, "selected_job": job["id"], "selected_doc_ids": docs,
+        "cycle_through": through,
         "qwen_campaign": args.qwen_campaign, "collector_sha256": digest(Path(args.collector)),
         "started_at": started, "finished_at": time.time(),
         "files": {name: digest(out / name) for name in FILES},
@@ -128,6 +133,8 @@ def validate_receipt(receipt, campaign, snapshot):
             or receipt.get("campaign_complete") is not False
             or receipt.get("coverage") != "selected-unit-only-at-collection"
             or not UNIT.fullmatch(receipt.get("selected_unit", ""))
+            or not UNIT.fullmatch(receipt.get("cycle_through", ""))
+            or receipt["selected_unit"] > receipt["cycle_through"]
             or not re.fullmatch(r"[a-f0-9]{64}", receipt.get("selected_job", ""))
             or not re.fullmatch(r"[a-f0-9]{64}", receipt.get("collector_sha256", ""))
             or not isinstance(receipt.get("selected_doc_ids"), list)
@@ -174,7 +181,8 @@ def host_pass(args):
     state_path = args.state_dir / args.campaign / "cursor.json"
     state = json.loads(state_path.read_bytes()) if state_path.exists() else {}
     after = state.get("after", "")
-    if after and not UNIT.fullmatch(after):
+    through = state.get("through", "")
+    if (after and not UNIT.fullmatch(after)) or (through and not UNIT.fullmatch(through)):
         raise ValueError("invalid persisted cursor")
     snapshot = uuid.uuid4().hex
     common = ["--campaign", args.campaign, "--snapshot", snapshot]
@@ -186,6 +194,8 @@ def host_pass(args):
     ]
     if after:
         remote += ["--after", after]
+    if through:
+        remote += ["--through", through]
     if args.qwen_campaign:
         remote += ["--qwen-campaign", args.qwen_campaign]
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", f"root@{args.server_host}"]
@@ -224,7 +234,8 @@ def host_pass(args):
             or loaded.get("selected_unit") != receipt["selected_unit"]):
         raise ValueError("loader receipt does not match partial snapshot")
     atomic_json(host_receipt, {"coverage": receipt, "loaded": True, "load": loaded})
-    atomic_json(state_path, {"after": receipt["selected_unit"], "last_snapshot": snapshot,
+    atomic_json(state_path, {"after": receipt["selected_unit"], "through": receipt["cycle_through"],
+                             "last_snapshot": snapshot,
                              "coverage": "cursor-only; no campaign freshness assertion"})
     return loaded
 
@@ -241,6 +252,7 @@ def main(argv=None):
     parser.add_argument("--snapshot")
     parser.add_argument("--snapshot-dir", type=Path)
     parser.add_argument("--after", default="")
+    parser.add_argument("--through", default="")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)
@@ -252,6 +264,7 @@ def main(argv=None):
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
             or min(args.ctid, args.server_ct) < 1
             or (args.after and not UNIT.fullmatch(args.after))
+            or (args.through and not UNIT.fullmatch(args.through))
             or not re.fullmatch(r"/project/[A-Za-z0-9_./-]+", args.collector)
             or ".." in Path(args.collector).parts
             or (args.snapshot and not SNAPSHOT.fullmatch(args.snapshot))

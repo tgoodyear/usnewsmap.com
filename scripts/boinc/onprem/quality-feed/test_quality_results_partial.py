@@ -27,7 +27,7 @@ class PartialTest(unittest.TestCase):
         self.campaign = "test"
         self.job = "b" * 64
         self.args = types.SimpleNamespace(
-            campaign=self.campaign, snapshot=self.snapshot, after="", qwen_campaign=None,
+            campaign=self.campaign, snapshot=self.snapshot, after="", through="", qwen_campaign=None,
             collector=str(self.root / "collector"), server_ct=230, ctid=215,
             server_host="server.example", state_dir=self.root / "state",
             engine_image="sha256:" + "c" * 64, snapshot_dir=self.root / "snapshot",
@@ -38,6 +38,7 @@ class PartialTest(unittest.TestCase):
             "coverage": "selected-unit-only-at-collection",
             "submitted_units_observed": 2, "unvisited_units": 1,
             "selected_unit": "bundle-a", "selected_job": self.job,
+            "cycle_through": "bundle-b",
             "selected_doc_ids": ["doc-a"], "collector_sha256": "d" * 64,
             "files": {name: "e" * 64 for name in partial.FILES},
             "snapshot_dir": "/project/ops/quality-results/scoped/test/"
@@ -125,6 +126,7 @@ class PartialTest(unittest.TestCase):
             self.assertFalse(report["campaign_complete"])
             state = json.loads((self.args.state_dir / "test/cursor.json").read_bytes())
             self.assertEqual(state["after"], "bundle-a")
+            self.assertEqual(state["through"], "bundle-b")
             self.assertIn("flock -n", run.call_args_list[0].args[0][-1])
             self.assertIn("180s", run.call_args_list[0].args[0][-1])
             for call in run.call_args_list[2:4]:
@@ -140,13 +142,25 @@ class PartialTest(unittest.TestCase):
     def test_coverage_cannot_claim_completeness_or_cross_snapshot(self):
         for key, value in [("campaign_complete", True), ("snapshot", "f" * 32),
                            ("selected_unit", "../wrong"), ("selected_job", "old"),
-                           ("snapshot_dir", "/project/quality/test/out"), ("unvisited_units", 0)]:
+                           ("snapshot_dir", "/project/quality/test/out"), ("unvisited_units", 0),
+                           ("cycle_through", "../wrong"), ("cycle_through", "bundle-0")]:
             with self.subTest(key=key):
                 receipt = {**self.receipt, key: value}
                 with self.assertRaises(ValueError):
                     partial.validate_receipt(receipt, self.campaign, self.snapshot)
-        self.assertEqual(partial.select_unit(["c", "a", "b"], "b"), "c")
-        self.assertEqual(partial.select_unit(["c", "a", "b"], "c"), "a")
+        self.assertEqual(partial.select_unit(["c", "a", "b"], "b"), ("c", "c"))
+        self.assertEqual(partial.select_unit(["c", "a", "b"], "c"), ("a", "c"))
+
+    def test_continuous_arrivals_cannot_starve_revisiting_prior_units(self):
+        names = ["a", "b", "c"]
+        after, through = "a", "c"
+        selected = []
+        for arriving in ["d", "e", "f"]:
+            names.append(arriving)
+            after, through = partial.select_unit(names, after, through)
+            selected.append(after)
+        self.assertEqual(selected, ["b", "c", "a"])
+        self.assertEqual(through, "f")
 
     def load_fixture(self, rows):
         root = self.args.snapshot_dir

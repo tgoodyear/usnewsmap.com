@@ -512,7 +512,10 @@ no LoC request:
    Source and preparation snapshots, coverage and host load receipts are retained.
    The host cursor advances only after successful verification and loading. Failure
    after a database commit but before cursor update safely repeats the same upserts.
-   Lexical round-robin selection wraps and revisits prior units, so newly canonical
+   Lexical round-robin selection fixes an upper-name fence for each finite cycle.
+   Continuous arrivals cannot postpone wrapping to earlier units; arrivals beyond
+   the fence join the next cycle. The fence is persisted in coverage and cursor
+   metadata, not a campaign freshness assertion. Selection revisits prior units, so newly canonical
    QUALITY results and real late or changed Qwen readings are not permanently skipped.
    Each visit invokes the collector's current dependency and content-addressed cache
    checks; old parts are never published just because a receipt exists.
