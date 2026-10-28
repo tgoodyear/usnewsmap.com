@@ -18,6 +18,18 @@ impl std::fmt::Display for CaptureError {
 impl std::error::Error for CaptureError {}
 
 pub fn capture(files: &[PathBuf], loaded: &Loaded, root: &Path) -> anyhow::Result<()> {
+    capture_with_sync(files, loaded, root, |dir| {
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })
+}
+
+fn capture_with_sync(
+    files: &[PathBuf],
+    loaded: &Loaded,
+    root: &Path,
+    mut sync: impl FnMut(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let name = crate::quality::validate::result_name(&files[1])?;
     let _lock = Lock::take(&root.join(".capture-locks").join(&name))?;
     let manifest = read(&files[1], MAX_RESULT_JSON)?;
@@ -113,7 +125,42 @@ pub fn capture(files: &[PathBuf], loaded: &Loaded, root: &Path) -> anyhow::Resul
         atomic(&staged.path().join("readings-metrics-v1.json"), &metrics)?;
         atomic(&staged.path().join("capture-v1.json"), &provenance)?;
         std::fs::rename(staged.path(), &to).context("commit Qwen evidence directory")?;
-        std::fs::File::open(root)?.sync_all()?;
     }
+    sync(&to)?;
+    sync(root)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_retries_failed_directory_durability_barriers() {
+        let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let files = super::super::validate::tests::write(
+            tmp.path(),
+            "sync",
+            &[("c01", "one two"), ("c02", "three four")],
+        );
+        let loaded = super::super::validate::load(&files).unwrap();
+        let root = tmp.path().join("seen");
+        let to = root.join(crate::quality::validate::result_name(&files[1]).unwrap());
+        for fail_at in [&root, &to, &root] {
+            let result = capture_with_sync(&files, &loaded, &root, |dir| {
+                ensure!(dir != fail_at, "injected directory sync failure");
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(to.join("capture-v1.json").is_file());
+            assert!(files.iter().all(|f| f.is_file()));
+        }
+        let mut synced = Vec::new();
+        capture_with_sync(&files, &loaded, &root, |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(synced, vec![to, root]);
+    }
 }
