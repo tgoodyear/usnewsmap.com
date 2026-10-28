@@ -130,12 +130,27 @@ fn strict_geometry(xml: &[u8]) -> anyhow::Result<()> {
     let mut unit_count = 0;
     let mut in_unit = false;
     let mut dimensions = None;
+    let mut ancestors: Vec<(bool, String)> = Vec::new();
     loop {
         let (ns, event) = reader.read_resolved_event_into(&mut buffer)?;
         let ours = matches!(ns, ResolveResult::Bound(n) if n.as_ref() == namespace);
+        ensure!(
+            !in_unit
+                || !matches!(
+                    event,
+                    Event::Start(_) | Event::Empty(_) | Event::CData(_) | Event::GeneralRef(_)
+                ),
+            "ambiguous ALTO measurement units"
+        );
         match event {
             Event::Start(ref e) | Event::Empty(ref e) if ours => {
                 let local = e.local_name();
+                let parent_is = |name| {
+                    ancestors
+                        .last()
+                        .is_some_and(|(ours, local)| *ours && local == name)
+                };
+                let within = |name| ancestors.iter().any(|(ours, local)| *ours && local == name);
                 if local.as_ref() == "MeasurementUnit" {
                     unit_count += 1;
                     ensure!(unit_count == 1, "ambiguous ALTO measurement units");
@@ -161,9 +176,33 @@ fn strict_geometry(xml: &[u8]) -> anyhow::Result<()> {
                 match local.as_ref() {
                     "Page" => {
                         ensure!(dimensions.is_none(), "multiple ALTO pages");
+                        ensure!(parent_is("Layout"), "ALTO Page outside Layout");
                         dimensions = Some((number("WIDTH")?, number("HEIGHT")?));
                     }
-                    "TextBlock" | "TextLine" | "String" => {
+                    "TextBlock" | "TextLine" | "String" | "Illustration" | "GraphicalElement" => {
+                        ensure!(within("Page"), "ALTO geometry outside Page");
+                        match local.as_ref() {
+                            "TextBlock" => ensure!(
+                                !within("TextBlock") && !within("TextLine"),
+                                "nested ALTO text block"
+                            ),
+                            "TextLine" => ensure!(
+                                parent_is("TextBlock") && !within("TextLine"),
+                                "orphan or nested ALTO text line"
+                            ),
+                            "String" => {
+                                ensure!(parent_is("TextLine"), "orphan ALTO String");
+                                ensure!(
+                                    e.attributes()
+                                        .with_checks(true)
+                                        .collect::<Result<Vec<_>, _>>()?
+                                        .iter()
+                                        .any(|a| a.key.as_ref() == "CONTENT"),
+                                    "ALTO String CONTENT missing"
+                                );
+                            }
+                            _ => {}
+                        }
                         let (width, height) = dimensions.context("ALTO geometry outside Page")?;
                         let (x, y, w, h) = (
                             number("HPOS")?,
@@ -193,6 +232,13 @@ fn strict_geometry(xml: &[u8]) -> anyhow::Result<()> {
                 in_unit = false;
             }
             Event::Eof => break,
+            _ => {}
+        }
+        match event {
+            Event::Start(ref e) => ancestors.push((ours, e.local_name().as_ref().to_owned())),
+            Event::End(_) => {
+                ancestors.pop();
+            }
             _ => {}
         }
         buffer.clear();
@@ -739,6 +785,41 @@ mod tests {
                 "measurement units",
             ),
             ("<TextLine HPOS=\"1\"", "<TextLine", "attribute missing"),
+            (
+                "CONTENT=\"reading\"",
+                "",
+                "CONTENT missing",
+            ),
+            (
+                "<MeasurementUnit>pixel</MeasurementUnit>",
+                "<MeasurementUnit>pixel<![CDATA[inch1200]]></MeasurementUnit>",
+                "measurement units",
+            ),
+            (
+                "<MeasurementUnit>pixel</MeasurementUnit>",
+                "<MeasurementUnit>pixel&#32;</MeasurementUnit>",
+                "measurement units",
+            ),
+            (
+                "</Page>",
+                "<Illustration HPOS=\"-1\" VPOS=\"1\" WIDTH=\"2\" HEIGHT=\"2\"/></Page>",
+                "geometry outside",
+            ),
+            (
+                "</Page>",
+                "<GraphicalElement HPOS=\"-1\" VPOS=\"1\" WIDTH=\"2\" HEIGHT=\"2\"/></Page>",
+                "geometry outside",
+            ),
+            (
+                "</Page>",
+                "<String HPOS=\"1\" VPOS=\"1\" WIDTH=\"2\" HEIGHT=\"2\" CONTENT=\"dropped\"/></Page>",
+                "orphan ALTO String",
+            ),
+            (
+                "</TextLine>",
+                "<TextLine HPOS=\"1\" VPOS=\"1\" WIDTH=\"2\" HEIGHT=\"2\"><String HPOS=\"1\" VPOS=\"1\" WIDTH=\"2\" HEIGHT=\"2\" CONTENT=\"dropped\"/></TextLine></TextLine>",
+                "nested ALTO text line",
+            ),
         ] {
             let mut f = Fixture::new("reading");
             let altered = String::from_utf8(f.alto.clone())
