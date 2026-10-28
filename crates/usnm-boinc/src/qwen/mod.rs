@@ -18,6 +18,7 @@ use usnm_ocr_contract::qwen::Model;
 pub mod benchmark;
 pub mod candidates;
 pub mod cli;
+pub mod retain;
 pub mod stage;
 pub mod submit;
 pub mod summary;

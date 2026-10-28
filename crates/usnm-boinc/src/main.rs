@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     if matches!(command, Commands::Export(_) | Commands::Claim(_)) {
         log_to_stderr();
     }
-    match command {
+    let result = match command {
         Commands::HostTrust(command) => host_trust::cli::run(command).await,
         Commands::Export(args) => job::export(args).await,
         Commands::Claim(command) => claim::cli::run(command).await,
@@ -108,7 +108,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Ndlocr(command) => ndlocr::cli::run(command).await,
         Commands::Handoff(command) => handoff::cli::run(command).await,
         Commands::Status(args) => job::status(args),
+    };
+    if let Err(error) = &result {
+        if error.downcast_ref::<qwen::retain::CaptureError>().is_some() {
+            eprintln!("{error:#}");
+            std::process::exit(3);
+        }
     }
+    result
 }
 
 #[cfg(test)]
