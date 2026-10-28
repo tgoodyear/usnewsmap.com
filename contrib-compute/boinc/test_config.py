@@ -76,7 +76,8 @@ class DaemonConfig(unittest.TestCase):
         slots = dict.fromkeys(names, 0)
         for _ in range(cache_size):
             best = max(range(len(names)), key=lambda i: (credit[i], -i))
-            credit[best] -= 1 / weights[names[best]]
+            # C divides by zero to infinity: a zero-weight app takes one slot, then no more.
+            credit[best] -= 1 / weights[names[best]] if weights[names[best]] else math.inf
             slots[names[best]] += 1
         self.assertGreaterEqual(slots["usnm_qwen"], qwen_ready_results)
         for name, weight in weights.items():
