@@ -65,7 +65,8 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             config_sha256=R.sha(self.config.read_bytes()), initial_policy_sha256=R.sha(self.policy.read_bytes()),
             controller="a" * 32, minimum_workunit=100, max_admissions=500, max_inflight_per_host=10,
             enabled_until=10000000000,
-            intel_host=9, nvidia_host=10, apply=True,
+            intel_host=9, nvidia_host=10, app_version_num=114, nvidia_app_version=66, intel_app_version=67,
+            prompt_version=1, apply=True,
         )
 
     def input(self, number, language="yid"):
@@ -479,6 +480,25 @@ class BoincDb {static $q=0;static function get(){return new self();}
             receipt = R.run(self.args)
         self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
         self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_reviewed_successor_release_and_request_version_are_pinned_together(self):
+        self.database["versions"] = [{"id": 70, "version_num": 115, "platformid": 1, "plan_class": "nvidia_vulkan_8b"},
+                                     {"id": 71, "version_num": 115, "platformid": 1, "plan_class": "intel_vulkan_8b"}]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            self.assertEqual(R.run(self.args)["status"],
+                             "closed-expired-budget-or-release-change")
+        self.args.app_version_num, self.args.nvidia_app_version, self.args.intel_app_version = 115, 70, 71
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            with self.assertRaisesRegex(Exception, "Unreviewed prompt/budget/cohort"):
+                R.run(SimpleNamespace(**vars(self.args) | {"prompt_version": 2}))
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+        base = ["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
+                "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "100",
+                "--enabled-until", str(int(time.time()) + 60)]
+        with self.assertRaisesRegex(Exception, "needs app versions that read it"):
+            R.main(base + ["--prompt-version", "2"])
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_standalone_fresh_pair_helper_also_requires_distinct_host_gate(self):
