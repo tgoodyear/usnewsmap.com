@@ -3,6 +3,7 @@
 
 use super::super::*;
 use super::{batch_client, key, BATCH};
+use crate::batch;
 use crate::loc::bucket::{BucketConfig, NAME};
 use crate::standin::{Page, Scripted, StandIn};
 
