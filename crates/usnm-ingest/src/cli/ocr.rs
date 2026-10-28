@@ -354,6 +354,11 @@ pub(crate) struct OcrAlternateStageArgs {
     input: std::path::PathBuf,
 }
 
+fn alternate_binding(bytes: &[u8]) -> anyhow::Result<usnm_ocr_local::alternate::Binding> {
+    serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("alternate binding refused: invalid binding JSON"))
+}
+
 pub(crate) async fn ocr_alternate_stage_command(
     cli: &Cli,
     state: State,
@@ -368,8 +373,7 @@ pub(crate) async fn ocr_alternate_stage_command(
         anyhow::ensure!(bytes.len() as u64 <= max, "{name}: size bound");
         Ok(bytes)
     };
-    let binding: usnm_ocr_local::alternate::Binding =
-        serde_json::from_slice(&read("binding.json", 65536)?)?;
+    let binding = alternate_binding(&read("binding.json", 65536)?)?;
     let image = read("source-image", 128 << 20)?;
     let baseline = read(
         "baseline.txt",
@@ -643,6 +647,18 @@ pub(crate) async fn ocr_requeue_command(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invalid_alternate_binding_errors_do_not_echo_private_values() {
+        for bytes in [
+            br#"{"dpi":"PRIVATE_BINDING_SENTINEL"}"#.as_slice(),
+            br#"{"text_rights":"PRIVATE_BINDING_SENTINEL"}"#.as_slice(),
+        ] {
+            let error = super::alternate_binding(bytes).unwrap_err();
+            assert!(format!("{error:#}").contains("binding refused"));
+            assert!(!format!("{error:#}").contains("PRIVATE_BINDING_SENTINEL"));
+        }
+    }
+
     use super::*;
     use crate::Command;
     use clap::Parser;
