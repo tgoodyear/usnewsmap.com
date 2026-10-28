@@ -61,7 +61,16 @@ pub fn run(root: &Path, pages: &Path) -> anyhow::Result<Vec<PageStatus>> {
             let member = membership.as_ref().map(|m| &m.pages[i]);
             let (status, records) = match member {
                 None => ("membership_invalid", Vec::new()),
-                Some(_) => page_records(pages, &job.id, &bp.doc_id)?,
+                Some(_) => {
+                    let prefix = format!("{}:", bp.doc_id);
+                    let expected: Vec<&str> = job
+                        .crops
+                        .iter()
+                        .map(|c| c.id.as_str())
+                        .filter(|id| id.starts_with(&prefix))
+                        .collect();
+                    page_records(pages, &job.id, &bp.doc_id, &expected)?
+                }
             };
             out.push(PageStatus {
                 workunit: job.workunit(),
@@ -79,12 +88,23 @@ pub fn run(root: &Path, pages: &Path) -> anyhow::Result<Vec<PageStatus>> {
 }
 
 /// The page's status from its pair records. A record that does not name
-/// this job and page, or holds a reading of another page, is not counted.
+/// this job and page, or whose sides and crop verdicts do not each hold
+/// exactly the page's staged crops (`expected`) once, is not counted.
 fn page_records(
     pages: &Path,
     job_id: &str,
     doc_id: &str,
+    expected: &[&str],
 ) -> anyhow::Result<(&'static str, Vec<String>)> {
+    let mut want: Vec<&str> = expected.to_vec();
+    want.sort_unstable();
+    let exact = |items: &serde_json::Value| {
+        items.as_array().is_some_and(|xs| {
+            let mut ids: Vec<&str> = xs.iter().filter_map(|x| x["id"].as_str()).collect();
+            ids.sort_unstable();
+            ids.len() == xs.len() && ids == want
+        })
+    };
     let dir = pages.join(job_id).join(doc_id);
     let mut agreed = Vec::new();
     let mut disagreed = Vec::new();
@@ -95,7 +115,6 @@ fn page_records(
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
             .collect();
         files.sort();
-        let prefix = format!("{doc_id}:");
         for f in files {
             let Ok(r) = read(&f, MAX_RECORD)
                 .and_then(|b| Ok(serde_json::from_slice::<serde_json::Value>(&b)?))
@@ -106,15 +125,10 @@ fn page_records(
                 && r["job_id"] == job_id
                 && r["doc_id"] == doc_id
                 && r["accuracy_established"] == false
+                && !want.is_empty()
+                && exact(&r["crops"])
                 && r["results"].as_array().is_some_and(|sides| {
-                    sides.len() == 2
-                        && sides.iter().all(|s| {
-                            s["readings"].as_array().is_some_and(|rs| {
-                                rs.iter().all(|x| {
-                                    x["id"].as_str().is_some_and(|id| id.starts_with(&prefix))
-                                })
-                            })
-                        })
+                    sides.len() == 2 && sides.iter().all(|s| exact(&s["readings"]))
                 });
             let name = f
                 .file_name()
@@ -428,5 +442,53 @@ mod tests {
                 < r["results"][1]["result"].as_str().unwrap()
         );
         assert_eq!(blank["read"], serde_json::json!([true, false]));
+    }
+
+    #[test]
+    fn a_page_both_hosts_left_short_is_not_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("pages");
+        let dropped = format!("{}:c02", DOCS[2]);
+        // Both results claim to be complete but leave out the same crop of page 3.
+        let short = |files: Vec<PathBuf>| {
+            let mut r: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+            r["readings"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|x| x["id"] != dropped.as_str());
+            let rb = serde_json::to_vec(&r).unwrap();
+            let mut m: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
+            let n = job.crops.len() - 1;
+            m["crops"] = n.into();
+            m["read"] = n.into();
+            m["readings_bytes"] = rb.len().into();
+            m["readings_sha256"] = sha256(&rb).into();
+            std::fs::write(&files[0], rb).unwrap();
+            std::fs::write(&files[1], serde_json::to_vec(&m).unwrap()).unwrap();
+            files
+        };
+        let a = short(result(tmp.path(), &job, "a", |d, c| {
+            format!("{d} {c} words")
+        }));
+        let b = short(result(tmp.path(), &job, "b", |d, c| {
+            format!("{d} {c} words")
+        }));
+        let _ = validate::compare(&a, &b, 0.5, None, Some(&pages));
+        assert_eq!(
+            std::fs::read_dir(pages.join(&job.id).join(DOCS[2]))
+                .unwrap()
+                .count(),
+            1
+        );
+        let status: Vec<&str> = run(&root, &pages)
+            .unwrap()
+            .iter()
+            .map(|p| p.status)
+            .collect();
+        assert_eq!(status, ["accepted", "accepted", "pending"]);
     }
 }
