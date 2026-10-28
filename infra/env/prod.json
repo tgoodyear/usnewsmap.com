@@ -20,6 +20,8 @@
   "USNM_INGEST_JOBS": false,
   "USNM_INGEST_ONPREM": true,
   "USNM_JA_LATIN": true,
+  "USNM_JA_OCR_ALERTS": true,
+  "USNM_JA_OCR_EXPECT_ACTIVE": false,
   "USNM_JA_OCR_JOB": false,
   "USNM_JA_OCR_ONPREM": true,
   "USNM_LAKE_BLOB_SOFT_DELETE_DAYS": 3,
