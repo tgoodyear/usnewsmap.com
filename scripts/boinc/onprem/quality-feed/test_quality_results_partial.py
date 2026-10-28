@@ -358,6 +358,39 @@ class PartialTest(unittest.TestCase):
                 partial.scoped_collect(self.args, self.root)
         self.assertEqual(frontier_path.read_bytes(), previous)
 
+    def test_slow_inventory_leaves_time_to_persist_collector_timeout_progress(self):
+        self.args.completion_frontier = True
+        unit = self.root / "quality/test/units/a-ready"
+        unit.mkdir(parents=True)
+        (unit / "submitted").touch()
+        (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        inventory = {"a-ready": {"status": "canonical-present", "fingerprint": "a" * 64}}
+        # A 90-second inventory must not leave the collector its former 120 seconds.
+        with mock.patch.object(partial.time, "monotonic", side_effect=[0, 90, 90]), \
+                mock.patch.object(partial, "completion_inventory", return_value=inventory), \
+                mock.patch.object(partial.subprocess, "run",
+                                  side_effect=subprocess.TimeoutExpired(["collector"], 70)) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                partial.scoped_collect(self.args, self.root)
+        self.assertEqual(run.call_args.kwargs["timeout"], 70)
+        state = json.loads((self.root / "ops/quality-results/scoped/test/frontier.json").read_bytes())
+        self.assertEqual(state["priority_after"], "a-ready")
+        self.assertEqual(state["turns"], 1)
+        self.assertEqual(state["loaded"], {})
+
+    def test_frontier_inventory_budget_is_shared_and_exhaustion_stays_unknown(self):
+        with mock.patch.object(partial.time, "monotonic", return_value=150), \
+                mock.patch.object(partial.subprocess, "run",
+                                  side_effect=subprocess.TimeoutExpired(["inventory"], 10)) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                partial.completion_inventory(self.args, self.root, self.root, deadline=160)
+        self.assertEqual(run.call_args.kwargs["timeout"], 10)
+        with mock.patch.object(partial.time, "monotonic", return_value=160), \
+                mock.patch.object(partial.subprocess, "run") as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                partial.completion_inventory(self.args, self.root, self.root, deadline=160)
+        run.assert_not_called()
+
     def load_fixture(self, rows):
         root = self.args.snapshot_dir
         (root / "out").mkdir(parents=True)

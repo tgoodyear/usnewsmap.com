@@ -562,6 +562,13 @@ no LoC request:
    priority lane or suppress fair revisits. Its fingerprint remains unacknowledged
    and is retried in later cycles. Inventory and selected-dependency recheck errors
    still abort without advancing either lane.
+   Frontier inventory, collection and selected-key recheck share a 160-second
+   monotonic work budget inside the existing 180-second remote limit. Each native
+   invocation gets at most 120 seconds and at most the remaining budget, reserving
+   20 seconds for subprocess teardown and durable scheduling progress. A slow
+   inventory therefore reduces the collector's timeout rather than allowing outer
+   termination to interrupt its failure-progress write. This reserve is not a
+   guarantee against unavailable storage, process kill, or host failure.
    No prior cursor, DB count, or output timestamp proves an exact dependency key
    was loaded: the first opt-in conservatively re-verifies canonical-present units
    once. Do not seed acknowledgements from guessed historical coverage.

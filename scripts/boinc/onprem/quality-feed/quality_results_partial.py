@@ -19,6 +19,7 @@ UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
 SNAPSHOT = re.compile(r"[a-f0-9]{32}")
 LOCK_ACQUIRED = "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"
 FRONTIER_LIMIT = 10_000
+REMOTE_WORK_SECONDS = 160  # Leave 20 seconds before the outer TERM for durable failure progress.
 
 
 def replay_collection_diagnostics(stderr):
@@ -92,7 +93,7 @@ def select_frontier(inventory, state):
     return selected, names[-1], lane, updated
 
 
-def completion_inventory(args, project, base, selected=None):
+def completion_inventory(args, project, base, selected=None, deadline=None):
     qwen_root = project / "qwen" / args.qwen_campaign if args.qwen_campaign else base / "no-qwen"
     if args.qwen_campaign:
         # An unavailable configured reading source is not an empty reading campaign.
@@ -111,7 +112,10 @@ def completion_inventory(args, project, base, selected=None):
     ]
     if selected:
         command += ["--inventory-unit", selected]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    budget = min(120, deadline - time.monotonic()) if deadline is not None else 120
+    if budget <= 0:
+        raise subprocess.TimeoutExpired(command, 0)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
     if result.returncode:
         print(result.stderr, file=sys.stderr, end="", flush=True)
     result.check_returncode()
@@ -143,6 +147,7 @@ def scoped_collect(args, project=Path("/project")):
     pass_started = time.monotonic()
     root = project / "quality" / args.campaign
     frontier = getattr(args, "completion_frontier", False)
+    deadline = pass_started + REMOTE_WORK_SECONDS if frontier else None
     names = []
     for index, path in enumerate((root / "units").iterdir()):
         if frontier and index >= FRONTIER_LIMIT:
@@ -157,7 +162,7 @@ def scoped_collect(args, project=Path("/project")):
         state = json.loads(frontier_path.read_bytes()) if frontier_path.exists() else {"schema": 1}
         if state.get("schema") != 1 or len(state.get("loaded", {})) > FRONTIER_LIMIT:
             raise ValueError("invalid completion frontier state")
-        inventory = completion_inventory(args, project, base)
+        inventory = completion_inventory(args, project, base, deadline=deadline)
         if set(inventory) != set(names):
             raise ValueError("submitted inventory changed or unavailable")
         state["loaded"] = {n: v for n, v in state.get("loaded", {}).items() if n in inventory}
@@ -202,7 +207,10 @@ def scoped_collect(args, project=Path("/project")):
     ]
     started = time.time()
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        budget = min(120, deadline - time.monotonic()) if deadline is not None else 120
+        if budget <= 0:
+            raise subprocess.TimeoutExpired(command, 0)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
         (out.parent / "collector.log").write_text(result.stdout + result.stderr)
         result.check_returncode()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -212,7 +220,7 @@ def scoped_collect(args, project=Path("/project")):
         raise
     if frontier:
         # Reuse the canonical dependency key, not mtimes or a guessed completion filename.
-        current = completion_inventory(args, project, base, selected)
+        current = completion_inventory(args, project, base, selected, deadline=deadline)
         if current.get(selected) != inventory[selected]:
             raise ValueError("selected completion dependencies changed during collection")
     docs = [p["doc_id"] for p in job.get("pages", [])] or [job["doc_id"]]
