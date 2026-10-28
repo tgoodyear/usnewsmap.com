@@ -492,6 +492,183 @@ async fn imports_a_page_it_asked_for() {
     }
 }
 
+#[tokio::test]
+async fn loc_reuse_fixture_preserves_baseline_conflicts_missing_coverage_and_rollback() {
+    let fx = fixture(false).await;
+    let curated = fx.stores.curated.as_ref();
+    let baseline_path = format!("pages/{BATCH}_ver01/part-0.parquet");
+    let baseline = curated.get(&baseline_path).await.unwrap().unwrap();
+    let doc = key(3).doc_id();
+    let missing = key(4).doc_id();
+    fx.ask(&[queued(&doc, BATCH, "bulk"), queued(&missing, BATCH, "bulk")])
+        .await;
+    let text = GERMAN.repeat(4);
+    let (alto_source, part_source) = fx.node_writes(&row(3, &text), ALTO, &stamp(1)).await;
+    let source_alto_bytes = fx.out.get(&alto_source).await.unwrap().unwrap();
+    let source_part_bytes = fx.out.get(&part_source).await.unwrap().unwrap();
+    assert_eq!(fx.sync().await.last_run.imported, 1);
+    let parts = curated.list(&format!("{ROOT}/pages")).await.unwrap();
+    let records = curated.list(&format!("{ROOT}/import")).await.unwrap();
+    let imported_bytes = curated.get(&parts[0]).await.unwrap().unwrap();
+    let record_bytes = curated.get(&records[0]).await.unwrap().unwrap();
+    let record: ImportRecord = serde_json::from_slice(&record_bytes).unwrap();
+    let listing = super::replace::Listing::list(curated).await.unwrap();
+    let loaded = listing
+        .load(curated, [LCCN].into_iter(), &[])
+        .await
+        .unwrap();
+    assert_eq!(loaded.pages[&doc].text, text.trim_end());
+    assert!(!loaded.pages.contains_key(&missing));
+    assert!(ledger::load(curated)
+        .await
+        .unwrap()
+        .outstanding(&missing)
+        .is_some());
+
+    for (path, body) in [
+        (&alto_source, source_alto_bytes),
+        (&part_source, source_part_bytes),
+    ] {
+        assert!(fx.out.put_new(path, body, "x").await.unwrap());
+    }
+    let replay = fx.sync().await;
+    assert_eq!(replay.last_run.imported, 0);
+    assert_eq!(replay.last_run.rejected.get("not_requested"), Some(&1));
+    assert_eq!(curated.list(&format!("{ROOT}/pages")).await.unwrap(), parts);
+    assert_eq!(
+        curated.get(&parts[0]).await.unwrap().unwrap(),
+        imported_bytes
+    );
+    assert_eq!(
+        curated.get(&records[0]).await.unwrap().unwrap(),
+        record_bytes
+    );
+    let mut successful_imports = Vec::new();
+    let mut quarantine_imports = 0;
+    for path in curated.list(&format!("{ROOT}/import")).await.unwrap() {
+        let receipt: ImportRecord =
+            serde_json::from_slice(&curated.get(&path).await.unwrap().unwrap()).unwrap();
+        if receipt
+            .sources
+            .iter()
+            .any(|source| source.outcome == "imported")
+        {
+            successful_imports.push(path);
+        } else {
+            assert!(receipt.pages.is_empty());
+            assert!(receipt
+                .sources
+                .iter()
+                .all(|source| source.outcome == "quarantined"));
+            quarantine_imports += 1;
+        }
+    }
+    assert_eq!(successful_imports, records);
+    assert_eq!(quarantine_imports, 1);
+    let replayed = super::replace::Listing::list(curated)
+        .await
+        .unwrap()
+        .load(curated, [LCCN].into_iter(), &[])
+        .await
+        .unwrap();
+    assert_eq!(replayed.pages[&doc].text, text.trim_end());
+    // A second reading cannot bypass the normal eligibility boundary.
+    let conflict = "A conflicting synthetic reading";
+    let (_, conflict_path) = fx.node_writes(&row(3, conflict), ALTO, &stamp(2)).await;
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.imported, 0);
+    assert_eq!(status.last_run.rejected.get("not_requested"), Some(&1));
+    assert!(fx
+        .records()
+        .await
+        .iter()
+        .any(|r| r.source == conflict_path && r.reason == "not_requested"));
+    let unchanged = super::replace::Listing::list(curated)
+        .await
+        .unwrap()
+        .load(curated, [LCCN].into_iter(), &[])
+        .await
+        .unwrap();
+    assert_eq!(unchanged.pages[&doc].text, text.trim_end());
+
+    let revoked_path = format!("{ROOT}/revoked/synthetic-loc-reuse.json");
+    assert!(curated
+        .put_new(
+            &revoked_path,
+            serde_json::to_vec(&serde_json::json!({
+                "run": record.run,
+                "reason": "Synthetic rollback rehearsal, not a LoC acceptance",
+                "reference": "#811"
+            }))
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap());
+    let revoked = super::replace::revocations(curated).await.unwrap();
+    let rollback = listing
+        .load(curated, [LCCN].into_iter(), &revoked)
+        .await
+        .unwrap();
+    assert!(rollback.pages.is_empty());
+    assert!(rollback.revoked.contains(&doc));
+    assert_eq!(
+        curated.get(&baseline_path).await.unwrap().unwrap(),
+        baseline
+    );
+    assert_eq!(
+        curated.get(&parts[0]).await.unwrap().unwrap(),
+        imported_bytes
+    );
+    assert_eq!(
+        curated.get(&records[0]).await.unwrap().unwrap(),
+        record_bytes
+    );
+    assert!(ledger::load(curated)
+        .await
+        .unwrap()
+        .outstanding(&missing)
+        .is_some());
+}
+
+#[tokio::test]
+async fn loc_reuse_fixture_rejects_unknown_provenance_and_malformed_alto() {
+    for (source, alto, reason) in [
+        ("loc", ALTO, "engine"),
+        ("usnm-tesseract", "<html/>", "alto_not_alto"),
+    ] {
+        let fx = fixture(false).await;
+        let curated = fx.stores.curated.as_ref();
+        let baseline_path = format!("pages/{BATCH}_ver01/part-0.parquet");
+        let baseline = curated.get(&baseline_path).await.unwrap().unwrap();
+        let doc = key(3).doc_id();
+        fx.ask(&[queued(&doc, BATCH, "bulk")]).await;
+        let mut candidate = row(3, &GERMAN.repeat(4));
+        candidate.ocr_source = source.into();
+        if source == "loc" {
+            candidate.ocr_engine = "unknown".into();
+        }
+        fx.node_writes(&candidate, alto, &stamp(1)).await;
+        let status = fx.sync().await;
+        assert_eq!(status.last_run.imported, 0, "{reason}");
+        assert_eq!(status.last_run.rejected.get(reason), Some(&1));
+        assert!(curated
+            .list(&format!("{ROOT}/pages"))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(ledger::load(curated)
+            .await
+            .unwrap()
+            .outstanding(&doc)
+            .is_some());
+        assert_eq!(
+            curated.get(&baseline_path).await.unwrap().unwrap(),
+            baseline
+        );
+    }
+}
+
 /// One fixture per reject reason: a change to a good page's output.
 #[tokio::test]
 async fn each_reject_goes_to_quarantine_with_its_reason() {
