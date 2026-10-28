@@ -16,7 +16,7 @@
 //!   every load so a release shows up at once. The app's pages carry an
 //!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
 //!   costs a `304`.
-//! - Legacy search links redirect to `/search/<query>`. Curated base searches
+//! - Legacy search links redirect to `/search/<query>`. Curated and promoted base searches
 //!   are indexable; other searches and filter variants carry `noindex`.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
 
@@ -90,6 +90,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     // "file name too long" with a 500, so such paths skip it and are answered
     // like any other path with no file.
     let sharing = state.clone();
+    let robots = state.clone();
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
         let state = state.clone();
@@ -134,7 +135,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
         .layer(middleware::from_fn(cache_control))
-        .layer(middleware::from_fn(robots_tag))
+        .layer(middleware::from_fn_with_state(robots, robots_tag))
 }
 
 /// How many bytes a path segment is once percent-decoded, as `ServeDir`
@@ -417,12 +418,27 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
     search_preview_snapshot(state, state.snapshot.load_full(), q, false).await
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(super) struct SearchPreview {
+    html: String,
+    total_hits: u64,
+}
+
 pub(crate) async fn search_preview_snapshot(
     state: &Arc<AppState>,
     snap: Arc<crate::Snapshot>,
     q: &str,
     background: bool,
 ) -> Result<String, ApiError> {
+    Ok(search_preview_data(state, snap, q, background).await?.html)
+}
+
+async fn search_preview_data(
+    state: &Arc<AppState>,
+    snap: Arc<crate::Snapshot>,
+    q: &str,
+    background: bool,
+) -> Result<SearchPreview, ApiError> {
     use crate::routes::{cached_body, with_timeout, Job};
     use crate::version::Pinning;
     use usnm_core::ids::PageKey;
@@ -460,7 +476,10 @@ pub(crate) async fn search_preview_snapshot(
                 .then_with(|| b.place_id.cmp(&a.place_id))
         });
         let Some(top) = top else {
-            return Ok("<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned());
+            return Ok(SearchPreview {
+                html: "<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned(),
+                total_hits: summary.total_hits,
+            });
         };
         let place = rd
             .place(&top.place_id)
@@ -507,7 +526,10 @@ pub(crate) async fn search_preview_snapshot(
         html.push_str(
             "</ol><p>The interactive map and full results require JavaScript.</p></section>",
         );
-        Ok::<_, ApiError>(html)
+        Ok::<_, ApiError>(SearchPreview {
+            html,
+            total_hits: summary.total_hits,
+        })
     };
     let job = Job::search("site-preview", background, state.config.compute_cap);
     let (_, body) = cached_body(
@@ -571,8 +593,8 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
     };
     if status == StatusCode::OK {
         if let Some(q) = search_query(path) {
-            // Only bounded, curated base searches add backend work on a page load.
-            if !noindex(req.uri()) {
+            // Only admitted base searches add backend work on a page load.
+            if !noindex(req.uri(), &state.sitemap) {
                 match search_preview(&state, &q).await {
                     Ok(preview) => body = insert_content(body, &preview),
                     Err(error) => {
@@ -702,11 +724,12 @@ async fn cache_control(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Only curated, unfiltered searches are indexable. Legacy search links
+/// Only curated or promoted, unfiltered searches are indexable. Legacy search links
 /// and the old dataset path keep their noindex policy.
-fn noindex(uri: &Uri) -> bool {
+fn noindex(uri: &Uri, sitemap: &sitemap::Service) -> bool {
     if let Some(q) = search_query(uri.path()) {
-        return !CURATED_SEARCHES.contains(&search_path(&q))
+        let path = search_path(&q);
+        return !(CURATED_SEARCHES.contains(&path) || sitemap.contains(&path))
             || uri.query().is_some_and(|q| !q.is_empty());
     }
     match uri.path().trim_end_matches('/') {
@@ -718,8 +741,8 @@ fn noindex(uri: &Uri) -> bool {
     }
 }
 
-async fn robots_tag(req: Request, next: Next) -> Response {
-    let noindex = noindex(req.uri());
+async fn robots_tag(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let noindex = noindex(req.uri(), &state.sitemap);
     let mut resp = next.run(req).await;
     if noindex {
         resp.headers_mut().insert(
@@ -936,7 +959,10 @@ mod tests {
             "/search/not-a-curated-search",
         ];
         for uri in yes {
-            assert!(noindex(&uri.parse().unwrap()), "{uri}");
+            assert!(
+                noindex(&uri.parse().unwrap(), &sitemap::Service::default()),
+                "{uri}"
+            );
         }
         let no = [
             "/",
@@ -953,7 +979,10 @@ mod tests {
             "/search/whigs",
         ];
         for uri in no {
-            assert!(!noindex(&uri.parse().unwrap()), "{uri}");
+            assert!(
+                !noindex(&uri.parse().unwrap(), &sitemap::Service::default()),
+                "{uri}"
+            );
         }
     }
 

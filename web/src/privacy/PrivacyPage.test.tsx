@@ -25,6 +25,9 @@ describe("PrivacyPage", () => {
     expect(text).toContain("never stored with your IP address, browser details, location or any identifier");
     expect(text).toContain("Do Not Track or Global Privacy Control, your searches are not recorded");
     expect(text).toContain("at least five times");
+    expect(text).toContain("two different UTC days");
+    expect(text).toContain("more than 50 newspaper pages");
+    expect(text).toContain("Only unfiltered, full-date-range newspaper searches qualify");
     expect(text).not.toContain("copied from the search engine's own log");
   });
 
