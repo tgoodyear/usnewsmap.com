@@ -503,7 +503,9 @@ async fn loc_reuse_fixture_preserves_baseline_conflicts_missing_coverage_and_rol
     fx.ask(&[queued(&doc, BATCH, "bulk"), queued(&missing, BATCH, "bulk")])
         .await;
     let text = GERMAN.repeat(4);
-    fx.node_writes(&row(3, &text), ALTO, &stamp(1)).await;
+    let (alto_source, part_source) = fx.node_writes(&row(3, &text), ALTO, &stamp(1)).await;
+    let source_alto_bytes = fx.out.get(&alto_source).await.unwrap().unwrap();
+    let source_part_bytes = fx.out.get(&part_source).await.unwrap().unwrap();
     assert_eq!(fx.sync().await.last_run.imported, 1);
     let parts = curated.list(&format!("{ROOT}/pages")).await.unwrap();
     let records = curated.list(&format!("{ROOT}/import")).await.unwrap();
@@ -523,12 +525,53 @@ async fn loc_reuse_fixture_preserves_baseline_conflicts_missing_coverage_and_rol
         .outstanding(&missing)
         .is_some());
 
-    assert_eq!(fx.sync().await.last_run.imported, 0);
+    for (path, body) in [
+        (&alto_source, source_alto_bytes),
+        (&part_source, source_part_bytes),
+    ] {
+        assert!(fx.out.put_new(path, body, "x").await.unwrap());
+    }
+    let replay = fx.sync().await;
+    assert_eq!(replay.last_run.imported, 0);
+    assert_eq!(replay.last_run.rejected.get("not_requested"), Some(&1));
     assert_eq!(curated.list(&format!("{ROOT}/pages")).await.unwrap(), parts);
     assert_eq!(
-        curated.list(&format!("{ROOT}/import")).await.unwrap(),
-        records
+        curated.get(&parts[0]).await.unwrap().unwrap(),
+        imported_bytes
     );
+    assert_eq!(
+        curated.get(&records[0]).await.unwrap().unwrap(),
+        record_bytes
+    );
+    let mut successful_imports = Vec::new();
+    let mut quarantine_imports = 0;
+    for path in curated.list(&format!("{ROOT}/import")).await.unwrap() {
+        let receipt: ImportRecord =
+            serde_json::from_slice(&curated.get(&path).await.unwrap().unwrap()).unwrap();
+        if receipt
+            .sources
+            .iter()
+            .any(|source| source.outcome == "imported")
+        {
+            successful_imports.push(path);
+        } else {
+            assert!(receipt.pages.is_empty());
+            assert!(receipt
+                .sources
+                .iter()
+                .all(|source| source.outcome == "quarantined"));
+            quarantine_imports += 1;
+        }
+    }
+    assert_eq!(successful_imports, records);
+    assert_eq!(quarantine_imports, 1);
+    let replayed = super::replace::Listing::list(curated)
+        .await
+        .unwrap()
+        .load(curated, [LCCN].into_iter(), &[])
+        .await
+        .unwrap();
+    assert_eq!(replayed.pages[&doc].text, text.trim_end());
     // A second reading cannot bypass the normal eligibility boundary.
     let conflict = "A conflicting synthetic reading";
     let (_, conflict_path) = fx.node_writes(&row(3, conflict), ALTO, &stamp(2)).await;

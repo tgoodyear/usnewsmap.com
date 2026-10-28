@@ -18,11 +18,12 @@ cargo test -p usnm-ocr-local --locked loc_reuse_fixture_
 ```
 
 The combined fixture imports an ordinary supported synthetic worker reading,
-replays the import pass, submits a conflicting later reading, and revokes the
-first import by its recorded run. It verifies:
+resubmits the exact original worker ALTO and Parquet bytes, submits a conflicting
+later reading, and revokes the first import by its recorded run. It verifies:
 
-- The same page ID and selected text survive replay without another imported
-  part or import record.
+- The same page ID, selected text, accepted part and successful-import lineage
+  survive replay. The repeated source is quarantined as no longer requested,
+  with a separate quarantine-only receipt rather than another successful import.
 - A conflicting reading does not overwrite the accepted reading or bypass
   normal eligibility; it receives a separate quarantine reason record.
 - A requested page with no output remains outstanding and has no replacement.
