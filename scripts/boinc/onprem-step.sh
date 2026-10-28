@@ -208,17 +208,29 @@ IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/ser
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
 BASE=()
 LINES=()
+QUEUE_LOCATION=""
 # The last line counts even without a newline after it.
 while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
   [[ $line =~ ^([A-Z][A-Z0-9_]{0,63})=(.*)$ ]] || die "bad line in $SETTINGS"
   BASE+=("${BASH_REMATCH[1]}")
   LINES+=("$line")
+  [ "${BASH_REMATCH[1]}" != QUEUE_URL ] || QUEUE_LOCATION=${BASH_REMATCH[2]}
   if [ "$TARGET" = handoff ]; then
     [[ $HANDOFF_HOST_VARS == *" ${BASH_REMATCH[1]} "* ]] || die "$SETTINGS sets ${BASH_REMATCH[1]}; it takes only$HANDOFF_HOST_VARS"
     [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
   fi
 done < "$SETTINGS"
+QUEUE_MOUNTS=()
+if [ "$TARGET" = handoff ] && [[ $QUEUE_LOCATION == postgres://* || $QUEUE_LOCATION == postgresql://* ]]; then
+  # Certificate paths in the URL are container paths, never caller-selected host mounts.
+  for file in client.crt client.key ca.pem; do
+    [ -f "$CONF/queue/$file" ] && [ -r "$CONF/queue/$file" ] ||
+      die "pgmq requires readable $CONF/queue/$file"
+    [ ! -L "$CONF/queue/$file" ] || die "pgmq certificate files must not be symlinks"
+    QUEUE_MOUNTS+=(-v "$CONF/queue/$file:/etc/usnm/queue/$file:ro")
+  done
+fi
 if [ "$TARGET" = handoff ]; then
   for v in $HANDOFF_HOST_VARS; do
     [[ " ${BASE[*]} " == *" $v "* ]] || die "$SETTINGS doesn't set $v"
@@ -266,6 +278,9 @@ if $WHAT_IF; then
   elif [ "$TARGET" = handoff ]; then
     echo "would run $IMAGE's handoff-job.sh as $name with $SETTINGS and:"
     echo "  HANDOFF_STEP=$STEP"
+    if [ ${#QUEUE_MOUNTS[@]} -gt 0 ]; then
+      echo "  pgmq certificates mounted read-only at /etc/usnm/queue"
+    fi
     for v in ${VARS[@]+"${VARS[@]}"}; do echo "  $v"; done
   else
     echo "would run $IMAGE as $name with $CONF/bridge.env and:"
@@ -293,6 +308,7 @@ fi
 run=(podman run --rm --name "$name" --network host
   --log-driver journald --log-opt tag=usnm-boinc-step --env-file "$envfile"
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
+run+=(${QUEUE_MOUNTS[@]+"${QUEUE_MOUNTS[@]}"})
 # The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
 [ "$TARGET" = handoff ] || run+=(--add-host usnm-boinc-mysql:127.0.0.1
   -v /srv/usnm-boinc/project:/project
