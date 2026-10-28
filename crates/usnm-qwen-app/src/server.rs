@@ -11,7 +11,7 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use usnm_ocr_contract::qwen::{MAX_CROP_TEXT, PROMPT};
+use usnm_ocr_contract::qwen::{tail_repetition, MAX_CROP_TEXT, PROMPT};
 use usnm_ocr_quality::slot::{resolve_slot_file, BoincControl};
 
 pub const ENV_LLAMA_SERVER: &str = "USNM_LLAMA_SERVER";
@@ -159,6 +159,7 @@ pub fn chat_completion(
     port: u16,
     png: &[u8],
     max_tokens: u32,
+    image_min_tokens: Option<u32>,
     timeout: Duration,
 ) -> anyhow::Result<(String, u32, String)> {
     let url = format!("data:image/png;base64,{}", BASE64.encode(png));
@@ -182,10 +183,14 @@ pub fn chat_completion(
             redacted_tail(&String::from_utf8_lossy(&resp), 256)
         );
     }
-    parse_completion(&resp, max_tokens)
+    parse_completion(&resp, max_tokens, image_min_tokens)
 }
 
-fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32, String)> {
+fn parse_completion(
+    resp: &[u8],
+    max_tokens: u32,
+    image_min_tokens: Option<u32>,
+) -> anyhow::Result<(String, u32, String)> {
     let v: serde_json::Value = serde_json::from_slice(resp).context("chat response JSON")?;
     let text = v
         .pointer("/choices/0/message/content")
@@ -205,8 +210,16 @@ fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32
     if finish_reason_raw.is_some_and(|v| !v.is_null()) && finish_reason.is_none() {
         flags.push("invalid_or_oversized_finish_reason");
     }
-    if tokens >= max_tokens || finish_reason == Some("length") {
+    let budget_exhausted = tokens >= max_tokens || finish_reason == Some("length");
+    if budget_exhausted {
         flags.push("completion_token_budget_exhausted");
+    }
+    let tail = tail_repetition(text);
+    if tail.is_some() {
+        flags.push("tail_periodic_repetition");
+        if budget_exhausted {
+            flags.push("repetition_loop_at_token_budget");
+        }
     }
     if cleaned.is_empty() {
         flags.push("empty_reading");
@@ -229,12 +242,13 @@ fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32
         flags.push("consecutive_duplicate_lines");
     }
     let metadata = serde_json::to_string(&serde_json::json!({
-        "schema": 1,
+        "schema": 2,
         "finish_reason": finish_reason,
         "completion_tokens_reported": tokens_reported,
         "max_tokens_requested": max_tokens,
         "stop_strings_requested": [],
         "repetition_penalty_requested": null,
+        "image_min_tokens_requested": image_min_tokens,
         "response_sha256": usnm_ocr_contract::boinc::sha256(resp),
         "response_bytes": resp.len(),
         "raw_content_sha256": usnm_ocr_contract::boinc::sha256(text.as_bytes()),
@@ -242,6 +256,7 @@ fn parse_completion(resp: &[u8], max_tokens: u32) -> anyhow::Result<(String, u32
         "cleaning_changed_content": text != cleaned,
         "longest_identical_token_run": longest_run,
         "repetition_scope": "raw_content_before_cleaning",
+        "tail_repetition": tail.map(|(period, span)| serde_json::json!({"period_chars": period, "span_chars": span})),
         "generation_flags": flags,
         "scientific_acceptance": "not_established_by_generation_metadata",
     }))?;
@@ -277,6 +292,7 @@ impl Server {
         gpu: &GpuState,
         threads: u32,
         load_deadline: Duration,
+        image_min_tokens: Option<u32>,
         control: &BoincControl,
     ) -> anyhow::Result<(Self, u64)> {
         if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
@@ -310,10 +326,13 @@ impl Server {
             ngl,
             "-t",
             &threads.max(1).to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err));
+        ]);
+        if let Some(n) = image_min_tokens {
+            cmd.args(["--image-min-tokens", &n.to_string()]);
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log_err));
 
         if let Some(dev) = gpu.cuda_device {
             cmd.env("CUDA_VISIBLE_DEVICES", dev.to_string());
@@ -388,7 +407,7 @@ mod completion_tests {
     #[test]
     fn preserves_length_stop_and_labels_repetition_without_rewriting_reading() {
         let response = br#"{"choices":[{"message":{"content":"word\nword\nword"},"finish_reason":"length"}],"usage":{"completion_tokens":12}}"#;
-        let (text, tokens, metadata) = parse_completion(response, 20).unwrap();
+        let (text, tokens, metadata) = parse_completion(response, 20, None).unwrap();
         let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(text, "word\nword\nword");
         assert_eq!(tokens, 12);
@@ -409,8 +428,12 @@ mod completion_tests {
 
     #[test]
     fn missing_finish_or_usage_stays_unknown_not_successful_stop() {
-        let (text, tokens, metadata) =
-            parse_completion(br#"{"choices":[{"message":{"content":" [?] [?] "}}]}"#, 20).unwrap();
+        let (text, tokens, metadata) = parse_completion(
+            br#"{"choices":[{"message":{"content":" [?] [?] "}}]}"#,
+            20,
+            None,
+        )
+        .unwrap();
         let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(text, "[?] [?]");
         assert_eq!(tokens, 0);
@@ -430,7 +453,7 @@ mod completion_tests {
             "usage": {"completion_tokens": "x".repeat(8192)}
         }))
         .unwrap();
-        let (text, _, metadata) = parse_completion(&response, 20).unwrap();
+        let (text, _, metadata) = parse_completion(&response, 20, None).unwrap();
         let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(text, "kept");
         assert!(metadata.len() < 2048);
@@ -455,7 +478,7 @@ mod completion_tests {
             "choices": [{"message": {"content": raw}, "finish_reason": "stop"}]
         }))
         .unwrap();
-        let (reading, _, metadata) = parse_completion(&response, 20000).unwrap();
+        let (reading, _, metadata) = parse_completion(&response, 20000, None).unwrap();
         let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(reading, clean_reading(&raw));
         assert!(!reading.contains("tailword"));
@@ -463,9 +486,51 @@ mod completion_tests {
         assert_eq!(m["repetition_scope"], "raw_content_before_cleaning");
         assert_eq!(
             m["generation_flags"],
-            serde_json::json!(["consecutive_duplicate_lines"])
+            serde_json::json!(["tail_periodic_repetition", "consecutive_duplicate_lines"])
         );
         assert_eq!(m["raw_content_bytes"], raw.len());
         assert_eq!(m["cleaning_changed_content"], true);
+    }
+
+    fn completion(content: &str, finish: &str, tokens: u32) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "choices": [{"message": {"content": content}, "finish_reason": finish}],
+            "usage": {"completion_tokens": tokens}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn loop_to_the_token_budget_is_labelled_and_kept_verbatim() {
+        // The 1.14 NVIDIA reading of a clean Yiddish crop (#529 benchmark, job 87a106ca…, c10).
+        let raw = format!("שְׁפָרִים,{}", " אֵיזֶר עַרְבְּעַיִם,".repeat(33));
+        let (reading, _, metadata) =
+            parse_completion(&completion(&raw, "length", 844), 844, None).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(reading, raw.trim());
+        assert_eq!(
+            m["generation_flags"],
+            serde_json::json!([
+                "completion_token_budget_exhausted",
+                "tail_periodic_repetition",
+                "repetition_loop_at_token_budget"
+            ])
+        );
+        assert_eq!(m["tail_repetition"]["period_chars"], 21);
+        assert!(m["image_min_tokens_requested"].is_null());
+    }
+
+    #[test]
+    fn repeated_print_that_stops_is_not_a_loop() {
+        // A shelf of book spines, read to a natural stop.
+        let raw = "SHAKESPEARE'S\nWORKS\n".repeat(6);
+        let (_, _, metadata) =
+            parse_completion(&completion(&raw, "stop", 80), 1474, Some(1024)).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(
+            m["generation_flags"],
+            serde_json::json!(["tail_periodic_repetition"])
+        );
+        assert_eq!(m["image_min_tokens_requested"], 1024);
     }
 }

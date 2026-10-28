@@ -45,8 +45,8 @@ use usnm_ocr_contract::{
     boinc::sha256,
     quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{
-        Crop, Engine, Job, Outcome, Reading, Readings, ResultManifest, MAX_ERROR, MAX_JOB_JSON,
-        PROMPT_VERSION, VERSION,
+        image_min_tokens, Crop, Engine, Job, Outcome, Reading, Readings, ResultManifest, MAX_ERROR,
+        MAX_JOB_JSON, PROMPT_VERSION, VERSION,
     },
     surya::Host,
 };
@@ -133,12 +133,26 @@ pub fn crop_png(page: &image::DynamicImage, c: &Crop) -> anyhow::Result<Vec<u8>>
     Ok(out.into_inner())
 }
 
+/// `items` comma-joined when that fits in `max` bytes, else their count.
+fn bounded_list(items: &[String], max: usize) -> String {
+    let all = items.join(",");
+    if all.len() <= max {
+        all
+    } else {
+        format!(
+            "{} crops; see the generation_v1 sections of diag.txt",
+            items.len()
+        )
+    }
+}
+
 fn empty_result(
     job_id: String,
     engine: Engine,
     crops: u32,
     outcome: Outcome,
     error: Option<String>,
+    prompt_version: u32,
 ) -> (ResultManifest, Readings) {
     let readings = Readings {
         v: VERSION,
@@ -147,7 +161,7 @@ fn empty_result(
         diag: BTreeMap::new(),
         model: None,
         outcome,
-        prompt_version: PROMPT_VERSION,
+        prompt_version,
         readings: vec![],
     };
     let result = ResultManifest {
@@ -275,6 +289,7 @@ pub fn run_slot_with(
                     l.job.crops.len() as u32,
                     Outcome::NoGpu,
                     None,
+                    l.job.prompt_version,
                 )
             } else if want_cuda_only && gpu.cuda_device.is_none() {
                 diag.section(
@@ -288,6 +303,7 @@ pub fn run_slot_with(
                     l.job.crops.len() as u32,
                     Outcome::NoGpu,
                     None,
+                    l.job.prompt_version,
                 )
             } else {
                 let deadline = deadline_override.unwrap_or_else(|| {
@@ -350,6 +366,7 @@ pub fn run_slot_with(
                 crops,
                 Outcome::UnitError,
                 Some(tail(&msg, MAX_ERROR).to_owned()),
+                PROMPT_VERSION,
             )
         }
     };
@@ -411,6 +428,7 @@ fn run_crops(
             l.job.crops.len() as u32,
             Outcome::Failed,
             None,
+            l.job.prompt_version,
         );
     }
 
@@ -430,6 +448,7 @@ fn run_crops(
                 l.job.crops.len() as u32,
                 Outcome::Failed,
                 None,
+                l.job.prompt_version,
             );
         }
     };
@@ -457,6 +476,7 @@ fn run_crops(
                         l.job.crops.len() as u32,
                         Outcome::Failed,
                         None,
+                        l.job.prompt_version,
                     );
                 }
             };
@@ -468,6 +488,7 @@ fn run_crops(
                 gpu,
                 threads,
                 LOAD_DEADLINE.min(deadline),
+                image_min_tokens(l.job.prompt_version),
                 control,
             ) {
                 Ok((srv, ms_loaded)) => {
@@ -482,6 +503,7 @@ fn run_crops(
                         l.job.crops.len() as u32,
                         Outcome::Failed,
                         None,
+                        l.job.prompt_version,
                     );
                 }
             }
@@ -552,7 +574,13 @@ fn run_crops(
             }
         };
         let t_crop = Instant::now();
-        match chat_completion(port, &png, l.job.max_tokens(crop), remaining) {
+        match chat_completion(
+            port,
+            &png,
+            l.job.max_tokens(crop),
+            image_min_tokens(l.job.prompt_version),
+            remaining,
+        ) {
             Ok((text, tokens, metadata)) => {
                 cp.generation_metadata.insert(crop.id.clone(), metadata);
                 cp.readings.push(Reading {
@@ -594,7 +622,15 @@ fn run_crops(
     let out_readings = cp.readings;
 
     let engine_ms = ms(started);
+    let mut loop_crops = Vec::new();
     for (crop, metadata) in cp.generation_metadata {
+        if serde_json::from_str::<serde_json::Value>(&metadata)
+            .ok()
+            .and_then(|m| m.get("generation_flags")?.as_array().cloned())
+            .is_some_and(|f| f.iter().any(|f| f == "repetition_loop_at_token_budget"))
+        {
+            loop_crops.push(crop.clone());
+        }
         diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
     }
     if let Some(ref srv) = srv_guard {
@@ -611,6 +647,16 @@ fn run_crops(
     let mut r_diag = BTreeMap::new();
     r_diag.insert("ctx_size".into(), CTX_SIZE.to_string());
     r_diag.insert(
+        "image_min_tokens".into(),
+        image_min_tokens(l.job.prompt_version).map_or("default".into(), |n| n.to_string()),
+    );
+    // Readings stay as read; this marks the crops whose reading ran out of tokens while
+    // repeating, so they are not mistaken for complete transcriptions.
+    r_diag.insert(
+        "repetition_loop_crops".into(),
+        bounded_list(&loop_crops, 256),
+    );
+    r_diag.insert(
         "n_gpu_layers".into(),
         if gpu.use_gpu { "99" } else { "0" }.into(),
     );
@@ -622,7 +668,7 @@ fn run_crops(
         diag: r_diag,
         model: Some(model.name.clone()),
         outcome,
-        prompt_version: PROMPT_VERSION,
+        prompt_version: l.job.prompt_version,
         readings: out_readings,
     };
     let result = ResultManifest {
@@ -970,7 +1016,10 @@ mod tests {
 
     #[test]
     fn qwen_slot_checkpoints_per_crop_and_resumes_multipage_bundle() {
-        use usnm_ocr_contract::{quality::BundleSlice, qwen::BundlePage};
+        use usnm_ocr_contract::{
+            quality::BundleSlice,
+            qwen::{BundlePage, PROMPT_VERSION_IMAGE_MIN_TOKENS},
+        };
 
         let tmp = tempfile::tempdir().unwrap();
         let slot = tmp.path().join("slot");
@@ -1053,7 +1102,7 @@ mod tests {
                     language: "eng".into(),
                 },
             ],
-            prompt_version: PROMPT_VERSION,
+            prompt_version: PROMPT_VERSION_IMAGE_MIN_TOKENS,
         };
         job.id = job.identity().unwrap();
         std::fs::write(slot.join(PAGE_FILE), &page_blob).unwrap();
@@ -1083,7 +1132,7 @@ mod tests {
             }],
             generation_metadata: BTreeMap::from([(
                 "page_one:c01".into(),
-                r#"{"schema":1,"finish_reason":"stop"}"#.into(),
+                r#"{"schema":1,"finish_reason":"length","generation_flags":["repetition_loop_at_token_budget"]}"#.into(),
             )]),
         };
         let mut legacy = serde_json::to_value(&cp).unwrap();
@@ -1115,7 +1164,10 @@ mod tests {
         assert_eq!(readings.readings[1].text, "fresh second page crop");
         let diag_str = String::from_utf8_lossy(&diag_bytes);
         assert!(diag_str
-            .contains("== generation_v1/page_one:c01\n{\"schema\":1,\"finish_reason\":\"stop\"}"));
+            .contains("== generation_v1/page_one:c01\n{\"schema\":1,\"finish_reason\":\"length\""));
+        assert_eq!(readings.prompt_version, PROMPT_VERSION_IMAGE_MIN_TOKENS);
+        assert_eq!(readings.diag["image_min_tokens"], "1024");
+        assert_eq!(readings.diag["repetition_loop_crops"], "page_one:c01");
         let fresh: serde_json::Value = serde_json::from_str(
             diag_str
                 .split("== generation_v1/page_two:c01\n")
@@ -1127,7 +1179,7 @@ mod tests {
         )
         .unwrap();
         assert!(fresh["finish_reason"].is_null());
-        assert_eq!(fresh["schema"], 1);
+        assert_eq!(fresh["schema"], 2);
         assert!(diag_str.contains("resumed from checkpoint: 1 of 2 crops already complete"));
     }
 
