@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -28,6 +29,7 @@ MAX_JOBS = 10000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
 MAX_STATUS_BYTES = 1024 * 1024
+MAX_FAILURE_OUTPUT_CHARS = 16384
 OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
 SURYA_APP_NAME = "usnm_surya"
@@ -575,6 +577,39 @@ class Transport:
         self._journal_snapshot = None
         self._journal_records = None
 
+    def retain_failure(self, label, *, returncode=None, error=None, stdout=None, stderr=None):
+        def tail(value):
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            return (value or "")[-MAX_FAILURE_OUTPUT_CHARS:]
+
+        receipt = {
+            "schema_version": 1, "at": int(time.time()), "label": label,
+            "returncode": returncode, "exception": type(error).__name__ if error else None,
+            "stdout_tail": tail(stdout), "stderr_tail": tail(stderr),
+        }
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self.directory, prefix=".command-failure-", delete=False
+            ) as output:
+                temporary = Path(output.name)
+                json.dump(receipt, output, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.directory / "last-command-failure.json")
+            fd = os.open(self.directory, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as failure:
+            raise RuntimeError(f"{label} failed; private command failure receipt could not be saved") from failure
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     def run(self, argv, label, timeout=2100, ok=(0,)):
         # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
         kind = f"storage {argv[3]}" if argv[:3] == ["az", "storage", "blob"] and len(argv) > 3 else label
@@ -584,11 +619,16 @@ class Transport:
                                   stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
             passed = done.returncode in ok
         except (OSError, subprocess.SubprocessError) as error:
+            self.retain_failure(
+                label, error=error, stdout=getattr(error, "stdout", None),
+                stderr=getattr(error, "stderr", None),
+            )
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying") from error
         finally:
             self.timings.command(kind, self.timings.clock() - start,
                                  self.timings.cpu() - cpu, passed)
         if not passed:
+            self.retain_failure(label, returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying")
         return done.stdout
 

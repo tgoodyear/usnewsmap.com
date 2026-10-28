@@ -6,6 +6,17 @@ controller connects the existing CT 211 cache push, hand-off export, bridge
 It runs **one bounded tick**, not a daemon, and does nothing remotely without
 `--apply`. Adding this code does **not** deploy it or enable a production feed.
 
+Failed subprocesses retain `last-command-failure.json` in the controller's
+private state directory, atomically replaced with mode `0600`. It records the
+step label, timestamp, exit code or exception class, and the final 16,384
+characters of each output stream, including partial timeout output. It does not
+record command arguments. Only the latest failed command is retained; a later
+successful command does not erase it. A receipt-write failure is reported
+explicitly. Public timing/failure telemetry still excludes subprocess output.
+Treat this file as sensitive operator evidence: inspect it on the controller
+host, not in GitHub comments, CI logs or public telemetry. Check its timestamp
+and label before attributing it to a tick. No automatic retry is added.
+
 ## Recovering a contract-invalid canonical output
 
 BOINC validity alone does not establish native output integrity. Do not repair a
