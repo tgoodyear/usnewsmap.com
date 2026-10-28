@@ -282,6 +282,10 @@ def run(args):
             require(sha(policy) == args.initial_policy_sha256, "Initial operator policy changed")
             state = {"controller": args.controller, "window": window, "admitted": [],
                      "resource_gates": class_scope(policy, without_bounds=True)}
+            if args.apply:
+                # Persist the validated baseline before any early return so later ticks use the
+                # scope-aware ownership checks rather than the whole-policy SHA.
+                persist(state_path, state)
         output = {"at": int(time.time()), "window": window, "reserved_amd": reserved,
                   "admitted_unique": len(state["admitted"]), "limit": args.max_admissions,
                   "apply": args.apply, "accuracy_established": False}

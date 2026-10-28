@@ -373,6 +373,18 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(closed.returncode, 0, closed.stderr)
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_first_idle_tick_persists_baseline_before_unrelated_amd_change(self):
+        self.args.minimum_workunit = 1000
+        self.assertEqual(R.run(self.args)["status"], "no-audited-fresh-inputs")
+        root = ET.fromstring(self.policy.read_bytes())
+        amd = root.find("plan_class[name='amd_vulkan_8b']")
+        amd.find("min_wu_id").text = amd.find("max_wu_id").text = "200"
+        self.policy.write_bytes(ET.tostring(root))
+        self.args.minimum_workunit = 100
+        with patch.object(R, "read_database", return_value=self.database):
+            self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_unpinned_non_linux_release_of_opened_class_closes_admission(self):
         with patch.object(R, "read_database", return_value=self.database):
             R.run(self.args)
