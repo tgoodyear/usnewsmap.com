@@ -110,6 +110,27 @@ class ResultsTest(unittest.TestCase):
                 results.run(args)
             self.assertEqual(run.call_count, 1)
 
+    def test_bounded_admission_transport_timeout_replays_receipt_and_never_loads(self):
+        args = self.args()
+        args.step_lock_wait_secs = 60
+        receipt = results.LOCK_ACQUIRED + " 2026-10-28T05:00:00Z\ncollector diagnostic\n"
+        for stderr in (receipt, receipt.encode(), b"remote diagnostic\n", None):
+            with self.subTest(stderr=stderr):
+                error = subprocess.TimeoutExpired(["ssh"], 1320, stderr=stderr)
+                with mock.patch.object(results.subprocess, "run", side_effect=error) as run, \
+                        mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+                    with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                        results.run(args)
+                    self.assertIs(raised.exception, error)
+                    self.assertEqual(run.call_count, 1)
+                    text = log.getvalue()
+                    event = json.loads(text.splitlines()[-1])
+                    self.assertEqual(event["phase"], "collection_transport_timeout")
+                    self.assertEqual(event["step_lock_acquired"], stderr in (receipt, receipt.encode()))
+                    self.assertEqual(event["budget_seconds"], 1320)
+                    if stderr:
+                        self.assertIn(stderr.decode() if isinstance(stderr, bytes) else stderr, text)
+
     def test_incremental_forwarding_and_incomplete_warming_never_pulls_stale_snapshot(self):
         args = self.args()
         args.incremental = True

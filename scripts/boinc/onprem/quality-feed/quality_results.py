@@ -23,6 +23,14 @@ HERE = Path(__file__).resolve().parent
 LOCK_ACQUIRED = "USNM_QUALITY_STEP_LOCK_ACQUIRED"
 
 
+def replay_collection_diagnostics(stderr):
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    if stderr:
+        print(stderr, file=sys.stderr, end="", flush=True)
+    return any(line.startswith(LOCK_ACQUIRED + " ") for line in (stderr or "").splitlines())
+
+
 def collect(args, command):
     wait = args.step_lock_wait_secs
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
@@ -31,10 +39,15 @@ def collect(args, command):
         subprocess.run(ssh, check=True, timeout=1260)
         return
     print(json.dumps({"phase": "step_lock_wait", "budget_seconds": wait}), file=sys.stderr, flush=True)
-    result = subprocess.run(ssh, stderr=subprocess.PIPE, text=True, timeout=1260 + wait)
-    if result.stderr:
-        print(result.stderr, file=sys.stderr, end="", flush=True)
-    acquired = any(line.startswith(LOCK_ACQUIRED + " ") for line in result.stderr.splitlines())
+    try:
+        result = subprocess.run(ssh, stderr=subprocess.PIPE, text=True, timeout=1260 + wait)
+    except subprocess.TimeoutExpired as error:
+        acquired = replay_collection_diagnostics(error.stderr)
+        print(json.dumps({"phase": "collection_transport_timeout",
+                          "budget_seconds": 1260 + wait, "step_lock_acquired": acquired}),
+              file=sys.stderr, flush=True)
+        raise
+    acquired = replay_collection_diagnostics(result.stderr)
     if result.returncode == 75 and not acquired:
         print(json.dumps({"phase": "step_lock_timeout", "budget_seconds": wait}),
               file=sys.stderr, flush=True)
