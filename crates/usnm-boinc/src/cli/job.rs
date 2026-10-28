@@ -126,6 +126,8 @@ pub struct RetryArgs {
     #[arg(long)]
     reviewed_reason: String,
     #[arg(long)]
+    handoff_url: String,
+    #[arg(long)]
     curated_url: String,
     #[arg(long)]
     reference_url: String,
@@ -154,6 +156,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
     };
     let curated = usnm_store::open(&args.curated_url)?;
     let reference = usnm_store::open(&args.reference_url)?;
+    let handoff = usnm_store::open(&args.handoff_url)?;
     let id = crate::retry::prepare(
         &crate::retry::Options {
             root: &args.root,
@@ -163,6 +166,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             app_version_num: args.app_version_num,
             image: &args.image,
             reviewed_reason: &args.reviewed_reason,
+            handoff: handoff.as_ref(),
         },
         &State::new(docs),
         curated.as_ref(),

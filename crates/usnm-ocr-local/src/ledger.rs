@@ -53,9 +53,10 @@ pub struct Queued {
     /// The UTC request day, for the daily cap. Queue ordering uses `queued_at`.
     pub request_day: Option<chrono::NaiveDate>,
     pub queued_at: DateTime<Utc>,
-    /// Exact message time for deliberate BOINC retries; legacy queues use
-    /// second precision or request-day midnight, not the ledger's queue time.
+    /// Exact message time for newly queued work, including BOINC retries.
+    /// Legacy rows omit it; queue time can differ from ledger time.
     pub retry_message_at: Option<DateTime<Utc>>,
+    pub retry_run: Option<String>,
 }
 
 pub const IMPORTED: &str = "imported";
@@ -79,6 +80,7 @@ pub struct Outcome {
     pub source: String,
     pub at: DateTime<Utc>,
     pub run: String,
+    pub message_sha256: Option<String>,
 }
 
 fn queued_schema() -> SchemaRef {
@@ -102,6 +104,7 @@ fn queued_schema() -> SchemaRef {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             true,
         ),
+        Field::new("retry_run", DataType::Utf8, true),
     ]))
 }
 
@@ -119,6 +122,7 @@ fn outcome_schema() -> SchemaRef {
             false,
         ),
         s("run", false),
+        s("message_sha256", true),
     ]))
 }
 
@@ -144,6 +148,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
     let mut request_day = StringBuilder::new();
     let mut at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
     let mut retry_at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
+    let mut retry_run = StringBuilder::new();
     for r in rows {
         doc_id.append_value(&r.doc_id);
         batch.append_value(&r.batch);
@@ -155,6 +160,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
         request_day.append_option(r.request_day.map(|d| d.format("%Y-%m-%d").to_string()));
         at.append_value(r.queued_at.timestamp_micros());
         retry_at.append_option(r.retry_message_at.map(|at| at.timestamp_micros()));
+        retry_run.append_option(r.retry_run.as_deref());
     }
     write(
         queued_schema(),
@@ -169,6 +175,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
             Arc::new(request_day.finish()),
             Arc::new(at.finish()),
             Arc::new(retry_at.finish()),
+            Arc::new(retry_run.finish()),
         ],
     )
 }
@@ -181,6 +188,7 @@ pub fn encode_outcomes(rows: &[Outcome]) -> anyhow::Result<Vec<u8>> {
     let mut source = StringBuilder::new();
     let mut at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
     let mut run = StringBuilder::new();
+    let mut message = StringBuilder::new();
     for r in rows {
         doc_id.append_value(&r.doc_id);
         outcome.append_value(&r.outcome);
@@ -189,6 +197,7 @@ pub fn encode_outcomes(rows: &[Outcome]) -> anyhow::Result<Vec<u8>> {
         source.append_value(&r.source);
         at.append_value(r.at.timestamp_micros());
         run.append_value(&r.run);
+        message.append_option(r.message_sha256.as_deref());
     }
     write(
         outcome_schema(),
@@ -200,6 +209,7 @@ pub fn encode_outcomes(rows: &[Outcome]) -> anyhow::Result<Vec<u8>> {
             Arc::new(source.finish()),
             Arc::new(at.finish()),
             Arc::new(run.finish()),
+            Arc::new(message.finish()),
         ],
     )
 }
@@ -236,6 +246,15 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
             })
             .transpose()?;
         let at = col!(b, "queued_at", TimestampMicrosecondArray);
+        let retry_run = b
+            .column_by_name("retry_run")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("column `retry_run` has an unexpected type")
+            })
+            .transpose()?;
         let retry_at = b
             .column_by_name("retry_message_at")
             .map(|column| {
@@ -266,6 +285,9 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
                 retry_message_at: retry_at
                     .filter(|times| !times.is_null(i))
                     .map(|times| from_micros(times.value(i))),
+                retry_run: retry_run
+                    .filter(|runs| !runs.is_null(i))
+                    .map(|runs| runs.value(i).to_owned()),
             });
         }
     }
@@ -283,6 +305,15 @@ pub fn decode_outcomes(bytes: Bytes) -> anyhow::Result<Vec<Outcome>> {
         let source = col!(b, "source", StringArray);
         let at = col!(b, "at", TimestampMicrosecondArray);
         let run = col!(b, "run", StringArray);
+        let message = b
+            .column_by_name("message_sha256")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("column `message_sha256` has an unexpected type")
+            })
+            .transpose()?;
         let opt = |a: &StringArray, i: usize| (!a.is_null(i)).then(|| a.value(i).to_owned());
         for i in 0..b.num_rows() {
             out.push(Outcome {
@@ -293,6 +324,7 @@ pub fn decode_outcomes(bytes: Bytes) -> anyhow::Result<Vec<Outcome>> {
                 source: source.value(i).to_owned(),
                 at: from_micros(at.value(i)),
                 run: run.value(i).to_owned(),
+                message_sha256: message.and_then(|m| opt(m, i)),
             });
         }
     }

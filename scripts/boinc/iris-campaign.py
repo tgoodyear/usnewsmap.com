@@ -14,6 +14,9 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from acceptance_server import verify_version_files
+
 CONTRACT = Path(__file__).resolve().parents[2] / "ocr/boinc/iris"
 if CONTRACT.is_dir():
     sys.path.insert(0, str(CONTRACT))
@@ -192,36 +195,6 @@ def verify_registered_image(project, image):
         verify_version_files(project, image, versions[0][0])
     finally:
         connection.close()
-
-
-def verify_version_files(project, image, xml_doc):
-    if isinstance(xml_doc, bytes):
-        xml_doc = xml_doc.decode("utf-8")
-    version = ET.fromstring("<version>" + xml_doc + "</version>")
-    refs = [ref for ref in version.findall(".//file_ref") if ref.findtext("open_name") == "Dockerfile"]
-    if len(refs) != 1:
-        raise ValueError("registered app version must contain one Dockerfile")
-    name = refs[0].findtext("file_name")
-    if not name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-        raise ValueError("invalid registered Dockerfile name")
-    infos = [info for info in version.findall(".//file_info") if info.findtext("name") == name]
-    if len(infos) != 1 or not infos[0].findtext("file_signature"):
-        raise ValueError("registered Dockerfile lacks code signature")
-    # Stock update_versions stages app files flat, unlike workunit input files.
-    path = (project / "download" / name).resolve(strict=True)
-    if not path.is_relative_to((project / "download").resolve()):
-        raise ValueError("registered Dockerfile outside download directory")
-    data = path.read_bytes()
-    if data != f"FROM {image}\n".encode():
-        raise ValueError("campaign image differs from registered signed app version")
-    with tempfile.TemporaryDirectory(prefix="iris-signature-") as directory:
-        signature = Path(directory) / "Dockerfile.sig"
-        signature.write_text(infos[0].findtext("file_signature"))
-        subprocess.run(
-            ["/usr/local/boinc/lib/crypt_prog", "-verify", str(path),
-             str(signature), str(project / "keys/code_sign_public")],
-            check=True, capture_output=True, text=True,
-        )
 
 
 def submit(root, project, apply=False):

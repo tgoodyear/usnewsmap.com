@@ -345,6 +345,7 @@ fn queued(doc_id: &str, batch: &str, reason: &str) -> Queued {
         attempt: 1,
         request_day: None,
         retry_message_at: None,
+        retry_run: None,
         queued_at: Utc::now() - chrono::Duration::hours(1),
     }
 }
@@ -930,18 +931,33 @@ async fn deliberate_retry_requires_settlement_replays_and_keeps_original_request
     let mut previous = queued(&key(3).doc_id(), BATCH, "user");
     previous.plan = "hit-results".into();
     previous.queued_at = DateTime::from_timestamp(Utc::now().timestamp() - 86400, 0).unwrap();
+    let message = OcrMessage {
+        v: 1,
+        page: key(3).to_string(),
+        batch: BATCH.into(),
+        language: "deu".into(),
+        reason: Reason::User,
+        score: None,
+        queued_at: previous.queued_at.to_rfc3339(),
+    };
     fx.ask(std::slice::from_ref(&previous)).await;
     let snapshot = super::boinc::Snapshot::load(&fx.state, fx.stores.reference.as_ref())
         .await
         .unwrap();
-    let next = super::boinc::next_attempt(&previous, Utc::now()).unwrap();
+    let mut next = super::boinc::next_attempt(
+        &previous,
+        previous.queued_at + chrono::Duration::seconds(30),
+        "boinc-0123456789ab",
+    )
+    .unwrap();
     assert!(super::boinc::retry(
         &fx.state,
         fx.stores.curated.as_ref(),
         &snapshot,
         &previous,
         &next,
-        "retry-one"
+        &message,
+        |_| Ok(())
     )
     .await
     .is_err());
@@ -956,24 +972,48 @@ async fn deliberate_retry_requires_settlement_replays_and_keeps_original_request
             source: "terminal-dead-letter".into(),
             at,
             run: "prior-failure".into(),
+            message_sha256: Some(usnm_ocr_contract::boinc::sha256(
+                &serde_json::to_vec(&message).unwrap(),
+            )),
         }],
         at,
         "prior-failure",
     )
     .await
     .unwrap();
+    let mut wrong_message = message.clone();
+    wrong_message.queued_at = Utc::now().to_rfc3339();
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &next,
+        &wrong_message,
+        |_| panic!("mismatched parent must not prepare a journal")
+    )
+    .await
+    .is_err());
+    let prepared = std::cell::Cell::new(0);
     for _ in 0..2 {
-        super::boinc::retry(
+        next = super::boinc::retry(
             &fx.state,
             fx.stores.curated.as_ref(),
             &snapshot,
             &previous,
             &next,
-            "retry-one",
+            &message,
+            |reserved| {
+                assert!(reserved.queued_at > at);
+                assert_eq!(reserved.retry_message_at, Some(reserved.queued_at));
+                prepared.set(prepared.get() + 1);
+                Ok(())
+            },
         )
         .await
         .unwrap();
     }
+    assert_eq!(prepared.get(), 1);
     let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
     assert_eq!(loaded.outstanding(&previous.doc_id), Some(&next));
     assert_eq!(next.attempt, 2);
@@ -983,15 +1023,51 @@ async fn deliberate_retry_requires_settlement_replays_and_keeps_original_request
         1
     );
     assert_eq!(loaded.user_requests_for_day(next.queued_at.date_naive()), 0);
-    let stale =
-        super::boinc::next_attempt(&previous, Utc::now() + chrono::Duration::seconds(1)).unwrap();
+    let stale = super::boinc::next_attempt(
+        &previous,
+        Utc::now() + chrono::Duration::seconds(1),
+        "boinc-0123456789ab",
+    )
+    .unwrap();
     assert!(super::boinc::retry(
         &fx.state,
         fx.stores.curated.as_ref(),
         &snapshot,
         &previous,
         &stale,
-        "retry-conflict"
+        &message,
+        |_| Ok(())
+    )
+    .await
+    .is_err());
+    for (offset, outcome) in [(1, ledger::IMPORTED), (2, ledger::DEAD_LETTERED)] {
+        let at = next.queued_at + chrono::Duration::seconds(offset);
+        ledger::write_outcomes(
+            fx.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: next.doc_id.clone(),
+                outcome: outcome.into(),
+                cause: Some("permanent".into()),
+                kind: None,
+                source: "later".into(),
+                at,
+                run: format!("later-{offset}"),
+                message_sha256: None,
+            }],
+            at,
+            &format!("later-{offset}"),
+        )
+        .await
+        .unwrap();
+    }
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &next,
+        &message,
+        |_| panic!("import history must not prepare a journal")
     )
     .await
     .is_err());
@@ -1027,8 +1103,22 @@ async fn stale_dead_letter_is_archived_without_settling_a_new_attempt() {
     let fx = fixture(false).await;
     let mut previous = queued(&key(3).doc_id(), BATCH, "bulk");
     previous.queued_at = DateTime::from_timestamp(Utc::now().timestamp() - 3600, 0).unwrap();
-    let next = super::boinc::next_attempt(&previous, Utc::now()).unwrap();
+    let next = super::boinc::next_attempt(&previous, Utc::now(), "boinc-0123456789ab").unwrap();
     fx.ask(std::slice::from_ref(&next)).await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    let stale_output = fx.sync().await;
+    assert_eq!(
+        stale_output.last_run.rejected.get("retry_attempt"),
+        Some(&1)
+    );
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .outstanding(&next.doc_id),
+        Some(&next)
+    );
     let message = OcrMessage {
         v: 1,
         page: key(3).to_string(),
@@ -1087,6 +1177,57 @@ async fn stale_dead_letter_is_archived_without_settling_a_new_attempt() {
     assert!(status.last_run.dead_letters_rejected.is_empty());
     let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
     assert!(loaded.outstanding(&next.doc_id).is_none());
+    let mut stale_message = current.clone();
+    stale_message.language = "fra".into();
+    stale_message.queued_at = previous.queued_at.to_rfc3339();
+    let stale = DeadLetter::new(
+        BULK,
+        "late-parent",
+        Some(&stale_message),
+        Cause::Permanent,
+        None,
+        None,
+        "old failure",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &stale.encode()).await.unwrap();
+    fx.sync().await;
+    let report = enqueue::requeue(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+        &fx.queue,
+        &RequeueOptions {
+            cause: "permanent".into(),
+            kind: None,
+            since: None,
+            plan: "recovery".into(),
+            max_pages: 1,
+            dry_run: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.queued, 1);
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    let ordinary = loaded.queued[&next.doc_id].clone();
+    assert_eq!(ordinary.language, current.language);
+    assert!(ordinary.retry_message_at.is_some());
+    assert!(ordinary.retry_run.is_none());
+    fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    let status = fx.sync().await;
+    assert_eq!(
+        status.last_run.dead_letters_rejected.get("stale_attempt"),
+        Some(&1)
+    );
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .outstanding(&next.doc_id),
+        Some(&ordinary)
+    );
 }
 
 #[tokio::test]
@@ -1222,6 +1363,7 @@ async fn drains_dead_letters_and_quarantines_bad_ones() {
             source: "m9".into(),
             at: Utc::now() + chrono::Duration::seconds(5),
             run: "later".into(),
+            message_sha256: None,
         }],
         Utc::now(),
         "later",

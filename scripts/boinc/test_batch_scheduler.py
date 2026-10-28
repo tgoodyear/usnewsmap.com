@@ -104,6 +104,30 @@ class SchedulerTests(unittest.TestCase):
         return batch.tick(self.config, self.state, self.fake,
                           lambda: self.saved.append(copy.deepcopy(self.state)), NOW, drain=drain)
 
+    def test_reviewed_retry_lineage_is_owned_but_never_automatically_submitted(self):
+        page = self.config["pages"][0]["page"]
+        self.config["pages"] = self.config["pages"][:1]
+        parent = record(page, 1, "failed")
+        child = record(page, 2)
+        child["job"].update(v=2, attempt=1, retry_of=parent["job"]["id"])
+        child["job"]["engine"]["image"] = "sha256:" + "b" * 64
+        child["retry"] = {"previous_job": parent["job"]["id"], "previous_attempt": 0,
+                          "app_version_num": 27}
+        self.fake.rows = [child, parent]
+        self.assertEqual(batch.owned_records(self.config, self.fake.rows), {page: child})
+        self.tick()
+        self.assertEqual(self.fake.actions, [])
+        self.fake.jobs[child["job"]["id"]] = {
+            "stage": "submitted", "spool": "/project/usnmocr/results/one"}
+        child["stage"] = "submitted"
+        self.tick()
+        self.assertEqual(self.fake.actions, [("collect", child["job"]["id"])])
+        self.assertEqual(parent["stage"], "failed")
+        branch = copy.deepcopy(child)
+        branch["job"]["id"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "branching"):
+            batch.owned_records(self.config, [parent, child, branch])
+
     def test_drain_does_not_allocate_or_dispatch(self):
         event = self.tick(drain=True)
         self.assertTrue(event["draining"])

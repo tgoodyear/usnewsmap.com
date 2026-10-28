@@ -392,6 +392,7 @@ async fn record_not_sent(
             source: run.to_owned(),
             at,
             run: run.to_owned(),
+            message_sha256: None,
         })
         .collect();
     if let Err(w) = ledger::write_outcomes(curated, &rows, at, run).await {
@@ -837,7 +838,10 @@ async fn enqueue_with_policy(
                 attempt,
                 request_day: policy.request_day,
                 queued_at: now,
-                retry_message_at: None,
+                retry_message_at: Some(
+                    DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                ),
+                retry_run: None,
             },
             msg,
         ));
@@ -973,6 +977,15 @@ async fn requeue_locked(
         }
         let Some(m) = d.message else { continue };
         let Ok(key) = m.key() else { continue };
+        if let Some(expected) = ledger
+            .outcomes
+            .get(&key.doc_id())
+            .and_then(|outcome| outcome.message_sha256.as_deref())
+        {
+            if expected != usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(&m)?) {
+                continue;
+            }
+        }
         latest.insert(key.doc_id(), m);
     }
     let mut out = Vec::new();
@@ -1038,7 +1051,10 @@ async fn requeue_locked(
                 attempt,
                 request_day: None,
                 queued_at: now,
-                retry_message_at: None,
+                retry_message_at: Some(
+                    DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                ),
+                retry_run: None,
             },
             msg,
         ));

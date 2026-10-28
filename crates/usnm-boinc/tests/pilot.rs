@@ -2098,6 +2098,7 @@ mod queue_feed {
             attempt: 2,
             request_day: None,
             retry_message_at: None,
+            retry_run: None,
             queued_at: chrono::DateTime::parse_from_rfc3339(&message.queued_at)
                 .unwrap()
                 .with_timezone(&Utc),
@@ -2203,6 +2204,25 @@ mod queue_feed {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_parent_queue_delivery_cannot_be_adopted_as_deliberate_retry() {
+        let f = fed(true).await;
+        let next = usnm_ocr_local::boinc::next_attempt(&f.queued, Utc::now(), "boinc-0123456789ab")
+            .unwrap();
+        ledger::write_queued(
+            f.fx.stores.curated.as_ref(),
+            &[next],
+            Utc::now(),
+            "explicit",
+        )
+        .await
+        .unwrap();
+        let claims = f.fx.tmp.path().join("claims");
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
+        assert!(report.claims.is_empty());
+        assert!(!claims.join(format!("{DOC}.json")).exists());
     }
 
     #[tokio::test]
@@ -2867,6 +2887,7 @@ mod queue_feed {
                 source: "pages/x.parquet".into(),
                 at: f.queued.queued_at + chrono::Duration::minutes(5),
                 run: "sync".into(),
+                message_sha256: None,
             }],
             f.queued.queued_at + chrono::Duration::minutes(5),
             "sync-run",
@@ -2953,6 +2974,7 @@ mod queue_feed {
                 source: "pages/by-a-node.parquet".into(),
                 at,
                 run: "sync".into(),
+                message_sha256: None,
             }],
             at,
             "node-run",
@@ -2990,6 +3012,7 @@ mod queue_feed {
                 source: "pages/elsewhere.parquet".into(),
                 at,
                 run: "sync".into(),
+                message_sha256: None,
             }],
             at,
             "other-run",

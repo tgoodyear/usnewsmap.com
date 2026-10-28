@@ -125,11 +125,16 @@ Retry contract v2 binds a new attempt to its parent ID. Never edit an old reques
 signed app version, journal, assimilator marker or accepted result to force a replay.
 
 Before activation, deploy the reviewed reader to **every** strict journal consumer
-(server, bridge and native sync), and sign/install a matching `usnm_ocr` worker
+(controller, server, bridge, native sync and seeder), and sign/install a matching `usnm_ocr` worker
 supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
 Record the supporting worker's full configuration digest (`TESSERACT_IMAGE`) and
 BOINC app version number. Existing trust, routing, source budgets and validation
 still apply. Do not retry a bundle or bypass its reconciliation.
+Preload the immutable signed worker image into the server's Podman image store.
+Submission verifies its registered Dockerfile signature, requires an unambiguous
+active app/version/platform/plan mapping, and checks the worker's immutable
+`USNM_TESSERACT_IMAGE` against the retry engine digest. Missing inspection
+dependencies, images or proof refuse submission before its uncertain state.
 
 After confirming BOINC's actual terminal disposition and that native sync has
 settled the exact previous native row as a permanent failure:
@@ -139,6 +144,7 @@ usnm-boinc retry --root /private/jobs --spool /private/assimilated \
   --job PARENT_JOB_ID --expected-error-mask 2 \
   --image sha256:SUPPORTING_WORKER_DIGEST --app-version-num SUPPORTING_APP_VERSION \
   --reviewed-reason 'Reviewed terminal 0x2; supporting worker release recorded' \
+  --handoff-url /private/handoff \
   --state-file /private/state.json \
   --curated-url /private/curated --reference-url /private/reference
 ```
@@ -148,6 +154,12 @@ actual `_no_output_files` marker. Unknown and zero masks are refused, not treate
 as missing output. An error mask is decimal on the CLI (`2` reviews `0x2`).
 Accepted/canonical/partial output, changed terminal proof, nonterminal work and a
 newer native reservation all require reconciliation, not retry.
+Historical imports always veto retry, even if a later dead letter became the
+latest outcome. Legacy journals without terminal proof require collection of
+the unchanged actual marker; a later collect cannot overwrite the first proof.
+The permanent outcome must carry the exact parent message digest; historical
+unbound outcomes cannot authorize retry. For queue-fed parents, the exact handoff
+claim must be conclusively `dead_lettered`, not lease-lost or still outstanding.
 
 The command prints the new child ID and reserves it without submission. It
 preserves the original scan, failed journal and request-day quota attribution.
@@ -157,6 +169,11 @@ single-page `submit` path, which pins `--app_version_num` from the retry journal
 Uncertain submission still requires authoritative BOINC lookup and explicit
 `reconcile`; never delete its journal and repeat. A retry of a failed child needs
 a fresh terminal review naming that child.
+Preparation validates settlement under the native lease before persisting the
+child timestamp, scan and journal, then writes its reservation. An unreserved
+prepared child may refresh its timestamp after later settlement; a reserved
+replay must still match the exact outstanding native row. The controller retains
+the parent/child chain but never automatically exports or submits manual retries.
 
 If that child fails, the existing handoff `claim dead-letter` step publishes the
 child's terminal mask and new message timestamp without touching the old claim.

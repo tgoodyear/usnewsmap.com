@@ -49,6 +49,24 @@ pub async fn submit_with_download(
             && usnm_ocr_contract::boinc::sha256(&scan) == job.scan.sha256,
         "staged scan changed"
     );
+    if let Some(retry) = &record.retry {
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            Command::new("python3")
+                .args(["-c", "import sys,types; m=types.ModuleType('retry_release_check'); exec(sys.argv[1],m.__dict__); m.verify_retry_worker(m.Path(sys.argv[2]),int(sys.argv[3]),sys.argv[4])"])
+                .arg(include_str!("../../../scripts/boinc/acceptance_server.py"))
+                .arg(&project)
+                .arg(retry.app_version_num.to_string())
+                .arg(&job.engine.image)
+                .kill_on_drop(true)
+                .output(),
+        ).await??;
+        ensure!(
+            output.status.success(),
+            "retry signed worker/app-version verification failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let remote = if let Some(download) = download {
         Some(download.prepare(&scan, &job.scan.sha256).await?)
     } else {

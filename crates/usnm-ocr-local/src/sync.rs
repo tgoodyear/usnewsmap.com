@@ -567,6 +567,9 @@ async fn drain_batch(
                         source: msg.id.clone(),
                         at: now,
                         run: run.to_owned(),
+                        message_sha256: Some(usnm_ocr_contract::boinc::sha256(
+                            &serde_json::to_vec(m)?,
+                        )),
                     });
                 }
             }
@@ -1099,6 +1102,7 @@ async fn import(
             source: i.source_part.clone(),
             at: now,
             run: run.to_owned(),
+            message_sha256: None,
         })
         .collect();
     let outcomes_path =

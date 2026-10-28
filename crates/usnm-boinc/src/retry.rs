@@ -54,7 +54,11 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                 .to_queued(&key.doc_id(), &record.job.message.batch)?;
             let next = record.queued()?;
             ensure!(
-                usnm_ocr_local::boinc::next_attempt(&previous, next.queued_at)? == next
+                usnm_ocr_local::boinc::next_attempt(
+                    &previous,
+                    next.queued_at,
+                    &format!("boinc-{}", &record.job.id[..12])
+                )? == next
                     && next.plan == record.plan
                     && next.batch_version == record.job.batch_version
                     && next.language == record.job.message.language
@@ -83,6 +87,7 @@ pub struct Options<'a> {
     pub app_version_num: u32,
     pub image: &'a str,
     pub reviewed_reason: &'a str,
+    pub handoff: &'a dyn ObjectStore,
 }
 
 pub async fn prepare(
@@ -97,6 +102,21 @@ pub async fn prepare(
         previous.stage == Stage::Failed && previous.bundle.is_none(),
         "only a terminal failed single-page job may be retried"
     );
+    if previous.retry.is_none() && previous.ledger.is_some() {
+        let key = previous.job.message.key()?;
+        let bytes = opts
+            .handoff
+            .get(&crate::claim::path(&key.doc_id()))
+            .await?
+            .context("missing parent claim; reconcile its queue delivery")?;
+        let claim = crate::claim::Claim::load(&bytes)?;
+        ensure!(
+            claim.message()? == previous.job.message
+                && claim.ledger == LedgerRow::from_queued(&previous.queued()?)
+                && claim.ended.as_deref() == Some("dead_lettered"),
+            "parent delivery is not conclusively deleted; reconcile its claim"
+        );
+    }
     let previous_dir = dir(opts.root, opts.previous_job)?;
     ensure!(
         !previous_dir.join("accepted").try_exists()?,
@@ -139,12 +159,13 @@ pub async fn prepare(
             "terminal failure differs from reviewed no-output disposition"
         ),
     }
-    if let Some(recorded) = &previous.terminal {
-        ensure!(
-            *recorded == terminal,
-            "terminal marker changed since collection"
-        );
-    }
+    ensure!(
+        previous.terminal.as_ref() == Some(&terminal)
+            && previous.error.as_deref() == Some(crate::terminal_reason(
+                marker.as_deref(), previous.job.engine.timeout_secs
+            ).as_str()),
+        "terminal proof is missing or changed; reconcile by collecting the actual terminal disposition"
+    );
     let previous_row = previous.queued()?;
     let snapshot = Snapshot::load(state, reference).await?;
     let now = Utc::now();
@@ -177,7 +198,11 @@ pub async fn prepare(
         );
         child
     } else {
-        let next = usnm_ocr_local::boinc::next_attempt(&previous_row, now)?;
+        let next = usnm_ocr_local::boinc::next_attempt(
+            &previous_row,
+            now,
+            &format!("boinc-{}", &job.id[..12]),
+        )?;
         let child = Record {
             job,
             plan: previous.plan.clone(),
@@ -191,28 +216,40 @@ pub async fn prepare(
             unbundled: None,
         };
         validate(&child)?;
-        let scan = read(&previous_dir.join("page"), boinc::MAX_SCAN)?;
-        ensure!(
-            scan.len() as u64 == child.job.scan.bytes
-                && boinc::sha256(&scan) == child.job.scan.sha256,
-            "original cached scan changed"
-        );
-        atomic(&child_dir.join("page"), &scan)?;
-        atomic(
-            &child_dir.join("request.json"),
-            &serde_json::to_vec_pretty(&child.job)?,
-        )?;
-        save(opts.root, &child)?;
         child
     };
-    if record.stage == Stage::Prepared {
+    if matches!(record.stage, Stage::Prepared | Stage::Reserved) {
+        let scan = read(&previous_dir.join("page"), boinc::MAX_SCAN)?;
+        ensure!(
+            scan.len() as u64 == record.job.scan.bytes
+                && boinc::sha256(&scan) == record.job.scan.sha256,
+            "original cached scan changed"
+        );
+        let expected = record.queued()?;
         usnm_ocr_local::boinc::retry(
             state,
             curated,
             &snapshot,
             &previous_row,
-            &record.queued()?,
-            &format!("boinc-retry-{id}"),
+            &expected,
+            &previous.job.message,
+            |next| {
+                ensure!(
+                    record.stage == Stage::Prepared,
+                    "reserved retry lost its reservation; reconcile"
+                );
+                record.job.message.queued_at =
+                    next.queued_at.to_rfc3339_opts(SecondsFormat::Micros, true);
+                record.stamp = next.queued_at.format("%Y%m%dT%H%M%S%6fZ").to_string();
+                record.ledger = Some(LedgerRow::from_queued(next));
+                validate(&record)?;
+                atomic(&child_dir.join("page"), &scan)?;
+                atomic(
+                    &child_dir.join("request.json"),
+                    &serde_json::to_vec_pretty(&record.job)?,
+                )?;
+                save(opts.root, &record)
+            },
         )
         .await?;
         record.stage = Stage::Reserved;
@@ -324,12 +361,13 @@ mod tests {
         job.scan.bytes = page.len() as u64;
         job.scan.sha256 = boinc::sha256(page);
         job.id = job.identity().unwrap();
+        let terminal_error = crate::terminal_reason(Some(b"0x2\n"), job.engine.timeout_secs);
         let parent = Record {
             job,
             plan: "reviewed-retry".into(),
             stage: Stage::Failed,
             stamp: "prior".into(),
-            error: Some("BOINC error mask 0x2".into()),
+            error: Some(terminal_error),
             terminal: Some(TerminalFailure::from_marker(Some(b"0x2\n"))),
             retry: None,
             ledger: None,
@@ -365,6 +403,9 @@ mod tests {
                 source: "prior-dead-letter".into(),
                 at,
                 run: "prior".into(),
+                message_sha256: Some(boinc::sha256(
+                    &serde_json::to_vec(&parent.job.message).unwrap(),
+                )),
             }],
             at,
             "prior",
@@ -380,6 +421,7 @@ mod tests {
             app_version_num: 27,
             image: &image,
             reviewed_reason: "reviewed terminal marker and settled native row",
+            handoff: curated.as_ref(),
         };
         for stage in [Stage::Submitted, Stage::Submitting] {
             let mut nonterminal = parent.clone();
@@ -389,6 +431,12 @@ mod tests {
                 .await
                 .is_err());
         }
+        let mut missing_proof = parent.clone();
+        missing_proof.terminal = None;
+        save(&root, &missing_proof).unwrap();
+        assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+            .await
+            .is_err());
         save(&root, &parent).unwrap();
         let partial = spool.join(format!("{}__file_text.txt", parent.job.workunit()));
         atomic(&partial, b"partial output").unwrap();
@@ -399,6 +447,20 @@ mod tests {
         let marker = spool.join(format!("{}_error", parent.job.workunit()));
         for content in [b"broken".as_slice(), b"0x0\n", b"0x4\n"] {
             atomic(&marker, content).unwrap();
+            let before = std::fs::read(parent_path.join("record.json")).unwrap();
+            assert!(crate::collect(
+                &root,
+                &spool,
+                &parent.job.id,
+                curated.as_ref(),
+                reference.as_ref()
+            )
+            .await
+            .is_err());
+            assert_eq!(
+                std::fs::read(parent_path.join("record.json")).unwrap(),
+                before
+            );
             assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
                 .await
                 .is_err());
@@ -409,6 +471,39 @@ mod tests {
             .await
             .is_err());
         opts.expected = ExpectedTerminal::Mask(2);
+        let mut queue_parent = parent.clone();
+        queue_parent.ledger = Some(LedgerRow::from_queued(&previous));
+        save(&root, &queue_parent).unwrap();
+        let claim_key = crate::claim::path(&previous.doc_id);
+        assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+            .await
+            .is_err());
+        for ended in [None, Some("dead_letter_lease_lost"), Some("lease_lost")] {
+            let claim = crate::claim::Claim {
+                v: crate::claim::VERSION,
+                queue: BULK.into(),
+                message_id: "parent".into(),
+                pop_receipt: "old-receipt".into(),
+                dequeue_count: 1,
+                text: parent.job.message.encode(),
+                claimed_at: at.to_rfc3339(),
+                lease_until: at.to_rfc3339(),
+                ledger: LedgerRow::from_queued(&previous),
+                ended: ended.map(str::to_owned),
+            };
+            curated
+                .put(
+                    &claim_key,
+                    serde_json::to_vec(&claim).unwrap(),
+                    "application/json",
+                )
+                .await
+                .unwrap();
+            assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err());
+        }
+        save(&root, &parent).unwrap();
         assert_eq!(crate::records(&root).unwrap().len(), 1);
         let id = prepare(&opts, &state, curated.as_ref(), reference.as_ref())
             .await
@@ -462,14 +557,15 @@ mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         assert!(crate::submit::submit(&root, &project, &id).await.is_err());
-        assert_eq!(load(&root, &id).unwrap().stage, Stage::Submitting);
+        assert_eq!(load(&root, &id).unwrap().stage, Stage::Reserved);
+        assert!(!project.join("attempted-args").exists());
+        interrupted.stage = Stage::Submitting;
+        save(&root, &interrupted).unwrap();
         assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
             .await
             .is_err());
         assert!(crate::submit::submit(&root, &project, &id).await.is_err());
-        let args = std::fs::read_to_string(project.join("attempted-args")).unwrap();
-        assert!(args.contains("--app_version_num\n27\n"));
-        assert_eq!(args.matches("--wu_name\n").count(), 1);
+        assert!(!project.join("attempted-args").exists());
         atomic(
             &spool.join(format!("{}_error", child.job.workunit())),
             b"0x4\n",

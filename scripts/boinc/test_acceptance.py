@@ -43,6 +43,40 @@ CONFIG = dict(fixture='qwen-cpu', server_command=['server'],
 DATA = b'{"transcription":"actual inference", "unit_error":null}'
 
 class RegisteredVersionRouting(unittest.TestCase):
+    def test_retry_rejects_ambiguous_versions_before_inspecting_worker(self):
+        db = MagicMock()
+        with patch.object(S, "db_connect", return_value=db), \
+                patch.object(S, "query", return_value=[{}, {}]), \
+                patch.object(S, "verify_version_files") as files:
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                S.verify_retry_worker(Path("/unused"), 27, "sha256:" + "a" * 64)
+            files.assert_not_called()
+        db.close.assert_called_once()
+
+    def test_retry_binds_signed_worker_configuration_to_engine_digest(self):
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64
+        engine = "sha256:" + "a" * 64
+        db = MagicMock()
+        version = dict(id=1, xml_doc="signed", plan_class="docker", platform="x86_64-pc-linux-gnu")
+        with patch.object(S, "db_connect", return_value=db), \
+                patch.object(S, "query", return_value=[version]), \
+                patch.object(S, "registered_version"), \
+                patch.object(S, "verify_version_files", return_value=worker) as files, \
+                patch.object(S.subprocess, "check_output") as inspect:
+            for value, accepted in [(engine, True), ("sha256:" + "c" * 64, False)]:
+                inspect.return_value = json.dumps([dict(
+                    RepoDigests=[worker], Config=dict(Env=["USNM_TESSERACT_IMAGE=" + value]))])
+                if accepted:
+                    S.verify_retry_worker(Path("/unused"), 27, engine)
+                else:
+                    with self.assertRaisesRegex(ValueError, "engine differs"):
+                        S.verify_retry_worker(Path("/unused"), 27, engine)
+            inspect.return_value = json.dumps([dict(RepoDigests=[], Config=dict(Env=[]))])
+            with self.assertRaisesRegex(ValueError, "preload"):
+                S.verify_retry_worker(Path("/unused"), 27, engine)
+            files.assert_called_with(Path("/unused"), None, "signed")
+        self.assertEqual(db.close.call_count, 3)
+
     def test_same_numeric_platform_versions_are_refused_but_distinct_versions_work(self):
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)

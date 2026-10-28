@@ -232,6 +232,7 @@ impl Fx {
                 source: format!("{doc_id}-{}", at.timestamp_micros()),
                 at,
                 run: "test".into(),
+                message_sha256: None,
             }],
             at,
             &super::run_id(at),
@@ -438,6 +439,7 @@ fn mine(doc_id: &str, attempt: u32, at: DateTime<Utc>) -> Queued {
         request_day: None,
         queued_at: at,
         retry_message_at: None,
+        retry_run: None,
     }
 }
 
@@ -511,6 +513,35 @@ async fn retries_after_14_days_dequeue_count_and_unroutable() {
 fn unroutable_waits_double_up_to_48_hours() {
     let w: Vec<i64> = (1..=6).map(seed::unroutable_wait_hours).collect();
     assert_eq!(w, [6, 12, 24, 48, 48, 48]);
+}
+
+#[tokio::test]
+async fn deliberate_retry_never_times_out_into_automatic_seed_work() {
+    let fx = fixture().await;
+    let old = Utc::now() - chrono::Duration::days(30);
+    let previous = mine(&doc(GER, 3, 1), 1, old - chrono::Duration::days(1));
+    let retry = super::boinc::next_attempt(&previous, old, "boinc-0123456789ab").unwrap();
+    ledger::write_queued(
+        fx.curated.as_ref(),
+        std::slice::from_ref(&retry),
+        old,
+        "explicit",
+    )
+    .await
+    .unwrap();
+    let report = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(100)
+        })
+        .await
+        .unwrap();
+    assert!(!report.requeue_pages.contains(&retry.doc_id));
+    assert!(report.in_flight >= 1);
+    assert_eq!(
+        ledger::load(fx.curated.as_ref()).await.unwrap().queued[&retry.doc_id],
+        retry
+    );
 }
 
 #[test]
@@ -691,6 +722,7 @@ async fn an_unroutable_dead_letter_drained_twice_is_one_cycle() {
             source: "message-1".into(),
             at,
             run: run.into(),
+            message_sha256: None,
         };
         ledger::write_outcomes(fx.curated.as_ref(), &[o], at, run)
             .await
@@ -732,6 +764,7 @@ async fn the_automatic_window_follows_the_imports() {
             source: format!("pages/p{i}.parquet"),
             at: now - chrono::Duration::hours(if i % 2 == 0 { 47 } else { 1 }),
             run: "imp".into(),
+            message_sha256: None,
         })
         .collect();
     ledger::write_outcomes(fx.curated.as_ref(), &rows, now, "imp")

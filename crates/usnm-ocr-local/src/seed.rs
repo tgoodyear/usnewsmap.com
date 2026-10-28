@@ -649,6 +649,9 @@ pub fn auto_window(pages_a_day: f64) -> u64 {
 
 /// Why a page of the plan is queued again, if it is.
 fn retry_kind(q: &Queued, ledger: &Ledger, now: DateTime<Utc>) -> Option<(&'static str, bool)> {
+    if q.retry_run.is_some() {
+        return None;
+    }
     let after = ledger
         .outcomes
         .get(&q.doc_id)
@@ -688,7 +691,8 @@ fn in_flight(q: &Queued, ledger: &Ledger, now: DateTime<Utc>) -> bool {
         .outcomes
         .get(&q.doc_id)
         .is_some_and(|o| o.at >= q.queued_at && o.outcome == DEAD_LETTERED);
-    !unroutable && now - q.queued_at < chrono::Duration::days(REQUEUE_AFTER_DAYS)
+    !unroutable
+        && (q.retry_run.is_some() || now - q.queued_at < chrono::Duration::days(REQUEUE_AFTER_DAYS))
 }
 
 /// What a seeding run queued from one unit.
@@ -1176,7 +1180,10 @@ pub(super) async fn seed(
                 attempt: attempt(&q.doc_id),
                 request_day: None,
                 queued_at: now,
-                retry_message_at: None,
+                retry_message_at: Some(
+                    DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                ),
+                retry_run: None,
             },
             msg,
         ));
@@ -1286,7 +1293,10 @@ pub(super) async fn seed(
                     attempt: attempt(doc_id),
                     request_day: None,
                     queued_at: now,
-                    retry_message_at: None,
+                    retry_message_at: Some(
+                        DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                    ),
+                    retry_run: None,
                 },
                 msg,
             ));
@@ -1449,7 +1459,10 @@ pub(super) async fn seed(
                         attempt: attempt(doc_id),
                         request_day: None,
                         queued_at: now,
-                        retry_message_at: None,
+                        retry_message_at: Some(
+                            DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                        ),
+                        retry_run: None,
                     },
                     msg,
                 ));

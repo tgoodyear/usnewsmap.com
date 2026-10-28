@@ -281,6 +281,8 @@ pub struct LedgerRow {
     pub queued_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_message_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_run: Option<String>,
 }
 impl LedgerRow {
     pub fn from_queued(q: &Queued) -> Self {
@@ -291,6 +293,7 @@ impl LedgerRow {
             plan: q.plan.clone(),
             attempt: q.attempt,
             request_day: q.request_day.map(|d| d.to_string()),
+            retry_run: q.retry_run.clone(),
             retry_message_at: q
                 .retry_message_at
                 .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
@@ -309,6 +312,7 @@ impl LedgerRow {
             plan: self.plan.clone(),
             attempt: self.attempt,
             request_day: self.request_day.as_deref().map(str::parse).transpose()?,
+            retry_run: self.retry_run.clone(),
             queued_at: DateTime::parse_from_rfc3339(&self.queued_at)?.with_timezone(&Utc),
             retry_message_at: self
                 .retry_message_at
@@ -335,6 +339,7 @@ impl Record {
             attempt: self.job.attempt + 1,
             request_day: None,
             retry_message_at: None,
+            retry_run: None,
             queued_at: DateTime::parse_from_rfc3339(&self.job.message.queued_at)?
                 .with_timezone(&Utc),
         })
@@ -980,9 +985,20 @@ pub async fn collect(
         let _lock = Lock::take(root)?;
         let mut record = load(root, id)?;
         ensure!(record.stage != Stage::Published, "already published");
+        let terminal = TerminalFailure::from_marker(marker.as_deref());
+        let error = terminal_reason(marker.as_deref(), job.engine.timeout_secs);
+        ensure!(
+            record
+                .terminal
+                .as_ref()
+                .is_none_or(|proof| proof == &terminal)
+                && (record.stage != Stage::Failed
+                    || record.error.as_deref() == Some(error.as_str())),
+            "terminal disposition changed; preserve the first proof and reconcile"
+        );
         record.stage = Stage::Failed;
-        record.error = Some(terminal_reason(marker.as_deref(), job.engine.timeout_secs));
-        record.terminal = Some(TerminalFailure::from_marker(marker.as_deref()));
+        record.error = Some(error);
+        record.terminal = Some(terminal);
         save(root, &record)?;
         bail!("BOINC terminal failure");
     }
