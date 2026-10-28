@@ -520,7 +520,10 @@ pub async fn read(
             registration: &registration,
             rights: &rights,
         },
-    )?;
+    )
+    .map_err(|_| {
+        anyhow::anyhow!("retained alternate refused: invalid binding or source artifacts")
+    })?;
     ensure!(
         checked == receipt,
         "candidate receipt differs from retained artifacts"
