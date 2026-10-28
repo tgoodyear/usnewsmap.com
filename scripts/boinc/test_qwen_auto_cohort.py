@@ -280,11 +280,26 @@ class BoincDb {static function get(){return new self();}function count($table,$w
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_stale_thousand_unit_prefix_cannot_starve_later_fresh_input(self):
+        self.assert_stale_prefix_progresses()
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_pristine_amd_reservation_cannot_pin_the_stale_scan_cursor(self):
+        self.assert_stale_prefix_progresses(reserved=500)
+
+    def assert_stale_prefix_progresses(self, reserved=None):
+        if reserved:
+            policy = ET.fromstring(self.policy.read_bytes())
+            policy.append(ET.Comment("usnm-amd-first-reservation-v1:" + "f" * 32 + f":{reserved}:9999999999"))
+            node = policy.find("plan_class[name='amd_vulkan_8b']")
+            node.find("min_wu_id").text = node.find("max_wu_id").text = str(reserved)
+            self.policy.write_bytes(ET.tostring(policy))
+            self.args.initial_policy_sha256 = R.sha(self.policy.read_bytes())
         all_rows = {}
         for number in [100, 101, *range(200, 1200)]:
             row = copy.deepcopy(self.rows[0])
             row["unit"]["id"] = number
-            row["results"][0].update(hostid=1, server_state=4)
+            if number != reserved:
+                row["results"][0].update(hostid=1, server_state=4)
             all_rows[number] = row
             self.audit[f"{number:064x}"] = {"workunit_id": number}
         new = self.input(1300)
@@ -301,6 +316,35 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertEqual(len(seen[0]), 1000)
         self.assertIn(1300, seen[1])
         self.assertEqual(receipt["target"], [1300, 1300])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_database_read_crossing_deadline_closes_existing_window(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        def delayed(*unused):
+            self.args.enabled_until = 1
+            return self.database
+        with patch.object(R, "read_database", side_effect=delayed):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_source_read_crossing_deadline_never_publishes_new_window(self):
+        before, original = self.policy.read_bytes(), R.bind_inputs
+        calls = 0
+        def delayed(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.args.enabled_until = 1
+            return original(*args)
+        with patch.object(R, "read_database", return_value=self.database), patch.object(R, "bind_inputs", side_effect=delayed):
+            with self.assertRaisesRegex(ValueError, "deadline passed"):
+                R.run(self.args)
+        self.assertEqual(self.policy.read_bytes(), before)
+        with patch.object(R, "read_database", side_effect=AssertionError("DB unavailable")):
+            self.assertEqual(R.run(self.args)["status"], "closed-expired-budget-or-release-change")
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_standalone_fresh_pair_helper_also_requires_distinct_host_gate(self):

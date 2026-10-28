@@ -304,7 +304,8 @@ def run(args):
                 require(workunit not in by_wu, "Duplicate native producer workunit binding")
                 by_wu[workunit] = (key, value)
             candidates = sorted(workunit for workunit in by_wu
-                                if workunit >= args.minimum_workunit and workunit not in state["admitted"])
+                                if workunit >= args.minimum_workunit and workunit not in state["admitted"]
+                                and workunit != reserved)
             later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
             ids = (later or candidates)[:1000]
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
@@ -321,7 +322,7 @@ def run(args):
                             and int(row["platformid"]) == 1]
                 allowed[plan] = bool(versions) and max((int(row["version_num"]), int(row["id"]))
                                                       for row in versions) == (114, expected)
-            release = not all(allowed.values())
+            release = int(time.time()) >= args.enabled_until or not all(allowed.values())
         if release:
             command = ["--stop"]
             selected, proof = [], []
@@ -374,6 +375,7 @@ def run(args):
             if selected:
                 require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])]) for row in selected] == proof,
                         "Input/source provenance changed before apply")
+                require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")
             applied = json.loads(subprocess.check_output(command + ["--apply"], timeout=15))
             require(applied["before_sha256"] == sha(policy), "Atomic policy precondition failed")
             state["window"] = target
