@@ -7,5 +7,7 @@
 # Entries are rebuilt on demand, so losing one costs only a slower search.
 # Each color has a directory of its own (usnm-api@.service says why), made
 # here, owned by the API image's user.
-d /srv/usnm-serving/cache/blue 0750 65532 65532 mM:14d
-d /srv/usnm-serving/cache/green 0750 65532 65532 mM:14d
+d /srv/usnm-serving/cache/blue 0750 1000 1000 mM:14d
+d /srv/usnm-serving/cache/green 0750 1000 1000 mM:14d
+# Durable lastmod checkpoints are shared across colors and must never expire.
+d /srv/usnm-serving/sitemap-state 0750 1000 1000 -

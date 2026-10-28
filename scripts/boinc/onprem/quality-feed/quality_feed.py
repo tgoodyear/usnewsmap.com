@@ -131,8 +131,6 @@ def read_lines(path):
 
 
 def cmd_select(a):
-    import pyarrow.parquet as pq
-
     staged = read_lines(a.staged)
     cand = {}
     with open(a.index) as f:
@@ -144,19 +142,44 @@ def cmd_select(a):
     by_batch = {}
     for r in cand.values():
         by_batch.setdefault((r["batch"], int(r.get("batch_version") or 1)), []).append(r)
+    db_damage = None
+    if getattr(a, "damage_dsn_file", None):
+        import csv
+        import subprocess
+
+        if any(not DOC_RE.fullmatch(doc) for doc in cand):
+            raise ValueError("invalid indexed document identity")
+        query = ("CREATE TEMP TABLE feed_candidates(doc_id text PRIMARY KEY);\n"
+                 "COPY feed_candidates FROM STDIN;\n"
+                 + "".join(doc + "\n" for doc in sorted(cand))
+                 + "\\.\nCOPY (SELECT s.doc_id,s.lang,s.damage_rate FROM quality.page_summary s "
+                 "JOIN feed_candidates c USING(doc_id)) TO STDOUT WITH (FORMAT csv);\n")
+        with open(a.damage_dsn_file) as f:
+            dsn = f.read().strip()
+        result = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=query,
+                                capture_output=True, text=True, timeout=1800)
+        if result.returncode:
+            raise RuntimeError(f"page-damage metadata query failed: {result.stderr.strip()[-300:]}")
+        db_damage = {doc: {"doc_id": doc, "lang": lang, "damage_rate": float(rate) if rate else None}
+                     for doc, lang, rate in csv.reader(io.StringIO(result.stdout))}
     out = []
     for (batch, bv), rows in sorted(by_batch.items()):
-        dmg = {}
+        dmg = db_damage if db_damage is not None else {}
         path = os.path.join(a.curated, "audit/damage/v2", f"{batch}_ver{bv:02d}.parquet")
-        if os.path.exists(path):
+        if db_damage is None and os.path.exists(path):
+            import pyarrow.parquet as pq
+
             want = {r["doc_id"] for r in rows}
-            t = pq.read_table(path, columns=["doc_id", "lang", "damage_rate"]).to_pylist()
+            t = pq.read_table(path, columns=["doc_id", "lang", "damage_rate"],
+                              filters=[("doc_id", "in", sorted(want))]).to_pylist()
             dmg = {x["doc_id"]: x for x in t if x["doc_id"] in want}
         for r in rows:
             m = DOC_RE.match(r["doc_id"])
             if not m:
                 continue
             d = dmg.get(r["doc_id"], {})
+            if getattr(a, "non_english", False) and (not d.get("lang") or lang_of(d["lang"]) == "eng"):
+                continue
             out.append({
                 "batch": batch,
                 "batch_version": bv,
@@ -177,7 +200,18 @@ def cmd_select(a):
     else:
         # Worst damage first; pages with no damage score after every scored page.
         out.sort(key=lambda p: (p["damage_rate"] is None, -(p["damage_rate"] or 0.0), p["doc_id"]))
-    if a.count:
+    if getattr(a, "scan_server", None):
+        available_pages = []
+        for p in out:
+            row = {**p, "format": "jp2" if p["scan"].endswith(".jp2") else "jpg"}
+            st = scan_set(a.scan_server, row)
+            if st:
+                p["scan"] = st + "/" + p["scan"].split("/", 1)[1]
+                available_pages.append(p)
+                if a.count and len(available_pages) >= a.count:
+                    break
+        out = available_pages
+    elif a.count:
         out = out[: a.count]
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     tmp = a.out + ".tmp"
@@ -275,7 +309,7 @@ def pending_chunks(camp_dir):
     return sorted(d for d in glob.glob(os.path.join(camp_dir, "c*")) if os.path.exists(os.path.join(d, "READY")))
 
 
-def write_chunk(camp_dir, name, pages, prepared):
+def write_chunk(camp_dir, name, pages, prepared, alto_cache=None):
     """prepared: doc_id -> (jpeg bytes, alto bytes, texts dict, ours alto path or None)."""
     final = os.path.join(camp_dir, name)
     tmp = os.path.join(camp_dir, f".{name}.tmp")
@@ -299,6 +333,9 @@ def write_chunk(camp_dir, name, pages, prepared):
         if ours:
             with open(ours, "rb") as f:
                 put(f"texts/{p['doc_id']}.ours.xml", f.read())
+        if alto_cache:
+            with open(os.path.join(alto_cache, p["doc_id"] + ".provenance.json"), "rb") as f:
+                put(f"texts/{p['doc_id']}.loc-provenance.json", f.read())
         rows.append(json.dumps(sample_row(p), sort_keys=True))
         langs.add(p["lang"])
     put("sample.jsonl", ("\n".join(rows) + "\n").encode())
@@ -322,6 +359,19 @@ def prepare_page(server, texts, p, loc_text, as_text, ours):
         readers.append({"alto": False, "name": reader_name(ours[0], ours[1]), "regions": [],
                         "source": "ocr-local:" + (ours[1] or "tesseract"), "text": normalize_text(ours[2])})
     return jpg, empty_alto(w, h), {"page": None, "readers": readers}, texts.ours_alto(p["doc_id"])
+
+
+def cached_alto(cache, doc):
+    """Only original, hash-verified archive ALTO; never manufacture crop coordinates."""
+    path = os.path.join(cache, doc + ".xml")
+    receipt = os.path.join(cache, doc + ".provenance.json")
+    with open(receipt) as f:
+        provenance = json.load(f)
+    with open(path, "rb") as f:
+        raw = f.read()
+    if hashlib.sha256(raw).hexdigest() != provenance["sha256"] or provenance["doc_id"] != doc:
+        raise ValueError(f"{doc}: cached ALTO differs from its archive receipt")
+    return raw
 
 
 def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
@@ -360,10 +410,14 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
             except Exception as e:  # a transient read: left for the next run
                 retry += 1
                 log("page failed; will retry", doc_id=p["doc_id"], error=str(e)[:200])
+    if getattr(a, "alto_cache", None):
+        # A corrupt source receipt is an integrity failure, not a permanently skipped page.
+        for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
+            prepared[doc] = (jpg, cached_alto(a.alto_cache, doc), tx, ours_alto_path)
     ok = [p for p in usable if p["doc_id"] in prepared]
     if ok:
         name = f"c{seq:05d}"
-        write_chunk(camp_dir, name, ok, prepared)
+        write_chunk(camp_dir, name, ok, prepared, getattr(a, "alto_cache", None))
         with open(os.path.join(state, "chunks.txt"), "a") as f:
             f.write(f"{seq}\n")
         seq += 1
@@ -602,6 +656,9 @@ def main(argv=None):
     s.add_argument("--count", type=int, default=0)
     s.add_argument("--out", required=True)
     s.add_argument("--order", choices=["damage", "fetched"], default="damage")
+    s.add_argument("--non-english", action="store_true", help="only pages explicitly scored as non-English")
+    s.add_argument("--scan-server", help="check actual scan availability before taking --count pages")
+    s.add_argument("--damage-dsn-file", help="query indexed quality.page_summary instead of rereading corpus Parquet")
     r = sub.add_parser("run")
     r.add_argument("--campaign", required=True)
     r.add_argument("--pages", required=True)
@@ -613,6 +670,7 @@ def main(argv=None):
     r.add_argument("--max-pending", type=int, default=5)
     r.add_argument("--workers", type=int, default=4)
     r.add_argument("--once", action="store_true", help="stop instead of waiting at --max-pending")
+    r.add_argument("--alto-cache", help="original bulk-archive ALTO with per-page SHA256 provenance receipts")
     w = sub.add_parser("follow")
     w.add_argument("--campaign", required=True)
     w.add_argument("--curated", required=True)

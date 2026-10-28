@@ -39,6 +39,20 @@ curl -fsS "$base/.well-known/security.txt" | grep -q '^Contact: https://github.c
 curl -fsS "$base/.well-known/trust.txt" | grep -q '^owner = Trevor Goodyear$'
 curl -fsS "$base/.well-known/gpc.json" | grep -q '"gpc": true'
 curl -fsS "$base/.well-known/assetlinks.json" | grep -qx '\[\]'
+version=$(python3 -c 'import json; print(json.load(open("web/basemap.json"))["version"])')
+range_headers=$(curl -fsS -D - -o /dev/null -H 'Range: bytes=0-126' -H 'Accept-Encoding: br, gzip' \
+  "$base/basemap/$version/overview.pmtiles.bin")
+grep -q ' 206 ' <<< "$range_headers"
+grep -qi '^content-range: bytes 0-126/' <<< "$range_headers"
+grep -qi '^content-length: 127' <<< "$range_headers"
+grep -qi '^cache-control: public, max-age=31536000, immutable' <<< "$range_headers"
+if grep -qi '^content-encoding:' <<< "$range_headers"; then
+  echo "PMTiles byte ranges must not be HTTP-compressed" >&2
+  exit 1
+fi
 curl -fsS "$base/.well-known/dnt-policy.txt" | grep -q 'Global Privacy Control'
 test "$(curl -sS -o /dev/null -w '%{http_code}' "$base/does-not-exist")" = 404
+curl -fsS "$base/search/cross-of-gold?from=1896-01-01&to=1896-12-31" | grep -q 'property="og:image" content="https://usnewsmap.com/share-image.png?'
+curl -fsS --max-time 45 "$base/share-image.png?page=%2F&q=cross+of+gold&from=1896-01-01&to=1896-12-31" |
+  python3 -c 'import struct, sys; b = sys.stdin.buffer.read(); assert b[:8] == b"\x89PNG\r\n\x1a\n"; assert struct.unpack(">II", b[16:24]) == (1200, 630)'
 echo "api image serves /v1 and the site ($asset)"

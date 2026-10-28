@@ -24,7 +24,10 @@ mod server;
 mod test_support;
 
 use crate::{
-    boinc::{boinc_info, runtime_info, start_boinc_control},
+    boinc::{
+        boinc_info, postpone_probe_timeout, runtime_info, start_boinc_control, PROBE_POSTPONE_SECS,
+        TEMPORARY_EXIT_FILE,
+    },
     checkpoint::{QwenCheckpoint, CHECKPOINT_FILE},
     gpu::{detect_gpu, gpu_used_mib, vulkan_refusal, GpuState},
     locks::{check_engine, resolve_model},
@@ -185,6 +188,7 @@ pub fn run_slot_with(
     let diag_out = resolve_slot_file(work, DIAG_FILE);
     let fraction_out = work.join(FRACTION_FILE);
     let finish_out = work.join(FINISH_FILE);
+    let temporary_exit_out = work.join(TEMPORARY_EXIT_FILE);
 
     for p in [
         &readings_out,
@@ -192,6 +196,7 @@ pub fn run_slot_with(
         &diag_out,
         &fraction_out,
         &finish_out,
+        &temporary_exit_out,
     ] {
         if p.exists() {
             std::fs::remove_file(p)?;
@@ -205,6 +210,28 @@ pub fn run_slot_with(
     boinc_info(work, &mut host, &mut diag);
     runtime_info(&mut host, &mut diag);
     let gpu = detect_gpu(work, &mut host, &mut diag);
+    if gpu.probe_timed_out {
+        // A slow cold driver load is not a missing GPU: retry it a bounded number of times.
+        match postpone_probe_timeout(work)? {
+            Some(attempt) => {
+                diag.section(
+                    "boinc control",
+                    &format!(
+                        "GPU device probe timed out; postponed {PROBE_POSTPONE_SECS} s \
+                         (attempt {attempt}), exiting without boinc_finish_called"
+                    ),
+                    256,
+                );
+                write_atomic(&diag_out, &diag.finish())?;
+                return Ok(());
+            }
+            None => diag.section(
+                "gpu",
+                "device probe timed out on every allowed attempt",
+                256,
+            ),
+        }
+    }
 
     if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
         diag.section(
@@ -486,6 +513,7 @@ fn run_crops(
             model: model.name.clone(),
             device: gpu.device_label.clone(),
             readings: Vec::with_capacity(l.job.crops.len()),
+            generation_metadata: BTreeMap::new(),
         },
     };
     let mut outcome = Outcome::Ok;
@@ -525,7 +553,8 @@ fn run_crops(
         };
         let t_crop = Instant::now();
         match chat_completion(port, &png, l.job.max_tokens(crop), remaining) {
-            Ok((text, tokens)) => {
+            Ok((text, tokens, metadata)) => {
+                cp.generation_metadata.insert(crop.id.clone(), metadata);
                 cp.readings.push(Reading {
                     id: crop.id.clone(),
                     ms: ms(t_crop),
@@ -565,6 +594,9 @@ fn run_crops(
     let out_readings = cp.readings;
 
     let engine_ms = ms(started);
+    for (crop, metadata) in cp.generation_metadata {
+        diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
+    }
     if let Some(ref srv) = srv_guard {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
             diag.section(
@@ -730,6 +762,66 @@ mod tests {
             assert_eq!(facts["out_of_memory"], true);
             assert!(facts["llama"].is_null());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn slot_preserves_probe_retry_budget_and_finishes_only_after_fourth_timeout() {
+        use crate::boinc::{MAX_PROBE_POSTPONES, PROBE_TIMEOUTS_FILE};
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path();
+        write_qwen_unit(slot);
+        std::fs::write(
+            slot.join("init_data.xml"),
+            "<app_init_data><plan_class>nvidia_vulkan_8b</plan_class><gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num></app_init_data>",
+        ).unwrap();
+        let server = slot.join("llama-server");
+        std::fs::write(&server, "#!/bin/sh\nexec sleep 1\n").unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        gpu::TEST_PROBE_DEADLINE.with(|deadline| {
+            let previous = deadline.replace(Some(Duration::ZERO));
+            for attempt in 1..=MAX_PROBE_POSTPONES {
+                std::fs::write(slot.join(TEMPORARY_EXIT_FILE), "stale temporary exit\n").unwrap();
+                std::fs::write(slot.join(FINISH_FILE), "1\n").unwrap();
+                run_slot_with(slot, None, None).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(slot.join(PROBE_TIMEOUTS_FILE)).unwrap(),
+                    format!("{attempt}\n")
+                );
+                let request = std::fs::read_to_string(slot.join(TEMPORARY_EXIT_FILE)).unwrap();
+                assert!(request.starts_with("120\nGPU driver still loading"));
+                assert!(request.contains(&format!("{attempt}/3")));
+                assert!(!slot.join(FINISH_FILE).exists());
+                assert!(!slot.join(RESULT_FILE).exists());
+                assert!(!slot.join(READINGS_FILE).exists());
+            }
+            run_slot_with(slot, None, None).unwrap();
+            deadline.set(previous);
+        });
+        assert!(
+            !slot.join(TEMPORARY_EXIT_FILE).exists(),
+            "stale restart request survived final refusal"
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join(PROBE_TIMEOUTS_FILE)).unwrap(),
+            "3\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join(FINISH_FILE)).unwrap(),
+            "1\n"
+        );
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::NoGpu);
+        assert_eq!(result.read, 0);
+        result
+            .check(
+                &std::fs::read(slot.join(READINGS_FILE)).unwrap(),
+                &std::fs::read(slot.join(DIAG_FILE)).unwrap(),
+            )
+            .unwrap();
     }
 
     #[test]
@@ -989,7 +1081,18 @@ mod tests {
                 text: "cached first page crop".into(),
                 tokens: 4,
             }],
+            generation_metadata: BTreeMap::from([(
+                "page_one:c01".into(),
+                r#"{"schema":1,"finish_reason":"stop"}"#.into(),
+            )]),
         };
+        let mut legacy = serde_json::to_value(&cp).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("generation_metadata");
+        let legacy: QwenCheckpoint = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.generation_metadata.is_empty());
         cp.save(&slot).unwrap();
         assert!(slot.join(CHECKPOINT_FILE).is_file());
 
@@ -1011,6 +1114,20 @@ mod tests {
         assert_eq!(readings.readings[1].id, "page_two:c01");
         assert_eq!(readings.readings[1].text, "fresh second page crop");
         let diag_str = String::from_utf8_lossy(&diag_bytes);
+        assert!(diag_str
+            .contains("== generation_v1/page_one:c01\n{\"schema\":1,\"finish_reason\":\"stop\"}"));
+        let fresh: serde_json::Value = serde_json::from_str(
+            diag_str
+                .split("== generation_v1/page_two:c01\n")
+                .nth(1)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(fresh["finish_reason"].is_null());
+        assert_eq!(fresh["schema"], 1);
         assert!(diag_str.contains("resumed from checkpoint: 1 of 2 crops already complete"));
     }
 

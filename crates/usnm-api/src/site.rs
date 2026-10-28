@@ -16,7 +16,7 @@
 //!   every load so a release shows up at once. The app's pages carry an
 //!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
 //!   costs a `304`.
-//! - Legacy search links redirect to `/search/<query>`. Curated base searches
+//! - Legacy search links redirect to `/search/<query>`. Curated and promoted base searches
 //!   are indexable; other searches and filter variants carry `noindex`.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
 
@@ -34,6 +34,9 @@ use tower_http::services::ServeDir;
 
 use crate::error::ApiError;
 use crate::AppState;
+
+pub(crate) mod sitemap;
+pub(crate) mod social;
 
 /// Headers on every response (the site's and the API's). `connect-src`
 /// allows the same-origin API, the OpenFreeMap basemap and public BOINC counts.
@@ -86,10 +89,15 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     // suffix) can't name one of ours, and `ServeDir` answers the filesystem's
     // "file name too long" with a 500, so such paths skip it and are answered
     // like any other path with no file.
+    let sharing = state.clone();
+    let robots = state.clone();
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
         let state = state.clone();
         async move {
+            if req.uri().path() == "/sitemap.xml" && state.config.sitemap_state_url().is_some() {
+                return sitemap::response(&state, &req);
+            }
             if let Some(location) = matches!(*req.method(), Method::GET | Method::HEAD)
                 .then(|| search_redirect(req.uri()))
                 .flatten()
@@ -120,10 +128,14 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         }
     };
     Router::new()
+        .route(
+            "/share-image.png",
+            axum::routing::get(move |uri| social::image(uri, sharing.clone())),
+        )
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
         .layer(middleware::from_fn(cache_control))
-        .layer(middleware::from_fn(robots_tag))
+        .layer(middleware::from_fn_with_state(robots, robots_tag))
 }
 
 /// How many bytes a path segment is once percent-decoded, as `ServeDir`
@@ -154,12 +166,69 @@ fn is_app_page(path: &str) -> bool {
         )
 }
 
+/// The readable path segment for a plain exact-phrase search: lowercase
+/// words joined by hyphens, quotes dropped. Search is case-insensitive and a
+/// hyphen inside a word is a word break, so it means what the query did.
+/// `None` when the query has syntax or a mode other than the default, where
+/// quotes matter. Mirrors `slugFor` in web/src/route.ts.
+fn slug_for(q: &str, phrase_mode: bool) -> Option<String> {
+    if !phrase_mode {
+        return None;
+    }
+    let mut text = q.trim();
+    match text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        Some(inner) if text.len() >= 2 && !inner.contains('"') => text = inner,
+        _ if text
+            .split_whitespace()
+            .any(|w| matches!(w, "AND" | "OR" | "NOT") || w.starts_with('-')) =>
+        {
+            return None
+        }
+        _ => {}
+    }
+    let words: Vec<String> = text
+        .split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            // Lowercasing can add a combining mark (İ), which splits a token.
+            let lower = w.to_lowercase();
+            lower.chars().all(char::is_alphanumeric).then_some(lower)
+        })
+        .collect::<Option<_>>()?;
+    (!words.is_empty()).then(|| words.join("-"))
+}
+
+fn is_slug(q: &str) -> bool {
+    !q.is_empty()
+        && q.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_alphanumeric() && !c.is_uppercase())
+        })
+}
+
 fn search_path(q: &str) -> String {
+    search_path_in_mode(q, true)
+}
+
+fn search_path_in_mode(q: &str, phrase_mode: bool) -> String {
+    if let Some(slug) = slug_for(q, phrase_mode) {
+        let encoded: String = form_urlencoded::byte_serialize(slug.as_bytes()).collect();
+        return format!("/search/{encoded}");
+    }
     let encoded: String = form_urlencoded::byte_serialize(q.as_bytes()).collect();
     format!("/search/{}", encoded.replace('+', "%20"))
 }
 
+/// The query a search path names, read in the default phrase mode.
 fn search_query(path: &str) -> Option<String> {
+    search_query_in_mode(path, true)
+}
+
+/// Outside phrase mode a hyphen is kept: `well-known` is an adjacent phrase
+/// there only as one word, and its terms would otherwise become separate ANDs.
+fn search_query_in_mode(path: &str, phrase_mode: bool) -> Option<String> {
     let segment = path.strip_prefix("/search/")?;
     let segment = segment.strip_suffix('/').unwrap_or(segment);
     if segment.is_empty() || segment.contains('/') {
@@ -176,15 +245,19 @@ fn search_query(path: &str) -> Option<String> {
             b
         });
     }
-    let q = String::from_utf8(bytes).ok()?;
+    let mut q = String::from_utf8(bytes).ok()?;
+    if phrase_mode && is_slug(&q) {
+        q = q.replace('-', " ");
+    }
     (q.encode_utf16().count() <= 256 && q != "." && q != "..").then_some(q)
 }
 
 fn search_redirect(uri: &Uri) -> Option<String> {
     let mut params: Vec<_> = form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()).collect();
+    let phrase_mode = params.iter().all(|(k, v)| k != "mode" || v == "phrase");
     let q = match uri.path().trim_end_matches('/') {
         "" | "/index.html" => params.iter().find(|(k, _)| k == "q")?.1.to_string(),
-        _ => search_query(uri.path())?,
+        _ => search_query_in_mode(uri.path(), phrase_mode)?,
     };
     if q.is_empty() || q == "." || q == ".." || q.encode_utf16().count() > 256 {
         return None;
@@ -193,7 +266,7 @@ fn search_redirect(uri: &Uri) -> Option<String> {
     let query = form_urlencoded::Serializer::new(String::new())
         .extend_pairs(params)
         .finish();
-    let path = search_path(&q);
+    let path = search_path_in_mode(&q, phrase_mode);
     let target = if query.is_empty() {
         path
     } else {
@@ -202,7 +275,7 @@ fn search_redirect(uri: &Uri) -> Option<String> {
     (uri.path_and_query()?.as_str() != target).then_some(target)
 }
 
-static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
+pub(crate) static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
         #[derive(serde::Deserialize)]
         struct Example {
@@ -237,6 +310,11 @@ fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
     let query = search_query(path);
     let (title, canonical) = if path.trim_end_matches('/') == "/privacy" {
         ("Privacy · US News Map".to_owned(), "/privacy".to_owned())
+    } else if path.trim_end_matches('/') == "/datasets" {
+        (
+            "Dataset details · US News Map".to_owned(),
+            "/datasets".to_owned(),
+        )
     } else if path.trim_end_matches('/') == "/credits" {
         (
             "OCR credits · US News Map".to_owned(),
@@ -337,6 +415,30 @@ fn preview_query(q: &str) -> String {
 }
 
 async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
+    search_preview_snapshot(state, state.snapshot.load_full(), q, false).await
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(super) struct SearchPreview {
+    html: String,
+    total_hits: u64,
+}
+
+pub(crate) async fn search_preview_snapshot(
+    state: &Arc<AppState>,
+    snap: Arc<crate::Snapshot>,
+    q: &str,
+    background: bool,
+) -> Result<String, ApiError> {
+    Ok(search_preview_data(state, snap, q, background).await?.html)
+}
+
+async fn search_preview_data(
+    state: &Arc<AppState>,
+    snap: Arc<crate::Snapshot>,
+    q: &str,
+    background: bool,
+) -> Result<SearchPreview, ApiError> {
     use crate::routes::{cached_body, with_timeout, Job};
     use crate::version::Pinning;
     use usnm_core::ids::PageKey;
@@ -344,14 +446,15 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
     use usnm_core::time::date_from_day;
     use usnm_search::HitsQuery;
 
-    let snap = state.snapshot.load_full();
     let raw = preview_query(q);
     let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
     let canonical = search.canonical();
     let version = snap.refdata.version().to_owned();
-    let key = snap
-        .refdata
-        .search_key("site-preview-v4", &canonical, &search.query);
+    let key = snap.refdata.search_key(
+        &format!("site-preview-{}", sitemap::renderer()),
+        &canonical,
+        &search.query,
+    );
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
@@ -373,7 +476,10 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
                 .then_with(|| b.place_id.cmp(&a.place_id))
         });
         let Some(top) = top else {
-            return Ok("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned());
+            return Ok(SearchPreview {
+                html: "<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned(),
+                total_hits: summary.total_hits,
+            });
         };
         let place = rd
             .place(&top.place_id)
@@ -391,7 +497,7 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
                 .hits(&indexes, &search.query, &search.filters, &page),
         )
         .await?;
-        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        let mut html = format!("<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
         for hit in result.hits {
             let title = rd
                 .titles
@@ -420,11 +526,15 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
         html.push_str(
             "</ol><p>The interactive map and full results require JavaScript.</p></section>",
         );
-        Ok::<_, ApiError>(html)
+        Ok::<_, ApiError>(SearchPreview {
+            html,
+            total_hits: summary.total_hits,
+        })
     };
+    let job = Job::search("site-preview", background, state.config.compute_cap);
     let (_, body) = cached_body(
         state,
-        Job::search("site-preview", false, state.config.compute_cap),
+        job,
         key,
         &Pinning::Unversioned,
         &version,
@@ -475,7 +585,7 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
         StatusCode::NOT_FOUND
     };
     let mut body = match tokio::fs::read(&index).await {
-        Ok(body) => shell_for(path, body),
+        Ok(body) => social::shell(req.uri(), shell_for(path, body)),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             return (StatusCode::NOT_FOUND, "not found").into_response();
@@ -483,8 +593,8 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
     };
     if status == StatusCode::OK {
         if let Some(q) = search_query(path) {
-            // Only bounded, curated base searches add backend work on a page load.
-            if !noindex(req.uri()) {
+            // Only admitted base searches add backend work on a page load.
+            if !noindex(req.uri(), &state.sitemap) {
                 match search_preview(&state, &q).await {
                     Ok(preview) => body = insert_content(body, &preview),
                     Err(error) => {
@@ -573,7 +683,9 @@ fn entity_tags(list: &str) -> impl Iterator<Item = &str> {
 }
 
 async fn cache_control(req: Request, next: Next) -> Response {
-    let immutable = req.uri().path().starts_with("/assets/");
+    let basemap = req.uri().path().starts_with("/basemap/");
+    let archive = basemap && req.uri().path().ends_with(".pmtiles.bin");
+    let immutable = req.uri().path().starts_with("/assets/") || basemap;
     let mut resp = next.run(req).await;
     let html = resp
         .headers()
@@ -591,7 +703,16 @@ async fn cache_control(req: Request, next: Next) -> Response {
     if !resp.status().is_success() && !(html && resp.status() == StatusCode::NOT_FOUND) {
         return resp;
     }
-    let value = if immutable {
+    if resp.headers().contains_key(header::CACHE_CONTROL) {
+        return resp;
+    }
+    if archive && resp.status().is_success() {
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/vnd.pmtiles"),
+        );
+    }
+    let value = if immutable && !html {
         "public, max-age=31536000, immutable"
     } else if html {
         "no-cache"
@@ -603,15 +724,16 @@ async fn cache_control(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Only curated, unfiltered searches are indexable. Dataset details and
-/// legacy search links also keep their noindex policy.
-fn noindex(uri: &Uri) -> bool {
+/// Only curated or promoted, unfiltered searches are indexable. Legacy search links
+/// and the old dataset path keep their noindex policy.
+fn noindex(uri: &Uri, sitemap: &sitemap::Service) -> bool {
     if let Some(q) = search_query(uri.path()) {
-        return !CURATED_SEARCHES.contains(&search_path(&q))
+        let path = search_path(&q);
+        return !(CURATED_SEARCHES.contains(&path) || sitemap.contains(&path))
             || uri.query().is_some_and(|q| !q.is_empty());
     }
     match uri.path().trim_end_matches('/') {
-        "/datasets" | OLD_DATASETS_PATH => true,
+        OLD_DATASETS_PATH => true,
         "" | "/index.html" => uri
             .query()
             .is_some_and(|q| form_urlencoded::parse(q.as_bytes()).any(|(k, _)| k == "q")),
@@ -619,8 +741,8 @@ fn noindex(uri: &Uri) -> bool {
     }
 }
 
-async fn robots_tag(req: Request, next: Next) -> Response {
-    let noindex = noindex(req.uri());
+async fn robots_tag(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let noindex = noindex(req.uri(), &state.sitemap);
     let mut resp = next.run(req).await;
     if noindex {
         resp.headers_mut().insert(
@@ -791,6 +913,15 @@ mod tests {
     }
 
     #[test]
+    fn the_datasets_page_names_itself_in_the_head() {
+        let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
+        let html = String::from_utf8(shell_for("/datasets/", index.to_vec())).unwrap();
+        assert!(html.contains("<title>Dataset details · US News Map</title>"));
+        assert!(html.contains(r#"href="https://usnewsmap.com/datasets""#));
+        assert!(html.contains(r#"content="https://usnewsmap.com/datasets""#));
+    }
+
+    #[test]
     fn the_credits_page_names_itself_in_the_head() {
         let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
         let html = String::from_utf8(shell_for("/credits/", index.to_vec())).unwrap();
@@ -822,15 +953,16 @@ mod tests {
         let yes = [
             "/?q=gold",
             "/?from=1896-06-01&q=%22cross+of+gold%22",
-            "/datasets",
-            "/datasets/?x=1",
             "/status",
             "/status/?x=1",
             "/search/whigs?tab=table",
             "/search/not-a-curated-search",
         ];
         for uri in yes {
-            assert!(noindex(&uri.parse().unwrap()), "{uri}");
+            assert!(
+                noindex(&uri.parse().unwrap(), &sitemap::Service::default()),
+                "{uri}"
+            );
         }
         let no = [
             "/",
@@ -839,24 +971,30 @@ mod tests {
             "/?qq=1",
             "/privacy",
             "/privacy?utm_source=x",
+            "/datasets",
+            "/datasets/?x=1",
+            "/credits",
             "/favicon.svg",
             "/search?q=gold",
             "/search/whigs",
         ];
         for uri in no {
-            assert!(!noindex(&uri.parse().unwrap()), "{uri}");
+            assert!(
+                !noindex(&uri.parse().unwrap(), &sitemap::Service::default()),
+                "{uri}"
+            );
         }
     }
 
     #[test]
     fn search_paths_preserve_syntax_and_legacy_filters() {
-        for q in ["gold", "\"cross of gold\"", "a/b + c? & # = %", "日本"] {
+        for q in ["gold", "gold OR silver", "a/b + c? & # = %", "日本"] {
             assert_eq!(search_query(&search_path(q)).as_deref(), Some(q));
         }
         let to = |uri: &str| search_redirect(&uri.parse().unwrap());
         assert_eq!(
             to("/?q=%22cross+of+gold%22&from=1896-06-01&tab=table").as_deref(),
-            Some("/search/%22cross%20of%20gold%22?from=1896-06-01&tab=table")
+            Some("/search/cross-of-gold?from=1896-06-01&tab=table")
         );
         assert_eq!(to("/index.html/?q=a%2Bb").as_deref(), Some("/search/a%2Bb"));
         assert_eq!(to("/search/gold?q=silver").as_deref(), Some("/search/gold"));
@@ -870,6 +1008,57 @@ mod tests {
         ] {
             assert_eq!(to(uri), None, "{uri}");
         }
+    }
+
+    #[test]
+    fn plain_phrases_get_readable_lowercase_paths() {
+        for (q, path) in [
+            ("\"Fifteenth Amendment\"", "/search/fifteenth-amendment"),
+            ("Know-Nothing", "/search/know-nothing"),
+            ("gold", "/search/gold"),
+            ("\"gold OR silver\"", "/search/gold-or-silver"),
+            ("gold OR silver", "/search/gold%20OR%20silver"),
+            ("-gold", "/search/-gold"),
+            (
+                "\"Uncle Tom's Cabin\"",
+                "/search/%22Uncle%20Tom%27s%20Cabin%22",
+            ),
+        ] {
+            assert_eq!(search_path(q), path, "{q}");
+        }
+        assert_eq!(
+            search_query("/search/fifteenth-amendment").as_deref(),
+            Some("fifteenth amendment")
+        );
+        assert_eq!(
+            search_query("/search/Know-Nothing").as_deref(),
+            Some("Know-Nothing")
+        );
+        assert_eq!(
+            search_path_in_mode("\"cross of gold\"", false),
+            "/search/%22cross%20of%20gold%22"
+        );
+
+        let to = |uri: &str| search_redirect(&uri.parse().unwrap());
+        assert_eq!(
+            to("/search/%22Fifteenth%20Amendment%22").as_deref(),
+            Some("/search/fifteenth-amendment")
+        );
+        assert_eq!(
+            to("/search/Know-Nothing?tab=table").as_deref(),
+            Some("/search/know-nothing?tab=table")
+        );
+        assert_eq!(to("/search/fifteenth-amendment"), None);
+        assert_eq!(to("/search/%22cross%20of%20gold%22?mode=all"), None,);
+        assert_eq!(to("/search/%E6%97%A5%E6%9C%AC"), None);
+        assert_eq!(search_path("İstanbul"), "/search/%C4%B0stanbul");
+        assert_eq!(to("/search/%C4%B0stanbul"), None);
+        assert_eq!(search_path("日本"), "/search/%E6%97%A5%E6%9C%AC");
+        assert_eq!(to("/search/well-known?mode=all"), None);
+        assert_eq!(
+            search_query_in_mode("/search/well-known", false).as_deref(),
+            Some("well-known")
+        );
     }
 
     #[test]

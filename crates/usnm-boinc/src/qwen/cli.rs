@@ -6,6 +6,18 @@ use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub enum QwenCommands {
+    /// Audit explicitly selected retained readings, never selecting a canonical result.
+    Candidates {
+        #[arg(long)]
+        job: PathBuf,
+        #[arg(long)]
+        page: PathBuf,
+        /// Directories written by `qwen check --keep`, at most 16.
+        #[arg(long, required = true, num_args = 1..)]
+        candidate: Vec<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Stage public gold crops without sending reference text to volunteers.
     BenchmarkStage {
         #[arg(long)]
@@ -145,6 +157,14 @@ pub enum QwenCommands {
 pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
     use crate::qwen as x;
     match command {
+        QwenCommands::Candidates {
+            job,
+            page,
+            candidate,
+            out,
+        } => {
+            x::candidates::run(&job, &page, &candidate, &out)?;
+        }
         QwenCommands::BenchmarkStage {
             crops,
             root,

@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep a bounded non-English Qwen crop backlog
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

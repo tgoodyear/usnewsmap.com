@@ -1,5 +1,5 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api, ApiError, sameSearch, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
@@ -15,7 +15,7 @@ import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
 import { PaperPages, type PaperSort } from "./components/PaperPages";
-import { usePrefetchPlaceHits } from "./components/placeHits";
+import { placeHitsQuery, usePrefetchPlaceHits } from "./components/placeHits";
 import { PlaceTable } from "./components/PlaceTable";
 import { NewspaperTable, paperRows } from "./components/NewspaperTable";
 import { paperFilterNames } from "./components/NewspaperFilter";
@@ -49,8 +49,9 @@ import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
 import { congressFeature } from "./lib/congress";
 import { SampleResults, topPlace } from "./components/SampleResults";
-import { prepareStates, stateTotals, stateBreaks } from "./engine/states";
+import { STATE_NAMES, prepareStates, stateTotals, stateBreaks } from "./engine/states";
 import { StatesLegend, StatesTable } from "./components/StatesPanel";
+import { ShareButton } from "./components/ShareButton";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -127,6 +128,10 @@ export function App() {
         : undefined,
   });
   const baselineRef = agg.data?.cube.baseline_ref ?? null;
+  const selectedPlace = useInfiniteQuery({
+    ...placeHitsQuery(params, version, view.place, view.sort),
+    enabled: !!version && !!view.place && !!agg.data,
+  });
   const coverage = useQuery({
     queryKey: ["coverage", baselineRef],
     queryFn: ({ signal }) => api.coverage(baselineRef!, version, signal),
@@ -492,6 +497,7 @@ export function App() {
     const hi = t + 1 >= count ? Infinity : dayNumber(bucketStart(unit, from, t + 1)) - 1;
     return new Map(daysSource.places.map((p) => [p.id, exactMedian(p.days, p.hits, lo, hi)]));
   }, [data, daysSource, medianStatus, view.win, t, count]);
+  const statePanel = view.place.startsWith("state:") ? view.place.slice(6) : null;
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
   const problem: Problem | null =
@@ -599,10 +605,18 @@ export function App() {
           params={params}
           version={version}
           placeId={view.place}
-          placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
+          placeName={
+            statePanel
+              ? (STATE_NAMES[statePanel] ?? statePanel)
+              : (selected?.name ?? features.get(view.place)?.properties.name ?? view.place)
+          }
           sort={view.sort}
           onSort={(sort) => setView({ sort })}
-          windowHits={selected?.value ?? 0}
+          windowHits={
+            statePanel
+              ? visible.reduce((a, r) => (r.state === statePanel ? a + Math.max(r.value, 0) : a), 0)
+              : (selected?.value ?? 0)
+          }
           note={norm === "skew" ? skewRows.find((r) => r.id === view.place)?.skew : undefined}
           synthetic={data.synthetic}
           onClose={() => setView({ place: "", sort: "oldest" })}
@@ -666,7 +680,28 @@ export function App() {
           />
         </main>
       ) : (
-        <main className={agg.isFetching ? "results results--loading" : "results"}>
+        <main
+          className={agg.isFetching ? "results results--loading" : "results"}
+          data-share-error={
+            (!!view.place && selectedPlace.isError) ||
+            (!!baselineRef && (view.tab === "table" || statesActive) && coverage.isError)
+          }
+          data-share-ready={
+            !!data &&
+            !!places.data &&
+            !agg.isFetching &&
+            !agg.isPlaceholderData &&
+            !updating &&
+            !problem &&
+            !placesFailed &&
+            !coverageFailed &&
+            (!baselineRef || (view.tab !== "table" && !statesActive) || !!pageSums) &&
+            (!statesActive || !!statesSums) &&
+            (!view.place || (selectedPlace.isSuccess && !selectedPlace.isFetching)) &&
+            !skewNotice &&
+            (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket")
+          }
+        >
           {agg.isFetching && <div className="search-progress" role="progressbar" aria-label="Search running" />}
           {updating && (
             <p className="notice" role="status">
@@ -1034,27 +1069,6 @@ function WhenLegend({ from, to }: { from: string; to: string }) {
         <span>{to}</span>
       </div>
     </div>
-  );
-}
-
-function ShareButton() {
-  return (
-    <button
-      type="button"
-      className="button toolbar__share"
-      onClick={(e) => {
-        const btn = e.currentTarget;
-        void navigator.clipboard?.writeText(window.location.href).then(
-          () => {
-            btn.textContent = "Link copied";
-            setTimeout(() => (btn.textContent = "Share"), 2000);
-          },
-          () => undefined,
-        );
-      }}
-    >
-      Share
-    </button>
   );
 }
 

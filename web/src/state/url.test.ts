@@ -21,11 +21,13 @@ describe("view URL", () => {
   });
 
   it("moves search syntax into a reversible path without losing filters", () => {
-    for (const q of ['"cross of gold"', "a/b + c? & # = %", "日本", ".", "..", ""]) {
+    for (const q of ['"cross of gold" OR silver', "a/b + c? & # = %", "日本", ".", "..", ""]) {
       const view = { ...DEFAULTS, q, from: "1896-01-01", tab: "table" as const };
       expect(parseViewUrl(viewUrl(view))).toEqual(view);
     }
     expect(viewUrl({ ...DEFAULTS, q: "gold" })).toBe("/search/gold");
+    expect(viewUrl({ ...DEFAULTS, q: '"Cross of Gold"' })).toBe("/search/cross-of-gold");
+    expect(parseViewUrl("/search/cross-of-gold").q).toBe("cross of gold");
     expect(parseViewUrl("/search/gold?q=silver&lang=ger")).toMatchObject({ q: "gold", lang: ["ger"] });
     expect(parseViewUrl("/?q=gold&lang=ger")).toEqual(parseViewUrl("/search/gold?lang=ger"));
   });
@@ -160,6 +162,12 @@ describe("Congress source (#229)", () => {
     // A series without the Congress source means nothing.
     expect(parseView("?q=gold&series=globe").series).toEqual([]);
     expect(parseView("?q=gold&source=senate").source).toBe("news");
+  });
+
+  it("keeps a selected state as the place, and refuses a malformed one", () => {
+    expect(parseView("?q=gold&place=state:PA").place).toBe("state:PA");
+    expect(parseView("?q=gold&place=state:pa").place).toBe("");
+    expect(parseView("?q=gold&place=state:PAX").place).toBe("");
   });
 
   it("drops the state and language filters, which a Congress search hides", () => {

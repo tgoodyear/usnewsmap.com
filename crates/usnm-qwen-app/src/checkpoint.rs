@@ -17,6 +17,8 @@ pub struct QwenCheckpoint {
     pub model: String,
     pub device: String,
     pub readings: Vec<Reading>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub generation_metadata: std::collections::BTreeMap<String, String>,
 }
 
 impl QwenCheckpoint {

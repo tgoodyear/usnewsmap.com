@@ -7,10 +7,10 @@ use anyhow::{bail, Context};
 use clap::Args;
 use usnm_ingest::activity::Reporter;
 use usnm_ingest::merges::{self, MergeWait};
-use usnm_ingest::owner_id;
 use usnm_ingest::release::{self, Published, Release};
 use usnm_ingest::sink::{IndexSink, IngestApi, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::state::State;
+use usnm_state::owner_id;
 
 use super::common::{root, IndexTarget, Stores};
 use crate::Cli;
@@ -49,6 +49,10 @@ pub(crate) struct ReleaseArgs {
     /// curated units changed and kept otherwise. Off: no Congress set.
     #[arg(long, env = "USNM_CONGRESS")]
     congress: bool,
+    /// Include manually acquired Annals and Register units. Off by
+    /// default; enable only after an operator reviewed the archived PDFs.
+    #[arg(long, env = "USNM_CONGRESS_MANUAL", requires = "congress")]
+    congress_manual: bool,
     /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
     /// searches skip the other decades' splits. Only a full base takes
     /// it; deltas follow the published version.
@@ -126,6 +130,9 @@ pub(crate) struct ReleaseFinishArgs {
     #[arg(long, env = "USNM_CONGRESS")]
     congress: bool,
     /// As for `release`.
+    #[arg(long, env = "USNM_CONGRESS_MANUAL", requires = "congress")]
+    congress_manual: bool,
+    /// As for `release`.
     #[arg(long)]
     partition_decade: bool,
     /// As for `release`.
@@ -152,6 +159,7 @@ pub(super) async fn release(
     ja_latin: bool,
     ocr_local: bool,
     congress: bool,
+    congress_manual: bool,
     partition_decade: bool,
     single_text_field: bool,
     page_language: bool,
@@ -174,6 +182,7 @@ pub(super) async fn release(
         ja_latin,
         ocr_local,
         congress,
+        congress_manual,
         partition_decade,
         single_text_field,
         page_language,
@@ -258,6 +267,7 @@ struct ReleaseFlags {
     ja_latin: bool,
     ocr_local: bool,
     congress: bool,
+    congress_manual: bool,
     partition_decade: bool,
     single_text_field: bool,
     page_language: bool,
@@ -306,6 +316,7 @@ async fn release_finish(
             ja_latin: flags.ja_latin,
             ocr_local: flags.ocr_local,
             congress: flags.congress,
+            congress_manual: flags.congress_manual,
             partition_decade: flags.partition_decade,
             single_text_field: flags.single_text_field,
             page_language: flags.page_language,
@@ -425,6 +436,7 @@ pub(crate) async fn release_command(
         ja_latin,
         ocr_local,
         congress,
+        congress_manual,
         partition_decade,
         single_text_field,
         page_language,
@@ -440,6 +452,7 @@ pub(crate) async fn release_command(
         *ja_latin,
         *ocr_local,
         *congress,
+        *congress_manual,
         *partition_decade,
         *single_text_field,
         *page_language,
@@ -468,6 +481,7 @@ pub(crate) async fn release_finish_command(
         ja_latin,
         ocr_local,
         congress,
+        congress_manual,
         partition_decade,
         single_text_field,
         page_language,
@@ -481,6 +495,7 @@ pub(crate) async fn release_finish_command(
         ja_latin: *ja_latin,
         ocr_local: *ocr_local,
         congress: *congress,
+        congress_manual: *congress_manual,
         partition_decade: *partition_decade,
         single_text_field: *single_text_field,
         page_language: *page_language,
@@ -559,6 +574,7 @@ mod tests {
             ja_latin,
             ocr_local,
             congress,
+            congress_manual,
             partition_decade,
             single_text_field,
             page_language,
@@ -573,12 +589,43 @@ mod tests {
         assert!(!ja_latin, "off unless asked for");
         assert!(!ocr_local, "off unless asked for");
         assert!(!congress, "off unless asked for");
+        assert!(!congress_manual, "manual debates remain opt-in");
         assert!(!partition_decade, "off unless asked for");
         assert!(!single_text_field, "off unless asked for");
         assert!(!page_language, "off unless asked for");
         // Each command's own default: 4 hours for a release.
         assert_eq!(target.merge_timeout_secs, None);
         assert_eq!(target.min_free_gib, 0);
+    }
+
+    #[test]
+    fn manual_congress_release_requires_the_congress_index() {
+        let base = [
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "release",
+            "--index-dir",
+            "x",
+        ];
+        let mut without_congress = base.to_vec();
+        without_congress.push("--congress-manual");
+        assert!(Cli::try_parse_from(without_congress).is_err());
+
+        let mut enabled = base.to_vec();
+        enabled.extend(["--congress", "--congress-manual"]);
+        let cli = Cli::try_parse_from(enabled).unwrap();
+        let Command::Release(ReleaseArgs {
+            congress,
+            congress_manual,
+            ..
+        }) = cli.command
+        else {
+            panic!("not a release");
+        };
+        assert!(congress && congress_manual);
     }
 
     #[test]

@@ -1,0 +1,18 @@
+# Joins native batch-8 Qwen canonical readings with its same-campaign QUALITY jobs.
+# ENGINE_IMAGE identifies the QUALITY scorer, not the Qwen model or native app.
+[Unit]
+Description=usnewsmap native Qwen canonical science into usnm_quality
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-ship.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/quality-ship.env
+Environment=CTID=215 NATIVE_QWEN_CAMPAIGN=qwen-nonenglish-v1
+Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
+EnvironmentFile=-/etc/usnm/quality-results.env
+EnvironmentFile=-/etc/usnm/quality-results-qwen.env
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py --campaign ${NATIVE_QWEN_CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --qwen-campaign ${NATIVE_QWEN_CAMPAIGN} --incremental --collector ${QUALITY_COLLECTOR} --step-lock-wait-secs 60
+TimeoutStartSec=40min
+Nice=10

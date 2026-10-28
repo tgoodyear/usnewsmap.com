@@ -82,7 +82,7 @@ param searcherName string = ''
 @minValue(0)
 @maxValue(1)
 param searcherMinReplicas int = 1
-@description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/azure/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
+@description('Custom hostnames with their managed or uploaded certificates, as { name, certificateId }. A name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
 var quickwit = searchBackend == 'quickwit'
@@ -176,7 +176,11 @@ var backendEnv = quickwit
 var apiContainer = {
   name: 'api'
   image: image
-  resources: { cpu: json('0.25'), memory: '0.5Gi' }
+  // Two Chromium captures miss their deadline at the old 0.25 CPU limit.
+  // Keep the legacy sidecar replica within Consumption's 4 CPU / 8 GiB cap.
+  resources: sidecar
+    ? { cpu: json('0.25'), memory: '0.5Gi' }
+    : { cpu: json('1.0'), memory: '2Gi' }
   env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv, computeEnv)
   probes: [
     {

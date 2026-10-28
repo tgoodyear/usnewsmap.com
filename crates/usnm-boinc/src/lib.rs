@@ -10,14 +10,14 @@ use std::{
     path::{Path, PathBuf},
 };
 use usnm_core::ids::PageKey;
-use usnm_ingest::ocr_local::{
-    self, checks,
-    ledger::{self, Queued},
-};
 use usnm_ocr_contract::{
     boinc::{self, Job, ResultManifest},
     message::{OcrMessage, Reason},
     prefetch::ManifestRow,
+};
+use usnm_ocr_local::{
+    self as ocr_local, checks,
+    ledger::{self, Queued},
 };
 use usnm_ocr_worker::{
     engine,
@@ -37,6 +37,7 @@ pub mod host_trust;
 pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
+pub mod reject;
 pub mod scans;
 pub mod submit;
 pub mod surya;

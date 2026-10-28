@@ -340,16 +340,30 @@ jobs use protocol v2 and require a **newly built and released worker containing
 this support**; do not target old worker images that only understand v1.
 Untargeted v1 job bytes and identities remain compatible. Use a fresh campaign
 root per host and image. It refuses until the project's active XML config
-explicitly has `<enable_assignment>1</enable_assignment>`. This PR does **not**
-enable assignment on production: first verify scheduler and assignment behavior
-in dev and calibrate the first campaign. Live acceptance of discovery and
-issuance for new hosts, canonical host-query acceptance, and periodic spot-check
-activation remain rollout blockers; no automatic publication or scheduler
-configuration has been deployed. The OFF-by-default [host-trust follow-up
-controller](../notes/2026-10-16-boinc-host-trust-followups.md) now provides bounded automatic host
-discovery and first-gold issuance commands, and sampled independent-host OCR
-rerun and comparison commands. Dispatch requires an explicit `--execute`; no
-timer, trust promotion or assignment enablement is installed.
+explicitly has `<enable_assignment>1</enable_assignment>`. Installing these
+commands does **not** enable assignment: first verify scheduler and assignment
+behavior in dev and calibrate the first campaign.
+
+There are two distinct automation entrypoints:
+
+- The opt-in [host-trust follow-up
+  controller](../notes/2026-10-16-boinc-host-trust-followups.md) provides bounded
+  discovery and first-Gold issuance, plus sampled independent-host OCR reruns and
+  comparisons. Its dispatch commands require an explicit `--execute`; invoking
+  those standalone commands installs no timer or assignment configuration.
+- The [batch scheduler's Gold onboarding](../boinc-batch-scheduler.md#gold-onboarding-901)
+  runs bounded `gold-onboard` and `gold-promote` steps when its operator-reviewed
+  `gold_onboarding` configuration is present. It can therefore issue first-Gold
+  work and promote hosts automatically within an existing calibrated scope;
+  standalone `--execute` instructions are not the scheduler's interface.
+  Independent-host OCR spot-check activation is separate from this configuration.
+
+Neither the presence of the code nor a successful controller step proves that a
+particular host completed the current challenge or became eligible. Verify the
+deployed immutable worker, assignment configuration, calibration, canonical host
+query and collected report for that host before claiming live acceptance. Keep
+periodic spot-check activation and each new scope's scientific acceptance
+explicit; historical pilot receipts do not establish them.
 
 ### Build the gold bundle
 

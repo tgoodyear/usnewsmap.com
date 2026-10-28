@@ -244,6 +244,16 @@ preconditions; the original empty-exchange window must not be assumed now
 that OCR and BOINC use it. The mapping below records legacy-to-target
 names, not a verified current Azure inventory.
 
+**Retired workloads (27 October 2026, #309):** #931 retired the Azure
+ingest/backfill/Japanese-OCR jobs and ingest identity, scratch account and
+endpoint, Document Intelligence and pipeline workbook after the index-account
+cutover. Do not recreate them solely to execute Phase 3. Their pinned fallback
+names remain in the map until a separately reviewed reintroduction or removal
+changes that code. The OCR workbook is `usnm OCR nodes (prod)`, not the retired
+pipeline workbook. The live exchange-account migration remains a separate,
+gated operation; retiring ingest does not authorize replacing its queues or
+BOINC hand-off data.
+
 ### Phase 0: write it down, make names come from one place
 
 No renames and no resource changes.
@@ -283,7 +293,7 @@ There is no API revision in prod, and running cost is unchanged or slightly lowe
 
 Phase 2 runs now rather than at a rebuild, decided by the maintainer on 10 October 2026. It runs as soon as Phase 0 has landed, alongside Phase 1, because it needs `names()` and the status sanitizer's new forms. These resources hold no state, so each rename costs one provision.
 
-- Recreate the alert inventory actually declared by the current modules (the original count predates added capacity rules and consolidated job failures), the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the workbook titles in place to `usnm pipeline (prod)` and `usnm API (prod)`. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
+- Recreate the alert inventory actually declared by the current modules (the original count predates added capacity rules and consolidated job failures), the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the live workbook titles in place to `usnm OCR nodes (prod)` and `usnm API (prod)`; `usnm pipeline (prod)` is historical and retired. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
 - `id-usnm-ci-prod` becomes `usnm-ci-id-prod`; run `bootstrap.sh` straight after the provision so `USNM_CI_CLIENT_ID` is rewritten.
 - Old fired-alert and availability history stays queryable in the workspace. CI deploys fail between the provision and `bootstrap.sh`; serving is unaffected.
 - The registry is not part of this phase; it stays in Phase 4.

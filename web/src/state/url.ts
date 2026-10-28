@@ -175,7 +175,7 @@ export function parseView(search: string): ViewState {
       parseLccns(s.get("lccn")),
       oneOf(s.get("source"), ["news", "congress"] as const, DEFAULTS.source),
     ),
-    place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
+    place: /^([A-Za-z0-9_-]{1,32}|state:[A-Z]{2})$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
     z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,
@@ -219,12 +219,12 @@ export function parseViewUrl(url: string): ViewState {
   const origin = "https://usnewsmap.com";
   const { pathname, search } = new URL(url.startsWith("/") ? `${origin}${url}` : url, origin);
   const view = parseView(search);
-  return { ...view, q: queryForPath(pathname) ?? view.q };
+  return { ...view, q: queryForPath(pathname, view.mode) ?? view.q };
 }
 
 /** Search text belongs in the path; optional filters remain query parameters. */
 export function viewUrl(v: ViewState): string {
-  const path = searchPath(v.q);
+  const path = searchPath(v.q, v.mode);
   const params = new URLSearchParams(serializeView(v));
   if (path !== "/") params.delete("q");
   const search = params.toString();
@@ -266,11 +266,11 @@ export function useView(): [ViewState, (patch: Partial<ViewState>, push?: boolea
   const view = parseViewUrl(url);
   useEffect(() => {
     document.title = view.q ? `${view.q} · US News Map` : TITLES.search;
-    const canonical = `https://usnewsmap.com${searchPath(view.q)}`;
+    const canonical = `https://usnewsmap.com${searchPath(view.q, view.mode)}`;
     document.querySelector('link[rel="canonical"]')?.setAttribute("href", canonical);
     document.querySelector('meta[property="og:url"]')?.setAttribute("content", canonical);
     document.querySelector('meta[property="og:title"]')?.setAttribute("content", document.title);
-  }, [view.q]);
+  }, [view.q, view.mode]);
   const set = useCallback((patch: Partial<ViewState>, push = false) => {
     const next = { ...parseViewUrl(getUrl()), ...patch };
     const url = viewUrl(next);

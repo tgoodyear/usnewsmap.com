@@ -11,7 +11,7 @@ import { test } from "node:test";
 import worker from "./worker.mjs";
 
 const AZURE = "https://ca-usnm-prod.example-env.eastus2.azurecontainerapps.io";
-const ENV = { AZURE_FALLBACK_ORIGIN: AZURE };
+const ENV = { AZURE_FALLBACK_ORIGIN: AZURE, FALLBACK_METRICS: { writeDataPoint() {} } };
 const SITE = "https://usnewsmap.com";
 const PROBLEM = JSON.stringify({ type: "about:blank", title: "Service Unavailable", status: 503 });
 
@@ -367,4 +367,147 @@ test("the source has no console call, waitUntil or passThroughOnException", () =
     .join("\n");
   assert.doesNotMatch(source, /console/);
   assert.doesNotMatch(source, /waitUntil|passThroughOnException/);
+});
+
+test("fallback accounting records only Worker-produced answers and no visitor data", async () => {
+  const points = [];
+  const env = { ...ENV, FALLBACK_METRICS: { writeDataPoint: (point) => points.push(point) } };
+  await run(get("/?q=private-marker", { "cf-connecting-ip": "203.0.113.7" }), env, [text(200)]);
+  assert.equal(points.length, 0);
+  await run(get("/v1/hits?q=private-marker"), env, [text(530), text(200)]);
+  await run(get("/v1/hits?q=private-marker"), { ...env, ADD_DNT: "true" }, [text(502), text(503)]);
+  await run(get("/v1/hits?q=private-marker"), env, [text(502), networkError()]);
+  assert.deepEqual(points, [
+    { blobs: ["azure", "production"], doubles: [1, 200], indexes: ["production"] },
+    { blobs: ["azure", "drill"], doubles: [1, 503], indexes: ["drill"] },
+  ]);
+});
+
+test("missing or failed accounting is visible without losing Azure's actual answer", async () => {
+  for (const [binding, expected] of [
+    [undefined, "unavailable"],
+    [{ writeDataPoint() { throw new Error("storage"); } }, "write-failed"],
+  ]) {
+    const { response } = await run(get("/"), { ...ENV, FALLBACK_METRICS: binding }, [text(530), text(200, "azure")]);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "azure");
+    assert.equal(response.headers.get("x-usnm-fallback-metric"), expected);
+  }
+});
+
+test("the explicit error layer never asks Azure and gives APIs/assets a non-cacheable problem", async () => {
+  for (const path of ["/v1/hits?q=private-marker", "/api/v1", "/api/v1/meta", "/assets/cold.js"]) {
+    for (const first of [text(502), text(530), networkError()]) {
+      const { response, calls } = await run(get(path), { ...ENV, ERROR_LAYER: "true" }, [first]);
+      assert.equal(calls.length, 1);
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("content-type"), "application/problem+json");
+      assert.equal(response.headers.get("retry-after"), "30");
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.doesNotMatch(await response.text(), /private-marker/);
+    }
+  }
+  const own = new Response(PROBLEM, { status: 503 });
+  const result = await run(get("/v1/hits"), { ...ENV, ERROR_LAYER: "true" }, [own]);
+  assert.equal(result.response, own);
+  const timeout = Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  assert.equal((await run(get("/"), { ...ENV, ERROR_LAYER: "true" }, [timeout])).error, timeout);
+});
+
+test("an errored tunnel body cannot prevent the degraded API answer", async () => {
+  const body = new ReadableStream({
+    start(controller) { controller.error(new Error("body failed")); },
+  });
+  const { response, calls } = await run(get("/v1/hits"), { ...ENV, ERROR_LAYER: "true" }, [
+    new Response(body, { status: 530 }),
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("content-type"), "application/problem+json");
+  assert.equal(response.headers.get("x-usnm-error-layer-cleanup"), "cancel-failed");
+});
+
+test("generated API outage problems grant CORS only to the API's exact allowed origins", async () => {
+  const env = { ...ENV, ERROR_LAYER: "true", ALLOWED_ORIGINS: `${SITE},https://research.example` };
+  for (const path of ["/v1/meta", "/api/v1/hits"]) {
+    for (const origin of [SITE, "https://research.example", "https://usnewsmap.com.evil.example", "null"]) {
+      const { response } = await run(get(path, { origin }), env, [text(530)]);
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("content-type"), "application/problem+json");
+      assert.equal(response.headers.get("vary"), "Origin");
+      assert.equal(response.headers.get("access-control-allow-origin"),
+        [SITE, "https://research.example"].includes(origin) ? origin : null);
+      assert.equal(response.headers.has("access-control-allow-credentials"), false);
+    }
+  }
+});
+
+test("only an anonymous query-free successful home shell is cached, never search results", async () => {
+  const original = globalThis.caches;
+  const stored = new Map();
+  globalThis.caches = { default: {
+    async put(key, answer) { stored.set(key.url, answer); },
+    async match(key) { return stored.get(key.url)?.clone(); },
+  } };
+  try {
+    const env = { ...ENV, ERROR_LAYER: "true" };
+    const shell = () => new Response("<html><body>Home</body></html>", {
+      headers: { "content-type": "text/html", etag: '"original"' },
+    });
+    for (const request of [
+      get("/?q=private-marker"),
+      get("/search/whigs", { accept: "text/html" }),
+      get("/", { cookie: "private-marker" }),
+      get("/", { authorization: "private-marker" }),
+    ]) await run(request, env, [shell()]);
+    for (const headers of [{ "set-cookie": "private-marker" }, { "cache-control": "private" }, { "cache-control": "no-store" }]) {
+      const answer = shell();
+      for (const [name, value] of Object.entries(headers)) answer.headers.set(name, value);
+      await run(get("/"), env, [answer]);
+    }
+    assert.equal(stored.size, 0);
+    const cold = await run(get("/", { accept: "text/html" }), env, [text(530)]);
+    assert.equal(cold.response.status, 503);
+    assert.equal(cold.response.headers.get("content-type"), "application/problem+json");
+    await run(get("/"), env, [shell()]);
+    assert.equal(stored.size, 1);
+    assert.equal([...stored.keys()][0], `${SITE}/__usnm_fallback/shell-v1`);
+    for (const path of ["/search/whigs?q=private-marker", "/index.html", "/index.html/", "/privacy/", "/datasets/", "/status/"]) {
+      const request = new Request(`${SITE}${path}`, {
+        method: "HEAD", headers: { accept: "text/html" },
+      });
+      const { response, calls } = await run(request, env, [text(530)]);
+      assert.equal(calls.length, 1);
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("x-usnm-error-layer"), "cached-shell", path);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.has("etag"), false);
+      assert.equal(await response.text(), "");
+    }
+  } finally {
+    if (original === undefined) delete globalThis.caches;
+    else globalThis.caches = original;
+  }
+});
+
+test("cache failures are explicit and a healthy shell response is not lost", async () => {
+  const original = globalThis.caches;
+  globalThis.caches = { default: {
+    async put() { throw new Error("cache"); },
+    async match() { throw new Error("cache"); },
+  } };
+  try {
+    const env = { ...ENV, ERROR_LAYER: "true" };
+    const warm = await run(get("/"), env, [
+      new Response("Home", { headers: { "content-type": "text/html" } }),
+    ]);
+    assert.equal(await warm.response.text(), "Home");
+    assert.equal(warm.response.headers.get("x-usnm-error-layer"), "cache-write-failed");
+    const cold = await run(get("/", { accept: "text/html" }), env, [text(530)]);
+    assert.equal(cold.response.status, 503);
+    assert.equal(cold.response.headers.get("x-usnm-error-layer"), "cache-read-failed");
+  } finally {
+    if (original === undefined) delete globalThis.caches;
+    else globalThis.caches = original;
+  }
 });

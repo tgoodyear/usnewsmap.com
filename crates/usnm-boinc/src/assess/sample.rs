@@ -189,9 +189,7 @@ pub fn read_strata(
     for r in rows {
         let empty = vec![];
         let title = titles.get(&r.lccn).unwrap_or(&empty);
-        let Some(lang) =
-            usnm_ingest::ocr_local::enqueue::message_language(r.lang.as_deref(), title)
-        else {
+        let Some(lang) = usnm_ocr_local::enqueue::message_language(r.lang.as_deref(), title) else {
             out.no_language += 1;
             continue;
         };

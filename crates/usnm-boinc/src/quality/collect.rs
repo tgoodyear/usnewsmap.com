@@ -72,9 +72,13 @@ pub struct Options {
     /// A local directory instead of the curated store.
     pub out_dir: Option<PathBuf>,
     pub curated_url: Option<String>,
+    /// Content-addressed row parts; unchanged units avoid repeating page-hat computation.
+    pub cache: Option<PathBuf>,
+    /// Maximum dirty canonical units computed before refusing an incomplete publication.
+    pub max_dirty_units: usize,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Summary {
     /// Pages whose `usnm_quality` result is in.
     pub pages: usize,
@@ -956,7 +960,44 @@ pub struct Collected {
     pub crops: Vec<CropRow>,
 }
 
+impl Summary {
+    pub(super) fn add(&mut self, other: &Self) {
+        self.pages += other.pages;
+        self.with_readings += other.with_readings;
+        self.with_surya += other.with_surya;
+        self.pending += other.pending;
+        self.failed += other.failed;
+        self.page_rows += other.page_rows;
+        self.crop_rows += other.crop_rows;
+        self.hat_v1_kept += other.hat_v1_kept;
+    }
+
+    pub(super) fn since(&self, before: &Self) -> Self {
+        Self {
+            pages: self.pages - before.pages,
+            with_readings: self.with_readings - before.with_readings,
+            with_surya: self.with_surya - before.with_surya,
+            pending: self.pending - before.pending,
+            failed: self.failed - before.failed,
+            page_rows: 0,
+            crop_rows: 0,
+            hat_v1_kept: self.hat_v1_kept - before.hat_v1_kept,
+        }
+    }
+}
+
 pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
+    anyhow::ensure!(
+        opts.max_dirty_units > 0,
+        "--max-dirty-units must be positive"
+    );
+    let cache = opts
+        .cache
+        .as_ref()
+        .map(|dir| super::collect_cache::Cache::new(dir, opts))
+        .transpose()?;
+    let mut dirty = 0;
+    let mut deferred = 0;
     let mut summary = Summary::default();
     let mut pages = Vec::new();
     let mut crop_table = Vec::new();
@@ -966,6 +1007,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
         (None, None) => BTreeMap::new(),
         _ => anyhow::bail!("--surya-root and --surya-spool go together"),
     };
+    if let Some(cache) = &cache {
+        cache.verify_readings()?;
+    }
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = if dir.exists() {
         std::fs::read_dir(&dir)?
@@ -978,6 +1022,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     };
     unit_dirs.sort();
     for unit in unit_dirs {
+        if cache.is_some() && dirty >= opts.max_dirty_units {
+            deferred += 1;
+            break;
+        }
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("{}", unit.display()))?;
         let wu = job.workunit();
@@ -990,6 +1038,23 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             summary.pending += 1;
             continue;
         }
+        let key = cache
+            .as_ref()
+            .map(|c| c.key(&unit, &job, &files))
+            .transpose()?;
+        if let (Some(cache), Some(key)) = (&cache, &key) {
+            cache.track(&unit, &files, key);
+            if let Some(part) = cache.load(key)? {
+                summary.add(&part.summary);
+                pages.extend(part.pages);
+                crop_table.extend(part.crops);
+                continue;
+            }
+            dirty += 1;
+        }
+        let before = summary.clone();
+        let pages_start = pages.len();
+        let crops_start = crop_table.len();
         let got = validate::load(&files).with_context(|| format!("canonical result {wu}"))?;
         anyhow::ensure!(
             got.result.job_id == job.id && got.result.engine == job.engine,
@@ -1141,6 +1206,28 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 }
             }
         }
+        if let (Some(cache), Some(key)) = (&cache, &key) {
+            cache.verify_readings()?;
+            anyhow::ensure!(
+                &cache.key(&unit, &job, &files)? == key,
+                "{wu}: collection inputs changed; no part published"
+            );
+            cache.store(
+                key,
+                &super::collect_cache::Part {
+                    summary: summary.since(&before),
+                    pages: pages[pages_start..].to_vec(),
+                    crops: crop_table[crops_start..].to_vec(),
+                },
+            )?;
+        }
+    }
+    anyhow::ensure!(
+        deferred == 0,
+        "collection cache warmed {dirty} dirty units; at least {deferred} deferred; no incomplete snapshot published"
+    );
+    if let Some(cache) = &cache {
+        cache.verify()?;
     }
     summary.page_rows = pages.len();
     summary.crop_rows = crop_table.len();
@@ -1208,7 +1295,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -1426,6 +1513,8 @@ mod tests {
             surya_spool: Some(sspool),
             out_dir: Some(tmp.path().join("out")),
             curated_url: None,
+            cache: None,
+            max_dirty_units: 8,
         })
         .unwrap();
         assert_eq!(
@@ -1626,5 +1715,269 @@ mod tests {
         );
         // The columns are typed in Parquet.
         assert!(to_parquet(&rows).is_ok());
+    }
+    pub(in crate::quality) async fn cached_fixture(root: &Path) -> (Options, PathBuf, Job) {
+        let unit = units(&root.join("quality")).join("page");
+        let job = crate::quality::work::tests::unit(&unit);
+        std::fs::write(unit.join("submitted"), b"").unwrap();
+        crate::quality::work::run(&unit).await.unwrap();
+        let opts = Options {
+            campaign: "test".into(),
+            root: root.join("quality"),
+            spool: root.join("spool"),
+            qwen_root: root.join("qwen"),
+            qwen_spool: root.join("qwen-spool"),
+            surya_root: None,
+            surya_spool: None,
+            out_dir: Some(root.join("out")),
+            curated_url: None,
+            cache: Some(root.join("cache")),
+            max_dirty_units: 1,
+        };
+        canonical(&unit, &job, &opts.spool);
+        (opts, unit, job)
+    }
+
+    fn canonical(unit: &Path, job: &Job, spool: &Path) {
+        std::fs::create_dir_all(spool).unwrap();
+        for name in super::super::outputs() {
+            std::fs::copy(
+                unit.join(name),
+                spool.join(format!("{}__file_{name}", job.workunit())),
+            )
+            .unwrap();
+        }
+    }
+
+    fn parts(opts: &Options) -> Vec<PathBuf> {
+        let mut files = std::fs::read_dir(opts.cache.as_ref().unwrap())
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .filter(|p| p.is_file())
+            .collect::<Vec<_>>();
+        files.sort();
+        files
+    }
+
+    #[tokio::test]
+    async fn warming_budget_stops_before_reading_any_further_unit() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, _) = cached_fixture(dir.path()).await;
+        for name in ["zz-deferred", "zzz-not-visited"] {
+            let other = units(&opts.root).join(name);
+            let mut job = crate::quality::work::tests::unit(&other);
+            job.doc_id = name.into();
+            job.id = job.identity().unwrap();
+            std::fs::write(other.join(JOB_FILE), serde_json::to_vec(&job).unwrap()).unwrap();
+            std::fs::write(other.join("submitted"), b"").unwrap();
+            for output in crate::quality::outputs() {
+                std::fs::copy(
+                    unit.join(output),
+                    opts.spool
+                        .join(format!("{}__file_{output}", job.workunit())),
+                )
+                .unwrap();
+            }
+            if name == "zz-deferred" {
+                std::fs::remove_file(other.join(PAGE_FILE)).unwrap();
+                std::fs::create_dir(other.join(PAGE_FILE)).unwrap();
+            }
+        }
+        let error = run(&opts).await.unwrap_err().to_string();
+        assert!(error.contains("deferred"), "{error}");
+        assert_eq!(parts(&opts).len(), 1);
+        assert!(!opts
+            .out_dir
+            .as_ref()
+            .unwrap()
+            .join("pages.parquet")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn incremental_warming_resumes_without_partial_publication_and_reuses_exact_rows() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        run(&Options {
+            cache: None,
+            ..opts.clone()
+        })
+        .await
+        .unwrap();
+        let output = opts.out_dir.as_ref().unwrap().join("pages.parquet");
+        let published = std::fs::read(&output).unwrap();
+        let other = units(&opts.root).join("second");
+        let mut second = crate::quality::work::tests::unit(&other);
+        second.doc_id = "second".into();
+        second.id = second.identity().unwrap();
+        std::fs::write(other.join(JOB_FILE), serde_json::to_vec(&second).unwrap()).unwrap();
+        std::fs::write(other.join("submitted"), b"").unwrap();
+        crate::quality::work::run(&other).await.unwrap();
+        canonical(&other, &second, &opts.spool);
+        let error = run(&opts).await.unwrap_err().to_string();
+        assert!(error.contains("1 deferred"), "{error}");
+        assert_eq!(parts(&opts).len(), 1);
+        assert_eq!(std::fs::read(&output).unwrap(), published);
+        run(&opts).await.unwrap();
+        let first = collect(&opts).unwrap();
+        assert_eq!(first.summary.pages, 2);
+        let original = parts(&opts)
+            .iter()
+            .map(|p| {
+                (
+                    p.clone(),
+                    std::fs::read(p).unwrap(),
+                    std::fs::metadata(p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let again = collect(&opts).unwrap();
+        assert_eq!(again.summary, first.summary);
+        assert_eq!(again.pages, first.pages);
+        assert_eq!(again.crops, first.crops);
+        for (path, bytes, modified) in original {
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                std::fs::metadata(path).unwrap().modified().unwrap(),
+                modified
+            );
+        }
+        let mut uncached = Options {
+            cache: None,
+            ..opts
+        };
+        let fresh = collect(&uncached).unwrap();
+        assert_eq!(fresh.pages, first.pages);
+        assert_eq!(fresh.crops, first.crops);
+        // A newly canonical QUALITY result is collected even though the earlier unit was cached.
+        std::fs::remove_file(uncached.spool.join(format!(
+            "{}__file_{}",
+            job.workunit(),
+            crate::quality::RESULT_FILE
+        )))
+        .unwrap();
+        uncached.cache = Some(dir.path().join("another-cache"));
+        assert_eq!(collect(&uncached).unwrap().summary.pending, 1);
+        canonical(&unit, &job, &uncached.spool);
+        let error = collect(&uncached).err().unwrap().to_string();
+        assert!(error.contains("1 deferred"), "{error}");
+        assert_eq!(collect(&uncached).unwrap().summary.pages, 2);
+    }
+
+    #[tokio::test]
+    async fn incremental_late_canonical_qwen_refreshes_join_and_retains_prior_parts() {
+        use usnm_ocr_contract::boinc::sha256;
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, quality) = cached_fixture(dir.path()).await;
+        let qunit = units(&opts.qwen_root).join("page");
+        let first = dir.path().join("staged-qwen-first");
+        let mut job = crate::qwen::stage::local_unit(
+            &unit.join(PAGE_FILE),
+            &unit.join(ALTO_FILE),
+            &first,
+            crate::qwen::stage::tests::engine(),
+            quality.crop_seed,
+            quality.k_crops,
+            600,
+            4,
+        )
+        .unwrap();
+        job.doc_id = quality.doc_id.clone();
+        job.id = job.identity().unwrap();
+        std::fs::write(
+            first.join(crate::qwen::JOB_FILE),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let second = dir.path().join("staged-qwen-second");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::copy(first.join(PAGE_FILE), second.join(PAGE_FILE)).unwrap();
+        let mut peer = job.clone();
+        peer.doc_id = "second".into();
+        peer.id = peer.identity().unwrap();
+        std::fs::write(
+            second.join(crate::qwen::JOB_FILE),
+            serde_json::to_vec(&peer).unwrap(),
+        )
+        .unwrap();
+        let job = crate::qwen::stage::write_bundle(&qunit, &[first, second]).unwrap();
+        assert_eq!(job.pages.len(), 2);
+        let before = collect(&opts).unwrap();
+        assert_eq!(before.summary.with_readings, 0);
+        assert!(before.crops.iter().all(|r| r.cer_vs_vlm.is_none()));
+        std::fs::create_dir_all(&opts.qwen_spool).unwrap();
+        for text in [
+            "the council reads this crop",
+            "a different late canonical text",
+        ] {
+            let readings = Readings {
+                v: qwen::VERSION,
+                job_id: job.id.clone(),
+                device: "cuda".into(),
+                diag: Default::default(),
+                model: Some("qwen3-vl-8b-q4km".into()),
+                outcome: qwen::Outcome::Ok,
+                prompt_version: qwen::PROMPT_VERSION,
+                readings: job
+                    .crops
+                    .iter()
+                    .map(|c| qwen::Reading {
+                        id: c.id.clone(),
+                        ms: 1,
+                        text: text.into(),
+                        tokens: 3,
+                    })
+                    .collect(),
+            };
+            let bytes = serde_json::to_vec(&readings).unwrap();
+            let manifest = qwen::ResultManifest {
+                v: qwen::VERSION,
+                job_id: job.id.clone(),
+                completed_at: "2026-10-14T00:00:00Z".into(),
+                crops: job.crops.len() as u32,
+                device: "cuda".into(),
+                diag_bytes: 4,
+                diag_sha256: sha256(b"diag"),
+                engine: job.engine.clone(),
+                engine_ms: 5,
+                gpu_mem_peak_mib: None,
+                host: Default::default(),
+                load_ms: 1,
+                model: Some("qwen3-vl-8b-q4km".into()),
+                outcome: qwen::Outcome::Ok,
+                peak_rss_kib: None,
+                read: job.crops.len() as u32,
+                readings_bytes: bytes.len() as u64,
+                readings_sha256: sha256(&bytes),
+                unit_error: None,
+            };
+            for (name, bytes) in [
+                (crate::qwen::READINGS_FILE, bytes),
+                (
+                    crate::qwen::RESULT_FILE,
+                    serde_json::to_vec(&manifest).unwrap(),
+                ),
+                (crate::qwen::DIAG_FILE, b"diag".to_vec()),
+            ] {
+                std::fs::write(
+                    opts.qwen_spool
+                        .join(format!("{}__file_{name}", job.workunit())),
+                    bytes,
+                )
+                .unwrap();
+            }
+            let after = collect(&opts).unwrap();
+            assert_eq!(after.summary.with_readings, 1);
+            assert!(after.crops.iter().any(|r| r.cer_vs_vlm.is_some()));
+            assert_ne!(after.crops, before.crops);
+            let fresh = collect(&Options {
+                cache: None,
+                ..opts.clone()
+            })
+            .unwrap();
+            assert_eq!(after.pages, fresh.pages);
+            assert_eq!(after.crops, fresh.crops);
+        }
+        assert_eq!(parts(&opts).len(), 3);
     }
 }

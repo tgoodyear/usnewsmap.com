@@ -3,7 +3,18 @@ use crate::atomic;
 use anyhow::Context;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn locked_destination(out: &Path) -> anyhow::Result<(PathBuf, crate::Lock)> {
+    let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
+        Path::new(".").join(out)
+    } else {
+        out.to_path_buf()
+    };
+    let parent = out.parent().context("no parent directory")?;
+    let lock = crate::Lock::take(parent)?;
+    Ok((out, lock))
+}
 
 /// What [`Trust::admit_hosts`] changed: the list's digest before and after, and the hosts it
 /// added (empty when every host was already eligible, and the file was not rewritten).
@@ -72,13 +83,7 @@ impl Trust {
         max_bytes: usize,
     ) -> anyhow::Result<Self> {
         self.validate()?;
-        let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
-            Path::new(".").join(out)
-        } else {
-            out.to_path_buf()
-        };
-        let parent = out.parent().context("no parent directory")?;
-        let _lock = crate::Lock::take(parent)?;
+        let (out, _lock) = locked_destination(out)?;
         let existing_out = if out.exists() {
             Self::load_for_promotion(&out)?
         } else {
@@ -132,15 +137,11 @@ impl Trust {
             !hosts.is_empty() && !hosts.contains(&0),
             "hosts to admit must be positive ids"
         );
-        let parent = out
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let _lock = crate::Lock::take(parent)?;
-        let bytes = crate::read(out, MAX_REPORTS as usize)
+        let (out, _lock) = locked_destination(out)?;
+        let bytes = crate::read(&out, MAX_REPORTS as usize)
             .with_context(|| format!("reading {}", out.display()))?;
         anyhow::ensure!(
-            !Self::is_legacy_uncalibrated(&bytes, out)?,
+            !Self::is_legacy_uncalibrated(&bytes, &out)?,
             "{} is an uncalibrated legacy list; rebuild trust before admitting hosts",
             out.display()
         );
@@ -148,7 +149,7 @@ impl Trust {
         if expected_sha256.is_some_and(|expected| expected != before_sha256) {
             return Ok(None);
         }
-        let mut trust = Self::from_bytes(&bytes, out)?;
+        let mut trust = Self::from_bytes(&bytes, &out)?;
         let view = trust
             .policy_view(&scope.language, &scope.profile)
             .context("no calibrated policy for this scope")?;
@@ -198,7 +199,7 @@ impl Trust {
             encoded.len() <= MAX_REPORTS as usize,
             "trust policy exceeds its reader limit"
         );
-        atomic(out, &encoded)?;
+        atomic(&out, &encoded)?;
         Ok(Some(Admission {
             before_sha256,
             after_sha256: usnm_ocr_contract::boinc::sha256(&encoded),

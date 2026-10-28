@@ -7,6 +7,8 @@
 #     [--outbox /var/lib/usnm-quality-feed/outbox] [--server-host pve.tjg.fyi] [--server-ct 230]
 #     [--readers loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract]
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
+#     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
+#     [--qwen-max-ready 1000]
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while the server has more than --max-unsent results ready to send (the public
@@ -32,6 +34,7 @@ CAMPAIGN="" ENGINE="" OUTBOX=/var/lib/usnm-quality-feed/outbox SERVER=pve.tjg.fy
 READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
+QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?counts=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -46,6 +49,11 @@ while [ $# -gt 0 ]; do
     --max-chunks) MAX_CHUNKS=${2:-}; shift 2 ;;
     --min-free-gb) MIN_FREE=${2:-}; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
+    --qwen-engine-plan) QWEN_PLAN=${2:-}; shift 2 ;;
+    --qwen-models) QWEN_MODELS=${2:-}; shift 2 ;;
+    --qwen-max-ready)
+      [ $# -ge 2 ] || die "--qwen-max-ready: a positive integer"
+      QWEN_MAX_READY=$2; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -56,6 +64,11 @@ done
 [[ $BUNDLE =~ ^[0-9]+$ && $MAX_UNSENT =~ ^[0-9]+$ && $MAX_CHUNKS =~ ^[0-9]+$ && $CT =~ ^[0-9]+$ && $MIN_FREE =~ ^[0-9]+$ ]] ||
   die "--bundle-size, --max-unsent, --max-chunks, --min-free-gb and --server-ct: numbers"
 [[ $SERVER =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--server-host: a host name"
+[[ $QWEN_MAX_READY =~ ^[1-9][0-9]*$ ]] || die "--qwen-max-ready: a positive integer"
+if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
+  [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
+    die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
+fi
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SERVER")
 in_ct() { "${SSH[@]}" pct exec "$CT" -- "$@"; }
 # One bridge step, waiting its turn: the host runs one step at a time, and the priority
@@ -88,11 +101,20 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
     log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
     break
   fi
-  free=$(in_ct df --output=avail -B1G "$SHARE" | tail -1 | tr -d ' G')
+  free=$(in_ct df --output=avail -B1G "$SHARE" "$SHARE/quality" "$SHARE/usnmocr/download" |
+    tail -n +2 | sort -n | head -1 | tr -d ' G')
   [[ $free =~ ^[0-9]+$ ]] || die "couldn't read CT $CT's free space"
   if [ "$free" -lt "$MIN_FREE" ]; then
     log "CT $CT has $free GB free (under $MIN_FREE); $chunk waits"
     break
+  fi
+  if [ -n "$QWEN_PLAN" ]; then
+    pool=$("${SSH[@]}" lvs --reportformat json --units b --nosuffix -o lv_size,data_percent pve/data |
+      python3 -c 'import json,sys; p=json.load(sys.stdin)["report"][0]["lv"][0]; print(int(float(p["lv_size"])*(1-float(p["data_percent"])/100)//1024**3))')
+    if [ "$pool" -lt "$MIN_FREE" ]; then
+      log "thin pool has $pool GiB free (under $MIN_FREE); $chunk waits"
+      break
+    fi
   fi
   pages=$(cat "$dir/READY")
   log "$chunk: $pages pages, server unsent $unsent"
@@ -116,6 +138,14 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
     --var "QUALITY_ENGINE_IMAGE=$ENGINE" --var "QUALITY_LANGS=$langs" \
     --var "QUALITY_BUNDLE_SIZE=$BUNDLE" --var "QUALITY_MAX=$((n + 10))" --wait-mins 45
   log "$chunk: staged; submitting"
+  if [ -n "$QWEN_PLAN" ]; then
+    # Native admission, shared models, scientific identities and DB quorum are checked
+    # before cleanup; failures leave the original READY chunk and receipts intact.
+    in_ct flock -n /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
+      python3 /project/ops/qwen-feed/qwen_submit.py --campaign "$CAMPAIGN" \
+      --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" --max-pages "$((n + 10))" \
+      --max-ready "$QWEN_MAX_READY"
+  fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
   freed=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$CAMPAIGN" --chunk "$chunk" --after-submit \

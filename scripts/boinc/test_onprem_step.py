@@ -343,6 +343,7 @@ class OnpremStep(unittest.TestCase):
         captured = Path(self.conf.name, "envfile")
         (bin_dir / "podman").write_text(
             "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$@\" > " + str(Path(self.conf.name, "podman-args")) + "\n"
             "while [ $# -gt 0 ]; do [ \"$1\" = --env-file ] && cp \"$2\" " + str(captured) + "; shift; done\n")
         (bin_dir / "flock").write_text("#!/usr/bin/env bash\nexit 0\n")
         for tool in ("podman", "flock"):
@@ -351,6 +352,45 @@ class OnpremStep(unittest.TestCase):
                "USNM_BOINC_STEP_RUN": str(run_dir)}
         done = subprocess.run(["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=30)
         return done, captured.read_text() if captured.exists() else None
+
+    def test_pgmq_handoff_mounts_only_fixed_certificate_files_read_only(self):
+        url = ("postgres://queue.example/usnm_queue?user=boinc_claim"
+               "&sslcert=/etc/usnm/queue/client.crt&sslkey=/etc/usnm/queue/client.key"
+               "&sslrootcert=/etc/usnm/queue/ca.pem")
+        self.write_handoff_env(QUEUE_URL=url)
+        directory = Path(self.conf.name, "queue")
+        directory.mkdir()
+        for name in ("client.crt", "client.key", "ca.pem"):
+            (directory / name).write_text("fixture")
+        done, envfile = self.run_for_real("--env", "prod", "--target", "handoff",
+                                         "--step", "claim", "--wait-mins", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("QUEUE_URL=" + url, envfile)
+        arguments = Path(self.conf.name, "podman-args").read_text().splitlines()
+        for name in ("client.crt", "client.key", "ca.pem"):
+            self.assertIn(f"{directory}/{name}:/etc/usnm/queue/{name}:ro", arguments)
+        self.assertNotIn(f"{directory}:/etc/usnm/queue:ro", arguments)
+        done = self.run_step("--env", "prod", "--target", "handoff",
+                             "--step", "claim", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("pgmq certificates mounted read-only", done.stdout)
+        (directory / "client.key").unlink()
+        missing = self.run_step("--env", "prod", "--target", "handoff",
+                                "--step", "claim", "--what-if")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("pgmq requires readable", missing.stderr)
+        (directory / "client.key").symlink_to(directory / "client.crt")
+        linked = self.run_step("--env", "prod", "--target", "handoff",
+                               "--step", "claim", "--what-if")
+        self.assertNotEqual(linked.returncode, 0)
+        self.assertIn("must not be symlinks", linked.stderr)
+
+    def test_azure_handoff_does_not_mount_queue_certificates(self):
+        self.write_handoff_env()
+        done, _ = self.run_for_real("--env", "prod", "--target", "handoff",
+                                   "--step", "claim", "--wait-mins", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("/etc/usnm/queue", Path(self.conf.name, "podman-args").read_text())
 
     def test_handoff_env_without_a_final_newline(self):
         # The last setting still counts, and it doesn't run into HANDOFF_STEP.

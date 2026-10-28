@@ -18,6 +18,7 @@ import { ALPHA_CLEAR, ALPHA_UNCLEAR, skewColor } from "../lib/skewScale";
 import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { DEFAULT_ZOOM, STYLE_URL, US_CENTER } from "../lib/basemap";
+import { installBasemapProtocol } from "../lib/basemapProtocol";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { stateDescription, type StateTotal } from "../engine/states";
 import boundariesUrl from "../assets/states.geojson?url";
@@ -138,9 +139,10 @@ export default function MapView(props: Props) {
   useEffect(() => {
     const element = container.current;
     if (!element) return;
+    installBasemapProtocol();
     const m = new MapLibreMap({
       container: element,
-      style: STYLE_URL === "none" ? PLAIN_STYLE : STYLE_URL,
+      ...(STYLE_URL === "none" ? { style: PLAIN_STYLE } : {}),
       center: latest.current.center ?? US_CENTER,
       zoom: latest.current.zoom ?? DEFAULT_ZOOM,
       minZoom: MIN_ZOOM,
@@ -151,16 +153,37 @@ export default function MapView(props: Props) {
     });
     m.touchZoomRotate.disableRotation();
     m.addControl(new NavigationControl({ showCompass: false }), "top-left");
+    const capturing = "__USNM_SHARE_CAPTURE__" in window;
     let fallbackStyleUsed = STYLE_URL === "none";
+    element.dataset.basemapError = "false";
     const recoverStyle = () => {
       // getStyle is undefined until the initial document is parsed. A failed
       // tile or font must not replace a usable style or remove native fills.
       if (fallbackStyleUsed || m.getStyle()) return;
       fallbackStyleUsed = true;
+      element.dataset.basemapError = "true";
+      element.dataset.basemapReady = "false";
       m.setStyle(PLAIN_STYLE, { diff: false });
     };
-    m.on("error", recoverStyle);
+    m.on("error", () => {
+      if (capturing) {
+        element.dataset.basemapError = "true";
+        element.dataset.basemapReady = "false";
+      }
+      recoverStyle();
+    });
     m.on("style.load", () => setStyleReady(true));
+    if (STYLE_URL !== "none") {
+      m.setStyle(STYLE_URL, {
+        transformStyle: (_previous, next) => ({
+          ...next,
+          // MapLibre requires absolute sprite URLs, including same-origin assets.
+          ...(typeof next.sprite === "string"
+            ? { sprite: new URL(next.sprite, new URL(STYLE_URL, window.location.href)).href }
+            : {}),
+        }),
+      });
+    }
     if (m.isStyleLoaded()) setStyleReady(true);
 
     let ready = false;
@@ -172,7 +195,9 @@ export default function MapView(props: Props) {
       clearTimeout(fallback);
     };
     const fallback = setTimeout(() => {
-      recoverStyle();
+      // Captures have a separate bounded deadline; do not cancel a slow style
+      // request and permanently cache a screenshot of the offline background.
+      if (!capturing) recoverStyle();
       reveal();
     }, 2000);
     m.on("load", () => {
@@ -180,6 +205,23 @@ export default function MapView(props: Props) {
     });
     m.on("idle", () => {
       if (loaded && m.areTilesLoaded()) reveal();
+      element.dataset.basemapReady = String(
+        loaded &&
+          m.areTilesLoaded() &&
+          element.dataset.basemapError !== "true" &&
+          (STYLE_URL === "none" || !fallbackStyleUsed),
+      );
+    });
+    m.on("movestart", () => {
+      element.dataset.basemapReady = "false";
+    });
+    m.on("dataloading", () => {
+      element.dataset.basemapReady = "false";
+    });
+    m.on("render", () => {
+      if (latest.current.layer === "states" && latest.current.norm === "raw") {
+        element.dataset.overlayReady = String(nativeStates.current?.isReady() ?? false);
+      }
     });
     if (STYLE_URL === "none") reveal();
 
@@ -335,10 +377,12 @@ export default function MapView(props: Props) {
   }, [styleReady, layer, norm, boundaries.data, hasStates]);
   useEffect(() => {
     nativeStates.current?.update(states ?? [], stateBreaks ?? []);
+    if (container.current && layer === "states" && norm === "raw") container.current.dataset.overlayReady = "false";
   }, [styleReady, layer, norm, boundaries.data, hasStates, states, stateBreaks]);
   useEffect(() => {
     const m = map.current;
     if (!m) return;
+    if (container.current) container.current.dataset.overlayReady = "false";
     drawn.current = { points, maxValue, layer, norm };
     if (tooltip.current) tooltip.current.hidden = true;
     let o = overlay.current;
@@ -348,7 +392,15 @@ export default function MapView(props: Props) {
       if (layer === "states" && norm === "raw") return;
       // Overlaid, not interleaved: deck.gl 9.4's interleaved mode reads
       // MapLibre internals that changed in MapLibre 6.
-      o = new MapboxOverlay({ id: "search-overlay", interleaved: false, layers: [] });
+      o = new MapboxOverlay({
+        id: "search-overlay",
+        interleaved: false,
+        layers: [],
+        onAfterRender: () => {
+          if (container.current && !(latest.current.layer === "states" && latest.current.norm === "raw"))
+            container.current.dataset.overlayReady = "true";
+        },
+      });
       m.addControl(o);
       overlay.current = o;
     }

@@ -44,9 +44,10 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
-use usnm_core::damage;
 use usnm_core::text::TextStatus;
-use usnm_ocr_contract::quality::{round6, round6_opt, MAX_TEXT};
+use usnm_corpus_signals::text::score_texts;
+pub use usnm_corpus_signals::text::{known_lang, ReaderStats, SKIP_TOO_LONG};
+use usnm_ocr_contract::quality::round6;
 use usnm_ocr_local::ocr_damage::{sampled, title_languages, version_batches};
 use usnm_ocr_quality::agreement::{self, Agreement};
 use usnm_overlay::curated::{read_part, CuratedRow};
@@ -57,9 +58,6 @@ use crate::american_stories;
 use crate::dedup;
 
 const PROGRESS_EVERY: Duration = Duration::from_secs(60);
-/// Why a page's pair was not computed: a text over the `usnm_quality`
-/// text limit, which the quality stage leaves out too.
-pub const SKIP_TOO_LONG: &str = "too_long";
 
 /// Where this metric version's tables live in the output store, for the
 /// full pass (`cut` none) or a sample.
@@ -114,22 +112,6 @@ pub struct Options {
     pub parallel: usize,
 }
 
-/// One reader's own scores.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ReaderStats {
-    /// Characters after the gold normalisation (`pair.chars_*`).
-    pub chars: u32,
-    /// Whitespace words after it (`pair.words_*`).
-    pub words: u32,
-    pub lang: Option<String>,
-    pub decision: Option<&'static str>,
-    pub damage_rate: Option<f64>,
-    pub function_share: Option<f64>,
-    pub garbage_share: Option<f64>,
-    /// Word tokens in `known_lang`'s top 5,000 over the word tokens scored.
-    pub known_rate: Option<f64>,
-}
-
 /// One page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageRow {
@@ -158,45 +140,6 @@ fn status_str(s: TextStatus) -> &'static str {
     }
 }
 
-fn clamp(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
-/// The language both readers' known-word rates use: LoC's detected one,
-/// else American Stories', else the title's first catalog language; none
-/// when that has no word list.
-pub fn known_lang(
-    loc: &damage::PageScore,
-    as_: &damage::PageScore,
-    titles: &[&str],
-) -> Option<String> {
-    [loc.lang.as_str(), as_.lang.as_str()]
-        .into_iter()
-        .find(|l| *l != damage::UNKNOWN)
-        .or_else(|| titles.first().copied())
-        .filter(|l| damage::model(l).is_some())
-        .map(str::to_owned)
-}
-
-fn reader(text: &str, s: &damage::PageScore, lang: Option<&str>) -> ReaderStats {
-    let known_rate = lang
-        .and_then(usnm_core::lang::marc_to_iso3)
-        .and_then(|iso3| damage::score_forced(text, iso3))
-        .and_then(|f| {
-            (f.damage.words > 0).then(|| round6(f.known_words as f64 / f.damage.words as f64))
-        });
-    ReaderStats {
-        chars: 0,
-        words: 0,
-        lang: (!text.is_empty()).then(|| s.lang.clone()),
-        decision: (!text.is_empty()).then(|| s.decision.as_str()),
-        damage_rate: round6_opt(s.damage_rate),
-        function_share: round6_opt(s.function_share),
-        garbage_share: round6_opt(s.garbage_share),
-        known_rate,
-    }
-}
-
 /// Score one page: its curated row against American Stories' text.
 pub fn score_page(row: &CuratedRow, as_text: &str, languages: &[&str]) -> PageRow {
     let k = &row.key;
@@ -204,25 +147,7 @@ pub fn score_page(row: &CuratedRow, as_text: &str, languages: &[&str]) -> PageRo
         (TextStatus::Ok, Some(t)) => t.as_str(),
         _ => "",
     };
-    let ls = damage::score(loc_text, languages);
-    let ass = damage::score(as_text, languages);
-    let lang = known_lang(&ls, &ass, languages);
-    let mut loc = reader(loc_text, &ls, lang.as_deref());
-    let mut as_ = reader(as_text, &ass, lang.as_deref());
-    let too_long = loc_text.len() > MAX_TEXT || as_text.len() > MAX_TEXT;
-    let agreement = (!too_long).then(|| agreement::compare(loc_text, as_text));
-    if let Some(g) = &agreement {
-        loc.chars = clamp(g.pair.chars_a);
-        loc.words = clamp(g.pair.words_a);
-        as_.chars = clamp(g.pair.chars_b);
-        as_.words = clamp(g.pair.words_b);
-    } else {
-        for (r, text) in [(&mut loc, loc_text), (&mut as_, as_text)] {
-            let n = usnm_ocr_quality::text::normalize(text, false);
-            r.chars = clamp(n.chars().count());
-            r.words = clamp(usnm_ocr_quality::text::py_split(&n).len());
-        }
-    }
+    let scores = score_texts(loc_text, as_text, languages);
     PageRow {
         doc_id: k.doc_id(),
         lccn: k.lccn.clone(),
@@ -230,11 +155,11 @@ pub fn score_page(row: &CuratedRow, as_text: &str, languages: &[&str]) -> PageRo
         batch: row.batch.clone(),
         batch_version: row.batch_version,
         loc_text_status: status_str(row.status),
-        loc,
-        as_,
-        known_lang: lang,
-        agreement,
-        skipped: too_long.then_some(SKIP_TOO_LONG),
+        loc: scores.loc,
+        as_: scores.as_,
+        known_lang: scores.known_lang,
+        agreement: scores.agreement,
+        skipped: scores.skipped,
     }
 }
 
@@ -1054,7 +979,9 @@ mod tests {
     use super::*;
     use arrow_array::Array;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use usnm_core::damage;
     use usnm_core::ids::PageKey;
+    use usnm_ocr_contract::quality::MAX_TEXT;
 
     fn row(text: Option<&str>, status: TextStatus) -> CuratedRow {
         CuratedRow {
@@ -1116,6 +1043,19 @@ mod tests {
         assert_eq!(g.len_ratio, None);
         // The known-word language falls back to American Stories'.
         assert_eq!(r.known_lang.as_deref(), Some("eng"));
+    }
+
+    #[test]
+    fn source_status_is_applied_before_shared_scoring() {
+        for status in [TextStatus::Short, TextStatus::Empty] {
+            let r = score_page(&row(Some(LOC), status), AS, &["eng"]);
+            let expected = score_texts("", AS, &["eng"]);
+            assert_eq!(r.loc, expected.loc);
+            assert_eq!(r.as_, expected.as_);
+            assert_eq!(r.agreement, expected.agreement);
+            assert_eq!(r.known_lang, expected.known_lang);
+            assert_eq!(r.loc_text_status, status_str(status));
+        }
     }
 
     #[test]

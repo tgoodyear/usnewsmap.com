@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "series": "annals",
+  "volumes": [
+    {
+      "unit": "annals-c01-s01-v01-b01",
+      "volume": 1,
+      "bound_part": 1,
+      "congress": 1,
+      "session": 1,
+      "title": "Annals of Congress, first Congress, first session (fixture)",
+      "first_day": "1789-10-05",
+      "last_day": "1789-11-02",
+      "pages": 1,
+      "pdf_sha256": "7a144203387b311369618ee7656484da24a92aedb5ea20de36a935e0c60f0084",
+      "pdf_bytes": 653,
+      "source_url": "https://www.congress.gov/fixture/annals",
+      "pdf_url": "https://www.congress.gov/fixture/annals.pdf",
+      "accessed": "2026-10-18",
+      "rights": "Fixture only; no source rights asserted",
+      "rights_url": "https://www.congress.gov/fixture/rights"
+    }
+  ]
+}

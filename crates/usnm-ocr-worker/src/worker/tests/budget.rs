@@ -146,7 +146,10 @@ async fn a_stop_abandons_unfinished_pages_after_the_grace() {
 }
 
 #[derive(Debug)]
-struct DelayedEngine;
+struct DelayedEngine {
+    started: tokio::sync::Notify,
+    finish: tokio::sync::Notify,
+}
 
 #[async_trait]
 impl Engine for DelayedEngine {
@@ -164,7 +167,8 @@ impl Engine for DelayedEngine {
         language: &str,
         work: &Path,
     ) -> Result<EngineOutput, EngineError> {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.started.notify_one();
+        self.finish.notified().await;
         FakeEngine.ocr(image, language, work).await
     }
 }
@@ -173,13 +177,17 @@ impl Engine for DelayedEngine {
 async fn a_planned_stop_drains_in_flight_pages_and_stops_intake() {
     let dir = tempfile::tempdir().unwrap();
     let (base, queue, out) = worker(dir.path());
+    let engine = Arc::new(DelayedEngine {
+        started: tokio::sync::Notify::new(),
+        finish: tokio::sync::Notify::new(),
+    });
     let w = Arc::new(Worker {
-        engine: Arc::new(DelayedEngine),
+        engine: engine.clone(),
         cfg: Config {
             concurrency: 1,
             shutdown_grace: Duration::from_millis(50),
             drain_on_stop: true,
-            page_timeout: Duration::from_secs(1),
+            page_timeout: Duration::from_secs(30),
             ..base.cfg.clone()
         },
         queue: base.queue.clone(),
@@ -199,23 +207,24 @@ async fn a_planned_stop_drains_in_flight_pages_and_stops_intake() {
     }
 
     let (tx, rx) = watch::channel(false);
-    let run = tokio::spawn(w.clone().run(rx));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while w.tracker.status().in_flight.is_empty() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let started = Instant::now();
+    let mut run = tokio::spawn(w.clone().run(rx));
+    tokio::time::timeout(Duration::from_secs(10), engine.started.notified())
+        .await
+        .unwrap();
     tx.send_replace(true);
-    tokio::time::timeout(Duration::from_secs(2), run)
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut run)
+            .await
+            .is_err(),
+        "planned stop must wait for the in-flight page"
+    );
+    engine.finish.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), run)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
 
-    assert!(started.elapsed() >= Duration::from_millis(150));
     assert_eq!(w.tracker.status().since_start.done, 1);
     assert_eq!(out.list("pages").await.unwrap().len(), 1);
     let pending = queue

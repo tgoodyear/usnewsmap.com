@@ -11,10 +11,10 @@ use cli::{
     batches, congress, curate, ocr, onprem, pictures, prune, release, run, searchlog_copy, titles,
 };
 use usnm_ingest::activity::{self, Reporter};
-use usnm_ingest::owner_id;
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
 use usnm_ingest::state::{Outcome, State, Step};
 use usnm_ingest::telemetry;
+use usnm_state::owner_id;
 
 /// US News Map ingest pipeline (docs/design/04 §4.4).
 #[derive(Parser)]
@@ -60,11 +60,15 @@ enum Command {
     OcrAgreement(ocr::OcrAgreementArgs),
     OcrPrefetchManifest(ocr::OcrPrefetchManifestArgs),
     OcrSync(ocr::OcrSyncArgs),
+    OcrAlternateStage(ocr::OcrAlternateStageArgs),
+    OcrAlternateDecide(ocr::OcrAlternateDecideArgs),
+    OcrAlternatePreview(ocr::OcrAlternatePreviewArgs),
     OcrSeed(ocr::OcrSeedArgs),
     OcrEnqueue(ocr::OcrEnqueueArgs),
     OcrRequeue(ocr::OcrRequeueArgs),
     CongressGlobe(congress::CongressGlobeArgs),
     CongressSerialset(congress::CongressSerialsetArgs),
+    CongressManual(congress::CongressManualArgs),
     CongressDamage(congress::CongressDamageArgs),
     SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
     Pictures(pictures::PicturesArgs),
@@ -92,7 +96,7 @@ async fn main() -> std::process::ExitCode {
     // it again as plain text after that line.
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(e) if e.is::<usnm_ingest::congress::fetch::Stopped>() => {
+        Err(e) if e.is::<usnm_congress::fetch::Stopped>() => {
             tracing::info!(command = cli.command.name(), "{e}");
             std::process::ExitCode::from(EXIT_SIGTERM)
         }
@@ -141,11 +145,15 @@ impl Command {
             Command::OcrAgreement { .. } => "ocr-agreement",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
+            Command::OcrAlternateStage { .. } => "ocr-alternate-stage",
+            Command::OcrAlternateDecide { .. } => "ocr-alternate-decide",
+            Command::OcrAlternatePreview { .. } => "ocr-alternate-preview",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
             Command::CongressGlobe { .. } => "congress-globe",
             Command::CongressSerialset { .. } => "congress-serialset",
+            Command::CongressManual { .. } => "congress-manual",
             Command::CongressDamage { .. } => "congress-damage",
             Command::SearchlogCopy { .. } => "searchlog-copy",
             Command::Pictures { .. } => "pictures",
@@ -178,11 +186,15 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrAgreement { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
+        | Command::OcrAlternateStage { .. }
+        | Command::OcrAlternateDecide { .. }
+        | Command::OcrAlternatePreview { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
         | Command::CongressGlobe { .. }
         | Command::CongressSerialset { .. }
+        | Command::CongressManual { .. }
         | Command::CongressDamage { .. }
         | Command::SearchlogCopy { .. }
         | Command::Pictures { .. } => None,
@@ -259,6 +271,13 @@ async fn command(
         Command::OcrAgreement(args) => ocr::ocr_agreement_command(cli, start, args).await,
         Command::OcrPrefetchManifest(args) => ocr::ocr_prefetch_manifest_command(cli, args).await,
         Command::OcrSync(args) => ocr::ocr_sync_command(cli, state, start, args).await,
+        Command::OcrAlternateStage(args) => {
+            ocr::ocr_alternate_stage_command(cli, state, args).await
+        }
+        Command::OcrAlternateDecide(args) => {
+            ocr::ocr_alternate_decide_command(cli, state, args).await
+        }
+        Command::OcrAlternatePreview(args) => ocr::ocr_alternate_preview_command(cli, args).await,
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,
         Command::OcrEnqueue(args) => ocr::ocr_enqueue_command(cli, state, args).await,
         Command::OcrRequeue(args) => ocr::ocr_requeue_command(cli, state, args).await,
@@ -267,6 +286,9 @@ async fn command(
         }
         Command::CongressSerialset(args) => {
             congress::congress_serialset_command(cli, state, start, args).await
+        }
+        Command::CongressManual(args) => {
+            congress::congress_manual_command(cli, state, start, args).await
         }
         Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
         Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,

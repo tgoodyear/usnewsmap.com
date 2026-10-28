@@ -1,0 +1,17 @@
+{
+  "ref": "usnm_azure_proxy",
+  "description": "Azure site: strict origin TLS, script-friendly requests, no analytics or HTML rewriting",
+  "expression": "(http.host in {\"usnewsmap.com\" \"www.usnewsmap.com\" \"api.usnewsmap.com\"})",
+  "action": "set_config",
+  "action_parameters": {
+    "ssl": "strict",
+    "bic": false,
+    "automatic_https_rewrites": false,
+    "email_obfuscation": false,
+    "rocket_loader": false,
+    "disable_rum": true,
+    "disable_zaraz": true,
+    "fonts": false
+  },
+  "enabled": true
+}

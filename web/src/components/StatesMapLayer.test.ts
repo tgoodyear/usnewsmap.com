@@ -50,8 +50,10 @@ it("adds lazy geometry below labels, changes only feature state, and removes its
   expect(native.hasDrawn()).toBe(true);
   map.queryRenderedFeatures.mockReturnValue([]);
   expect(native.hasDrawn()).toBe(false);
+  expect(native.isReady()).toBe(true);
   map.isSourceLoaded.mockReturnValue(false);
   expect(native.hasDrawn()).toBe(false);
+  expect(native.isReady()).toBe(false);
   const event = { features: [{ properties: { STUSPS: "NY" } }], point: { x: 10, y: 20 } };
   map.on.mock.calls.find((call) => call[0] === "mousemove")![2](event);
   expect(hover).toHaveBeenCalledWith("NY", 10, 20);

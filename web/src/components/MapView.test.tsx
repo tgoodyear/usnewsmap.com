@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 // MapLibre and deck.gl need WebGL; stand in for the parts MapView calls.
 const maps: FakeMap[] = [];
+const afterRender: (() => void)[] = [];
 const config = vi.hoisted(() => ({ style: "https://tiles.openfreemap.org/styles/positron", styleLoaded: true }));
 vi.mock("../lib/basemap", () => ({
   get STYLE_URL() {
@@ -42,7 +43,8 @@ class FakeMap {
   styleLoaded = config.styleLoaded;
   isStyleLoaded = () => this.styleLoaded;
   getStyle = () => (this.styleLoaded ? { version: 8, layers: [] } : undefined);
-  setStyle = vi.fn(() => {
+  setStyle = vi.fn((style: unknown) => {
+    if (typeof style === "string") return;
     this.styleLoaded = true;
     this.emit("style.load");
   });
@@ -52,6 +54,7 @@ class FakeMap {
 vi.mock("maplibre-gl", () => ({ Map: FakeMap, NavigationControl: class {}, setWorkerUrl: () => {} }));
 vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}));
 vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({ default: "" }));
+vi.mock("../lib/basemapProtocol", () => ({ installBasemapProtocol: () => {} }));
 const layers: { id: string; data: unknown }[][] = [];
 const nativeLayers: { data: unknown; update: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }[] = [];
 vi.mock("./StatesMapLayer", () => ({
@@ -59,6 +62,7 @@ vi.mock("./StatesMapLayer", () => ({
     update = vi.fn();
     destroy = vi.fn();
     hasDrawn = () => false;
+    isReady = () => true;
     constructor(
       _map: unknown,
       public data: unknown,
@@ -69,6 +73,9 @@ vi.mock("./StatesMapLayer", () => ({
 }));
 vi.mock("@deck.gl/mapbox", () => ({
   MapboxOverlay: class {
+    constructor(props: { onAfterRender: () => void }) {
+      afterRender.push(props.onAfterRender);
+    }
     setProps(props: { layers: { id: string; data: unknown }[] }) {
       layers.push(props.layers);
     }
@@ -105,8 +112,10 @@ describe("MapView", () => {
   afterEach(() => {
     cleanup();
     maps.length = 0;
+    afterRender.length = 0;
     layers.length = 0;
     nativeLayers.length = 0;
+    Reflect.deleteProperty(window, "__USNM_SHARE_CAPTURE__");
     vi.unstubAllGlobals();
     vi.useRealTimers();
     config.style = "https://tiles.openfreemap.org/styles/positron";
@@ -132,6 +141,22 @@ describe("MapView", () => {
     expect(element.classList.contains("map--basemap-ready")).toBe(true);
   });
 
+  it("exposes screenshot readiness only for loaded tiles and a rendered overlay", () => {
+    const { getByTestId, rerender } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const element = getByTestId("map");
+    expect(element.dataset.overlayReady).toBe("false");
+    const m = maps[0]!;
+    m.emit("load");
+    m.emit("idle");
+    afterRender[0]!();
+    expect(element.dataset.basemapReady).toBe("true");
+    expect(element.dataset.overlayReady).toBe("true");
+    m.emit("dataloading");
+    expect(element.dataset.basemapReady).toBe("false");
+    rerender(<MapView {...props} points={[]} zoom={null} center={null} />);
+    expect(element.dataset.overlayReady).toBe("false");
+  });
+
   it("reveals the overlay after two seconds if the basemap is blocked", () => {
     vi.useFakeTimers();
     const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
@@ -139,6 +164,53 @@ describe("MapView", () => {
     expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(false);
     vi.advanceTimersByTime(1);
     expect(getByTestId("map").classList.contains("map--basemap-ready")).toBe(true);
+  });
+
+  it("keeps a slow initial basemap request alive during capture", () => {
+    vi.useFakeTimers();
+    config.styleLoaded = false;
+    Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true, configurable: true });
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const m = maps[0]!;
+    act(() => vi.advanceTimersByTime(2500));
+    expect(m.setStyle).toHaveBeenCalledTimes(1);
+    expect(getByTestId("map").dataset.basemapError).toBe("false");
+    m.styleLoaded = true;
+    act(() => {
+      m.emit("style.load");
+      m.emit("load");
+      m.emit("idle");
+    });
+    expect(getByTestId("map").dataset.basemapReady).toBe("true");
+  });
+
+  it("never marks a degraded offline background ready for a screenshot", () => {
+    config.styleLoaded = false;
+    Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true, configurable: true });
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const m = maps[0]!;
+    act(() => {
+      m.emit("error");
+      m.emit("load");
+      m.emit("idle");
+    });
+    expect(m.setStyle).toHaveBeenCalledTimes(2);
+    expect(getByTestId("map").dataset.basemapError).toBe("true");
+    expect(getByTestId("map").dataset.basemapReady).toBe("false");
+  });
+
+  it("rejects capture protocol/decoding errors after the style has loaded", () => {
+    Object.defineProperty(window, "__USNM_SHARE_CAPTURE__", { value: true, configurable: true });
+    const { getByTestId } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
+    const m = maps[0]!;
+    act(() => {
+      m.emit("load");
+      m.emit("error");
+      m.emit("idle");
+    });
+    expect(m.setStyle).toHaveBeenCalledTimes(1);
+    expect(getByTestId("map").dataset.basemapError).toBe("true");
+    expect(getByTestId("map").dataset.basemapReady).toBe("false");
   });
 
   it("shows the offline style immediately and cleans up its timer on unmount", () => {
@@ -239,7 +311,7 @@ describe("MapView", () => {
     );
     await waitFor(() => expect(nativeLayers).toHaveLength(1));
     act(() => maps[0]!.emit("error"));
-    expect(maps[0]!.setStyle).toHaveBeenCalledTimes(1);
+    expect(maps[0]!.setStyle).toHaveBeenCalledTimes(2);
   });
 
   it("bounds a stalled initial style request but does not replace a loaded style on tile errors", () => {
@@ -247,13 +319,13 @@ describe("MapView", () => {
     config.styleLoaded = false;
     const { unmount } = render(<MapView {...props} zoom={null} center={null} />, { wrapper });
     act(() => vi.advanceTimersByTime(2000));
-    expect(maps[0]!.setStyle).toHaveBeenCalledTimes(1);
+    expect(maps[0]!.setStyle).toHaveBeenCalledTimes(2);
     unmount();
     render(<MapView {...props} zoom={null} center={null} />, { wrapper });
     const loaded = maps.at(-1)!;
     loaded.styleLoaded = true;
     act(() => loaded.emit("error"));
     act(() => vi.advanceTimersByTime(2000));
-    expect(loaded.setStyle).not.toHaveBeenCalled();
+    expect(loaded.setStyle).toHaveBeenCalledTimes(1);
   });
 });

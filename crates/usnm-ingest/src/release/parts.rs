@@ -447,6 +447,7 @@ mod tests {
                 batch: "batch_a".into(),
                 ocr_source: "usnm-local".into(),
                 ocr_engine: "tesseract/5 profile=fast".into(),
+                ocr_reason: "bulk".into(),
                 node: "node1".into(),
                 metric_version: usnm_core::damage::VERSION,
                 ocred_at: 0,

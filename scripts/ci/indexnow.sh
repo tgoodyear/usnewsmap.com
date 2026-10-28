@@ -7,7 +7,7 @@
 # Submits only when the app just rolled (APP in RG) answers on the sitemap's
 # host and serves the key there. The site is already live, so a problem here
 # is a warning, never a failed deploy: this script always exits 0. CI restores
-# INDEXNOW_STATE_FILE so only a changed URL set is submitted.
+# INDEXNOW_STATE_FILE so only added, changed or removed URLs are submitted.
 set -uo pipefail
 skip() {
   echo "::warning::IndexNow: $*; not submitted"
@@ -35,56 +35,36 @@ if ! names=$(az containerapp hostname list -n "$APP" -g "$RG" --query "[].name" 
   skip "could not list the hostnames of $APP: $names"
 fi
 grep -Fqx "$host" <<< "$names" || skip "$APP does not answer on $host"
-live=$(curl -fsS --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "https://$host/$key.txt") ||
+live=$(curl -fsS -H 'DNT: 1' --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "https://$host/$key.txt") ||
   skip "https://$host/$key.txt could not be fetched"
 [ "$live" = "$key" ] || skip "https://$host/$key.txt does not hold the key"
 
 # Read the deployed build's generated sitemap, not a stale source-tree list.
-sitemap=$(curl -fsS --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
+sitemap=$(curl -fsS -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
   skip "$sitemap_url could not be fetched"
-locations=$(python3 -c '
-import sys
-import xml.etree.ElementTree as ET
-
-root = ET.fromstring(sys.stdin.read())
-ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-if root.tag != ns + "urlset":
-    raise ValueError("expected a sitemap urlset")
-for entry in root.findall(ns + "url"):
-    location = entry.findtext(ns + "loc", "").strip()
-    if not location or any(c.isspace() for c in location):
-        raise ValueError("missing or invalid sitemap URL")
-    print(location)
-' <<< "$sitemap") || skip "$sitemap_url is not a valid URL sitemap"
+work=$(mktemp -d) || skip "could not create request files"
+body="$work/response"
+payload="$work/request.json"
+next_state="$work/state.json"
+trap 'rm -f "$body" "$payload" "$next_state"; rmdir "$work"' EXIT
+locations=$(python3 scripts/ci/indexnow-plan.py --host "$host" --key "$key" \
+  --state "$INDEXNOW_STATE_FILE" --output-state "$next_state" <<< "$sitemap") ||
+  skip "$sitemap_url is not a valid URL sitemap or its submission state is invalid"
 urls=()
 while IFS= read -r url; do
   [ -z "$url" ] || urls+=("$url")
 done <<< "$locations"
-[ "${#urls[@]}" -gt 0 ] || skip "$sitemap_url has no <loc> entries"
+[ "${#urls[@]}" -gt 0 ] || {
+  echo "IndexNow: sitemap URLs unchanged since the last successful submission; not submitted"
+  exit 0
+}
 for url in "${urls[@]}"; do
   [[ $url == "https://$host/"* ]] || skip "sitemap URL $url is not on $host"
 done
 
-digest=$(printf '%s\n' "$key" "${urls[@]}" | python3 -c '
-import hashlib
-import sys
-print(hashlib.sha256("\n".join(sorted(set(sys.stdin.read().splitlines()))).encode()).hexdigest())
-') || skip "could not fingerprint the sitemap URLs"
-if [ -f "$INDEXNOW_STATE_FILE" ]; then
-  previous=$(cat "$INDEXNOW_STATE_FILE") || skip "could not read the last submission"
-  if [ "$previous" = "$digest" ]; then
-    echo "IndexNow: sitemap URLs unchanged since the last successful submission; not submitted"
-    exit 0
-  fi
-fi
-
 # IndexNow takes at most 10,000 URLs per request.
 batch=10000
 total=$(((${#urls[@]} + batch - 1) / batch))
-work=$(mktemp -d) || skip "could not create request files"
-body="$work/response"
-payload="$work/request.json"
-trap 'rm -f "$body" "$payload"; rmdir "$work"' EXIT
 submitted=true
 for ((i = 0; i < ${#urls[@]}; i += batch)); do
   label="batch $((i / batch + 1))/$total"
@@ -108,7 +88,12 @@ for ((i = 0; i < ${#urls[@]}; i += batch)); do
 done
 [ "$submitted" = true ] || exit 0
 mkdir -p "$(dirname "$INDEXNOW_STATE_FILE")" || skip "could not create the submission state directory"
-printf '%s\n' "$digest" > "$INDEXNOW_STATE_FILE" || skip "could not save the successful submission"
+# Rename within the state directory, so an interrupted save leaves the old
+# acknowledged state intact. Never acknowledge a rejected or partial batch.
+if ! cp "$next_state" "$INDEXNOW_STATE_FILE.tmp" ||
+   ! mv "$INDEXNOW_STATE_FILE.tmp" "$INDEXNOW_STATE_FILE"; then
+  skip "could not save the successful submission"
+fi
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   echo "submitted=true" >> "$GITHUB_OUTPUT" || skip "could not report the successful submission"
 fi

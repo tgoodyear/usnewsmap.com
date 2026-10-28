@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { examplesShown, type Example } from "../examples";
 import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
-import { searchPath } from "../route";
 
 interface Props {
   /** Every example, in the order to show them. */
@@ -51,7 +50,6 @@ export function Examples({ order, clicks, onMore, onPick }: Props) {
                 <strong>{ex.title}</strong>
                 <span>{ex.blurb}</span>
               </a>
-              <a href={searchPath(ex.view.q ?? "")}>Search all dates</a>
             </li>
           );
         })}

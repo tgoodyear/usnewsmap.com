@@ -1,11 +1,11 @@
 //! `enqueue` and `curate`: recording the listed batches and curating the queued ones.
 use anyhow::bail;
 use clap::Args;
-use usnm_ingest::owner_id;
 use usnm_ingest::release::Published;
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::State;
 use usnm_ingest::worker::{self, Worker};
+use usnm_state::owner_id;
 
 use super::common::{deadline, read_list, Stores};
 use crate::Cli;

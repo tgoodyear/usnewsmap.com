@@ -37,11 +37,11 @@ COPY ocr/engines/engines.toml ./ocr/engines/engines.toml
 RUN cargo build --release --locked -p usnm-ingest
 
 FROM ${QUICKWIT_IMAGE}
-# pdftotext for `congress-serialset` (#229): GovInfo's Serial Set PDFs carry
-# an OCR text layer, read page by page.
+# Poppler reads GovInfo's Serial Set text layer and renders the manually
+# downloaded Annals/Register PDFs; Tesseract OCRs pages without usable text.
 # Installed first, so the binaries and commit below don't invalidate it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
+    && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/usnm-ingest /usr/local/bin/usnm-ingest
 # The experimental search cluster's nodes and bench job (#239).

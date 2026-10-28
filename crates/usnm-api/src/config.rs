@@ -142,6 +142,9 @@ pub struct Config {
     /// Where the anonymous search log goes (`searches/` container), if
     /// anywhere (06 §6.8).
     pub search_log_url: Option<String>,
+    /// Persistent sitemap checkpoints, independent of visitor logging.
+    /// Unset, use `search_log_url`'s existing non-expiring container.
+    pub sitemap_state_url: Option<String>,
     /// How often the search log appends its batch.
     pub search_log_flush: Duration,
     /// Where qualifying hit page ids are staged for on-prem OCR.
@@ -309,6 +312,7 @@ impl Config {
                 .map(|c| crate::status::schedule::Cron::parse(&c))
                 .transpose()?,
             search_log_url: var("USNM_SEARCH_LOG_URL"),
+            sitemap_state_url: var("USNM_SITEMAP_STATE_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             ocr_requests_url: var("USNM_OCR_REQUESTS_URL"),
             searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
@@ -331,6 +335,13 @@ impl Config {
 }
 
 impl Config {
+    /// Dedicated sitemap storage, or the existing durable search-log store.
+    pub fn sitemap_state_url(&self) -> Option<&str> {
+        self.sitemap_state_url
+            .as_deref()
+            .or(self.search_log_url.as_deref())
+    }
+
     /// Where the rate limiter and page views take a request's client address.
     pub fn client_address(&self) -> crate::ratelimit::ClientAddress {
         if self.trust_cf_connecting_ip {
@@ -361,6 +372,7 @@ mod tests {
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());
+        assert!(c.sitemap_state_url().is_none());
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert!(c.ocr_requests_url.is_none());
         assert_eq!(c.compute_cap, Duration::from_secs(120));

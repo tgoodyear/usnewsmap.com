@@ -1,13 +1,13 @@
-//! `congress-globe` and `congress-serialset`: the Congress fetches (`usnm_ingest::congress`, the
+//! `congress-globe` and `congress-serialset`: the Congress fetches (`usnm_congress`, the
 //! `usnm-congress` crate); and `congress-damage` (#922), the damage metric over what they wrote.
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Args;
-use usnm_ingest::owner_id;
 use usnm_ingest::release::Published;
 use usnm_ingest::state::State;
+use usnm_state::owner_id;
 
 use super::common::deadline;
 use crate::Cli;
@@ -40,7 +40,7 @@ pub(crate) struct CongressGlobeArgs {
     #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(3..=60))]
     crawl_delay_secs: u64,
     /// Where to fetch from (UNT; another host only for a copy of its responses).
-    #[arg(long, default_value = usnm_ingest::congress::globe::UNT)]
+    #[arg(long, default_value = usnm_congress::globe::UNT)]
     unt_url: String,
 }
 
@@ -80,7 +80,7 @@ pub(crate) struct CongressSerialsetArgs {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..=60))]
     delay_secs: u64,
     /// Where to fetch from (GovInfo; another host only for a copy of its responses).
-    #[arg(long, default_value = usnm_ingest::congress::serialset::GOVINFO)]
+    #[arg(long, default_value = usnm_congress::serialset::GOVINFO)]
     govinfo_url: String,
     /// The pdftotext binary (poppler-utils).
     #[arg(long, env = "USNM_PDFTOTEXT", default_value = "pdftotext")]
@@ -92,6 +92,37 @@ pub(crate) struct CongressSerialsetArgs {
     /// part.
     #[arg(long, conflicts_with_all = ["years", "serials"])]
     done_file: Option<PathBuf>,
+}
+
+/// Curate Annals or Register PDFs an operator downloaded in a browser.
+/// Reads only the matching manifest/PDFs from USNM_RAW_URL; it never
+/// contacts Congress.gov. Each complete PDF becomes one curated unit.
+#[derive(Args)]
+pub(crate) struct CongressManualArgs {
+    /// `annals` or `register`.
+    #[arg(long, value_enum)]
+    series: usnm_congress::manual::Series,
+    /// Only these unit ids from the manifest, comma separated.
+    #[arg(long, value_delimiter = ',')]
+    units: Vec<String>,
+    /// Reprocess units even when their manifest fingerprint is unchanged.
+    #[arg(long)]
+    refetch: bool,
+    /// Stop after this many units.
+    #[arg(long)]
+    max_units: Option<usize>,
+    /// Stop between volumes by this deadline; the manual job uses 22 h.
+    #[arg(long, required = true)]
+    max_runtime_secs: u64,
+    /// Poppler and Tesseract executables.
+    #[arg(long, env = "USNM_PDFTOTEXT", default_value = "pdftotext")]
+    pdftotext: PathBuf,
+    #[arg(long, env = "USNM_PDFINFO", default_value = "pdfinfo")]
+    pdfinfo: PathBuf,
+    #[arg(long, env = "USNM_PDFTOPPM", default_value = "pdftoppm")]
+    pdftoppm: PathBuf,
+    #[arg(long, env = "USNM_TESSERACT", default_value = "tesseract")]
+    tesseract: PathBuf,
 }
 
 /// Score every page of the curated Congress pages with the OCR damage
@@ -113,8 +144,8 @@ pub(crate) struct CongressDamageArgs {
     /// The series to score.
     #[arg(
         long,
-        default_value = usnm_ingest::congress::serialset::SERIES,
-        value_parser = clap::builder::PossibleValuesParser::new(usnm_ingest::congress::SERIES.iter().copied())
+        default_value = usnm_congress::serialset::SERIES,
+        value_parser = clap::builder::PossibleValuesParser::new(usnm_congress::SERIES.iter().copied())
     )]
     series: String,
     /// Only these volumes (`00033_00_00`), comma separated; with `--serials`,
@@ -187,7 +218,7 @@ pub(crate) async fn congress_globe_command(
         crawl_delay_secs,
         unt_url,
     } = args;
-    use usnm_ingest::congress::globe;
+    use usnm_congress::globe;
     let curated = usnm_store::open(&cli.stores.curated)?;
     let raw = cli
         .stores
@@ -209,7 +240,7 @@ pub(crate) async fn congress_globe_command(
         globe::USER_AGENT,
         "UNT",
     )?
-    .with_cutoff(run_deadline.map(|d| d + usnm_ingest::congress::fetch::REQUEST_GRACE));
+    .with_cutoff(run_deadline.map(|d| d + usnm_congress::fetch::REQUEST_GRACE));
     let opts = globe::Options {
         base: unt_url.trim_end_matches('/').to_owned(),
         items: items.clone(),
@@ -253,7 +284,7 @@ pub(crate) async fn congress_serialset_command(
         pdftotext,
         done_file,
     } = args;
-    use usnm_ingest::congress::{fetch::or_stopped, serialset};
+    use usnm_congress::{fetch::or_stopped, serialset};
     use usnm_ingest::local_holder::LocalHolder;
     let curated = usnm_store::open(&cli.stores.curated)?;
     let raw = cli
@@ -274,12 +305,12 @@ pub(crate) async fn congress_serialset_command(
     let run_deadline = deadline(start, *max_runtime_secs);
     // Sitemaps and MODS get 120 s a try, a PDF 30 minutes; every
     // request ends within the grace after the deadline.
-    let fetch = usnm_ingest::congress::fetch::Http::new(
+    let fetch = usnm_congress::fetch::Http::new(
         std::time::Duration::from_secs(*delay_secs),
         serialset::USER_AGENT,
         "GovInfo",
     )?
-    .with_cutoff(run_deadline.map(|d| d + usnm_ingest::congress::fetch::REQUEST_GRACE));
+    .with_cutoff(run_deadline.map(|d| d + usnm_congress::fetch::REQUEST_GRACE));
     let pdf = serialset::Pdftotext::new(pdftotext.clone());
     let opts = serialset::Options {
         base: govinfo_url.trim_end_matches('/').to_owned(),
@@ -341,6 +372,60 @@ pub(crate) async fn congress_serialset_command(
             );
         }
     }
+    Ok(None)
+}
+
+pub(crate) async fn congress_manual_command(
+    cli: &Cli,
+    state: State,
+    start: tokio::time::Instant,
+    args: &CongressManualArgs,
+) -> anyhow::Result<Option<Published>> {
+    use usnm_congress::manual;
+    let CongressManualArgs {
+        series,
+        units,
+        refetch,
+        max_units,
+        max_runtime_secs,
+        pdftotext,
+        pdfinfo,
+        pdftoppm,
+        tesseract,
+    } = args;
+    let raw_url = cli
+        .stores
+        .raw
+        .as_deref()
+        .context("congress-manual requires USNM_RAW_URL with the manually downloaded PDFs")?;
+    let raw = usnm_store::open(raw_url)?;
+    let curated = usnm_store::open(&cli.stores.curated)?;
+    let scratch = cli.stores.work_dir.join("congress-lcg");
+    std::fs::create_dir_all(&scratch).with_context(|| format!("creating {}", scratch.display()))?;
+    let pdf = manual::TesseractPdf::new(
+        pdftotext.clone(),
+        pdfinfo.clone(),
+        pdftoppm.clone(),
+        tesseract.clone(),
+    )
+    .await?;
+    let opts = manual::Options {
+        series: *series,
+        units: units.clone(),
+        refetch: *refetch,
+        max_units: *max_units,
+        deadline: deadline(start, Some(*max_runtime_secs)),
+        work_dir: scratch,
+    };
+    let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let report = manual::locked(
+        &state,
+        &owner_id(),
+        manual::run(raw.as_ref(), curated.as_ref(), &pdf, &opts, lost.as_ref()),
+        lost.clone(),
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(None)
 }
 
@@ -410,7 +495,7 @@ mod tests {
         };
         assert_eq!(items, ["metadc29274", "metadc29275"]);
         assert_eq!(crawl_delay_secs, 3);
-        assert_eq!(unt_url, usnm_ingest::congress::globe::UNT);
+        assert_eq!(unt_url, usnm_congress::globe::UNT);
         assert!(!refetch);
         assert!(parse(&["--crawl-delay-secs", "2"]).is_err());
         assert!(parse(&["--crawl-delay-secs", "5"]).is_ok());
@@ -447,7 +532,7 @@ mod tests {
         assert_eq!(years, [1820, 1990]);
         assert_eq!(serials, [33]);
         assert_eq!(delay_secs, 1);
-        assert_eq!(govinfo_url, usnm_ingest::congress::serialset::GOVINFO);
+        assert_eq!(govinfo_url, usnm_congress::serialset::GOVINFO);
         assert_eq!(pdftotext, PathBuf::from("pdftotext"));
         assert!(!refetch);
         assert!(parse(&["--delay-secs", "0"]).is_err());
@@ -526,5 +611,57 @@ mod tests {
         assert!(parse(&["33"]).is_err(), "named arguments only");
         assert!(parse(&["--series", "newspapers"]).is_err());
         assert!(parse(&["--serials", "x"]).is_err());
+    }
+
+    #[test]
+    fn congress_manual_requires_series_and_a_deadline() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "congress-manual",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--series", "annals"]).is_err());
+        let Command::CongressManual(CongressManualArgs {
+            series,
+            units,
+            refetch,
+            max_units,
+            max_runtime_secs,
+            pdftotext,
+            ..
+        }) = parse(&[
+            "--series",
+            "register",
+            "--units",
+            "register-c18-s01-v01-b01,register-c18-s01-v02-b01",
+            "--refetch",
+            "--max-units",
+            "2",
+            "--max-runtime-secs",
+            "79200",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not congress-manual");
+        };
+        assert_eq!(series, usnm_congress::manual::Series::Register);
+        assert_eq!(
+            units,
+            ["register-c18-s01-v01-b01", "register-c18-s01-v02-b01"]
+        );
+        assert!(refetch);
+        assert_eq!(max_units, Some(2));
+        assert_eq!(max_runtime_secs, 79_200);
+        assert_eq!(pdftotext, PathBuf::from("pdftotext"));
+        assert!(parse(&["--series", "globe", "--max-runtime-secs", "10"]).is_err());
     }
 }

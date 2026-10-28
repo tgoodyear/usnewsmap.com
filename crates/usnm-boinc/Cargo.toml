@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-usnm-core.workspace = true
+usnm-core = { workspace = true, features = ["damage"] }
 usnm-ocr-adapter = { path = "../usnm-ocr-adapter" }
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-ocr-quality.workspace = true
@@ -18,7 +18,7 @@ usnm-store.workspace = true
 usnm-state.workspace = true
 usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
-usnm-ingest = { path = "../usnm-ingest" }
+usnm-ocr-local.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

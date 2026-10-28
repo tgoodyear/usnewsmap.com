@@ -28,6 +28,8 @@
 # - USNM_QUICKWIT_URL: the searcher on loopback.
 # - USNM_RESPONSE_CACHE_URL: a local directory (the API's LocalStore) in
 #   place of the Blob container.
+# - USNM_SITEMAP_STATE_URL: a shared durable directory, never cache-cleaned,
+#   independent of visitor search logging.
 # - USNM_SEARCH_LOG_URL and USNM_OCR_REQUESTS_URL: unset until the public
 #   cutover (#955 Phase 3), because the API records same-origin searches on
 #   any hostname.
@@ -101,6 +103,7 @@ trap 'rm -f "$API_ENV"' EXIT
   echo "USNM_QUICKWIT_URL=http://127.0.0.1:7280"
   echo "USNM_REFERENCE_URL=https://$STORAGE.blob.core.windows.net/reference"
   echo "USNM_RESPONSE_CACHE_URL=/srv/usnm-serving/cache"
+  echo "USNM_SITEMAP_STATE_URL=/srv/usnm-serving/sitemap-state"
   echo "USNM_ALLOWED_ORIGINS=https://$ZONE,https://www.$ZONE"
   echo "USNM_TRUST_CF_CONNECTING_IP=true"
   echo "USNM_TRUSTED_PROXY_HOPS=0"
@@ -162,9 +165,9 @@ if $CHECK_APP; then
   diffs=$(jq -rn --argjson azure "$azure" --rawfile onprem "$API_ENV" '
     ($azure | map({(.name): (.value // "(a secret)")}) | add) as $a
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
-    | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS"] as $differ
+    | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS"] as $differ
     | ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "AZURE_CLIENT_ID"] as $azure_only
-    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
+    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
     | [($ak - $ok - $azure_only)[] as $k | "\($k): only in the Azure app (\($a[$k]))"]
     + [($ok - $ak - $onprem_only)[] as $k | "\($k): only here (\($o[$k]))"]

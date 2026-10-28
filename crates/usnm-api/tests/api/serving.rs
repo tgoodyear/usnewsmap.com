@@ -268,6 +268,70 @@ async fn get_site(
 }
 
 #[tokio::test]
+async fn basemap_archive_has_immutable_unencoded_byte_ranges() {
+    let dir = site_dir("basemap-ranges");
+    let path = "basemap/test-v1/overview.pmtiles.bin";
+    std::fs::create_dir_all(dir.join("basemap/test-v1")).unwrap();
+    let data = b"PMTiles".repeat(1024);
+    std::fs::write(dir.join(path), &data).unwrap();
+    let mut cfg = config();
+    cfg.site_dir = Some(dir.clone());
+    let state = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    for (range, status, expected) in [
+        (None, StatusCode::OK, &data[..]),
+        (Some("bytes=0-6"), StatusCode::PARTIAL_CONTENT, &data[..7]),
+    ] {
+        let mut req = Request::builder()
+            .uri(format!("/{path}"))
+            .header(header::ACCEPT_ENCODING, "br, gzip");
+        if let Some(value) = range {
+            req = req.header(header::RANGE, value);
+        }
+        let resp = app(state.clone())
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), status);
+        assert_eq!(
+            header_str(resp.headers(), header::CACHE_CONTROL),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            header_str(resp.headers(), header::CONTENT_TYPE),
+            "application/vnd.pmtiles"
+        );
+        assert_eq!(
+            header_str(resp.headers(), header::CONTENT_LENGTH),
+            expected.len().to_string()
+        );
+        assert!(!resp.headers().contains_key(header::CONTENT_ENCODING));
+        if range.is_some() {
+            assert_eq!(
+                header_str(resp.headers(), header::CONTENT_RANGE),
+                format!("bytes 0-6/{}", data.len())
+            );
+        }
+        assert_eq!(
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            expected
+        );
+    }
+    let (status, headers, _) = get_site(&state, "/basemap/test-v1/missing.pmtiles.bin", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn serves_the_site_alongside_the_api() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("serve"));
@@ -614,12 +678,12 @@ async fn the_apps_pages_revalidate_with_an_etag() {
     tags.sort();
     tags.dedup();
     assert_eq!(tags.len(), 3);
-    // The dataset page's 304 keeps its noindex.
+    // The dataset page remains indexable on revalidation.
     let (_, h, _) = get_site(&s, "/datasets", None).await;
     let (_, h304, _) = get_if_none_match(&s, "/datasets", header_str(&h, header::ETAG)).await;
     assert_eq!(
         header_str(&h304, header::HeaderName::from_static("x-robots-tag")),
-        "noindex"
+        ""
     );
 
     // A release changes the shell, and with it the tag.
@@ -640,7 +704,7 @@ async fn the_apps_pages_revalidate_with_an_etag() {
 }
 
 #[tokio::test]
-async fn search_permalinks_and_dataset_details_are_noindex() {
+async fn uncurated_searches_are_noindex_and_site_pages_are_indexable() {
     let mut cfg = config();
     cfg.site_dir = Some(site_dir("noindex"));
     let s = Arc::new(AppState::new(
@@ -649,11 +713,7 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
         refdata().await,
     ));
     let robots = header::HeaderName::from_static("x-robots-tag");
-    for uri in [
-        "/search/x",
-        "/search/%22cross%20of%20gold%22?from=1896-06-01",
-        "/datasets",
-    ] {
+    for uri in ["/search/x", "/search/cross-of-gold?from=1896-06-01"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "noindex", "{uri}");
@@ -662,7 +722,14 @@ async fn search_permalinks_and_dataset_details_are_noindex() {
     let (status, h, _) = get_site(&s, "/status", None).await;
     assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
     assert_eq!(header_str(&h, robots.clone()), "noindex");
-    for uri in ["/", "/?t=1896-07-01", "/favicon.svg", "/search/whigs"] {
+    for uri in [
+        "/",
+        "/?t=1896-07-01",
+        "/favicon.svg",
+        "/search/whigs",
+        "/datasets",
+        "/credits",
+    ] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(header_str(&h, robots.clone()), "", "{uri}");
@@ -686,7 +753,7 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     for (uri, location) in [
         (
             "/?q=%22cross+of+gold%22&tab=table",
-            "/search/%22cross%20of%20gold%22?tab=table",
+            "/search/cross-of-gold?tab=table",
         ),
         ("/index.html?q=gold", "/search/gold"),
         ("/search/whigs/", "/search/whigs"),
@@ -695,14 +762,13 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         assert_eq!(status, StatusCode::MOVED_PERMANENTLY, "{uri}");
         assert_eq!(header_str(&headers, header::LOCATION), location);
     }
-    let uri = "/search/%22cross%20of%20gold%22";
+    let uri = "/search/cross-of-gold";
     let (status, headers, body) = get_site(&s, uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
-    assert!(body.contains("<title>&quot;cross of gold&quot; · US News Map</title>"));
-    assert!(body.contains(
-        r#"<link rel="canonical" href="https://usnewsmap.com/search/%22cross%20of%20gold%22" />"#
-    ));
+    assert!(body.contains("<title>cross of gold · US News Map</title>"));
+    assert!(body
+        .contains(r#"<link rel="canonical" href="https://usnewsmap.com/search/cross-of-gold" />"#));
     assert!(body.contains("matching newspaper pages"));
     assert!(body.contains("1896-07-18"), "{body}");
     assert!(
@@ -753,7 +819,7 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
     backend.add_index("pages-base-fixture", vec![doc]);
     backend.add_index("pages-delta-fixture-1", vec![]);
     let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
-    let (status, _, body) = get_site(&s, "/search/%22cross%20of%20gold%22", None).await;
+    let (status, _, body) = get_site(&s, "/search/cross-of-gold", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
         body.contains("Reader&#39;s &amp; Co. &lt;archive&gt;"),

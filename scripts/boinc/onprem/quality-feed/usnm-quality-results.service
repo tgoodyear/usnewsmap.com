@@ -1,0 +1,17 @@
+# On pve-laptop: upsert one verified partial scope under CT230's bridge lock.
+# Complete campaign outputs are not replaced. Never runs on pve-big.
+[Unit]
+Description=usnewsmap bounded partial canonical quality results into usnm_quality
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-ship.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/quality-ship.env
+Environment=CTID=215
+Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
+EnvironmentFile=-/etc/usnm/quality-results.env
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --collector ${QUALITY_COLLECTOR}
+TimeoutStartSec=10min
+Nice=10

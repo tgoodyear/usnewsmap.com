@@ -1,4 +1,5 @@
 ocr/bench/serialset-pilot/source/alto/*.xml whitespace=cr-at-eol
+fixtures/congress/lcg/manual/annals/*.pdf binary
 # The native Qwen app embeds these byte for byte (include_bytes!) and compares them with the
 # copies shipped beside it, so every checkout, Windows CI included, must keep LF.
 ocr/boinc/qwen/*.lock text eol=lf

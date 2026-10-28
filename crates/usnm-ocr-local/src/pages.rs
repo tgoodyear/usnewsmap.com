@@ -7,10 +7,12 @@
 //! The release (Step 9) scores both texts again rather than trusting these
 //! scores; they are for choosing a row per page, for `ocr-sync --report`
 //! and for the operator's estimates.
+//! Schema v2 adds `ocr_reason`; `loc_text` and `reason` are deprecated,
+//! equal aliases retained for older readers, never reader text.
 
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use arrow_array::builder::{Float64Builder, Int16Builder, Int32Builder, StringBuilder};
 use arrow_array::{Array, ArrayRef, Float64Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -21,6 +23,8 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use usnm_core::text::Hyphenation;
 use usnm_overlay::OverlayRow;
+
+const SCHEMA_VERSION_KEY: &str = "usnm.ocr_local.schema_version";
 
 /// One text's scores (`usnm_core::damage::score` against the title's
 /// catalog languages plus English).
@@ -87,6 +91,7 @@ pub fn extra_fields() -> Vec<Field> {
         f("loc_damage_rate"),
         f("loc_function_share"),
         i("loc_head"),
+        s("ocr_reason", false),
     ]
 }
 
@@ -97,7 +102,55 @@ pub fn schema() -> SchemaRef {
         .map(|f| f.as_ref().clone())
         .collect();
     fields.extend(extra_fields());
-    Arc::new(Schema::new(fields))
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        [(SCHEMA_VERSION_KEY.to_owned(), "2".to_owned())]
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>(),
+    ))
+}
+
+fn version_two(schema: &Schema) -> anyhow::Result<bool> {
+    let has_reason = schema.index_of("ocr_reason").is_ok();
+    match schema
+        .metadata()
+        .get(SCHEMA_VERSION_KEY)
+        .map(String::as_str)
+    {
+        None | Some("1") if !has_reason => Ok(false),
+        Some("2") if has_reason => Ok(true),
+        version => {
+            bail!("unsupported local OCR schema {version:?} with ocr_reason column={has_reason}")
+        }
+    }
+}
+
+fn reasons(batch: &RecordBatch, version_two: bool) -> anyhow::Result<&StringArray> {
+    let column = |name| {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .with_context(|| format!("local OCR `{name}` must be a string column"))
+    };
+    let legacy = column("loc_text")?;
+    let alias = column("reason")?;
+    let reason = if version_two {
+        column("ocr_reason")?
+    } else {
+        legacy
+    };
+    for i in 0..batch.num_rows() {
+        if reason.is_null(i)
+            || legacy.is_null(i)
+            || alias.is_null(i)
+            || !matches!(reason.value(i), "bulk" | "user")
+            || reason.value(i) != legacy.value(i)
+            || reason.value(i) != alias.value(i)
+        {
+            bail!("local OCR row {i}: invalid or conflicting OCR reasons");
+        }
+    }
+    Ok(reason)
 }
 
 /// A merged part holding `rows`.
@@ -127,6 +180,9 @@ pub fn encode(rows: &[Imported]) -> anyhow::Result<Vec<u8>> {
         })
         .collect();
     for r in rows {
+        if !matches!(r.reason.as_str(), "bulk" | "user") || r.reason != r.row.loc_text {
+            bail!("invalid or conflicting local OCR reasons for {}", r.row.key);
+        }
         version.append_value(i16::try_from(r.batch_version).context("batch version")?);
         source.append_value(&r.source_part);
         node.append_value(&r.node);
@@ -152,6 +208,9 @@ pub fn encode(rows: &[Imported]) -> anyhow::Result<Vec<u8>> {
         cols.push(Arc::new(b.3.finish()));
         cols.push(Arc::new(b.4.finish()));
     }
+    cols.push(Arc::new(StringArray::from_iter_values(
+        rows.iter().map(|r| r.reason.as_str()),
+    )));
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(6).expect("valid level"),
@@ -171,6 +230,8 @@ pub struct StoredRow {
     pub batch: String,
     pub ocr_source: String,
     pub ocr_engine: String,
+    /// The queue reason, never LoC's reader text.
+    pub ocr_reason: String,
     /// The node that read it.
     pub node: String,
     /// The damage metric version `ocr-sync` scored the row with. Rows of
@@ -209,6 +270,7 @@ impl StoredRow {
 pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let schema = builder.schema().clone();
+    let version_two = version_two(&schema)?;
     let wanted: Vec<usize> = (0..schema.fields().len())
         .filter(|&i| schema.field(i).name() != "text")
         .collect();
@@ -216,6 +278,7 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
     let mut out = Vec::new();
     for batch in builder.with_projection(mask).build()? {
         let b = batch?;
+        let reason = reasons(&b, version_two)?;
         macro_rules! col {
             ($name:expr, $t:ty) => {
                 b.column_by_name($name)
@@ -269,6 +332,7 @@ pub fn read_scores(bytes: Bytes) -> anyhow::Result<Vec<StoredRow>> {
                 batch: batch_name.value(i).to_owned(),
                 ocr_source: source.value(i).to_owned(),
                 ocr_engine: engine.value(i).to_owned(),
+                ocr_reason: reason.value(i).to_owned(),
                 node: node.value(i).to_owned(),
                 metric_version: u32::try_from(metric.value(i)).unwrap_or(0),
                 ocred_at: at.value(i),
@@ -298,7 +362,12 @@ pub fn read_texts(
     use arrow_array::LargeStringArray;
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let schema = builder.schema().clone();
-    let wanted: Vec<usize> = ["doc_id", "text"]
+    let version_two = version_two(&schema)?;
+    let mut names = vec!["doc_id", "text", "loc_text", "reason"];
+    if version_two {
+        names.push("ocr_reason");
+    }
+    let wanted: Vec<usize> = names
         .iter()
         .map(|n| {
             schema
@@ -311,6 +380,7 @@ pub fn read_texts(
     let mut at = 0usize;
     for batch in builder.with_projection(mask).build()? {
         let b = batch?;
+        reasons(&b, version_two)?;
         let doc_id = b
             .column_by_name("doc_id")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
@@ -328,4 +398,104 @@ pub fn read_texts(
         at += b.num_rows();
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn imported() -> Imported {
+        Imported {
+            row: OverlayRow {
+                key: "sn83045462/1890-05-03/ed-2/seq-7".parse().unwrap(),
+                batch: "batch_dlc_test_ver01".into(),
+                ocr_source: "usnm-tesseract".into(),
+                ocr_engine: "tesseract/5.5.1 profile=eng".into(),
+                loc_text: "bulk".into(),
+                text: "The newspaper printed the actual page text.".into(),
+                image_url: "https://tile.loc.gov/x".into(),
+                ocred_at: chrono::DateTime::from_timestamp(1, 0).unwrap(),
+            },
+            batch_version: 1,
+            source_part: "pages/source.parquet".into(),
+            node: "node1".into(),
+            reason: "bulk".into(),
+            ours: Scores::default(),
+            loc: Scores::default(),
+        }
+    }
+
+    fn part(version: Option<&str>, reason: Option<&str>, legacy: &str, alias: &str) -> Bytes {
+        let reader =
+            ParquetRecordBatchReaderBuilder::try_new(Bytes::from(encode(&[imported()]).unwrap()))
+                .unwrap()
+                .build()
+                .unwrap();
+        let batch = reader.into_iter().next().unwrap().unwrap();
+        let mut fields: Vec<Field> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect();
+        let mut cols = batch.columns().to_vec();
+        cols[batch.schema().index_of("loc_text").unwrap()] =
+            Arc::new(StringArray::from(vec![legacy]));
+        cols[batch.schema().index_of("reason").unwrap()] = Arc::new(StringArray::from(vec![alias]));
+        assert_eq!(fields.last().unwrap().name(), "ocr_reason");
+        if let Some(reason) = reason {
+            *cols.last_mut().unwrap() = Arc::new(StringArray::from(vec![reason]));
+        } else {
+            fields.pop();
+            cols.pop();
+        }
+        let metadata: HashMap<String, String> = version
+            .map(|v| (SCHEMA_VERSION_KEY.to_owned(), v.to_owned()))
+            .into_iter()
+            .collect();
+        let schema = Arc::new(Schema::new_with_metadata(fields, metadata));
+        let mut writer = ArrowWriter::try_new(Vec::new(), schema.clone(), None).unwrap();
+        writer
+            .write(&RecordBatch::try_new(schema, cols).unwrap())
+            .unwrap();
+        Bytes::from(writer.into_inner().unwrap())
+    }
+
+    #[test]
+    fn legacy_and_version_two_parts_keep_reasons_separate_from_text() {
+        for bytes in [
+            part(None, None, "bulk", "bulk"),
+            part(Some("1"), None, "user", "user"),
+            part(Some("2"), Some("user"), "user", "user"),
+            Bytes::from(encode(&[imported()]).unwrap()),
+        ] {
+            let scores = read_scores(bytes.clone()).unwrap();
+            assert!(matches!(scores[0].ocr_reason.as_str(), "bulk" | "user"));
+            let old_reader = usnm_overlay::read_part(bytes.clone()).unwrap();
+            assert_eq!(old_reader[0].loc_text, scores[0].ocr_reason);
+            let text = read_texts(bytes, &HashSet::from([0])).unwrap();
+            assert_eq!(text[0].1 .1, imported().row.text);
+        }
+    }
+
+    #[test]
+    fn readers_reject_unknown_schemas_and_conflicting_or_invalid_reasons() {
+        for bytes in [
+            part(Some("3"), Some("bulk"), "bulk", "bulk"),
+            part(None, Some("bulk"), "bulk", "bulk"),
+            part(Some("1"), Some("bulk"), "bulk", "bulk"),
+            part(Some("2"), None, "bulk", "bulk"),
+            part(Some("2"), Some("user"), "bulk", "bulk"),
+            part(None, None, "bulk", "user"),
+            part(Some("2"), Some("missing"), "missing", "missing"),
+            part(None, None, "search", "search"),
+        ] {
+            assert!(read_scores(bytes.clone()).is_err());
+            assert!(read_texts(bytes, &HashSet::from([0])).is_err());
+        }
+        let mut row = imported();
+        row.reason = "user".into();
+        assert!(encode(&[row]).is_err());
+    }
 }

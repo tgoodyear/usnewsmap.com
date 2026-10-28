@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Examples } from "./Examples";
-import { EXAMPLE_ORDER, EXAMPLES } from "../examples";
+import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_MORE, EXAMPLES_SHOWN } from "../examples";
 import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
 
 /** The cards as App shows them, with the press count held in state. */
@@ -38,7 +38,7 @@ describe("Examples", () => {
       expect(after.slice(0, before.length)).toEqual(before);
       expect(after.length - before.length).toBe(Math.min(10, EXAMPLES.length - before.length));
     }
-    expect(presses).toBe(10);
+    expect(presses).toBe(Math.ceil((EXAMPLES.length - EXAMPLES_SHOWN) / EXAMPLES_MORE));
     const all = titles();
     expect(all).toHaveLength(EXAMPLES.length);
     expect(new Set(all).size).toBe(EXAMPLES.length);
@@ -74,14 +74,5 @@ describe("Examples", () => {
     fireEvent.click(link);
     expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...EXAMPLE_ORDER[1]!.view });
     expect(viewUrl(onPick.mock.calls[0]![0])).toBe(link.getAttribute("href"));
-  });
-
-  it("links to indexable base searches and leaves modified clicks to the browser", () => {
-    const onPick = vi.fn();
-    render(<Home onPick={onPick} />);
-    const base = screen.getAllByRole("link", { name: "Search all dates" })[0]!;
-    expect(base.getAttribute("href")).toMatch(/^\/search\/[^?]+$/);
-    fireEvent.click(document.querySelector("#examples a.example")!, { ctrlKey: true });
-    expect(onPick).not.toHaveBeenCalled();
   });
 });

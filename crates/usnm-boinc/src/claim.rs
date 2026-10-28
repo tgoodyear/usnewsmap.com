@@ -31,11 +31,11 @@ use std::{
     path::Path,
     time::Duration,
 };
-use usnm_ingest::ocr_local::{boinc::Snapshot, ledger::Ledger};
 use usnm_ocr_contract::{
     fetched,
     message::{self, Cause, DeadLetter, OcrMessage},
 };
+use usnm_ocr_local::{boinc::Snapshot, ledger::Ledger};
 use usnm_ocr_worker::engine;
 use usnm_store::{
     queue::{LeaseLost, Queue, Received, DEADLETTER, PRIORITY},

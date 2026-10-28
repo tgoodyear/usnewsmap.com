@@ -127,6 +127,8 @@ describe("PagesLists", () => {
     expect(panel.textContent).toContain("600 pages (51.1%) in 2 places");
     fireEvent.click(within(panel).getByRole("button", { name: "Chicago, IL" }));
     expect(onSelect).toHaveBeenCalledWith("Chicago");
+    fireEvent.click(within(panel).getByRole("button", { name: "IL" }));
+    expect(onSelect).toHaveBeenCalledWith("state:IL");
   });
 });
 
@@ -292,14 +294,13 @@ describe("Most pages: Show more", () => {
     expect(document.activeElement).toBe(button(places(), "Show more"));
   });
 
-  it("expands each list on its own, and focuses the first state it adds, which has no button", () => {
+  it("expands each list on its own, and focuses the first state it adds", () => {
     render(<Pages rows={many(30, 8)} />);
     expect(states().textContent).toContain("Showing 5 of 8.");
     fireEvent.click(button(states(), "Show more")!);
     expect(entries(states())).toHaveLength(8);
     expect(states().textContent).toContain("Showing all 8.");
-    expect(document.activeElement).toBe(entries(states())[5]);
-    expect(document.activeElement?.textContent).toMatch(/^S6 /);
+    expect(document.activeElement?.textContent).toBe("S6");
     // The places list didn't move.
     expect(entries(places())).toHaveLength(5);
     expect(button(places(), "Show fewer")).toBeNull();

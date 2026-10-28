@@ -232,6 +232,7 @@ impl Env {
             ja_latin: false,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -270,6 +271,7 @@ impl Env {
             ja_latin,
             ocr_local: false,
             congress: false,
+            congress_manual: false,
             partition_decade: false,
             single_text_field: false,
             page_language: false,
@@ -581,8 +583,8 @@ pub(crate) fn local_row(
     loc: &str,
     node: &str,
     ocred_at: i64,
-) -> usnm_ingest::ocr_local::pages::Imported {
-    use usnm_ingest::ocr_local::pages::{Imported, Scores};
+) -> usnm_ocr_local::pages::Imported {
+    use usnm_ocr_local::pages::{Imported, Scores};
     let langs = ["eng"];
     Imported {
         row: usnm_overlay::OverlayRow {
@@ -648,8 +650,8 @@ pub(crate) fn garble(text: &str) -> String {
 /// Congress pages curated from the recorded UNT responses (#229), as
 /// `congress-globe` writes them: metadc29274's pages in `seqs`, a new
 /// attempt each call.
-pub(crate) async fn put_globe(e: &Env, seqs: &[u32]) -> usnm_ingest::congress::curated::Counts {
-    use usnm_ingest::congress::{curated, globe, parse};
+pub(crate) async fn put_globe(e: &Env, seqs: &[u32]) -> usnm_congress::curated::Counts {
+    use usnm_congress::{curated, globe, parse};
     let dir = fixtures().join("../congress/unt");
     let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
     let (items, _) = globe::parse_records(&read("oai-cglob-1.xml")).unwrap();

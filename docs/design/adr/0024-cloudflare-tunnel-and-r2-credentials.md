@@ -1,6 +1,9 @@
 # ADR-0024: Cloudflare Tunnel and R2 credentials for the on-prem BOINC server
 
 - **Status:** Accepted (2026-10-21, maintainer). In use since the #942 cutover. Amended 2026-10-25 (maintainer): the `usnm-ocrdash` tunnel (item 4).
+- **Amendment 2026-10-27 (maintainer):** renewable public DNS-01 TLS for
+  Cloudflare-proxied Azure Container Apps (item 5), explicitly authorized with
+  the Cloudflare/Azure cutover.
 - **Date:** 2026-10
 - **Relates to:** ADR-0009, ADR-0023; #942, #955; `docs/boinc-onprem.md`
 
@@ -35,8 +38,24 @@ An exception to ADR-0009 covers exactly these Cloudflare credentials:
    Key Vault home-kv, secret `cloudflare-tunnel-usnm-ocrdash-token`; on the host,
    `/etc/cloudflared/usnm-ocrdash.env` (mode 0600). The LAN view and the hosts' pushes stay on the
    LAN listener.
+5. **The DNS-01 validation token** for the production public origin certificate.
+   It has DNS Write on the `usnewsmap.com` zone only, no account administration,
+   token administration or tunnel access. Unlike the operator token, this workload
+   token permits GitHub-hosted runner IPs. It expires after 90 days and is stored
+   as `usnm-prod-acme-cloudflare-token` in the dedicated production vault
+   `usnmtlskvprodffapzy`. The existing production GitHub
+   OIDC identity has Secrets User on this secret alone and Secrets Officer on
+   `usnm-prod-acme-state` alone (the ACME account and certificate private keys).
+   No workload receives the operator token. The operator rotates this token
+   every 60 days; the weekly renewal job fails with an explicit maintenance
+   instruction when fewer than 14 days remain. See the
+   [certificate runbook](../../operations/origin-tls.md).
+   The vault's public endpoint supports GitHub-hosted runner egress with
+   secret-level Entra RBAC; its resource-scoped public-network policy exception
+   covers only the DNS token and ACME state. The home vault retains its
+   operator-only IP firewall, and no workload may read its operator token.
 
-Rules for all four:
+Rules for all applicable credentials:
 
 - Kept in Azure Key Vault, read through Entra RBAC; never in the repository or on a command line,
   and never printed. The one copy outside Key Vault of each tunnel token is on its host, in a
@@ -59,3 +78,7 @@ Rules for all four:
   token was revoked, and its key pair was deleted from both vaults. Exception 2 no longer
   applies. Exceptions 1 and 3 remain.
 - Moving serving on-prem (#955) would add tunnels under the same rules, with no new kind of credential.
+- The production origin certificate now uses Let's Encrypt DNS-01 rather than
+  Azure's direct-DNS managed-certificate renewal. Its private ACME state is
+  encrypted in Key Vault and materialized only in a mode-0700 working directory
+  while Certbot runs, removed on exit; never in Actions artifacts or caches.

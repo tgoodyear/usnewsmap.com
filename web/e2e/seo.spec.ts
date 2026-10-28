@@ -82,11 +82,11 @@ test("curated searches expose top-city results and homepage links without JavaSc
   try {
     await page.goto(`${process.env.PW_BASE_URL}/`);
     const home = page.getByRole("navigation", { name: "Common newspaper searches" });
-    await expect(home.getByRole("link", { name: '"cross of gold"', exact: true })).toHaveAttribute(
+    await expect(home.getByRole("link", { name: "cross of gold", exact: true })).toHaveAttribute(
       "href",
-      "/search/%22cross%20of%20gold%22",
+      "/search/cross-of-gold",
     );
-    await home.getByRole("link", { name: '"cross of gold"', exact: true }).click();
+    await home.getByRole("link", { name: "cross of gold", exact: true }).click();
     const samples = page.getByRole("region", { name: "Sample results" });
     await expect(samples).toContainText("has the most hits");
     await expect(samples.locator("ol > li")).toHaveCount(10);
@@ -178,7 +178,7 @@ test("the API's OpenAPI document is served on the site's origin too", async ({ r
   expect(Object.keys(doc.paths)).toContain("/v1/aggregate");
 });
 
-test("sitemap.xml lists the home page, privacy and curated base searches", async ({ request }) => {
+test("sitemap.xml lists canonical site pages and curated base searches", async ({ request }) => {
   const res = await request.get("/sitemap.xml");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/xml/);
@@ -186,6 +186,8 @@ test("sitemap.xml lists the home page, privacy and curated base searches", async
   expect(locs).toEqual([
     `${SITE}/`,
     `${SITE}/privacy`,
+    `${SITE}/datasets`,
+    `${SITE}/credits`,
     ...[...new Set(examples.map(({ view }) => searchPath(view.q)))].map((path) => `${SITE}${path}`),
   ]);
   if (withApi) {
@@ -199,7 +201,9 @@ test("sitemap.xml lists the home page, privacy and curated base searches", async
 });
 
 test("the privacy page renders, with links to it from the other pages", async ({ page }) => {
-  await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    route.fulfill({ status: 404 }),
+  );
   await page.goto("/privacy");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Privacy");
   await expect(page.locator("h1")).toHaveCount(1);
@@ -244,20 +248,22 @@ test.describe("what the API tells crawlers", () => {
     expect((await request.get("/status")).url()).toMatch(/\/datasets$/);
   });
 
-  test("search permalinks and the dataset details are noindex; the home page is not", async ({ request }) => {
-    for (const url of ["/search/x", "/search/whigs?tab=table", "/datasets"]) {
+  test("uncurated searches and filtered permalinks are noindex; site pages are not", async ({ request }) => {
+    for (const url of ["/search/x", "/search/whigs?tab=table"]) {
       const res = await request.get(url);
       expect(res.status(), url).toBe(200);
       expect(res.headers()["x-robots-tag"], url).toBe("noindex");
     }
-    const home = await request.get("/");
-    expect(home.headers()["x-robots-tag"]).toBeUndefined();
+    for (const url of ["/", "/datasets", "/credits", "/privacy"]) {
+      const page = await request.get(url);
+      expect(page.headers()["x-robots-tag"], url).toBeUndefined();
+    }
   });
 
   test("legacy searches redirect without losing filters", async ({ request }) => {
     const res = await request.get("/?q=%22cross+of+gold%22&tab=table", { maxRedirects: 0 });
     expect(res.status()).toBe(301);
-    expect(res.headers()["location"]).toBe("/search/%22cross%20of%20gold%22?tab=table");
+    expect(res.headers()["location"]).toBe("/search/cross-of-gold?tab=table");
   });
 
   test("the privacy page is indexable and names itself in the head", async ({ request }) => {

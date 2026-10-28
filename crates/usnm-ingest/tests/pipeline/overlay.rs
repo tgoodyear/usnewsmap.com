@@ -323,7 +323,7 @@ async fn japanese_ocr_with_nothing_to_index_waits() {
 /// a third text in `text_all`, on those pages only.
 #[tokio::test]
 async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
-    use usnm_ingest::ocr_local::{pages, pages_path};
+    use usnm_ocr_local::{pages, pages_path};
     use usnm_state::ocr_local::{OcrLocalPages, OCR_LOCAL_FILE, OCR_LOCAL_PAGES_FILE};
     let e = env().await;
     let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
@@ -451,6 +451,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
             ja_latin: true,
             ocr_local: true,
             congress: false,
+            congress_manual: false,
             ..e.releaser(day, full)
         };
         let root = e.root.clone();
@@ -612,6 +613,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         ja_latin: true,
         ocr_local: true,
         congress: false,
+        congress_manual: false,
         single_text_field: true,
         ..e.releaser(7, true)
     };

@@ -90,6 +90,27 @@ test("a drill dry run deploys the drill Worker to its one hostname with DNT on",
   assert.equal(result.calls, "");
 });
 
+test("the Phase 4 mode requires an explicit deploy flag", () => {
+  const result = deploy([...COMMON, "--drill-hostname", "test.usnewsmap.com", "--error-layer",
+    "--allowed-origins", "https://usnewsmap.com", "--dry-run"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--var ERROR_LAYER:true/);
+  assert.match(result.stdout, /--var ADD_DNT:true/);
+  assert.match(result.stdout, /--var ALLOWED_ORIGINS:https:\/\/usnewsmap\.com/);
+  assert.equal(result.calls, "");
+});
+
+test("the error layer cannot deploy without an explicit valid origin policy", () => {
+  for (const value of [null, "*", "https://usnewsmap.com/path", "https://user:pass@usnewsmap.com", "https://usnewsmap.com,"]) {
+    const args = [...COMMON, "--drill-hostname", "test.usnewsmap.com", "--error-layer", "--dry-run"];
+    if (value !== null) args.push("--allowed-origins", value);
+    const result = deploy(args);
+    assert.equal(result.status, 2, String(value));
+    assert.match(result.stderr, /error:/);
+    assert.equal(result.calls, "");
+  }
+});
+
 test("it is not run from the repository to find its files: any directory works", () => {
   // deploy() runs in a scratch directory; the config path is still the repository's file.
   const result = deploy([...COMMON, "--production", "--dry-run"]);

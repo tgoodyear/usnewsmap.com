@@ -21,7 +21,10 @@
 # usnm-quality-locwc-load.{service,timer} (LoC's word confidence, once /srv/locstats is there).
 # On the host it
 # installs quality-ship.sh, quality_receive.py,
-# usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env. The campaign's page list
+# usnm-quality-ship.{service,timer} and /etc/usnm/quality-ship.env, plus
+# usnm-quality-results.{service,timer} to collect canonical results into the certificate-
+# authenticated quality database every 15 minutes, once CT215's loader DSN exists.
+# The campaign's page list
 # (/var/lib/usnm-quality-feed/<campaign>/pages.jsonl in the container, from
 # quality_feed.py select) must be there before --enable starts the feeder and the timer.
 # --follow runs the piggyback and the full image pass instead: usnm-quality-follow (every
@@ -74,6 +77,8 @@ stage=/root/usnm-quality-feed-install
 "${SSH[@]}" "rm -rf $stage && install -d -m 700 $stage"
 scp -q "$HERE/quality_feed.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
+  "$HERE/quality_results.py" "$HERE/quality_results_partial.py" "$HERE/quality-results-pull.sh" \
+  "$HERE/usnm-quality-results.service" "$HERE/usnm-quality-results.timer" \
   "$HERE/usnm-quality-ship.timer" "$HERE/../../../onprem/quality/load.py" \
   "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
   "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" \
@@ -139,9 +144,16 @@ install -d /opt/usnm-quality-feed /etc/usnm
 install -m 0755 "$stage/quality-ship.sh" /opt/usnm-quality-feed/quality-ship.sh
 install -m 0644 "$stage/quality_receive.py" /opt/usnm-quality-feed/quality_receive.py
 install -m 0644 "$stage/usnm-quality-ship.service" "$stage/usnm-quality-ship.timer" /etc/systemd/system/
+install -m 0755 "$stage/quality_results.py" "$stage/quality_results_partial.py" \
+  "$stage/quality-results-pull.sh" /opt/usnm-quality-feed/
+install -m 0644 "$stage/usnm-quality-results.service" "$stage/usnm-quality-results.timer" /etc/systemd/system/
+printf 'CTID=%s\n' "$ct" > /etc/usnm/quality-results.env
 printf 'CAMPAIGN=%s\nENGINE_IMAGE=%s\nMAX_UNSENT=%s\nMAX_CHUNKS=%s\nBUNDLE_SIZE=%s\n' \
   "$campaign" "$engine" "$unsent" "$chunks" "$bundle" > /etc/usnm/quality-ship.env
 systemctl daemon-reload
+if in_ct test -s /etc/usnm/quality-db/dsn; then
+  systemctl enable --now usnm-quality-results.timer
+fi
 rm -rf "$stage"
 if [ "$follow" = true ]; then
   # The piggyback and the image pass: the follow feeder and the pass's manifests, with the

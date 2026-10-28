@@ -28,6 +28,7 @@ The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with th
 | `install.sh`                                          | The container, as root, from a checkout                                         | Installs the units, configs and update script, the journald and tmpfiles rules and the Quickwit binary, then enables and starts Caddy, the searcher and the timer. Safe to run again. It restarts the searcher only when its config, binary or unit changed.                                     |
 | `update-api.sh`                                       | The container, from the timer                                                   | Blue/green deploys (below).                                                                                                                                                                                                                                                                      |
 | `apply-tunnel-ingress.sh`                             | The operator's machine, from the address the Cloudflare API token is limited to | Sends `tunnel-ingress.json` to Cloudflare, with the token read from Key Vault. `--hostname` routes a test hostname only.                                                                                                                                                                         |
+| `apply-cache-rules.py`, `cache-rules.json`            | The operator's machine, from the address the Cloudflare API token is limited to | Stages apex static/versioned lookup caching and explicit dynamic/API bypasses. Edits individual rules, preserves existing basemap/OCR rules, and verifies read-back. Does not change DNS or certificates.                                                                                        |
 | `Caddyfile`, `*.service`, `*.timer`                   | Installed by `install.sh`                                                       |                                                                                                                                                                                                                                                                                                  |
 | `tunnel-ingress.json`                                 | Applied by `apply-tunnel-ingress.sh`                                            | The tunnel's ingress, kept in the repository (ADR-0005 decision 3).                                                                                                                                                                                                                              |
 | `flood-rule.json`                                     | Recorded only; the operator makes the rule in the dashboard                     | The zone's one Free rate-limit rule for the four search routes, off until a flood (ADR-0027 settled decision 9), in the shape of the body for the zone's `http_ratelimit` entry point. Until the zone-settings script exists (ADR-0027 decision 12), the dashboard rule must match this file.    |
@@ -37,10 +38,53 @@ The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with th
 
 Every script takes named flags and has a `--dry-run`.
 
+## Cloudflare cache policy
+
+Staging Cache Rules does not enable proxying or prove a cache HIT.
+[ADR-0028](../../../docs/design/adr/0028-cloudflare-with-azure-origin.md) allows
+proxying the existing Azure origin independently of the on-prem migration.
+Replace DNS-dependent managed certificates with renewable DNS-01 certificates,
+deploy the privacy/proxy changes and verify strict TLS before enabling the
+proxy. ADR-0027's hardware, rehearsal and fallback gates still apply to the
+later on-prem cutover, not to the Azure-origin proxy.
+
+Preview the policy without credentials or network calls:
+
+```bash
+python3 scripts/onprem/serving/apply-cache-rules.py --zone-id <zone id> --dry-run
+```
+
+Stage it with a Key Vault token authorized for the zone's Cache Rules:
+
+```bash
+python3 scripts/onprem/serving/apply-cache-rules.py --zone-id <zone id> --vault <vault> --token-secret <secret>
+```
+
+Keep the printed before/after receipt. The script updates only its three
+stable rule refs, preserving existing rules (including `usnm_versioned_basemap`
+and the OCR dashboard). It places the dynamic bypass last. A failed operation
+is explicit and may leave a partially applied policy; inspect the receipt/zone
+and rerun before proceeding with any cutover.
+
+| Request                                                                                                                                   | Policy                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Apex `/assets/*`, `robots.txt`, `favicon.svg`, `og-image.png`                                                                             | Eligible only under origin Cache-Control; bypass when absent                       |
+| Apex versioned basemap                                                                                                                    | Existing `basemap-cache-rule.json` remains unchanged                               |
+| Apex `/v1/places`, `/v1/titles`, `/v1/titles/*`, `/v1/coverage`, `/v1/days` and `/api/v1` equivalents, with a nonempty `v` query argument | Eligible only under origin Cache-Control; default cache key retains the full query |
+| Everything else on apex, including HTML/search previews, sitemap, aggregate/hits, live metadata/status, health and unversioned lookups    | Bypass                                                                             |
+| All requests on `api` and `www`                                                                                                           | Bypass; avoids cross-origin cache mixing, while `www` redirects to apex            |
+
+Origin `no-store` responses, including lookup 202/307/errors and missing assets,
+must remain uncacheable. No forced TTL, query-string stripping, deployment purge
+or cache-everything rule is introduced. After the approved cutover, fetch each
+class twice and retain `CF-Cache-Status`/`Age` evidence: static/versioned successes
+should warm to HIT, dynamic/API requests must not HIT, and PMTiles ranges must
+retain `Content-Length`/`Content-Range` without `Content-Encoding`.
+
 ## Setup (Phase 2)
 
 1. home-infra's `serving-ct.sh` creates the container, its VLAN tag, its firewall and its packages. Then the container joins Arc under its own identity, outside the on-prem group, and Bicep grants that identity its roles with `onPremServing` on.
-2. The host mounts the index read-only at the path the release wrote into its metastore (the release's run directory plus `/qw`), and the NVMe pool's cache dataset at `/srv/usnm-serving/cache`.
+2. The host mounts the index read-only at the path the release wrote into its metastore (the release's run directory plus `/qw`), and the NVMe pool's cache dataset at `/srv/usnm-serving/cache`. The installer also creates `/srv/usnm-serving/sitemap-state`, writable by the API image's user and bind-mounted into both API colors. `USNM_SITEMAP_STATE_URL` points there independently of visitor search logging, which remains disabled before cutover. Unlike the response cache, these durable sitemap checkpoints never expire; preserve this directory across upgrades and restores.
 3. On the operator's machine:
 
    ```bash

@@ -196,7 +196,8 @@ same rules.
 4. Verify the actual deployed alert inventory and queries, the site web
    test, the `usnm-core-ag-prod` receivers and short name `usnm-prod`, the
    `usnm-core-budget-prod` start/notifications, and workbook titles
-   `usnm pipeline (prod)` and `usnm API (prod)`. Do not use the issue's old
+   `usnm OCR nodes (prod)` and `usnm API (prod)`. The pipeline workbook is
+   retired; do not recreate it for this verification. Do not use the issue's old
    alert count: later changes added and consolidated rules. The three OCR
    alert names also become conventional. The old history of fired alerts
    and availability results remains in the same workspace; the recreated
@@ -224,6 +225,15 @@ same rules.
    Offboarding still accepts legacy names so this migration is possible.
 
 ### Explicitly blocked later changes
+
+**Current production topology (27 October 2026, #309):** the #931 cutover
+retired the Azure ingest jobs, ingest identity, scratch account/file endpoint,
+Document Intelligence and pipeline workbook. Their Phase 3 naming entries
+below are historical fallback pins, not instructions to recreate those
+resources. A later proposal to reintroduce a retired workload must review its
+names and exception map before provisioning. The live OCR workbook is
+`usnm OCR nodes (prod)`; do not recreate `usnm pipeline (prod)` to complete the
+old checklist.
 
 - **OCR exchange:** the original window, when the account was empty and had
   no worker, has passed; `ocr-exchange.bicep` now also holds BOINC hand-off
@@ -255,9 +265,10 @@ same rules.
 - Phase 4 is intentionally deferred to an environment rebuild, not part of
   #283. Do not unpin the skeleton, lake or Cosmos just to complete naming.
 
-Keep #309 open until the applicable code changes and Phase 3 operator
-verification are complete. These instructions do not report any migration
-as performed.
+Keep #309 open until the applicable operator verification and the live
+exchange-account migration or an explicitly accepted deferral are complete.
+Retired Phase 3 resources require inventory reconciliation, not a rename.
+These instructions do not report the exchange migration as performed.
 
 ## Retired Spot resource group
 
@@ -448,7 +459,7 @@ It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=r
 - `SITE_URL` then becomes `https://<domain>`, and `API_URL` becomes `https://api.<domain>`.
 - If a name's DNS record changed within the last hour, resolvers may still hold the old one and validation can fail. Re-run bootstrap later.
 
-Prod's domain has been hosted at Cloudflare since 20 October 2026 (#944), with `usnewsmap.com`, `www` and `api` as DNS-only records, so its settings set `USNM_DNS_ZONE_HOSTED=false`: the stack deploys no zone and `NAME_SERVERS` is empty. `USNM_DNS_ZONE` stays set, because the custom domains, managed certificates, CORS origins and availability tests come from it. The records the zone held (the apex A record, the `www` and `api` CNAMEs, the `asuid` TXT records, CAA allowing DigiCert, and the no-mail and site-verification TXT records) are kept at Cloudflare by hand. Managed-certificate renewal needs only that the names keep resolving straight to the app, not Azure DNS ([free certificate requirements](https://learn.microsoft.com/azure/container-apps/custom-domains-managed-certificates#free-certificate-requirements)). A proxied (orange-cloud) record would put Cloudflare in between and block renewal.
+Prod's domain has been hosted at Cloudflare since 20 October 2026 (#944), so `USNM_DNS_ZONE_HOSTED=false`: the stack deploys no zone and `NAME_SERVERS` is empty. `USNM_DNS_ZONE` stays set for custom domains, certificate bindings, CORS origins and availability tests. [ADR-0028](../docs/design/adr/0028-cloudflare-with-azure-origin.md) authorizes proxying the apex, `www` and `api` while keeping the API, searchers and index in Azure. Replacement DNS-01 certificates must be bound before enabling the proxy; Azure's managed-certificate renewal requires direct DNS and is not used for proxied names. Keep the existing private certificate-ID settings updated so provisioning preserves the uploaded certificate bindings. DNS records, domain-verification TXT records, CAA and site-verification records remain at Cloudflare.
 
 ## Container registry
 

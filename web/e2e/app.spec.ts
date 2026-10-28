@@ -47,8 +47,10 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route("https://tiles.openfreemap.org/**", (route) =>
-    route.request().url().includes("/styles/") ? route.fulfill({ json: STYLE }) : route.fulfill({ status: 404 }),
+  await page.route(/tiles\.openfreemap\.org\/|\/basemap\/[^/]+\/style\.json$/, (route) =>
+    /\/styles\/|\/style\.json$/.test(route.request().url())
+      ? route.fulfill({ json: STYLE })
+      : route.fulfill({ status: 404 }),
   );
 });
 
@@ -133,7 +135,7 @@ test("example clicks reset inherited filters to match their link URLs", async ({
 
 test("path searches survive reload and history when only the query changes", async ({ page }) => {
   await page.goto("/search/%22cross%20of%20gold%22?tab=table");
-  await expect(page.getByRole("searchbox")).toHaveValue('"cross of gold"');
+  await expect(page.getByRole("searchbox")).toHaveValue("cross of gold");
   await expect(page.locator(".summary")).toContainText("6 places");
   await page.reload();
   await expect(page.getByRole("button", { name: "Table", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -145,7 +147,7 @@ test("path searches survive reload and history when only the query changes", asy
   await expect(page).toHaveURL(/\/search\/gold(?:\?|$)/);
   await expect(page).toHaveTitle("gold · US News Map");
   await page.goBack();
-  await expect(page.getByRole("searchbox")).toHaveValue('"cross of gold"');
+  await expect(page.getByRole("searchbox")).toHaveValue("cross of gold");
   await expect(page.locator(".summary")).toContainText("6 places");
   await page.goForward();
   await expect(page.getByRole("searchbox")).toHaveValue("gold");
@@ -158,7 +160,7 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   await expectAccessible(page);
 
   await (await findExample(page, /Cross of Gold, 1896/)).click();
-  await expect(page).toHaveURL(/\/search\/%22cross%20of%20gold%22/);
+  await expect(page).toHaveURL(/\/search\/cross-of-gold/);
   await expect(page.locator(".summary")).toContainText("6 places");
 
   // Keyboard playback: Home goes to the first week, where nothing has matched yet.

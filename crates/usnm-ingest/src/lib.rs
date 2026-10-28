@@ -41,12 +41,13 @@ pub mod worker;
 // Pipeline state lives in its own crate so the API can read it without
 // the pipeline's dependencies (Parquet, Quickwit, telemetry export).
 // `owner_id` (leases and attempt paths) lives beside the leases.
-pub use usnm_state::{cosmos, docs, owner_id, state};
+use usnm_state::owner_id;
+pub use usnm_state::{cosmos, docs, state};
 
 // The Congress fetches and the local OCR pipeline are their own crates. The
-// modules keep their paths here, for the stages above and for the crates
-// that call them (`usnm-boinc`, `usnm-ocr-worker`).
-pub use usnm_congress as congress;
-pub use usnm_ocr_local as ocr_local;
+// private aliases keep internal stage imports concise; other crates use
+// the extracted crates directly.
+use usnm_congress as congress;
+use usnm_ocr_local as ocr_local;
 // The curated page rows (`usnm-overlay` holds the Parquet schemas of a page's text).
-pub use usnm_overlay::curated;
+use usnm_overlay::curated;

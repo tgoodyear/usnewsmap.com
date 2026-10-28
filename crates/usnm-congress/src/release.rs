@@ -52,14 +52,25 @@ pub struct Listing {
 }
 
 impl Listing {
-    /// Each unit's newest finished attempt.
+    /// Each unit's newest finished attempt, including every series.
     pub async fn load(store: &dyn ObjectStore) -> anyhow::Result<Self> {
+        Self::load_enabled(store, true).await
+    }
+
+    /// [`load`], optionally excluding the browser-downloaded Annals and
+    /// Register units until an operator enables `USNM_CONGRESS_MANUAL`.
+    pub async fn load_enabled(
+        store: &dyn ObjectStore,
+        include_manual: bool,
+    ) -> anyhow::Result<Self> {
         let mut out = Listing::default();
         let empties = curated::empties(store).await?;
         for f in curated::finished(store).await? {
             let superseded = f.series == globe::SERIES
                 && globe::SUPERSEDED.iter().any(|(id, _, _)| *id == f.unit);
+            let manual_off = !include_manual && matches!(f.series.as_str(), "annals" | "register");
             if superseded
+                || manual_off
                 || curated::superseded_by_empty(&empties, &f)
                 || !super::SERIES.contains(&f.series.as_str())
             {

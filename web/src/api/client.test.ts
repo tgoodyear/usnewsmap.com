@@ -250,6 +250,9 @@ describe("api client", () => {
     expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
       "/v1/hits?q=gold&v=v1&place=P00006&limit=20&sort=newest&cursor=abc",
     );
+    respond({ index_version: "v1" });
+    await api.hits({ q: "gold", mode: "all", state: ["IL", "NY"] }, "v1", "state:IL", "oldest", null);
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe("/v1/hits?q=gold&state=IL&v=v1&limit=20");
     expect(searchQuery({ q: "gold", mode: "all", lang: [] }, "v").toString()).toBe("q=gold&v=v");
   });
 

@@ -299,7 +299,9 @@ export function PagesLists({
         itemKey={(s) => s.state}
         render={(s) => (
           <>
-            {s.state}{" "}
+            <button type="button" className="link-button" onClick={() => onSelect(`state:${s.state}`)}>
+              {s.state}
+            </button>{" "}
             <span className="skew-list__value">
               {pages(s.pages)} ({share(s.pages, total)}) in {s.places.toLocaleString("en-US")}{" "}
               {s.places === 1 ? "place" : "places"}

@@ -181,6 +181,7 @@ async fn index_storage_stages_a_fresh_base_without_changing_the_serving_version(
     let release = Release {
         stage_index_storage: true,
         congress: true,
+        congress_manual: false,
         ..e.releaser(2, false)
     };
     let mut sink = JsonlSink::new(e.root.join("new-account"));
@@ -588,6 +589,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,

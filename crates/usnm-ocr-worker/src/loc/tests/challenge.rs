@@ -1,5 +1,6 @@
 //! Bot challenges and other HTML answers, which hold the server.
 
+use super::super::fetch::ProbeFailure;
 use super::super::*;
 use super::{batch_client, key, BATCH};
 use crate::standin::{Scripted, StandIn};

@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -37,6 +41,9 @@ jobs:
     outputs:
       rust: ${{ steps.f.outputs.rust }}
       quickwit: ${{ steps.f.outputs.quickwit }}
+      quickwit_parity: ${{ steps.f.outputs.quickwit_parity }}
+      quickwit_pipeline: ${{ steps.f.outputs.quickwit_pipeline }}
+      quickwit_suites: ${{ steps.f.outputs.quickwit_suites }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
       e2e: ${{ steps.f.outputs.e2e }}
@@ -78,7 +85,15 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - name: Workspace tests
+        shell: bash
+        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"
+      - name: Test binary timings
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/rust-tests.log" ]; then
+            python3 scripts/ci/rust-test-times.py --log "$RUNNER_TEMP/rust-tests.log" >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The stored ALTO profile (13 §13.8.2): the writer's golden pages
       # against LoC's ALTO 3.1 schema.
       - name: Stored ALTO against alto-3-1.xsd
@@ -295,16 +310,15 @@ jobs:
           bad=$(grep -nE '^(FROM|ARG BASE=)' contrib-compute/images/*/Containerfile | grep -vE '@sha256:[0-9a-f]{64}|FROM \$\{|FROM scratch$' || true)
           [ -z "$bad" ] || { echo "::error::base image without a digest:"; echo "$bad"; exit 1; }
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # The base (BOINC from source) is the slow layer: cached across runs.
-      - uses: ./.github/actions/build-check-image
+      # BuildKit follows the dependency graph: base/server and Rust bridge-bin
+      # can build concurrently, without shipping large images between runners.
+      - uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7
         with:
-          file: contrib-compute/images/base/Containerfile
-          tag: usnm-boinc-base:check
-          cache-scope: boinc-base
-      - name: The server image builds on the base
-        run: |
-          docker buildx build --builder default --load -t usnm-boinc-server:check \
-            -f contrib-compute/images/server/Containerfile --build-arg BASE_IMAGE=usnm-boinc-base:check .
+          source: .
+          files: contrib-compute/images/ci.hcl
+          targets: ci
+        env:
+          CI_CACHE_WRITE: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
       - name: The server image has the stock tools and daemons
         run: scripts/ci/check-boinc-server-image.sh --image usnm-boinc-server:check
       - name: Record the image id
@@ -319,11 +333,6 @@ jobs:
       - name: The bridge image builds
         if: hashFiles('crates/usnm-boinc/Cargo.toml') != ''
         run: |
-          docker buildx build --builder default --load -t usnm-boinc-bridge-bin:check \
-            -f contrib-compute/images/bridge-bin/Containerfile .
-          docker buildx build --builder default --load -t usnm-boinc-bridge:check \
-            -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
-            --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
           # The gold-bundle step's tools (docs/boinc/gold-check.md#build-the-gold-bundle).
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
@@ -350,8 +359,8 @@ jobs:
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
   # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
-  # run offline on Node's own test runner with no dependencies, and shellcheck of its deploy
-  # script. No package.json and no npm cache, so it does not use setup-node-web.
+  # run offline on Node's own test runner, native Cache API/HTMLRewriter integration with
+  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache.
   edge:
     name: edge (fallback worker tests)
     needs: changes
@@ -365,13 +374,20 @@ jobs:
         with:
           node-version: 24
       - run: node --test edge/fallback-worker/*.test.mjs
+      - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
+        env:
+          WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
 
-  quickwit:
-    name: quickwit (parity, ingest release)
+  quickwit-tests:
+    name: quickwit (${{ matrix.suite }})
     needs: changes
     if: needs.changes.outputs.quickwit == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}
     # Upstream's v0.9.1 release binary, not our build (ADR-0013): our one
     # commit changes only the Azure Blob client, which these tests don't
     # reach (they index and search local files), and building ours takes an
@@ -384,21 +400,47 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ matrix.suite }}
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
+        if: matrix.suite == 'parity'
         run: echo "QUICKWIT_URL=$(scripts/dev/quickwit-fixtures.sh --workdir "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
-      - run: cargo test -p usnm-search --test quickwit_parity --locked
+      - name: Search parity
+        if: matrix.suite == 'parity'
+        shell: bash
+        run: cargo test -p usnm-search --test quickwit_parity --locked 2>&1 | tee "$RUNNER_TEMP/quickwit-tests.log"
       # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
       # with the environment the official Quickwit image sets (the ingest image
       # is built on it): the writer must not pick these up.
-      - run: cargo test -p usnm-ingest --test pipeline --locked
+      - name: Ingest pipeline
+        if: matrix.suite == 'pipeline'
+        shell: bash
+        run: cargo test -p usnm-ingest --test pipeline --locked 2>&1 | tee "$RUNNER_TEMP/quickwit-tests.log"
         env:
           QW_LISTEN_ADDRESS: 0.0.0.0
           QW_DATA_DIR: /quickwit/qwdata
           QW_CONFIG: /quickwit/config/quickwit.yaml
-      - if: failure()
+      - name: Test binary timings
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/quickwit-tests.log" ]; then
+            python3 scripts/ci/rust-test-times.py --log "$RUNNER_TEMP/quickwit-tests.log" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: failure() && matrix.suite == 'parity'
         run: tail -n 200 "$RUNNER_TEMP"/qw/*.log
+
+  quickwit:
+    name: quickwit (parity, ingest release)
+    needs: [changes, quickwit-tests]
+    if: always() && needs.changes.outputs.quickwit == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: All selected isolated suites must pass
+        env:
+          RESULT: ${{ needs.quickwit-tests.result }}
+        run: test "$RESULT" = success
 
   fixtures:
     name: fixtures are reproducible
@@ -435,11 +477,15 @@ jobs:
           scripts/ops/test_check_version_snapshots.py scripts/ops/test_check_index_history.py
           scripts/azure/test_date_spans.py
 
-  image:
-    name: container image builds
+  image-tests:
+    name: container image (${{ matrix.image }})
     needs: changes
     if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, ingest, ja-ocr]
     # Build and smoke-test the images. Publishing happens per environment in
     # `publish`, from the same build cache.
     permissions:
@@ -456,27 +502,33 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
       - uses: ./.github/actions/build-check-image
+        if: matrix.image == 'api'
         with:
           file: docker/Dockerfile.api
           tag: usnewsmap-api:check
           cache-scope: api
       - name: The API image serves the API and the site
+        if: matrix.image == 'api'
         run: scripts/ci/check-api-image.sh --image usnewsmap-api:check
       - uses: ./.github/actions/build-check-image
+        if: matrix.image == 'ingest'
         with:
           file: docker/Dockerfile.ingest
           tag: usnm-ingest-check
           cache-scope: ingest
       - name: The ingest image runs
+        if: matrix.image == 'ingest'
         run: scripts/ci/check-ingest-image.sh --image usnm-ingest-check
       # PR builds have no registry, so docker/Dockerfile.ingest's default base is
       # upstream's image; it must be the one infra/quickwit-image.json pins.
       - name: docker/Dockerfile.ingest's default Quickwit is the pinned upstream image
+        if: matrix.image == 'ingest'
         run: |
           want=$(jq -r '.upstream | "\(.image):\(.tag)@\(.digest)"' infra/quickwit-image.json)
           grep -qxF "ARG QUICKWIT_IMAGE=$want" docker/Dockerfile.ingest ||
             { echo "::error::docker/Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
       - uses: ./.github/actions/build-check-image
+        if: matrix.image == 'ja-ocr'
         with:
           file: docker/Dockerfile.ja-ocr
           tag: usnm-ja-ocr-check
@@ -484,11 +536,24 @@ jobs:
       # The whole checkout, read-only: test_page_language_parity.py checks
       # the Rust port's word list and parity fixture against this Python.
       - name: The Japanese OCR job's tests pass
+        if: matrix.image == 'ja-ocr'
         run: |
           docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo/ocr/ja-ocr --entrypoint python3 usnm-ja-ocr-check \
             -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
+        if: matrix.image == 'ja-ocr'
         run: scripts/ci/check-ja-ocr-image.sh --image usnm-ja-ocr-check
+
+  image:
+    name: container image builds
+    needs: [changes, image-tests]
+    if: always() && needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: All image builds and smoke tests must pass
+        env:
+          RESULT: ${{ needs.image-tests.result }}
+        run: test "$RESULT" = success
 
   # The on-prem OCR worker for the nodes (12 Step 2): built on AlmaLinux 9,
   # so it links against EL9's glibc (2.34) and runs on EL9 and RHEL 10.
@@ -585,6 +650,16 @@ jobs:
       - name: The worker reads a line with the image, as on a node
         run: |
           dist/usnm-ocr-worker check-engine --tesseract-image "$(cat dist/usnm-ocr-tesseract.image-id)"
+      - name: Linux engine-image resource and deadline cleanup acceptance
+        run: |
+          if ! command -v setfacl >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y acl
+          fi
+          python3 scripts/ci/ocr-engine-cgroup-smoke.py \
+            --worker dist/usnm-ocr-worker \
+            --base-image localhost/usnm-ocr/tesseract:check \
+            --work-dir .ci/ocr-engine-cgroup
       - name: The archive loads back as the same image
         run: |
           podman rmi -f usnm-ocr/tesseract:check
@@ -600,6 +675,66 @@ jobs:
             dist/usnm-ocr-tesseract.oci.tar.gz
             dist/usnm-ocr-tesseract.image-id
           if-no-files-found: error
+
+  # Require one always-reporting context, not path-filtered child checks.
+  worker-contrib:
+    name: worker and BOINC checks
+    needs:
+      - changes
+      - contrib-compute
+      - boinc-pages
+      - boinc-db-tls
+      - boinc-mysql84-db-tls
+      - boinc-node-client
+      - contrib-images
+      - ocr-worker-el9
+      - ocr-worker-check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every applicable worker and BOINC check must pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CONTRIB_REQUIRED: ${{ needs.changes.outputs.contrib }}
+          PAGES_REQUIRED: ${{ needs.changes.outputs.boinc_pages }}
+          WORKER_REQUIRED: ${{ needs.changes.outputs.ocr_worker }}
+          DASH_REQUIRED: ${{ needs.changes.outputs.ocr_dash }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          if needs.get("changes", {}).get("result") != "success":
+              raise SystemExit("::error::changes must succeed before classifying worker/BOINC checks")
+          flags = {}
+          for name in ("CONTRIB_REQUIRED", "PAGES_REQUIRED", "WORKER_REQUIRED", "DASH_REQUIRED"):
+              value = os.environ.get(name)
+              if value not in ("true", "false"):
+                  raise SystemExit(f"::error::{name} must be true or false, got {value!r}")
+              flags[name] = value == "true"
+          event = os.environ["GITHUB_EVENT_NAME"]
+          if event not in ("pull_request", "push", "workflow_dispatch"):
+              raise SystemExit(f"::error::unsupported CI event: {event}")
+          required = dict.fromkeys((
+              "contrib-compute", "boinc-db-tls", "boinc-mysql84-db-tls",
+              "boinc-node-client", "contrib-images",
+          ), flags["CONTRIB_REQUIRED"])
+          required["boinc-pages"] = flags["PAGES_REQUIRED"]
+          required["ocr-worker-el9"] = flags["WORKER_REQUIRED"] or flags["DASH_REQUIRED"]
+          required["ocr-worker-check"] = flags["WORKER_REQUIRED"] or (
+              flags["DASH_REQUIRED"] and event != "pull_request"
+          )
+          errors = []
+          for name, selected in required.items():
+              expected = "success" if selected else "skipped"
+              result = needs.get(name, {}).get("result", "missing")
+              print(f"{name}: {result} (expected {expected})")
+              if result != expected:
+                  errors.append(f"::error::{name} must be {expected}, got {result}")
+          if errors:
+              raise SystemExit("\n".join(errors))
+          PY
 
   # On main: a GitHub release of the worker binary, the LAN dashboard and
   # the Tesseract image, with a build provenance attestation, which hosts
@@ -670,11 +805,11 @@ jobs:
           persist-credentials: false
       - run: scripts/ci/no-private-addresses.sh
 
-  infra:
-    name: infra (bicep lint, build)
+  infra-checks:
+    name: infra configuration checks
     # Also the shared-key scan and the named-arguments check (#277), so every
     # change but documentation runs them. The Bicep, naming, workbook and
-    # script-test steps run when something they read changed (`infra`), which
+    # script-test jobs run when something they read changed (`infra`), which
     # a change confined to src/ and tests/ of the LAN dashboard crate doesn't.
     # The OCR gold steps follow `ocr_gold`.
     needs: changes
@@ -700,13 +835,6 @@ jobs:
       - name: Engine pins written in more than one place agree
         if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/check-engine-pins.py
-      # Every scripts/**/test_*.py (changes.sh, the corpus catalog, model downloads, the
-      # environment and BOINC scripts against stub tools, the checkers, ...). A new test file
-      # runs without being listed here. The files it leaves out (Pillow, the ops venv, their own
-      # workflow) and why are in scripts/ci/run-unit-tests.py; each runs in a step of its own.
-      - name: The script unit tests pass (every scripts/**/test_*.py)
-        if: needs.changes.outputs.infra == 'true'
-        run: scripts/ci/run-unit-tests.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
@@ -772,6 +900,52 @@ jobs:
           AZURE_ENV_NAME: dev
           USNM_VNET_ADDRESS_PREFIX: 192.0.2.0/24
 
+  script-tests:
+    name: script tests (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Bicep for ARM contract tests
+        run: scripts/ci/install-bicep.sh
+      - name: Every selected script module runs in exactly one isolated shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: scripts/ci/run-unit-tests.py --shard-index "$SHARD" --shard-count 3 --timings "$RUNNER_TEMP/script-timings.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: script-timings-${{ matrix.shard }}
+          path: ${{ runner.temp }}/script-timings.json
+          retention-days: 7
+          if-no-files-found: error
+
+  infra:
+    name: infra (bicep lint, build)
+    needs: [changes, infra-checks, script-tests]
+    if: always() && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configuration and all relevant script shards must pass
+        env:
+          CONFIG_RESULT: ${{ needs.infra-checks.result }}
+          SCRIPTS_RESULT: ${{ needs.script-tests.result }}
+          SCRIPTS_REQUIRED: ${{ needs.changes.outputs.infra }}
+        run: |
+          test "$CONFIG_RESULT" = success
+          if [ "$SCRIPTS_REQUIRED" = true ]; then
+            test "$SCRIPTS_RESULT" = success
+          else
+            test "$SCRIPTS_RESULT" = skipped
+          fi
+
   web:
     name: web (lint, typecheck, test, build)
     needs: changes
@@ -790,6 +964,7 @@ jobs:
       - run: npm run lint
       # Prettier: web/ and Markdown anywhere in the repository.
       - run: npm run format:check
+      - run: python3 ../scripts/ci/check-doc-links.py
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -811,6 +986,7 @@ jobs:
       - uses: ./.github/actions/setup-node-web
       - run: npm ci
       - run: npm run format:check
+      - run: python3 ../scripts/ci/check-doc-links.py
 
   web-e2e:
     name: web end-to-end (Playwright + axe)
@@ -1002,19 +1178,61 @@ jobs:
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: scripts/ci/roll-api.sh
+      # A build provenance attestation for the API image, for an origin that
+      # checks it before it runs the image (#955), as hosts check the OCR
+      # worker release's. Its subject is the
+      # digest the push returned, the one `usnewsmap-api:<sha>` names.
+      - name: Attest the API image
+        if: steps.head.outputs.current == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.ACR }}/usnewsmap-api
+          subject-digest: ${{ steps.api.outputs.digest }}
+
+  indexnow:
+    name: notify changed URLs (${{ matrix.environment }})
+    needs: publish
+    if: >-
+      always() && needs.publish.result == 'success'
+      && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
+    environment: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: indexnow-${{ matrix.environment }}
+      cancel-in-progress: false
+    env:
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: env.APP != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Restore the last successful IndexNow submission
-        if: steps.head.outputs.current == 'true' && env.APP != ''
+        if: env.APP != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: ${{ runner.temp }}/indexnow/sitemap.sha256
           key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: indexnow-v1-${{ matrix.environment }}-
-      # Submit every live sitemap URL only when the URL set changes. Record
+      # Submit added/removed URLs and existing URLs whose lastmod changed. Record
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: steps.head.outputs.current == 'true' && env.APP != ''
+        if: env.APP != ''
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
@@ -1026,15 +1244,3 @@ jobs:
         with:
           path: ${{ runner.temp }}/indexnow/sitemap.sha256
           key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-      # A build provenance attestation for the API image, for an origin that
-      # checks it before it runs the image (#955), as hosts check the OCR
-      # worker release's. Its subject is the
-      # digest the push returned, the one `usnewsmap-api:<sha>` names. Last,
-      # so a failure here doesn't hold back the rollout or IndexNow, but
-      # still fails the deployment.
-      - name: Attest the API image
-        if: steps.head.outputs.current == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.ACR }}/usnewsmap-api
-          subject-digest: ${{ steps.api.outputs.digest }}

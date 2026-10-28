@@ -15,6 +15,7 @@ use axum::routing::{get, post, MethodRouter};
 use axum::Router;
 use moka::future::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -239,6 +240,8 @@ pub struct AppState {
     pub ocr_requests: Option<Arc<ocr_requests::OcrRequests>>,
     /// `/v1/openapi.json`'s body, built on its first request.
     pub(crate) openapi: std::sync::OnceLock<Arc<Vec<u8>>>,
+    pub(crate) sitemap: site::sitemap::Service,
+    pub(crate) previews: site::social::Service,
 }
 
 impl AppState {
@@ -283,6 +286,8 @@ impl AppState {
             search_log: None,
             ocr_requests: None,
             openapi: std::sync::OnceLock::new(),
+            sitemap: site::sitemap::Service::default(),
+            previews: site::social::Service::default(),
         }
     }
 
@@ -384,7 +389,9 @@ pub fn app(state: Arc<AppState>) -> Router {
     }
     router
         .layer(cors)
-        .layer(CompressionLayer::new())
+        .layer(CompressionLayer::new().compress_when(
+            DefaultPredicate::new().and(NotForContentType::new("application/vnd.pmtiles")),
+        ))
         // One span per request with the route template, never the path or
         // query: query strings carry search text (09 §9.4.2).
         .layer(middleware::from_fn_with_state(state, telemetry::track))
@@ -613,6 +620,8 @@ pub fn spawn_searcher_warm_up(state: Arc<AppState>) -> Option<tokio::task::JoinH
 /// Poll `current.json` every `refresh_interval` (no-op without a loader), and
 /// prune idle rate-limit buckets.
 pub fn spawn_background(state: Arc<AppState>) {
+    site::sitemap::spawn(state.clone());
+    site::social::spawn(state.clone());
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(state.config.refresh_interval);
         tick.tick().await;

@@ -21,6 +21,12 @@ function pairs(query: URLSearchParams | string): string[] {
 }
 
 describe("examples", () => {
+  it("contains 200 distinct curated searches", () => {
+    expect(EXAMPLES).toHaveLength(200);
+    const queries = EXAMPLES.map((e) => (e.view.q ?? "").toLowerCase().replaceAll('"', "").replace(/\s+/g, " ").trim());
+    expect(new Set(queries).size).toBe(EXAMPLES.length);
+  });
+
   it("have unique ids and views that survive the URL", () => {
     expect(new Set(EXAMPLES.map((e) => e.id)).size).toBe(EXAMPLES.length);
     for (const ex of EXAMPLES) {
@@ -256,7 +262,7 @@ describe("examples shown", () => {
       before = shown;
       if (shown.length === EXAMPLE_ORDER.length) break;
     }
-    // 100 examples: 3, then 13, 23, ... 93, then the last 7.
+    // Three first, then ten at a time, then whatever remains.
     expect(clicks).toBe(Math.ceil((EXAMPLES.length - EXAMPLES_SHOWN) / EXAMPLES_MORE));
     expect(new Set(before)).toEqual(new Set(EXAMPLES));
     // Pressing on past the end changes nothing.

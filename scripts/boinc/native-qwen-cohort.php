@@ -3,6 +3,7 @@
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
 const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
+const TIEBREAKER_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b", "shared_8b"];
 const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
 // General admission: the class takes any of the app's work, with no workunit bounds. The
 // marker records the operator's choice, so a plan-policy refresh keeps it (refresh-plan-policy.py).
@@ -114,9 +115,83 @@ function native_qwen_other_closed($xml, $plan_class) {
     return true;
 }
 
-function native_qwen_cohort_validate($workunit, $results, $plan_class) {
+// An AMD ordinary canary admits one ordinary (non-assignment) workunit to AMD exactly as the
+// NVIDIA/Intel windows do: two unsent generic replicas, so its peer is that workunit's normal
+// replica on any eligible host. The default AMD window still requires targeted staging.
+// A tiebreaker admits Intel/NVIDIA to the one unsent replica the transitioner created after an
+// inconclusive quorum. Earlier results stay untouched; the normal validator compares the new one,
+// and <one_result_per_host_per_wu/> keeps it on a host other than the inconclusive ones.
+function native_qwen_tiebreaker_validate($workunit, $results, $plan_class, $assignments = 0) {
+    if (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)) {
+        throw new RuntimeException("Tiebreaker is for intel_vulkan_8b, nvidia_vulkan_8b, or shared_8b only");
+    }
+    $unsent = 0;
+    $inconclusive = 0;
+    foreach ($results as $result) {
+        if (intval($result->server_state) === 2 && intval($result->sent_time) === 0
+            && intval($result->outcome) === 0 && intval($result->validate_state) === 0) {
+            $unsent++;
+        } elseif (intval($result->server_state) === 5 && intval($result->outcome) === 1
+            && intval($result->validate_state) === 4) {
+            $inconclusive++;
+        } else {
+            throw new RuntimeException("Tiebreaker requires every reported result to be a successful inconclusive");
+        }
+    }
+    if (intval($workunit->batch) !== 8 || intval($workunit->rsc_disk_bound) !== 19327352832
+        || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== count($results)
+        || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
+        || intval($workunit->transitioner_flags ?? -1) !== 0 || intval($workunit->need_validate ?? -1) !== 0
+        || intval($workunit->app_version_num ?? -1) !== 0 || intval($assignments) !== 0
+        || $unsent !== 1 || $inconclusive < 2) {
+        throw new RuntimeException("Tiebreaker requires one unassigned native 8b quorum-2 workunit with "
+            ."one unsent replica and only inconclusive successes");
+    }
+}
+
+// BOINC enables <one_result_per_host_per_wu> only as a self-closing flag or a numeric true
+// value; empty pairs, CDATA and nested markup leave it off, so accept only <tag/> or <tag>1</tag>.
+function native_qwen_one_result_per_host($path) {
+    $reader = new XMLReader();
+    if (!$reader->open($path, null, LIBXML_NONET)) return false;
+    $enabled = 0;
+    $found = 0;
+    $stack = [];
+    while (@$reader->read()) {
+        if ($reader->nodeType === XMLReader::END_ELEMENT) {
+            array_pop($stack);
+        } elseif ($reader->nodeType === XMLReader::ELEMENT) {
+            $here = array_merge($stack, [$reader->name]);
+            if ($reader->name === "one_result_per_host_per_wu") {
+                $found++;
+                if ($here === ["boinc", "config", "one_result_per_host_per_wu"]) {
+                    if ($reader->isEmptyElement) {
+                        $enabled++;
+                    } else {
+                        $inner = $reader->readInnerXml();
+                        if (preg_match('/^\s*1\s*$/D', $inner)) $enabled++;
+                    }
+                }
+            }
+            if (!$reader->isEmptyElement) $stack = $here;
+        }
+    }
+    $reader->close();
+    // BOINC reads the raw token in the first <config> block, without entity expansion.
+    $raw = file_get_contents($path);
+    return $found === 1 && $enabled === 1 && $raw !== false
+        && preg_match_all('/<one_result_per_host_per_wu[\s>\/]/', $raw) === 1
+        && preg_match_all('/<config[\s>\/]/', $raw) === 1
+        && preg_match('/<config>(?:(?!<\/config>).)*(?:<one_result_per_host_per_wu\s*\/>|'
+            .'<one_result_per_host_per_wu>\s*1\s*<\/one_result_per_host_per_wu>)/s', $raw) === 1;
+}
+
+function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary_canary = false, $assignments = 0) {
     if (!in_array($plan_class, NATIVE_QWEN_CLASSES, true)) {
         throw new RuntimeException("Unsupported native class");
+    }
+    if ($ordinary_canary && $plan_class !== "amd_vulkan_8b") {
+        throw new RuntimeException("Ordinary canary is for amd_vulkan_8b only");
     }
     $model = $plan_class === "nvidia_cuda_2b" ? "2b" : "8b";
     $batch = $model === "2b" ? 2 : 8;
@@ -124,12 +199,18 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class) {
     if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk
         || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== 2
         || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
-        || ($plan_class === "amd_vulkan_8b" ? (
+        || ($ordinary_canary && (count($results) !== 2 || intval($assignments) !== 0
+            || intval($workunit->transitioner_flags ?? -1) !== 0
+            || intval($workunit->need_validate ?? -1) !== 0
+            || intval($workunit->app_version_num ?? -1) !== 0))
+        || (!$ordinary_canary && ($plan_class === "amd_vulkan_8b" ? (
             count($results) !== 0 || intval($workunit->transitioner_flags ?? 0) !== 2
             || intval($workunit->transition_time ?? 0) <= time()
             || intval($workunit->need_validate ?? 0) !== 0
-        ) : count($results) !== 2)) {
-        throw new RuntimeException("Expected unaccepted native quorum-2 work; AMD requires targeted staging without results");
+        ) : count($results) !== 2))) {
+        throw new RuntimeException($ordinary_canary
+            ? "AMD ordinary canary requires one unassigned, unbound quorum-2 workunit with two unsent replicas"
+            : "Expected unaccepted native quorum-2 work; AMD requires targeted staging without results");
     }
     foreach ($results as $result) {
         if (intval($result->server_state) !== 2 || intval($result->sent_time) !== 0) {
@@ -138,7 +219,16 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class) {
     }
 }
 
-function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false) {
+function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
+        $ordinary_canary = false, $tiebreaker = false) {
+    if ($tiebreaker && (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true) || $general || $ordinary_canary
+            || $workunit_id <= 1 || ($last_id !== null && $last_id !== $workunit_id))) {
+        throw new RuntimeException("Tiebreaker is one intel_vulkan_8b, nvidia_vulkan_8b, or shared_8b workunit");
+    }
+    if ($ordinary_canary && ($plan_class !== "amd_vulkan_8b" || $general || $workunit_id <= 1
+            || ($last_id !== null && $last_id !== $workunit_id))) {
+        throw new RuntimeException("Ordinary canary is one amd_vulkan_8b workunit");
+    }
     if ($general && (!isset(GENERAL_MARKERS[$plan_class]) || $workunit_id !== 0 || ($last_id !== null && $last_id !== 0))) {
         throw new RuntimeException("General admission is for ".implode(" and ", array_keys(GENERAL_MARKERS))." only and has no workunit identity");
     }
@@ -158,7 +248,8 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,
             "other_managed_class_closed" => !$general && native_qwen_other_closed($updated, $plan_class),
-            "admission_mode" => $general ? "general" : ($workunit_id > 1 ? "bounded" : "closed"),
+            "admission_mode" => $general ? "general"
+                : ($workunit_id > 1 ? ($ordinary_canary ? "ordinary_canary" : ($tiebreaker ? "tiebreaker" : "bounded")) : "closed"),
             "independent_amd_window" => true, "apply" => $apply,
             "before_sha256" => hash("sha256", $original),
             "after_sha256" => hash("sha256", $updated),
@@ -202,20 +293,27 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
 }
 
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "apply"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "ordinary-canary", "tiebreaker", "apply"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
     $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
     $stop = array_key_exists("stop", $options);
     $general = array_key_exists("general", $options);
+    $ordinary_canary = array_key_exists("ordinary-canary", $options);
+    $tiebreaker = array_key_exists("tiebreaker", $options);
     if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
         || (!in_array($plan_class, NATIVE_QWEN_CLASSES, true) && $plan_class !== "shared_8b")
         || (!$stop && !$general && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
         || (isset($options["workunit-end"]) && !preg_match('/^[1-9][0-9]*$/', $options["workunit-end"]))
         || ($stop && (isset($options["workunit"]) || isset($options["workunit-end"])))
         || ($general && ($stop || !isset(GENERAL_MARKERS[$plan_class])
-            || isset($options["workunit"]) || isset($options["workunit-end"])))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
+            || isset($options["workunit"]) || isset($options["workunit-end"])))
+        || ($ordinary_canary && ($stop || $general || $plan_class !== "amd_vulkan_8b"
+            || !isset($options["workunit"]) || isset($options["workunit-end"])))
+        || ($tiebreaker && ($stop || $general || $ordinary_canary
+            || !in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)
+            || !isset($options["workunit"]) || isset($options["workunit-end"])))) {
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
@@ -225,18 +323,33 @@ function native_qwen_cohort_main() {
     }
     if (!$stop && !$general) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
+        if ($tiebreaker) {
+            // The scheduler reads the live project's config; a private --db-project copy must agree.
+            if (!native_qwen_one_result_per_host("$project/config.xml")
+                || !native_qwen_one_result_per_host("$db_project/config.xml")) {
+                throw new RuntimeException("Tiebreaker requires one_result_per_host_per_wu");
+            }
+        }
         chdir("$db_project/html/inc");
         require_once("boinc_db.inc");
         for ($current = $id; $current <= $last_id; $current++) {
             $wu = BoincWorkunit::lookup_id($current);
             $app = $wu ? BoincApp::lookup_id($wu->appid) : null;
             if (!$wu || !$app || $app->name !== "usnm_qwen") throw new RuntimeException("Not a Qwen workunit");
-            native_qwen_cohort_validate($wu, BoincResult::enum("workunitid=$current"),
-                $plan_class === "shared_8b" ? "nvidia_vulkan_8b" : $plan_class);
+            $results = BoincResult::enum("workunitid=$current");
+            if ($tiebreaker) {
+                native_qwen_tiebreaker_validate($wu, $results, $plan_class,
+                    BoincDb::get()->count("assignment", "workunitid=$current"));
+            } else {
+                native_qwen_cohort_validate($wu, $results,
+                    $plan_class === "shared_8b" ? "nvidia_vulkan_8b" : $plan_class, $ordinary_canary,
+                    $ordinary_canary ? BoincDb::get()->count("assignment", "workunitid=$current") : 0);
+            }
         }
     }
     echo json_encode(native_qwen_cohort_write(
-        $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general
+        $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general, $ordinary_canary,
+        $tiebreaker
     ), JSON_PRETTY_PRINT)."\n";
 }
 

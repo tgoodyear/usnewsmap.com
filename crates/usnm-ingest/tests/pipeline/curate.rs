@@ -80,6 +80,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,
@@ -119,7 +120,7 @@ async fn curates_a_real_loc_archive() {
     );
     let mut rows = Vec::new();
     let part = e.curated.get(&c.parts[0]).await.unwrap().unwrap();
-    usnm_ingest::curated::read_part(part.into(), true, |r| {
+    usnm_overlay::curated::read_part(part.into(), true, |r| {
         rows.push(r);
         Ok(())
     })
@@ -229,6 +230,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         ja_latin: false,
         ocr_local: false,
         congress: false,
+        congress_manual: false,
         partition_decade: false,
         single_text_field: false,
         page_language: false,

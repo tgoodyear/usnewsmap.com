@@ -3,6 +3,7 @@
 
 use super::super::*;
 use super::{batch_client, key, BATCH};
+use crate::batch;
 use crate::standin::{Page, Scripted, StandIn};
 
 /// One issue of sn1 (1890-05-03, ed. 1) in batch `xx_test_ver01`,

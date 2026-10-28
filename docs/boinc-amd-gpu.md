@@ -18,17 +18,19 @@ intact; admission and validation policy are unchanged. See the
 [release receipt](notes/2026-10-26-boinc-gpu-release.md).
 This is not a successful RX 9070 XT execution or a resolved startup-failure claim.
 
-## Automatic scheduling and optional qualification
+## Admission status and qualification
 
-The production admission mode is automatic: an attached host with a
-compatible accelerator should receive eligible accelerator-only work through
-normal BOINC scheduling, without a manual admission step for each volunteer.
-The maintainer authorized initial AMD admission before hardware qualification;
-signed publication plus one operator **platform-wide promotion** enables it.
-That promotion removes only AMD workunit bounds, not GPU, memory or validation
-checks. Volunteers do not need an individual cohort, audited workunit or manual
-host approval. The optional bounded procedure below remains a diagnostic tool,
-not a prerequisite for normal volunteers.
+AMD admission is **currently stopped** under
+[home-infra#81](https://github.com/tgoodyear/home-infra/issues/81) after signed
+Windows 1.10/110 failed before inference on an actual RX 9070 XT. Do not apply
+the general promotion below until a corrected signed release completes the
+**required** bounded exact-one-workunit acceptance (real-device inference and a
+valid returned result) and ordinary independent-peer validation/collection, and
+the reopening is coordinated on #529. After that acceptance, the intended mode
+is automatic again: compatible hosts receive eligible accelerator-only work
+through normal BOINC scheduling without per-volunteer cohorts or manual host
+approval. Promotion removes only AMD workunit bounds, not GPU, memory or
+validation checks.
 
 GPU-only Qwen routes use separate resource classes: AMD/ATI and Intel are
 detected through OpenCL for Vulkan execution; NVIDIA uses CUDA detection for
@@ -83,12 +85,79 @@ Do not substitute the CPU or CUDA archive. Bundle `llama-server[.exe]`, all its
 runtime shared libraries, `llama.lock`, `weights.lock`, and the matching native
 CI artifact's `usnm-amd-device-map[.exe]` as signed native extra files. The helper
 is required for AMD only and uses the unchanged b8799 ggml device-properties ABI
-to verify PCI identity; it does not rebuild or replace llama.cpp. Windows requires
+to verify PCI identity. On Windows drivers without `VK_EXT_pci_bus_info`, the
+baseline runtime is **not sufficient**: use the identity-only patched b8799
+Vulkan DLL described below, together with the corrected signed helper. Windows requires
 `ggml-vulkan.dll`, the common llama/ggml/mtmd DLLs,
 `ggml-cpu-x64.dll`, `libomp140.x86_64.dll`, and the Microsoft CRT enforced by
 `scripts/boinc/install.py`. Keep the complete pinned Linux library set as well.
 Verify that the bundled server launches and lists the real AMD Vulkan device
 before admission. Retain checksums and the signed publication/readback receipt.
+
+### Windows drivers without Vulkan PCI bus information
+
+The actual signed Windows 1.10/110 RX 9070 XT task failed before inference with
+OpenCL `????:03:00.0` and Vulkan `[]`. In baseline b8799, ggml exports no
+`device_id` when `VK_EXT_pci_bus_info` is absent, even when the adapter supports
+Vulkan inference. Re-signing the helper alone cannot fix that runtime limitation.
+AMD admission remains intentionally closed under `home-infra#81`; neither a
+successful build nor a device listing is hardware acceptance.
+
+The pinned source patch exports `luid:` followed by the **same physical Vulkan
+device's eight LUID bytes** only when PCI information is unavailable on Windows.
+The helper opens that exact LUID with `D3DKMTOpenAdapterFromLuid`, queries
+`KMTQAITYPE_ADAPTERADDRESS`, closes the adapter, and compares its PCI
+bus/device/function with the BOINC-assigned OpenCL topology. No enumeration
+ordinal or adapter name is used as an identity. D3DKMT does not supply a PCI
+domain: the helper refuses a domain-known OpenCL assignment rather than invent
+domain zero. Duplicate matches, invalid/zero LUIDs, unavailable adapter APIs or
+failed address queries remain refusals. Linux and extension-provided PCI
+identities retain their existing path.
+
+Build on Windows with MSVC, CMake, Python, and the upstream b8799 Vulkan SDK
+version **1.4.313.2** installed (`VULKAN_SDK` set). Use an operator build
+directory, not an installed BOINC slot. From this reviewed repository checkout:
+
+```powershell
+git clone --config core.autocrlf=false --no-checkout https://github.com/ggml-org/llama.cpp.git amd-llama-source
+git -C amd-llama-source checkout e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
+.\scripts\boinc\build_amd_vulkan_runtime.ps1 `
+  -Source "$PWD/amd-llama-source" -Build "$PWD/amd-llama-build" `
+  -Output "$PWD/amd-llama-identity"
+```
+
+The builder rejects a dirty/wrong source checkout; the patcher also verifies the
+original Vulkan source SHA-256. It builds only the `ggml-vulkan` target with the
+upstream release's dynamic-backend mode and verifies the DLL's
+`ggml_backend_init` export before emitting
+`ggml-vulkan.dll` plus `AMD_RUNTIME_BUILD.json` (source commit, patch digest,
+output digest and local SDK provenance). These are **unsigned build artifacts**.
+The exact patched function is tested against synthetic Vulkan responses on both
+platform branches in CI; Windows CI also compiles and self-tests the helper.
+This is not a full patched-runtime build or a real-card test.
+
+For the next reviewed Windows AMD app version:
+
+1. Verify and unpack the pinned `win-vulkan-x64` baseline archive; replace only
+   `ggml-vulkan.dll` with the builder output. Keep its complete original runtime
+   and model set. Retain the receipt; do not claim the resulting bundle equals
+   the unmodified archive hash.
+2. Use the same reviewed native CI commit's app, corrected helper, app-local CRT
+   and unchanged locks. Verify every artifact hash, and test the original
+   `llama-server.exe` with the patched DLL before signing.
+3. Use `scripts/boinc/boinc-app-release.sh`'s existing native
+   `--plan-class amd_vulkan_8b --platform windows_x86_64` on-prem release path,
+   signing **all** replaced and existing extra files. Include
+   `--extra-file AMD_RUNTIME_BUILD.json=PATH`. Never overlay an unsigned DLL
+   into a client slot or expose signing keys. Record the new app/version IDs,
+   commit and public signed-download/readback hashes.
+4. Coordinate with the current `#529` runtime owner **before** publication,
+   host validation or any admission change. Keep general AMD admission stopped.
+   Use the bounded exact-one-workunit acceptance procedure below only with
+   separately coordinated permission; require the corrected signed app download,
+   exact device mapping, real offload and valid inference return. Then require
+   ordinary independent-peer validation/collection before general reopening.
+   A pre-inference failure or missing LUID leaves admission closed.
 
 Publish through the normal [reviewed app release path](../contrib-compute/docs/app-release.md)
 with `--app usnm_qwen --kind native --plan-class amd_vulkan_8b` and the matching
@@ -97,8 +166,8 @@ platform. Stage the unchanged Qwen3-VL-8B Q4_K_M model and Q8_0 projector from
 native-8B batch 8, 6 GiB host-memory/18 GiB disk bounds, quorum 2 and target
 replicas 2. Do not edit scientific rows or relax independent/distinct-host validation.
 
-After publication, under the normal #529 controller guard, preview and explicitly
-promote **only AMD**:
+Only after the required acceptance above has passed and the reopening is
+coordinated on #529, preview and explicitly promote **only AMD**:
 
 ```sh
 php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
@@ -119,9 +188,11 @@ helper is also available at `/usr/local/lib/usnm-boinc/amd-885/native-qwen-cohor
 (the `amd-885` and `live-overlay` server images under `contrib-compute/images/server/`
 install it).
 
-### Optional bounded diagnostic: stage, audit, admit, then resume the same workunit
+### Required bounded acceptance: stage, audit, admit, then resume the same workunit
 
-This procedure is not required for automatic scheduling. It deliberately
+This procedure, or the [ordinary one-workunit canary](#ordinary-one-workunit-canary)
+below, is **required** before reopening the corrected Windows release
+(and remains available as a diagnostic afterwards). It deliberately
 replaces general AMD admission with an exact-one-workunit pilot; coordinate any
 such platform-wide diagnostic with other AMD users and close AMD first.
 
@@ -157,7 +228,7 @@ payload, template, batch, bounds and version, then add that ID to the same fixtu
 as `audited_workunit_id` and use it as `ID` below.
 
 The installation default is **closed** (`min_wu_id=2`, `max_wu_id=1`); normal
-production promotion above is separate. For this optional diagnostic, preview and
+production promotion above is separate. For this bounded acceptance, preview and
 apply one newly staged, audited, unaccepted workunit without generic replicas:
 
 ```sh
@@ -187,13 +258,88 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
   --plan-class amd_vulkan_8b --stop --apply
 ```
 
-AMD's optional pilot has an **independent exact-one-workunit** window;
+AMD's bounded pilot has an **independent exact-one-workunit** window;
 `--workunit-end` cannot widen it. It is deliberately not a member of the existing `shared_8b`
 Intel/NVIDIA pilot. Opening/stopping AMD preserves all old windows; legacy/shared
 commands (including an unqualified `--stop`) preserve AMD. Stop AMD explicitly.
 All modes share the policy lock and durable journal. Image policy refresh
 introduces AMD closed on upgrade and preserves explicit general, bounded or
 stopped AMD state on restart.
+
+### Ordinary one-workunit canary
+
+The staged harness above needs a dedicated assignment-only account and a peer
+host eligible for the **same exact release** (e.g. a second Windows AMD client).
+When no such peer exists, an explicit ordinary canary admits AMD to one
+ordinary scientific workunit instead, the same way the NVIDIA/Intel bounded
+windows do:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class amd_vulkan_8b --ordinary-canary --workunit ID
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class amd_vulkan_8b --ordinary-canary --workunit ID --apply
+```
+
+The difference is where the peer comes from. The staged harness assigns the
+client and a reviewed same-release peer to a new targeted workunit. The ordinary
+canary assigns nothing: the workunit's second **normal replica** goes to any
+host eligible for native 8B (for example Apple or NVIDIA), with the same pinned
+model, batch, crops, scientific identity and quorum, and the normal validator
+compares them. It is a bounded ordinary rollout of one workunit, not a way
+around the staged fixture's isolation checks.
+
+The flag is accepted only with `amd_vulkan_8b` and one `--workunit`; it cannot be
+combined with `--workunit-end`, `--stop` or `--general`. The workunit must be an
+ordinary native-8B workunit: batch 8, 18 GiB disk bound, quorum 2, target 2, not
+yet canonical, no error, `need_validate=0`, `transitioner_flags=0`, not bound to an
+app version (`app_version_num=0`), no `assignment` rows, and exactly two unsent
+results. Choose one that no other host has been sent yet. Without the flag, the
+default AMD window still requires the staged no-results workunit. The plan XML
+change (`min_wu_id=max_wu_id=ID`), shared lock and durable journal are the same
+as the default window; the proof records `admission_mode: ordinary_canary`. It
+changes no host trust, quorum, account, scientific row or other class.
+
+Acceptance still requires all of the following before any general reopening:
+
+- the AMD host's result ran the intended published app version (check
+  `result.app_version_id`);
+- the device mapping succeeded and the GPU actually offloaded;
+- the result is valid; and
+- an independent peer result agrees and becomes canonical.
+
+If an older app version was chosen, or any evidence is bad, close AMD with
+`--plan-class amd_vulkan_8b --stop --apply` and leave general admission closed.
+
+#### Inconclusive canary: one-replica tiebreaker
+
+If the canary and its peer are both successful but **inconclusive**, the
+transitioner raises `target_nresults` and creates one more unsent replica. When
+every other native class is closed, no host may be eligible for it. An explicit
+tiebreaker admits Intel or NVIDIA to that one workunit only:
+
+```sh
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class intel_vulkan_8b --tiebreaker --workunit ID
+php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr \
+  --plan-class intel_vulkan_8b --tiebreaker --workunit ID --apply
+```
+
+The flag is accepted only with `intel_vulkan_8b`, `nvidia_vulkan_8b` or
+`shared_8b` and one `--workunit`. The workunit must be ordinary native 8B (batch
+8, 18 GiB disk bound, quorum 2, not canonical, no error, `need_validate=0`,
+`transitioner_flags=0`, `app_version_num=0`, no `assignment` rows), with
+`target_nresults` equal to its result count, exactly one unsent replica, and every
+other result successful and inconclusive (`validate_state=4`). The live
+project `config.xml` (and any private `--db-project` copy) must enable
+`<one_result_per_host_per_wu/>` (or `1`) exactly once in its single `<config>`
+block, so the scheduler sends the replica to a host other than the inconclusive
+ones. The mode edits no result,
+quorum or scientific row: the normal validator compares the new result with the
+existing ones. The plan XML change, lock and journal match the bounded window;
+the proof records `admission_mode: tiebreaker`. Close the class with `--stop` once
+the replica is sent. The default and ordinary-canary modes still refuse
+workunits that already have results.
 
 The scheduler uses `<gpu_type>ati</gpu_type><opencl/>` and reserves one AMD GPU
 plus two host CPUs. The pinned BOINC source accepts `ati`/`amd` in
@@ -216,7 +362,8 @@ to equal the index among visible Vulkan devices. Following the pinned
 `boinc_get_opencl_ids_aux` convention, the helper resolves the assigned OpenCL
 GPU index on AMD platforms and obtains its PCI identity (`cl_khr_pci_bus_info`
 or AMD PCI topology). It matches that identity against the bundled ggml Vulkan
-backend's PCI identities, returning exactly one `VulkanN`, regardless of order.
+backend's PCI identities (or the verified Windows LUID-to-PCI bridge above),
+returning exactly one `VulkanN`, regardless of order.
 AMD topology lacks a domain, so matches across multiple domains are ambiguous
 and refused. Conflicting AMD platform mappings, missing PCI support, duplicate
 identities, or an invisible assigned adapter are also refused, even if another
@@ -224,7 +371,8 @@ AMD card is visible. There is no name-only or ordinal fallback. The Rust app
 also requires that exact device in the server listing with a real AMD/ATI/Radeon
 or Advanced Micro Devices name, skipping software and other vendors.
 
-The signed helper runs with a 30-second deadline and the same bundled backend
+The signed helper runs with the same bounded 300-second GPU-enumeration deadline
+as `llama-server --list-devices` and the same bundled backend
 and loader environment as the server. Its registry loader comes from
 `libggml.so` / `ggml.dll`, while device APIs come from
 `libggml-base.so` / `ggml-base.dll`. Both libraries and the Vulkan backend must

@@ -1,0 +1,50 @@
+name: origin-tls
+
+on:
+  schedule:
+    - cron: "19 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      validate-dns:
+        description: Exercise staging DNS-01 issuance before reusing or renewing the production certificate
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  renew:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 20
+    concurrency:
+      group: origin-tls-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Install DNS-01 tooling
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends certbot dnsutils
+      - name: Validate certificate tooling
+        run: python3 -m unittest discover -s scripts/azure -p test_origin_tls.py
+      - name: Validate DNS-01 issuance against staging
+        if: inputs.validate-dns == true
+        run: python3 scripts/azure/origin_tls.py renew --staging --no-bind
+      - name: Renew the production origin certificate
+        # The stable certificate ID is already bound by infrastructure. Renewal
+        # must never race a deployment by patching application configuration.
+        run: python3 scripts/azure/origin_tls.py renew --no-bind
+      - name: Remove private working state after cancellation
+        if: always()
+        run: rm -rf -- .origin-tls-work

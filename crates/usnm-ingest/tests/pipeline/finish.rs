@@ -169,8 +169,8 @@ async fn finish_inputs(e: &Env) {
     ];
     e.curated
         .put(
-            &usnm_ingest::ocr_local::pages_path(lccn, "20261011T000000Z-aaaa"),
-            usnm_ingest::ocr_local::pages::encode(&rows).unwrap(),
+            &usnm_ocr_local::pages_path(lccn, "20261011T000000Z-aaaa"),
+            usnm_ocr_local::pages::encode(&rows).unwrap(),
             "application/octet-stream",
         )
         .await
@@ -335,7 +335,7 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
     // A later part of our OCR, which the run never saw.
     e.curated
         .put(
-            &usnm_ingest::ocr_local::pages_path("sn99000001", "20261023T000000Z-cccc"),
+            &usnm_ocr_local::pages_path("sn99000001", "20261023T000000Z-cccc"),
             std::fs::read(
                 e.root
                     .join("curated/ocr-local/pages/sn99000001/20261011T000000Z-aaaa.parquet"),

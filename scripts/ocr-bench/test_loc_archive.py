@@ -58,6 +58,16 @@ class ArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     loc.inspect(path, digest)
 
+    def test_explicit_uncompressed_bound_is_enforced(self):
+        with tempfile.TemporaryDirectory() as root:
+            path, digest = self.archive(root, [(PREFIX + "xml", ALTO), (PREFIX + "txt", b"Text")])
+            total = len(ALTO) + 4
+            with self.assertRaisesRegex(ValueError, "exceeds"):
+                loc.inspect(path, digest, max_uncompressed_bytes=total - 1)
+            self.assertEqual(loc.inspect(path, digest, max_uncompressed_bytes=total)["page_count"], 1)
+            with self.assertRaisesRegex(ValueError, "positive"):
+                loc.inspect(path, digest, max_uncompressed_bytes=0)
+
 
 if __name__ == "__main__":
     unittest.main()

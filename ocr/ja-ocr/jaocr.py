@@ -47,7 +47,9 @@ full-resolution JPEG from LoC's IIIF service, runs NDLOCR-Lite on the issue's
 pages together, and writes each page's ALTO to ocr-ja/alto/<doc_id>.xml
 (alto.py, #151) and then ocr-ja/pages/<issue>[.<n>].parquet, an overlay keyed
 by doc_id (see write_part; not the full curated schema). A part is written
-only when every page it was asked for has text and ALTO. A page is done when
+only when every image-available page it was asked for has text and ALTO.
+Explicitly undigitized source pages stay pending without blocking the rest.
+A page is done when
 its doc_id is in a part and it has ALTO, so an issue done before new targets
 appeared, or before the job wrote ALTO, gets another part for those pages. loc.gov's API is paced JAOCR_API_GAP seconds
 per request and the image server JAOCR_TILE_GAP seconds, each multiplied by
@@ -703,7 +705,7 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
               engine: str) -> int:
     """OCR one claimed issue's target pages and write its part; the number of pages written.
 
-    Writes nothing unless every page has text and ALTO: the issue is then retried once its claim goes stale.
+    Explicitly undigitized pages stay pending; every other requested page must have text and ALTO.
     """
     p0 = pages[0]
     item_url = f"https://www.loc.gov/item/{p0['lccn']}/{p0['date']}/ed-{p0['edition']}/?fo=json"
@@ -714,6 +716,11 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
         log("issue not found on loc.gov", issue=issue, status=e.code)
         return 0
     images, altos = page_images(item), page_altos(item)
+    files = (item.get("resources") or [{}])[0].get("files") or []
+    undigitized = {
+        seq for seq, page in enumerate(files, 1)
+        if seq not in images and any(f.get("digitized") is False for f in page)
+    }
     rows_out = []
     altos_out: dict[str, bytes] = {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -723,7 +730,8 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
         for p in pages:
             base = images.get(p["seq"])
             if not base:
-                log("no image for page", page=p["page_key"])
+                log("no image for page", page=p["page_key"],
+                    explicitly_undigitized=p["seq"] in undigitized)
                 continue
             urls[p["doc_id"]] = base
             (src / f"{p['doc_id']}.jpg").write_bytes(fetch(base + "/full/full/0/default.jpg", tile))
@@ -747,10 +755,17 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
                 "image_url": urls[p["doc_id"]], "ocred_at": now,
             })
     got = {r["doc_id"] for r in rows_out}
-    missing = [p["page_key"] for p in pages if p["doc_id"] not in got]
+    missing = [p["page_key"] for p in pages
+               if p["doc_id"] not in got and p["seq"] not in undigitized]
     if missing:
         log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
             missing_count=len(missing))
+        return 0
+    deferred = [p["page_key"] for p in pages if p["seq"] in undigitized]
+    if deferred:
+        log("upstream undigitized pages remain pending", issue=issue, pages=deferred,
+            completed_pages=len(rows_out))
+    if not rows_out:
         return 0
     # ALTO first: a page counts as done only once both are written.
     for doc_id, xml in altos_out.items():

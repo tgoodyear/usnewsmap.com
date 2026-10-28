@@ -5,6 +5,7 @@ changes.sh on it as a push. The lock-file cases resolve packages with cargo
 (the registry index, over the network), so they skip without it.
 """
 
+import json
 import os
 import re
 import shutil
@@ -49,7 +50,8 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
                          {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 24)
+        self.assertEqual(len(flags), 26)
+        self.assertIn("quickwit_suites=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
         self.assertEqual(flags["edge"], "false")
@@ -65,6 +67,9 @@ class Dispatch(unittest.TestCase):
                 self.assertEqual(flags["rust"], "true")
                 self.assertEqual(flags["contrib"], "true")
                 self.assertEqual(flags["edge"], "true")
+                self.assertEqual(flags["quickwit_parity"], "true")
+                self.assertEqual(flags["quickwit_pipeline"], "true")
+                self.assertIn('quickwit_suites=["parity","pipeline"]', result.stdout)
 
     def test_unknown_dispatch_scope_fails_closed(self):
         result, flags = self.flags("ocr-wroker")
@@ -113,7 +118,8 @@ class Quickwit(unittest.TestCase):
         self.repo = self.tmp / "repo"
         subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(ROOT), str(self.repo)], check=True)
         # The working tree's changes.sh and Cargo manifests, committed or not.
-        for rel in ["scripts/ci/changes.sh", "Cargo.toml", "Cargo.lock"]:
+        for rel in ["scripts/ci/changes.sh", ".github/workflows/ci.yml",
+                    "Cargo.toml", "Cargo.lock"]:
             shutil.copy(ROOT / rel, self.repo / rel)
         for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
             rel_dir = manifest.parent.relative_to(ROOT)
@@ -226,7 +232,9 @@ class Quickwit(unittest.TestCase):
             with (self.repo / "Cargo.toml").open("a") as h:
                 h.write("\n[profile.test]\noverflow-checks = false\n")
         self.change = change
-        self.assertTrue(self.quickwit())
+        flags = self.outputs()
+        self.assertTrue(flags["quickwit_parity"])
+        self.assertTrue(flags["quickwit_pipeline"])
 
     @unittest.skipUnless(CARGO, "no cargo")
     def test_a_dependency_bump_under_usnm_search_runs_it(self):
@@ -237,7 +245,22 @@ class Quickwit(unittest.TestCase):
             subprocess.run([CARGO, "update", "-q", "-p", f"thiserror@{version.group(1)}",
                             "--precise", older], cwd=self.repo, check=True, capture_output=True)
         self.change = change
-        self.assertTrue(self.quickwit())
+        flags = self.outputs()
+        self.assertTrue(flags["quickwit_parity"])
+        self.assertTrue(flags["quickwit_pipeline"])
+
+    @unittest.skipUnless(CARGO, "no cargo")
+    def test_api_lockfile_bump_runs_both_for_example_build_resolution(self):
+        def change():
+            subprocess.run(
+                [CARGO, "update", "-q", "-p", "resvg", "--precise", "0.45.0"],
+                cwd=self.repo, check=True, capture_output=True,
+            )
+            self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
+        self.change = change
+        flags = self.outputs()
+        self.assertTrue(flags["quickwit_pipeline"])
+        self.assertTrue(flags["quickwit_parity"])
 
 
 if __name__ == "__main__":
@@ -419,7 +442,13 @@ class BuildInputs(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.log = result.stdout + result.stderr
-        return {k for k, v in re.findall(r"^(\w+)=(\w+)$", out.read_text(), re.M) if v == "true"}
+        output = out.read_text()
+        on = {k for k, v in re.findall(r"^(\w+)=(\w+)$", output, re.M) if v == "true"}
+        suites = json.loads(re.search(r"^quickwit_suites=(.*)$", output, re.M)[1])
+        self.assertEqual(suites, [s for s in ("parity", "pipeline")
+                                  if f"quickwit_{s}" in on])
+        self.assertEqual("quickwit" in on, bool(suites))
+        return on
 
     def stub_tool(self, name: str) -> dict:
         """An environment whose `name` fails, as when the tool is broken or missing."""
@@ -429,6 +458,130 @@ class BuildInputs(unittest.TestCase):
         stub.write_text("#!/bin/sh\necho 'stub: broken' >&2\nexit 1\n")
         stub.chmod(0o755)
         return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    def test_api_site_changes_skip_quickwit_but_keep_serving_checks(self):
+        for path in [
+            "crates/usnm-api/src/site.rs",
+            "crates/usnm-api/src/site/social.rs",
+            "crates/usnm-api/src/site/social/cache.rs",
+            "crates/usnm-api/src/site/new-presentation.rs",
+        ]:
+            with self.subTest(path=path):
+                on = self.select((path, "// presentation-only change\n"))
+                self.assertNotIn("quickwit", on)
+                self.assertFalse(on & {"quickwit_parity", "quickwit_pipeline"})
+                self.assertGreaterEqual(on, {"rust", "image", "e2e"})
+
+    def test_preview_appstate_changes_run_pipeline_not_parity(self):
+        # #1285 also changed AppState initialization and background startup in
+        # lib.rs. A file selector cannot prove that shared code is site-only.
+        on = self.select(
+            "crates/usnm-api/src/lib.rs", "crates/usnm-api/src/site.rs",
+            "crates/usnm-api/src/site/social.rs",
+            "crates/usnm-api/src/site/social/cache.rs",
+        )
+        self.assertGreaterEqual(on, {"quickwit", "rust", "image", "e2e"})
+        self.assertIn("quickwit_pipeline", on)
+        self.assertNotIn("quickwit_parity", on)
+
+    def test_shared_api_inputs_remain_conservative_quickwit_triggers(self):
+        for path in [
+            "crates/usnm-api/src/refdata.rs",
+            "crates/usnm-api/src/status/assemble.rs",
+            "crates/usnm-api/src/status/assemble/published.rs",
+            "crates/usnm-api/src/error.rs",
+            "crates/usnm-api/src/routes.rs",
+            "crates/usnm-api/src/config.rs",
+            "crates/usnm-api/src/main.rs",
+            "crates/usnm-api/src/lib.rs",
+            "crates/usnm-api/src/site_shared.rs",
+            "crates/usnm-api/Cargo.toml",
+        ]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertGreaterEqual(on, {"quickwit", "quickwit_pipeline"})
+                self.assertNotIn("quickwit_parity", on)
+
+    def test_independent_quickwit_roots_select_only_the_affected_suites(self):
+        for path, suites in [
+            ("crates/usnm-search/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-core/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/src/sink/template.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/examples/decade_fixture.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/examples/single_field_fixture.rs", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/examples/page_language_fixture.rs", {"parity", "pipeline"}),
+            ("crates/usnm-core/examples/add_text_cg.rs", {"parity", "pipeline"}),
+            ("crates/usnm-state/src/lib.rs", {"parity", "pipeline"}),
+            ("crates/usnm-search/Cargo.toml", {"parity", "pipeline"}),
+            ("crates/usnm-ingest/Cargo.toml", {"parity", "pipeline"}),
+            ("crates/usnm-search/tests/quickwit_parity.rs", {"parity"}),
+            ("crates/usnm-ingest/tests/pipeline/writer.rs", {"pipeline"}),
+        ]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertEqual(on & {"quickwit_parity", "quickwit_pipeline"},
+                                 {f"quickwit_{s}" for s in suites})
+
+    def test_quickwit_runtime_inputs_still_run_for_site_changes(self):
+        for path in [
+            "crates/usnm-search/src/lib.rs",
+            "crates/usnm-ingest/src/lib.rs",
+            "crates/usnm-core/src/lib.rs",
+            "crates/usnm-search/tests/quickwit_parity.rs",
+            "crates/usnm-ingest/tests/pipeline/writer.rs",
+            "fixtures/new-quickwit-input.txt",
+            "infra/quickwit/searcher.yaml",
+            "scripts/dev/quickwit-fixtures.sh",
+            "scripts/ci/install-quickwit.sh",
+            "scripts/ci/rust-test-times.py",
+            "rust-toolchain.toml",
+        ]:
+            with self.subTest(path=path):
+                on = self.select(
+                    "crates/usnm-api/src/site/social.rs", path,
+                )
+                self.assertIn("quickwit", on)
+                if not path.startswith("crates/"):
+                    self.assertGreaterEqual(on, {"quickwit_parity", "quickwit_pipeline"})
+
+    def test_site_changes_fail_open_when_metadata_is_unavailable(self):
+        on = self.select("crates/usnm-api/src/site/social.rs",
+                         env=self.stub_tool("cargo"))
+        self.assertGreaterEqual(on, {"quickwit", "quickwit_parity", "quickwit_pipeline"})
+        self.assertIn("cargo metadata failed: running quickwit_parity", self.log)
+        self.assertIn("cargo metadata failed: running quickwit_pipeline", self.log)
+
+    def test_quickwit_workflow_changes_still_force_its_gate(self):
+        path = ".github/workflows/ci.yml"
+        workflow = (self.repo / path).read_text()
+        self.assertIn("name: quickwit (${{ matrix.suite }})", workflow)
+        on = self.select(
+            "crates/usnm-api/src/site/social.rs",
+            (path, workflow.replace("name: quickwit (${{ matrix.suite }})",
+                                    "name: quickwit (${{ matrix.suite }}) # changed")),
+        )
+        self.assertGreaterEqual(on, {"quickwit", "quickwit_parity", "quickwit_pipeline"})
+
+    def test_selected_quickwit_matrix_keeps_required_aggregate(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        child = workflow.split("\n  quickwit-tests:\n", 1)[1].split("\n  quickwit:\n", 1)[0]
+        self.assertIn("suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}", child)
+        self.assertIn("if: needs.changes.outputs.quickwit == 'true'", child)
+        gate = workflow.split("\n  quickwit:\n", 1)[1].split("\n  fixtures:\n", 1)[0]
+        self.assertIn("needs: [changes, quickwit-tests]", gate)
+        self.assertIn("if: always() && needs.changes.outputs.quickwit == 'true'", gate)
+        self.assertIn('test "$RESULT" = success', gate)
+
+    def test_parity_fixture_generators_do_not_call_the_excluded_api(self):
+        setup = (ROOT / "scripts/dev/quickwit-fixtures.sh").read_text()
+        generators = set(re.findall(r"-p ([\w-]+) --example (\w+)", setup))
+        self.assertTrue(generators)
+        for crate, example in generators:
+            with self.subTest(crate=crate, example=example):
+                self.assertIn(crate, {"usnm-core", "usnm-ingest"})
+                source = (ROOT / f"crates/{crate}/examples/{example}.rs").read_text()
+                self.assertNotRegex(source, r"\busnm_api\b")
 
     def test_dashboard_renderer_and_markdown_change_runs_only_the_dashboard_checks(self):
         # The change #734 makes: html.rs and docs/operations/onprem-ocr.md.
@@ -455,27 +608,40 @@ class BuildInputs(unittest.TestCase):
         on = self.select("crates/usnm-ocr-worker/src/lib.rs")
         self.assertGreaterEqual(on, {"rust", "ocr_worker"} | BOINC_IMAGES | DASHBOARD)
 
+    @unittest.skipUnless(CARGO, "no cargo")
     def test_a_dev_dependency_of_a_dependency_is_not_a_build_input(self):
-        # The worker's tests use usnm-ingest, the BOINC client links it, the dashboard doesn't.
+        # Recreate a dev-only ingest edge in the fixture. The real worker and
+        # BOINC client no longer depend on ingest at all (#1206).
+        manifest = self.repo / "crates/usnm-ocr-worker/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace(
+            "[dev-dependencies]\n",
+            '[dev-dependencies]\nusnm-ingest = { path = "../usnm-ingest" }\n',
+        ))
+        subprocess.run([CARGO, "metadata", "--format-version", "1"],
+                       cwd=self.repo, check=True, capture_output=True)
+        self.commit("dev-only dependency fixture")
         on = self.select("crates/usnm-ingest/src/lib.rs")
-        self.assertGreaterEqual(on, BOINC_IMAGES)
-        self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
+        self.assertGreaterEqual(on, {"rust", "quickwit", "image"})
+        self.assertFalse(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), on)
 
     def test_the_crates_split_out_of_ingest_run_what_ingest_runs(self):
         # The Congress fetches and the local OCR pipeline are crates of their own that usnm-ingest
-        # links: the ingest image, the Quickwit job and the BOINC client rebuild for them; the
-        # web end-to-end job, the worker and the dashboard don't.
+        # links. Only the local OCR pipeline is also a BOINC dependency.
         for path in ["crates/usnm-congress/src/lib.rs", "crates/usnm-ocr-local/src/lib.rs"]:
             with self.subTest(path=path):
                 on = self.select(path)
-                self.assertGreaterEqual(on, {"rust", "quickwit", "image"} | BOINC_IMAGES)
+                self.assertGreaterEqual(on, {"rust", "quickwit", "image"})
+                if "usnm-ocr-local" in path:
+                    self.assertGreaterEqual(on, BOINC_IMAGES)
+                else:
+                    self.assertFalse(on & BOINC_IMAGES, on)
                 self.assertFalse(on & (DASHBOARD | NATIVE | {"ocr_worker", "e2e"}), on)
 
     def test_a_file_a_crate_embeds_counts_for_what_links_the_crate(self):
-        # usnm-ingest embeds the catalog; the BOINC client links usnm-ingest, the worker doesn't.
+        # Only ingest embeds the catalog; BOINC's shared place rows live in core.
         on = self.select("catalog/overrides/places.json")
-        self.assertGreaterEqual(on, BOINC_IMAGES)
-        self.assertFalse(on & (DASHBOARD | {"ocr_worker"}), on)
+        self.assertGreaterEqual(on, {"rust", "image"})
+        self.assertFalse(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), on)
         # usnm-ocr-worker embeds the Tesseract models lock; everything that links it rebuilds.
         on = self.select("ocr/engines/tesseract/models.lock")
         self.assertGreaterEqual(on, {"ocr_worker"} | BOINC_IMAGES | DASHBOARD)
@@ -525,6 +691,20 @@ class BuildInputs(unittest.TestCase):
         on = self.select("ocr/engines/tesseract/Containerfile")
         self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}),
                          {"boinc_worker", "ocr_worker"}, on)
+        on = self.select("scripts/ci/ocr-engine-cgroup-smoke.py")
+        self.assertIn("ocr_worker", on)
+        self.assertNotIn("image", on)
+        on = self.select("ocr/contract/fixtures/corrupt.png")
+        self.assertIn("ocr_worker", on)
+        for path in [
+            "scripts/ci/ocr-engine-contract/Containerfile",
+            "scripts/ci/ocr-engine-contract/contract-test-adapter.sh",
+        ]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertIn("ocr_worker", on)
+                self.assertNotIn("image", on)
+                self.assertNotIn("contrib", on)
 
     def test_a_toolchain_change_runs_every_build(self):
         on = self.select("rust-toolchain.toml")
@@ -564,6 +744,9 @@ class BuildInputs(unittest.TestCase):
         for job in re.findall(r"(?m)^  ([a-z0-9_-]+):$", ci.split("\njobs:\n", 1)[1]):
             text = job_text(ci, job)
             flags = set(re.findall(r"needs\.changes\.outputs\.(\w+)", text))
+            if "quickwit_suites" in flags:
+                flags.remove("quickwit_suites")
+                flags.update({"quickwit_parity", "quickwit_pipeline"})
             for action in re.findall(r"uses: \./\.github/actions/([\w-]+)", text):
                 called.setdefault(action, set()).update(flags)
         self.assertGreaterEqual(len(called), 3)
@@ -591,7 +774,8 @@ class BuildInputs(unittest.TestCase):
 
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
         for path in ["ocr/boinc/qwen/llama.lock", "ocr/boinc/qwen/weights.lock", "ocr/contract/v1/schema.json",
-                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py"]:
+                     "ocr/boinc/qwen/amd-device-map.cpp", "scripts/boinc/test_amd_device_map.py",
+                     "scripts/boinc/patch_amd_vulkan_identity.py", "scripts/boinc/build_amd_vulkan_runtime.ps1"]:
             with self.subTest(path=path):
                 self.assertIn("boinc_native", self.select(path))
         # What only the images embed is not theirs.
@@ -634,6 +818,35 @@ class BuildInputs(unittest.TestCase):
         marker = "      - run: node --test edge/fallback-worker/*.test.mjs\n"
         self.assertIn(marker, ci)
         self.assertEqual(self.select((path, ci.replace(marker, marker + "      # touched\n"))), {"edge"})
+
+    def test_an_edit_inside_the_worker_gate_exercises_every_child_selection(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "      - name: Every applicable worker and BOINC check must pass\n"
+        self.assertEqual(
+            self.select((path, ci.replace(marker, marker + "      # touched\n"))),
+            {"contrib", "boinc_pages", "ocr_worker", "ocr_dash"},
+        )
+
+    def test_an_edit_inside_the_boinc_pages_job_runs_php_check_only(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "    name: boinc pages (php lint)\n"
+        self.assertEqual(
+            self.select((path, ci.replace(marker, marker + "    # touched\n"))),
+            {"boinc_pages"},
+        )
+
+    def test_an_edit_inside_a_script_shard_also_enables_its_required_gate(self):
+        path = ".github/workflows/ci.yml"
+        ci = (ROOT / path).read_text()
+        self.select((path, ci))
+        marker = "      - name: Every selected script module runs in exactly one isolated shard\n"
+        self.assertIn(marker, ci)
+        self.assertEqual(self.select((path, ci.replace(marker, marker + "        # touched\n"))),
+                         {"code", "infra"})
 
     def test_a_broken_cargo_runs_everything_that_builds_a_crate(self):
         on = self.select("crates/usnm-ocr-dash/src/html.rs", env=self.stub_tool("cargo"))
@@ -813,7 +1026,8 @@ class Wiring(unittest.TestCase):
         # doesn't report at all, so none of these may sit behind one.
         required = ["changes", "rust (fmt, clippy, test)", "quickwit (parity, ingest release)",
                     "fixtures are reproducible", "container image builds", "infra (bicep lint, build)",
-                    "web (lint, typecheck, test, build)", "web end-to-end (Playwright + axe)"]
+                    "web (lint, typecheck, test, build)", "web end-to-end (Playwright + axe)",
+                    "worker and BOINC checks"]
         ci = self.workflow("ci.yml")
         triggers = ci.split("\npermissions:", 1)[0]
         self.assertNotIn("paths", triggers)
@@ -845,7 +1059,7 @@ class Wiring(unittest.TestCase):
             self.assertRegex(file, r"^edge/fallback-worker/[^/]+\.test\.mjs$")
 
     def test_the_infra_jobs_stack_steps_follow_the_infra_output(self):
-        job = job_text(self.workflow("ci.yml"), "infra")
+        job = job_text(self.workflow("ci.yml"), "infra-checks")
         always = ("actions/checkout", "No shared-key authentication", "Scripts and CLIs take named arguments")
         steps = re.split(r"(?m)^      - ", job.split("    steps:\n", 1)[1])[1:]
         self.assertGreaterEqual(len(steps), 12)  # the split found the steps; script unit tests are one step

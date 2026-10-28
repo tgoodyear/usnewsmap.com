@@ -8,6 +8,13 @@
       content="Search two centuries of American newspapers and see where and when words spread."
     />
     <meta name="color-scheme" content="light dark" />
+    <style>
+      @media (scripting: enabled) {
+        #site-fallback {
+          display: none;
+        }
+      }
+    </style>
     <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>US News Map</title>
@@ -60,22 +67,24 @@
     </script>
   </head>
   <body>
-    <!-- Shown until the app mounts, and to crawlers and link previews that
-         don't run JavaScript. React replaces it on its first render. -->
+    <!-- Keep the no-script content readable without flashing it before React mounts.
+         This rule is inline so it does not wait for the application's CSS. -->
     <div id="root">
-      <main class="empty">
-        <p>
-          US News Map searches <a href="https://chroniclingamerica.loc.gov/">Chronicling America</a>, the
-          <a href="https://www.loc.gov/">Library of Congress</a> collection of digitized American newspapers, and maps
-          every matching page by where and when it was printed. Play the timeline to watch a word or a story move across
-          the country.
-        </p>
-        <p>
-          Each result links to the full page image at the Library of Congress. US News Map is maintained by
-          <a href="https://goodyeartechnical.com/">Trevor Goodyear</a>.
-        </p>
-        <noscript><p>The search and the map need JavaScript.</p></noscript>
-      </main>
+      <div id="site-fallback">
+        <main class="empty">
+          <p>
+            US News Map searches <a href="https://chroniclingamerica.loc.gov/">Chronicling America</a>, the
+            <a href="https://www.loc.gov/">Library of Congress</a> collection of digitized American newspapers, and maps
+            every matching page by where and when it was printed. Play the timeline to watch a word or a story move
+            across the country.
+          </p>
+          <p>
+            Each result links to the full page image at the Library of Congress. US News Map is maintained by
+            <a href="https://goodyeartechnical.com/">Trevor Goodyear</a>.
+          </p>
+          <noscript><p>The search and the map need JavaScript.</p></noscript>
+        </main>
+      </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

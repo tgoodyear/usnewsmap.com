@@ -6,6 +6,76 @@ controller connects the existing CT 211 cache push, hand-off export, bridge
 It runs **one bounded tick**, not a daemon, and does nothing remotely without
 `--apply`. Adding this code does **not** deploy it or enable a production feed.
 
+Failed subprocesses retain `last-command-failure.json` in the controller's
+private state directory, atomically replaced with mode `0600`. It records the
+step label, timestamp, exit code or exception class, and the final 16,384
+characters of each output stream, including partial timeout output. It does not
+record command arguments. Only the latest failed command is retained; a later
+successful command does not erase it. A receipt-write failure is reported
+explicitly. Public timing/failure telemetry still excludes subprocess output.
+Treat this file as sensitive operator evidence: inspect it on the controller
+host, not in GitHub comments, CI logs or public telemetry. Check its timestamp
+and label before attributing it to a tick. No automatic retry is added.
+
+## Recovering a contract-invalid canonical output
+
+BOINC validity alone does not establish native output integrity. Do not repair a
+checksum in `result.json`, replace scientific output with empty files, reset the
+controller journal, or release a failed page to rediscover the same workunit.
+Trust holds, missing files and transport errors are not permanent output failures.
+
+After an operator reconciles the exact job, canonical result and original
+assimilator spool, `usnm-boinc reject-output` provides an explicit, local-only
+disposition:
+
+```sh
+usnm-boinc reject-output --root "$dispatch_root" --spool "$canonical_spool" \
+  --job "$job" --expect-result-sha256 "$result_sha256" \
+  --expect-text-sha256 "$text_sha256" --expect-alto-sha256 "$alto_sha256"
+```
+
+All three hashes must come from the reviewed canonical bytes, including an empty
+file's hash. The command refuses missing/changed files, accepted snapshots,
+bundles, unsubmitted jobs and outputs with a valid native result contract.
+Only invalid result JSON or a failed native provenance/checksum/UTF-8 contract
+can be rejected. It preserves those exact bytes plus a content-free receipt in
+`quarantine/<job>/rejected/` **before** marking the job `failed`. Replaying the
+same disposition is idempotent; conflicting receipts or quarantined bytes fail.
+Ordinary collection and all trust checks are unchanged.
+
+For a remote hand-off, first back up both authoritative dispatch journals and
+the canonical files under the exclusive operator/controller locks. Run the
+command on a private working copy reconciled with the existing hand-off helpers:
+
+1. Read the BOINC bridge's `handoff/jobs/<job>/record.json` and the collection
+   container's `dispatch/jobs/<job>/record.json`. Remote submission can leave the
+   latter **reserved** while the bridge is **submitted**; do not manually advance
+   its stage. Require matching complete job identity, plan, stamp and native
+   ledger, a confirmed submitted canonical workunit, no bundle and no uncertain
+   submission. A mismatch requires reconciliation, not disposition.
+2. Use the verified **submitted bridge record** as the private working record.
+   Fetch the collection-side `dispatch/jobs/<job>/accepted/` into that working
+   job's `accepted/`, and check the bridge-side accepted directory too. Any
+   accepted manifest makes the command refuse; do not discard accepted data to
+   pass its guard. Preserve existing quarantine files in the working copy as
+   well, so a retry cannot overwrite conflicting evidence.
+3. After the command succeeds, persist the exact failed record to **both**
+   bridge `handoff/jobs/<job>/record.json` and collection
+   `dispatch/jobs/<job>/record.json`. Persist its quarantine to collection
+   `dispatch/quarantine/<job>/` through the existing `handoff put` workflow and
+   the bridge's corresponding local quarantine path. Verify all hashes before
+   resuming the controller. A changed local working copy alone is not recovery.
+
+With `--dead-letter-failed`, the existing controller
+then uses the failed journal's reason to send only that page to `ocr-deadletter`,
+preserving the native reservation and scientific database. Confirm message
+settlement and a clean subsequent ordinary tick; a lost queue lease still needs
+explicit reconciliation. Requeue is deliberately not automatic.
+
+Rollback before message settlement restores the backed-up journals under the
+same locks. After settlement, do not restore a submitted journal or replay work:
+retain the receipt and reconcile the existing dead letter/reservation explicitly.
+
 ## Allocation and boundaries
 
 An operator allocates explicit page keys from one prefetch manifest snapshot,

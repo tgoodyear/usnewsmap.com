@@ -10,6 +10,7 @@ rust-version.workspace = true
 usnm-alto.workspace = true
 usnm-ocr-route.workspace = true
 usnm-core = { workspace = true, features = ["damage"] }
+usnm-corpus-signals.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-overlay.workspace = true
 usnm-store.workspace = true
@@ -50,7 +51,7 @@ standin = []
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower.workspace = true
 tracing-subscriber.workspace = true
-usnm-ingest = { path = "../usnm-ingest" }
+usnm-ocr-local.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
 
 [lints]

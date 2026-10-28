@@ -694,6 +694,16 @@ select {
 /* Wide enough for "Link copied", so copying the link doesn't shift the buttons beside it. */
 .toolbar__share {
   min-width: 7em;
+  display: grid;
+  gap: 4px;
+}
+.share-status {
+  max-width: 14em;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.share-status:empty {
+  display: none;
 }
 /* Wide screens: one row that never wraps, so no control moves when a measure's options come
    and go; a long summary is cut short instead. */

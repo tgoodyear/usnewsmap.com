@@ -798,5 +798,805 @@
     "id": "polio-vaccine",
     "title": "Polio vaccine, 1955",
     "view": { "bucket": "month", "from": "1953-01-01", "q": "\"Salk vaccine\" OR \"polio vaccine\"", "to": "1957-12-31" }
+  },
+  {
+    "aggregate": "q=daguerreotype&mode=phrase&from=1839-01-01&to=1841-12-31&bucket=month",
+    "blurb": "The photographic process announced in 1839 reached American studios and newspapers.",
+    "era": "1828-1860",
+    "id": "daguerreotype",
+    "title": "Daguerreotype photography",
+    "view": { "bucket": "month", "from": "1839-01-01", "q": "daguerreotype", "to": "1841-12-31" }
+  },
+  {
+    "aggregate": "q=reaping+machine&mode=phrase&from=1851-01-01&to=1853-12-31&bucket=month",
+    "blurb": "Harvesting machinery drew attention as inventors competed to mechanize farm work.",
+    "era": "1828-1860",
+    "id": "mechanical-reaper",
+    "title": "Mechanical reapers",
+    "view": { "bucket": "month", "from": "1851-01-01", "q": "reaping machine", "to": "1853-12-31" }
+  },
+  {
+    "aggregate": "q=sewing+machine&mode=phrase&from=1851-01-01&to=1853-12-31&bucket=month",
+    "blurb": "Inventors and manufacturers promoted machines that changed garment production.",
+    "era": "1828-1860",
+    "id": "sewing-machine",
+    "title": "Sewing machines",
+    "view": { "bucket": "month", "from": "1851-01-01", "q": "sewing machine", "to": "1853-12-31" }
+  },
+  {
+    "aggregate": "q=Goodyear+AND+rubber&from=1845-01-01&to=1847-12-31&bucket=month",
+    "blurb": "Goodyear's rubber treatment opened new uses for a once temperature-sensitive material.",
+    "era": "1828-1860",
+    "id": "vulcanized-rubber",
+    "title": "Vulcanized rubber",
+    "view": { "bucket": "month", "from": "1845-01-01", "q": "Goodyear AND rubber", "to": "1847-12-31" }
+  },
+  {
+    "aggregate": "q=electric+telegraph&mode=phrase&from=1844-01-01&to=1846-12-31&bucket=month",
+    "blurb": "Morse's Washington-to-Baltimore line helped launch rapid long-distance communication.",
+    "era": "1828-1860",
+    "id": "electric-telegraph",
+    "title": "Electric telegraph",
+    "view": { "bucket": "month", "from": "1844-01-01", "q": "electric telegraph", "to": "1846-12-31" }
+  },
+  {
+    "aggregate": "q=insane+asylum&mode=phrase&from=1843-01-01&to=1845-12-31&bucket=month",
+    "blurb": "Institutions and reform campaigns shaped how newspapers discussed mental illness.",
+    "era": "1828-1860",
+    "id": "asylum-reform",
+    "title": "Asylums and reform",
+    "view": { "bucket": "month", "from": "1843-01-01", "q": "insane asylum", "to": "1845-12-31" }
+  },
+  {
+    "aggregate": "q=%22Dorr%22+AND+rebellion&from=1842-01-01&to=1843-12-31&bucket=month",
+    "blurb": "Rhode Island's struggle over voting qualifications produced rival state governments.",
+    "era": "1828-1860",
+    "id": "dorr-rebellion",
+    "title": "Dorr Rebellion",
+    "view": { "bucket": "month", "from": "1842-01-01", "q": "\"Dorr\" AND rebellion", "to": "1843-12-31" }
+  },
+  {
+    "aggregate": "q=Bloomer+costume&mode=phrase&from=1851-01-01&to=1853-12-31&bucket=month",
+    "blurb": "Amelia Bloomer helped popularize a shorter dress worn over loose trousers.",
+    "era": "1828-1860",
+    "id": "bloomer-dress",
+    "title": "Bloomer dress reform",
+    "view": { "bucket": "month", "from": "1851-01-01", "q": "Bloomer costume", "to": "1853-12-31" }
+  },
+  {
+    "aggregate": "q=Origin+of+Species&mode=phrase&from=1859-01-01&to=1860-12-31&bucket=month",
+    "blurb": "The 1859 publication introduced natural selection to a widening reading public.",
+    "era": "1828-1860",
+    "id": "darwin-origin",
+    "title": "Darwin's Origin of Species",
+    "view": { "bucket": "month", "from": "1859-01-01", "q": "Origin of Species", "to": "1860-12-31" }
+  },
+  {
+    "aggregate": "q=Leaves+of+Grass&mode=phrase&from=1855-01-01&to=1857-12-31&bucket=month",
+    "blurb": "Walt Whitman's poetry collection first appeared in Brooklyn in 1855.",
+    "era": "1828-1860",
+    "id": "leaves-of-grass",
+    "title": "Leaves of Grass",
+    "view": { "bucket": "month", "from": "1855-01-01", "q": "Leaves of Grass", "to": "1857-12-31" }
+  },
+  {
+    "aggregate": "q=Brook+Farm&mode=phrase&from=1841-01-01&to=1845-12-31&bucket=month",
+    "blurb": "A Massachusetts communal experiment joined intellectual life with cooperative labor.",
+    "era": "1828-1860",
+    "id": "brook-farm",
+    "title": "Brook Farm community",
+    "view": { "bucket": "month", "from": "1841-01-01", "q": "Brook Farm", "to": "1845-12-31" }
+  },
+  {
+    "aggregate": "q=Chang+and+Eng&mode=phrase&from=1830-01-01&to=1832-12-31&bucket=month",
+    "blurb": "The conjoined brothers toured the United States as celebrated public performers.",
+    "era": "1828-1860",
+    "id": "chang-and-eng",
+    "title": "Chang and Eng",
+    "view": { "bucket": "month", "from": "1830-01-01", "q": "Chang and Eng", "to": "1832-12-31" }
+  },
+  {
+    "aggregate": "q=menagerie&mode=phrase&from=1840-01-01&to=1842-12-31&bucket=month",
+    "blurb": "Traveling animal exhibitions and circuses advertised entertainment across the country.",
+    "era": "1828-1860",
+    "id": "circus-menageries",
+    "title": "Traveling menageries",
+    "view": { "bucket": "month", "from": "1840-01-01", "q": "menagerie", "to": "1842-12-31" }
+  },
+  {
+    "aggregate": "q=balloon+corps&mode=phrase&from=1861-01-01&to=1863-12-31&bucket=month",
+    "blurb": "Aerial reconnaissance offered Union officers a new view of Confederate positions.",
+    "era": "1860-1865",
+    "id": "civil-war-ballooning",
+    "title": "Civil War balloons",
+    "view": { "bucket": "month", "from": "1861-01-01", "q": "balloon corps", "to": "1863-12-31" }
+  },
+  {
+    "aggregate": "q=blockade+runner&mode=phrase&from=1863-01-01&to=1864-12-31&bucket=month",
+    "blurb": "Fast vessels tried to carry goods through the Union blockade of Southern ports.",
+    "era": "1860-1865",
+    "id": "blockade-runners",
+    "title": "Blockade runners",
+    "view": { "bucket": "month", "from": "1863-01-01", "q": "blockade runner", "to": "1864-12-31" }
+  },
+  {
+    "aggregate": "q=Clara+Barton&mode=phrase&from=1863-01-01&to=1865-12-31&bucket=month",
+    "blurb": "Barton carried supplies and cared for wounded soldiers during the Civil War.",
+    "era": "1860-1865",
+    "id": "clara-barton",
+    "title": "Clara Barton",
+    "view": { "bucket": "month", "from": "1863-01-01", "q": "Clara Barton", "to": "1865-12-31" }
+  },
+  {
+    "aggregate": "q=Sultana+AND+explosion&from=1865-04-27&to=1865-07-31&bucket=month",
+    "blurb": "The Mississippi steamboat exploded in April 1865 while carrying returning prisoners.",
+    "era": "1860-1865",
+    "id": "sultana-disaster",
+    "title": "Sultana steamboat disaster",
+    "view": { "bucket": "month", "from": "1865-04-27", "q": "Sultana AND explosion", "to": "1865-07-31" }
+  },
+  {
+    "aggregate": "q=Belle+Boyd&mode=phrase&from=1862-01-01&to=1864-12-31&bucket=month",
+    "blurb": "The Confederate spy became a subject of wartime reports, arrests, and celebrity.",
+    "era": "1860-1865",
+    "id": "belle-boyd",
+    "title": "Belle Boyd",
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "Belle Boyd", "to": "1864-12-31" }
+  },
+  {
+    "aggregate": "q=sanitary+commission&mode=phrase&from=1861-01-01&to=1863-12-31&bucket=month",
+    "blurb": "Civilian organizers raised supplies and improved care for Union soldiers.",
+    "era": "1860-1865",
+    "id": "sanitary-commission",
+    "title": "Sanitary Commission",
+    "view": { "bucket": "month", "from": "1861-01-01", "q": "sanitary commission", "to": "1863-12-31" }
+  },
+  {
+    "aggregate": "q=Edwin+Booth&mode=phrase&from=1863-01-01&to=1864-12-31&bucket=month",
+    "blurb": "The Shakespearean actor performed during the war, before his brother's notoriety.",
+    "era": "1860-1865",
+    "id": "edwin-booth",
+    "title": "Edwin Booth on stage",
+    "view": { "bucket": "month", "from": "1863-01-01", "q": "Edwin Booth", "to": "1864-12-31" }
+  },
+  {
+    "aggregate": "q=homestead+act&mode=phrase&from=1862-01-01&to=1863-12-31&bucket=month",
+    "blurb": "The 1862 law offered settlers public land, dispossessing Indigenous homelands.",
+    "era": "1860-1865",
+    "id": "homestead-act",
+    "title": "Homestead Act",
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "homestead act", "to": "1863-12-31" }
+  },
+  {
+    "aggregate": "q=agricultural+colleges&mode=phrase&from=1862-01-01&to=1863-12-31&bucket=month",
+    "blurb": "The 1862 Morrill Act supported colleges teaching agriculture and mechanical arts.",
+    "era": "1860-1865",
+    "id": "morrill-act",
+    "title": "Land-grant colleges",
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "agricultural colleges", "to": "1863-12-31" }
+  },
+  {
+    "aggregate": "q=%22New+York%22+AND+%22draft+riots%22&from=1863-07-13&to=1863-09-30&bucket=month",
+    "blurb": "Opposition to conscription in July 1863 became deadly racist violence in New York.",
+    "era": "1860-1865",
+    "id": "draft-riots",
+    "title": "New York draft riots",
+    "view": { "bucket": "month", "from": "1863-07-13", "q": "\"New York\" AND \"draft riots\"", "to": "1863-09-30" }
+  },
+  {
+    "aggregate": "q=%22Port+Royal%22+AND+freedmen+AND+school%2A&from=1862-01-01&to=1864-12-31&bucket=month",
+    "blurb": "Schools and paid labor on South Carolina's Sea Islands tested wartime emancipation.",
+    "era": "1860-1865",
+    "id": "port-royal-schools",
+    "title": "Port Royal experiment",
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "\"Port Royal\" AND freedmen AND school*", "to": "1864-12-31" }
+  },
+  {
+    "aggregate": "q=%22Sand+Creek%22+AND+massacre&from=1864-11-29&to=1865-12-31&bucket=month",
+    "blurb": "U.S. troops attacked a Cheyenne and Arapaho encampment in Colorado in November 1864.",
+    "era": "1860-1865",
+    "id": "sand-creek",
+    "title": "Sand Creek massacre",
+    "view": { "bucket": "month", "from": "1864-11-29", "q": "\"Sand Creek\" AND massacre", "to": "1865-12-31" }
+  },
+  {
+    "aggregate": "q=Yosemite+valley&mode=phrase&from=1864-01-01&to=1865-12-31&bucket=month",
+    "blurb": "The 1864 federal grant protected Yosemite Valley and the Mariposa Grove.",
+    "era": "1860-1865",
+    "id": "yosemite-grant",
+    "title": "Yosemite Grant",
+    "view": { "bucket": "month", "from": "1864-01-01", "q": "Yosemite valley", "to": "1865-12-31" }
+  },
+  {
+    "aggregate": "q=Russian+America&mode=phrase&from=1867-01-01&to=1868-12-31&bucket=month",
+    "blurb": "The United States purchased Alaska from Russia in 1867.",
+    "era": "1865-1877",
+    "id": "alaska-purchase",
+    "title": "Alaska Purchase",
+    "view": { "bucket": "month", "from": "1867-01-01", "q": "Russian America", "to": "1868-12-31" }
+  },
+  {
+    "aggregate": "q=Fenian+AND+Canada&from=1866-05-01&to=1866-07-31&bucket=month",
+    "blurb": "Irish nationalists crossed the U.S. border to attack British rule in Canada.",
+    "era": "1865-1877",
+    "id": "fenian-raids",
+    "title": "Fenian raids into Canada",
+    "view": { "bucket": "month", "from": "1866-05-01", "q": "Fenian AND Canada", "to": "1866-07-31" }
+  },
+  {
+    "aggregate": "q=%22Brooklyn%22+AND+%22theatre+fire%22&from=1876-12-05&to=1877-02-28&bucket=month",
+    "blurb": "A December 1876 theater fire killed hundreds in Brooklyn.",
+    "era": "1865-1877",
+    "id": "brooklyn-theater-fire",
+    "title": "Brooklyn Theater fire",
+    "view": { "bucket": "month", "from": "1876-12-05", "q": "\"Brooklyn\" AND \"theatre fire\"", "to": "1877-02-28" }
+  },
+  {
+    "aggregate": "q=Yellowstone+park&mode=phrase&from=1872-01-01&to=1873-12-31&bucket=month",
+    "blurb": "Congress established Yellowstone as a national park in March 1872.",
+    "era": "1865-1877",
+    "id": "yellowstone-park",
+    "title": "Yellowstone National Park",
+    "view": { "bucket": "month", "from": "1872-01-01", "q": "Yellowstone park", "to": "1873-12-31" }
+  },
+  {
+    "aggregate": "q=Navajo+AND+treaty&from=1868-01-01&to=1869-12-31&bucket=month",
+    "blurb": "The 1868 treaty allowed Navajo people to return from imprisonment at Bosque Redondo.",
+    "era": "1865-1877",
+    "id": "navajo-treaty",
+    "title": "Navajo return from exile",
+    "view": { "bucket": "month", "from": "1868-01-01", "q": "Navajo AND treaty", "to": "1869-12-31" }
+  },
+  {
+    "aggregate": "q=telephone&mode=phrase&from=1876-01-01&to=1877-12-31&bucket=month",
+    "blurb": "Bell's patent and public demonstrations brought voice transmission to wider notice.",
+    "era": "1865-1877",
+    "id": "telephone-invention",
+    "title": "The telephone's debut",
+    "view": { "bucket": "month", "from": "1876-01-01", "q": "telephone", "to": "1877-12-31" }
+  },
+  {
+    "aggregate": "q=%22Red+Stockings%22+AND+Cincinnati&from=1869-01-01&to=1870-12-31&bucket=month",
+    "blurb": "Cincinnati's openly professional baseball club toured and won national attention.",
+    "era": "1865-1877",
+    "id": "red-stockings",
+    "title": "Cincinnati Red Stockings",
+    "view": { "bucket": "month", "from": "1869-01-01", "q": "\"Red Stockings\" AND Cincinnati", "to": "1870-12-31" }
+  },
+  {
+    "aggregate": "q=type+writer&mode=phrase&from=1873-01-01&to=1875-12-31&bucket=month",
+    "blurb": "Early commercial writing machines offered a new way to produce business documents.",
+    "era": "1865-1877",
+    "id": "typewriter",
+    "title": "Typewriters reach the market",
+    "view": { "bucket": "month", "from": "1873-01-01", "q": "type writer", "to": "1875-12-31" }
+  },
+  {
+    "aggregate": "q=East+river+bridge&mode=phrase&from=1870-01-01&to=1872-12-31&bucket=month",
+    "blurb": "Workers laid the foundations of the suspension bridge connecting Brooklyn and New York.",
+    "era": "1865-1877",
+    "id": "brooklyn-bridge-building",
+    "title": "Building the Brooklyn Bridge",
+    "view": { "bucket": "month", "from": "1870-01-01", "q": "East river bridge", "to": "1872-12-31" }
+  },
+  {
+    "aggregate": "q=Molly+Maguires&mode=phrase&from=1875-01-01&to=1877-12-31&bucket=month",
+    "blurb": "Trials in Pennsylvania's coal region intertwined labor conflict and anti-Irish prejudice.",
+    "era": "1865-1877",
+    "id": "molly-maguires",
+    "title": "Molly Maguires trials",
+    "view": { "bucket": "month", "from": "1875-01-01", "q": "Molly Maguires", "to": "1877-12-31" }
+  },
+  {
+    "aggregate": "q=grasshoppers&mode=phrase&from=1874-01-01&to=1875-12-31&bucket=month",
+    "blurb": "Swarms devastated crops and livelihoods across the Great Plains.",
+    "era": "1865-1877",
+    "id": "grasshopper-plague",
+    "title": "Great Plains grasshopper plague",
+    "view": { "bucket": "month", "from": "1874-01-01", "q": "grasshoppers", "to": "1875-12-31" }
+  },
+  {
+    "aggregate": "q=Challenger+expedition&mode=phrase&from=1873-01-01&to=1876-12-31&bucket=month",
+    "blurb": "A British scientific voyage surveyed ocean depths and marine life around the world.",
+    "era": "1865-1877",
+    "id": "challenger-expedition",
+    "title": "Challenger ocean expedition",
+    "view": { "bucket": "month", "from": "1873-01-01", "q": "Challenger expedition", "to": "1876-12-31" }
+  },
+  {
+    "aggregate": "q=Suez+canal&mode=phrase&from=1869-01-01&to=1870-12-31&bucket=month",
+    "blurb": "The canal opened in 1869, linking Mediterranean and Red Sea shipping routes.",
+    "era": "1865-1877",
+    "id": "suez-canal-opening",
+    "title": "Suez Canal opens",
+    "view": { "bucket": "month", "from": "1869-01-01", "q": "Suez canal", "to": "1870-12-31" }
+  },
+  {
+    "aggregate": "q=bicycle&mode=phrase&from=1885-01-01&to=1887-12-31&bucket=month",
+    "blurb": "Cycling clubs, new machines, and road culture expanded during the bicycle boom.",
+    "era": "1877-1900",
+    "id": "bicycle-boom",
+    "title": "Bicycle boom",
+    "view": { "bucket": "month", "from": "1885-01-01", "q": "bicycle", "to": "1887-12-31" }
+  },
+  {
+    "aggregate": "q=roller+skating&mode=phrase&from=1884-01-01&to=1886-12-31&bucket=month",
+    "blurb": "Rinks and skating parties became a fashionable recreation in towns and cities.",
+    "era": "1877-1900",
+    "id": "roller-skating",
+    "title": "Roller skating craze",
+    "view": { "bucket": "month", "from": "1884-01-01", "q": "roller skating", "to": "1886-12-31" }
+  },
+  {
+    "aggregate": "q=%22Rock+Springs%22+AND+Chinese&from=1885-09-02&to=1885-12-31&bucket=month",
+    "blurb": "White miners attacked Chinese workers in Wyoming Territory in September 1885.",
+    "era": "1877-1900",
+    "id": "rock-springs",
+    "title": "Rock Springs massacre",
+    "view": { "bucket": "month", "from": "1885-09-02", "q": "\"Rock Springs\" AND Chinese", "to": "1885-12-31" }
+  },
+  {
+    "aggregate": "q=Dawes+AND+allotment&from=1887-01-01&to=1888-12-31&bucket=month",
+    "blurb": "The 1887 allotment law broke up collectively held Indigenous reservation lands.",
+    "era": "1877-1900",
+    "id": "dawes-allotment",
+    "title": "Dawes Act and allotment",
+    "view": { "bucket": "month", "from": "1887-01-01", "q": "Dawes AND allotment", "to": "1888-12-31" }
+  },
+  {
+    "aggregate": "q=%22Ida+B+Wells%22+OR+%22Ida+Wells%22&from=1892-01-01&to=1894-12-31&bucket=month",
+    "blurb": "Wells's reporting challenged lynching and its justifications in the American press.",
+    "era": "1877-1900",
+    "id": "ida-wells",
+    "title": "Ida B. Wells's journalism",
+    "view": { "bucket": "month", "from": "1892-01-01", "q": "\"Ida B Wells\" OR \"Ida Wells\"", "to": "1894-12-31" }
+  },
+  {
+    "aggregate": "q=Black+Patti&mode=phrase&from=1892-01-01&to=1894-12-31&bucket=month",
+    "blurb": "The acclaimed Black soprano toured under a stage name used widely in period coverage.",
+    "era": "1877-1900",
+    "id": "sissieretta-jones",
+    "title": "Sissieretta Jones sings",
+    "view": { "bucket": "month", "from": "1892-01-01", "q": "Black Patti", "to": "1894-12-31" }
+  },
+  {
+    "aggregate": "q=ragtime&mode=phrase&from=1897-01-01&to=1899-12-31&bucket=month",
+    "blurb": "Syncopated music moved through sheet music, performances, and debates about taste.",
+    "era": "1877-1900",
+    "id": "ragtime",
+    "title": "Ragtime music",
+    "view": { "bucket": "month", "from": "1897-01-01", "q": "ragtime", "to": "1899-12-31" }
+  },
+  {
+    "aggregate": "q=passenger+pigeon&mode=phrase&from=1880-01-01&to=1882-12-31&bucket=month",
+    "blurb": "Market hunting and shrinking flocks drew attention to a once abundant North American bird.",
+    "era": "1877-1900",
+    "id": "passenger-pigeons",
+    "title": "Passenger pigeons decline",
+    "view": { "bucket": "month", "from": "1880-01-01", "q": "passenger pigeon", "to": "1882-12-31" }
+  },
+  {
+    "aggregate": "q=Bartholdi+statue&mode=phrase&from=1885-01-01&to=1886-12-31&bucket=month",
+    "blurb": "Fundraising and construction culminated in the statue's New York dedication in 1886.",
+    "era": "1877-1900",
+    "id": "statue-liberty",
+    "title": "Statue of Liberty dedication",
+    "view": { "bucket": "month", "from": "1885-01-01", "q": "Bartholdi statue", "to": "1886-12-31" }
+  },
+  {
+    "aggregate": "q=%22Nellie+Bly%22+AND+world&from=1889-11-01&to=1890-02-28&bucket=month",
+    "blurb": "The reporter's round-the-world journey turned newspaper readers into travel spectators.",
+    "era": "1877-1900",
+    "id": "nellie-bly",
+    "title": "Nellie Bly circles the globe",
+    "view": { "bucket": "month", "from": "1889-11-01", "q": "\"Nellie Bly\" AND world", "to": "1890-02-28" }
+  },
+  {
+    "aggregate": "q=Homestead+strike&mode=phrase&from=1892-01-01&to=1893-12-31&bucket=month",
+    "blurb": "A Pennsylvania steel dispute led to a deadly confrontation with Pinkerton guards.",
+    "era": "1877-1900",
+    "id": "homestead-strike",
+    "title": "Homestead steel strike",
+    "view": { "bucket": "month", "from": "1892-01-01", "q": "Homestead strike", "to": "1893-12-31" }
+  },
+  {
+    "aggregate": "q=X+rays&mode=phrase&from=1896-01-01&to=1897-12-31&bucket=month",
+    "blurb": "Reports of Rontgen's discovery spread rapidly into medical and popular discussion.",
+    "era": "1877-1900",
+    "id": "x-rays",
+    "title": "X-rays enter medicine",
+    "view": { "bucket": "month", "from": "1896-01-01", "q": "X rays", "to": "1897-12-31" }
+  },
+  {
+    "aggregate": "q=Nikola+Tesla&mode=phrase&from=1893-01-01&to=1895-12-31&bucket=month",
+    "blurb": "Tesla's electrical demonstrations and inventions attracted scientific and public interest.",
+    "era": "1877-1900",
+    "id": "nikola-tesla",
+    "title": "Nikola Tesla's experiments",
+    "view": { "bucket": "month", "from": "1893-01-01", "q": "Nikola Tesla", "to": "1895-12-31" }
+  },
+  {
+    "aggregate": "q=Esperanto+AND+language&from=1897-01-01&to=1900-12-31&bucket=month",
+    "blurb": "A proposed international language sought readers beyond national and linguistic borders.",
+    "era": "1877-1900",
+    "id": "esperanto",
+    "title": "Esperanto's early readers",
+    "view": { "bucket": "month", "from": "1897-01-01", "q": "Esperanto AND language", "to": "1900-12-31" }
+  },
+  {
+    "aggregate": "q=Carnegie+library&mode=phrase&from=1889-01-01&to=1891-12-31&bucket=month",
+    "blurb": "Philanthropic gifts helped establish public libraries in industrial communities.",
+    "era": "1877-1900",
+    "id": "carnegie-libraries",
+    "title": "Carnegie libraries",
+    "view": { "bucket": "month", "from": "1889-01-01", "q": "Carnegie library", "to": "1891-12-31" }
+  },
+  {
+    "aggregate": "q=electric+automobile&mode=phrase&from=1900-01-01&to=1902-12-31&bucket=month",
+    "blurb": "Battery-powered vehicles competed with steam and gasoline cars on American streets.",
+    "era": "1900-1929",
+    "id": "electric-cars",
+    "title": "Early electric automobiles",
+    "view": { "bucket": "month", "from": "1900-01-01", "q": "electric automobile", "to": "1902-12-31" }
+  },
+  {
+    "aggregate": "q=Marconi&mode=phrase&from=1901-01-01&to=1903-12-31&bucket=month",
+    "blurb": "Transatlantic experiments promised communication without undersea telegraph cables.",
+    "era": "1900-1929",
+    "id": "wireless-marconi",
+    "title": "Marconi's wireless",
+    "view": { "bucket": "month", "from": "1901-01-01", "q": "Marconi", "to": "1903-12-31" }
+  },
+  {
+    "aggregate": "q=radium&mode=phrase&from=1903-01-01&to=1905-12-31&bucket=month",
+    "blurb": "The Curies' discoveries prompted scientific excitement and speculative medical claims.",
+    "era": "1900-1929",
+    "id": "radium-discovery",
+    "title": "Radium and radioactivity",
+    "view": { "bucket": "month", "from": "1903-01-01", "q": "radium", "to": "1905-12-31" }
+  },
+  {
+    "aggregate": "q=Halley%2A+AND+comet&from=1910-01-01&to=1910-12-31&bucket=month",
+    "blurb": "The comet's 1910 return inspired observations, publicity, and public anxiety.",
+    "era": "1900-1929",
+    "id": "halleys-comet",
+    "title": "Halley's comet returns",
+    "view": { "bucket": "month", "from": "1910-01-01", "q": "Halley* AND comet", "to": "1910-12-31" }
+  },
+  {
+    "aggregate": "q=Mount+Wilson&mode=phrase&from=1904-01-01&to=1906-12-31&bucket=month",
+    "blurb": "The California observatory began a new era of solar and astronomical research.",
+    "era": "1900-1929",
+    "id": "mount-wilson",
+    "title": "Mount Wilson Observatory",
+    "view": { "bucket": "month", "from": "1904-01-01", "q": "Mount Wilson", "to": "1906-12-31" }
+  },
+  {
+    "aggregate": "q=tuberculosis+AND+prevention&from=1905-01-01&to=1907-12-31&bucket=month",
+    "blurb": "Public health campaigns promoted prevention, sanatorium care, and disease education.",
+    "era": "1900-1929",
+    "id": "tuberculosis-campaign",
+    "title": "Campaigns against tuberculosis",
+    "view": { "bucket": "month", "from": "1905-01-01", "q": "tuberculosis AND prevention", "to": "1907-12-31" }
+  },
+  {
+    "aggregate": "q=Typhoid+Mary&mode=phrase&from=1907-01-01&to=1909-12-31&bucket=month",
+    "blurb": "Officials traced outbreaks to an asymptomatic cook and imposed contested isolation.",
+    "era": "1900-1929",
+    "id": "typhoid-mary",
+    "title": "Mary Mallon and typhoid",
+    "view": { "bucket": "month", "from": "1907-01-01", "q": "Typhoid Mary", "to": "1909-12-31" }
+  },
+  {
+    "aggregate": "q=%22Major+Taylor%22+AND+bicycle&from=1900-01-01&to=1902-12-31&bucket=month",
+    "blurb": "The Black cycling champion raced internationally despite exclusion and discrimination.",
+    "era": "1900-1929",
+    "id": "major-taylor",
+    "title": "Major Taylor's cycling",
+    "view": { "bucket": "month", "from": "1900-01-01", "q": "\"Major Taylor\" AND bicycle", "to": "1902-12-31" }
+  },
+  {
+    "aggregate": "q=Jim+Thorpe&mode=phrase&from=1912-01-01&to=1913-12-31&bucket=month",
+    "blurb": "The Native American athlete's Olympic victories were followed by an eligibility dispute.",
+    "era": "1900-1929",
+    "id": "jim-thorpe",
+    "title": "Jim Thorpe's Olympic fame",
+    "view": { "bucket": "month", "from": "1912-01-01", "q": "Jim Thorpe", "to": "1913-12-31" }
+  },
+  {
+    "aggregate": "q=%22Bessie+Coleman%22+AND+aviat%2A&from=1922-01-01&to=1926-12-31&bucket=month",
+    "blurb": "Coleman earned a pilot's license in France and performed at American air shows.",
+    "era": "1900-1929",
+    "id": "bessie-coleman",
+    "title": "Bessie Coleman flies",
+    "view": { "bucket": "month", "from": "1922-01-01", "q": "\"Bessie Coleman\" AND aviat*", "to": "1926-12-31" }
+  },
+  {
+    "aggregate": "q=Tulsa+riot&mode=phrase&from=1921-01-01&to=1921-12-31&bucket=month",
+    "blurb": "White mobs destroyed Greenwood in 1921; the query follows contemporary press wording.",
+    "era": "1900-1929",
+    "id": "tulsa-massacre",
+    "title": "Tulsa race massacre",
+    "view": { "bucket": "month", "from": "1921-01-01", "q": "Tulsa riot", "to": "1921-12-31" }
+  },
+  {
+    "aggregate": "q=sleeping+car+porters&mode=phrase&from=1925-01-01&to=1927-12-31&bucket=month",
+    "blurb": "Black railroad workers built a union challenging the Pullman Company's labor practices.",
+    "era": "1900-1929",
+    "id": "sleeping-car-porters",
+    "title": "Sleeping car porters organize",
+    "view": { "bucket": "month", "from": "1925-01-01", "q": "sleeping car porters", "to": "1927-12-31" }
+  },
+  {
+    "aggregate": "q=Triangle+fire&mode=phrase&from=1911-01-01&to=1911-12-31&bucket=month",
+    "blurb": "The New York garment factory fire killed 146 workers and intensified safety campaigns.",
+    "era": "1900-1929",
+    "id": "triangle-fire",
+    "title": "Triangle factory fire",
+    "view": { "bucket": "month", "from": "1911-01-01", "q": "Triangle fire", "to": "1911-12-31" }
+  },
+  {
+    "aggregate": "q=Panama+canal&mode=phrase&from=1914-01-01&to=1914-12-31&bucket=month",
+    "blurb": "The canal opened to shipping in August 1914 after a vast and deadly construction effort.",
+    "era": "1900-1929",
+    "id": "panama-canal",
+    "title": "Panama Canal opens",
+    "view": { "bucket": "month", "from": "1914-01-01", "q": "Panama canal", "to": "1914-12-31" }
+  },
+  {
+    "aggregate": "q=dust+storm&mode=phrase&from=1934-01-01&to=1936-12-31&bucket=month",
+    "blurb": "Drought and soil erosion sent immense dust storms across the Great Plains.",
+    "era": "1929-1945",
+    "id": "dust-bowl",
+    "title": "Dust Bowl storms",
+    "view": { "bucket": "month", "from": "1934-01-01", "q": "dust storm", "to": "1936-12-31" }
+  },
+  {
+    "aggregate": "q=Amelia+Earhart&mode=phrase&from=1932-05-20&to=1932-07-31&bucket=month",
+    "blurb": "Earhart became the first woman to fly solo across the Atlantic in May 1932.",
+    "era": "1929-1945",
+    "id": "earhart-atlantic",
+    "title": "Amelia Earhart's Atlantic flight",
+    "view": { "bucket": "month", "from": "1932-05-20", "q": "Amelia Earhart", "to": "1932-07-31" }
+  },
+  {
+    "aggregate": "q=Tuskegee+AND+%22fighter+pilots%22&from=1943-01-01&to=1945-12-31&bucket=month",
+    "blurb": "Black military pilots flew combat missions while the armed forces remained segregated.",
+    "era": "1929-1945",
+    "id": "tuskegee-airmen",
+    "title": "Tuskegee airmen",
+    "view": { "bucket": "month", "from": "1943-01-01", "q": "Tuskegee AND \"fighter pilots\"", "to": "1945-12-31" }
+  },
+  {
+    "aggregate": "q=Lindbergh+baby&mode=phrase&from=1932-01-01&to=1932-12-31&bucket=month",
+    "blurb": "The kidnapping of Charles and Anne Lindbergh's son became a national news story.",
+    "era": "1929-1945",
+    "id": "lindbergh-kidnapping",
+    "title": "Lindbergh kidnapping",
+    "view": { "bucket": "month", "from": "1932-01-01", "q": "Lindbergh baby", "to": "1932-12-31" }
+  },
+  {
+    "aggregate": "q=Scottsboro&mode=phrase&from=1931-01-01&to=1933-12-31&bucket=month",
+    "blurb": "Nine Black youths faced Alabama prosecutions that exposed racism in the justice system.",
+    "era": "1929-1945",
+    "id": "scottsboro",
+    "title": "Scottsboro defendants",
+    "view": { "bucket": "month", "from": "1931-01-01", "q": "Scottsboro", "to": "1933-12-31" }
+  },
+  {
+    "aggregate": "q=Bonneville+dam&mode=phrase&from=1937-01-01&to=1939-12-31&bucket=month",
+    "blurb": "The Columbia River project brought hydropower, navigation changes, and ecological costs.",
+    "era": "1929-1945",
+    "id": "bonneville-dam",
+    "title": "Bonneville Dam",
+    "view": { "bucket": "month", "from": "1937-01-01", "q": "Bonneville dam", "to": "1939-12-31" }
+  },
+  {
+    "aggregate": "q=Golden+Gate+bridge&mode=phrase&from=1937-01-01&to=1937-12-31&bucket=month",
+    "blurb": "San Francisco's new suspension bridge opened to pedestrians and traffic in May 1937.",
+    "era": "1929-1945",
+    "id": "golden-gate-bridge",
+    "title": "Golden Gate Bridge opens",
+    "view": { "bucket": "month", "from": "1937-01-01", "q": "Golden Gate bridge", "to": "1937-12-31" }
+  },
+  {
+    "aggregate": "q=Boulder+dam&mode=phrase&from=1935-01-01&to=1936-12-31&bucket=month",
+    "blurb": "The Colorado River dam's dedication celebrated a major federal engineering project.",
+    "era": "1929-1945",
+    "id": "boulder-dam",
+    "title": "Boulder Dam dedication",
+    "view": { "bucket": "month", "from": "1935-01-01", "q": "Boulder dam", "to": "1936-12-31" }
+  },
+  {
+    "aggregate": "q=Jesse+Owens&mode=phrase&from=1936-08-01&to=1936-09-30&bucket=month",
+    "blurb": "Owens won four gold medals at the Berlin Olympics under Nazi rule.",
+    "era": "1929-1945",
+    "id": "jesse-owens",
+    "title": "Jesse Owens in Berlin",
+    "view": { "bucket": "month", "from": "1936-08-01", "q": "Jesse Owens", "to": "1936-09-30" }
+  },
+  {
+    "aggregate": "q=Marian+Anderson&mode=phrase&from=1939-03-01&to=1939-05-31&bucket=month",
+    "blurb": "Denied a concert hall because of race, Anderson sang at the Lincoln Memorial.",
+    "era": "1929-1945",
+    "id": "marian-anderson",
+    "title": "Marian Anderson at the memorial",
+    "view": { "bucket": "month", "from": "1939-03-01", "q": "Marian Anderson", "to": "1939-05-31" }
+  },
+  {
+    "aggregate": "q=penicillin&mode=phrase&from=1943-01-01&to=1945-12-31&bucket=month",
+    "blurb": "Wartime production expanded access to a life-saving antibiotic.",
+    "era": "1929-1945",
+    "id": "penicillin",
+    "title": "Penicillin reaches patients",
+    "view": { "bucket": "month", "from": "1943-01-01", "q": "penicillin", "to": "1945-12-31" }
+  },
+  {
+    "aggregate": "q=braceros&mode=phrase&from=1942-01-01&to=1945-12-31&bucket=month",
+    "blurb": "A wartime agreement recruited Mexican workers for U.S. farms and railroads.",
+    "era": "1929-1945",
+    "id": "bracero-workers",
+    "title": "Bracero workers",
+    "view": { "bucket": "month", "from": "1942-01-01", "q": "braceros", "to": "1945-12-31" }
+  },
+  {
+    "aggregate": "q=victory+garden&mode=phrase&from=1942-01-01&to=1944-12-31&bucket=month",
+    "blurb": "Families and communities grew food as part of the wartime home-front effort.",
+    "era": "1929-1945",
+    "id": "victory-gardens",
+    "title": "Victory gardens",
+    "view": { "bucket": "month", "from": "1942-01-01", "q": "victory garden", "to": "1944-12-31" }
+  },
+  {
+    "aggregate": "q=Jackie+Robinson&mode=phrase&from=1947-01-01&to=1947-12-31&bucket=month",
+    "blurb": "Robinson broke modern Major League Baseball's color barrier with Brooklyn in 1947.",
+    "era": "1945-1963",
+    "id": "jackie-robinson",
+    "title": "Jackie Robinson's Dodgers debut",
+    "view": { "bucket": "month", "from": "1947-01-01", "q": "Jackie Robinson", "to": "1947-12-31" }
+  },
+  {
+    "aggregate": "q=Ralph+Bunche&mode=phrase&from=1950-01-01&to=1951-12-31&bucket=month",
+    "blurb": "The diplomat became the first African American awarded the Nobel Peace Prize.",
+    "era": "1945-1963",
+    "id": "ralph-bunche",
+    "title": "Ralph Bunche's peace prize",
+    "view": { "bucket": "month", "from": "1950-01-01", "q": "Ralph Bunche", "to": "1951-12-31" }
+  },
+  {
+    "aggregate": "q=Maria+Tallchief&mode=phrase&from=1947-01-01&to=1951-12-31&bucket=month",
+    "blurb": "The Osage ballerina became a leading figure in American ballet.",
+    "era": "1945-1963",
+    "id": "maria-tallchief",
+    "title": "Maria Tallchief's ballet career",
+    "view": { "bucket": "month", "from": "1947-01-01", "q": "Maria Tallchief", "to": "1951-12-31" }
+  },
+  {
+    "aggregate": "q=Eartha+Kitt&mode=phrase&from=1953-01-01&to=1955-12-31&bucket=month",
+    "blurb": "Recordings, cabaret, and Broadway performances brought Kitt international attention.",
+    "era": "1945-1963",
+    "id": "eartha-kitt",
+    "title": "Eartha Kitt on stage",
+    "view": { "bucket": "month", "from": "1953-01-01", "q": "Eartha Kitt", "to": "1955-12-31" }
+  },
+  {
+    "aggregate": "q=Roberto+Clemente&mode=phrase&from=1955-01-01&to=1957-12-31&bucket=month",
+    "blurb": "The Puerto Rican outfielder began his Pittsburgh Pirates career in 1955.",
+    "era": "1945-1963",
+    "id": "roberto-clemente",
+    "title": "Roberto Clemente's rookie years",
+    "view": { "bucket": "month", "from": "1955-01-01", "q": "Roberto Clemente", "to": "1957-12-31" }
+  },
+  {
+    "aggregate": "q=Anna+May+Wong&mode=phrase&from=1961-01-01&to=1961-12-31&bucket=month",
+    "blurb": "The Chinese American screen pioneer's death prompted accounts of her film career.",
+    "era": "1945-1963",
+    "id": "anna-may-wong",
+    "title": "Anna May Wong remembered",
+    "view": { "bucket": "month", "from": "1961-01-01", "q": "Anna May Wong", "to": "1961-12-31" }
+  },
+  {
+    "aggregate": "q=Everest&mode=phrase&from=1953-05-29&to=1953-08-31&bucket=month",
+    "blurb": "Tenzing Norgay and Edmund Hillary reached the summit in May 1953.",
+    "era": "1945-1963",
+    "id": "everest-ascent",
+    "title": "Everest's first summit",
+    "view": { "bucket": "month", "from": "1953-05-29", "q": "Everest", "to": "1953-08-31" }
+  },
+  {
+    "aggregate": "q=Antarctic+treaty&mode=phrase&from=1959-01-01&to=1961-12-31&bucket=month",
+    "blurb": "The treaty reserved Antarctica for peaceful activity and international scientific work.",
+    "era": "1945-1963",
+    "id": "antarctic-treaty",
+    "title": "Antarctic Treaty",
+    "view": { "bucket": "month", "from": "1959-01-01", "q": "Antarctic treaty", "to": "1961-12-31" }
+  },
+  {
+    "aggregate": "q=International+Geophysical+Year&mode=phrase&from=1957-01-01&to=1958-12-31&bucket=month",
+    "blurb": "Scientists coordinated observations of Earth, oceans, atmosphere, and space.",
+    "era": "1945-1963",
+    "id": "geophysical-year",
+    "title": "International Geophysical Year",
+    "view": { "bucket": "month", "from": "1957-01-01", "q": "International Geophysical Year", "to": "1958-12-31" }
+  },
+  {
+    "aggregate": "q=interstate+highway&mode=phrase&from=1956-01-01&to=1958-12-31&bucket=month",
+    "blurb": "The 1956 highway law launched a vast expansion of controlled-access roads.",
+    "era": "1945-1963",
+    "id": "interstate-highways",
+    "title": "Interstate highway program",
+    "view": { "bucket": "month", "from": "1956-01-01", "q": "interstate highway", "to": "1958-12-31" }
+  },
+  {
+    "aggregate": "q=Nautilus+AND+submarine&from=1954-01-01&to=1956-12-31&bucket=month",
+    "blurb": "The first nuclear-powered submarine demonstrated a new form of marine propulsion.",
+    "era": "1945-1963",
+    "id": "nautilus-submarine",
+    "title": "Nautilus nuclear submarine",
+    "view": { "bucket": "month", "from": "1954-01-01", "q": "Nautilus AND submarine", "to": "1956-12-31" }
+  },
+  {
+    "aggregate": "q=transistor+radio&mode=phrase&from=1954-01-01&to=1956-12-31&bucket=month",
+    "blurb": "Small battery-powered sets helped make radio listening portable.",
+    "era": "1945-1963",
+    "id": "transistor-radio",
+    "title": "Pocket transistor radios",
+    "view": { "bucket": "month", "from": "1954-01-01", "q": "transistor radio", "to": "1956-12-31" }
+  },
+  {
+    "aggregate": "q=hula+hoop&mode=phrase&from=1958-01-01&to=1959-12-31&bucket=month",
+    "blurb": "A plastic toy became a nationwide fad in playgrounds, stores, and newspaper features.",
+    "era": "1945-1963",
+    "id": "hula-hoop",
+    "title": "Hula hoop craze",
+    "view": { "bucket": "month", "from": "1958-01-01", "q": "hula hoop", "to": "1959-12-31" }
+  },
+  {
+    "aggregate": "q=Telstar&mode=phrase&from=1962-01-01&to=1963-12-31&bucket=month",
+    "blurb": "The communications satellite relayed transatlantic television signals in 1962.",
+    "era": "1945-1963",
+    "id": "telstar-satellite",
+    "title": "Telstar relays television",
+    "view": { "bucket": "month", "from": "1962-01-01", "q": "Telstar", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=Albany+AND+union&from=1754-01-01&to=1754-12-31&bucket=month",
+    "blurb": "Franklin promoted colonial union as delegates met at Albany in 1754.",
+    "era": "1751-1828",
+    "id": "albany-union",
+    "title": "Albany Plan of Union",
+    "view": { "bucket": "month", "from": "1754-01-01", "q": "Albany AND union", "to": "1754-12-31" }
+  },
+  {
+    "aggregate": "q=stamp+act&mode=phrase&from=1765-01-01&to=1766-12-31&bucket=month",
+    "blurb": "The 1765 tax on printed materials provoked colonial resistance and was repealed in 1766.",
+    "era": "1751-1828",
+    "id": "stamp-act",
+    "title": "Stamp Act protests",
+    "view": { "bucket": "month", "from": "1765-01-01", "q": "stamp act", "to": "1766-12-31" }
+  },
+  {
+    "aggregate": "q=Boston+AND+tea+AND+destroyed&from=1773-12-17&to=1774-03-31&bucket=month",
+    "blurb": "Colonists destroyed East India Company tea in Boston Harbor in December 1773.",
+    "era": "1751-1828",
+    "id": "boston-tea-party",
+    "title": "Boston Tea Party",
+    "view": { "bucket": "month", "from": "1773-12-17", "q": "Boston AND tea AND destroyed", "to": "1774-03-31" }
+  },
+  {
+    "aggregate": "q=%22cow+pox%22+OR+%22cow+pock%22&from=1800-01-01&to=1803-12-31&bucket=month",
+    "blurb": "Jenner's cowpox method offered a new way to protect people against smallpox.",
+    "era": "1751-1828",
+    "id": "cowpox-vaccination",
+    "title": "Early smallpox vaccination",
+    "view": { "bucket": "month", "from": "1800-01-01", "q": "\"cow pox\" OR \"cow pock\"", "to": "1803-12-31" }
+  },
+  {
+    "aggregate": "q=Erie+canal&mode=phrase&from=1825-01-01&to=1826-12-31&bucket=month",
+    "blurb": "The canal opened in 1825, connecting the Hudson River with Lake Erie.",
+    "era": "1751-1828",
+    "id": "erie-canal",
+    "title": "Erie Canal opens",
+    "view": { "bucket": "month", "from": "1825-01-01", "q": "Erie canal", "to": "1826-12-31" }
   }
 ]

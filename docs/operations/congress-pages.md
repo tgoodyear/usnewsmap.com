@@ -90,6 +90,25 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 
 4. **Close.** When it's done, set `USNM_SERIALSET_ONPREM` to false and provision: the lake closes, the grant goes and the policy drops the exemption. Remove the private setting with `scripts/azure/settings.sh --env prod --key USNM_SERIALSET_RUNNER --unset`.
 
+### Annals and Register: browser acquisition and local OCR
+
+The Annals of Congress and Register of Debates have no complete permitted scripted text source. Congress.gov scans must be downloaded by a person in a browser; do not automate or work around that restriction. Before importing a volume, check its individual Rights & Access statement and record the statement and URL. If the rights are unclear or restrictive, leave that volume out pending review.
+
+1. **Acquire and archive.** Reconcile the browser-downloaded volumes against the volume list on [issue #229](https://github.com/tgoodyear/usnewsmap.com/issues/229). Keep each original PDF unchanged and record its Congress.gov item and PDF URLs, access date, title, Congress/session, dates, printed volume and bound-part order, page count, SHA-256, byte size, and rights statement. Build the series `manifest.json` using `fixtures/congress/lcg/manual/annals/manifest.json` as the schema example. Store each PDF as `<unit>.pdf` with the manifest under `congress/lcg/manual/{annals|register}/` in the raw archive; use create-only uploads and verify the archived hashes.
+2. **Import, without publishing.** The ingest image has Poppler and English Tesseract. Run one series at a time; the command reads only the archived manifest/PDFs, checks hashes and page counts, extracts text locally, and OCRs pages without usable text. It never contacts Congress.gov:
+
+   ```sh
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 1380 -- --work-dir /work congress-manual \
+     --series annals --max-runtime-secs 79200
+   # After the Annals report is checked, run Register:
+   scripts/azure/start-job.sh --env prod --job INGEST_JOB --wait-mins 1380 -- --work-dir /work congress-manual \
+     --series register --max-runtime-secs 79200
+   ```
+
+   Check the JSON report and logs, and sample text/OCR, dates, chamber, page citations, and provenance from representative volumes in each series. The command writes curated attempts only; it does not publish an index.
+
+3. **Publish only after QA.** `USNM_CONGRESS_MANUAL` defaults to false. After confirming rights, coverage, OCR, dates, citations, and provenance, set both `USNM_CONGRESS` and `USNM_CONGRESS_MANUAL` and provision. The next release adds Annals and Register to the Congress index set. Check `congress.json`, `congress/baselines.json`, `current.json`, and source-filtered searches. Clearing the manual flag and provisioning removes those series from a later release.
+
 ### Damage scores for the Serial Set
 
 `usnm-ingest congress-damage` (#922, [04 §4.10](../design/04-data-sources-and-ingestion.md#damage-scores-for-the-congress-pages-922)) scores every page of the curated Serial Set with the OCR damage metric ([`usnm_core::damage`](japanese-ocr.md#damage-metric-parity-296), version 2), for the quality gate on #922. The text is GPO's text layer, so this measures what the layer holds, page by page, instead of the first sample's 2,989 pages. It is pure text and reads only the curated parts the fetch wrote.

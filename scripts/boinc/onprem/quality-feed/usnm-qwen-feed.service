@@ -1,0 +1,18 @@
+[Unit]
+Description=Non-English damage-first Qwen crop replenishment
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/qwen-feed.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/qwen-feed.env
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/qwen_feed.py \
+  --campaign ${CAMPAIGN} --state /var/lib/usnm-qwen-feed \
+  --server-host ${SERVER_HOST} --archive-host ${ARCHIVE_HOST} --scan-server ${SCAN_SERVER}
+ExecStartPost=/opt/usnm-quality-feed/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
+  --server-host ${SERVER_HOST} --max-unsent 1500 --max-chunks 1 --min-free-gb 50 \
+  --qwen-engine-plan ${QWEN_ENGINE_PLAN} --qwen-models ${QWEN_MODELS}
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=3h
