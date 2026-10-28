@@ -12,6 +12,7 @@ pub mod net;
 pub mod nodes;
 pub mod pipeline;
 pub mod public;
+pub mod queues;
 pub mod sset;
 pub mod tail;
 pub mod view;
@@ -43,6 +44,7 @@ pub struct App {
     pub nodes: Mutex<Nodes>,
     pub hosts: Mutex<Hosts>,
     pub ssets: Mutex<Ssets>,
+    pub queues: Mutex<queues::Queues>,
     pub seed_plan_path: Option<PathBuf>,
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
@@ -102,6 +104,21 @@ impl App {
         }
     }
 
+    pub async fn poll_queues(&self) {
+        let source = self.queues.lock().expect("queues lock").source.clone();
+        let Some(source) = source else {
+            return;
+        };
+        let result = queues::read_counts(source.as_ref(), queues::POLL_TIMEOUT).await;
+        if let Err(error) = &result {
+            tracing::warn!(error = format!("{error:#}"), "can't read pgmq metrics");
+        }
+        self.queues
+            .lock()
+            .expect("queues lock")
+            .apply(result, Utc::now());
+    }
+
     pub fn view(&self) -> View {
         let mut fetch = self.fetch.lock().expect("fetch lock");
         let nodes = self.nodes.lock().expect("nodes lock");
@@ -119,6 +136,10 @@ impl App {
             now,
         );
         v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        self.queues
+            .lock()
+            .expect("queues lock")
+            .apply_to(&mut v.azure, now);
         v
     }
 }
@@ -338,6 +359,7 @@ mod tests {
             nodes: Mutex::new(Nodes::open(dir.join("state"), &[]).unwrap()),
             hosts: Mutex::new(Hosts::new(Vec::new())),
             ssets: Mutex::new(Ssets::default()),
+            queues: Mutex::new(queues::Queues::default()),
             seed_plan_path: None,
             seed_plan: Mutex::new(None),
             settings: Settings {
@@ -383,6 +405,58 @@ mod tests {
         body: &str,
     ) -> (StatusCode, String) {
         call_on(router(app), from, method, uri, body).await.0
+    }
+
+    #[tokio::test]
+    async fn pgmq_metrics_errors_stay_visible_without_public_host_or_key_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        {
+            let mut queues = a.queues.lock().unwrap();
+            queues.source = Some(Arc::new(queues::tests::Metrics { fail: false }));
+            queues.apply(
+                Ok([
+                    ("ocr-priority".into(), 7),
+                    ("ocr-bulk".into(), 0),
+                    ("ocr-deadletter".into(), 3),
+                ]
+                .into()),
+                Utc::now(),
+            );
+            queues.apply(
+                Err(anyhow::anyhow!(
+                    "pve-big.tjg.fyi: cannot read /etc/usnm/queue/client.key"
+                )),
+                Utc::now(),
+            );
+        }
+        let (status, body) = call_on(
+            public_router(a.clone()),
+            "203.0.113.9",
+            "GET",
+            "/api/view.json",
+            "",
+        )
+        .await
+        .0;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["azure"]["queues"]["counts"]["ocr-deadletter"], 3);
+        assert_eq!(v["azure"]["queues_from"], queues::SOURCE);
+        assert_eq!(v["azure"]["queues_stale"], true);
+        assert_eq!(v["azure"]["queues_metrics_only"], true);
+        assert!(v["azure"]["queues_error"]
+            .as_str()
+            .unwrap()
+            .contains("a local path"));
+        assert!(!body.contains("pve-big"));
+        assert!(!body.contains("/etc/usnm"));
+        let (status, html) = call_on(public_router(a), "203.0.113.9", "GET", "/", "")
+            .await
+            .0;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("Dead-letter message bodies are not read"));
+        assert!(!html.contains("No dead letters visible"));
     }
 
     #[tokio::test]
@@ -612,6 +686,7 @@ mod tests {
             ),
             hosts: Mutex::new(Hosts::new(Vec::new())),
             ssets: Mutex::new(Ssets::default()),
+            queues: Mutex::new(queues::Queues::default()),
             seed_plan_path: None,
             seed_plan: Mutex::new(Some(
                 [("pve-big".to_owned(), "/etc/usnm/seed.env".to_owned())].into(),

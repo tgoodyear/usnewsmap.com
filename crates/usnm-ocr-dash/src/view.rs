@@ -282,6 +282,8 @@ pub struct AzureView {
     pub queues_from: Option<String>,
     /// The look is older than [`QUEUES_FRESH`].
     pub queues_stale: bool,
+    pub queues_error: Option<String>,
+    pub queues_metrics_only: bool,
     pub queues_note: &'static str,
     pub imports: &'static str,
     pub workbook_url: Option<String>,
@@ -314,7 +316,7 @@ pub fn node_status_fresh(n: &NodeView, now: DateTime<Utc>) -> bool {
 /// Where the queues come from (12 §12.2.5).
 pub const QUEUES_NOTE: &str = "Queue lengths came from the direct queue workers' status ports, and those workers \
 are retired (#1053): this panel shows a count only while a configured worker still reports one. The OCR queues are \
-now on-prem (PostgreSQL and pgmq, ADR-0025); the dashboard doesn't read them yet.";
+now on-prem (PostgreSQL and pgmq, ADR-0025); configure the read-only dash_reader metrics source to observe them.";
 
 /// The freshest look at the queues among the nodes, with every node's
 /// dead letters joined.
@@ -696,6 +698,8 @@ pub fn build(
                 .is_some_and(|q| now - q.checked_at > QUEUES_FRESH),
             queues: queues.0,
             queues_from: queues.1,
+            queues_error: None,
+            queues_metrics_only: false,
             queues_note: QUEUES_NOTE,
             imports: IMPORTS_NOTE,
             workbook_url: s.workbook_url.clone(),

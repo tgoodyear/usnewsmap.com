@@ -44,7 +44,18 @@ pub struct PgmqQueue {
     config: Config,
     tls: MakeRustlsConnect,
     label: String,
-    client: Mutex<Option<Arc<Client>>>,
+    client: Mutex<Option<Connected>>,
+}
+
+struct Connected {
+    client: Arc<Client>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Connected {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl std::fmt::Debug for PgmqQueue {
@@ -181,12 +192,31 @@ impl PgmqQueue {
         })
     }
 
+    /// Apply a server-side deadline, reconnecting if already in use.
+    pub fn with_statement_timeout(mut self, timeout: Duration) -> anyhow::Result<Self> {
+        let millis =
+            i32::try_from(timeout.as_millis()).context("statement timeout is too large")?;
+        ensure!(
+            millis > 0,
+            "statement timeout must be at least one millisecond"
+        );
+        self.config
+            .options(format!("-c statement_timeout={millis}"));
+        drop(self.client.get_mut().take());
+        Ok(self)
+    }
+
+    /// Abort the transport, rather than leaving cancelled requests in its queue.
+    pub async fn discard_connection(&self) {
+        drop(self.client.lock().await.take());
+    }
+
     /// The connection, made again if it has closed.
     async fn client(&self) -> anyhow::Result<Arc<Client>> {
         let mut slot = self.client.lock().await;
-        if let Some(client) = slot.as_ref() {
-            if !client.is_closed() {
-                return Ok(client.clone());
+        if let Some(connected) = slot.as_ref() {
+            if !connected.client.is_closed() {
+                return Ok(connected.client.clone());
             }
         }
         let (client, connection) = self
@@ -195,13 +225,16 @@ impl PgmqQueue {
             .await
             .with_context(|| format!("connecting to {}", self.label))?;
         let label = self.label.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             if let Err(e) = connection.await {
                 tracing::warn!(queue = %label, error = %e, "queue connection closed");
             }
         });
         let client = Arc::new(client);
-        *slot = Some(client.clone());
+        *slot = Some(Connected {
+            client: client.clone(),
+            task,
+        });
         Ok(client)
     }
 }
@@ -350,17 +383,55 @@ mod tests {
         assert_eq!(text_of(serde_json::json!({"a": 1})), "{\"a\":1}");
     }
 
+    fn live_database_location() -> Option<String> {
+        let location = std::env::var("USNM_TEST_PGMQ").ok();
+        assert!(
+            location.is_some() || std::env::var("USNM_TEST_PGMQ_REQUIRED").is_err(),
+            "USNM_TEST_PGMQ_REQUIRED is set but USNM_TEST_PGMQ isn't"
+        );
+        location
+    }
+
+    #[tokio::test]
+    async fn server_deadline_and_discard_allow_a_fresh_connection() {
+        let Some(location) = live_database_location() else {
+            return;
+        };
+        let q = PgmqQueue::new(&location)
+            .unwrap()
+            .with_statement_timeout(Duration::from_millis(50))
+            .unwrap();
+        let client = q.client().await.unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.simple_query("SELECT pg_sleep(30)"),
+        )
+        .await
+        .expect("server statement deadline did not fire")
+        .expect_err("blocked statement should be cancelled");
+        assert_eq!(
+            error.code(),
+            Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
+        );
+        q.discard_connection().await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !client.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("discarded transport remained open");
+        let next = q.client().await.unwrap();
+        assert!(!Arc::ptr_eq(&client, &next));
+        next.simple_query("SELECT 1").await.unwrap();
+    }
+
     /// Against a real queue database: set USNM_TEST_PGMQ to a location whose
     /// role may send, read and delete on `ocr_deadletter` (CI's queue job uses
     /// scripts/onprem/queue/ci-fixture.sh with ingest_producer).
     #[tokio::test]
     async fn round_trip_against_a_live_database() {
-        let Ok(location) = std::env::var("USNM_TEST_PGMQ") else {
-            // CI's queue job sets USNM_TEST_PGMQ_REQUIRED, so a missing fixture fails there.
-            assert!(
-                std::env::var("USNM_TEST_PGMQ_REQUIRED").is_err(),
-                "USNM_TEST_PGMQ_REQUIRED is set but USNM_TEST_PGMQ isn't"
-            );
+        let Some(location) = live_database_location() else {
             return;
         };
         let q = PgmqQueue::new(&location).unwrap();

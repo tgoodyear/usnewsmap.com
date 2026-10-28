@@ -51,6 +51,24 @@ postgres://usnm-queue.tjg.fyi/usnm_queue?user=boinc_claim&sslcert=<client.crt>&s
   update and delete on `ocr_deadletter` to run the live round trip in
   `cargo test -p usnm-store pgmq`.
 
+## Read-only dashboard
+
+`usnm-ocrdash --queue-url` (or `USNM_OCRDASH_QUEUE_URL`) accepts the same
+certificate-authenticated PostgreSQL URL, but requires `user=dash_reader`.
+Make that role's certificate bundle readable only by the dashboard service
+account, transferring keys directly between the queue host and dashboard
+host, never through a workstation.
+
+The adapter reads only metrics for `ocr_priority`, `ocr_bulk` and
+`ocr_deadletter`. It never takes, sends, deletes or peeks at messages. A
+failed poll retains the last complete observation with an error/stale
+indicator; before any successful poll, counts are unavailable, not zero.
+An observation older than five minutes is stale. Configuration is optional
+and does not change any producer, consumer, queue backend or role grants.
+Each metrics statement has a server-enforced five-second deadline inside
+the 15-second poll budget. A failed or timed-out poll discards its cached
+connection and aborts its transport before another poll can use it.
+
 ## BOINC handoff containers
 
 For a PostgreSQL `QUEUE_URL`, the on-prem step runner requires the role's

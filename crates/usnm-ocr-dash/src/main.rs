@@ -94,6 +94,9 @@ struct Cli {
     /// The global LoC pacer's `pacer.json`, read-only.
     #[arg(long, env = "USNM_OCRDASH_PACER")]
     pacer: Option<PathBuf>,
+    /// Read-only PostgreSQL pgmq metrics, with a dash_reader client certificate.
+    #[arg(long, env = "USNM_OCRDASH_QUEUE_URL")]
+    queue_url: Option<String>,
     /// A host stats file to read (`<host>.json`), comma-separated or
     /// repeated.
     #[arg(long, env = "USNM_OCRDASH_HOST_FILE", value_delimiter = ',')]
@@ -200,6 +203,9 @@ async fn main() -> anyhow::Result<()> {
         nodes: Mutex::new(Nodes::open(cli.state_dir.clone(), &workers)?),
         hosts: Mutex::new(Hosts::new(cli.host_file.clone())),
         ssets: Mutex::new(Ssets::default()),
+        queues: Mutex::new(usnm_ocr_dash::queues::Queues::new(
+            cli.queue_url.as_deref(),
+        )?),
         seed_plan_path: cli.seed_plan.clone(),
         seed_plan: Mutex::new(None),
         settings: Settings {
@@ -246,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = tokio::task::spawn_blocking(move || a.poll_files()).await {
                     tracing::error!(error = %e, "reading the files panicked");
                 }
-                app.poll_nodes(&client).await;
+                tokio::join!(app.poll_nodes(&client), app.poll_queues());
             }
         });
     }
