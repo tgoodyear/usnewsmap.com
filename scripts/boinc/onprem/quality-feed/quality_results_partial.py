@@ -206,7 +206,7 @@ def host_pass(args):
     receipt = json.loads(response.stdout)
     validate_receipt(receipt, args.campaign, snapshot)
     host_receipt = args.state_dir / args.campaign / "receipts" / (snapshot + ".json")
-    atomic_json(host_receipt, {"coverage": receipt, "loaded": False})
+    atomic_json(host_receipt, {"coverage": receipt, "verified": False, "loaded": False})
     dest = f"/var/lib/usnm-quality-feed/results/{args.campaign}/partial/{snapshot}"
     subprocess.run(["pct", "exec", str(args.ctid), "--", "install", "-d", "-m", "700", dest],
                    check=True, timeout=30)
@@ -233,7 +233,8 @@ def host_pass(args):
             or loaded.get("campaign_complete") is not False
             or loaded.get("selected_unit") != receipt["selected_unit"]):
         raise ValueError("loader receipt does not match partial snapshot")
-    atomic_json(host_receipt, {"coverage": receipt, "loaded": True, "load": loaded})
+    atomic_json(host_receipt, {"coverage": receipt, "verified": True,
+                               "loaded": loaded["pages"] > 0, "load": loaded})
     atomic_json(state_path, {"after": receipt["selected_unit"], "through": receipt["cycle_through"],
                              "last_snapshot": snapshot,
                              "coverage": "cursor-only; no campaign freshness assertion"})

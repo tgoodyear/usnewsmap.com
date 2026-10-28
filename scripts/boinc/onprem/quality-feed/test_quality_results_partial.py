@@ -195,6 +195,18 @@ class PartialTest(unittest.TestCase):
         self.assertEqual(report["pages"], 0)
         self.assertFalse(report["campaign_complete"])
         load.assert_not_called()
+        responses = self.responses()
+        responses[-1].stdout = json.dumps(report).encode()
+        with mock.patch.object(partial.uuid, "uuid4",
+                               return_value=types.SimpleNamespace(hex=self.snapshot)), \
+                mock.patch.object(partial.subprocess, "run", side_effect=responses):
+            partial.host_pass(self.args)
+        receipt = json.loads((self.args.state_dir / "test/receipts"
+                              / (self.snapshot + ".json")).read_bytes())
+        self.assertTrue(receipt["verified"])
+        self.assertFalse(receipt["loaded"])
+        state = json.loads((self.args.state_dir / "test/cursor.json").read_bytes())
+        self.assertEqual(state["after"], "bundle-a")
 
     def test_verified_repeat_load_uses_only_existing_upsert_loader(self):
         rows = [{"doc_id": "doc-a", "job_id": self.job}]
