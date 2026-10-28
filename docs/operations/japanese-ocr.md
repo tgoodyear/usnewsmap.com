@@ -68,6 +68,17 @@ The ingest CLI's standard curated/reference arguments remain required (already
 present in the native unit's environment); supervision opens neither store nor
 pipeline state and requires no Cosmos permission.
 
+The monitored drop-in also opts the native runner into
+`run --fail-on-issue-error`: it continues through the remaining issues without
+retrying, then exits nonzero if any claimed issue failed, including incomplete
+image/engine output or an unavailable item API. This detects partial as well as
+all-issue failures. Explicitly undigitized pages, already-completed work and
+claims held by another replica are not failures. Intentional source holds still
+require stopping/disarming, never launching a retry. The runner's default exit
+behavior is unchanged without this flag. Install and locally accept the reviewed
+native runner supporting this flag in a new versioned prefix before activating
+the drop-in; retain the prior accepted prefix for rollback.
+
 Install the reviewed Linux `usnm-ingest` **separately** at
 `/opt/usnm-ja-native/monitor/usnm-ingest`, never replacing CT215's shared ingest
 binary. Write only `APPLICATIONINSIGHTS_CONNECTION_STRING` to the root-owned
