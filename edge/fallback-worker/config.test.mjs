@@ -77,6 +77,7 @@ test("the runtime date is pinned and not in the future", () => {
 test("the entry point exists and the file holds no setting this Worker does not use", () => {
   assert.ok(existsSync(new URL(config.main, import.meta.url)));
   assert.deepEqual(Object.keys(config).sort(), [
+    "analytics_engine_datasets",
     "compatibility_date",
     "main",
     "name",
@@ -101,9 +102,10 @@ test("the routes are the apex, www and api, every path, nothing else", () => {
   for (const route of config.routes) assert.deepEqual(Object.keys(route).sort(), ["pattern", "zone_name"]);
 });
 
-test("vars hold no secret, and neither the drill flag nor an Azure name", () => {
-  assert.deepEqual(Object.keys(config.vars), ["AZURE_FALLBACK_ORIGIN"]);
+test("vars hold no secret, drill flag or Azure name; the Phase 4 mode stays off", () => {
+  assert.deepEqual(Object.keys(config.vars), ["AZURE_FALLBACK_ORIGIN", "ERROR_LAYER"]);
   assert.equal(config.vars.AZURE_FALLBACK_ORIGIN, "");
+  assert.equal(config.vars.ERROR_LAYER, "false");
 });
 
 test("the Worker does not fall back to the empty name committed here", async () => {

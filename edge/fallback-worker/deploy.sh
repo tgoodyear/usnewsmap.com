@@ -5,7 +5,7 @@
 #
 #   edge/fallback-worker/deploy.sh --account-id ID --azure-origin URL
 #     --wrangler-version X.Y.Z --vault NAME --token-secret NAME
-#     (--production | --drill-hostname NAME) [--dry-run]
+#     (--production | --drill-hostname NAME) [--error-layer] [--dry-run]
 #
 # --account-id: the Cloudflare account id (32 hex digits).
 # --azure-origin: ca-usnm-prod's default name, https://<name>.azurecontainerapps.io. It is
@@ -22,6 +22,8 @@
 #   every request, so a drill's searches stay out of the search log (Phase 2).
 # --dry-run: print the command it would run, and stop before reading the token or
 #   calling Cloudflare.
+# --error-layer: disable Azure fallback and enable the Phase 4 cached-shell/error mode.
+#   Production use requires the accepted Phase 4 gate; isolated drills can exercise it.
 #
 # The route's failure mode (fail open) is a setting on the route in Cloudflare, not in
 # wrangler.jsonc; README.md has the steps, before and after a deploy.
@@ -30,13 +32,13 @@ usage() {
   cat >&2 << 'EOF'
 Usage: edge/fallback-worker/deploy.sh --account-id ID --azure-origin URL
          --wrangler-version X.Y.Z --vault NAME --token-secret NAME
-         (--production | --drill-hostname NAME) [--dry-run]
+         (--production | --drill-hostname NAME) [--error-layer] [--dry-run]
 EOF
   exit 2
 }
 die() { echo "error: $*" >&2; exit 1; }
 
-ACCOUNT="" ORIGIN="" VERSION="" VAULT="" SECRET="" DRILL_HOST="" PRODUCTION=false DRY_RUN=false
+ACCOUNT="" ORIGIN="" VERSION="" VAULT="" SECRET="" DRILL_HOST="" PRODUCTION=false DRY_RUN=false ERROR_LAYER=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --account-id) ACCOUNT=${2:-}; shift 2 || usage ;;
@@ -46,6 +48,7 @@ while [ $# -gt 0 ]; do
     --token-secret) SECRET=${2:-}; shift 2 || usage ;;
     --drill-hostname) DRILL_HOST=${2:-}; shift 2 || usage ;;
     --production) PRODUCTION=true; shift ;;
+    --error-layer) ERROR_LAYER=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -73,6 +76,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Wrangler deletes any variable not named here or in wrangler.jsonc (there is no
 # --keep-vars), so a variable set by hand in the dashboard does not survive a deploy.
 cmd=(npx --yes "wrangler@$VERSION" deploy --config "$HERE/wrangler.jsonc" --var "AZURE_FALLBACK_ORIGIN:$ORIGIN")
+if $ERROR_LAYER; then
+  cmd+=(--var ERROR_LAYER:true)
+fi
 if [ -n "$DRILL_HOST" ]; then
   cmd+=(--name usnm-fallback-drill --route "$DRILL_HOST/*" --var ADD_DNT:true)
 fi

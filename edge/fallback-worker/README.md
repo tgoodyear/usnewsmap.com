@@ -2,7 +2,7 @@
 
 A Cloudflare Worker that sits in front of the `usnm-serving` tunnel during Phase 3 of the on-prem move ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955), [ADR-0027](../../docs/design/adr/0027-onprem-serving-behind-cloudflare.md) decision 10). It passes every request to the tunnel. When the tunnel cannot answer, it asks `ca-usnm-prod` at its default `azurecontainerapps.io` name once, so a home-side outage costs visitors a slower answer and not an error page. This is [#1098](https://github.com/tgoodyear/usnewsmap.com/issues/1098)'s Phase 3 work.
 
-Nothing is deployed from this directory yet. Deploying and drilling the Worker are live Cloudflare operations that wait for the Phase 2 serving container (see "Not in this change").
+Deployment and drills are separate live Cloudflare operations. Production routing and the Phase 4 transition remain gated; an isolated drill does not authorize either.
 
 The Worker has no dependencies and no `package.json`. Its code is `worker.mjs`, its production configuration `wrangler.jsonc`, its hand-deploy script `deploy.sh`.
 
@@ -34,6 +34,18 @@ A request with a body is the page-view beacon (`POST /v1/beacon`, at most 2 KiB)
 The Worker logs nothing. URLs carry the search words in `q`, so the code has no `console` call (`worker.test.mjs` fails on one), `wrangler.jsonc` turns Workers Logs off (`observability.enabled` is `false`), and the Worker has no `workers.dev` name or preview URL. `config.test.mjs` checks the settings. Cloudflare still sees every request, which ADR-0027 settled decision 1 accepts.
 
 The drill Worker sends `DNT: 1` on both requests (`ADD_DNT` is `true`), so a drill's searches are left out of the search log whichever origin answers (`admit()` excludes `DNT: 1`; ADR-0012). The production Worker never sets it, and `config.test.mjs` fails if the committed variables turn it on.
+
+The `FALLBACK_METRICS` Analytics Engine binding records only fixed outcome (`azure` or `degraded`), fixed deployment scope (`production` or `drill`), a count of one and response status. No URL, path, search words, visitor header, address or request body enters the dataset. A direct request to Azure cannot write this Worker binding and is not counted. Failed Azure fetches are not counted as fallback answers. Missing/failed metric writes are surfaced as `X-USNM-Fallback-Metric: unavailable|write-failed`; monitoring/drill acceptance must reject incomplete accounting rather than treating it as zero downtime.
+
+The dataset is `usnm_fallback`; Cloudflare creates it on first write. There is at most one datapoint per routed request, bounded by Workers Free's own 100,000/day ceiling, matching [Analytics Engine's Free allowance](https://developers.cloudflare.com/analytics/analytics-engine/pricing/). Read through an account-scoped **Account Analytics Read** token, not a visitor endpoint or the deployment credential. For example, count production fallback answers with `SELECT SUM(_sample_interval * double1) AS fallback_answers FROM usnm_fallback WHERE blob1 = 'azure' AND blob2 = 'production' AND timestamp >= NOW() - INTERVAL '1' DAY`. Account for sampling as shown; this is a fallback count, not a replacement for the existing availability-test SLI.
+
+## Explicit Phase 4 error layer
+
+`ERROR_LAYER` is committed as `false`; normal deploys retain the existing Phase 3 fallback behavior. Only an explicit `deploy.sh --error-layer` enables the error layer. It must not be used in production before ADR-0027's Phase 4 gate and approval; it may be tested on the isolated drill hostname.
+
+In that mode, 502/530/non-abort network failures never ask Azure. API paths (both `/v1` and `/api/v1`), POSTs and cold assets receive a generic problem+json 503 with `Retry-After: 30` and `Cache-Control: no-store`; the response includes no request data. The API's own 503s, timeouts and aborts retain their original semantics.
+
+Only a successful, anonymous, query-free `GET /` HTML response without private/no-store caching or Set-Cookie is saved in the host-qualified private Cache API slot, for at most 24 hours. Search pages/results and authenticated/cookie-bearing requests are never saved. On an HTML navigation outage, that generic home shell is returned as 503 with a fixed status banner, no-store, Retry-After and no stale validators. HEAD has no body. A cold/evicted shell yields the explicit problem response, not invented content. `X-USNM-Error-Layer: cache-write-failed|cache-read-failed` exposes storage failures; `cached-shell` identifies the degraded response. Warm and verify the actual shell before the outage drill; Cache API storage is evictable, not a durable availability guarantee.
 
 ## Configuration
 
@@ -80,11 +92,11 @@ To undo the Phase 3 cutover, remove the Worker routes and set the three records 
 
 Phase 2 (#1101) deploys the drill Worker on the private test hostname, then stops `cloudflared`, the API and the container's network in turn, and records what the Worker receives each time. A page is loaded with a cold cache, to see that an asset the edge does not hold falls back with its HTML. The same drills show whether `Sec-Fetch-Site`, `Origin` and the client IP headers reach Azure unchanged. The drills have not been run. The Worker keeps no log, so how a drill reads the tunnel's result is part of planning them.
 
-## Not in this change
+## Remaining live acceptance
 
-- **The error layer after Phase 4.** The Worker stays then, serving the last good page shell from the Cache API with a status banner on a 502 or 530, and answering `/v1` with a problem+json 503 and `Retry-After` (ADR-0027 settled decision 2). It is a later change, behind the Phase 4 gate.
-- **The count of fallback answers for the Phase 4 gate.** It has to exclude direct requests to the default name, which stays publicly reachable. ADR-0027 names two ways: a count only the Worker can produce, or limiting that name to the Worker's traffic and verifying the limit. Neither is chosen yet, and this Worker produces no count.
-- **The live steps.** Creating the token, deploying, setting the routes to fail open, and the drills.
+- Deploy only the reviewed release to the isolated hostname with logs/previews off and fail-open readback. Retain the original DNS, route and Worker configuration for rollback.
+- Demonstrate actual connector/API/network failures, cold assets, intact POST/header forwarding, no timeout/abort/API-503 retry, no duplicate search log, and fixed-only metric readback excluding direct Azure requests.
+- On the drill hostname, explicitly enable the error layer, warm its anonymous root shell, then verify the real Cache API/HTMLRewriter banner, API 503/Retry-After, cold-cache response and recovery. No production mode change follows automatically.
 
 ## Tests
 
