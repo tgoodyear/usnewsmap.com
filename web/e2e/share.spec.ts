@@ -41,7 +41,7 @@ test("Share copies immediately and warms the actual current view before reportin
   expect(new URL(requests[0]!).searchParams.get("state")).toBe("IL");
   const cached = await request.get(requests[0]!);
   expect(cached.status()).toBe(200);
-  expect(cached.headers()["cache-control"]).toContain("max-age=3600");
+  expect(cached.headers()["cache-control"]).toContain("max-age=86400");
   expect((await cached.body()).subarray(0, 8)).toEqual(Buffer.from("\x89PNG\r\n\x1a\n", "binary"));
 });
 
