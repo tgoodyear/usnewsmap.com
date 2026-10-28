@@ -847,6 +847,7 @@ jobs:
       - name: The OCR node scripts pass their image tests and shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
+          python3 -m unittest -v scripts/ocr-node/test_install_data_flow.py
           python3 -m pip install --quiet --break-system-packages pillow==13.0.0
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
