@@ -79,6 +79,51 @@ def assert_processed(root, sample):
         raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
 
 
+def admission(a, state, root):
+    if list(root.glob("units/*/submitting")):
+        raise RuntimeError("Uncertain Qwen submission: reconcile existing markers against BOINC, never replay")
+    receipt = root / "audit.json"
+    raw = receipt.read_bytes() if receipt.exists() else None
+    verified = json.loads(raw) if raw is not None else {}
+    pending = 0
+    seen = set()
+    for path, job in jobs(root / "units"):
+        if job["id"] in seen:
+            raise RuntimeError(f"Duplicate staged Qwen identity: {job['id']}; reconcile, never replay")
+        seen.add(job["id"])
+        previous = verified.get(job["id"])
+        if previous is not None and previous["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise RuntimeError(f"Previously audited Qwen job changed: {path}; reconcile, never replay")
+        pending += not (path.parent / "submitted").exists()
+    if set(verified) - seen:
+        raise RuntimeError("Previously audited Qwen job missing or identity changed; reconcile, never replay")
+    reason = None
+    if 2 * (state["fresh_pairs"] + a.max_pages) > a.max_ready:
+        reason = "fresh_original_watermark"
+    elif state["unresolved_native"] + a.max_pages > a.max_unresolved:
+        reason = "unresolved_native_ceiling"
+    elif state["free_bytes"] - a.max_pages * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
+        reason = "reserved_input_free_space"
+    decision = {
+        "status": "deferred" if reason else "admitted",
+        "phase": "preflight" if a.preflight else "locked_recheck",
+        "campaign": a.campaign, "reason": reason, "reserve_pages": a.max_pages,
+        "fresh_pairs": state["fresh_pairs"], "max_ready_replicas": a.max_ready,
+        "unresolved_native": state["unresolved_native"], "max_unresolved": a.max_unresolved,
+        "free_bytes": state["free_bytes"], "reserve_mib_per_page": a.reserve_mib,
+        "min_free_gb": a.min_free_gb, "pending_staged_units": pending,
+        "audit_total": len(verified),
+        "audit_sha256": hashlib.sha256(raw).hexdigest() if raw is not None else None,
+        "ready_retained": True, "publication_attempted": False,
+    }
+    if a.preflight:
+        decision["transferred_pages"] = 0
+    if reason or a.preflight:
+        print(json.dumps(decision, sort_keys=True), flush=True)
+    if reason:
+        raise SystemExit(75)
+
+
 def audit(root, project):
     receipt = root / "audit.json"
     verified = json.loads(receipt.read_text()) if receipt.exists() else {}
@@ -131,6 +176,8 @@ def main():
     ap.add_argument("--share", type=Path, default=Path("/project"))
     ap.add_argument("--project", type=Path, default=Path("/project/usnmocr"))
     ap.add_argument("--inventory", action="store_true")
+    ap.add_argument("--preflight", action="store_true",
+                    help="Read-only admission before transferring a READY chunk; exit 75 on capacity deferral")
     ap.add_argument("--campaign")
     ap.add_argument("--engine-plan", type=Path)
     ap.add_argument("--models", type=Path)
@@ -156,16 +203,9 @@ def main():
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
-    if list(root.glob("units/*/submitting")):
-        raise RuntimeError("Uncertain Qwen submission: reconcile existing markers against BOINC, never replay")
-    # A paused ship must stay pending, not return success to quality-ship's cleanup.
-    if 2 * (state["fresh_pairs"] + a.max_pages) > a.max_ready:
-        raise RuntimeError(f"Qwen fresh-original watermark: {state['fresh_pairs']} pairs, "
-                           f"reserve {a.max_pages}, replica limit {a.max_ready}")
-    if state["unresolved_native"] + a.max_pages > a.max_unresolved:
-        raise RuntimeError("Qwen unresolved-native ceiling reached; retries are not fresh science")
-    if state["free_bytes"] - a.max_pages * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
-        raise RuntimeError("Qwen reserved-input free-space floor reached")
+    admission(a, state, root)
+    if a.preflight:
+        return
     elsewhere = set()
     for path, job in jobs(a.share / "qwen"):
         if root not in path.parents:

@@ -757,6 +757,19 @@ unvalidated, and no assignment row. Retry replicas and unrelated applications ne
 masquerade as useful fresh supply or block it via a global ready headline. The
 ordinary non-Qwen shipper's global unsent ceiling is unchanged.
 
+Before transferring or staging a native READY chunk, the shipper calls the same
+read-only admission helper with `--preflight` and reserves its **whole** page count.
+Normal capacity pressure emits JSON `status=deferred` with the phase, reason,
+fresh-pair count, reservation, limits and existing audit SHA256, then exits 75
+(already a normal deferred exit for `usnm-qwen-ship.service`). Preflight deferral
+transfers zero pages; it neither acknowledges READY nor reports a publication.
+Unchanged full-watermark ticks only recheck admission, not recopy the sources.
+Admission is always checked again under the normal project mutex before native
+publication: a capacity race also defers with JSON/exit 75 and retains READY and
+staged partials. Uncertain `submitting` markers or changes to previously audited
+job bytes remain hard errors, not normal backpressure. No audit is rewritten by a
+deferred decision; the logged SHA256 binds the existing immutable receipt.
+
 The 50 GiB project/bulk/thin-pool floors remain; native admission additionally
 reserves at least 64 MiB **per candidate page** before staging on the least-free
 backing filesystem. Preparation uses the same conservative per-page reservation to
@@ -767,7 +780,8 @@ The filesystem floor uses the minimum available space across the project root,
 cannot be hidden by free space on the local root filesystem.
 Successful native workunit audits are retained in `audit.json`, bound to the exact job
 SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
-new or changed jobs always require a fresh authoritative audit.
+new jobs always require a fresh authoritative audit; changed previously audited
+job bytes require explicit reconciliation, never automatic replay.
 
 Ramp the configured target only after measured automatic runs, not to manufacture
 10,000 via a number change. For example, start at 200 fresh replicas (100 pairs),

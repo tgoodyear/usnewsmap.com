@@ -1,5 +1,6 @@
 """Regression tests for real-source Qwen replenishment; no GPU, Pillow or network."""
 import hashlib
+import contextlib
 import importlib.util
 import io
 import json
@@ -314,21 +315,120 @@ class SourceTest(unittest.TestCase):
                     "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root)]
             base = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
                     "free_bytes": 100 * 1024**3}
-            for change, error in (({}, None), ({"fresh_pairs": 401}, "fresh-original"),
-                                  ({"unresolved_native": 1901}, "unresolved-native"),
-                                  ({"free_bytes": 51 * 1024**3}, "reserved-input")):
+            for change, error in (({}, None), ({"fresh_pairs": 401}, "fresh_original_watermark"),
+                                  ({"unresolved_native": 1901}, "unresolved_native_ceiling"),
+                                  ({"free_bytes": 51 * 1024**3}, "reserved_input_free_space")):
                 with self.subTest(change=change), mock.patch.object(sys, "argv", argv), \
                         mock.patch.object(submit, "inventory", return_value={**base, **change}), \
                         mock.patch.object(submit.subprocess, "run") as run, \
                         mock.patch.object(submit, "assert_submitted"), \
                         mock.patch.object(submit, "audit", return_value={}):
                     if error:
-                        with self.assertRaisesRegex(RuntimeError, error):
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as caught:
                             submit.main()
+                        self.assertEqual(caught.exception.code, 75)
+                        decision = json.loads(output.getvalue())
+                        self.assertEqual((decision["status"], decision["reason"]),
+                                         ("deferred", error))
+                        self.assertEqual(decision["phase"], "locked_recheck")
                         run.assert_not_called()
                     else:
                         submit.main()
                         self.assertEqual(run.call_count, 2)
+
+    def test_preflight_and_locked_recheck_preserve_partial_jobs_and_hash_bound_audit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            share = Path(folder)
+            root = share / "qwen/qwen-test"
+            unit = root / "units" / DOC
+            unit.mkdir(parents=True)
+            raw = json.dumps({"id": "a" * 64, "doc_id": DOC}).encode()
+            (unit / "qwen.json").write_bytes(raw)
+            submitted = root / "units" / "sn2_1900-01-02_ed-1_seq-3"
+            submitted.mkdir()
+            job = {"id": "b" * 64, "doc_id": submitted.name}
+            old_raw = json.dumps(job).encode()
+            (submitted / "qwen.json").write_bytes(old_raw)
+            (submitted / "submitted").write_text("already published\n")
+            old_audit = json.dumps({job["id"]: {"job_sha256": hashlib.sha256(old_raw).hexdigest(),
+                                                "workunit_id": 42}}).encode()
+            (root / "audit.json").write_bytes(old_audit)
+            plan = share / "plan.json"
+            plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama",
+                                                  "weights": "weights"}}))
+            argv = ["qwen_submit.py", "--share", str(share), "--project", str(share),
+                    "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(share),
+                    "--max-pages", "1", "--max-ready", "200"]
+            state = {"ready": 5000, "fresh_pairs": 99, "unresolved_native": 100,
+                     "free_bytes": 100 * 1024**3}
+            output = io.StringIO()
+            with mock.patch.object(submit.subprocess, "run") as run, \
+                    mock.patch.object(submit, "inventory", return_value=state), \
+                    mock.patch.object(sys, "argv", [*argv, "--preflight"]), \
+                    contextlib.redirect_stdout(output):
+                submit.main()
+            run.assert_not_called()
+            decision = json.loads(output.getvalue())
+            self.assertEqual(decision["status"], "admitted")
+            self.assertEqual(decision["pending_staged_units"], 1)
+            self.assertEqual(decision["audit_sha256"], hashlib.sha256(old_audit).hexdigest())
+
+            for preflight in (False, True):
+                output = io.StringIO()
+                with mock.patch.object(submit.subprocess, "run") as run, \
+                        mock.patch.object(submit, "inventory", return_value={**state, "fresh_pairs": 100}), \
+                        mock.patch.object(sys, "argv", [*argv, *(["--preflight"] if preflight else [])]), \
+                        contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as caught:
+                    submit.main()
+                self.assertEqual(caught.exception.code, 75)
+                self.assertEqual(json.loads(output.getvalue())["reason"], "fresh_original_watermark")
+                run.assert_not_called()
+                self.assertEqual((root / "audit.json").read_bytes(), old_audit)
+                self.assertEqual((unit / "qwen.json").read_bytes(), raw)
+                self.assertFalse((unit / "submitted").exists())
+
+            (unit / "submitting").write_text("uncertain\n")
+            with mock.patch.object(submit, "inventory", return_value=state), \
+                    mock.patch.object(sys, "argv", [*argv, "--preflight"]), \
+                    self.assertRaisesRegex(RuntimeError, "Uncertain Qwen"):
+                submit.main()
+            (unit / "submitting").unlink()
+            (submitted / "qwen.json").write_bytes(old_raw + b"\n")
+            with mock.patch.object(submit, "inventory", return_value=state), \
+                    mock.patch.object(sys, "argv", [*argv, "--preflight"]), \
+                    self.assertRaisesRegex(RuntimeError, "Previously audited"):
+                submit.main()
+            (submitted / "qwen.json").write_text(json.dumps({**job, "id": "c" * 64}))
+            for preflight in (False, True):
+                with mock.patch.object(submit.subprocess, "run") as run, \
+                        mock.patch.object(submit, "inventory", return_value={**state, "fresh_pairs": 100}), \
+                        mock.patch.object(sys, "argv", [*argv, *(["--preflight"] if preflight else [])]), \
+                        self.assertRaisesRegex(RuntimeError, "missing or identity changed"):
+                    submit.main()
+                run.assert_not_called()
+                self.assertEqual((root / "audit.json").read_bytes(), old_audit)
+            (submitted / "qwen.json").write_bytes(old_raw)
+            sample = share / "sample.jsonl"
+            sample.write_text(json.dumps({"doc_id": DOC}) + "\n")
+            published = []
+
+            def execute(args, **kwargs):
+                if args[1:3] == ["qwen", "submit"] and not (unit / "submitted").exists():
+                    published.append("a" * 64)
+                    (unit / "submitted").write_text("new workunit\n")
+
+            response = json.dumps({"a" * 64: {
+                "job_sha256": hashlib.sha256(raw).hexdigest(), "workunit_id": 43}})
+            for _ in range(2):
+                with mock.patch.object(submit, "inventory", return_value=state), \
+                        mock.patch.object(sys, "argv", [*argv, "--sample", str(sample)]), \
+                        mock.patch.object(submit.subprocess, "run", side_effect=execute), \
+                        mock.patch.object(submit.subprocess, "check_output", return_value=response):
+                    submit.main()
+            self.assertEqual(published, ["a" * 64])
+            self.assertEqual(json.loads((root / "audit.json").read_bytes())[job["id"]],
+                             json.loads(old_audit)[job["id"]])
 
 
 if __name__ == "__main__":

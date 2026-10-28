@@ -13,7 +13,8 @@
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while the server has more than --max-unsent results ready to send (the public
 #     server_status.php?counts=1), so quality never crowds out OCR's units, or while CT230's
-#     project tree has less than --min-free-gb free.
+#     project tree has less than --min-free-gb free. Native Qwen instead preflights strict
+#     fresh-pair capacity plus the whole READY reservation before transfer (exit 75 defers).
 #  2. Copies the chunk into CT230's <share>/quality/<campaign>/incoming/<chunk>/ (tar over ssh).
 #  3. Runs quality_receive.py there: every file against SHA256SUMS, every page's scan present
 #     (so quality-stage never falls back to tile.loc.gov), then files the scans and texts.
@@ -133,6 +134,15 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
       log "thin pool has $pool bytes free, needs $need including per-page reservation; $chunk waits"
       break
     fi
+    if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
+      --preflight --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --max-pages "$pages" --max-ready "$QWEN_MAX_READY"; then
+      :
+    else
+      rc=$?
+      [ "$rc" -ne 75 ] || log "$chunk: preflight deferred; transferred 0 pages; READY retained"
+      exit "$rc"
+    fi
   fi
   log "$chunk: $pages pages, server unsent $unsent"
   if $WHAT_IF; then
@@ -159,11 +169,17 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
     # Native admission, shared models, scientific identities and DB quorum are checked
     # before cleanup; failures leave the original READY chunk and receipts intact.
     log "$chunk: native submission waiting for normal project mutex"
-    in_ct flock -w 900 -E 75 /run/usnm-boinc-step.lock sh -c \
+    if in_ct flock -w 900 -E 75 /run/usnm-boinc-step.lock sh -c \
       'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY"
+      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY"; then
+      :
+    else
+      rc=$?
+      [ "$rc" -ne 75 ] || log "$chunk: native publication deferred; READY retained; no acknowledgement"
+      exit "$rc"
+    fi
   fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
