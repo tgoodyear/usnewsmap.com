@@ -252,8 +252,24 @@ function native_qwen_reservation_guard($original, $updated) {
     }
 }
 
+function native_qwen_fresh_pair_validate($workunit, $results, $assignments) {
+    native_qwen_cohort_validate($workunit, $results, "nvidia_vulkan_8b");
+    if (intval($workunit->appid) !== 6 || intval($assignments) !== 0
+        || intval($workunit->transitioner_flags ?? -1) !== 0
+        || intval($workunit->need_validate ?? -1) !== 0
+        || intval($workunit->app_version_num ?? -1) !== 0
+        || intval($workunit->hr_class ?? -1) !== 0) {
+        throw new RuntimeException("Fresh pair requires ordinary unassigned native work");
+    }
+    foreach ($results as $result) {
+        foreach (["hostid", "outcome", "validate_state", "app_version_id", "received_time"] as $field) {
+            if (intval($result->$field ?? -1) !== 0) throw new RuntimeException("Fresh pair is no longer pristine");
+        }
+    }
+}
+
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
-        $ordinary_canary = false, $tiebreaker = false) {
+        $ordinary_canary = false, $tiebreaker = false, $expected_sha256 = null, $revalidate = null) {
     if ($tiebreaker && (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true) || $general || $ordinary_canary
             || $workunit_id <= 1 || ($last_id !== null && $last_id !== $workunit_id))) {
         throw new RuntimeException("Tiebreaker is one intel_vulkan_8b, nvidia_vulkan_8b, or shared_8b workunit");
@@ -275,6 +291,11 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
     try {
         $original = file_get_contents($path);
         if ($original === false) throw new RuntimeException("Cannot read plan XML");
+        if ($expected_sha256 !== null && (!preg_match('/^[a-f0-9]{64}$/D', $expected_sha256)
+            || hash("sha256", $original) !== $expected_sha256)) {
+            throw new RuntimeException("Policy changed since reviewed preview");
+        }
+        if ($revalidate !== null) $revalidate();
         $updated = $general ? native_qwen_general_xml($original, $plan_class)
             : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id);
         native_qwen_reservation_guard($original, $updated);
@@ -327,7 +348,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
 }
 
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "ordinary-canary", "tiebreaker", "apply"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
     $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
@@ -335,6 +356,8 @@ function native_qwen_cohort_main() {
     $general = array_key_exists("general", $options);
     $ordinary_canary = array_key_exists("ordinary-canary", $options);
     $tiebreaker = array_key_exists("tiebreaker", $options);
+    $fresh_pair = array_key_exists("fresh-pair", $options);
+    $expected_sha256 = $options["expected-policy-sha256"] ?? null;
     if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
         || (!in_array($plan_class, NATIVE_QWEN_CLASSES, true) && $plan_class !== "shared_8b")
         || (!$stop && !$general && !preg_match('/^[1-9][0-9]*$/', $options["workunit"] ?? ""))
@@ -346,8 +369,11 @@ function native_qwen_cohort_main() {
             || !isset($options["workunit"]) || isset($options["workunit-end"])))
         || ($tiebreaker && ($stop || $general || $ordinary_canary
             || !in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)
-            || !isset($options["workunit"]) || isset($options["workunit-end"])))) {
-        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--apply]");
+            || !isset($options["workunit"]) || isset($options["workunit-end"])))
+        || ($fresh_pair && ($stop || $general || $ordinary_canary || $tiebreaker
+            || !in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)))
+        || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))) {
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--apply]");
     }
     $id = ($stop || $general) ? 0 : intval($options["workunit"]);
     $last_id = isset($options["workunit-end"]) ? intval($options["workunit-end"]) : $id;
@@ -355,6 +381,7 @@ function native_qwen_cohort_main() {
         || ($plan_class !== "shared_8b" && $last_id !== $id)) {
         throw new RuntimeException("Only shared_8b supports a contiguous range of at most ten workunits");
     }
+    $revalidate = null;
     if (!$stop && !$general) {
         if ($id <= 1) throw new RuntimeException("Use a newly staged workunit ID greater than 1");
         if ($tiebreaker) {
@@ -366,12 +393,16 @@ function native_qwen_cohort_main() {
         }
         chdir("$db_project/html/inc");
         require_once("boinc_db.inc");
-        for ($current = $id; $current <= $last_id; $current++) {
+        $revalidate = function() use ($id, $last_id, $plan_class, $ordinary_canary, $tiebreaker, $fresh_pair) {
+          for ($current = $id; $current <= $last_id; $current++) {
             $wu = BoincWorkunit::lookup_id($current);
             $app = $wu ? BoincApp::lookup_id($wu->appid) : null;
             if (!$wu || !$app || $app->name !== "usnm_qwen") throw new RuntimeException("Not a Qwen workunit");
             $results = BoincResult::enum("workunitid=$current");
-            if ($tiebreaker) {
+            if ($fresh_pair) {
+                native_qwen_fresh_pair_validate($wu, $results,
+                    BoincDb::get()->count("assignment", "workunitid=$current"));
+            } elseif ($tiebreaker) {
                 native_qwen_tiebreaker_validate($wu, $results, $plan_class,
                     BoincDb::get()->count("assignment", "workunitid=$current"));
             } else {
@@ -379,11 +410,13 @@ function native_qwen_cohort_main() {
                     $plan_class === "shared_8b" ? "nvidia_vulkan_8b" : $plan_class, $ordinary_canary,
                     $ordinary_canary ? BoincDb::get()->count("assignment", "workunitid=$current") : 0);
             }
-        }
+          }
+        };
+        $revalidate();
     }
     echo json_encode(native_qwen_cohort_write(
         $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general, $ordinary_canary,
-        $tiebreaker
+        $tiebreaker, $expected_sha256, $fresh_pair ? $revalidate : null
     ), JSON_PRETTY_PRINT)."\n";
 }
 
