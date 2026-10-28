@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context};
@@ -192,30 +192,54 @@ pub struct ImportRecord {
 /// The lock, renewed in the background until dropped.
 pub(super) struct Lease {
     lost: Arc<AtomicBool>,
+    until: Arc<Mutex<Instant>>,
     renewer: tokio::task::JoinHandle<()>,
 }
 
 impl Lease {
     pub(super) async fn take(state: &State, owner: &str) -> anyhow::Result<Self> {
+        let ttl = LOCK_TTL.to_std()?;
+        let until = Arc::new(Mutex::new(Instant::now() + ttl));
         state.lock(super::LOCK, owner, LOCK_TTL).await?;
         let lost = Arc::new(AtomicBool::new(false));
         let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
+        let renewed_until = until.clone();
         let renewer = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(LOCK_RENEW).await;
+                let next_until = Instant::now() + ttl;
                 if let Err(e) = state.lock(super::LOCK, &owner, LOCK_TTL).await {
                     tracing::error!(error = %format!("{e:#}"), "ocr-sync lock renewal failed");
                     flag.store(true, Ordering::SeqCst);
                     break;
                 }
+                match renewed_until.lock() {
+                    Ok(mut deadline) => *deadline = next_until,
+                    Err(error) => {
+                        tracing::error!(%error, "ocr-sync lease deadline unavailable");
+                        flag.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
             }
         });
-        Ok(Self { lost, renewer })
+        Ok(Self {
+            lost,
+            until,
+            renewer,
+        })
     }
 
     pub(super) fn check(&self) -> anyhow::Result<()> {
         if self.lost.load(Ordering::SeqCst) {
             bail!("the ocr-sync lock could not be renewed; stopping before the next write");
+        }
+        let until = self
+            .until
+            .lock()
+            .map_err(|error| anyhow::anyhow!("ocr-sync lease deadline unavailable: {error}"))?;
+        if Instant::now() >= *until {
+            bail!("the ocr-sync lock expired; stopping before the next write");
         }
         Ok(())
     }
@@ -1348,4 +1372,21 @@ async fn check_one(
         alto_bytes,
         runs,
     })
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stalled_renewal_cannot_keep_an_expired_lease_valid() {
+        let lease = Lease {
+            lost: Arc::new(AtomicBool::new(false)),
+            until: Arc::new(Mutex::new(Instant::now() + LOCK_TTL.to_std().unwrap())),
+            renewer: tokio::spawn(std::future::pending()),
+        };
+        lease.check().unwrap();
+        *lease.until.lock().unwrap() = Instant::now();
+        assert!(lease.check().unwrap_err().to_string().contains("expired"));
+    }
 }

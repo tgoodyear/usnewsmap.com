@@ -1230,6 +1230,95 @@ async fn stale_dead_letter_is_archived_without_settling_a_new_attempt() {
     );
 }
 
+#[test]
+fn ordinary_message_fences_keep_history_and_request_day_without_reusing_legacy_seconds() {
+    let at = DateTime::parse_from_rfc3339("2026-10-14T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut ledger = ledger::Ledger::default();
+    let mut legacy = queued(&key(3).doc_id(), BATCH, "user");
+    legacy.queued_at = at;
+    ledger.add_queued(legacy.clone());
+    let first = ledger.next_message_time(&legacy.doc_id, at).unwrap();
+    assert_eq!(first, at + chrono::Duration::microseconds(1));
+    let mut ordinary = legacy.clone();
+    ordinary.retry_message_at = Some(first);
+    ledger.add_queued(ordinary.clone());
+    let second = ledger.next_message_time(&legacy.doc_id, at).unwrap();
+    assert_eq!(second, first + chrono::Duration::microseconds(1));
+    ordinary.queued_at = at - chrono::Duration::days(1);
+    ordinary.plan = "another-plan".into();
+    ordinary.retry_message_at = Some(second);
+    ledger.add_queued(ordinary);
+    let third = ledger.next_message_time(&legacy.doc_id, at).unwrap();
+    assert_eq!(third, second + chrono::Duration::microseconds(1));
+    assert_eq!(third.date_naive(), at.date_naive());
+    let end = at + chrono::Duration::days(1) - chrono::Duration::microseconds(1);
+    legacy.retry_message_at = Some(end);
+    ledger.add_queued(legacy.clone());
+    assert!(ledger.next_message_time(&legacy.doc_id, at).is_err());
+    assert_eq!(
+        ledger
+            .next_message_time(&legacy.doc_id, at + chrono::Duration::days(1))
+            .unwrap(),
+        at + chrono::Duration::days(1) + chrono::Duration::microseconds(1)
+    );
+}
+
+#[tokio::test]
+async fn same_tick_ordinary_dead_letter_cannot_settle_its_replacement() {
+    let fx = fixture(false).await;
+    let at = DateTime::parse_from_rfc3339("2026-10-14T12:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut ledger = ledger::Ledger::default();
+    let mut previous = queued(&key(3).doc_id(), BATCH, "bulk");
+    previous.queued_at = at;
+    previous.retry_message_at = Some(ledger.next_message_time(&previous.doc_id, at).unwrap());
+    ledger.add_queued(previous.clone());
+    let mut next = previous.clone();
+    next.attempt += 1;
+    next.retry_message_at = Some(ledger.next_message_time(&next.doc_id, at).unwrap());
+    fx.ask(&[previous.clone(), next.clone()]).await;
+    for (id, fence, stale) in [
+        ("old-ordinary", previous.retry_message_at.unwrap(), true),
+        ("new-ordinary", next.retry_message_at.unwrap(), false),
+    ] {
+        let message = OcrMessage {
+            v: 1,
+            page: key(3).to_string(),
+            batch: BATCH.into(),
+            language: "deu".into(),
+            reason: Reason::Bulk,
+            score: None,
+            queued_at: fence.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        };
+        let dead = DeadLetter::new(
+            BULK,
+            id,
+            Some(&message),
+            Cause::Permanent,
+            None,
+            None,
+            "BOINC error mask 0x2",
+            1,
+            NODE,
+        );
+        fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+        let status = fx.sync().await;
+        let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+        if stale {
+            assert_eq!(
+                status.last_run.dead_letters_rejected.get("stale_attempt"),
+                Some(&1)
+            );
+            assert_eq!(loaded.outstanding(&next.doc_id), Some(&next));
+        } else {
+            assert!(loaded.outstanding(&next.doc_id).is_none());
+        }
+    }
+}
+
 #[tokio::test]
 async fn drains_dead_letters_and_quarantines_bad_ones() {
     let fx = fixture(false).await;
@@ -1882,7 +1971,7 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_complete_the_day(
         assert_eq!(page, expected);
         assert_eq!(message.reason, Reason::User);
         assert!(message.score.is_some_and(|score| score >= 0.1));
-        assert_eq!(message.queued_at, "2026-10-14T00:00:00Z");
+        assert_eq!(message.queued_at().unwrap().date_naive(), request_day);
         let queued = ledger.queued.get(&expected.doc_id()).unwrap();
         assert_eq!(queued.request_day, Some(request_day));
         assert!(queued.queued_at > request_day.and_hms_opt(0, 0, 0).unwrap().and_utc());

@@ -334,6 +334,7 @@ pub fn decode_outcomes(bytes: Bytes) -> anyhow::Result<Vec<Outcome>> {
 /// The ledger's latest state per page.
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
+    message_times: HashMap<(String, chrono::NaiveDate), DateTime<Utc>>,
     /// Each page's latest queued row.
     pub queued: HashMap<String, Queued>,
     /// Each page's latest outcome.
@@ -360,6 +361,11 @@ impl Ledger {
     }
 
     fn add_queued_from_run(&mut self, q: Queued, run: &str) {
+        let at = q.retry_message_at.unwrap_or(q.queued_at);
+        self.message_times
+            .entry((q.doc_id.clone(), at.date_naive()))
+            .and_modify(|previous| *previous = (*previous).max(at))
+            .or_insert(at);
         if q.plan == "hit-results" {
             let day = q.request_day.unwrap_or_else(|| q.queued_at.date_naive());
             self.user_requests_by_day
@@ -378,6 +384,36 @@ impl Ledger {
                 self.queued.insert(q.doc_id.clone(), q);
             }
         }
+    }
+
+    /// Mint a distinct microsecond fence across retained reservations, including
+    /// other plans and historical rows. Closed hit requests keep their UTC day.
+    pub fn next_message_time(
+        &self,
+        doc_id: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        let day = at.date_naive();
+        let mut next = DateTime::from_timestamp_micros(at.timestamp_micros())
+            .context("message timestamp is out of range")?;
+        if let Some(previous) = self.message_times.get(&(doc_id.to_owned(), day)) {
+            if *previous >= next {
+                next = previous
+                    .checked_add_signed(chrono::Duration::microseconds(1))
+                    .context("message timestamp exhausted")?;
+            }
+        }
+        // Historical producers emitted whole seconds, including request-day midnight.
+        if next.timestamp_subsec_micros() == 0 {
+            next = next
+                .checked_add_signed(chrono::Duration::microseconds(1))
+                .context("message timestamp exhausted")?;
+        }
+        anyhow::ensure!(
+            next.date_naive() == day,
+            "message identities exhausted for UTC day"
+        );
+        Ok(next)
     }
 
     pub fn add_outcome(&mut self, o: Outcome) {

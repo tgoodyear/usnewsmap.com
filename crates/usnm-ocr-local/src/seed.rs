@@ -1108,7 +1108,6 @@ pub(super) async fn seed(
         .window
         .saturating_sub(outstanding)
         .min(MAX_PAGES as u64);
-    let queued_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut out: Vec<(Queued, OcrMessage)> = Vec::new();
     let attempt = |doc_id: &str| {
         ledger
@@ -1159,7 +1158,9 @@ pub(super) async fn seed(
             language: q.language.clone(),
             reason: Reason::Bulk,
             score: None,
-            queued_at: queued_at.clone(),
+            queued_at: ledger
+                .next_message_time(&q.doc_id, now)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         };
         if let Err(e) = msg.validate() {
             skip(&mut report, e.kind(), 1);
@@ -1255,7 +1256,9 @@ pub(super) async fn seed(
                 language: language.clone(),
                 reason: Reason::Bulk,
                 score: Some(row.damage_rate).filter(|s| (0.0..=1.0).contains(s)),
-                queued_at: queued_at.clone(),
+                queued_at: ledger
+                    .next_message_time(doc_id, now)?
+                    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             };
             if let Err(e) = msg.validate() {
                 skip(&mut report, e.kind(), 1);
@@ -1437,7 +1440,9 @@ pub(super) async fn seed(
                     language: language.clone(),
                     reason: Reason::Bulk,
                     score: row.damage_rate.filter(|s| (0.0..=1.0).contains(s)),
-                    queued_at: queued_at.clone(),
+                    queued_at: ledger
+                        .next_message_time(doc_id, now)?
+                        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
                 };
                 if let Err(e) = msg.validate() {
                     skip(&mut report, e.kind(), 1);

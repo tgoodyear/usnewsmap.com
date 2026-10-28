@@ -815,7 +815,9 @@ async fn enqueue_with_policy(
             language: language.clone(),
             reason: opts.reason,
             score: found.damage_rate.filter(|s| (0.0..=1.0).contains(s)),
-            queued_at: message_queued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            queued_at: ledger
+                .next_message_time(doc_id, message_queued_at)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         };
         if let Err(e) = msg.validate() {
             skip_page(&mut report, e.kind(), doc_id, policy.private_pages);
@@ -1027,7 +1029,9 @@ async fn requeue_locked(
             continue;
         };
         let msg = OcrMessage {
-            queued_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            queued_at: ledger
+                .next_message_time(&doc_id, now)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             ..old.clone()
         };
         if let Err(e) = msg.validate() {

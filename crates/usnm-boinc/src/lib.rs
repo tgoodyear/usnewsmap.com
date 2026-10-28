@@ -183,6 +183,36 @@ impl Drop for Lock {
     }
 }
 
+#[cfg(unix)]
+pub(crate) struct ProcessGroup(rustix::process::Pid);
+
+#[cfg(unix)]
+impl ProcessGroup {
+    pub(crate) fn new(id: Option<u32>) -> anyhow::Result<Self> {
+        Ok(Self(
+            id.and_then(|id| i32::try_from(id).ok())
+                .and_then(rustix::process::Pid::from_raw)
+                .context("child process group missing")?,
+        ))
+    }
+
+    pub(crate) fn kill(&self) -> anyhow::Result<()> {
+        match rustix::process::kill_process_group(self.0, rustix::process::Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(error).context("could not stop child process group"),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Err(error) = self.kill() {
+            eprintln!("{error:#}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod lock_tests {
     use super::*;

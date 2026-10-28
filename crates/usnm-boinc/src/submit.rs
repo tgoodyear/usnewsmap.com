@@ -8,6 +8,52 @@ use usnm_ocr_contract::message::Reason;
 mod remote;
 pub use remote::{prepare_download, Download, PreparedDownload};
 
+async fn bounded_create_work(
+    command: &mut Command,
+    check: impl Fn() -> anyhow::Result<()>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    check()?;
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.kill_on_drop(true).spawn()?;
+    #[cfg(unix)]
+    let group = crate::ProcessGroup::new(child.id())?;
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            check()?;
+            tokio::select! {
+                status = child.wait() => {
+                    check()?;
+                    let status = status.context("could not wait for create_work")?;
+                    ensure!(status.success(), "create_work failed");
+                    return Ok::<_, anyhow::Error>(());
+                },
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {},
+            }
+        }
+    })
+    .await
+    .context("create_work exceeded its submission deadline")
+    .and_then(|result| result);
+    if let Err(error) = result {
+        #[cfg(unix)]
+        group
+            .kill()
+            .with_context(|| format!("{error:#}; stopping uncertain create_work"))?;
+        #[cfg(not(unix))]
+        child
+            .start_kill()
+            .with_context(|| format!("{error:#}; stopping uncertain create_work"))?;
+        child
+            .wait()
+            .await
+            .with_context(|| format!("{error:#}; reaping uncertain create_work"))?;
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// A page someone was shown (`ocr-priority`, #866) gets a one-day deadline, so a host that
 /// doesn't return it hands it on within a day rather than three. Its workunit priority
 /// takes effect once the feeder orders by priority. The claim's lease must outlast the
@@ -168,11 +214,18 @@ pub async fn submit_checked(
             } else {
                 command.arg(format!("{id}_page"));
             }
+            command.arg(format!("{id}_request_json"));
             if let Some(lease) = &lease {
+                bounded_create_work(
+                    &mut command,
+                    || lease.check(),
+                    std::time::Duration::from_secs(120),
+                )
+                .await?;
                 lease.check()?;
+            } else {
+                ensure!(command.status().await?.success(), "create_work failed");
             }
-            let status = command.arg(format!("{id}_request_json")).status().await?;
-            ensure!(status.success(), "create_work failed");
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -253,5 +306,38 @@ mod tests {
     fn user_pages_get_a_shorter_deadline_and_a_higher_priority() {
         assert_eq!(schedule(Reason::User), ("86400", "10"));
         assert_eq!(schedule(Reason::Bulk), ("259200", "0"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uncertain_create_work_is_stopped_and_reaped_on_timeout_or_lease_loss() {
+        for lose_lease in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mutation = dir.path().join("created");
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", "sleep 1; printf created > \"$1\"", "create_work"])
+                .arg(&mutation);
+            let checks = std::cell::Cell::new(0);
+            let error = bounded_create_work(
+                &mut command,
+                || {
+                    checks.set(checks.get() + 1);
+                    ensure!(!lose_lease || checks.get() < 3, "lease lost");
+                    Ok(())
+                },
+                std::time::Duration::from_millis(300),
+            )
+            .await
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains(if lose_lease { "lease lost" } else { "deadline" }));
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            assert!(
+                !mutation.exists(),
+                "stopped create_work mutated the database later"
+            );
+        }
     }
 }
