@@ -15,10 +15,27 @@ use crate::view::{AzureView, QUEUES_FRESH};
 pub const SOURCE: &str = "PostgreSQL / pgmq (dash_reader)";
 pub const NOTE: &str = "Certificate-authenticated, read-only pgmq metrics. Counts include leased \
 messages. No messages are taken, changed or peeked; dead-letter message bodies are not read.";
+pub(crate) const POLL_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[async_trait::async_trait]
+pub(crate) trait MetricsSource: Send + Sync {
+    async fn count(&self, name: &str) -> anyhow::Result<u64>;
+    async fn discard(&self);
+}
+
+#[async_trait::async_trait]
+impl MetricsSource for PgmqQueue {
+    async fn count(&self, name: &str) -> anyhow::Result<u64> {
+        self.approximate_count(name).await
+    }
+    async fn discard(&self) {
+        self.discard_connection().await;
+    }
+}
 
 #[derive(Default)]
 pub struct Queues {
-    pub(crate) source: Option<Arc<dyn Queue>>,
+    pub(crate) source: Option<Arc<dyn MetricsSource>>,
     last: Option<QueueStats>,
     error: Option<String>,
 }
@@ -34,7 +51,9 @@ impl Queues {
             "dashboard queues require dash_reader"
         );
         Ok(Self {
-            source: Some(Arc::new(PgmqQueue::new(location)?)),
+            source: Some(Arc::new(
+                PgmqQueue::new(location)?.with_statement_timeout(Duration::from_secs(5))?,
+            )),
             ..Self::default()
         })
     }
@@ -77,14 +96,17 @@ impl Queues {
     }
 }
 
-pub(crate) async fn read_counts(source: &dyn Queue) -> anyhow::Result<BTreeMap<String, u64>> {
-    tokio::time::timeout(Duration::from_secs(15), async {
+pub(crate) async fn read_counts(
+    source: &dyn MetricsSource,
+    budget: Duration,
+) -> anyhow::Result<BTreeMap<String, u64>> {
+    let result = tokio::time::timeout(budget, async {
         let mut counts = BTreeMap::new();
         for name in [PRIORITY, BULK, DEADLETTER] {
             counts.insert(
                 name.to_owned(),
                 source
-                    .approximate_count(name)
+                    .count(name)
                     .await
                     .with_context(|| format!("{name} metrics"))?,
             );
@@ -92,31 +114,27 @@ pub(crate) async fn read_counts(source: &dyn Queue) -> anyhow::Result<BTreeMap<S
         Ok(counts)
     })
     .await
-    .context("pgmq metrics timed out after 15 seconds")?
+    .context("pgmq metrics poll timed out")
+    .and_then(|result| result);
+    if result.is_err() {
+        source.discard().await;
+    }
+    result
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use usnm_store::queue::Received;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Debug)]
-    struct Metrics {
-        fail: bool,
+    pub(crate) struct Metrics {
+        pub(crate) fail: bool,
     }
 
     #[async_trait::async_trait]
-    impl Queue for Metrics {
-        async fn receive(&self, _: &str, _: Duration) -> anyhow::Result<Option<Received>> {
-            panic!("dashboard must not take messages")
-        }
-        async fn send(&self, _: &str, _: &str) -> anyhow::Result<()> {
-            panic!("dashboard must not send messages")
-        }
-        async fn delete(&self, _: &Received) -> anyhow::Result<()> {
-            panic!("dashboard must not delete messages")
-        }
-        async fn approximate_count(&self, name: &str) -> anyhow::Result<u64> {
+    impl MetricsSource for Metrics {
+        async fn count(&self, name: &str) -> anyhow::Result<u64> {
             if self.fail && name == BULK {
                 anyhow::bail!("database unavailable");
             }
@@ -127,6 +145,32 @@ mod tests {
                 _ => anyhow::bail!("unexpected queue"),
             })
         }
+        async fn discard(&self) {}
+    }
+
+    struct Blocked {
+        discarded: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl MetricsSource for Blocked {
+        async fn count(&self, _: &str) -> anyhow::Result<u64> {
+            std::future::pending().await
+        }
+        async fn discard(&self) {
+            self.discarded.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn timed_out_poll_discards_its_transport_before_returning() {
+        let source = Blocked {
+            discarded: AtomicBool::new(false),
+        };
+        assert!(read_counts(&source, Duration::from_millis(5))
+            .await
+            .is_err());
+        assert!(source.discarded.load(Ordering::SeqCst));
     }
 
     fn view() -> AzureView {
@@ -150,9 +194,12 @@ mod tests {
             ..Queues::default()
         };
         let at = Utc::now();
-        reader.apply(read_counts(source.as_ref()).await, at);
+        reader.apply(read_counts(source.as_ref(), POLL_TIMEOUT).await, at);
         let later = at + chrono::Duration::seconds(1);
-        reader.apply(read_counts(&Metrics { fail: true }).await, later);
+        reader.apply(
+            read_counts(&Metrics { fail: true }, POLL_TIMEOUT).await,
+            later,
+        );
         let mut v = view();
         reader.apply_to(&mut v, later);
         let q = v.queues.unwrap();
@@ -178,13 +225,16 @@ mod tests {
             ..Queues::default()
         };
         let at = Utc::now();
-        reader.apply(read_counts(&Metrics { fail: true }).await, at);
+        reader.apply(read_counts(&Metrics { fail: true }, POLL_TIMEOUT).await, at);
         let mut v = view();
         reader.apply_to(&mut v, at);
         assert!(v.queues.is_none());
         assert!(v.queues_error.is_some());
         assert!(v.queues_stale);
-        reader.apply(read_counts(&Metrics { fail: false }).await, at);
+        reader.apply(
+            read_counts(&Metrics { fail: false }, POLL_TIMEOUT).await,
+            at,
+        );
         reader.apply_to(&mut v, at + QUEUES_FRESH + chrono::Duration::seconds(1));
         assert!(v.queues.is_some());
         assert!(v.queues_error.is_none());

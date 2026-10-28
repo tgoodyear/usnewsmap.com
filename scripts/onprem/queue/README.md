@@ -65,6 +65,9 @@ failed poll retains the last complete observation with an error/stale
 indicator; before any successful poll, counts are unavailable, not zero.
 An observation older than five minutes is stale. Configuration is optional
 and does not change any producer, consumer, queue backend or role grants.
+Each metrics statement has a server-enforced five-second deadline inside
+the 15-second poll budget. A failed or timed-out poll discards its cached
+connection and aborts its transport before another poll can use it.
 
 ## BOINC handoff containers
 

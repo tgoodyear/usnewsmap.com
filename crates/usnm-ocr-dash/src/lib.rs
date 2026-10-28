@@ -109,7 +109,7 @@ impl App {
         let Some(source) = source else {
             return;
         };
-        let result = queues::read_counts(source.as_ref()).await;
+        let result = queues::read_counts(source.as_ref(), queues::POLL_TIMEOUT).await;
         if let Err(error) = &result {
             tracing::warn!(error = format!("{error:#}"), "can't read pgmq metrics");
         }
@@ -413,7 +413,7 @@ mod tests {
         let a = app(dir.path());
         {
             let mut queues = a.queues.lock().unwrap();
-            queues.source = Some(Arc::new(usnm_store::queue::LocalQueue::new(dir.path())));
+            queues.source = Some(Arc::new(queues::tests::Metrics { fail: false }));
             queues.apply(
                 Ok([
                     ("ocr-priority".into(), 7),
