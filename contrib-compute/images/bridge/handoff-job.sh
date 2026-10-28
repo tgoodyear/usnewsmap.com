@@ -230,8 +230,9 @@ case "${HANDOFF_STEP:-}" in
     exit "$rc" ;;
   claim)
     [ -n "${QUEUE_URL:-}" ] || fail "QUEUE_URL is not set (the job's own setting)"
-    [[ $QUEUE_URL =~ ^https://[a-z0-9]{3,24}\.queue\.core\.windows\.net$ ]] ||
-      fail "QUEUE_URL must be https://<account>.queue.core.windows.net"
+    [[ $QUEUE_URL =~ ^https://[a-z0-9]{3,24}\.queue\.core\.windows\.net$ ||
+      $QUEUE_URL == postgres://* || $QUEUE_URL == postgresql://* ]] ||
+      fail "QUEUE_URL must be an Azure queue endpoint or a PostgreSQL queue location"
     [[ ${HANDOFF_MANIFEST:-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/manifest\.parquet$ ]] && [[ $HANDOFF_MANIFEST != *..* ]] ||
       fail "HANDOFF_MANIFEST is <version>/manifest.parquet"
     version=${HANDOFF_MANIFEST%/manifest.parquet}

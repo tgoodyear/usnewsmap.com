@@ -50,3 +50,25 @@ postgres://usnm-queue.tjg.fyi/usnm_queue?user=boinc_claim&sslcert=<client.crt>&s
 - **Testing:** set `USNM_TEST_PGMQ` to a location whose role may send, read,
   update and delete on `ocr_deadletter` to run the live round trip in
   `cargo test -p usnm-store pgmq`.
+
+## BOINC handoff containers
+
+For a PostgreSQL `QUEUE_URL`, the on-prem step runner requires the role's
+`client.crt`, `client.key` and `ca.pem` under `/etc/usnm-boinc/queue`.
+It mounts only those three regular, non-symlink files read-only at
+`/etc/usnm/queue/` in handoff containers. Use those container paths in the
+URL. Keep the host directory root-owned and mode 0700, and the private key
+mode 0600. Transfer keys directly between the queue host and client host,
+never through a workstation. Azure queue URLs do not add certificate mounts.
+`--what-if` checks the files without opening a connection or consuming work.
+Rust's queue client still verifies TLS, server identity and client credentials.
+
+This mount support is a prerequisite, **not an authorized backend cutover**.
+Existing claim-v1 records carry backend-specific message IDs/pop receipts
+without recording the backend. Do not change `QUEUE_URL` while unresolved
+Azure claims exist: finish/release would send their receipts to PostgreSQL.
+Coordinate one producer/consumer freeze, reconcile outstanding claims and
+retain a rollback/transfer journal before changing any backend setting.
+Certificate provisioning, message migration, producer/dashboard settings,
+backup/restore and real lease/restart/ack acceptance remain separate gates
+in #967. Never run Azure and PostgreSQL consumers on copied work concurrently.
