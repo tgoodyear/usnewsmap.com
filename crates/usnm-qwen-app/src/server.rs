@@ -387,7 +387,7 @@ mod completion_tests {
     #[test]
     fn preserves_length_stop_and_labels_repetition_without_rewriting_reading() {
         let response = br#"{"choices":[{"message":{"content":"word\nword\nword"},"finish_reason":"length"}],"usage":{"completion_tokens":12}}"#;
-        let (text, tokens, metadata) = parse_completion(response, 12).unwrap();
+        let (text, tokens, metadata) = parse_completion(response, 20).unwrap();
         let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(text, "word\nword\nword");
         assert_eq!(tokens, 12);
