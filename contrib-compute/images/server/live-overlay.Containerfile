@@ -31,6 +31,7 @@ RUN echo "security refresh $SECURITY_REFRESH" \
       echo "apache2 $apache_version is older than $APACHE_FLOOR" >&2; exit 1; fi
 COPY contrib-compute/images/server/refresh-plan-policy.py contrib-compute/images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
 COPY scripts/boinc/native-qwen-cohort.php /usr/local/lib/usnm-boinc/amd-885/
+COPY scripts/boinc/qwen-amd-reservation.py /usr/local/lib/usnm-boinc/
 COPY contrib-compute/boinc/html/user/pipeline.html contrib-compute/boinc/html/user/pipeline_summary.php /usr/local/lib/usnm-boinc/html/user/
 RUN chmod 0755 /usr/local/lib/usnm-boinc/boinc-daemons.sh \
  && grep -q 'usnm-nvidia-general-admission-v1' /usr/local/lib/usnm-boinc/refresh-plan-policy.py \
@@ -38,6 +39,7 @@ RUN chmod 0755 /usr/local/lib/usnm-boinc/boinc-daemons.sh \
  && grep -q 'stop_maintenance' /usr/local/lib/usnm-boinc/boinc-daemons.sh \
  && php -l /usr/local/lib/usnm-boinc/amd-885/native-qwen-cohort.php \
  && python3 -m py_compile /usr/local/lib/usnm-boinc/refresh-plan-policy.py \
+ && python3 -m py_compile /usr/local/lib/usnm-boinc/qwen-amd-reservation.py \
  && bash -n /usr/local/lib/usnm-boinc/boinc-daemons.sh \
  && php -l /usr/local/lib/usnm-boinc/html/user/pipeline_summary.php \
  && grep -q 'pipeline_summary.php' /usr/local/lib/usnm-boinc/html/user/pipeline.html

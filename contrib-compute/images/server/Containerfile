@@ -41,6 +41,7 @@ COPY contrib-compute/boinc/html /usr/local/lib/usnm-boinc/html
 COPY contrib-compute/images/server/prepare-prefs.py contrib-compute/images/server/refresh-scheduler.py \
      contrib-compute/images/server/refresh-plan-policy.py contrib-compute/images/server/refresh-project-code.py \
      /usr/local/lib/usnm-boinc/
+COPY scripts/boinc/qwen-amd-reservation.py /usr/local/lib/usnm-boinc/
 RUN python3 /usr/local/lib/usnm-boinc/prepare-prefs.py
 # Debian's default site sets its own DocumentRoot, which would serve its page at /.
 RUN a2dissite -q 000-default \
