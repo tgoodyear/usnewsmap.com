@@ -17,6 +17,14 @@ import uuid
 FILES = ("pages.parquet", "crops.parquet", "summary.md")
 UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
 SNAPSHOT = re.compile(r"[a-f0-9]{32}")
+LOCK_ACQUIRED = "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"
+
+
+def replay_collection_diagnostics(stderr):
+    stderr = stderr or b""
+    if stderr:
+        print(stderr.decode("utf-8", errors="replace"), file=sys.stderr, end="", flush=True)
+    return LOCK_ACQUIRED.encode() in stderr.splitlines()
 
 
 def digest(path):
@@ -187,7 +195,9 @@ def host_pass(args):
     snapshot = uuid.uuid4().hex
     common = ["--campaign", args.campaign, "--snapshot", snapshot]
     remote = [
-        "pct", "exec", str(args.server_ct), "--", "flock", "-n", "/run/usnm-boinc-step.lock",
+        "pct", "exec", str(args.server_ct), "--", "flock", "-n", "-E", "75",
+        "/run/usnm-boinc-step.lock", "sh", "-c",
+        'printf "%s\\n" ' + LOCK_ACQUIRED + ' >&2; exec "$@"', "sh",
         "podman", "exec", "-i", "usnm-boinc-server",
         "timeout", "--signal=TERM", "--kill-after=10s", "180s", "python3", "-", "--remote",
         *common, "--collector", args.collector,
@@ -199,10 +209,25 @@ def host_pass(args):
     if args.qwen_campaign:
         remote += ["--qwen-campaign", args.qwen_campaign]
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", f"root@{args.server_host}"]
-    response = subprocess.run(
-        [*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
-        capture_output=True, check=True, timeout=210,
-    )
+    try:
+        response = subprocess.run(
+            [*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
+            capture_output=True, timeout=210,
+        )
+    except subprocess.TimeoutExpired as error:
+        acquired = replay_collection_diagnostics(error.stderr)
+        print(json.dumps({"phase": "collection_transport_timeout", "step_lock_acquired": acquired}),
+              file=sys.stderr, flush=True)
+        raise
+    acquired = replay_collection_diagnostics(response.stderr)
+    if response.returncode:
+        phase = ("step_lock_busy" if response.returncode == 75 and not acquired
+                 else "collection_failed" if acquired else "remote_admission_failed")
+        print(json.dumps({"phase": phase, "exit": response.returncode}),
+              file=sys.stderr, flush=True)
+    response.check_returncode()
+    if not acquired:
+        raise RuntimeError("Missing step-lock acquisition receipt; refusing snapshot transfer")
     receipt = json.loads(response.stdout)
     validate_receipt(receipt, args.campaign, snapshot)
     host_receipt = args.state_dir / args.campaign / "receipts" / (snapshot + ".json")
