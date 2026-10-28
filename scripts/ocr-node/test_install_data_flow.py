@@ -64,13 +64,20 @@ class InstallerTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b"old reviewed bytes\n")
             before = {relative: (root / relative).read_bytes() for relative in payload}
-            with patch.object(installer.subprocess, "run") as run:
-                run.side_effect = [subprocess.CalledProcessError(1, ["systemd-analyze"]), None]
-                with self.assertRaises(subprocess.CalledProcessError):
-                    installer.install(payload, "a" * 40, root=root)
-            for relative, data in before.items():
-                self.assertEqual((root / relative).read_bytes(), data)
-            self.assertFalse((root / installer.STAMP).exists())
+            for failure_call in (1, 2):
+                with self.subTest(failure_call=failure_call), \
+                        patch.object(installer.subprocess, "run") as run:
+                    run.side_effect = ([None] * failure_call
+                                       + [subprocess.CalledProcessError(1, ["fixture-verification"])]
+                                       + [None])
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        installer.install(payload, "a" * 40, root=root)
+                    self.assertEqual(run.call_args.args[0], ["systemctl", "daemon-reload"])
+                for relative, data in before.items():
+                    self.assertEqual((root / relative).read_bytes(), data)
+                self.assertFalse((root / installer.STAMP).exists())
+                for target, data in original.items():
+                    self.assertEqual(target.read_bytes(), data)
             with patch.object(installer.subprocess, "run") as run:
                 backup = installer.install(payload, "a" * 40, root=root)
                 self.assertTrue(backup.is_dir())
