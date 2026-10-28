@@ -202,11 +202,15 @@ def host_pass(args):
                    check=True, timeout=30)
     remote_source = "/srv/usnm-boinc/project/" + receipt["snapshot_dir"].removeprefix("/project/")
     archive = subprocess.run(
-        [*ssh, shlex.join(["pct", "exec", str(args.server_ct), "--", "tar", "-C", remote_source,
+        [*ssh, shlex.join(["pct", "exec", str(args.server_ct), "--",
+                          "timeout", "--signal=TERM", "--kill-after=5s", "45s",
+                          "tar", "-C", remote_source,
                           "-cf", "-", "coverage.json", *("out/" + name for name in FILES)])],
         capture_output=True, check=True, timeout=60,
     ).stdout
-    subprocess.run(["pct", "exec", str(args.ctid), "--", "tar", "-x", "--no-same-owner", "-C", dest],
+    subprocess.run(["pct", "exec", str(args.ctid), "--",
+                    "timeout", "--signal=TERM", "--kill-after=5s", "45s",
+                    "tar", "-x", "--no-same-owner", "-C", dest],
                    input=archive, check=True, timeout=60)
     load = ["pct", "exec", str(args.ctid), "--",
             "timeout", "--signal=TERM", "--kill-after=10s", "150s",

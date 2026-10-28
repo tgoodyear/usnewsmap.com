@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -126,6 +127,15 @@ class PartialTest(unittest.TestCase):
             self.assertEqual(state["after"], "bundle-a")
             self.assertIn("flock -n", run.call_args_list[0].args[0][-1])
             self.assertIn("180s", run.call_args_list[0].args[0][-1])
+            for call in run.call_args_list[2:4]:
+                command = call.args[0]
+                if command[0] == "ssh":
+                    command = shlex.split(command[-1])
+                inner = command.index("timeout")
+                seconds = float(command[inner + 3].removesuffix("s"))
+                grace = float(command[inner + 2].removeprefix("--kill-after=").removesuffix("s"))
+                self.assertLess(seconds + grace, call.kwargs["timeout"])
+                self.assertEqual(command[inner + 4], "tar")
 
     def test_coverage_cannot_claim_completeness_or_cross_snapshot(self):
         for key, value in [("campaign_complete", True), ("snapshot", "f" * 32),
