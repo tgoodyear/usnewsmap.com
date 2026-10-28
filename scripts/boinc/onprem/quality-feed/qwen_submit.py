@@ -39,7 +39,17 @@ $app = BoincApp::lookup("name='usnm_qwen'");
 if (!$app) throw new RuntimeException("Qwen app missing");
 $ready = BoincResult::enum("appid=".intval($app->id)." AND server_state=2");
 $running = BoincResult::enum("appid=".intval($app->id)." AND server_state=4");
-echo json_encode(["ready"=>count($ready), "dispatched"=>count($running)]);
+$native = "appid=".intval($app->id)." AND batch=8 AND canonical_resultid=0 AND error_mask=0";
+$db = BoincDb::get();
+$unresolved = $db->count("workunit", $native);
+$fresh = $db->count("workunit", $native." AND min_quorum=2 AND target_nresults=2"
+    ." AND (SELECT COUNT(*) FROM result r WHERE r.workunitid=workunit.id)=2"
+    ." AND (SELECT COUNT(*) FROM result r WHERE r.workunitid=workunit.id"
+    ." AND r.server_state=2 AND r.hostid=0 AND r.outcome=0 AND r.validate_state=0"
+    ." AND r.sent_time=0 AND r.received_time=0)=2"
+    ." AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.workunitid=workunit.id)");
+echo json_encode(["ready"=>count($ready), "dispatched"=>count($running),
+    "fresh_pairs"=>intval($fresh), "unresolved_native"=>intval($unresolved)]);
 """ % json.dumps(str(project / "html/inc"))
     counts = json.loads(subprocess.check_output(["php", "-r", php], text=True))
     free = min(shutil.disk_usage(path).free
@@ -52,6 +62,21 @@ def assert_submitted(root):
     pending = [p for p, _ in jobs(root / "units") if not (p.parent / "submitted").exists()]
     if uncertain or pending:
         raise RuntimeError(f"Qwen submission incomplete: {len(uncertain)} uncertain, {len(pending)} without receipts")
+
+
+def assert_processed(root, sample):
+    for line in sample.read_text().splitlines():
+        doc = json.loads(line)["doc_id"]
+        if not re.fullmatch(r"[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", doc):
+            raise RuntimeError("Invalid source document identity")
+        unit = root / "units" / doc
+        if (unit / "qwen.json").exists() and (unit / "submitted").exists():
+            continue
+        if (unit / "no_crops").exists():
+            continue
+        if (unit / "too_large").exists() and (unit / "rejected-qwen.json").exists():
+            continue
+        raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
 
 
 def audit(root, project):
@@ -109,10 +134,15 @@ def main():
     ap.add_argument("--campaign")
     ap.add_argument("--engine-plan", type=Path)
     ap.add_argument("--models", type=Path)
+    ap.add_argument("--sample", type=Path, help="READY chunk; every source needs a terminal native disposition")
     isolated_stage = Path(__file__).with_name("usnm-boinc-stage")
     ap.add_argument("--stage-binary", default=str(isolated_stage) if isolated_stage.is_file() else "usnm-boinc")
     ap.add_argument("--max-pages", type=int, default=100)
-    ap.add_argument("--max-ready", type=int, default=1000)
+    ap.add_argument("--max-ready", type=int, default=1000,
+                    help="Fresh native original replicas, not host-ineligible retry replicas")
+    ap.add_argument("--max-unresolved", type=int, default=2000)
+    ap.add_argument("--reserve-mib", type=int, default=64,
+                    help="Conservative incremental bytes per new page on every backing filesystem")
     ap.add_argument("--min-free-gb", type=int, default=50)
     a = ap.parse_args()
     state = inventory(a.share, a.project)
@@ -121,17 +151,21 @@ def main():
         return
     if (not a.campaign or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or a.engine_plan is None or a.models is None or not 1 <= a.max_pages <= 500
-            or a.max_ready < 2 or a.min_free_gb < 1):
+            or a.max_ready < 2 or not 1 <= a.max_unresolved <= 10000
+            or a.reserve_mib < 64 or a.min_free_gb < 1):
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
     if list(root.glob("units/*/submitting")):
         raise RuntimeError("Uncertain Qwen submission: reconcile existing markers against BOINC, never replay")
     # A paused ship must stay pending, not return success to quality-ship's cleanup.
-    if state["ready"] + 2 * a.max_pages > a.max_ready:
-        raise RuntimeError(f"Qwen watermark: {state['ready']} ready, reserve {2 * a.max_pages}, limit {a.max_ready}")
-    if state["free_bytes"] < a.min_free_gb * 1024**3:
-        raise RuntimeError("Qwen free-space floor reached")
+    if 2 * (state["fresh_pairs"] + a.max_pages) > a.max_ready:
+        raise RuntimeError(f"Qwen fresh-original watermark: {state['fresh_pairs']} pairs, "
+                           f"reserve {a.max_pages}, replica limit {a.max_ready}")
+    if state["unresolved_native"] + a.max_pages > a.max_unresolved:
+        raise RuntimeError("Qwen unresolved-native ceiling reached; retries are not fresh science")
+    if state["free_bytes"] - a.max_pages * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
+        raise RuntimeError("Qwen reserved-input free-space floor reached")
     elsewhere = set()
     for path, job in jobs(a.share / "qwen"):
         if root not in path.parents:
@@ -151,6 +185,8 @@ def main():
                    check=True)
     assert_submitted(root)
     print(json.dumps(audit(root, a.project), sort_keys=True))
+    if a.sample:
+        assert_processed(root, a.sample)
 
 
 if __name__ == "__main__":

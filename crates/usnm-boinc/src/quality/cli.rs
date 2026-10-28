@@ -172,6 +172,12 @@ pub enum QualityCommands {
         /// Bound recomputation per pass; incomplete cache warming never publishes partial tables.
         #[arg(long, default_value_t = 8)]
         max_dirty_units: usize,
+        /// Emit bounded canonical dependency fingerprints only; no row computation or publication.
+        #[arg(long, requires = "cache")]
+        inventory_only: bool,
+        /// Recheck just this unit's dependency key after a scoped collection.
+        #[arg(long, requires = "inventory_only")]
+        inventory_unit: Option<String>,
         /// The usnm_surya staging root and spool: its crop units' texts join crops.parquet as the
         /// reader `surya` (#968).
         #[arg(long, requires = "surya_spool")]
@@ -415,12 +421,14 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             qwen_spool,
             cache,
             max_dirty_units,
+            inventory_only,
+            inventory_unit,
             surya_root,
             surya_spool,
             out_dir,
             curated_url,
         } => {
-            let s = x::collect::run(&x::collect::Options {
+            let opts = x::collect::Options {
                 campaign,
                 root,
                 spool,
@@ -432,9 +440,19 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 surya_spool,
                 out_dir,
                 curated_url,
-            })
-            .await?;
-            eprintln!("{s:?}");
+            };
+            if inventory_only {
+                println!(
+                    "{}",
+                    serde_json::to_string(&x::collect::inventory(
+                        &opts,
+                        inventory_unit.as_deref()
+                    )?)?
+                );
+            } else {
+                let s = x::collect::run(&opts).await?;
+                eprintln!("{s:?}");
+            }
         }
         QualityCommands::Calibrate {
             crops,

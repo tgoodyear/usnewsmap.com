@@ -37,17 +37,36 @@ despite 1,000 cache slots (about 111 per app). Replicas already completed by
 the requesting host still occupy that prefix: distinct-host validation correctly
 blocks them, leaving eligible work beyond enumeration invisible (#860).
 
-The template sets `feeder_query_size=20000`: 2,222 candidates per equal-weight
-app. The sizing invariant is that **each positive-weight app's rounded query
-budget covers at least twice the entire cache capacity**, and Qwen's covers
-at least four times the 455 ready results across its current batches (2, 8, 12
-and 18). The whole-cache floor is deliberately conservative; this allocation
-is about 20 times each app's current cache share and 4.9 times the Qwen
-baseline. Tests derive the budgets from `project.xml` weights, so app additions,
-weight changes and cache growth must still satisfy the invariant.
+The cache share is a separate limit. The feeder computes each app's slot
+share once at startup from weights. With nine equal weights, Qwen got 111
+slots while 624–635 Qwen replicas were unsent and fewer than 20 other-app
+results were waiting. Purge rotation then showed a strict GPU window for only
+about 5 of every 22 minutes, so eligible pilot requests mostly received empty
+replies and the client backed off (6→22→48 minutes on host 10). Qwen
+therefore has weight 16 of 24: about 666 Qwen slots and 41–42 for each other
+app, whose backlog was at most nine results. The cache stays at 1,000 slots,
+so shared memory does not grow (about 93 MB).
+
+The template sets `feeder_query_size=48000`: 2,000 candidates per weight-1 app
+and 32,000 for Qwen. The sizing invariant is that **each positive-weight app's
+rounded query budget covers at least twice the entire cache capacity**, Qwen's
+covers at least four times its 635-result ready baseline, and Qwen's cache
+share covers that baseline. The query is bounded by the rows that exist: the
+Qwen enumeration returned 624 rows in 3 ms on 28 October. Tests derive the
+budgets and slot shares from `project.xml` weights, so app additions, weight
+changes and cache growth must still satisfy the invariant.
+
+Registering apps with `xadd` does not update an existing app's weight. Apply
+the `app.weight` change in the database and the rendered `feeder_query_size`
+together, at a feeder-only boundary. The feeder reread trigger does not
+recompute the slot shares, so the feeder process must restart; do not restart
+the whole server. The Qwen auto-cohort controller pins the `config.xml` SHA-256,
+so update that pin in the same rollout (its own timer is disabled first) or it
+releases its window. If the half-completed replicas that only a different host
+can take keep accumulating beyond the Qwen share, visibility degrades again.
 
 This is a bounded fix, not infinite fairness: queries may enumerate roughly
-20,000 joined result/workunit rows across apps per pass (rounding can vary the
+48,000 joined result/workunit rows across apps per pass (rounding can vary the
 total), increasing database, feeder memory and collision-check costs without
 allocating more shared-memory slots. A larger blocked prefix or a full cache
 of infeasible work can still hide eligible results. Recheck actual registered

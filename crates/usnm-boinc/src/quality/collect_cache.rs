@@ -218,13 +218,25 @@ fn fingerprint(hash: &mut Sha256, path: &Path, memo: Option<&Path>) -> anyhow::R
 
 fn jobs(root: &Path, name: &str) -> anyhow::Result<Vec<PathBuf>> {
     let dir = super::units(root);
-    if !dir.exists() {
-        return Ok(vec![]);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e).context("reading canonical dependency inventory"),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let unit = entry?.path();
+        if !std::fs::metadata(&unit)?.is_dir() {
+            continue;
+        }
+        let path = unit.join(name);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => paths.push(path),
+            Ok(_) => anyhow::bail!("reading job is not a regular file: {path:?}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e).context("reading canonical dependency job"),
+        }
     }
-    let mut paths = std::fs::read_dir(dir)?
-        .map(|entry| Ok(entry?.path().join(name)))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    paths.retain(|p| p.is_file());
     paths.sort();
     Ok(paths)
 }
@@ -427,6 +439,17 @@ impl Cache {
 mod tests {
     use super::*;
     use crate::quality::collect::{collect, run, tests::cached_fixture};
+
+    #[test]
+    fn dependency_inventory_ignores_nonunits_but_rejects_nonfile_jobs() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let units = super::super::units(dir.path());
+        std::fs::create_dir_all(&units).unwrap();
+        std::fs::write(units.join("nonunit"), b"").unwrap();
+        assert!(jobs(dir.path(), "job.json").unwrap().is_empty());
+        std::fs::create_dir_all(units.join("unit/job.json")).unwrap();
+        assert!(jobs(dir.path(), "job.json").is_err());
+    }
 
     #[cfg(unix)]
     #[test]

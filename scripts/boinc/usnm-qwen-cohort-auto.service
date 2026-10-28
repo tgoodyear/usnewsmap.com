@@ -1,0 +1,12 @@
+[Unit]
+Description=Guarded finite NVIDIA/Intel native Qwen cohort refill
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm-boinc/qwen-cohort-auto.env
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/usnm-boinc-step.lock /usr/bin/podman exec usnm-boinc-server /usr/bin/timeout --signal=TERM --kill-after=5s 20s python3 /project/ops/qwen-cohort-auto/qwen-auto-cohort.py --project /project/usnmocr --helper /project/ops/qwen-cohort-auto/native-qwen-cohort.php --helper-sha256 ${HELPER_SHA256} --config-sha256 ${CONFIG_SHA256} --initial-policy-sha256 ${INITIAL_POLICY_SHA256} --controller ${CONTROLLER_ID} --minimum-workunit ${MINIMUM_WORKUNIT} --max-admissions ${MAX_ADMISSIONS} --enabled-until ${ENABLED_UNTIL} --apply
+SuccessExitStatus=75
+TimeoutStartSec=30
+MemoryMax=256M
+Nice=10

@@ -19,14 +19,18 @@ class ShipperTest(unittest.TestCase):
         self.bin.mkdir()
         self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                     "SHIP_TEST_ROOT": str(self.root)}
-        self.stub("curl", "#!/bin/sh\necho '<results_ready_to_send>0</results_ready_to_send>'\n")
+        self.stub("curl", "#!/bin/sh\necho \"<results_ready_to_send>${SHIP_TEST_READY:-0}</results_ready_to_send>\"\n")
         self.stub("tar", "#!/bin/sh\nexit 0\n")
         self.stub("mktemp", "#!/bin/sh\necho \"$SHIP_TEST_ROOT/step.err\"\n")
         self.stub("ssh", """#!/usr/bin/env python3
-import json, os, sys
+import json, os, shlex, sys
 from pathlib import Path
 root = Path(os.environ["SHIP_TEST_ROOT"])
 args = sys.argv[1:]
+remote = next(i for i, arg in enumerate(args) if arg.startswith("root@")) + 1
+# OpenSSH joins remote arguments before invoking a shell: do not accidentally
+# validate a local argv list that production will never receive.
+args = args[:remote] + shlex.split(" ".join(args[remote:]))
 with (root / "calls.jsonl").open("a") as f:
     f.write(json.dumps(args) + "\\n")
 if "df" in args:
@@ -36,7 +40,8 @@ if "df" in args:
     if "/srv/usnm-boinc/project/usnmocr/download" in args:
         print(os.environ.get("SHIP_TEST_BULK_FREE", "100"))
 elif "lvs" in args:
-    print(json.dumps({"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": "0"}]}]}))
+    print(json.dumps({"report": [{"lv": [{"lv_size": os.environ.get(
+        "SHIP_TEST_POOL_FREE_BYTES", str(100 * 1024**3)), "data_percent": "0"}]}]}))
 elif "python3" in args and "-" in args:
     sys.stdin.read()
     if "--after-submit" in args:
@@ -50,14 +55,15 @@ elif "python3" in args and "-" in args:
         path.write_text(body)
         path.chmod(0o755)
 
-    def run_ship(self, extra):
+    def run_ship(self, extra, native=True):
         chunk = self.root / "outbox/test/c00001"
         chunk.mkdir(parents=True, exist_ok=True)
         (chunk / "READY").write_text("1\n")
         return subprocess.run(
             ["bash", str(HERE / "quality-ship.sh"), "--campaign", "test",
              "--engine-image", "sha256:" + "a" * 64, "--outbox", str(self.root / "outbox"),
-             "--qwen-engine-plan", "/project/plan.json", "--qwen-models", "/project/models",
+             *(["--qwen-engine-plan", "/project/plan.json", "--qwen-models", "/project/models"]
+               if native else []),
              *extra], env=self.env, capture_output=True, text=True, timeout=30)
 
     def test_qwen_watermark_default_and_override_reach_submit(self):
@@ -68,6 +74,13 @@ elif "python3" in args and "-" in args:
                 calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
                 submit = next(c for c in reversed(calls) if "/project/ops/qwen-feed/qwen_submit.py" in c)
                 self.assertEqual(submit[submit.index("--max-ready") + 1], expected)
+                self.assertEqual(submit[submit.index("--max-pages") + 1], "1")
+                script = submit[submit.index("-c") + 1]
+                probe = subprocess.run(
+                    ["bash", "-c", script, "sh", "printf", "locked argv survives"],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(probe.returncode, 0, probe.stderr)
+                self.assertEqual(probe.stdout, "locked argv survives")
 
     def test_qwen_watermark_rejects_nonpositive_noninteger_and_missing_values(self):
         for value in ("0", "-1", "1.5", "oops", "", None):
@@ -86,3 +99,41 @@ elif "python3" in args and "-" in args:
         calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
         self.assertFalse(any("tar" in call or "/project/ops/qwen-feed/qwen_submit.py" in call
                              for call in calls))
+
+    def test_thin_pool_reserves_inputs_above_floor_before_copy(self):
+        self.env["SHIP_TEST_POOL_FREE_BYTES"] = str(50 * 1024**3 + 1024**2)
+        result = self.run_ship(["--min-free-gb", "50"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("including per-page reservation", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any("tar" in call or "/project/ops/qwen-feed/qwen_submit.py" in call
+                             for call in calls))
+
+    def test_native_shipping_does_not_wait_for_unrelated_global_replicas(self):
+        self.env["SHIP_TEST_READY"] = "5000"
+        self.stub("curl", "#!/bin/sh\nexit 1\n")
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertTrue(any("/project/ops/qwen-feed/qwen_submit.py" in call for call in calls))
+
+    def test_other_campaigns_retain_global_unsent_backpressure(self):
+        self.env["SHIP_TEST_READY"] = "5000"
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("over 300", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        self.assertFalse((self.root / "calls.jsonl").exists())
+
+    @unittest.skipUnless(shutil.which("flock"), "Linux shipper uses util-linux flock")
+    def test_inline_and_independent_native_shippers_cannot_clean_same_chunk(self):
+        import fcntl
+        outbox = self.root / "outbox"
+        outbox.mkdir()
+        with (outbox / ".qwen-ship-test.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_ship([])
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertTrue((outbox / "test/c00001/READY").exists())
+        self.assertFalse((self.root / "calls.jsonl").exists())

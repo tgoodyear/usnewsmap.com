@@ -32,9 +32,45 @@ pub const MAX_BUNDLE_CROPS: usize = 256;
 pub const MAX_MODELS: usize = 4;
 /// One crop's text, LoC's or the model's.
 pub const MAX_CROP_TEXT: usize = 8 * 1024;
-/// The transcription prompt this version of the job sends.
+/// The transcription request version new jobs are staged with. A job's
+/// `prompt_version` fixes the whole request a reading is made with: the
+/// prompt text and how the crop is encoded for the model.
 pub const PROMPT_VERSION: u32 = 1;
+/// Request version 2: the same [`PROMPT`], with the vision encoder's
+/// minimum image tokens raised to [`V2_IMAGE_MIN_TOKENS`]. Version 1 leaves
+/// llama.cpp's default, which encodes a newspaper crop at its native
+/// resolution of one token per 32x32 pixels (about 200-400 tokens), below
+/// the 1,024 that llama.cpp says Qwen-VL needs; that is where the
+/// unreadable, looping Hebrew-script readings came from (#529).
+pub const PROMPT_VERSION_IMAGE_MIN_TOKENS: u32 = 2;
+pub const V2_IMAGE_MIN_TOKENS: u32 = 1024;
+/// Every request version this contract's apps can read with.
+pub const SUPPORTED_PROMPT_VERSIONS: [u32; 2] = [PROMPT_VERSION, PROMPT_VERSION_IMAGE_MIN_TOKENS];
+
+/// `--image-min-tokens` for a job's request version; `None` keeps the
+/// engine default, as version 1 always has.
+pub fn image_min_tokens(prompt_version: u32) -> Option<u32> {
+    (prompt_version == PROMPT_VERSION_IMAGE_MIN_TOKENS).then_some(V2_IMAGE_MIN_TOKENS)
+}
 pub const PROMPT: &str = "Transcribe exactly the printed text in the image. Keep the original spelling, punctuation, line breaks and hyphenation. Do not correct or modernise anything, and do not add anything that is not printed. If a word is unreadable, write [?] for it. Output only the transcription.";
+/// The repeated run that ends `text`, ignoring trailing whitespace: the
+/// shortest period of at most 400 chars that repeats at least three times
+/// over at least 30 chars, as `(period, span)` in chars. Printed text can
+/// repeat (a shelf of "SHAKESPEARE'S WORKS" spines); a reading that also
+/// ran out of tokens on such a run is the model looping.
+pub fn tail_repetition(text: &str) -> Option<(usize, usize)> {
+    let s: Vec<char> = text.trim_end().chars().collect();
+    let n = s.len();
+    (1..=400.min(n / 3)).find_map(|p| {
+        let mut i = n - 1;
+        while i >= p && s[i] == s[i - p] {
+            i -= 1;
+        }
+        let span = n - 1 - i + p;
+        (span >= 3 * p && span >= 30).then_some((p, span))
+    })
+}
+
 /// The probe's acceptance floor for word-bag Dice between two hosts'
 /// readings of one crop. Vision-language output can differ between
 /// devices, so the threshold proper is measured on the probe's pairs
@@ -302,7 +338,7 @@ impl Job {
             );
         }
         ensure!(
-            self.prompt_version == PROMPT_VERSION,
+            SUPPORTED_PROMPT_VERSIONS.contains(&self.prompt_version),
             "unsupported prompt version"
         );
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
@@ -689,9 +725,28 @@ pub(crate) mod tests {
         order.engine.models.reverse();
         order.id = order.identity().unwrap();
         assert!(order.validate().is_err());
-        let mut tampered = j;
-        tampered.prompt_version = 2;
+        let mut tampered = j.clone();
+        tampered.prompt_version = PROMPT_VERSION_IMAGE_MIN_TOKENS;
         assert!(tampered.validate().is_err());
+        tampered.id = tampered.identity().unwrap();
+        assert!(tampered.validate().is_ok());
+        assert_ne!(tampered.id, j.id);
+        let mut unknown = j;
+        unknown.prompt_version = 3;
+        unknown.id = unknown.identity().unwrap();
+        assert!(unknown.validate().is_err());
+    }
+
+    #[test]
+    fn tail_repetition_finds_the_run_that_ends_a_reading() {
+        let looped = format!("Head line.\n{}", "[?] ".repeat(40));
+        assert_eq!(tail_repetition(&looped), Some((4, 159)));
+        assert_eq!(tail_repetition("word\nword\nword"), None);
+        assert_eq!(
+            tail_repetition("The ship sailed for England, and the enemy sank it."),
+            None
+        );
+        assert_eq!(tail_repetition(""), None);
     }
 
     #[test]

@@ -9,6 +9,114 @@ classes, through the pinned llama.cpp Vulkan build (`ubuntu-vulkan-x64` and `win
 `scripts/boinc/native-qwen-cohort.php --plan-class intel_vulkan_8b`, as for the NVIDIA classes
 ([app releases](../contrib-compute/docs/app-release.md)).
 
+### Persistent finite NVIDIA/Intel refill
+
+`scripts/boinc/qwen-auto-cohort.py` is an operator-enabled, finite rolling pilot,
+not general admission. The accompanying `usnm-qwen-cohort-auto.service` and
+`.timer` run one short operation per minute under the normal **nonblocking**
+project mutex. No collector, AMD acceptance, client restart or manual feed start
+is required. Lock contention exits 75 normally. An in-container 20-second
+timeout (five-second kill grace) bounds the Python/PHP process group independently
+of the host's 30-second service budget, rather than relying on killing only a
+`podman exec` client. These bound only this owned operation. Disable the timer
+and let any active oneshot finish before handing off ownership.
+
+Each refill admits at most **ten contiguous** newly produced native-8B workunits
+with two pristine ordinary replicas, quorum/target 2, no assignment, no app-version
+binding and zero error/transition/HR flags. The existing pinned Windows/Linux
+GPU artifacts, model/engine hashes, generation budgets, distinct-host gate and
+validator are not relaxed. Only one reviewed Linux Intel/NVIDIA release pair is
+authorized: `--app-version-num`, `--intel-app-version` and `--nvidia-app-version`
+(default the published 1.14 pair, Intel67/NVIDIA66) name it, and redeploying with a
+successor pair is a reviewed step. `--prompt-version` (default 1) is the one request
+version admitted; 2 (`--image-min-tokens 1024`, [quality](boinc-quality.md)) needs
+1.15 or later. A job of another request version fails the tick rather than being
+admitted. A superseding release on any platform (including a
+Windows release of either opened class) or changed project config closes the
+owned window instead of silently adopting a new release. The guard checks the
+complete non-deprecated version set the feeder would dispatch: with the app's
+`min_version` at 0 the stock feeder loads only the newest version per
+platform/plan class, so older reviewed Linux rows stay superseded; a nonzero
+`min_version` that would make an older Linux row dispatchable also closes it.
+
+Refill also reads actual native-8B **in-progress tasks across all windows** for
+both pilot hosts. New window size is reduced to the smaller remaining headroom
+of a ten-task-per-host buffer; a full buffer waits for actual completions.
+Thus a 500-job ramp is not permission to queue 500 unvalidated GPU tasks at once.
+This is conservative admission backpressure, not a client preference/quota
+change; report measured per-host backlog and rates rather than claiming the
+admission budget is completed work.
+
+A window normally refills only once neither pilot host can take any replica of it.
+One-result-per-host makes that a head-of-line hazard: when a host already holds a
+replica of every remaining window unit and has no native task left, it can take
+nothing until its peer drains the rest, and a stalled peer starves it indefinitely.
+After the window has been held `--rotate-after-seconds` (default 1800, at least
+600: several native task times, so a merely slow peer keeps its window), such a
+starved host lets the controller open the next fresh window. The left-behind
+replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
+for every other eligible class, and the receipt records them
+(`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
+
+The controller reads the producer's durable
+`/project/qwen/qwen-nonenglish-v1/audit.json` directly, not a human handoff or a
+headline count of stale ready work. It binds each WU/job identity to the actual
+downloaded job/page, native unit/submitted marker, source-quality page hash,
+archive ALTO hash/provenance, and original sampled damage metadata. Existing
+Yiddish and Serbian source cohorts are explicit bounded inputs; 1–12 crops and
+8192 UTF-8 bytes per crop remain enforced. Selection is the oldest contiguous
+eligible prefix in each bounded scan, never easiest-page selection. A durable
+cursor advances past fully stale 1000-unit slices and wraps to revisit pending
+inputs, so an assigned prefix cannot starve later fresh work. Counts explicitly
+describe the scanned slice, not the global eligible backlog. Quality/provenance file hashes
+and damage metadata are journaled; this is not a new whole-archive/GGUF readback
+or a multilingual accuracy claim.
+
+A window advances only when it has no **currently unsent replica eligible for
+either pilot host**. Completed/inconclusive replicas already run by both hosts
+are not fresh work. Pending normal peers/validation are left untouched; no
+canonical/status/assignment row is rewritten, no fake third replica is made,
+and no collector wait is added. Normal transitioner peers can remain pending
+outside an advanced finite window: report that unresolved inventory honestly,
+not as independently accepted jobs. An active AMD-first reserved ID is excluded;
+later disjoint NVIDIA/Intel windows may continue on either side of it.
+
+Before installation, coordinate #529 with exact source SHA, config/helper/initial
+policy SHA, unique controller ID, minimum new WU, budget, deadline and rollback.
+Install the reviewed controller and helper at
+`/project/ops/qwen-cohort-auto/{qwen-auto-cohort.py,native-qwen-cohort.php}` on the
+persistent project bind. Install the two reviewed units in the host's normal
+systemd directory, and create `/etc/usnm-boinc/qwen-cohort-auto.env`:
+
+```ini
+HELPER_SHA256=REVIEWED_HELPER_SHA
+CONFIG_SHA256=REVIEWED_CURRENT_CONFIG_SHA
+INITIAL_POLICY_SHA256=REVIEWED_CURRENT_POLICY_SHA
+CONTROLLER_ID=UNIQUE_32_HEX
+MINIMUM_WORKUNIT=FIRST_NEW_WU
+MAX_ADMISSIONS=500
+ENABLED_UNTIL=REVIEWED_UNIX_DEADLINE
+```
+
+Default ramp budget is **500 unique new workunits**, not 500 replicas/readings or
+10,000 accepted jobs; the hard budget limit is 10,000, and one reviewed enablement
+lasts at most 24 hours. Increase only with measured source-eligible input,
+storage floors, actual dispatch/completion and scientific-quality evidence.
+Run a dry invocation under the same normal mutex before enabling the timer.
+Verify the real ordinary timer's immutable input receipt and actual signed
+assignments/returns afterwards; a policy change alone is not throughput.
+
+The helper rechecks pristine DB state **inside the policy lock** and accepts an
+expected policy SHA and `--admit-until` deadline (checked under the lock and again
+just before the atomic rename; closing remains allowed), so a stale preview cannot overwrite a concurrent operator.
+Durable intent precedes publication; exact interrupted publications reconcile
+without duplicate admission. Unknown ownership stops rather than clobbers.
+Expiry/budget shutdown needs neither the producer audit nor DB. Rollback is to
+disable only this owned timer and use the reviewed shared-cohort `--stop` after
+checking the current window still belongs to this controller; in-flight work
+continues normally. Raw candidate/generation/quality retention and independent
+validation remain mandatory, and high backend agreement is not accuracy.
+
 `usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
 [docs/notes/2026-10-16-boinc-iris-pilot.md](notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
 (4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum.

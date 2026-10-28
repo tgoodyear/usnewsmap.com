@@ -1,0 +1,11 @@
+[Unit]
+Description=Continuously drain bounded Qwen READY chunks without waiting for source preparation
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=10
+Persistent=true
+
+[Install]
+WantedBy=timers.target
