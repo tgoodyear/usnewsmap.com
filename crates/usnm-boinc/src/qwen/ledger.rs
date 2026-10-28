@@ -56,7 +56,7 @@ pub fn run(root: &Path, pages: &Path) -> anyhow::Result<Vec<PageStatus>> {
         let membership = read(&unit.join(MEMBERSHIP_FILE), MAX_MEMBERSHIP)
             .ok()
             .and_then(|b| serde_json::from_slice::<Membership>(&b).ok())
-            .filter(|m| m.check(&job).is_ok());
+            .filter(|m| m.check(&job).is_ok() && m.check_sources(&root.join("pages")).is_ok());
         for (i, bp) in job.pages.iter().enumerate() {
             let member = membership.as_ref().map(|m| &m.pages[i]);
             let (status, records) = match member {
@@ -350,13 +350,36 @@ mod tests {
             .iter()
             .all(|p| p.status == "accepted"));
         let path = units(&root).join("bundle-00001").join(MEMBERSHIP_FILE);
-        let mut m: Membership = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut m: Membership = serde_json::from_slice(&original).unwrap();
         m.pages.swap(0, 1);
         std::fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
         assert!(run(&root, &pages)
             .unwrap()
             .iter()
             .all(|p| p.status == "membership_invalid" && p.page_job_id.is_none()));
+        // Members trading source identities do not trace to their own pages.
+        let mut m: Membership = serde_json::from_slice(&original).unwrap();
+        let (j0, s0) = (m.pages[0].job_id.clone(), m.pages[0].job_sha256.clone());
+        m.pages[0].job_id = m.pages[1].job_id.clone();
+        m.pages[0].job_sha256 = m.pages[1].job_sha256.clone();
+        m.pages[1].job_id = j0;
+        m.pages[1].job_sha256 = s0;
+        std::fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
+        assert!(run(&root, &pages)
+            .unwrap()
+            .iter()
+            .all(|p| p.status == "membership_invalid"));
+        // Nor does a source page unit changed after the bundle was written.
+        std::fs::write(&path, &original).unwrap();
+        let source = root.join("pages").join(DOCS[2]).join(JOB_FILE);
+        let mut sj = std::fs::read(&source).unwrap();
+        sj.push(b'\n');
+        std::fs::write(&source, sj).unwrap();
+        assert!(run(&root, &pages)
+            .unwrap()
+            .iter()
+            .all(|p| p.status == "membership_invalid"));
         std::fs::write(&path, b"{").unwrap();
         assert!(run(&root, &pages)
             .unwrap()
@@ -367,5 +390,43 @@ mod tests {
             .unwrap()
             .iter()
             .all(|p| p.status == "membership_invalid"));
+    }
+
+    #[test]
+    fn a_pair_compared_either_way_round_writes_one_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("pages");
+        let a = result(tmp.path(), &job, "a", |d, c| format!("{d} {c} words"));
+        // b leaves page 2's first crop blank: a page where the hosts' read flags differ.
+        let b = result(tmp.path(), &job, "b", |d, c| {
+            if d == DOCS[1] && c == "c01" {
+                String::new()
+            } else {
+                format!("{d} {c} words")
+            }
+        });
+        let dir = pages.join(&job.id).join(DOCS[1]);
+        assert!(validate::compare(&b, &a, 0.5, None, Some(&pages)).is_err());
+        let first = std::fs::read(dir.read_dir().unwrap().next().unwrap().unwrap().path()).unwrap();
+        assert!(validate::compare(&a, &b, 0.5, None, Some(&pages)).is_err());
+        assert_eq!(dir.read_dir().unwrap().count(), 1);
+        let path = dir.read_dir().unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        let r: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(r["status"], validate::PAGE_DISAGREED);
+        // The record's first result is a's, so each crop's flags are (a, b).
+        let blank = r["crops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == format!("{}:c01", DOCS[1]))
+            .unwrap();
+        assert!(
+            r["results"][0]["result"].as_str().unwrap()
+                < r["results"][1]["result"].as_str().unwrap()
+        );
+        assert_eq!(blank["read"], serde_json::json!([true, false]));
     }
 }

@@ -714,6 +714,33 @@ impl Membership {
         }
         Ok(())
     }
+
+    /// Checks each page against the page unit it names under `pages`
+    /// (the staging root's `pages/`): that unit's `qwen.json` must still
+    /// hash to the recorded checksum and be the single-page job with the
+    /// recorded id, page and checksum, so members cannot trade identities.
+    pub fn check_sources(&self, pages: &Path) -> anyhow::Result<()> {
+        for m in &self.pages {
+            let bytes = read(&pages.join(&m.unit).join(JOB_FILE), MAX_JOB_JSON)
+                .with_context(|| format!("membership page {} source unit", m.doc_id))?;
+            ensure!(
+                sha256(&bytes) == m.job_sha256,
+                "membership page {} source job checksum differs",
+                m.doc_id
+            );
+            let pj: Job = serde_json::from_slice(&bytes)?;
+            ensure!(
+                pj.pages.is_empty()
+                    && pj.id == m.job_id
+                    && pj.doc_id == m.doc_id
+                    && pj.input.sha256 == m.page_sha256
+                    && pj.input.bytes == m.bytes,
+                "membership page {} is not its source unit's job",
+                m.doc_id
+            );
+        }
+        Ok(())
+    }
 }
 
 /// The synthetic check page: two lines of block capitals in a 5 by 7

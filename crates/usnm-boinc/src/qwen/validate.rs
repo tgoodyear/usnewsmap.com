@@ -122,7 +122,16 @@ fn record_page(
     results: [(&String, &Loaded); 2],
 ) -> anyhow::Result<()> {
     let mut results = results;
-    results.sort_by(|x, y| x.0.cmp(y.0));
+    let mut page = page.clone();
+    if results[1].0 < results[0].0 {
+        // One order for the whole record, crops' read flags included, so a
+        // pair compared either way round writes the same bytes.
+        results.swap(0, 1);
+        for c in &mut page.crops {
+            c.read = (c.read.1, c.read.0);
+        }
+    }
+    let page = &page;
     let job_id = &results[0].1.result.job_id;
     usnm_ocr_contract::quality::check_doc_id(&page.doc_id)?;
     let prefix = format!("{}:", page.doc_id);
@@ -158,14 +167,27 @@ fn record_page(
         .join(job_id)
         .join(&page.doc_id)
         .join(format!("{}.json", &pair[..16]));
-    match std::fs::read(&path) {
-        Ok(existing) if existing == bytes => Ok(()),
-        Ok(_) => anyhow::bail!("{} already holds another record", path.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(path.parent().context("page record directory")?)?;
-            crate::atomic(&path, &bytes)
+    let parent = path.parent().context("page record directory")?;
+    std::fs::create_dir_all(parent)?;
+    let mut f = tempfile::NamedTempFile::new_in(parent)?;
+    f.write_all(&bytes)?;
+    f.as_file().sync_all()?;
+    // Never replaces a record, even one a concurrent comparison published
+    // after this one started.
+    match f.persist_noclobber(&path) {
+        Ok(_) => {
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
         }
-        Err(e) => Err(e.into()),
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::ensure!(
+                std::fs::read(&path)? == bytes,
+                "{} already holds another record",
+                path.display()
+            );
+            Ok(())
+        }
+        Err(e) => Err(e.error.into()),
     }
 }
 
