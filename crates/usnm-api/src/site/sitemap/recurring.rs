@@ -1,5 +1,5 @@
 //! Only finalized anonymous days contribute; never staging batches or raw text
-//! in telemetry. Unsupported/filter-specific searches remain private/noindex.
+//! in telemetry. Filter combinations count separately and are never published.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -15,13 +15,13 @@ use crate::Snapshot;
 const MAX_DAY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DISTINCT: usize = 50_000;
 
-fn path(record: &Record, snap: &Snapshot) -> Option<String> {
+fn identity(record: &Record, snap: &Snapshot) -> Option<(String, String)> {
     if record.v != FORMAT || record.source != "api" {
         return None;
     }
     let canonical =
         crate::searchlog::canonical(record, snap.refdata.bounds(), snap.refdata.analyzers())?;
-    let recorded = snap
+    let mut recorded = snap
         .refdata
         .search_request(&RawParams::parse(&canonical).ok()?)
         .ok()?;
@@ -31,12 +31,11 @@ fn path(record: &Record, snap: &Snapshot) -> Option<String> {
         .refdata
         .search_request(&RawParams::parse(&super::super::preview_query(&query)).ok()?)
         .ok()?;
-    // Bucket choice does not change a search's matches, but all query/filter
-    // semantics must survive the public base URL exactly.
-    (recorded.query == base.query
-        && recorded.filters == base.filters
-        && recorded.source == base.source)
-        .then_some(path)
+    // Filters count separately, but only the unfiltered base URL is published.
+    // Bucket choice changes presentation, not which pages match.
+    recorded.bucket = base.bucket;
+    (recorded.query == base.query && recorded.source == base.source)
+        .then(|| (path, recorded.canonical()))
 }
 
 pub(super) async fn candidates(
@@ -44,7 +43,7 @@ pub(super) async fn candidates(
     snap: &Arc<Snapshot>,
     today: NaiveDate,
 ) -> Result<BTreeSet<String>> {
-    let mut days: BTreeMap<String, BTreeSet<NaiveDate>> = BTreeMap::new();
+    let mut days: BTreeMap<(String, String), BTreeSet<NaiveDate>> = BTreeMap::new();
     let mut paths = store.list("days").await.map_err(backend)?;
     paths.sort();
     for file in paths {
@@ -76,8 +75,8 @@ pub(super) async fn candidates(
                 if record.day != day {
                     return Err(backend(format!("search log day mismatch in {file}")));
                 }
-                if let Some(path) = path(&record, &snap) {
-                    terms.insert(path);
+                if let Some(key) = identity(&record, &snap) {
+                    terms.insert(key);
                     if terms.len() > MAX_DISTINCT {
                         return Err(backend("distinct searches exceed sitemap scan limit"));
                     }
@@ -99,7 +98,7 @@ pub(super) async fn candidates(
     }
     Ok(days
         .into_iter()
-        .filter_map(|(path, days)| (days.len() >= 2).then_some(path))
+        .filter_map(|((path, _), days)| (days.len() >= 2).then_some(path))
         .collect())
 }
 
@@ -189,6 +188,24 @@ pub(super) mod tests {
                 "source" => other.corpus = Some("congress".into()),
                 _ => other.query = "cobalt AND jubilee".into(),
             }
+            let mut filtered_one = record(&snap, one, "\"cobalt jubilee\"");
+            filtered_one.state.push("NY".into());
+            filtered_one.to = filtered_one.from;
+            let mut filtered_two = filtered_one.clone();
+            filtered_two.day = two;
+            write(&store, one, &[filtered_one]).await;
+            write(&store, two, std::slice::from_ref(&filtered_two)).await;
+            assert_eq!(
+                candidates(&store, &snap, today).await.unwrap(),
+                BTreeSet::from(["/search/cobalt-jubilee".into()]),
+                "a repeated filtered search promotes only its base term"
+            );
+            filtered_two.state = vec!["CA".into()];
+            write(&store, two, &[filtered_two]).await;
+            assert!(
+                candidates(&store, &snap, today).await.unwrap().is_empty(),
+                "different filter combinations cannot pool their days"
+            );
             write(&store, two, &[other]).await;
             assert!(
                 candidates(&store, &snap, today).await.unwrap().is_empty(),

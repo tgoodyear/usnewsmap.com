@@ -27,7 +27,8 @@ describe("PrivacyPage", () => {
     expect(text).toContain("at least five times");
     expect(text).toContain("two different UTC days");
     expect(text).toContain("more than 50 newspaper pages");
-    expect(text).toContain("Only unfiltered, full-date-range newspaper searches qualify");
+    expect(text).toContain("Only unfiltered, full-date-range newspaper search pages are published");
+    expect(text).toContain("different filters are counted separately");
     expect(text).not.toContain("copied from the search engine's own log");
   });
 

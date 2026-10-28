@@ -71,9 +71,10 @@ export default function PrivacyPage() {
         </p>
         <p>
           Search terms may also become public, indexable search pages listed in the sitemap after searches on at least
-          two different UTC days, if the search currently finds more than 50 newspaper pages. Only unfiltered,
-          full-date-range newspaper searches qualify; the sitemap does not publish search counts, search dates or chosen
-          filters. Once added, a search page may remain listed even if its result count later falls.
+          two different UTC days, if the unfiltered search currently finds more than 50 newspaper pages. Searches with
+          different filters are counted separately. Only unfiltered, full-date-range newspaper search pages are
+          published; the sitemap does not publish search counts, search dates or chosen filters. Once added, a search
+          page may remain listed even if its result count later falls.
         </p>
         <p>
           To prioritize pages for improved OCR, the server may also keep the IDs of eligible newspaper pages shown in
