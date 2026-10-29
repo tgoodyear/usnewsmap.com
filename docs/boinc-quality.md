@@ -8,6 +8,63 @@ Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](ht
 
 Status: implemented in code and tested locally; new split-payload releases remain UNVERIFIED on the live BOINC server and volunteer hosts. Disk metadata observations below are distinguished from conservative limits and live acceptance.
 
+## Repeatable German comparison report (#926)
+
+`scripts/boinc/german-quality-report.py` replaces the external experiment's
+`perpage.py`, `order.py` and reporting part of `crops.py`. It uses the collector's
+existing comparison metrics, not another implementation of normalization or edit
+distance. It needs only Python's standard library and runs offline:
+
+```bash
+python3 scripts/boinc/german-quality-report.py \
+  --sample german-sample.jsonl \
+  --pages pages.jsonl --crops crops.jsonl \
+  --reader loc --reader ours-tesseract --reader tess-deulatf \
+  --crops-per-page 12 --out german-report.json
+```
+
+Keep the frozen `quality sample` JSONL, with `doc_id` and `lang=deu`, separately
+from the results. For an explicitly labelled retrospective reproduction, a list
+of those fields from the original **input** cohort also works; deriving it from
+successful result rows would hide missing pages. Export the collector's page
+and crop tables to JSONL without changing their field names or values. The
+historical experiment already has these two JSONL exports. `--crops-per-page`
+must match the staging plan, and every expected OCR reader must be named.
+
+The create-only JSON report binds the sample, both exports and reporter source
+by SHA-256. It emits source-qualified page IDs, per-title/year and per-page
+comparisons, whole-page word-bag Dice alongside order-sensitive CER/WER, and
+crop CER/Dice against the reported VLM model. These are **model agreement, not
+human CER or calibrated accuracy**. Crop scores retain the collector's
+normalization; they are not the old `crops.py` script's separately normalized
+scores. Distinct comparator model identifiers cannot be pooled. Identifiers
+such as `qwen3-vl-8b-q4km` are metadata, **not immutable model-file digests**.
+
+Missing readers/pages, failed/timeout page outcomes, missing metrics,
+unobserved planned crops, null VLM references and empty readings remain explicit. An absent
+crop does not identify a timeout; retain native diagnostics for that. Means
+and medians use only successful pages or crops with nonempty VLM references,
+with their observed/missing denominators. Summaries are unweighted. Reader
+`total_ms` is kept as reported, not summed into a fictitious campaign duration.
+Layout and hat-derived accuracy metrics are deliberately omitted.
+The scorer's reported page languages are preserved separately from the sample's
+declared German cohort: a historical `und` score must not be relabelled as a
+German-configured run.
+
+This extracts reporting, **not `build_units.py` or a completed 100-page
+benchmark**. Continue to use the native `quality sample`, `texts-export`,
+`stage` and `collect` helpers. In particular, do not copy our ALTO to
+`loc.xml` and label it LoC's layout, as the external staging script did.
+Curated LoC text and verified local master staging need an explicitly
+provenanced native path when original LoC ALTO is unavailable.
+
+To close #926, freeze approximately 100 pages across titles, years and layouts,
+including #925's reading-order cases; pin native app, model and llama
+artifacts independently of Docker identities; retain source/input hashes and
+measured wall/CPU/memory costs; then rerun the report and review all missing
+or failed coverage. A 12-page, one-title historical reproduction proves only
+the reporting path. Human-labelled crops remain necessary for accuracy claims.
+
 ## What a unit is
 
 ### usnm_quality
