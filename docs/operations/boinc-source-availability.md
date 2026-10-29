@@ -30,3 +30,12 @@ No shipper, worker recipe, GPU admission, bundle or validator update is required
 `retained_archive_filter` timing/count receipts distinguish candidates filtered
 from actual prepared pages and newly audited workunits. Temporal schedules the
 same native producer service; do not start a competing producer for this change.
+
+The actual forced command was checked read-only on 29 October: it runs
+`nice -n 19 ionice -c 3 python3 /opt/usnm-quality-feed/archive_alto.py --pages -
+--archives /tank/locbulk/ocr --out /tank/locstats/qwen-alto`.
+An empty stdin request through the real producer's SSH alias returned the
+legacy three empty lists without error. The additive inventory uses that exact
+stdin contract, not a new remote-command flag or a broader SSH permission.
+The regression suite executes this fixed-argument empty-input interface and
+checks the complete additive response without opening an archive.

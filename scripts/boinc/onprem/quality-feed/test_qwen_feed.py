@@ -30,6 +30,22 @@ DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
 class ArchiveTest(unittest.TestCase):
+    def test_existing_forced_stdin_command_returns_additive_inventory_on_empty_input(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "xx_present_ver01.tar.bz2").write_bytes(b"not opened")
+            output = io.StringIO()
+            with mock.patch.object(sys, "argv", [
+                    "archive_alto.py", "--pages", "-", "--archives", str(root),
+                    "--out", str(root / "cache")]), \
+                    mock.patch.object(sys, "stdin", io.StringIO("")), \
+                    mock.patch.object(archive.tarfile, "open", side_effect=AssertionError("not metadata-only")), \
+                    contextlib.redirect_stdout(output):
+                archive.main()
+            self.assertEqual(json.loads(output.getvalue()), {
+                "cached": [], "missing": [], "pending": [],
+                "available_archives": ["xx_present_ver01.tar.bz2"]})
+
     def test_inventory_lists_only_retained_supported_archive_files_without_opening_them(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
