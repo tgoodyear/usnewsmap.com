@@ -532,6 +532,11 @@ select {
   break-inside: avoid;
   margin-bottom: 4px;
 }
+.search-links a {
+  display: block;
+  min-height: 24px;
+  padding-block: 4px;
+}
 .static-search-map {
   margin: 0;
 }

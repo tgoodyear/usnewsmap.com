@@ -91,6 +91,10 @@ test("the interactive homepage links every sitemap search after React mounts", a
   for (const href of searches) {
     await expect(nav.locator(`a[href="${href}"]`)).toBeVisible();
   }
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
 });
 
 test("curated searches expose top-city results and homepage links without JavaScript", async ({ browser }) => {
