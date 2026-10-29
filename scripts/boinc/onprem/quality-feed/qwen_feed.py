@@ -9,6 +9,7 @@ import argparse
 import fcntl
 import json
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,25 @@ def command(args, data=None):
 def remote(host, args, data=None):
     return command(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                     "root@" + host, shlex.join(args)], data)
+
+
+def available_source_index(lines, inventory):
+    names = inventory.get("available_archives")
+    if (not isinstance(names, list) or len(names) > 100000
+            or any(not isinstance(n, str) or not re.fullmatch(
+                r"[a-z]+_[a-zA-Z0-9]+_ver(?:0[1-9]|[1-9][0-9])\.tar\.bz2", n) for n in names)
+            or len(set(names)) != len(names)):
+        raise ValueError("archive helper must provide a valid fresh retained-archive inventory")
+    retained = set(names)
+    selected = []
+    total = 0
+    for line in lines:
+        row = json.loads(line)
+        total += 1
+        name = f"{row['batch']}_ver{int(row.get('batch_version') or 1):02d}.tar.bz2"
+        if name in retained:
+            selected.append(line)
+    return b"".join(selected), total, len(selected)
 
 
 def tick(a):
@@ -86,8 +106,13 @@ def _tick(a):
     seen = set(inv["documents"]) | set(json.loads(done)) | {
         d for d, retry_at in deferred.items() if retry_at > time.time()}
     command(ct + ["tee", work + "/staged.txt"], ("\n".join(sorted(seen)) + "\n").encode())
+    archive_inventory = json.loads(remote(
+        a.archive_host, ["python3", "/opt/usnm-quality-feed/archive_alto.py",
+                         "--pages", "-", "--archives", a.archives, "--out", a.alto_export], b""))
     with urllib.request.urlopen(a.scan_server.rstrip("/") + "/index/full.jsonl", timeout=300) as r:
-        command(ct + ["tee", work + "/index.jsonl"], r.read())
+        index, total, retained = available_source_index(r, archive_inventory)
+    command(ct + ["tee", work + "/index.jsonl"], index)
+    phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained)
     command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
                      "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(count),
                      "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
@@ -146,7 +171,6 @@ def main():
     ap.add_argument("--chunk-pages", type=int, default=100)
     ap.add_argument("--max-pending", type=int, default=3)
     a = ap.parse_args()
-    import re
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or not 1 <= a.chunk_pages <= 490 or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
             or not 1 <= a.max_unresolved <= 10000 or a.reserve_mib < 64):
