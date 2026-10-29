@@ -6,11 +6,14 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import time
 
 DAY = 24 * 60 * 60
 MAX_GAP = 20 * 60
 UNIT = "usnm-boinc-priority-controller.service"
+STARTING = "7d4958e842da4a758f6c1cdc7b36dcc5"
+FINISHED = "39f53479d3a045ac8e11786248231fbf"
 REQUIRED_ROUTES = {
     "onprem/handoff/claim", "onprem/handoff/collect", "onprem/handoff/export", "onprem/scans",
 }
@@ -27,6 +30,7 @@ def audit(records, since, until, unit=UNIT):
     plans = set()
     published = 0
     pushed = 0
+    invocations = {}
     if not number(since) or not number(until) or until - since < DAY:
         raise ValueError("window must span at least 24 hours")
     for record in records:
@@ -35,7 +39,18 @@ def audit(records, since, until, unit=UNIT):
         if not since <= at <= until:
             continue
         associated = any(record.get(key) == unit for key in ("UNIT", "_SYSTEMD_UNIT", "OBJECT_SYSTEMD_UNIT"))
+        invocation = None
         if associated:
+            invocation = record.get("INVOCATION_ID") or record.get("_SYSTEMD_INVOCATION_ID")
+            if not isinstance(invocation, str) or re.fullmatch(r"[0-9a-f]{32}", invocation) is None:
+                failures.add("controller journal record lacks a valid invocation identity")
+                invocation = None
+            else:
+                state = invocations.setdefault(invocation, {"starts": 0, "finishes": 0, "summaries": 0})
+                if record.get("MESSAGE_ID") == STARTING:
+                    state["starts"] += 1
+                elif record.get("MESSAGE_ID") == FINISHED:
+                    state["finishes"] += 1
             for key in ("UNIT_RESULT", "SERVICE_RESULT"):
                 if key in record and record[key] != "success":
                     failures.add("systemd reports a failed controller invocation")
@@ -56,6 +71,8 @@ def audit(records, since, until, unit=UNIT):
             raise ValueError("controller event kind must be a string")
         if kind.startswith("boinc_batch_") and record.get("_SYSTEMD_UNIT") != unit:
             failures.add("controller event has missing or mismatched journal unit")
+        if kind in ("boinc_batch_tick", "boinc_batch_failure") and invocation is not None:
+            invocations[invocation]["summaries"] += 1
         if kind == "boinc_batch_failure":
             failures.add("controller failure in window")
         elif kind == "boinc_batch_phase" and event.get("ok") is not True:
@@ -142,11 +159,15 @@ def audit(records, since, until, unit=UNIT):
         failures.add("window has no newly published pages")
     if pushed == 0:
         failures.add("window has no actual on-prem pushed pages")
+    if not invocations or any(state != {"starts": 1, "finishes": 1, "summaries": 1}
+                              for state in invocations.values()):
+        failures.add("window contains an unresolved or boundary-crossing controller invocation")
     return {
         "schema_version": 1,
         "scope": "controller-routing-window",
         "unit": unit,
         "since": since, "until": until, "ticks": len(ticks),
+        "controller_invocations": len(invocations),
         "plans": sorted(plans), "newly_published": published,
         "onprem_pushed_pages": pushed,
         "observed_routes": sorted(routes),

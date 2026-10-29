@@ -207,7 +207,13 @@ python3 scripts/boinc/handoff-window.py --journal controller-journal.jsonl \
 ```
 
 Use the same explicit UTC boundaries for both commands, at least 24 hours apart;
-never select only successful ticks. The offline audit rejects failures, held/backlog
+choose quiet gaps between invocations, not a time while the unit is still running.
+Every observed systemd invocation must have its starting marker, one controller
+terminal summary and its finished marker inside the window. An invocation crossing
+either boundary, missing invocation identity or an incomplete lifecycle rejects the
+window even if nearby successful ticks are less than 20 minutes apart. Later
+out-of-window summaries cannot make an unresolved invocation acceptable.
+Never select only successful ticks. The offline audit rejects failures, held/backlog
 results, alerts, Azure launches/pushes, missing or inconsistent routing counters,
 plan changes, duplicate ticks, gaps over 20 minutes, and windows without real
 on-prem claim/collect/export/push and newly published pages. Old summaries without

@@ -26,17 +26,39 @@ def fixture():
             "execution_routes": {route: dict(counts) for route in window.REQUIRED_ROUTES},
         },
     }
-    return [{
-        "__REALTIME_TIMESTAMP": str(at * 1_000_000),
-        "_SYSTEMD_UNIT": window.UNIT,
-        "MESSAGE": json.dumps(event),
-    } for at in range(0, window.DAY + 1, 600)]
+    records = []
+    for at in range(0, window.DAY, 600):
+        invocation = f"{at:032x}"
+        records.extend([
+            {
+                "__REALTIME_TIMESTAMP": str(at * 1_000_000),
+                "UNIT": window.UNIT, "INVOCATION_ID": invocation,
+                "MESSAGE_ID": window.STARTING, "MESSAGE": "Starting controller",
+            },
+            {
+                "__REALTIME_TIMESTAMP": str((at + 1) * 1_000_000),
+                "_SYSTEMD_UNIT": window.UNIT, "_SYSTEMD_INVOCATION_ID": invocation,
+                "MESSAGE": json.dumps(event),
+            },
+            {
+                "__REALTIME_TIMESTAMP": str((at + 2) * 1_000_000),
+                "UNIT": window.UNIT, "INVOCATION_ID": invocation,
+                "MESSAGE_ID": window.FINISHED, "MESSAGE": "Finished controller",
+            },
+        ])
+    return records
+
+
+def application_records(records):
+    return [record for record in records if record["MESSAGE"].startswith("{")]
 
 
 def change(records, function):
-    event = json.loads(records[len(records) // 2]["MESSAGE"])
+    selected = application_records(records)
+    record = selected[len(selected) // 2]
+    event = json.loads(record["MESSAGE"])
     function(event)
-    records[len(records) // 2]["MESSAGE"] = json.dumps(event)
+    record["MESSAGE"] = json.dumps(event)
 
 
 class HandoffWindowTests(unittest.TestCase):
@@ -45,7 +67,8 @@ class HandoffWindowTests(unittest.TestCase):
         self.assertTrue(report["telemetry_window_passed"], report)
         self.assertFalse(report["retirement_authorized"])
         self.assertEqual(len(report["remaining_evidence"]), 4)
-        self.assertEqual(report["ticks"], 145)
+        self.assertEqual(report["ticks"], 144)
+        self.assertEqual(report["controller_invocations"], 144)
 
     def test_legacy_missing_or_miscounted_routes_fail_closed(self):
         for mutate in (
@@ -89,7 +112,7 @@ class HandoffWindowTests(unittest.TestCase):
         records.append(copy.deepcopy(records[10]))
         self.assertFalse(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
         records = fixture()
-        for record in records:
+        for record in application_records(records):
             event = json.loads(record["MESSAGE"])
             event["newly_published"] = 0
             record["MESSAGE"] = json.dumps(event)
@@ -116,7 +139,7 @@ class HandoffWindowTests(unittest.TestCase):
 
     def test_missing_only_scan_commands_are_not_actual_scan_transfer_evidence(self):
         records = fixture()
-        for record in records:
+        for record in application_records(records):
             event = json.loads(record["MESSAGE"])
             event["timings"]["scan_pages"]["onprem"] = {"pushed": 0, "missing": 1}
             record["MESSAGE"] = json.dumps(event)
@@ -124,6 +147,34 @@ class HandoffWindowTests(unittest.TestCase):
         self.assertFalse(result["telemetry_window_passed"])
         self.assertEqual(result["onprem_pushed_pages"], 0)
         self.assertIn("window has no actual on-prem pushed pages", result["failures"])
+
+    def test_running_invocation_at_boundary_cannot_hide_a_later_azure_summary(self):
+        records = fixture()
+        invocation = "f" * 32
+        records.append({
+            "__REALTIME_TIMESTAMP": str((window.DAY - 60) * 1_000_000),
+            "UNIT": window.UNIT, "INVOCATION_ID": invocation,
+            "MESSAGE_ID": window.STARTING, "MESSAGE": "Starting controller",
+        })
+        # A summary outside the requested window cannot authorize an unresolved tick inside it.
+        summary = json.loads(application_records(records)[0]["MESSAGE"])
+        summary["timings"]["execution_routes"]["azure/handoff/claim"] = (
+            summary["timings"]["execution_routes"].pop("onprem/handoff/claim"))
+        records.append({
+            "__REALTIME_TIMESTAMP": str((window.DAY + 60) * 1_000_000),
+            "_SYSTEMD_UNIT": window.UNIT, "_SYSTEMD_INVOCATION_ID": invocation,
+            "MESSAGE": json.dumps(summary),
+        })
+        result = window.audit(records, 0, window.DAY)
+        self.assertFalse(result["telemetry_window_passed"])
+        self.assertIn("window contains an unresolved or boundary-crossing controller invocation",
+                      result["failures"])
+
+    def test_missing_start_finish_or_summary_is_not_a_complete_invocation(self):
+        for index in (0, 1, 2):
+            records = fixture()
+            del records[index]
+            self.assertFalse(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
 
     def test_cli_retains_input_hash_and_rejects_malformed_input(self):
         with tempfile.TemporaryDirectory() as directory:
