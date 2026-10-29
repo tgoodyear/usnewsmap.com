@@ -481,6 +481,8 @@ class Timings:
         self.cpu_started = self.cpu()
         self.phases = {}
         self.commands = {}
+        self.execution_routes = {}
+        self.scan_pages = {}
         self.current = None
 
     @staticmethod
@@ -520,8 +522,10 @@ class Timings:
                     # A closed or broken log stream never stops a tick or strands its lease.
                     pass
 
-    def command(self, key, seconds, cpu, ok):
+    def command(self, key, seconds, cpu, ok, execution_route=None):
         self._add(self.commands, key, seconds, cpu, ok)
+        if execution_route is not None:
+            self._add(self.execution_routes, execution_route, seconds, cpu, ok)
 
     def summary(self):
         return {
@@ -529,6 +533,8 @@ class Timings:
             "cpu_seconds": round(self.cpu() - self.cpu_started, 3),
             "phases": copy.deepcopy(self.phases),
             "commands": copy.deepcopy(self.commands),
+            "execution_routes": copy.deepcopy(self.execution_routes),
+            "scan_pages": copy.deepcopy(self.scan_pages),
         }
 
 
@@ -628,7 +634,7 @@ class Transport:
                         f"{label} failed; private command failure receipt cleanup failed"
                     ) from failure
 
-    def run(self, argv, label, timeout=2100, ok=(0,)):
+    def run(self, argv, label, timeout=2100, ok=(0,), *, execution_route=None):
         # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
         kind = f"storage {argv[3]}" if argv[:3] == ["az", "storage", "blob"] and len(argv) > 3 else label
         start, cpu, passed = self.timings.clock(), self.timings.cpu(), False
@@ -643,8 +649,8 @@ class Transport:
             )
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying") from error
         finally:
-            self.timings.command(kind, self.timings.clock() - start,
-                                 self.timings.cpu() - cpu, passed)
+            seconds, used = self.timings.clock() - start, self.timings.cpu() - cpu
+            self.timings.command(kind, seconds, used, passed, execution_route)
         if not passed:
             self.retain_failure(label, returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying")
@@ -713,7 +719,8 @@ class Transport:
                           "--target", target, "--step", step, "--wait-mins", "30"]
         for key, value in variables.items():
             argv += ["--var", f"{key}={value}"]
-        self.run(argv, f"{target}/{step}")
+        route = "onprem" if onprem and self.config.get("step_command") else "azure"
+        self.run(argv, f"{target}/{step}", execution_route=f"{route}/{target}/{step}")
 
     @timed("inventory")
     def inventory(self):
@@ -815,7 +822,7 @@ class Transport:
             argv = self.push_args()
             for page in pages:
                 argv += ["--scan", page["scan"]]
-            self.run(argv, "cached scan push")
+            self.run(argv, "cached scan push", execution_route="azure/scans")
         # The exporter takes one base batch at a time; queued pages come from many.
         batches = {}
         for page in pages:
@@ -882,7 +889,8 @@ class Transport:
             # The script names a page by where the fetcher files it under keep/, without "keep/".
             require(base.startswith("keep/"), "claimed scan is not under keep/")
             argv += ["--keep-page", base[len("keep/"):]]
-        output = self.run(argv, "cached scan push", ok=(0, 3))
+        route = "onprem" if "--to-onprem" in argv else "azure"
+        output = self.run(argv, "cached scan push", ok=(0, 3), execution_route=f"{route}/scans")
         pushed, missing = {}, []
         for line in output.splitlines():
             kind, _, value = line.partition(" ")
@@ -897,6 +905,9 @@ class Transport:
                 found[base] = match[0]
         require(set(found) | set(missing) == set(bases) and not (set(found) & set(missing)),
                 "scan push did not account for every claimed page")
+        counts = self.timings.scan_pages.setdefault(route, {"pushed": 0, "missing": 0})
+        counts["pushed"] += len(found)
+        counts["missing"] += len(missing)
         return found, missing
 
     @timed("release")
