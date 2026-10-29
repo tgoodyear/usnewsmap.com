@@ -2078,7 +2078,8 @@ mod queue_feed {
     /// A German page the seeder has queued: a ledger row and a message on `ocr-bulk`.
     async fn fed(list_it: bool) -> Fed {
         let fx = Fixture::new("ger").await;
-        let queued_at = Utc::now();
+        let queued_at =
+            chrono::DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
         let message = OcrMessage {
             v: 1,
             page: PAGE.into(),

@@ -27,6 +27,7 @@ on:
       - "rust-toolchain.toml"
       - ".dockerignore"
       # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "scripts/boinc/acceptance_server.py"
       - "fixtures/ocr-gold/bundle-v1.lock.json"
       - "ocr/boinc/qwen/disk-policy.json"
       - "ocr/boinc/qwen/weights.lock"
