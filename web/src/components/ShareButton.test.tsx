@@ -29,18 +29,21 @@ describe("Share preview preparation", () => {
       .mockResolvedValueOnce(png());
     vi.stubGlobal("fetch", fetch);
     render(<ShareButton />);
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
     window.history.replaceState(null, "", "/search/cross-of-gold?state=IL");
     expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Share" }));
     expect(copy).toHaveBeenCalledWith(window.location.href);
     expect(fetch).toHaveBeenCalledWith(window.location.href, { signal: expect.any(AbortSignal), cache: "no-store" });
     await waitFor(() => expect(screen.getByRole("button").textContent).toBe("Link copied"));
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toBe("");
     fireEvent.click(screen.getByRole("button"));
     expect(fetch).toHaveBeenCalledTimes(1);
     await act(async () => release(metadata()));
     await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(fetch).toHaveBeenLastCalledWith(new URL(image, window.location.href).href, {
       signal: expect.any(AbortSignal),
       cache: "no-store",
@@ -61,10 +64,10 @@ describe("Share preview preparation", () => {
     render(<ShareButton />);
     await act(async () => fireEvent.click(screen.getByRole("button")));
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     await act(async () => vi.advanceTimersByTimeAsync(48_000));
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(fetch.mock.calls.length).toBeLessThan(25);
   });
 
@@ -80,10 +83,10 @@ describe("Share preview preparation", () => {
     render(<ShareButton />);
     await act(async () => fireEvent.click(screen.getByRole("button")));
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     await act(async () => vi.advanceTimersByTimeAsync(2000));
     expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
@@ -105,7 +108,7 @@ describe("Share preview preparation", () => {
     render(<ShareButton />);
     fireEvent.click(screen.getByRole("button"));
     await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -121,10 +124,10 @@ describe("Share preview preparation", () => {
     vi.stubGlobal("fetch", fetch);
     const { rerender } = render(<ShareButton key="old-view" />);
     fireEvent.click(screen.getByRole("button"));
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     await act(async () => rerender(<ShareButton key="new-view" />));
     expect(signal.aborted).toBe(true);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

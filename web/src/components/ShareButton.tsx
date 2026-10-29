@@ -76,11 +76,9 @@ export function ShareButton() {
       <button type="button" className="button" disabled={preview === "preparing"} onClick={share}>
         {copied ? "Link copied" : "Share"}
       </button>
-      {copyError && (
-        <span className="share-status" role="status">
-          Copy failed. Copy the address bar link.
-        </span>
-      )}
+      <span className="share-status" role="status">
+        {copyError && "Copy failed. Copy the address bar link."}
+      </span>
     </div>
   );
 }
