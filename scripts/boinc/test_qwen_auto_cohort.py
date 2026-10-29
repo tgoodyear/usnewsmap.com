@@ -124,6 +124,26 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertFalse(R.fresh(rows[0]))
         self.assertEqual(R.choose(rows, 100, None, 0), [])
 
+    def test_out_of_cohort_language_is_passed_over_and_never_inside_the_window(self):
+        languages = ["spa", "yid", "yid", "deu", "yid", "srp"]
+        self.rows[:] = [self.input(100 + i, language) for i, language in enumerate(languages)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["target"]), ("refilled-finite-window", [101, 102]))
+        self.assertEqual(receipt["out_of_cohort_skipped"], [100, 103])
+        self.assertEqual([proof["workunit"] for proof in receipt["inputs"]], [101, 102])
+        state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
+        self.assertEqual(state["admitted"], [101, 102])
+        # Integrity failures still stop the tick rather than being passed over.
+        row = self.input(200, "yid")
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        (self.project / "download/200_page_jpg").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "page identity"):
+            R.choose([row], 100, None, 10,
+                     lambda r: R.bind_inputs(self.project, r, key, self.audit[key]) is not None)
+
     def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
         for language in ("yid", "srp"):
             row = self.input(200, language)
@@ -418,7 +438,8 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         def delayed(*args):
             nonlocal calls
             calls += 1
-            if calls == 3:
+            # Two admissibility reads and two proofs precede the apply-time re-read.
+            if calls == 5:
                 self.args.enabled_until = 1
             return original(*args)
         with patch.object(R, "read_database", return_value=self.database), patch.object(R, "bind_inputs", side_effect=delayed):
