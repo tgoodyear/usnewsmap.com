@@ -34,6 +34,8 @@ impl Fixture {
         std::fs::create_dir(&mirror).unwrap();
         std::fs::set_permissions(&mirror, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut job = Job {
+            retry_of: None,
+            attempt: 0,
             v: boinc::VERSION,
             id: String::new(),
             message: serde_json::from_value(serde_json::json!({
@@ -73,6 +75,8 @@ impl Fixture {
         save(
             &root,
             &Record {
+                terminal: None,
+                retry: None,
                 job,
                 plan: "test".into(),
                 stage: Stage::Reserved,

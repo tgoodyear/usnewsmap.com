@@ -8,18 +8,49 @@ use std::path::Path;
 fn bridge_submit_remote_submits_only_a_reserved_job() {
     use std::os::unix::fs::PermissionsExt;
     let id = "b".repeat(64);
-    for (state, submits, url) in [
+    for (step, state, submits, url, native) in [
         (
+            "submit-remote",
             "reserved",
             true,
             "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+            false,
         ),
         (
+            "submit-remote",
             "submitted",
             false,
             "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+            false,
         ),
-        ("reserved", false, "https://example.org/boinc-handoff"),
+        (
+            "submit-remote",
+            "reserved",
+            false,
+            "https://example.org/boinc-handoff",
+            false,
+        ),
+        (
+            "submit-remote",
+            "reserved",
+            true,
+            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+            true,
+        ),
+        (
+            "submit",
+            "reserved",
+            true,
+            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+            true,
+        ),
+        (
+            "submit",
+            "reserved",
+            true,
+            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+            false,
+        ),
     ] {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("bin");
@@ -59,7 +90,23 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
                 "PATH",
                 format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
             )
-            .env("BRIDGE_STEP", "submit-remote")
+            .env("BRIDGE_STEP", step)
+            .env(
+                "COSMOS_ENDPOINT",
+                if native {
+                    "https://native.documents.azure.com:443"
+                } else {
+                    ""
+                },
+            )
+            .env(
+                "CURATED_URL",
+                if native {
+                    "https://native.blob.core.windows.net/curated"
+                } else {
+                    ""
+                },
+            )
             .env("JOB_ID", &id)
             .env("HANDOFF_DIR", tmp.path().join("handoff"))
             .env("HANDOFF_URL", url)
@@ -76,8 +123,12 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
             String::from_utf8_lossy(&out.stderr)
         );
         let calls = std::fs::read_to_string(&calls).unwrap();
-        assert!(calls.starts_with("handoff pull --from-url"), "{calls}");
-        assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
+        if step == "submit-remote" {
+            assert!(calls.starts_with("handoff pull --from-url"), "{calls}");
+        }
+        assert_eq!(calls.contains("submit --root"), submits, "{calls}");
+        assert_eq!(calls.contains("--cosmos https://native.documents.azure.com:443 --curated-url https://native.blob.core.windows.net/curated"),
+                   native && submits, "{calls}");
     }
 }
 

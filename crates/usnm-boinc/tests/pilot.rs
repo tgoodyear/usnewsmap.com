@@ -2078,7 +2078,8 @@ mod queue_feed {
     /// A German page the seeder has queued: a ledger row and a message on `ocr-bulk`.
     async fn fed(list_it: bool) -> Fed {
         let fx = Fixture::new("ger").await;
-        let queued_at = Utc::now();
+        let queued_at =
+            chrono::DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
         let message = OcrMessage {
             v: 1,
             page: PAGE.into(),
@@ -2097,6 +2098,8 @@ mod queue_feed {
             plan: "seed-test".into(),
             attempt: 2,
             request_day: None,
+            retry_message_at: Some(queued_at),
+            retry_run: None,
             queued_at: chrono::DateTime::parse_from_rfc3339(&message.queued_at)
                 .unwrap()
                 .with_timezone(&Utc),
@@ -2202,6 +2205,82 @@ mod queue_feed {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_requeue_discards_old_delivery_but_claims_exact_new_message() {
+        let mut f = fed(true).await;
+        let at = f.queued.queued_at + chrono::Duration::seconds(1);
+        f.queued.queued_at = at;
+        f.queued.retry_message_at = Some(at);
+        f.queued.attempt += 1;
+        ledger::write_queued(
+            f.fx.stores.curated.as_ref(),
+            &[f.queued.clone()],
+            at,
+            "ordinary-requeue",
+        )
+        .await
+        .unwrap();
+        let claims = f.fx.tmp.path().join("claims");
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
+        assert!(report.claims.is_empty());
+        assert_eq!(report.stale, 1);
+        f.message.queued_at = at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        f.fx.stores
+            .queue
+            .send(BULK, &f.message.encode())
+            .await
+            .unwrap();
+        assert_eq!(
+            pull(&f, &claims, Duration::from_secs(3600))
+                .await
+                .claims
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_ordinary_rows_keep_their_unfenced_timestamp_contract() {
+        let mut f = fed(true).await;
+        f.queued.retry_message_at = None;
+        f.queued.queued_at += chrono::Duration::seconds(1);
+        ledger::write_queued(
+            f.fx.stores.curated.as_ref(),
+            &[f.queued.clone()],
+            f.queued.queued_at,
+            "legacy-ordinary",
+        )
+        .await
+        .unwrap();
+        let claims = f.fx.tmp.path().join("claims");
+        assert_eq!(
+            pull(&f, &claims, Duration::from_secs(3600))
+                .await
+                .claims
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_parent_queue_delivery_cannot_be_adopted_as_deliberate_retry() {
+        let f = fed(true).await;
+        let next = usnm_ocr_local::boinc::next_attempt(&f.queued, Utc::now(), "boinc-0123456789ab")
+            .unwrap();
+        ledger::write_queued(
+            f.fx.stores.curated.as_ref(),
+            &[next],
+            Utc::now(),
+            "explicit",
+        )
+        .await
+        .unwrap();
+        let claims = f.fx.tmp.path().join("claims");
+        let report = pull(&f, &claims, Duration::from_secs(3600)).await;
+        assert!(report.claims.is_empty());
+        assert!(!claims.join(format!("{DOC}.json")).exists());
     }
 
     #[tokio::test]
@@ -2866,6 +2945,7 @@ mod queue_feed {
                 source: "pages/x.parquet".into(),
                 at: f.queued.queued_at + chrono::Duration::minutes(5),
                 run: "sync".into(),
+                message_sha256: None,
             }],
             f.queued.queued_at + chrono::Duration::minutes(5),
             "sync-run",
@@ -2952,6 +3032,7 @@ mod queue_feed {
                 source: "pages/by-a-node.parquet".into(),
                 at,
                 run: "sync".into(),
+                message_sha256: None,
             }],
             at,
             "node-run",
@@ -2989,6 +3070,7 @@ mod queue_feed {
                 source: "pages/elsewhere.parquet".into(),
                 at,
                 run: "sync".into(),
+                message_sha256: None,
             }],
             at,
             "other-run",

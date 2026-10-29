@@ -43,6 +43,34 @@ CONFIG = dict(fixture='qwen-cpu', server_command=['server'],
 DATA = b'{"transcription":"actual inference", "unit_error":null}'
 
 class RegisteredVersionRouting(unittest.TestCase):
+    def test_retry_rejects_ambiguous_versions_before_inspecting_worker(self):
+        db = MagicMock()
+        with patch.object(S, "db_connect", return_value=db), \
+                patch.object(S, "query", return_value=[{}, {}]), \
+                patch.object(S, "verify_version_files") as files:
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                S.verify_retry_worker(Path("/unused"), 27, "sha256:" + "a" * 64)
+            files.assert_not_called()
+        db.close.assert_called_once()
+
+    def test_retry_binds_registered_signed_worker_not_tesseract_base(self):
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64
+        image = "sha256:" + "b" * 64
+        db = MagicMock()
+        version = dict(id=1, xml_doc="signed", plan_class="docker", platform="x86_64-pc-linux-gnu")
+        with patch.object(S, "db_connect", return_value=db), \
+                patch.object(S, "query", return_value=[version]), \
+                patch.object(S, "registered_version"), \
+                patch.object(S, "verify_version_files", return_value=worker) as files, \
+                patch.object(S.subprocess, "check_output") as inspect:
+            S.verify_retry_worker(Path("/unused"), 27, image)
+            for other in ["sha256:" + "a" * 64, "sha256:" + "c" * 64]:
+                with self.assertRaisesRegex(ValueError, "worker digest differs"):
+                    S.verify_retry_worker(Path("/unused"), 27, other)
+            inspect.assert_not_called()
+            files.assert_called_with(Path("/unused"), None, "signed")
+        self.assertEqual(db.close.call_count, 3)
+
     def test_same_numeric_platform_versions_are_refused_but_distinct_versions_work(self):
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)

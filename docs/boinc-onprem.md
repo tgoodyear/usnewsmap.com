@@ -117,6 +117,83 @@ an ambiguous publication or acceptance reservation.
 Native binary/auxiliary inputs are rehashed after copying into private staging;
 only those verified copies are transferred for signing and appver construction.
 
+## Deliberate terminal OCR retry (#1159)
+
+`usnm-boinc retry` prepares **one explicitly reviewed single-page retry**, not an
+automatic recovery loop. Attempt 0 keeps its existing v1 JSON and job/workunit ID.
+Retry contract v2 binds a new attempt to its parent ID. Never edit an old request,
+signed app version, journal, assimilator marker or accepted result to force a replay.
+
+Before activation, deploy the reviewed reader to **every** strict journal consumer
+(controller, server, bridge, native sync and seeder), and sign/install a matching `usnm_ocr` worker
+supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
+Record the supporting BOINC worker's full released image digest (not its separate
+Tesseract base image digest) and
+BOINC app version number. Existing trust, routing, source budgets and validation
+still apply. Do not retry a bundle or bypass its reconciliation.
+Submission verifies its registered Dockerfile signature, requires an unambiguous
+active app/version/platform/plan mapping, and compares the signed Dockerfile's
+immutable worker `FROM` digest against `Job.engine.image`. No Podman socket or
+host image store is required. Missing registration or signature proof refuses
+submission before its uncertain state.
+
+After confirming BOINC's actual terminal disposition and that native sync has
+settled the exact previous native row as a permanent failure:
+
+```sh
+usnm-boinc retry --root /private/jobs --spool /private/assimilated \
+  --job PARENT_JOB_ID --expected-error-mask 2 \
+  --image sha256:SUPPORTING_WORKER_DIGEST --app-version-num SUPPORTING_APP_VERSION \
+  --reviewed-reason 'Reviewed terminal 0x2; supporting worker release recorded' \
+  --handoff-url /private/handoff \
+  --state-file /private/state.json \
+  --curated-url /private/curated --reference-url /private/reference
+```
+
+Use `--expected-no-output-files` instead of `--expected-error-mask` only for an
+actual `_no_output_files` marker. Unknown and zero masks are refused, not treated
+as missing output. An error mask is decimal on the CLI (`2` reviews `0x2`).
+Accepted/canonical/partial output, changed terminal proof, nonterminal work and a
+newer native reservation all require reconciliation, not retry.
+Historical imports always veto retry, even if a later dead letter became the
+latest outcome. Legacy journals without terminal proof require collection of
+the unchanged actual marker; a later collect cannot overwrite the first proof.
+The permanent outcome must carry the exact parent message digest; historical
+unbound outcomes cannot authorize retry. For queue-fed parents, the exact handoff
+claim must be conclusively `dead_lettered`, not lease-lost or still outstanding.
+
+The command prints the new child ID and reserves it without submission. It
+preserves the original scan, failed journal and request-day quota attribution.
+An identical invocation resumes its durable prepared/reserved child; it never
+creates another workunit for that parent. Submit that child through the existing
+single-page `submit` path, which pins `--app_version_num` from the retry journal.
+Pass `--curated-url` and exactly one of `--state-file` or `--cosmos` again on
+submission. For both `submit` and `submit-remote`, the on-prem bridge forwards
+host-owned `COSMOS_ENDPOINT` and `CURATED_URL` from `bridge.env`; configure its
+existing identity with the native lock/ledger permissions before activation.
+Submission holds the native lease while revalidating the exact outstanding
+child, verifying the signed worker, and crossing the write-ahead/create-work
+boundary. A replaced or settled child is refused without submission.
+Uncertain submission still requires authoritative BOINC lookup and explicit
+`reconcile`; never delete its journal and repeat. A retry of a failed child needs
+a fresh terminal review naming that child.
+Preparation validates settlement under the native lease before persisting the
+child timestamp, scan and journal, then writes its reservation. An unreserved
+prepared child may refresh its timestamp after later settlement; a reserved
+replay must still match the exact outstanding native row. The controller retains
+the parent/child chain but never automatically exports or submits manual retries.
+
+If that child fails, the existing handoff `claim dead-letter` step publishes the
+child's terminal mask and new message timestamp without touching the old claim.
+Its private durable payload/sent receipt makes a completed repeat a no-op; lost
+send acknowledgement retains at-least-once delivery. Native sync fences duplicate
+old-attempt events from subsequent retries.
+
+First acceptance is one reviewed failed-page canary: preserve its original real
+mask through collect/journal/dead letter, verify the one new workunit and supporting
+app version, collect/import via ordinary validation, verify native settlement,
+and record all identities. Code tests or a merged PR do not prove this live gate.
+
 ## What runs on the host
 
 | Unit                               | What                                                                                                                                                                | Notes                                                                                                                     |

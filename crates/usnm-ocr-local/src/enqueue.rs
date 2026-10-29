@@ -390,8 +390,10 @@ async fn record_not_sent(
             cause: None,
             kind: None,
             source: run.to_owned(),
-            at,
+            // Anchor an unsent outcome to its reservation, not a delayed failure's wall time.
+            at: q.queued_at,
             run: run.to_owned(),
+            message_sha256: None,
         })
         .collect();
     if let Err(w) = ledger::write_outcomes(curated, &rows, at, run).await {
@@ -814,7 +816,9 @@ async fn enqueue_with_policy(
             language: language.clone(),
             reason: opts.reason,
             score: found.damage_rate.filter(|s| (0.0..=1.0).contains(s)),
-            queued_at: message_queued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            queued_at: ledger
+                .next_message_time(doc_id, message_queued_at)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         };
         if let Err(e) = msg.validate() {
             skip_page(&mut report, e.kind(), doc_id, policy.private_pages);
@@ -836,7 +840,11 @@ async fn enqueue_with_policy(
                 plan: opts.plan.clone(),
                 attempt,
                 request_day: policy.request_day,
-                queued_at: now,
+                queued_at: ledger.next_event_time(doc_id, now)?,
+                retry_message_at: Some(
+                    DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                ),
+                retry_run: None,
             },
             msg,
         ));
@@ -972,6 +980,15 @@ async fn requeue_locked(
         }
         let Some(m) = d.message else { continue };
         let Ok(key) = m.key() else { continue };
+        if let Some(expected) = ledger
+            .outcomes
+            .get(&key.doc_id())
+            .and_then(|outcome| outcome.message_sha256.as_deref())
+        {
+            if expected != usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(&m)?) {
+                continue;
+            }
+        }
         latest.insert(key.doc_id(), m);
     }
     let mut out = Vec::new();
@@ -1013,7 +1030,9 @@ async fn requeue_locked(
             continue;
         };
         let msg = OcrMessage {
-            queued_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            queued_at: ledger
+                .next_message_time(&doc_id, now)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             ..old.clone()
         };
         if let Err(e) = msg.validate() {
@@ -1036,7 +1055,11 @@ async fn requeue_locked(
                 plan: opts.plan.clone(),
                 attempt,
                 request_day: None,
-                queued_at: now,
+                queued_at: ledger.next_event_time(&doc_id, now)?,
+                retry_message_at: Some(
+                    DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                ),
+                retry_run: None,
             },
             msg,
         ));

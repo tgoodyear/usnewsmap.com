@@ -1036,7 +1036,7 @@ def units_of(config, records):
 def owned_records(config, records):
     # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
     wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
-    owned = {}
+    by_page = {}
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
                 "invalid dispatch journal")
@@ -1046,11 +1046,38 @@ def owned_records(config, records):
             require(page not in wanted,
                     "page is already allocated to another plan; reconcile the allocation before export")
             continue
-        require(wanted.get(page) == job["message"]["batch"]
-                and job["engine"]["image"] == config["image"],
+        require(wanted.get(page) == job["message"]["batch"],
                 "plan already exists with a different allocation/image; operator migration required")
-        require(page not in owned, "multiple jobs for one allocated page; reconcile before feeding")
-        owned[page] = record
+        by_page.setdefault(page, []).append(record)
+    owned = {}
+    for page, history in by_page.items():
+        roots = [record for record in history if not record.get("retry")]
+        require(len(roots) == 1, "multiple jobs for one allocated page; reconcile before feeding")
+        current = roots[0]
+        require(current["job"]["engine"]["image"] == config["image"],
+                "plan already exists with a different allocation/image; operator migration required")
+        remaining = [record for record in history if record.get("retry")]
+        while remaining:
+            children = [record for record in remaining
+                        if record["retry"].get("previous_job") == current["job"]["id"]]
+            require(len(children) == 1 and current["stage"] == "failed",
+                    "invalid or branching reviewed retry lineage")
+            child = children[0]
+            job, parent = child["job"], current["job"]
+            require(job.get("v") == 2 and job.get("retry_of") == parent["id"]
+                    and type(job.get("attempt")) is int
+                    and job["attempt"] == parent.get("attempt", 0) + 1
+                    and child["retry"].get("previous_attempt") == parent.get("attempt", 0)
+                    and type(child["retry"].get("app_version_num")) is int
+                    and child["retry"]["app_version_num"] > 0
+                    and job["message"].get("language") == parent["message"].get("language")
+                    and job["message"].get("reason") == parent["message"].get("reason")
+                    and job["engine"]["image"].startswith("sha256:")
+                    and ID.fullmatch(job["engine"]["image"][7:]),
+                    "invalid reviewed retry lineage")
+            remaining.remove(child)
+            current = child
+        owned[page] = current
     return owned
 
 
@@ -1630,7 +1657,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 selected[page["page"]] = now
             persist()
         export = [page for page in config["pages"] if page["page"] in selected and
-                  (page["page"] not in owned or owned[page["page"]]["stage"] == "prepared")]
+                  (page["page"] not in owned or
+                   (owned[page["page"]]["stage"] == "prepared"
+                    and not owned[page["page"]].get("retry")))]
         if export:
             export = export[:config["batch_size"]]
             pages = {page["page"] for page in export}
@@ -1641,7 +1670,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             records = transport.records()
             owned = owned_records(config, records)
         candidates = {record["job"]["id"] for record in owned.values()
-                      if record["stage"] == "reserved" and record["job"]["id"] not in existing_jobs
+                      if not record.get("retry") and record["stage"] == "reserved"
+                      and record["job"]["id"] not in existing_jobs
                       and server.get(record["job"]["id"], {}).get("stage") in (None, "reserved")}
         backlog = sum(record["stage"] not in ("published", "failed") and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
@@ -1652,7 +1682,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         to_submit = []
         for record in owned.values():
             job_id = record["job"]["id"]
-            if record["stage"] == "reserved" and \
+            if not record.get("retry") and record["stage"] == "reserved" and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
                     len(to_submit) < submit_limit:
                 require(job_id not in existing_jobs,

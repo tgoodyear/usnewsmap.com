@@ -52,6 +52,7 @@ pub enum Reject {
     NotRequested,
     BatchMismatch,
     ReasonMismatch,
+    RetryAttempt,
     /// Check 4.
     TextNull,
     TextTooLarge,
@@ -90,6 +91,7 @@ impl Reject {
             Reject::NotRequested => "not_requested",
             Reject::BatchMismatch => "batch_mismatch",
             Reject::ReasonMismatch => "reason_mismatch",
+            Reject::RetryAttempt => "retry_attempt",
             Reject::TextNull => "text_null",
             Reject::TextTooLarge => "text_too_large",
             Reject::TextControl => "text_control",
@@ -286,6 +288,13 @@ pub fn check_part(name: &PartName, bytes: Vec<u8>, ctx: &Context) -> Result<Node
     }
     if queued.reason != row.loc_text {
         return Err(Reject::ReasonMismatch);
+    }
+    if queued
+        .retry_run
+        .as_deref()
+        .is_some_and(|run| run != name.run_id())
+    {
+        return Err(Reject::RetryAttempt);
     }
     // 4: the text is what its hash and length say, and plain.
     let text = row.text.as_deref().ok_or(Reject::TextNull)?;

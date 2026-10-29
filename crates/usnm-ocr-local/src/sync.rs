@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context};
@@ -192,32 +192,70 @@ pub struct ImportRecord {
 /// The lock, renewed in the background until dropped.
 pub(super) struct Lease {
     lost: Arc<AtomicBool>,
+    until: Arc<Mutex<Instant>>,
     renewer: tokio::task::JoinHandle<()>,
 }
 
 impl Lease {
     pub(super) async fn take(state: &State, owner: &str) -> anyhow::Result<Self> {
+        let ttl = LOCK_TTL.to_std()?;
+        let until = Arc::new(Mutex::new(Instant::now() + ttl));
         state.lock(super::LOCK, owner, LOCK_TTL).await?;
         let lost = Arc::new(AtomicBool::new(false));
         let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
+        let renewed_until = until.clone();
         let renewer = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(LOCK_RENEW).await;
+                if let Err(error) = Self::valid_until(&flag, &renewed_until).map(drop) {
+                    tracing::error!(%error, "ocr-sync lease expired before renewal");
+                    break;
+                }
+                let next_until = Instant::now() + ttl;
                 if let Err(e) = state.lock(super::LOCK, &owner, LOCK_TTL).await {
                     tracing::error!(error = %format!("{e:#}"), "ocr-sync lock renewal failed");
                     flag.store(true, Ordering::SeqCst);
                     break;
                 }
+                // Check and advance under the same guard: a late successful RPC
+                // must never revive a snapshot whose old lease already expired.
+                match Self::valid_until(&flag, &renewed_until) {
+                    Ok(mut deadline) => *deadline = next_until,
+                    Err(error) => {
+                        tracing::error!(%error, "ocr-sync lease could not accept renewal");
+                        break;
+                    }
+                }
             }
         });
-        Ok(Self { lost, renewer })
+        Ok(Self {
+            lost,
+            until,
+            renewer,
+        })
     }
 
     pub(super) fn check(&self) -> anyhow::Result<()> {
-        if self.lost.load(Ordering::SeqCst) {
+        drop(Self::valid_until(&self.lost, &self.until)?);
+        Ok(())
+    }
+
+    fn valid_until<'a>(
+        lost: &AtomicBool,
+        until: &'a Mutex<Instant>,
+    ) -> anyhow::Result<std::sync::MutexGuard<'a, Instant>> {
+        let until = until.lock().map_err(|error| {
+            lost.store(true, Ordering::SeqCst);
+            anyhow::anyhow!("ocr-sync lease deadline unavailable: {error}")
+        })?;
+        if lost.load(Ordering::SeqCst) {
             bail!("the ocr-sync lock could not be renewed; stopping before the next write");
         }
-        Ok(())
+        if Instant::now() >= *until {
+            lost.store(true, Ordering::SeqCst);
+            bail!("the ocr-sync lock expired; stopping before the next write");
+        }
+        Ok(until)
     }
 }
 
@@ -457,20 +495,60 @@ fn dead_letter_key(d: &DeadLetter) -> String {
 /// [`DEAD_LETTER_HIDE`], so none comes back while the run holds it.
 const DEAD_LETTER_BATCH: usize = 100;
 
+#[derive(Default)]
+struct OutcomeLog {
+    rows: Vec<Outcome>,
+    times: HashMap<String, DateTime<Utc>>,
+}
+
+impl OutcomeLog {
+    // Allocate order without settling the snapshot used to validate this run's parts.
+    fn reserve_time(
+        &mut self,
+        ledger: &ledger::Ledger,
+        doc_id: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        let at = match self.times.get(doc_id) {
+            Some(previous) => at.max(
+                previous
+                    .checked_add_signed(chrono::Duration::microseconds(1))
+                    .context("outcome order exhausted")?,
+            ),
+            None => at,
+        };
+        let at = ledger.next_event_time(doc_id, at)?;
+        self.times.insert(doc_id.to_owned(), at);
+        Ok(at)
+    }
+}
+
+fn same_attempt(message: &usnm_ocr_contract::message::OcrMessage, queued: &ledger::Queued) -> bool {
+    let Some(expected) = queued.retry_message_at else {
+        return true;
+    };
+    message.batch == queued.batch
+        && message.language == queued.language
+        && message.reason.as_str() == queued.reason
+        && DateTime::parse_from_rfc3339(&message.queued_at)
+            .is_ok_and(|at| at.timestamp_micros() == expected.timestamp_micros())
+}
+
 async fn drain_dead_letters(
     stores: &Stores,
     run: &str,
     max: usize,
     counts: &mut Counts,
-    written: &mut Vec<Outcome>,
+    written: &mut OutcomeLog,
     lease: &Lease,
+    ledger: &ledger::Ledger,
 ) -> anyhow::Result<()> {
     let mut drained = 0;
     let mut n = 0;
     while drained < max {
         let limit = DEAD_LETTER_BATCH.min(max - drained);
         let tag = format!("{run}-dl{n:03}");
-        let got = drain_batch(stores, &tag, limit, counts, written, lease).await?;
+        let got = drain_batch(stores, &tag, limit, counts, written, lease, ledger).await?;
         drained += got;
         n += 1;
         if got < limit {
@@ -487,8 +565,9 @@ async fn drain_batch(
     run: &str,
     max: usize,
     counts: &mut Counts,
-    written: &mut Vec<Outcome>,
+    written: &mut OutcomeLog,
     lease: &Lease,
+    ledger: &ledger::Ledger,
 ) -> anyhow::Result<usize> {
     let mut valid: Vec<(Received, DeadLetter)> = Vec::new();
     let mut rejected: Vec<Received> = Vec::new();
@@ -533,14 +612,30 @@ async fn drain_batch(
             if let Some(m) = &d.message {
                 // The message passed its checks, so its page parses.
                 if let Ok(key) = m.key() {
+                    if let Some(queued) = ledger.queued.get(&key.doc_id()) {
+                        if !same_attempt(m, queued) {
+                            tracing::warn!(
+                                message_id = %msg.id, doc_id = %key.doc_id(),
+                                "stale dead letter archived without settling the latest attempt"
+                            );
+                            *counts
+                                .dead_letters_rejected
+                                .entry("stale_attempt".into())
+                                .or_default() += 1;
+                            continue;
+                        }
+                    }
                     outcomes.push(Outcome {
                         doc_id: key.doc_id(),
                         outcome: DEAD_LETTERED.into(),
                         cause: d.cause.map(|c| c.as_str().to_owned()),
                         kind: d.kind.clone(),
                         source: msg.id.clone(),
-                        at: now,
+                        at: written.reserve_time(ledger, &key.doc_id(), now)?,
                         run: run.to_owned(),
+                        message_sha256: Some(usnm_ocr_contract::boinc::sha256(
+                            &serde_json::to_vec(m)?,
+                        )),
                     });
                 }
             }
@@ -554,7 +649,7 @@ async fn drain_batch(
             bail!("{path} already exists");
         }
         ledger::write_outcomes(stores.curated.as_ref(), &outcomes, now, run).await?;
-        written.extend(outcomes);
+        written.rows.extend(outcomes);
         tracing::info!(path, dead_letters = valid.len(), "dead letters written");
     }
     for msg in valid.iter().map(|(m, _)| m).chain(rejected.iter()) {
@@ -635,7 +730,7 @@ async fn run_locked(
         .collect();
 
     // Outcomes this run writes, for the status's outstanding count.
-    let mut written: Vec<Outcome> = Vec::new();
+    let mut written = OutcomeLog::default();
     drain_dead_letters(
         stores,
         &run,
@@ -643,6 +738,7 @@ async fn run_locked(
         &mut counts,
         &mut written,
         lease,
+        &ctx.ledger,
     )
     .await?;
 
@@ -783,7 +879,7 @@ async fn run_locked(
             };
             let after = reread.unwrap_or_else(|| {
                 let mut after = ctx.ledger.clone();
-                for o in written {
+                for o in written.rows {
                     after.add_outcome(o);
                 }
                 after
@@ -845,7 +941,7 @@ async fn import(
     runs_by_path: &HashMap<String, ObjectInfo>,
     counts: &mut Counts,
     taken: &mut HashSet<String>,
-    written_outcomes: &mut Vec<Outcome>,
+    written_outcomes: &mut OutcomeLog,
     lease: &Lease,
 ) -> anyhow::Result<()> {
     let metrics = crate::metrics::metrics();
@@ -1064,19 +1160,22 @@ async fn import(
     let now = Utc::now();
     let outcomes: Vec<Outcome> = accepted
         .iter()
-        .map(|(i, _)| Outcome {
-            doc_id: i.row.key.doc_id(),
-            outcome: IMPORTED.into(),
-            cause: None,
-            kind: None,
-            source: i.source_part.clone(),
-            at: now,
-            run: run.to_owned(),
+        .map(|(i, _)| {
+            Ok(Outcome {
+                doc_id: i.row.key.doc_id(),
+                outcome: IMPORTED.into(),
+                cause: None,
+                kind: None,
+                source: i.source_part.clone(),
+                at: written_outcomes.reserve_time(&ctx.ledger, &i.row.key.doc_id(), now)?,
+                run: run.to_owned(),
+                message_sha256: None,
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
     let outcomes_path =
         ledger::write_outcomes(stores.curated.as_ref(), &outcomes, now, run).await?;
-    written_outcomes.extend(outcomes);
+    written_outcomes.rows.extend(outcomes);
     let record = ImportRecord {
         run: run.to_owned(),
         at: now,
@@ -1317,4 +1416,34 @@ async fn check_one(
         alto_bytes,
         runs,
     })
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stalled_renewal_cannot_keep_an_expired_lease_valid() {
+        let lease = Lease {
+            lost: Arc::new(AtomicBool::new(false)),
+            until: Arc::new(Mutex::new(Instant::now() + LOCK_TTL.to_std().unwrap())),
+            renewer: tokio::spawn(std::future::pending()),
+        };
+        lease.check().unwrap();
+        *lease.until.lock().unwrap() = Instant::now();
+        assert!(lease.check().unwrap_err().to_string().contains("expired"));
+        assert!(lease.lost.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_late_renewal_cannot_revive_an_expired_lease() {
+        let lost = AtomicBool::new(false);
+        let until = Mutex::new(Instant::now() - Duration::from_secs(1));
+        let renewal = Lease::valid_until(&lost, &until);
+        assert!(renewal.is_err());
+        assert!(lost.load(Ordering::SeqCst));
+        // Even a later apparent acquisition cannot make the old operation valid.
+        *until.lock().unwrap() = Instant::now() + LOCK_TTL.to_std().unwrap();
+        assert!(Lease::valid_until(&lost, &until).is_err());
+    }
 }
