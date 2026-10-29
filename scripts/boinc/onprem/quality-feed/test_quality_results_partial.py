@@ -152,12 +152,51 @@ class PartialTest(unittest.TestCase):
             with self.subTest(phase=phase), mock.patch.object(
                     partial.subprocess, "run", return_value=response) as run, \
                     mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
-                with self.assertRaises(subprocess.CalledProcessError):
+                expected_error = SystemExit if phase == "step_lock_busy" else subprocess.CalledProcessError
+                with self.assertRaises(expected_error) as raised:
                     partial.host_pass(self.args)
+                if phase == "step_lock_busy":
+                    self.assertEqual(raised.exception.code, 75)
                 self.assertEqual(run.call_count, 1)
                 self.assertIn("remote diagnostic", log.getvalue())
                 self.assertIn(phase, log.getvalue())
                 self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+
+    def test_step_lock_deferral_preserves_existing_cursor_and_acknowledgement(self):
+        state = self.args.state_dir / "test/cursor.json"
+        state.parent.mkdir(parents=True)
+        original = json.dumps({
+            "after": "bundle-a", "through": "bundle-b",
+            "frontier_ack": {"unit": "bundle-a", "fingerprint": "a" * 64},
+        }).encode()
+        state.write_bytes(original)
+        response = subprocess.CompletedProcess(["ssh"], 75, b"", b"")
+        with mock.patch.object(partial.subprocess, "run", return_value=response) as run, \
+                mock.patch.object(partial, "atomic_json") as write, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+            with self.assertRaises(SystemExit) as raised:
+                partial.host_pass(self.args)
+        self.assertEqual(raised.exception.code, 75)
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("step_lock_busy", log.getvalue())
+        write.assert_not_called()
+        self.assertEqual(state.read_bytes(), original)
+
+    def test_host_lock_deferral_never_starts_remote_work(self):
+        lock_path = self.root / "host.lock"
+        with lock_path.open("a") as lock:
+            partial.fcntl.flock(lock, partial.fcntl.LOCK_EX | partial.fcntl.LOCK_NB)
+            with mock.patch.object(partial, "host_pass") as host, \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(SystemExit) as raised:
+                    partial.main([
+                        "--campaign", "test", "--engine-image", self.args.engine_image,
+                        "--lock", str(lock_path), "--state-dir", str(self.args.state_dir),
+                    ])
+        self.assertEqual(raised.exception.code, 75)
+        host.assert_not_called()
+        self.assertIn("host_lock_busy", log.getvalue())
+        self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
 
     def test_success_without_lock_receipt_never_transfers_or_loads(self):
         response = subprocess.CompletedProcess(["ssh"], 0, b"{}", b"")
