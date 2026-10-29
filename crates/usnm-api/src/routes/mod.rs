@@ -3,6 +3,7 @@ mod beacon;
 mod coverage;
 mod days;
 mod hits;
+pub(crate) use hits::ocr_for_hit;
 mod meta;
 mod titles;
 

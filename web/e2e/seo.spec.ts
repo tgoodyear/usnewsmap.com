@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import examples from "../src/examples.json" with { type: "json" };
 import { searchPath } from "../src/route";
+import AxeBuilder from "@axe-core/playwright";
 
 // SEO smoke tests: the head that search engines and link previews read, the
 // page structure once the app renders, and what the API sends crawlers.
@@ -95,6 +96,38 @@ test("curated searches expose top-city results and homepage links without JavaSc
   } finally {
     await context.close();
   }
+});
+
+test("sitemap searches remain readable with JavaScript enabled and API access blocked", async ({ page }) => {
+  test.skip(!withApi, "the API renders the search landing page");
+  const apiRequests: string[] = [];
+  await page.route("**/v1/**", (route) => {
+    apiRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/search/cross-of-gold");
+  const landing = page.locator("#search-landing");
+  const samples = landing.getByRole("region", { name: "Sample results" });
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Newspaper results for cross of gold");
+  await expect(samples).toBeVisible();
+  await expect(samples.locator("ol > li")).toHaveCount(10);
+  await expect(samples).toContainText("1896-07-18");
+  await expect(page.locator("#root")).toBeEmpty();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  expect(apiRequests.filter((url) => !url.endsWith("/beacon"))).toEqual([]);
+  await landing.getByRole("button", { name: "Explore interactive map" }).click();
+  await expect(page.locator("#root .app")).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "Word or phrase", exact: true })).toBeFocused();
+  await expect(page.getByRole("main")).toHaveCount(1);
+  await expect.poll(() => apiRequests.some((url) => new URL(url).pathname === "/v1/meta")).toBe(true);
+  await expect(samples).toBeVisible();
+  await expect(samples.locator("ol > li")).toHaveCount(10);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole("searchbox", { name: "Word or phrase", exact: true }).fill("unlisted search");
+  await page.getByRole("searchbox", { name: "Word or phrase", exact: true }).press("Enter");
+  await expect(landing).toBeHidden();
+  await page.goBack();
+  await expect(samples).toBeVisible();
 });
 
 test("an unknown path shows the not-found page", async ({ page }) => {

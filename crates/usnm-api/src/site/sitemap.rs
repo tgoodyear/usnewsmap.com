@@ -1124,6 +1124,8 @@ mod tests {
         .unwrap();
         assert!(html.contains("51 matching newspaper pages in total."));
         assert!(html.contains("href=\"https://usnewsmap.com/search/cobalt-jubilee\""));
+        assert!(html.contains(r#"<div id="root"></div><div id="search-landing">"#));
+        assert!(!html.contains(r#"class="visually-hidden" inert"#));
         let filtered = crate::app(st.clone())
             .oneshot(
                 Request::builder()
