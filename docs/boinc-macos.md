@@ -85,6 +85,39 @@ a success; its validation shows under **Tasks** on your account page. On an
 Apple Silicon Mac the Event Log also lists the GPU at startup; without that
 line the Mac gets CPU work only.
 
+### GPU work runs, but downloaded CPU quality tasks never start
+
+Check `projects/boinc.usnewsmap.com/app_config.xml` in BOINC's existing data
+directory. A `project_max_concurrent` of `1` applies to **all** project apps:
+one Qwen task can indefinitely prevent CPU quality work from starting.
+The helper does not create or remove this project-specific limit.
+
+If you intend to allow one Qwen task alongside one quality task, back up the
+file first. An otherwise empty configuration can use:
+
+```xml
+<app_config>
+  <project_max_concurrent>2</project_max_concurrent>
+  <app>
+    <name>usnm_qwen</name>
+    <max_concurrent>1</max_concurrent>
+  </app>
+  <app>
+    <name>usnm_quality</name>
+    <max_concurrent>1</max_concurrent>
+  </app>
+</app_config>
+```
+
+Do not overwrite other app settings or raise an intentional GPU limit.
+Reload configuration through BOINC's **Read config files** command
+(`boinccmd --read_cc_config` with local RPC authentication), without restarting
+or aborting tasks. Check the Event Log for configuration errors and the Tasks
+view for actual CPU execution alongside at most one Qwen task. Existing CPU,
+memory, battery and activity preferences still apply; this does not guarantee
+enough resources or available work. Roll back by restoring the backup and
+reading configuration again, not by resetting the project.
+
 ## 5. Pause, stop or leave
 
 - **Pause:** Manager's **Activity** menu, or the project's **Suspend** button.
