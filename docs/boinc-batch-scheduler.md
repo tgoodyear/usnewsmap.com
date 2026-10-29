@@ -175,6 +175,16 @@ those are configuration, so turning them on makes a new plan.
 
 ### On-prem claim, collect and export (#967)
 
+Journal metadata uses an account-bound snapshot under the controller's private
+state directory. Every read still lists the complete current blob names and
+ETags. An identical snapshot can reuse validated disk records across ordinary
+fresh-process ticks; any added, removed or changed journal invalidates it.
+Downloads invalidate the durable marker before modifying files and must match
+a second complete ETag inventory before publishing a reusable snapshot. A
+matching snapshot with missing, malformed or misidentified local records fails
+closed; recorded content digests also reject changed local bytes. The cache is derived metadata, never an authoritative claim or queue
+acknowledgement; do not restore controller state from it.
+
 By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff claim`,
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host

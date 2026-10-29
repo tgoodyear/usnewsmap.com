@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -370,7 +371,7 @@ class SchedulerTests(unittest.TestCase):
                 returned[0]["stage"] = "must-not-poison-cache"
                 self.assertEqual(transport.records(), rows)
                 self.assertEqual(run.call_count, 1)
-                self.assertEqual(az.call_count, 3)
+                self.assertEqual(az.call_count, 4)
                 self.assertFalse(stale.exists())
                 listing[0]["etag"] = '"version-2"'
                 rows[0]["stage"] = "published"
@@ -390,6 +391,16 @@ class SchedulerTests(unittest.TestCase):
                     patch.object(transport, "run", side_effect=download) as run:
                 self.assertEqual(transport.records(), rows)
                 self.assertEqual(run.call_count, 1)
+            restarted = batch.Transport(self.config, directory)
+            with patch.object(restarted, "az", return_value=json.dumps(listing)) as az, \
+                    patch.object(restarted, "run", side_effect=AssertionError("unchanged restart downloaded")):
+                self.assertEqual(restarted.records(), rows)
+                az.assert_called_once()
+            foreign = batch.Transport({**self.config, "account": "otheraccount"}, directory)
+            with patch.object(foreign, "az", return_value=json.dumps(listing)), \
+                    patch.object(foreign, "run", side_effect=download) as run:
+                self.assertEqual(foreign.records(), rows)
+                run.assert_called_once()
             listing[0]["etag"] = None
             with patch.object(transport, "az", return_value=json.dumps(listing)), \
                     patch.object(transport, "run", side_effect=AssertionError("invalid inventory")), \
@@ -398,6 +409,69 @@ class SchedulerTests(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(directory)
+
+    def test_journal_download_race_never_persists_a_reusable_snapshot(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        transport = batch.Transport(self.config, directory)
+        row = record("page-1", 1)
+        name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
+        first = [{"name": name, "etag": '"version-1"'}]
+        changed = [{"name": name, "etag": '"version-2"'}]
+
+        def download(argv, label):
+            path = directory / "journal-cache" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(row))
+            return ""
+
+        with patch.object(transport, "az", side_effect=[json.dumps(first), json.dumps(changed)]), \
+                patch.object(transport, "run", side_effect=download):
+            with self.assertRaisesRegex(ValueError, "ETags changed during download"):
+                transport.records()
+        self.assertFalse((directory / "journal-snapshot.json").exists())
+        restarted = batch.Transport(self.config, directory)
+        with patch.object(restarted, "az", return_value=json.dumps(changed)), \
+                patch.object(restarted, "run", side_effect=download) as run:
+            self.assertEqual(restarted.records(), [row])
+            run.assert_called_once()
+        changed[0]["etag"] = '"version-3"'
+        with patch.object(restarted, "az", return_value=json.dumps(changed)), \
+                patch.object(restarted, "run", side_effect=RuntimeError("download interrupted")):
+            with self.assertRaisesRegex(RuntimeError, "download interrupted"):
+                restarted.records()
+        self.assertFalse((directory / "journal-snapshot.json").exists())
+        with patch.object(transport, "az", return_value=json.dumps(changed)), \
+                patch.object(transport, "run", side_effect=download) as run:
+            self.assertEqual(transport.records(), [row])
+            run.assert_called_once()
+
+    def test_matching_journal_snapshot_with_changed_local_identity_fails_closed(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        row = record("page-1", 1)
+        name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
+        snapshot = {name: '"version-1"'}
+        path = directory / "journal-cache" / name
+        path.parent.mkdir(parents=True)
+        row["job"]["id"] = "f" * 64
+        path.write_text(json.dumps(row))
+        batch.save(directory / "journal-snapshot.json", {
+            "schema_version": 1, "account": self.config["account"],
+            "container": "boinc-handoff", "entries": snapshot,
+            "files": {name: hashlib.sha256(path.read_bytes()).hexdigest()},
+        })
+        transport = batch.Transport(self.config, directory)
+        with patch.object(transport, "az", return_value=json.dumps([
+            {"name": name, "etag": snapshot[name]},
+        ])), patch.object(transport, "run", side_effect=AssertionError("must fail closed")):
+            with self.assertRaisesRegex(ValueError, "filename/identity mismatch"):
+                transport.records()
+        row["job"]["id"] = name.split("/")[2]
+        path.write_text(json.dumps(row))
+        with patch.object(transport, "az", return_value=json.dumps([
+            {"name": name, "etag": snapshot[name]},
+        ])), patch.object(transport, "run", side_effect=AssertionError("must fail closed")):
+            with self.assertRaisesRegex(ValueError, "content digest mismatch"):
+                transport.records()
 
     def test_stale_inventory(self):
         with self.assertRaisesRegex(ValueError, "fresh"):

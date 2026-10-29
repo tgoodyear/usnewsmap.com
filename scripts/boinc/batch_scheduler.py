@@ -731,8 +731,7 @@ class Transport:
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
-    @timed("journals")
-    def records(self):
+    def journal_inventory(self):
         listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
                                      "--query", "[].{name:name,etag:properties.etag}", "-o", "json"))
         require(isinstance(listing, list), "invalid dispatch inventory")
@@ -750,6 +749,12 @@ class Transport:
         names = list(snapshot)
         require(len(names) <= MAX_JOBS and len(set(names)) == len(names),
                 "dispatch inventory limit/consistency failure; reconcile drained journals")
+        return snapshot
+
+    @timed("journals")
+    def records(self):
+        snapshot = self.journal_inventory()
+        names = list(snapshot)
         # Re-list every time, but avoid the second full download within a tick
         # when every journal identity and ETag is unchanged.
         if self._journal_snapshot == snapshot:
@@ -757,27 +762,57 @@ class Transport:
         self._journal_snapshot = None
         self._journal_records = None
         cache = self.directory / "journal-cache"
-        if cache.exists():
-            shutil.rmtree(cache)
-        cache.mkdir(mode=0o700)
-        if names:
-            pattern = "dispatch/jobs/" + "[0-9a-f]" * 64 + "/record.json"
-            self.run([
-                "az", "storage", "blob", "download-batch", "--source", "boinc-handoff",
-                "--destination", str(cache), "--pattern", pattern, "--overwrite", "true",
-                "--account-name", self.config["account"], "--auth-mode", "login",
-                "--only-show-errors", "-o", "none",
-            ], "batch journal inventory")
+        manifest = self.directory / "journal-snapshot.json"
+        identity = {"schema_version": 1, "account": self.config["account"],
+                    "container": "boinc-handoff", "entries": snapshot}
+        require(not cache.is_symlink() and not manifest.is_symlink(), "invalid journal cache path")
+        reusable = False
+        if manifest.exists():
+            require(manifest.stat().st_size <= MAX_JOBS * 512, "oversized journal cache manifest")
+            stored = json.loads(manifest.read_text())
+            require(isinstance(stored, dict), "invalid journal cache manifest")
+            reusable = {key: value for key, value in stored.items() if key != "files"} == identity
+            if reusable:
+                require(isinstance(stored.get("files"), dict) and set(stored["files"]) == set(names),
+                        "invalid journal cache content inventory")
+        if not reusable:
+            if manifest.exists():
+                manifest.unlink()
+                fd = os.open(self.directory, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            if cache.exists():
+                shutil.rmtree(cache)
+            cache.mkdir(mode=0o700)
+            if names:
+                pattern = "dispatch/jobs/" + "[0-9a-f]" * 64 + "/record.json"
+                self.run([
+                    "az", "storage", "blob", "download-batch", "--source", "boinc-handoff",
+                    "--destination", str(cache), "--pattern", pattern, "--overwrite", "true",
+                    "--account-name", self.config["account"], "--auth-mode", "login",
+                    "--only-show-errors", "-o", "none",
+                ], "batch journal inventory")
         actual = {str(path.relative_to(cache)) for path in cache.rglob("*") if path.is_file()}
         require(actual == set(names), "journal inventory changed during download; retry under the owner lock")
         records = []
+        checksums = {}
         for name in sorted(names):
             path = cache / name
             require(not path.is_symlink() and path.stat().st_size <= 131072,
                     "invalid/oversized journal metadata")
-            record = json.loads(path.read_text())
+            data = path.read_bytes()
+            checksums[name] = hashlib.sha256(data).hexdigest()
+            if reusable:
+                require(checksums[name] == stored["files"][name], "journal cache content digest mismatch")
+            record = json.loads(data)
             require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
             records.append(record)
+        if not reusable:
+            require(self.journal_inventory() == snapshot,
+                    "journal ETags changed during download; retry under the owner lock")
+            save(manifest, {**identity, "files": checksums})
         self._journal_snapshot = snapshot
         self._journal_records = copy.deepcopy(records)
         return records
