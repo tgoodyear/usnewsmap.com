@@ -106,62 +106,96 @@ def page_stats(successes, pages, name):
 
 def crop_stats(rows, name):
     field = "vlm_reference_chars" if name == "cer_vs_vlm" else "vlm_reference_words"
-    present = [row for row in rows if row["vlm_text"] is not None]
+    verified = [row for row in rows if row["_provenance_verified"]]
+    present = [row for row in verified if row["vlm_text"] is not None]
     return {
         **stats([row for row in present if (row.get(field) or 0) > 0], name),
-        "missing_reference_rows": len(rows) - len(present),
+        "unverified_provenance_rows": len(rows) - len(verified),
+        "missing_reference_rows": sum(row.get("vlm_reading_present") is False for row in verified),
+        "ambiguous_null_reference_rows": sum(
+            row["vlm_text"] is None and row.get("vlm_reading_present") is None for row in verified
+        ),
         "empty_reference_rows": sum(row.get(field) == 0 for row in present),
         "unknown_reference_rows": sum(row.get(field) is None for row in present),
     }
 
 
+def page_summary(ids, reader, pages):
+    outcomes = collections.Counter()
+    successes = []
+    present = []
+    source_ids = collections.defaultdict(set)
+    for doc in sorted(ids):
+        row = pages.get((doc, reader))
+        outcome = row["outcome"] if row is not None else "unknown_no_reader_row"
+        outcomes[outcome] += 1
+        if row is not None:
+            present.append(row)
+            source_ids[row.get("source")].add(doc)
+        if outcome == "ok":
+            successes.append((doc, row))
+    result = {
+        "outcomes": dict(sorted(outcomes.items())),
+        "reported_source": next(iter(source_ids)) if len(source_ids) == 1 else None,
+        "unknown_source_rows": sum(row.get("source") is None for row in present),
+        "reported_job_ids": sorted({
+            row["job_id"] for row in present if row.get("job_id") is not None
+        }),
+        "reported_reader_row_languages": dict(sorted(collections.Counter(
+            row.get("language") or "unreported" for row in present
+        ).items())),
+        "metrics_on_successes": {
+            name: page_stats(successes, pages, name) for name in PAGE_METRICS
+        } if len(source_ids) <= 1 else None,
+    }
+    if len(source_ids) > 1:
+        result["by_source"] = [
+            page_summary(source_ids[source], reader, pages)
+            for source in sorted(source_ids, key=lambda source: source or "")
+        ]
+    return result
+
+
+def crop_summary(selected, observed_crops):
+    sources = {row.get("source") for row in selected}
+    result = {
+        "observed_rows": len(selected),
+        "missing_rows_for_observed_crops": observed_crops - len(selected),
+        "unverified_provenance_rows": sum(not row["_provenance_verified"] for row in selected),
+        "missing_reference_rows": sum(row.get("vlm_reading_present") is False for row in selected),
+        "ambiguous_null_reference_rows": sum(
+            row["vlm_text"] is None and row.get("vlm_reading_present") is None for row in selected
+        ),
+        "empty_reference_rows": sum(
+            row["vlm_text"] is not None and not row["vlm_text"].strip() for row in selected
+        ),
+        "reported_source": next(iter(sources)) if len(sources) == 1 else None,
+        "reported_job_ids": sorted({
+            row["job_id"] for row in selected if row.get("job_id") is not None
+        }),
+        "metrics_with_nonempty_reference": {
+            name: crop_stats(selected, name) for name in CROP_METRICS
+        } if len(sources) <= 1 else None,
+    }
+    if len(sources) > 1:
+        groups = [
+            [row for row in selected if row.get("source") == source]
+            for source in sorted(sources, key=lambda source: source or "")
+        ]
+        result["by_source"] = [crop_summary(rows, len(rows)) for rows in groups]
+    return result
+
+
 def summarize(ids, readers, crop_readers, pages, crops, max_crops_per_page):
-    page_report = {}
+    page_report = {reader: page_summary(ids, reader, pages) for reader in readers}
     crop_report = {}
     crop_keys = {(doc, crop) for doc, crop, _ in crops if doc in ids}
-    for reader in readers:
-        outcomes = collections.Counter()
-        successes = []
-        present = []
-        for doc in sorted(ids):
-            row = pages.get((doc, reader))
-            outcome = row["outcome"] if row is not None else "unknown_no_reader_row"
-            outcomes[outcome] += 1
-            if row is not None:
-                present.append(row)
-            if outcome == "ok":
-                successes.append((doc, row))
-        page_report[reader] = {
-            "outcomes": dict(sorted(outcomes.items())),
-            "reported_source": present[0].get("source") if present else None,
-            "unknown_source_rows": sum(row.get("source") is None for row in present),
-            "reported_job_ids": sorted({
-                row["job_id"] for row in present if row.get("job_id") is not None
-            }),
-            "reported_reader_row_languages": dict(sorted(collections.Counter(
-                row.get("language") or "unreported" for row in present
-            ).items())),
-            "metrics_on_successes": {
-                name: page_stats(successes, pages, name) for name in PAGE_METRICS
-            },
-        }
     for reader in crop_readers:
         selected = [
             row for (doc, _, rd), row in crops.items()
             if doc in ids and rd == reader
         ]
-        crop_report[reader] = {
-            "observed_rows": len(selected),
-            "missing_rows_for_observed_crops": len(crop_keys) - len(selected),
-            "missing_reference_rows": sum(row["vlm_text"] is None for row in selected),
-            "empty_reference_rows": sum(
-                row["vlm_text"] is not None and not row["vlm_text"].strip()
-                for row in selected
-            ),
-            "metrics_with_nonempty_reference": {
-                name: crop_stats(selected, name) for name in CROP_METRICS
-            },
-        }
+        crop_report[reader] = crop_summary(selected, len(crop_keys))
     return {
         "pages": len(ids),
         "crop_upper_bound": len(ids) * max_crops_per_page,
@@ -205,7 +239,7 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page, crop_only_
     unreported_models = 0
     ignored_crop_rows = collections.Counter()
     page_jobs = {}
-    reader_sources = collections.defaultdict(set)
+    crop_jobs = {}
     for rows, dest, metrics, is_crop in (
         (page_rows, pages, PAGE_METRICS, False),
         (crop_rows, crops, CROP_METRICS, True),
@@ -222,6 +256,12 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page, crop_only_
                 raise ValueError(f"{doc}: row outside the declared sample/readers")
             for name in metrics:
                 metric(row, name)
+            job = row.get("job_id")
+            if job is not None and (not isinstance(job, str) or not job.strip()):
+                raise ValueError(f"{doc}/{reader}: invalid job_id")
+            source = row.get("source")
+            if source is not None and (not isinstance(source, str) or not source.strip()):
+                raise ValueError(f"{doc}/{reader}: invalid reader source")
             if is_crop:
                 crop = row.get("crop_id")
                 if not isinstance(crop, str) or not crop:
@@ -231,6 +271,13 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page, crop_only_
                 text = row["vlm_text"]
                 if text is not None and not isinstance(text, str):
                     raise ValueError(f"{doc}/{crop}: vlm_text must be null or a string")
+                reading_present = row.get("vlm_reading_present")
+                if reading_present is not None and not isinstance(reading_present, bool):
+                    raise ValueError(f"{doc}/{crop}: invalid vlm_reading_present")
+                if (reading_present is True and text is None) or (
+                    reading_present is False and text is not None
+                ):
+                    raise ValueError(f"{doc}/{crop}: inconsistent VLM reading presence")
                 model = row.get("vlm_model")
                 if model is not None and (not isinstance(model, str) or not model.strip()):
                     raise ValueError(f"{doc}/{crop}: invalid vlm_model")
@@ -253,32 +300,39 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page, crop_only_
                 stratum = row.get("stratum")
                 if not isinstance(stratum, str) or not stratum.strip():
                     raise ValueError(f"{doc}/{crop}: missing exported crop stratum")
-                reference = (rectangle, stratum, text, model, counts)
+                reference = (rectangle, stratum, text, model, counts, reading_present)
                 previous = references.setdefault((doc, crop), reference)
                 if previous != reference:
                     raise ValueError(f"{doc}/{crop}: inconsistent VLM reference or crop geometry/stratum")
                 if model is not None:
                     models.add(model)
-                    if text is not None and any((count or 0) > 0 for count in counts):
-                        comparison_models.add(model)
                 else:
                     unreported_models += 1
+                if job is not None and crop_jobs.setdefault(doc, job) != job:
+                    raise ValueError(f"{doc}: conflicting crop job IDs")
+                page_job = page_jobs.get(doc)
+                if job is not None and page_job is not None and job != page_job:
+                    raise ValueError(f"{doc}: crop job ID differs from page job ID")
+                page_row = pages.get((doc, reader))
+                page_source = page_row.get("source") if page_row is not None else None
+                if source is not None and page_source is not None and source != page_source:
+                    raise ValueError(f"{doc}/{reader}: crop source differs from page source")
+                row = dict(row, _provenance_verified=(
+                    job is not None and job == page_job and source is not None
+                    and (page_row is None or source == page_source)
+                ))
+                if (
+                    reader != "vlm" and row["_provenance_verified"] and model is not None
+                    and text is not None and any((count or 0) > 0 for count in counts)
+                ):
+                    comparison_models.add(model)
                 key = (doc, crop, reader)
             else:
                 outcome = row.get("outcome")
                 if outcome not in ("ok", "timeout", "failed", "unit_error"):
                     raise ValueError(f"{doc}/{reader}: invalid reported reader-row outcome")
-                job = row.get("job_id")
-                if job is not None and (not isinstance(job, str) or not job.strip()):
-                    raise ValueError(f"{doc}/{reader}: invalid job_id")
                 if page_jobs.setdefault(doc, job) != job:
                     raise ValueError(f"{doc}: conflicting page job IDs")
-                source = row.get("source")
-                if source is not None and (not isinstance(source, str) or not source.strip()):
-                    raise ValueError(f"{doc}/{reader}: invalid reader source")
-                reader_sources[reader].add(source)
-                if len(reader_sources[reader]) > 1:
-                    raise ValueError(f"{reader}: conflicting reader sources")
                 for count_field in ("chars", "words"):
                     count = row.get(count_field)
                     if count is not None and (
@@ -314,6 +368,9 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page, crop_only_
             "LoC comparisons exclude empty or unknown reference counts; timings are retained.",
             "loc-hist self-scores are excluded when a distinct loc reference is present.",
             "Historical crop exports without normalized reference counts have unknown comparison denominators.",
+            "Crop comparisons require exported job/source provenance bound to known page jobs; legacy or uncorroborated rows are unverified.",
+            "Different reported sources have separate score groups, not pooled metrics; Surya job IDs are not assumed to identify a shared model configuration.",
+            "Legacy null VLM text without a reading-presence flag is ambiguous, not a known missing reading.",
             "Unselected crop-only Surya rows are counted separately, not treated as page readers.",
             "Stratum summaries are unweighted; the frozen sample controls representativeness.",
             "The sample declares German pages; reported scorer languages are retained separately.",

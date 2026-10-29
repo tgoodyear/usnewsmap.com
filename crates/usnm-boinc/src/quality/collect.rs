@@ -101,6 +101,8 @@ pub struct Summary {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CropRow {
     pub doc_id: String,
+    pub job_id: Option<String>,
+    pub source: Option<String>,
     pub crop_id: String,
     pub stratum: String,
     pub x0: u32,
@@ -113,6 +115,8 @@ pub struct CropRow {
     pub vlm_text: Option<String>,
     pub vlm_model: Option<String>,
     pub vlm_device: Option<String>,
+    /// None in older exports, whose null text may mean missing or completed empty.
+    pub vlm_reading_present: Option<bool>,
     pub vlm_reference_chars: Option<usize>,
     pub vlm_reference_words: Option<usize>,
     /// The reader as the hypothesis against the vision-language reading.
@@ -130,6 +134,7 @@ pub struct CropRow {
 /// What the crop join needs for one page.
 pub struct CropInputs<'a> {
     pub doc_id: &'a str,
+    pub job_id: &'a str,
     /// LoC's ALTO in page pixels.
     pub loc: &'a Page,
     /// Our ALTO in page pixels, when a reader is marked `alto`.
@@ -160,10 +165,9 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
         .unwrap_or_default();
     let mut rows = Vec::new();
     for crop in inputs.crops {
-        let vlm = readings
-            .get(crop.id.as_str())
-            .filter(|r| !r.text.trim().is_empty());
-        let reference_counts = vlm.map(|v| {
+        let reading = readings.get(crop.id.as_str());
+        let vlm = reading.filter(|r| !r.text.trim().is_empty());
+        let reference_counts = reading.map(|v| {
             let normalized = usnm_ocr_quality::text::normalize(&v.text, false);
             (
                 normalized.chars().count(),
@@ -234,6 +238,17 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
         };
         let base = |reader: String| CropRow {
             doc_id: inputs.doc_id.to_owned(),
+            job_id: Some(inputs.job_id.to_owned()),
+            source: match reader.as_str() {
+                VLM => inputs.readings.map(|r| format!("qwen:{}", r.job_id)),
+                SURYA => surya.map(|c| format!("surya:whole:{}", c.job_id)),
+                _ => inputs
+                    .texts
+                    .readers
+                    .iter()
+                    .find(|r| r.name == reader)
+                    .map(|r| r.source.clone()),
+            },
             crop_id: crop.id.clone(),
             stratum: crop.stratum.clone(),
             x0: crop.rect[0],
@@ -242,9 +257,10 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             y1: crop.rect[3],
             reader,
             text: None,
-            vlm_text: vlm.map(|v| v.text.clone()),
+            vlm_text: reading.map(|v| v.text.clone()),
             vlm_model: inputs.readings.and_then(|r| r.model.clone()),
             vlm_device: inputs.readings.map(|r| r.device.clone()),
+            vlm_reading_present: Some(reading.is_some()),
             vlm_reference_chars: reference_counts.map(|(chars, _)| chars),
             vlm_reference_words: reference_counts.map(|(_, words)| words),
             cer_vs_vlm: None,
@@ -699,6 +715,24 @@ enum Column {
 /// all integers as `Int64`, others as `Float64`. Field order is the
 /// struct's.
 pub fn to_parquet<T: serde::Serialize>(rows: &[T]) -> anyhow::Result<Vec<u8>> {
+    to_parquet_typed(rows, &[])
+}
+
+fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
+    to_parquet_typed(
+        rows,
+        &[
+            ("vlm_reference_chars", DataType::Int64),
+            ("vlm_reference_words", DataType::Int64),
+            ("vlm_reading_present", DataType::Boolean),
+        ],
+    )
+}
+
+fn to_parquet_typed<T: serde::Serialize>(
+    rows: &[T],
+    types: &[(&str, DataType)],
+) -> anyhow::Result<Vec<u8>> {
     let values: Vec<serde_json::Map<String, serde_json::Value>> = rows
         .iter()
         .map(|r| match serde_json::to_value(r)? {
@@ -713,7 +747,38 @@ pub fn to_parquet<T: serde::Serialize>(rows: &[T]) -> anyhow::Result<Vec<u8>> {
     let mut columns: Vec<(String, Column)> = Vec::new();
     for name in &names {
         let cells: Vec<&serde_json::Value> = values.iter().map(|o| &o[name]).collect();
-        let col = if cells.iter().all(|v| v.is_null() || v.is_string()) {
+        let hint = types.iter().find(|(n, _)| *n == name).map(|(_, t)| t);
+        let col = if hint == Some(&DataType::Int64) {
+            Column::I64(
+                cells
+                    .iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            Ok(None)
+                        } else {
+                            v.as_i64()
+                                .map(Some)
+                                .with_context(|| format!("column {name} must fit Int64"))
+                        }
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            )
+        } else if hint == Some(&DataType::Boolean) {
+            Column::Bool(
+                cells
+                    .iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            Ok(None)
+                        } else {
+                            v.as_bool()
+                                .map(Some)
+                                .with_context(|| format!("column {name} must be Boolean"))
+                        }
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            )
+        } else if cells.iter().all(|v| v.is_null() || v.is_string()) {
             Column::Str(
                 cells
                     .iter()
@@ -1197,6 +1262,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
                 crop_table.extend(crop_rows(&CropInputs {
                     doc_id: &job.doc_id,
+                    job_id: &job.id,
                     loc: &loc,
                     ours: ours.as_ref(),
                     texts: &texts,
@@ -1277,6 +1343,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     let readers: Vec<String> = bp.readers.iter().map(|r| r.name.clone()).collect();
                     crop_table.extend(crop_rows(&CropInputs {
                         doc_id: &bp.doc_id,
+                        job_id: &job.id,
                         loc: &loc,
                         ours: ours.as_ref(),
                         texts: &texts,
@@ -1333,7 +1400,7 @@ pub fn files(
         ),
         (
             "crops.parquet".into(),
-            to_parquet(&c.crops)?,
+            crop_parquet(&c.crops)?,
             "application/vnd.apache.parquet",
         ),
         (
@@ -1448,6 +1515,7 @@ pub(super) mod tests {
         let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
         let rows = crop_rows(&CropInputs {
             doc_id: "p1",
+            job_id: &job.id,
             loc: &loc,
             ours: None,
             texts: &l.texts,
@@ -1459,6 +1527,15 @@ pub(super) mod tests {
         // Three readers plus the vision-language row per crop.
         assert_eq!(rows.len(), crops.len() * 4);
         let loc_row = rows.iter().find(|r| r.reader == "loc").unwrap();
+        assert_eq!(loc_row.job_id.as_deref(), Some(job.id.as_str()));
+        assert_eq!(
+            loc_row.source.as_deref(),
+            l.texts
+                .readers
+                .iter()
+                .find(|r| r.name == "loc")
+                .map(|r| r.source.as_str())
+        );
         assert!(loc_row.text.as_deref().is_some_and(|t| !t.is_empty()));
         assert!(loc_row.cer_vs_vlm.is_some());
         assert!(loc_row.vlm_reference_chars.is_some_and(|n| n > 0));
@@ -1475,6 +1552,7 @@ pub(super) mod tests {
         // Without readings there are reader rows and nothing to compare.
         let rows = crop_rows(&CropInputs {
             doc_id: "p1",
+            job_id: &job.id,
             loc: &loc,
             ours: Some(&loc),
             texts: &l.texts,
@@ -1485,6 +1563,25 @@ pub(super) mod tests {
         });
         assert_eq!(rows.len(), crops.len() * 3);
         assert!(rows.iter().all(|r| r.vlm_text.is_none()));
+        assert!(rows.iter().all(|r| r.vlm_reading_present == Some(false)));
+        let parquet = crop_parquet(&rows).unwrap();
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+            bytes::Bytes::from(parquet),
+        )
+        .unwrap();
+        for name in ["vlm_reference_chars", "vlm_reference_words"] {
+            assert_eq!(
+                reader.schema().field_with_name(name).unwrap().data_type(),
+                &DataType::Int64
+            );
+        }
+        let batches: Vec<_> = reader.build().unwrap().map(Result::unwrap).collect();
+        for batch in batches {
+            for name in ["vlm_reference_chars", "vlm_reference_words"] {
+                let column = batch.column_by_name(name).unwrap();
+                assert_eq!(column.null_count(), batch.num_rows());
+            }
+        }
         assert!(rows
             .iter()
             .all(|r| r.vlm_reference_chars.is_none() && r.vlm_reference_words.is_none()));
@@ -1506,6 +1603,7 @@ pub(super) mod tests {
         );
         let rows = crop_rows(&CropInputs {
             doc_id: "p1",
+            job_id: &job.id,
             loc: &loc,
             ours: None,
             texts: &l.texts,
@@ -1521,6 +1619,7 @@ pub(super) mod tests {
         other.get_mut(&crops[0].id).unwrap().rect[0] += 1;
         let misaligned = crop_rows(&CropInputs {
             doc_id: "p1",
+            job_id: &job.id,
             loc: &loc,
             ours: None,
             texts: &l.texts,
@@ -1532,6 +1631,8 @@ pub(super) mod tests {
         assert_eq!(misaligned.len(), crops.len() * 4);
         assert!(misaligned.iter().all(|r| r.reader != SURYA));
         let s_row = rows.iter().find(|r| r.reader == SURYA).unwrap();
+        assert_eq!(s_row.job_id.as_deref(), Some(job.id.as_str()));
+        assert_eq!(s_row.source.as_deref(), Some("surya:whole:j"));
         assert_eq!(s_row.crop_id, crops[0].id);
         assert!(s_row.text.as_deref().is_some_and(|t| t.ends_with(" extra")));
         assert!(s_row.cer_vs_vlm.is_some_and(|c| c > 0.0));
@@ -1556,7 +1657,13 @@ pub(super) mod tests {
         let loc = parse_alto(&l.alto, f64::from(w), f64::from(h)).unwrap();
         let crops = crate::qwen::stage::cut(&l.page, &l.alto, job.crop_seed, job.k_crops).unwrap();
         let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
-        for (text, chars, words) in [("-\n", 0, 0), ("...", 3, 0), ("The council", 11, 2)] {
+        for (text, chars, words) in [
+            ("", 0, 0),
+            (" \n\t ", 0, 0),
+            ("-\n", 0, 0),
+            ("...", 3, 0),
+            ("The council", 11, 2),
+        ] {
             let readings = Readings {
                 v: qwen::VERSION,
                 job_id: job.id.clone(),
@@ -1577,6 +1684,7 @@ pub(super) mod tests {
             };
             let rows = crop_rows(&CropInputs {
                 doc_id: "p1",
+                job_id: &job.id,
                 loc: &loc,
                 ours: None,
                 texts: &l.texts,
@@ -1589,18 +1697,30 @@ pub(super) mod tests {
             assert!(rows.iter().all(|r| {
                 r.vlm_reference_chars == Some(chars) && r.vlm_reference_words == Some(words)
             }));
+            assert!(rows.iter().all(|r| {
+                r.vlm_text.as_deref() == Some(text) && r.vlm_reading_present == Some(true)
+            }));
+            if text.trim().is_empty() {
+                assert!(rows
+                    .iter()
+                    .all(|r| r.cer_vs_vlm.is_none() && r.dice_vs_vlm.is_none()));
+                assert!(rows.iter().all(|r| r.reader != VLM && r.hat_readers == 1));
+            }
             let mut legacy = serde_json::to_value(&rows[0]).unwrap();
-            legacy
-                .as_object_mut()
-                .unwrap()
-                .remove("vlm_reference_chars");
-            legacy
-                .as_object_mut()
-                .unwrap()
-                .remove("vlm_reference_words");
+            for field in [
+                "job_id",
+                "source",
+                "vlm_reading_present",
+                "vlm_reference_chars",
+                "vlm_reference_words",
+            ] {
+                legacy.as_object_mut().unwrap().remove(field);
+            }
             let legacy: CropRow = serde_json::from_value(legacy).unwrap();
             assert!(legacy.vlm_reference_chars.is_none() && legacy.vlm_reference_words.is_none());
-            let parquet = to_parquet(&rows).unwrap();
+            assert!(legacy.job_id.is_none() && legacy.source.is_none());
+            assert!(legacy.vlm_reading_present.is_none());
+            let parquet = crop_parquet(&rows).unwrap();
             let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
                 bytes::Bytes::from(parquet),
             )

@@ -40,8 +40,12 @@ human CER or calibrated accuracy**. Crop scores retain the collector's
 normalization; they are not the old `crops.py` script's separately normalized
 scores. Distinct comparator model identifiers with comparable nonempty references
 cannot be pooled; attempted models without usable references remain metadata.
-Conflicting reported sources for one page-reader name are rejected, including
-different Tesseract profiles hidden behind `ours-tesseract`. Source identities
+Different reported sources for one reader have separate `by_source` summaries,
+with null pooled metrics, including different Tesseract profiles hidden behind
+`ours-tesseract`. Full per-page Surya sources contain page-specific job IDs;
+these are retained, not rejected or stripped to invent a shared model
+configuration. Cross-job pooling needs independently verified stable configuration
+identities that these exports do not provide. Source identities
 and known job IDs remain in each reader summary; conflicting page job IDs are
 rejected before joining LoC reference rows. Both job IDs may be absent in older
 exports, but one known and one unknown are not treated as the same job. Identifiers
@@ -50,11 +54,20 @@ such as `qwen3-vl-8b-q4km` are metadata, **not immutable model-file digests**.
 Absent reader rows have **unknown outcomes**, not inferred failures or timeouts:
 the collector emits no reader rows for failed, timed-out or given-up units.
 Keep an independent unit-outcome inventory to distinguish these from pending work.
-Reported reader-row outcomes, missing metrics, null VLM references and empty
-readings remain explicit. `k_crops` is only an upper bound: unused crop capacity
+Reported reader-row outcomes, missing metrics, absent VLM references and empty
+readings remain explicit. The collector preserves completed whitespace-only
+readings and exports `vlm_reading_present`; they are not used in scoring or hats.
+Legacy null text without this flag is **ambiguous**, not a known missing reading.
+`k_crops` is only an upper bound: unused crop capacity
 is **not missing work**, and actual unobserved staged crops remain unknown without
 the staging manifests. Crop joins require identical exported rectangles, strata
 and VLM reference metadata. An absent crop does not identify a timeout.
+Native crop rows also export the quality `job_id` and reader `source`.
+Known crop jobs and sources must match the corresponding page metadata.
+Crop-only readers retain their own source and bind to the page's known quality
+job. Missing crop provenance, unknown page jobs, or absent page rows are
+**unverified** and excluded from crop score pools, not silently upgraded using
+another row's metadata. Different crop sources have separate score groups too.
 Means and medians use only successful pages with nonempty, known LoC reference
 counts, or crops with known nonempty normalized VLM references. Page CER/WER
 require normalized reference characters; page Dice requires reference words.
@@ -64,6 +77,7 @@ Crop CER requires `vlm_reference_chars` and crop Dice `vlm_reference_words`,
 exported by the native collector using its canonical normalization and Dice
 word bags. Older exports without these counts have **unknown denominators**;
 raw non-whitespace text is not proof of a nonempty normalized reference.
+The nullable count columns retain an Int64 Parquet schema even without readings.
 The derived row-cache format is advanced without deleting previous parts.
 Empty/unknown reference exclusions and
 observed/missing metric denominators are separate. Summaries are unweighted. Reader

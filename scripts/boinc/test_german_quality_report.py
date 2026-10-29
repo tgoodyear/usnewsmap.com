@@ -38,6 +38,11 @@ class Report(unittest.TestCase):
              "vlm_reference_chars": 0, "vlm_reference_words": 0,
              "vlm_text": "", "vlm_model": "model-a", "cer_vs_vlm": 0.0},
         ]
+        for row in [*self.pages, *self.crops]:
+            row["job_id"] = "job-a" if row["doc_id"] == DOC else "job-b"
+            row["source"] = "tesseract;profile=frak2021" if row["reader"] == "ours" else "loc-alto"
+        for row in self.crops:
+            row["vlm_reading_present"] = True
 
     def run_report(self, readers=("ours", "loc")):
         return REPORT.report(self.sample, self.pages, self.crops, readers, 2)
@@ -111,6 +116,7 @@ class Report(unittest.TestCase):
         self.crops[1]["vlm_text"] = None
         self.crops[1]["vlm_model"] = None
         self.crops[1].update(vlm_reference_chars=None, vlm_reference_words=None)
+        self.crops[1]["vlm_reading_present"] = False
         result = self.run_report()["overall"]["crop_readers"]["ours"]
         self.assertEqual(result["missing_reference_rows"], 1)
         self.assertEqual(result["empty_reference_rows"], 0)
@@ -201,8 +207,12 @@ class Report(unittest.TestCase):
     def test_reader_sources_cannot_be_silently_pooled(self):
         self.pages[0]["source"] = "tesseract;profile=frak2021"
         self.pages[1]["source"] = "tesseract;profile=deu_latf"
-        with self.assertRaisesRegex(ValueError, "conflicting reader sources"):
-            self.run_report()
+        row = self.run_report()["overall"]["page_readers"]["ours"]
+        self.assertIsNone(row["metrics_on_successes"])
+        self.assertEqual(
+            {group["reported_source"] for group in row["by_source"]},
+            {"tesseract;profile=frak2021", "tesseract;profile=deu_latf"},
+        )
         self.pages[1]["source"] = self.pages[0]["source"]
         row = self.run_report()["overall"]["page_readers"]["ours"]
         self.assertEqual(row["reported_source"], "tesseract;profile=frak2021")
@@ -216,10 +226,10 @@ class Report(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "conflicting page job IDs"):
                     self.run_report()
         self.pages[2]["job_id"] = "job-a"
-        self.assertEqual(self.run_report()["overall"]["page_readers"]["ours"]["reported_job_ids"], ["job-a"])
+        self.assertEqual(self.run_report()["overall"]["page_readers"]["ours"]["reported_job_ids"], ["job-a", "job-b"])
 
     def test_surya_crop_only_rows_do_not_create_expected_page_readers(self):
-        self.crops.append(dict(self.crops[0], reader="surya"))
+        self.crops.append(dict(self.crops[0], reader="surya", source="surya:whole:job-s"))
         result = self.run_report()
         self.assertEqual(result["ignored_unselected_crop_rows"], {"surya": 1})
         self.assertNotIn("surya", result["overall"]["page_readers"])
@@ -233,10 +243,95 @@ class Report(unittest.TestCase):
         for text, count in (("", 0), (None, None)):
             with self.subTest(text=text):
                 self.crops[1].update(vlm_text=text, vlm_model="model-b",
-                                     vlm_reference_chars=count, vlm_reference_words=count)
+                                     vlm_reference_chars=count, vlm_reference_words=count,
+                                     vlm_reading_present=text is not None)
                 result = self.run_report()
                 self.assertEqual(result["reported_vlm_models"], ["model-a", "model-b"])
                 self.assertEqual(result["compared_vlm_models"], ["model-a"])
+
+    def test_multi_page_surya_jobs_keep_full_sources_without_assuming_a_shared_profile(self):
+        self.crops = []
+        for index, row in enumerate(self.pages[:2]):
+            row.update(reader="ours-surya", outcome="ok", source=f"surya:whole:{index:064x}")
+        self.pages.append(dict(self.pages[2], doc_id=OTHER, job_id="job-b"))
+        result = self.run_report(("ours-surya", "loc"))
+        reader = result["overall"]["page_readers"]["ours-surya"]
+        self.assertIsNone(reader["metrics_on_successes"])
+        self.assertEqual(len(reader["by_source"]), 2)
+        for index, group in enumerate(reader["by_source"]):
+            self.assertEqual(group["reported_source"], f"surya:whole:{index:064x}")
+            self.assertEqual(group["metrics_on_successes"]["cer_vs_loc"]["observed"], 1)
+        self.assertEqual(
+            result["per_page"][0]["page_readers"]["ours-surya"]["reported_source"],
+            "surya:whole:" + "0" * 64,
+        )
+
+    def test_stale_crop_jobs_and_profiles_are_rejected(self):
+        for change, message in (
+            ({"job_id": "stale-job"}, "crop job ID differs"),
+            ({"source": "tesseract;profile=deu_latf"}, "crop source differs"),
+        ):
+            with self.subTest(change=change):
+                crops = [dict(row, **change) for row in self.crops]
+                with self.assertRaisesRegex(ValueError, message):
+                    REPORT.report(self.sample, self.pages, crops, ["ours", "loc"], 2)
+
+    def test_legacy_or_uncorroborated_crop_provenance_never_enters_score_pooling(self):
+        for field in ("job_id", "source", "all-page-rows"):
+            with self.subTest(field=field):
+                pages = copy.deepcopy(self.pages)
+                crops = copy.deepcopy(self.crops)
+                if field == "all-page-rows":
+                    pages = []
+                else:
+                    for row in crops:
+                        row.pop(field)
+                result = REPORT.report(self.sample, pages, crops, ["ours", "loc"], 2)
+                row = result["overall"]["crop_readers"]["ours"]
+                self.assertEqual(row["unverified_provenance_rows"], 2)
+                metric = row["metrics_with_nonempty_reference"]["cer_vs_vlm"]
+                self.assertEqual(metric["observed"], 0)
+                self.assertEqual(metric["unverified_provenance_rows"], 2)
+                self.assertEqual(result["compared_vlm_models"], [])
+
+    def test_crop_only_sources_are_preserved_and_not_pooled_across_job_sources(self):
+        self.crops = [
+            dict(row, reader="surya", source=f"surya:whole:{index:064x}")
+            for index, row in enumerate(self.crops)
+        ]
+        result = REPORT.report(self.sample, self.pages, self.crops, ["ours", "loc"], 2, ["surya"])
+        reader = result["overall"]["crop_readers"]["surya"]
+        self.assertEqual(reader["unverified_provenance_rows"], 0)
+        self.assertIsNone(reader["metrics_with_nonempty_reference"])
+        self.assertEqual(len(reader["by_source"]), 2)
+        self.assertTrue(all(group["reported_source"].startswith("surya:whole:") for group in reader["by_source"]))
+
+    def test_completed_whitespace_missing_and_legacy_null_readings_are_distinct(self):
+        self.crops[1].update(vlm_text=" \n\t ", vlm_reading_present=True)
+        row = self.run_report()["overall"]["crop_readers"]["ours"]
+        self.assertEqual(row["empty_reference_rows"], 1)
+        self.assertEqual(row["missing_reference_rows"], 0)
+        self.assertEqual(row["ambiguous_null_reference_rows"], 0)
+        self.crops[1].update(vlm_text=None, vlm_reference_chars=None,
+                             vlm_reference_words=None, vlm_reading_present=False)
+        row = self.run_report()["overall"]["crop_readers"]["ours"]
+        self.assertEqual(row["missing_reference_rows"], 1)
+        self.crops[1].pop("vlm_reading_present")
+        row = self.run_report()["overall"]["crop_readers"]["ours"]
+        self.assertEqual(row["missing_reference_rows"], 0)
+        self.assertEqual(row["ambiguous_null_reference_rows"], 1)
+        self.assertEqual(
+            row["metrics_with_nonempty_reference"]["cer_vs_vlm"]["ambiguous_null_reference_rows"], 1,
+        )
+
+    def test_inconsistent_reading_presence_is_rejected(self):
+        for text, present in ((None, True), ("", False), ("reference", 1)):
+            with self.subTest(text=text, present=present):
+                crops = copy.deepcopy(self.crops)
+                crops[0].update(vlm_text=text, vlm_reading_present=present,
+                                vlm_reference_chars=None, vlm_reference_words=None)
+                with self.assertRaisesRegex(ValueError, "presence|vlm_reading_present"):
+                    REPORT.report(self.sample, self.pages, crops, ["ours", "loc"], 2)
 
     def test_cli_is_deterministic_hash_bound_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as tmp:
