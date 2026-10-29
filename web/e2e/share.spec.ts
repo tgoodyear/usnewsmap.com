@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 
-test("Share copies immediately and warms the actual current view before reporting readiness", async ({
+test("Share copies immediately and warms the actual current view without preview status text", async ({
   page,
   request,
 }) => {
@@ -22,6 +22,7 @@ test("Share copies immediately and warms the actual current view before reportin
   await page.goto("/search/cross-of-gold?from=1896-01-01&to=1896-12-31&state=IL&bucket=week");
   const share = page.getByRole("button", { name: "Share", exact: true });
   await expect(share).toBeVisible();
+  await expect(page.locator(".share-status")).toBeEmpty();
   await share.evaluate((button) => {
     button.addEventListener(
       "click",
@@ -36,7 +37,9 @@ test("Share copies immediately and warms the actual current view before reportin
   await expect(page.getByRole("button", { name: "Link copied", exact: true })).toBeVisible();
   const link = await page.locator("html").getAttribute("data-share-click-url");
   await expect(page.locator("html")).toHaveAttribute("data-copied-link", link!);
-  await expect(page.locator(".share-status")).toHaveText("Preview ready for copied link", { timeout: 50_000 });
+  await expect(page.locator(".share-status")).toBeEmpty();
+  await expect(page.getByRole("button", { name: "Link copied", exact: true })).toBeEnabled({ timeout: 50_000 });
+  await expect(page.locator(".share-status")).toBeEmpty();
   expect(requests.length).toBeGreaterThan(0);
   expect(new URL(requests[0]!).searchParams.get("state")).toBe("IL");
   const cached = await request.get(requests[0]!);
