@@ -89,6 +89,19 @@ instruction once token validity falls below 14 days. The token expiration is
 also recorded in Key Vault secret attributes. Rotation needs the authorized
 operator IP; do not broaden or give the operator token to CI.
 
+For an actual maintenance rotation before the automatic 30-day threshold, use:
+
+```sh
+python3 scripts/azure/origin_tls_bootstrap.py --rotate-dns-token
+```
+
+This requires a tracked predecessor, replaces only the zone-DNS credential in
+the dedicated TLS vault, then revokes its predecessor after the replacement is
+saved. It does not provision resources, alter Entra grants or touch ACME state.
+Dispatch `origin-tls` with `validate-dns=true` afterward and require successful
+staging DNS-01 and reuse of the production certificate. Record the new token's
+expiration and next rotation deadline; never log either token value.
+
 Certificate/account keys exist on disk only under `.origin-tls-work` (0700,
 files 0600) during execution. Normal exit removes them; the workflow's always
 step also cleans up cancellation. Never enable shell tracing, upload this

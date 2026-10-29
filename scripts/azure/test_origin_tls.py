@@ -153,6 +153,50 @@ class OriginTlsTests(unittest.TestCase):
             self.assertEqual(deletion.args[0], "DELETE")
             self.assertTrue(deletion.args[1].endswith("/tokens/new-id"))
 
+    def test_explicit_rotation_replaces_current_token_without_other_vault_or_role_writes(self):
+        existing = {
+            "value": "old-secret", "attributes": {"exp": 9999999999},
+            "tags": {"cloudflare-token-id": "old-id"},
+        }
+        created = {"success": True, "result": {"id": "new-id", "value": "new-secret"}}
+        with patch.object(bootstrap, "read_existing_token", return_value=existing), \
+                patch.object(bootstrap, "operator_token", return_value="operator-token"), \
+                patch.object(tls, "request", side_effect=[created, {"success": True}]) as request, \
+                patch.object(tls, "secret", return_value={}) as secret, \
+                patch.object(bootstrap, "provision_vault") as provision, \
+                patch.object(bootstrap, "az") as azure:
+            bootstrap.main(["--rotate-dns-token"])
+        provision.assert_not_called()
+        azure.assert_not_called()
+        secret.assert_called_once()
+        self.assertEqual(secret.call_args.args, (tls.TOKEN_SECRET, "new-secret"))
+        self.assertEqual(secret.call_args.kwargs["tags"], {"cloudflare-token-id": "new-id"})
+        self.assertEqual(request.call_args_list[0].args[0], "POST")
+        self.assertEqual(request.call_args.args[0], "DELETE")
+        self.assertTrue(request.call_args.args[1].endswith("/tokens/old-id"))
+        policy = request.call_args_list[0].args[3]["policies"]
+        self.assertEqual(policy, [{
+            "effect": "allow",
+            "resources": {f"com.cloudflare.api.account.zone.{tls.ZONE}": "*"},
+            "permission_groups": [{"id": "4755a26eedb94da69e1066d98aa820be"}],
+        }])
+
+    def test_normal_credential_check_does_not_replace_current_token(self):
+        with patch.object(bootstrap, "read_existing_token", return_value={
+            "attributes": {"exp": 9999999999},
+        }), patch.object(tls, "request") as request, patch.object(tls, "secret") as secret:
+            bootstrap.rotate_dns_token()
+        request.assert_not_called()
+        secret.assert_not_called()
+
+    def test_explicit_rotation_requires_tracked_predecessor_before_creating_token(self):
+        with patch.object(bootstrap, "read_existing_token", return_value={
+            "attributes": {"exp": 9999999999},
+        }), patch.object(tls, "request") as request:
+            with self.assertRaisesRegex(RuntimeError, "existing tracked DNS token"):
+                bootstrap.rotate_dns_token(force=True)
+        request.assert_not_called()
+
     def test_vault_bootstrap_limits_policy_exception_and_operator_permissions(self):
         created_templates = []
 
