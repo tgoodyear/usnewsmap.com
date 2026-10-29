@@ -30,6 +30,13 @@ def require(condition, message):
         raise ValueError(message)
 
 
+class OutOfCohort(ValueError):
+    """A sound producer job in a language this controller was not reviewed to admit."""
+
+
+COHORT_LANGUAGES = ("yid", "srp")
+
+
 def sha(payload):
     return hashlib.sha256(payload).hexdigest()
 
@@ -121,7 +128,7 @@ def assignable_units(rows, window, host):
     )
 
 
-def choose(rows, floor, reserved, remaining):
+def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
     if remaining <= 0:
         return []
     candidates = sorted((row for row in rows if int(row["unit"]["id"]) >= floor
@@ -132,6 +139,12 @@ def choose(rows, floor, reserved, remaining):
         current = int(row["unit"]["id"])
         if result and current != int(result[-1]["unit"]["id"]) + 1:
             break
+        # The window is a workunit id range: an inadmissible unit ends the run rather than
+        # being opened inside it, and one before the run is passed over.
+        if not admissible(row):
+            if result:
+                break
+            continue
         result.append(row)
         if len(result) >= min(10, remaining):
             break
@@ -166,8 +179,7 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
             and job["engine"]["models"] == MODELS, "Unreviewed engine/models")
     require(type(job["v"]) is int and job["v"] == 1 and type(job["prompt_version"]) is int
             and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
-            and job["group"] == "qwen-nonenglish-v1" and job["language"] in ("yid", "srp"),
-            "Unreviewed prompt/budget/cohort")
+            and job["group"] == "qwen-nonenglish-v1", "Unreviewed prompt/budget/cohort")
     crops = job["crops"]
     require(1 <= len(crops) <= 12 and len({crop["id"] for crop in crops}) == len(crops)
             and all(isinstance(crop["id"], str) and crop["id"] and
@@ -191,6 +203,9 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
             and re.fullmatch("[a-f0-9]{64}", provenance["sha256"])
             and provenance["archive"] and provenance["member"] and int(provenance["archive_bytes"]) > 0,
             "Source-quality/archive-provenance binding mismatch")
+    # Checked last: an out-of-cohort job is only passed over once every integrity check holds.
+    if job["language"] not in COHORT_LANGUAGES:
+        raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(job["language"]))
     return {"workunit": int(wu["id"]), "job_id": job_id, "doc_id": doc, "crops": len(crops),
             "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]),
             "quality_sha256": sha(quality_raw), "provenance_sha256": sha(provenance_raw),
@@ -387,9 +402,29 @@ def run(args):
                 output |= {"starved_hosts": starved, "window_held_seconds": held}
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
+            skipped = []
+
+            def admissible(row):
+                # Only a language outside the reviewed cohort is passed over; every other
+                # binding failure still stops the tick.
+                try:
+                    bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+                except OutOfCohort:
+                    skipped.append(int(row["unit"]["id"]))
+                    return False
+                return True
+
             selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
-                              args.minimum_workunit, reserved, min(remaining, capacity))
+                              args.minimum_workunit, reserved, min(remaining, capacity), admissible)
+            if skipped:
+                output |= {"out_of_cohort_skipped": skipped}
             if not selected:
+                if skipped and ids:
+                    # Every fresh unit in this page is out of cohort and never becomes admissible:
+                    # move past it so later in-cohort work is reached.
+                    state["scan_after"] = ids[-1]
+                    if args.apply:
+                        persist(state_path, state)
                 return output | {"status": "no-fresh-verified-pairs"}
             if available:
                 # The left-behind replicas stay ordinary unsent work for every other eligible class;
