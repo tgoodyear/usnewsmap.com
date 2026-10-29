@@ -8,10 +8,12 @@ quorum, retry identity or manually generated BOINC result.
 import argparse
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -62,6 +64,119 @@ def assert_submitted(root):
     pending = [p for p, _ in jobs(root / "units") if not (p.parent / "submitted").exists()]
     if uncertain or pending:
         raise RuntimeError(f"Qwen submission incomplete: {len(uncertain)} uncertain, {len(pending)} without receipts")
+
+
+def source_fingerprint(page):
+    if (not isinstance(page, dict)
+            or not re.fullmatch(r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", page.get("doc_id", ""))
+            or not re.fullmatch(r"[a-z]+_[a-zA-Z0-9]+", page.get("batch", ""))
+            or type(page.get("batch_version")) is not int or not 1 <= page["batch_version"] <= 99
+            or type(page.get("bytes")) is not int or page["bytes"] < 1
+            or not re.fullmatch(r"[a-f0-9]{64}", page.get("sha256", ""))):
+        raise ValueError("invalid bounded source-status membership")
+    return {k: page[k] for k in ("doc_id", "batch", "batch_version", "bytes", "sha256")}
+
+
+def source_bindings(root, job):
+    bindings = {}
+    for member in job.get("pages") or [job]:
+        path = root.parent.parent / "quality" / root.name / "texts" / (
+            member["doc_id"] + ".image-provenance.json")
+        if not path.exists():
+            logging.warning("Native source provenance unavailable: %s", path)
+            continue
+        binding = json.loads(path.read_text())
+        image = member["input"]
+        source = source_fingerprint(binding["source"])
+        if (binding["schema"] != 1 or source != binding["source"] or source["doc_id"] != member["doc_id"]
+                or binding["jpeg"] != {k: image[k] for k in ("bytes", "sha256")}):
+            raise ValueError("native image provenance does not bind to job: " + str(path))
+        bindings[member["doc_id"]] = binding
+    return bindings
+
+
+def source_status(share, project, sample):
+    frozen = [source_fingerprint(json.loads(line)) for line in sample.splitlines() if line.strip()]
+    pages = [page["doc_id"] for page in frozen]
+    if not pages or len(pages) > 10000 or len(set(pages)) != len(pages):
+        raise ValueError("invalid bounded source-status membership")
+    expected = {p["doc_id"]: p for p in frozen}
+    wanted = set(pages)
+    states = {doc: {"status": "pending", "workunit_ids": []} for doc in pages}
+    audited = {}
+    for campaign in sorted((share / "qwen").glob("*")):
+        if not campaign.is_dir():
+            continue
+        receipt = campaign / "audit.json"
+        audit_rows = json.loads(receipt.read_text()) if receipt.exists() else {}
+        for path, job in jobs(campaign):
+            members = documents(job) & wanted
+            if not members:
+                continue
+            row = audit_rows.get(job["id"])
+            if row:
+                if (row["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest()
+                        or not (path.parent / "submitted").is_file()
+                        or row["batch"] != 8 or row["min_quorum"] != 2 or row["target_nresults"] != 2
+                        or type(row["workunit_id"]) is not int or row["workunit_id"] < 1):
+                    raise ValueError("changed or unbound native source audit: " + str(path))
+            for doc in members:
+                if not row:
+                    if not states[doc]["workunit_ids"]:
+                        states[doc]["status"] = "pending_audit"
+                    continue
+                states[doc]["workunit_ids"].append(row["workunit_id"])
+                binding = row.get("source_bindings", {}).get(doc)
+                member = next(p for p in job.get("pages") or [job] if p["doc_id"] == doc)
+                if binding is None:
+                    states[doc]["status"] = "source_provenance_unavailable"
+                elif (not isinstance(binding, dict) or binding.get("schema") != 1
+                      or binding.get("source") != expected[doc]
+                      or binding.get("jpeg") != {k: member["input"][k] for k in ("bytes", "sha256")}):
+                    states[doc]["status"] = "source_conflict"
+                else:
+                    if states[doc]["status"] not in ("source_conflict", "source_provenance_unavailable"):
+                        states[doc]["status"] = "published"
+                    audited[row["workunit_id"]] = row
+        for layout in ("units", "pages"):
+            for disposition in ("no_crops", "too_large"):
+                for marker in (campaign / layout).glob("*/" + disposition):
+                    doc = marker.parent.name
+                    if doc in wanted and not states[doc]["workunit_ids"]:
+                        states[doc]["status"] = disposition
+    ids = sorted(audited)
+    totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
+              "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
+              "error_workunits": 0, "history_unavailable_workunits": 0,
+              "source_conflict_pages": sum(state["status"] in (
+                  "source_conflict", "source_provenance_unavailable") for state in states.values())}
+    if ids:
+        php = """
+chdir(%s);
+require_once("boinc_db.inc");
+$rows = BoincDb::get()->enum_general('stdClass',
+    "SELECT w.id,w.canonical_resultid,w.error_mask,"
+    ."SUM(r.server_state=2) AS unsent,SUM(r.server_state=4) AS running,"
+    ."SUM(r.received_time>0) AS returned,SUM(r.validate_state=2) AS invalid "
+    ."FROM workunit w LEFT JOIN result r ON r.workunitid=w.id "
+    ."WHERE w.id IN (%s) GROUP BY w.id,w.canonical_resultid,w.error_mask");
+echo json_encode($rows);
+""" % (json.dumps(str(project / "html/inc")), ",".join(map(str, ids)))
+        rows = json.loads(subprocess.check_output(["php", "-r", php], text=True))
+        observed = {int(row["id"]) for row in rows}
+        if not observed <= set(ids):
+            raise ValueError("native source report returned unexpected workunits")
+        missing = set(ids) - observed
+        totals["history_unavailable_workunits"] = len(missing)
+        for state in states.values():
+            if missing.intersection(state["workunit_ids"]):
+                state["status"] = "native_history_unavailable"
+        for row in rows:
+            totals["agreed_workunits"] += int(row["canonical_resultid"]) > 0
+            totals["error_workunits"] += int(row["error_mask"]) != 0
+            for name in ("unsent", "running", "returned", "invalid"):
+                totals[name + "_replicas"] += int(row[name] or 0)
+    return {"pages": states, **totals}
 
 
 def assert_processed(root, sample):
@@ -129,11 +244,13 @@ def audit(root, project):
     verified = json.loads(receipt.read_text()) if receipt.exists() else {}
     pending = {}
     expected = {}
+    bindings = {}
     for path, job in jobs(root / "units"):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if verified.get(job["id"], {}).get("job_sha256") != digest:
             pending[str(path)] = digest
             expected[job["id"]] = digest
+            bindings[job["id"]] = source_bindings(root, job)
     if not pending:
         return {"verified_new": 0, "verified_total": len(verified)}
     php = """
@@ -157,8 +274,10 @@ echo json_encode($verified);
     new = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(pending), text=True))
     if set(new) != set(expected) or any(row["job_sha256"] != expected[job] for job, row in new.items()):
         raise RuntimeError("Incomplete or changed scientific audit receipt")
-    for result in new.values():
+    for identity, result in new.items():
         result["audited_at"] = time.time()
+        if bindings[identity]:
+            result["source_bindings"] = bindings[identity]
     verified.update(new)
     tmp = receipt.with_suffix(".tmp")
     with tmp.open("w") as f:
@@ -176,6 +295,7 @@ def main():
     ap.add_argument("--share", type=Path, default=Path("/project"))
     ap.add_argument("--project", type=Path, default=Path("/project/usnmocr"))
     ap.add_argument("--inventory", action="store_true")
+    ap.add_argument("--source-status", action="store_true")
     ap.add_argument("--preflight", action="store_true",
                     help="Read-only admission before transferring a READY chunk; exit 75 on capacity deferral")
     ap.add_argument("--campaign")
@@ -192,6 +312,14 @@ def main():
                     help="Conservative incremental bytes per new page on every backing filesystem")
     ap.add_argument("--min-free-gb", type=int, default=50)
     a = ap.parse_args()
+    if a.source_status:
+        if not a.sample:
+            ap.error("--source-status needs --sample FILE or -")
+        sample = sys.stdin.read(16 * 1024**2 + 1) if str(a.sample) == "-" else a.sample.read_text()
+        if len(sample.encode()) > 16 * 1024**2:
+            raise ValueError("source-status sample exceeds bound")
+        print(json.dumps(source_status(a.share, a.project, sample), sort_keys=True))
+        return
     state = inventory(a.share, a.project)
     if a.inventory:
         print(json.dumps(state))
