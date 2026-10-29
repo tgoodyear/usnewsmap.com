@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -62,6 +63,71 @@ def assert_submitted(root):
     pending = [p for p, _ in jobs(root / "units") if not (p.parent / "submitted").exists()]
     if uncertain or pending:
         raise RuntimeError(f"Qwen submission incomplete: {len(uncertain)} uncertain, {len(pending)} without receipts")
+
+
+def source_status(share, project, sample):
+    pages = [json.loads(line)["doc_id"] for line in sample.splitlines() if line.strip()]
+    if (not pages or len(pages) > 10000 or len(set(pages)) != len(pages)
+            or any(not re.fullmatch(r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", p) for p in pages)):
+        raise ValueError("invalid bounded source-status membership")
+    wanted = set(pages)
+    states = {doc: {"status": "pending", "workunit_ids": []} for doc in pages}
+    audited = {}
+    for campaign in sorted((share / "qwen").iterdir()):
+        if not campaign.is_dir():
+            continue
+        receipt = campaign / "audit.json"
+        audit_rows = json.loads(receipt.read_text()) if receipt.exists() else {}
+        for path, job in jobs(campaign):
+            members = documents(job) & wanted
+            if not members:
+                continue
+            row = audit_rows.get(job["id"])
+            if row:
+                if (row["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest()
+                        or not (path.parent / "submitted").is_file()
+                        or row["batch"] != 8 or row["min_quorum"] != 2 or row["target_nresults"] != 2
+                        or type(row["workunit_id"]) is not int or row["workunit_id"] < 1):
+                    raise ValueError("changed or unbound native source audit: " + str(path))
+                audited[row["workunit_id"]] = row
+            for doc in members:
+                states[doc]["status"] = "published" if row else "pending_audit"
+                if row:
+                    states[doc]["workunit_ids"].append(row["workunit_id"])
+        for marker in (campaign / "units").glob("*/no_crops"):
+            doc = marker.parent.name
+            if doc in wanted and states[doc]["status"] == "pending":
+                states[doc]["status"] = "no_crops"
+        for marker in (campaign / "units").glob("*/too_large"):
+            doc = marker.parent.name
+            if (doc in wanted and states[doc]["status"] == "pending"
+                    and (marker.parent / "rejected-qwen.json").is_file()):
+                states[doc]["status"] = "too_large"
+    ids = sorted(audited)
+    totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
+              "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
+              "error_workunits": 0}
+    if ids:
+        php = """
+chdir(%s);
+require_once("boinc_db.inc");
+$rows = BoincDb::get()->enum_general('stdClass',
+    "SELECT w.id,w.canonical_resultid,w.error_mask,"
+    ."SUM(r.server_state=2) AS unsent,SUM(r.server_state=4) AS running,"
+    ."SUM(r.received_time>0) AS returned,SUM(r.validate_state=2) AS invalid "
+    ."FROM workunit w LEFT JOIN result r ON r.workunitid=w.id "
+    ."WHERE w.id IN (%s) GROUP BY w.id,w.canonical_resultid,w.error_mask");
+echo json_encode($rows);
+""" % (json.dumps(str(project / "html/inc")), ",".join(map(str, ids)))
+        rows = json.loads(subprocess.check_output(["php", "-r", php], text=True))
+        if {int(row["id"]) for row in rows} != set(ids):
+            raise ValueError("native source audit references missing workunits")
+        for row in rows:
+            totals["agreed_workunits"] += int(row["canonical_resultid"]) > 0
+            totals["error_workunits"] += int(row["error_mask"]) != 0
+            for name in ("unsent", "running", "returned", "invalid"):
+                totals[name + "_replicas"] += int(row[name] or 0)
+    return {"pages": states, **totals}
 
 
 def assert_processed(root, sample):
@@ -176,6 +242,7 @@ def main():
     ap.add_argument("--share", type=Path, default=Path("/project"))
     ap.add_argument("--project", type=Path, default=Path("/project/usnmocr"))
     ap.add_argument("--inventory", action="store_true")
+    ap.add_argument("--source-status", action="store_true")
     ap.add_argument("--preflight", action="store_true",
                     help="Read-only admission before transferring a READY chunk; exit 75 on capacity deferral")
     ap.add_argument("--campaign")
@@ -192,6 +259,14 @@ def main():
                     help="Conservative incremental bytes per new page on every backing filesystem")
     ap.add_argument("--min-free-gb", type=int, default=50)
     a = ap.parse_args()
+    if a.source_status:
+        if not a.sample:
+            ap.error("--source-status needs --sample FILE or -")
+        sample = sys.stdin.read(16 * 1024**2 + 1) if str(a.sample) == "-" else a.sample.read_text()
+        if len(sample.encode()) > 16 * 1024**2:
+            raise ValueError("source-status sample exceeds bound")
+        print(json.dumps(source_status(a.share, a.project, sample), sort_keys=True))
+        return
     state = inventory(a.share, a.project)
     if a.inventory:
         print(json.dumps(state))

@@ -111,8 +111,11 @@ def _tick(a):
                          "--pages", "-", "--archives", a.archives, "--out", a.alto_export], b""))
     with urllib.request.urlopen(a.scan_server.rstrip("/") + "/index/full.jsonl", timeout=300) as r:
         index, total, retained = available_source_index(r, archive_inventory)
+    from qwen_source import priority_index
+    index, request_id = priority_index(index, a.state, a.campaign, seen)
     command(ct + ["tee", work + "/index.jsonl"], index)
-    phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained)
+    phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
+          source_request=request_id)
     command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
                      "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(count),
                      "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",

@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
 
 def load(name):
@@ -26,7 +27,122 @@ archive = load("archive_alto")
 quality = load("quality_feed")
 submit = load("qwen_submit")
 driver = load("qwen_feed")
+source = load("qwen_source")
 DOC = "sn1_1900-01-02_ed-1_seq-3"
+
+
+class SourceRequestTest(unittest.TestCase):
+    def test_selectors_are_exact_and_bounded(self):
+        row = {"doc_id": DOC, "batch": "xx_test", "batch_version": 2}
+        for value in (DOC, "sn1", "xx_test_ver02"):
+            self.assertTrue(source.matches(row, source.specification(value, 100, "test")))
+        for value in ("sn10", "xx_test_ver01"):
+            self.assertFalse(source.matches(row, source.specification(value, 100, "test")))
+        for value, cap in (("../anything", 1), ("xx_test", 1), ("sn1", 0), ("sn1", 10001),
+                           ("sn1", True)):
+            with self.assertRaises(ValueError):
+                source.specification(value, cap, "test")
+
+    def test_frozen_priority_replays_and_completed_requests_do_not_starve_normal_feed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1,
+                    "bytes": 12, "sha256": "a" * 64}
+            other = {**page, "doc_id": "sn2_1900-01-02_ed-1_seq-3"}
+            spec = source.specification("sn1", 100, "test")
+            identity = source.digest(spec)
+            record = {"request_id": identity, "spec": spec, "pages": [page],
+                      "pages_sha256": source.digest([page])}
+            path = root / "requests" / (identity + ".json")
+            source.save(path, record)
+            index = b"".join((json.dumps(p) + "\n").encode() for p in (other, page))
+            selected, request_id = source.priority_index(index, root, "test", set())
+            self.assertEqual(json.loads(selected), page)
+            self.assertEqual(request_id, identity)
+            self.assertEqual(source.priority_index(index, root, "test", {DOC}), (index, None))
+            changed = json.dumps({**page, "sha256": "b" * 64}).encode()
+            with self.assertRaisesRegex(ValueError, "changed"):
+                source.priority_index(changed, root, "test", set())
+            record["pages"][0]["bytes"] += 1
+            source.save(path, record)
+            with self.assertRaisesRegex(ValueError, "integrity"):
+                source.read(path)
+
+    def test_registered_source_replays_without_rerunning_selection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            args = types.SimpleNamespace(state=state, prep_ct=215, scan_server="http://scan")
+            spec = source.specification(DOC, 1, "test")
+            page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1}
+            with mock.patch.object(source.urllib.request, "urlopen",
+                                   return_value=contextlib.closing(io.BytesIO(
+                                       (json.dumps(page) + "\n").encode()))), \
+                    mock.patch("qwen_feed.command", side_effect=[b"", b"", b"", b"",
+                                                               json.dumps(page).encode()]) as command:
+                first = source.register(args, spec)
+            self.assertEqual(command.call_count, 5)
+            with mock.patch("qwen_feed.command", side_effect=AssertionError("must replay")), \
+                    mock.patch.object(source.urllib.request, "urlopen",
+                                      side_effect=AssertionError("must replay")):
+                self.assertEqual(source.register(args, spec), first)
+
+    def test_native_source_status_binds_exact_audit_and_never_counts_source_rejections_as_jobs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            campaign = root / "qwen/test"
+            unit = campaign / "units" / DOC
+            unit.mkdir(parents=True)
+            job = {"id": "a" * 64, "doc_id": DOC}
+            raw = json.dumps(job).encode()
+            (unit / "qwen.json").write_bytes(raw)
+            (unit / "submitted").touch()
+            entry = {"workunit_id": 42, "job_sha256": hashlib.sha256(raw).hexdigest(),
+                     "batch": 8, "min_quorum": 2, "target_nresults": 2}
+            (campaign / "audit.json").write_text(json.dumps({job["id"]: entry}))
+            rejected = "sn2_1900-01-02_ed-1_seq-3"
+            no_crops = campaign / "units" / rejected
+            no_crops.mkdir()
+            (no_crops / "no_crops").touch()
+            sample = "\n".join(json.dumps({"doc_id": d}) for d in (DOC, rejected))
+            response = json.dumps([{"id": 42, "canonical_resultid": 0, "error_mask": 0,
+                                    "unsent": 2, "running": 0, "returned": 0, "invalid": 0}])
+            with mock.patch.object(submit.subprocess, "check_output", return_value=response):
+                status = submit.source_status(root, root, sample)
+            self.assertEqual(status["published_workunits"], 1)
+            self.assertEqual(status["unsent_replicas"], 2)
+            self.assertEqual(status["agreed_workunits"], 0)
+            self.assertEqual(status["pages"][rejected]["status"], "no_crops")
+            (unit / "qwen.json").write_bytes(raw + b" ")
+            with self.assertRaisesRegex(ValueError, "changed or unbound"):
+                submit.source_status(root, root, sample)
+
+    def test_progress_distinguishes_publication_dispatch_consensus_and_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            args = types.SimpleNamespace(state=root, prep_ct=215, server_ct=230,
+                                         campaign="test", server_host="server", archive_host="archive")
+            spec = source.specification(DOC, 1, "test")
+            page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1}
+            record = {"request_id": source.digest(spec), "spec": spec,
+                      "pages": [page], "pages_sha256": source.digest([page])}
+            base = {"pages": {DOC: {"status": "published"}}, "published_workunits": 1,
+                    "agreed_workunits": 0, "unsent_replicas": 2, "running_replicas": 0,
+                    "returned_replicas": 0, "invalid_replicas": 0, "error_workunits": 0}
+            for delta, expected in (
+                    ({}, "awaiting_dispatch_or_admission"),
+                    ({"running_replicas": 1}, "awaiting_host_results"),
+                    ({"agreed_workunits": 1}, "native_consensus_complete"),
+                    ({"error_workunits": 1}, "needs_science_review")):
+                with mock.patch("qwen_feed.remote", side_effect=[
+                        json.dumps({**base, **delta}).encode(),
+                        b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
+                        mock.patch("qwen_feed.command",
+                                   return_value=b'{"done.txt":{},"skipped.txt":{}}'):
+                    result = source.inspect(args, record)
+                self.assertEqual(result["state"], expected)
+                self.assertEqual(result["selected_pages"], 1)
 
 
 class ArchiveTest(unittest.TestCase):
