@@ -60,7 +60,7 @@ def marker(unit, name):
     require(not path.is_symlink(), f"symlink marker: {path}")
     if not path.exists():
         return None
-    return digest(read_file(path, 4096))
+    return digest(read_file(path, 64 * 1024 if name == "too_large" else 4096))
 
 
 def unit_directories(units, max_units):

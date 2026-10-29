@@ -185,6 +185,21 @@ class ShadowTest(unittest.TestCase):
         with self.assertRaisesRegex(shadow.ObservationError, "marker names another"):
             shadow.observe(self.root)
 
+    def test_multi_crop_oversized_diagnostics_fit_bounded_marker_read(self):
+        unit = self.root / "units" / "oversized"
+        unit.mkdir()
+        diagnostic = "".join(
+            f"crop c{n:02d}: source text exceeds 8192-byte limit; "
+            f"original ALTO sha256={'a' * 64}; image sha256={'b' * 64}\n"
+            for n in range(64))
+        self.assertGreater(len(diagnostic), 4096)
+        path = unit / "too_large"
+        path.write_text(diagnostic)
+        self.assertEqual(shadow.observe(self.root)["counts"]["too_large_dispositions"], 1)
+        path.write_bytes(b"x" * (64 * 1024 + 1))
+        with self.assertRaisesRegex(shadow.ObservationError, "size limit"):
+            shadow.observe(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()
