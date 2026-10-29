@@ -179,6 +179,10 @@ Journal metadata uses an account-bound snapshot under the controller's private
 state directory. Every read still lists the complete current blob names and
 ETags. An identical snapshot can reuse validated disk records across ordinary
 fresh-process ticks; any added, removed or changed journal invalidates it.
+For up to 32 added or changed records, the next tick first validates every
+retained file against its recorded digest, removes deleted records and downloads
+only the changed metadata. Larger changes or a different account use the full
+batch refresh. Directory symlinks are rejected before incremental writes.
 Downloads invalidate the durable marker before modifying files and must match
 a second complete ETag inventory before publishing a reusable snapshot. A
 matching snapshot with missing, malformed or misidentified local records fails
