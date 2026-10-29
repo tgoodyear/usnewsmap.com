@@ -189,6 +189,7 @@ class SourceRequestTest(unittest.TestCase):
             self.assertEqual(status["unsent_replicas"], 2)
             self.assertEqual(status["agreed_workunits"], 0)
             self.assertEqual(status["pages"][rejected]["status"], "no_crops")
+            (unit / "too_large").touch()
             other = "sn3_1900-01-02_ed-1_seq-3"
             other_unit = campaign / "units" / other
             other_unit.mkdir()
@@ -222,12 +223,24 @@ class SourceRequestTest(unittest.TestCase):
                     page.mkdir(parents=True)
                     (page / disposition).touch()
                     if disposition == "too_large":
-                        (page / "rejected-qwen.json").write_text("{}")
+                        (page / "qwen.json").write_text(json.dumps({"id": "a" * 64, "doc_id": DOC}))
                     with mock.patch.object(submit.subprocess, "check_output") as query:
                         result = submit.source_status(root, root, json.dumps({"doc_id": DOC}))
                     self.assertEqual(result["pages"][DOC]["status"], disposition)
                     self.assertEqual(result["published_workunits"], 0)
                     query.assert_not_called()
+                    if disposition == "too_large":
+                        (page / "qwen.json").unlink()
+                        self.assertEqual(submit.source_status(root, root, json.dumps({"doc_id": DOC}))[
+                            "pages"][DOC]["status"], "too_large")
+
+    def test_source_progress_exists_before_the_first_native_campaign_is_staged(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(submit.subprocess, "check_output") as query:
+            result = submit.source_status(Path(folder), Path(folder), json.dumps({"doc_id": DOC}))
+        self.assertEqual(result["pages"][DOC]["status"], "pending")
+        self.assertEqual(result["published_workunits"], 0)
+        query.assert_not_called()
 
     def test_progress_distinguishes_publication_dispatch_consensus_and_error(self):
         with tempfile.TemporaryDirectory() as folder:

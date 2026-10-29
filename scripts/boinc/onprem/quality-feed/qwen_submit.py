@@ -73,7 +73,7 @@ def source_status(share, project, sample):
     wanted = set(pages)
     states = {doc: {"status": "pending", "workunit_ids": []} for doc in pages}
     audited = {}
-    for campaign in sorted((share / "qwen").iterdir()):
+    for campaign in sorted((share / "qwen").glob("*")):
         if not campaign.is_dir():
             continue
         receipt = campaign / "audit.json"
@@ -98,9 +98,7 @@ def source_status(share, project, sample):
             for disposition in ("no_crops", "too_large"):
                 for marker in (campaign / layout).glob("*/" + disposition):
                     doc = marker.parent.name
-                    if (doc in wanted and states[doc]["status"] == "pending"
-                            and (disposition == "no_crops"
-                                 or (marker.parent / "rejected-qwen.json").is_file())):
+                    if doc in wanted and not states[doc]["workunit_ids"]:
                         states[doc]["status"] = disposition
     ids = sorted(audited)
     totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
