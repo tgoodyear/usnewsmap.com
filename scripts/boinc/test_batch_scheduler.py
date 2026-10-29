@@ -363,7 +363,17 @@ class SchedulerTests(unittest.TestCase):
                     path.write_text(json.dumps(row))
                 return ""
 
-            with patch.object(transport, "az", side_effect=lambda *args: json.dumps(listing)) as az, \
+            def storage(*args):
+                if args[0] == "list":
+                    return json.dumps(listing)
+                self.assertEqual(args[0], "download")
+                self.assertFalse((directory / "journal-snapshot.json").exists())
+                name = args[args.index("--name") + 1]
+                path = Path(args[args.index("--file") + 1])
+                path.write_text(json.dumps(rows[names.index(name)]))
+                return ""
+
+            with patch.object(transport, "az", side_effect=storage) as az, \
                     patch.object(transport, "run", side_effect=download) as run, \
                     patch.object(transport, "blob", side_effect=AssertionError("per-record CLI")):
                 self.assertEqual(transport.records(), rows)
@@ -376,13 +386,15 @@ class SchedulerTests(unittest.TestCase):
                 listing[0]["etag"] = '"version-2"'
                 rows[0]["stage"] = "published"
                 self.assertEqual(transport.records(), rows)
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(sum(call.args[0] == "download" for call in az.call_args_list), 1)
                 listing.pop()
                 names.pop()
                 rows.pop()
                 self.assertEqual(transport.records(), rows)
-                self.assertEqual(run.call_count, 3)
+                self.assertEqual(run.call_count, 1)
             listing[0]["etag"] = '"version-3"'
+            (directory / "journal-snapshot.json").unlink()
             with patch.object(transport, "az", return_value=json.dumps(listing)), \
                     patch.object(transport, "run", return_value=""), \
                     self.assertRaisesRegex(ValueError, "changed during download"):
@@ -396,6 +408,16 @@ class SchedulerTests(unittest.TestCase):
                     patch.object(restarted, "run", side_effect=AssertionError("unchanged restart downloaded")):
                 self.assertEqual(restarted.records(), rows)
                 az.assert_called_once()
+            for entry in listing[:33]:
+                entry["etag"] = '"version-4"'
+            for row in rows[:33]:
+                row["stage"] = "published"
+            broad = batch.Transport(self.config, directory)
+            with patch.object(broad, "az", side_effect=storage) as az, \
+                    patch.object(broad, "run", side_effect=download) as run:
+                self.assertEqual(broad.records(), rows)
+                run.assert_called_once()
+                self.assertTrue(all(call.args[0] == "list" for call in az.call_args_list))
             foreign = batch.Transport({**self.config, "account": "otheraccount"}, directory)
             with patch.object(foreign, "az", return_value=json.dumps(listing)), \
                     patch.object(foreign, "run", side_effect=download) as run:
@@ -435,8 +457,14 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(restarted.records(), [row])
             run.assert_called_once()
         changed[0]["etag"] = '"version-3"'
-        with patch.object(restarted, "az", return_value=json.dumps(changed)), \
-                patch.object(restarted, "run", side_effect=RuntimeError("download interrupted")):
+
+        def interrupted(*args):
+            if args[0] == "download":
+                raise RuntimeError("download interrupted")
+            return json.dumps(changed)
+
+        with patch.object(restarted, "az", side_effect=interrupted), \
+                patch.object(restarted, "run", side_effect=AssertionError("unexpected batch")):
             with self.assertRaisesRegex(RuntimeError, "download interrupted"):
                 restarted.records()
         self.assertFalse((directory / "journal-snapshot.json").exists())
@@ -444,6 +472,88 @@ class SchedulerTests(unittest.TestCase):
                 patch.object(transport, "run", side_effect=download) as run:
             self.assertEqual(transport.records(), [row])
             run.assert_called_once()
+        changed[0]["etag"] = '"version-4"'
+        newer = [{"name": name, "etag": '"version-5"'}]
+        inventories = iter((changed, newer))
+
+        def racing_delta(*args):
+            if args[0] == "list":
+                return json.dumps(next(inventories))
+            self.assertEqual(args[0], "download")
+            self.assertFalse((directory / "journal-snapshot.json").exists())
+            (directory / "journal-cache" / name).write_text(json.dumps(row))
+            return ""
+
+        restarted = batch.Transport(self.config, directory)
+        with patch.object(restarted, "az", side_effect=racing_delta), \
+                patch.object(restarted, "run", side_effect=AssertionError("unexpected batch")):
+            with self.assertRaisesRegex(ValueError, "ETags changed during download"):
+                restarted.records()
+        self.assertFalse((directory / "journal-snapshot.json").exists())
+
+    def test_small_journal_delta_after_restart_preserves_only_verified_files(self):
+        for corruption in ("none", "bytes", "directory-symlink"):
+            with self.subTest(corruption=corruption):
+                directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+                cache = directory / "journal-cache"
+                rows = [record("page-" + str(number), number) for number in range(1, 5)]
+                names = [f'dispatch/jobs/{row["job"]["id"]}/record.json' for row in rows]
+                checksums = {}
+                for name, row in zip(names, rows):
+                    path = cache / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(row))
+                    checksums[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+                manifest = directory / "journal-snapshot.json"
+                batch.save(manifest, {
+                    "schema_version": 1, "account": self.config["account"],
+                    "container": "boinc-handoff", "entries": {name: "old" for name in names},
+                    "files": checksums,
+                })
+                rows[0]["stage"] = "published"
+                rows[-1] = record("page-5", 5)
+                current = names[:-1] + [f'dispatch/jobs/{rows[-1]["job"]["id"]}/record.json']
+                listing = [{"name": name, "etag": "new" if i in (0, 3) else "old"}
+                           for i, name in enumerate(current)]
+                if corruption == "bytes":
+                    path = cache / names[1]
+                    path.write_bytes(path.read_bytes() + b" ")
+                elif corruption == "directory-symlink":
+                    external = directory / "external"
+                    external.mkdir()
+                    (cache / "unused").symlink_to(external, target_is_directory=True)
+                downloaded = []
+
+                def storage(*args):
+                    if args[0] == "list":
+                        return json.dumps(listing)
+                    self.assertEqual(args[0], "download")
+                    self.assertFalse(manifest.exists())
+                    name = args[args.index("--name") + 1]
+                    Path(args[args.index("--file") + 1]).write_text(json.dumps(rows[current.index(name)]))
+                    downloaded.append(name)
+                    return ""
+
+                restarted = batch.Transport(self.config, directory)
+                with patch.object(restarted, "az", side_effect=storage), \
+                        patch.object(restarted, "run", side_effect=AssertionError("unexpected batch")):
+                    if corruption != "none":
+                        error = "content digest mismatch" if corruption == "bytes" else "invalid journal cache path"
+                        with self.assertRaisesRegex(ValueError, error):
+                            restarted.records()
+                        self.assertTrue(manifest.exists())
+                        self.assertEqual(downloaded, [])
+                        continue
+                    self.assertEqual(restarted.records(), rows)
+                self.assertEqual(downloaded, [current[0], current[-1]])
+                self.assertFalse((cache / names[-1]).exists())
+                self.assertFalse((cache / names[-1]).parent.exists())
+                self.assertEqual(hashlib.sha256((cache / names[1]).read_bytes()).hexdigest(), checksums[names[1]])
+                final = batch.Transport(self.config, directory)
+                with patch.object(final, "az", return_value=json.dumps(listing)) as az, \
+                        patch.object(final, "run", side_effect=AssertionError("unexpected download")):
+                    self.assertEqual(final.records(), rows)
+                    az.assert_called_once()
 
     def test_matching_journal_snapshot_with_changed_local_identity_fails_closed(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))

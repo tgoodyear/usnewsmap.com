@@ -751,6 +751,27 @@ class Transport:
                 "dispatch inventory limit/consistency failure; reconcile drained journals")
         return snapshot
 
+    def read_journal_cache(self, cache, names, expected):
+        require(len(names) <= MAX_JOBS and all(
+            isinstance(name, str) and re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name)
+            for name in names), "invalid journal cache inventory")
+        paths = list(cache.rglob("*"))
+        require(not any(path.is_symlink() for path in paths), "invalid journal cache path")
+        actual = {str(path.relative_to(cache)) for path in paths if path.is_file()}
+        require(actual == set(names), "journal inventory changed during download; retry under the owner lock")
+        records, checksums = [], {}
+        for name in sorted(names):
+            path = cache / name
+            require(path.stat().st_size <= 131072, "invalid/oversized journal metadata")
+            data = path.read_bytes()
+            checksums[name] = hashlib.sha256(data).hexdigest()
+            if name in expected:
+                require(checksums[name] == expected[name], "journal cache content digest mismatch")
+            record = json.loads(data)
+            require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
+            records.append(record)
+        return records, checksums
+
     @timed("journals")
     def records(self):
         snapshot = self.journal_inventory()
@@ -763,10 +784,11 @@ class Transport:
         self._journal_records = None
         cache = self.directory / "journal-cache"
         manifest = self.directory / "journal-snapshot.json"
-        identity = {"schema_version": 1, "account": self.config["account"],
-                    "container": "boinc-handoff", "entries": snapshot}
+        base = {"schema_version": 1, "account": self.config["account"], "container": "boinc-handoff"}
+        identity = {**base, "entries": snapshot}
         require(not cache.is_symlink() and not manifest.is_symlink(), "invalid journal cache path")
         reusable = False
+        delta = None
         if manifest.exists():
             require(manifest.stat().st_size <= MAX_JOBS * 512, "oversized journal cache manifest")
             stored = json.loads(manifest.read_text())
@@ -775,6 +797,18 @@ class Transport:
             if reusable:
                 require(isinstance(stored.get("files"), dict) and set(stored["files"]) == set(names),
                         "invalid journal cache content inventory")
+            elif {key: value for key, value in stored.items() if key not in ("entries", "files")} == base:
+                previous = stored.get("entries")
+                require(isinstance(previous, dict) and all(
+                    isinstance(etag, str) and bool(etag.strip()) for etag in previous.values()),
+                    "invalid journal cache inventory")
+                require(isinstance(stored.get("files"), dict) and set(stored["files"]) == set(previous),
+                        "invalid journal cache content inventory")
+                changed = [name for name in names if previous.get(name) != snapshot[name]]
+                # Bound CLI startups; broad changes keep the single batch download.
+                if len(changed) <= 32:
+                    self.read_journal_cache(cache, previous, stored["files"])
+                    delta = changed
         if not reusable:
             if manifest.exists():
                 manifest.unlink()
@@ -783,10 +817,21 @@ class Transport:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-            if cache.exists():
-                shutil.rmtree(cache)
-            cache.mkdir(mode=0o700)
-            if names:
+            if delta is not None:
+                for name in set(previous) - set(names):
+                    path = cache / name
+                    path.unlink()
+                    path.parent.rmdir()
+                for name in delta:
+                    path = cache / name
+                    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    self.az("download", "--name", name, "--file", str(path),
+                            "--overwrite", "true", "-o", "none")
+            else:
+                if cache.exists():
+                    shutil.rmtree(cache)
+                cache.mkdir(mode=0o700)
+            if names and delta is None:
                 pattern = "dispatch/jobs/" + "[0-9a-f]" * 64 + "/record.json"
                 self.run([
                     "az", "storage", "blob", "download-batch", "--source", "boinc-handoff",
@@ -794,21 +839,10 @@ class Transport:
                     "--account-name", self.config["account"], "--auth-mode", "login",
                     "--only-show-errors", "-o", "none",
                 ], "batch journal inventory")
-        actual = {str(path.relative_to(cache)) for path in cache.rglob("*") if path.is_file()}
-        require(actual == set(names), "journal inventory changed during download; retry under the owner lock")
-        records = []
-        checksums = {}
-        for name in sorted(names):
-            path = cache / name
-            require(not path.is_symlink() and path.stat().st_size <= 131072,
-                    "invalid/oversized journal metadata")
-            data = path.read_bytes()
-            checksums[name] = hashlib.sha256(data).hexdigest()
-            if reusable:
-                require(checksums[name] == stored["files"][name], "journal cache content digest mismatch")
-            record = json.loads(data)
-            require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
-            records.append(record)
+        expected = stored["files"] if reusable else {}
+        if delta is not None:
+            expected = {name: stored["files"][name] for name in names if name not in delta}
+        records, checksums = self.read_journal_cache(cache, names, expected)
         if not reusable:
             require(self.journal_inventory() == snapshot,
                     "journal ETags changed during download; retry under the owner lock")
