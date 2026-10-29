@@ -7,3 +7,5 @@ ocr/boinc/qwen/*.json text eol=lf
 # The Surya image's pins: usnm-boinc compiles one in (include_str!) and a build passes each line to
 # `docker build --build-arg`, where a carriage return would be part of the value.
 ocr/boinc/surya/engine.lock text eol=lf
+# The picture baseline checks the bundled provenance's exact SHA256.
+scripts/pictures/newspaper-navigator-baseline.lock.json text eol=lf

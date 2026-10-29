@@ -25,6 +25,8 @@ npm run build
 
 The infrastructure checks, and the scan for shared keys, run on every pull request that changes anything other than Markdown or `docs/` (from the repository root):
 
+Before the script suite, follow the [Python 3.12 virtual-environment setup](docs/development.md#script-tests) and install `scripts/pictures/requirements.txt`; the discovered picture tests require PyArrow. CI installs this pinned prerequisite automatically.
+
 ```sh
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh

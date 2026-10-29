@@ -914,6 +914,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install pinned picture evaluation dependency
+        run: python -m pip install -r scripts/pictures/requirements.txt
       - name: Install pinned Bicep for ARM contract tests
         run: scripts/ci/install-bicep.sh
       - name: Every selected script module runs in exactly one isolated shard
