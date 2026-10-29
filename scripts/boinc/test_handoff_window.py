@@ -19,6 +19,7 @@ def fixture():
         "draining": False, "collection_backlog": 0, "collection_held": 0, "alerts": [],
         "newly_published": 1,
         "timings": {
+            "scan_pages": {"onprem": {"pushed": 1, "missing": 0}},
             "commands": {label: dict(counts) for label in (
                 "handoff/claim", "handoff/export", "handoff/collect", "cached scan push",
             )},
@@ -97,6 +98,32 @@ class HandoffWindowTests(unittest.TestCase):
         records = fixture()
         records[10]["_SYSTEMD_UNIT"] = "unrelated.service"
         self.assertFalse(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
+
+    def test_native_manager_failures_cannot_be_hidden_by_surrounding_successful_ticks(self):
+        for fields in ({"UNIT_RESULT": "signal"}, {"SERVICE_RESULT": "timeout"},
+                       {"EXIT_CODE": "killed", "EXIT_STATUS": "9"},
+                       {"EXIT_CODE": "exited", "EXIT_STATUS": "1"},
+                       {"JOB_RESULT": "failed"}):
+            with self.subTest(fields=fields):
+                records = fixture()
+                records.append({
+                    "__REALTIME_TIMESTAMP": str(300 * 1_000_000), "UNIT": window.UNIT,
+                    "_SYSTEMD_UNIT": "init.scope", "MESSAGE": "native manager failure", **fields,
+                })
+                self.assertFalse(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
+                records[-1]["UNIT"] = "unrelated.service"
+                self.assertTrue(window.audit(records, 0, window.DAY)["telemetry_window_passed"])
+
+    def test_missing_only_scan_commands_are_not_actual_scan_transfer_evidence(self):
+        records = fixture()
+        for record in records:
+            event = json.loads(record["MESSAGE"])
+            event["timings"]["scan_pages"]["onprem"] = {"pushed": 0, "missing": 1}
+            record["MESSAGE"] = json.dumps(event)
+        result = window.audit(records, 0, window.DAY)
+        self.assertFalse(result["telemetry_window_passed"])
+        self.assertEqual(result["onprem_pushed_pages"], 0)
+        self.assertIn("window has no actual on-prem pushed pages", result["failures"])
 
     def test_cli_retains_input_hash_and_rejects_malformed_input(self):
         with tempfile.TemporaryDirectory() as directory:

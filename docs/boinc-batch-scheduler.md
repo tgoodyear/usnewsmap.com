@@ -200,7 +200,7 @@ page text or scan paths enter these counters.
 After the last reviewed controller repair/release, retain a full unit journal export:
 
 ```sh
-journalctl -u usnm-boinc-priority-controller.service --since "$START" --until "$END" \
+journalctl --all -u usnm-boinc-priority-controller.service --since "$START" --until "$END" \
   -o json --no-pager > controller-journal.jsonl
 python3 scripts/boinc/handoff-window.py --journal controller-journal.jsonl \
   --since "$START_UNIX_SECONDS" --until "$END_UNIX_SECONDS"
@@ -213,6 +213,11 @@ plan changes, duplicate ticks, gaps over 20 minutes, and windows without real
 on-prem claim/collect/export/push and newly published pages. Old summaries without
 route evidence are unknown, not a clean window. Exit 0 means only that this
 **controller-routing telemetry window** passes; it never authorizes retirement.
+The export's `--all` preserves messages exceeding journald's default 4096-byte
+JSON-field limit. Native systemd failure metadata (including manager records
+associated through `UNIT`) also invalidates the window if Python died without a
+failure summary. Scan evidence requires a positive parsed pushed-page count in
+`timings.scan_pages`; an accepted missing-only push is not a transfer.
 
 Keep independent evidence of the reviewed binary/configuration/unit remaining
 unchanged throughout the window, zero Azure hand-off executions over that same

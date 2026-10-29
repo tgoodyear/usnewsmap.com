@@ -26,6 +26,7 @@ def audit(records, since, until, unit=UNIT):
     routes = set()
     plans = set()
     published = 0
+    pushed = 0
     if not number(since) or not number(until) or until - since < DAY:
         raise ValueError("window must span at least 24 hours")
     for record in records:
@@ -33,6 +34,15 @@ def audit(records, since, until, unit=UNIT):
         at = int(record["__REALTIME_TIMESTAMP"]) / 1_000_000
         if not since <= at <= until:
             continue
+        associated = any(record.get(key) == unit for key in ("UNIT", "_SYSTEMD_UNIT", "OBJECT_SYSTEMD_UNIT"))
+        if associated:
+            for key in ("UNIT_RESULT", "SERVICE_RESULT"):
+                if key in record and record[key] != "success":
+                    failures.add("systemd reports a failed controller invocation")
+            if ((("EXIT_CODE" in record or "EXIT_STATUS" in record)
+                 and (record.get("EXIT_CODE"), record.get("EXIT_STATUS")) != ("exited", "0"))
+                    or ("JOB_RESULT" in record and record["JOB_RESULT"] != "done")):
+                failures.add("systemd reports a failed controller invocation")
         message = record["MESSAGE"]
         if not isinstance(message, str):
             raise ValueError("journal MESSAGE must be a string")
@@ -105,6 +115,20 @@ def audit(records, since, until, unit=UNIT):
                     expected[label] = count
             if expected != routed:
                 failures.add("execution routes do not reconcile with command counts")
+            scans = timing.get("scan_pages")
+            if not isinstance(scans, dict):
+                failures.add("tick lacks parsed scan-page evidence")
+                continue
+            for dest, counts in scans.items():
+                if (dest not in ("onprem", "azure") or not isinstance(counts, dict)
+                        or any(type(counts.get(key)) is not int or counts[key] < 0
+                               for key in ("pushed", "missing"))
+                        or f"{dest}/scans" not in observed):
+                    failures.add("invalid scan-page evidence")
+                elif dest == "onprem":
+                    pushed += counts["pushed"]
+            if "onprem/scans" in observed and "onprem" not in scans:
+                failures.add("on-prem scan command lacks parsed page counts")
     ticks.sort()
     if not ticks or max(b - a for a, b in zip([since, *ticks], [*ticks, until])) > MAX_GAP:
         failures.add("controller observation gap exceeds 20 minutes")
@@ -116,12 +140,15 @@ def audit(records, since, until, unit=UNIT):
         failures.add("window lacks real on-prem claim/collect/export/scan-push observations")
     if published == 0:
         failures.add("window has no newly published pages")
+    if pushed == 0:
+        failures.add("window has no actual on-prem pushed pages")
     return {
         "schema_version": 1,
         "scope": "controller-routing-window",
         "unit": unit,
         "since": since, "until": until, "ticks": len(ticks),
         "plans": sorted(plans), "newly_published": published,
+        "onprem_pushed_pages": pushed,
         "observed_routes": sorted(routes),
         "telemetry_window_passed": not failures,
         "failures": sorted(failures),

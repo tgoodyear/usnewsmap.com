@@ -1450,6 +1450,20 @@ class TimingsTests(unittest.TestCase):
                     self.assertEqual(transport.push_pages([base]), ({base: base + ".jpg"}, []))
                 self.assertEqual(set(transport.timings.summary()["execution_routes"]), {route})
                 self.assertEqual(transport.timings.summary()["execution_routes"][route]["count"], 1)
+                self.assertEqual(transport.timings.summary()["scan_pages"][route.split("/")[0]],
+                                 {"pushed": 1, "missing": 0})
+
+    def test_missing_only_push_is_not_counted_as_a_transferred_page(self):
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example"]
+        transport = batch.Transport(cfg, Path("."), onprem_handoff=("export",))
+        base = "keep/batch/sn1/1900-01-01/1/1"
+        done = subprocess.CompletedProcess([], 3, f"missing {base.removeprefix('keep/')}\n", "")
+        with patch.object(batch.subprocess, "run", return_value=done):
+            self.assertEqual(transport.push_pages([base]), ({}, [base]))
+        summary = transport.timings.summary()
+        self.assertEqual(summary["execution_routes"]["onprem/scans"]["failed"], 0)
+        self.assertEqual(summary["scan_pages"]["onprem"], {"pushed": 0, "missing": 1})
 
     def test_phases_add_up_and_report_as_they_end(self):
         ticker, lines = Ticker(), []

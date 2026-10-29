@@ -482,6 +482,7 @@ class Timings:
         self.phases = {}
         self.commands = {}
         self.execution_routes = {}
+        self.scan_pages = {}
         self.current = None
 
     @staticmethod
@@ -533,6 +534,7 @@ class Timings:
             "phases": copy.deepcopy(self.phases),
             "commands": copy.deepcopy(self.commands),
             "execution_routes": copy.deepcopy(self.execution_routes),
+            "scan_pages": copy.deepcopy(self.scan_pages),
         }
 
 
@@ -903,6 +905,9 @@ class Transport:
                 found[base] = match[0]
         require(set(found) | set(missing) == set(bases) and not (set(found) & set(missing)),
                 "scan push did not account for every claimed page")
+        counts = self.timings.scan_pages.setdefault(route, {"pushed": 0, "missing": 0})
+        counts["pushed"] += len(found)
+        counts["missing"] += len(missing)
         return found, missing
 
     @timed("release")
