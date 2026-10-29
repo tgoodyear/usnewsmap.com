@@ -34,7 +34,8 @@ test("mounts the normal visible app immediately without waiting for results or t
 test("reveals the static map and excerpts when API requests fail, then recovers", async () => {
   shell();
   const mount = vi.fn(() => {
-    document.getElementById("root")!.innerHTML = '<p role="alert">Could not load metadata</p>';
+    document.getElementById("root")!.innerHTML =
+      '<div data-search-error="true"><p role="alert">Could not load metadata</p></div>';
   });
   expect(enhanceSearchLanding(mount)).toBe(true);
   expect(mount).toHaveBeenCalledOnce();
@@ -47,6 +48,18 @@ test("reveals the static map and excerpts when API requests fail, then recovers"
   expect(document.getElementById("search-landing")!.classList.contains("search-static-fallback")).toBe(true);
   expect(document.querySelector('[role="status"]')?.textContent).toContain("unavailable");
   root.innerHTML = '<main data-share-ready="false">Retrying</main>';
+  await mutations();
+  expect(root.hidden).toBe(false);
+  expect(document.getElementById("search-landing")!.hidden).toBe(true);
+});
+
+test("keeps the normal app usable when optional newspaper or sample requests fail", async () => {
+  shell();
+  const root = document.getElementById("root")!;
+  enhanceSearchLanding(() => {
+    root.innerHTML =
+      '<main data-share-ready="false"><input type="search"><p role="alert">Newspaper list unavailable</p><section class="visually-hidden" inert><p role="alert">Sample results unavailable</p></section></main>';
+  });
   await mutations();
   expect(root.hidden).toBe(false);
   expect(document.getElementById("search-landing")!.hidden).toBe(true);

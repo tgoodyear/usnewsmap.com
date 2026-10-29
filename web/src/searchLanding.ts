@@ -34,7 +34,7 @@ export function enhanceSearchLanding(mount: () => void): boolean {
       discard();
       return;
     }
-    const failed = !!root.querySelector('[role="alert"], [data-basemap-error="true"]');
+    const failed = !!root.querySelector('[data-search-error="true"], [data-basemap-error="true"]');
     if (root.hidden !== failed) root.hidden = failed;
     landing.classList.toggle("search-static-fallback", failed);
     landing.hidden = !failed;

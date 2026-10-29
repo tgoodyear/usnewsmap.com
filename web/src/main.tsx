@@ -17,6 +17,10 @@ import { enhanceSearchLanding } from "./searchLanding";
 const DatasetsPage = lazy(() => import("./status/StatusPage"));
 const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
+const searchLinks = [...document.querySelectorAll<HTMLAnchorElement>("#common-searches a")].map((link) => ({
+  href: link.getAttribute("href")!,
+  label: link.textContent ?? "",
+}));
 const page = pageFor(window.location.pathname);
 // The old path, where a server didn't redirect it: show the new one.
 if (page === "datasets" && window.location.pathname.replace(/\/+$/, "") === OLD_DATASETS_PATH) {
@@ -65,7 +69,7 @@ function mount() {
         ) : page === "not-found" ? (
           <NotFound />
         ) : (
-          <App />
+          <App searchLinks={searchLinks} />
         )}
       </QueryClientProvider>
     </StrictMode>,

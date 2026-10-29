@@ -525,6 +525,13 @@ select {
   font-size: clamp(1.6rem, 4vw, 2.4rem);
   margin-bottom: 8px;
 }
+.search-links {
+  columns: 2 16rem;
+}
+.search-links li {
+  break-inside: avoid;
+  margin-bottom: 4px;
+}
 .static-search-map {
   margin: 0;
 }

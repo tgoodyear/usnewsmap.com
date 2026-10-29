@@ -108,12 +108,12 @@ const noHits: HitsResponse = {
   next_cursor: null,
 } as unknown as HitsResponse;
 
-function show(search: string) {
+function show(search: string, searchLinks: { href: string; label: string }[] = []) {
   window.history.replaceState(null, "", `/${search}`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <App />
+      <App searchLinks={searchLinks} />
     </QueryClientProvider>,
   );
 }
@@ -136,6 +136,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   window.history.replaceState(null, "", "/");
+});
+
+it("keeps the server's curated and promoted search links on the interactive homepage", () => {
+  show("", [
+    { href: "/search/whigs", label: "whigs" },
+    { href: "/search/cobalt-jubilee", label: "cobalt jubilee" },
+  ]);
+  const nav = screen.getByRole("navigation", { name: "Common newspaper searches" });
+  expect(within(nav).getByRole("link", { name: "whigs" }).getAttribute("href")).toBe("/search/whigs");
+  expect(within(nav).getByRole("link", { name: "cobalt jubilee" }).getAttribute("href")).toBe("/search/cobalt-jubilee");
 });
 
 describe("App under the Congress source (#229)", () => {

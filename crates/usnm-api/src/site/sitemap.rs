@@ -1116,6 +1116,33 @@ mod tests {
             1
         );
         let response = crate::app(st.clone())
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let home = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(home.contains(r#"<nav id="common-searches""#));
+        for path in first
+            .pages
+            .keys()
+            .filter(|path| path.starts_with("/search/"))
+        {
+            assert!(
+                home.contains(&format!(r#"href="{}""#, super::super::escape_html(path))),
+                "{path}"
+            );
+        }
+        assert!(!home.contains(r#"href="/search/amber-jubilee""#));
+        let response = crate::app(st.clone())
             .oneshot(
                 Request::builder()
                     .uri("/search/cobalt-jubilee")

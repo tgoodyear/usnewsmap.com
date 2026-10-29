@@ -76,6 +76,23 @@ test("the static description is in the HTML before the app runs", async ({ reque
   expect(html).toContain('href="https://goodyeartechnical.com/"');
 });
 
+test("the interactive homepage links every sitemap search after React mounts", async ({ page, request }) => {
+  test.skip(!withApi, "the API provides the admitted search links");
+  await page.goto("/");
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toBeVisible();
+  await expect(page.locator("#site-fallback")).toHaveCount(0);
+  const nav = page.getByRole("navigation", { name: "Common newspaper searches" });
+  const xml = await (await request.get("/sitemap.xml")).text();
+  const searches = [...xml.matchAll(/<loc>https:\/\/usnewsmap\.com(\/search\/[^<]+)<\/loc>/g)].map((match) =>
+    match[1]!.replaceAll("&amp;", "&"),
+  );
+  expect(searches.length).toBeGreaterThan(0);
+  await expect(nav.getByRole("link")).toHaveCount(searches.length);
+  for (const href of searches) {
+    await expect(nav.locator(`a[href="${href}"]`)).toBeVisible();
+  }
+});
+
 test("curated searches expose top-city results and homepage links without JavaScript", async ({ browser }) => {
   test.skip(!withApi, "the API renders the search preview");
   test.setTimeout(60_000);
