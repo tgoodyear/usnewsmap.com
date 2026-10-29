@@ -52,7 +52,6 @@ import { SampleResults, topPlace } from "./components/SampleResults";
 import { STATE_NAMES, prepareStates, stateTotals, stateBreaks } from "./engine/states";
 import { StatesLegend, StatesTable } from "./components/StatesPanel";
 import { ShareButton } from "./components/ShareButton";
-import { focusInteractiveSearch } from "./searchLanding";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -60,7 +59,6 @@ const webgl = typeof document !== "undefined" && hasWebGL2();
 const LIST_NAMES = ["above", "below", "places", "states", "earliest", "latest"] as const;
 
 export function App() {
-  useEffect(focusInteractiveSearch, []);
   const [view, setView] = useView();
   // How many times "Show more" was pressed under the home page's examples;
   // kept across searches so Back returns to the same cards.

@@ -383,6 +383,61 @@ pub(super) async fn image(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -
     render_response(render).await
 }
 
+/// Static pages must never substitute an unrelated generic sharing image.
+pub(super) async fn search_map(OriginalUri(uri): OriginalUri, state: Arc<AppState>) -> Response {
+    if uri.query().is_some_and(|query| query.len() > 8192) {
+        return (StatusCode::BAD_REQUEST, "search map query is too long").into_response();
+    }
+    let params: Vec<_> =
+        form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()).collect();
+    let [(key, query)] = params.as_slice() else {
+        return (StatusCode::BAD_REQUEST, "search map requires one query").into_response();
+    };
+    if key != "q" || query.len() > 2048 {
+        return (StatusCode::BAD_REQUEST, "invalid search map query").into_response();
+    }
+    let path = super::search_path(query);
+    let page: Uri = match path.parse() {
+        Ok(page) => page,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    if super::noindex(&page, &state.sitemap) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(card) = Card::new(&path, "") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let render = tokio::spawn(async move { cached(&state, card, false).await });
+    map_response(render).await
+}
+
+async fn map_response(
+    render: tokio::task::JoinHandle<Result<Vec<u8>, Arc<RenderError>>>,
+) -> Response {
+    match tokio::time::timeout(std::time::Duration::from_secs(45), render).await {
+        Ok(Ok(Ok(body))) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "public, max-age=300"),
+            ],
+            body,
+        )
+            .into_response(),
+        _ => {
+            tracing::warn!("static search map unavailable");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::RETRY_AFTER, "10"),
+                ],
+                "Search map is temporarily unavailable",
+            )
+                .into_response()
+        }
+    }
+}
+
 fn digest(bytes: impl AsRef<[u8]>) -> String {
     Sha256::digest(bytes.as_ref())
         .iter()
@@ -504,12 +559,20 @@ async fn cached(
     let identity = identity(state).await.map_err(Arc::new)?;
     let normalized = overview_key(&card.image);
     let key = format!("previews/{identity}/{}.png", digest(&normalized));
-    let persistent = EXAMPLE_CARDS
-        .iter()
-        .any(|(_, example)| overview_key(&example.image) == normalized)
-        .then(|| state.responses.clone())
-        .flatten()
-        .map(|store| (store, key.clone()));
+    let admitted_base = card
+        .url
+        .strip_prefix(SITE)
+        .and_then(|path| path.parse::<Uri>().ok())
+        .is_some_and(|uri| {
+            uri.path().starts_with("/search/") && !super::noindex(&uri, &state.sitemap)
+        });
+    let persistent = (admitted_base
+        || EXAMPLE_CARDS
+            .iter()
+            .any(|(_, example)| overview_key(&example.image) == normalized))
+    .then(|| state.responses.clone())
+    .flatten()
+    .map(|store| (store, key.clone()));
     state
         .previews
         .get(key, persistent, background, async {
@@ -558,14 +621,22 @@ pub(crate) fn spawn(state: Arc<AppState>) {
                 previous = current;
                 cursor = 0;
             }
-            let Some((id, card)) = EXAMPLE_CARDS.get(cursor) else {
+            let searches = state.sitemap.search_paths();
+            let card = if let Some(path) = searches.get(cursor) {
+                Card::new(path, "")
+            } else {
+                EXAMPLE_CARDS
+                    .get(cursor - searches.len())
+                    .map(|(_, card)| card.clone())
+            };
+            let Some(card) = card else {
                 cursor = 0;
                 continue;
             };
-            match cached(&state, card.clone(), true).await {
-                Ok(_) => tracing::info!(example = id, "example screenshot warmed"),
+            match cached(&state, card, true).await {
+                Ok(_) => tracing::info!("search screenshot warmed"),
                 Err(error) => {
-                    tracing::warn!(example = id, %error, "example screenshot warm-up deferred")
+                    tracing::warn!(%error, "search screenshot warm-up deferred")
                 }
             }
             cursor += 1;
@@ -615,6 +686,43 @@ mod tests {
 
     static IMAGES: LazyLock<moka::future::Cache<String, Vec<u8>>> =
         LazyLock::new(|| moka::future::Cache::new(1024));
+
+    #[tokio::test]
+    async fn static_maps_never_return_generic_images_when_capture_fails_or_is_busy() {
+        use http_body_util::BodyExt;
+
+        for error in [
+            RenderError::Busy,
+            RenderError::Failed("capture failed".to_owned()),
+        ] {
+            let response = map_response(tokio::spawn(async move { Err(Arc::new(error)) })).await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::RETRY_AFTER], "10");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(
+                !body.starts_with(b"\x89PNG"),
+                "never show another query's map"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn static_map_endpoint_rejects_unlisted_searches_and_extra_parameters() {
+        let state = state().await;
+        for (uri, status) in [
+            ("/search-map.png", StatusCode::BAD_REQUEST),
+            (
+                "/search-map.png?q=not-a-listed-search",
+                StatusCode::NOT_FOUND,
+            ),
+            ("/search-map.png?q=whigs&state=NY", StatusCode::BAD_REQUEST),
+            ("/search-map.png?q=whigs&q=gold", StatusCode::BAD_REQUEST),
+        ] {
+            let response = search_map(OriginalUri(uri.parse().unwrap()), state.clone()).await;
+            assert_eq!(response.status(), status, "{uri}");
+        }
+    }
 
     #[tokio::test]
     async fn changing_the_selected_renderer_invalidates_persisted_identity() {

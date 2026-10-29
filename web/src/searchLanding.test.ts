@@ -1,60 +1,69 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { enhanceSearchLanding, focusInteractiveSearch } from "./searchLanding";
+import { enhanceSearchLanding } from "./searchLanding";
 
 afterEach(() => {
   document.body.innerHTML = "";
-  window.history.replaceState(null, "", "/");
 });
 
-test("listed searches retain readable results without mounting the API-dependent app", () => {
+function shell() {
   document.body.innerHTML =
-    '<div id="root"></div><div id="search-landing"><h1>Newspaper results for whigs</h1><button id="explore-map" hidden>Explore interactive map</button><section aria-label="Sample results"><a href="https://www.loc.gov/">A newspaper page</a></section></div>';
+    '<div id="root"></div><div id="search-landing"><main><h1>Newspaper results for whigs</h1><img alt="Map for whigs"><a href="https://www.loc.gov/">A newspaper page</a></main></div>';
+}
+
+async function mutations() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("automatically mounts offscreen and retains the static map when API requests fail", async () => {
+  shell();
   const mount = vi.fn(() => {
-    document.getElementById("root")!.textContent = "Could not load metadata";
+    document.getElementById("root")!.innerHTML = '<p role="alert">Could not load metadata</p>';
   });
   expect(enhanceSearchLanding(mount)).toBe(true);
-  expect(mount).not.toHaveBeenCalled();
-  const button = document.querySelector<HTMLButtonElement>("button")!;
-  expect(button.hidden).toBe(false);
-  button.click();
   expect(mount).toHaveBeenCalledOnce();
+  await mutations();
+  expect(document.querySelector("#search-landing img")).not.toBeNull();
   expect(document.querySelector("#search-landing a")?.textContent).toBe("A newspaper page");
-  expect(document.querySelector("#search-landing [inert], #search-landing .visually-hidden")).toBeNull();
-  expect(button.hidden).toBe(true);
-  button.click();
-  expect(mount).toHaveBeenCalledOnce();
+  expect(document.getElementById("root")!.inert).toBe(true);
+  expect(document.getElementById("root")!.getAttribute("aria-hidden")).toBe("true");
+  expect(document.querySelector('[role="status"]')?.textContent).toContain("unavailable");
 });
 
-test("changing searches or filters hides stale results, and Back restores them", () => {
-  window.history.replaceState(null, "", "/search/whigs");
-  document.body.innerHTML =
-    '<div id="root"></div><div id="search-landing"><button id="explore-map" hidden>Explore map</button></div>';
-  enhanceSearchLanding(vi.fn());
-  const landing = document.getElementById("search-landing")!;
-  for (const [url, hidden] of [
-    ["/search/other-query", true],
-    ["/search/whigs?state=NY", true],
-    ["/search/whigs?bucket=year", false],
-    ["/search/whigs", false],
-  ] as const) {
-    window.history.replaceState(null, "", url);
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(landing.hidden, url).toBe(hidden);
+test("replaces all static elements only after the actual basemap and result overlay are ready", async () => {
+  shell();
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+  try {
+    const root = document.getElementById("root")!;
+    enhanceSearchLanding(() => {
+      root.innerHTML =
+        '<main data-share-ready="false"><div data-testid="map" data-basemap-ready="false" data-overlay-ready="false"></div></main>';
+    });
+    const results = root.querySelector("main")!;
+    const map = root.querySelector("[data-testid]")!;
+    results.dataset.shareReady = "true";
+    await mutations();
+    expect(frames).toHaveLength(0);
+    map.setAttribute("data-basemap-ready", "true");
+    map.setAttribute("data-overlay-ready", "true");
+    await mutations();
+    expect(frames).toHaveLength(1);
+    expect(document.getElementById("search-landing")).not.toBeNull();
+    frames.shift()!(0);
+    expect(document.getElementById("search-landing")).not.toBeNull();
+    frames.shift()!(0);
+    expect(document.getElementById("search-landing")).toBeNull();
+    expect(root.inert).toBe(false);
+    expect(root.hasAttribute("aria-hidden")).toBe(false);
+    expect(root.classList.contains("search-hydrating")).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
   }
 });
 
-test("mounting the app moves focus and leaves only one main landmark", () => {
-  document.body.innerHTML =
-    '<div id="root"><main><input type="search" aria-label="Search"></main></div><div id="search-landing"><main>Original results</main></div>';
-  focusInteractiveSearch();
-  expect(document.activeElement).toBe(document.querySelector("input"));
-  expect(document.querySelector("#search-landing main")).toBeNull();
-  expect(document.querySelector("#search-landing section")?.getAttribute("aria-label")).toBe(
-    "Original newspaper search results",
-  );
-});
-
-test("unlisted searches and other pages use the dynamic app", () => {
+test("unlisted searches and other pages use the dynamic app directly", () => {
   document.body.innerHTML = '<div id="root"><div id="site-fallback">Search newspapers</div></div>';
-  expect(enhanceSearchLanding(vi.fn())).toBe(false);
+  const mount = vi.fn();
+  expect(enhanceSearchLanding(mount)).toBe(false);
+  expect(mount).not.toHaveBeenCalled();
 });

@@ -90,6 +90,7 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
     // "file name too long" with a 500, so such paths skip it and are answered
     // like any other path with no file.
     let sharing = state.clone();
+    let static_map = state.clone();
     let robots = state.clone();
     let app_paths = move |req: Request, next: Next| {
         let index = index.clone();
@@ -131,6 +132,10 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
         .route(
             "/share-image.png",
             axum::routing::get(move |uri| social::image(uri, sharing.clone())),
+        )
+        .route(
+            "/search-map.png",
+            axum::routing::get(move |uri| social::search_map(uri, static_map.clone())),
         )
         .fallback_service(files)
         .layer(middleware::from_fn(app_paths))
@@ -392,8 +397,16 @@ fn insert_content(body: Vec<u8>, content: &str) -> Vec<u8> {
     }
 }
 
-fn search_landing(body: Vec<u8>, preview: &str) -> Vec<u8> {
+fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
     let body = insert_content(body, preview);
+    let image_query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("q", query)
+        .finish();
+    let map = format!(
+        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" fetchpriority=\"high\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
+        escape_html(&image_query),
+        escape_html(query),
+    );
     match String::from_utf8(body) {
         Ok(html) => html
             .replacen(
@@ -408,13 +421,13 @@ fn search_landing(body: Vec<u8>, preview: &str) -> Vec<u8> {
                 1,
             )
             .replacen(
-                "<section aria-label=\"Sample results\">",
-                "<p><a href=\"/\">Search other newspaper topics</a></p><button id=\"explore-map\" type=\"button\" class=\"button button--primary\" hidden>Explore interactive map</button><section aria-label=\"Sample results\">",
+                r#"<main class="empty">"#,
+                &format!(r#"<main class="search-static">{map}<div class="empty">"#),
                 1,
             )
             .replacen(
                 "</main>",
-                "</main><footer class=\"empty\" aria-label=\"Search landing information\"><nav aria-label=\"Site information\"><p><a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>",
+                "</div></main><footer class=\"empty\" aria-label=\"Search landing information\"><nav aria-label=\"Site information\"><p><a href=\"/\">Search other newspaper topics</a> · <a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>",
                 1,
             )
             .into_bytes(),
@@ -668,7 +681,7 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
             // Only admitted base searches add backend work on a page load.
             if !noindex(req.uri(), &state.sitemap) {
                 match search_preview(&state, &q).await {
-                    Ok(preview) => body = search_landing(body, &preview),
+                    Ok(preview) => body = search_landing(body, &preview, &q),
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
                         return error.into_response();
