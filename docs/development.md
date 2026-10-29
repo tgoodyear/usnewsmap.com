@@ -198,6 +198,15 @@ What CI runs and CONTRIBUTING.md does not list:
 
 ### Script tests
 
+Use Python 3.12 in a virtual environment and install the pinned picture-test dependency before running the generic suite. Its automatically discovered picture tests read real Parquet fixtures with PyArrow; CI performs the same installation.
+
+```sh
+python3.12 -m venv /tmp/usnm-script-tests
+. /tmp/usnm-script-tests/bin/activate
+python -m pip install -r scripts/pictures/requirements.txt
+scripts/ci/run-unit-tests.py
+```
+
 `scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, so a new test file runs in CI without being added to a list in `ci.yml`. CI uses three isolated `script tests` shards, alongside the configuration checks; the required `infra (bicep lint, build)` gate waits for all relevant children and fails if any fails or is cancelled. Run it from anywhere in the checkout; `--list` shows what it would run. `--shard-index 0 --shard-count 3` selects one deterministic shard, balancing measured heavy modules; `--timings FILE` writes per-module timings and outcomes, retained by CI as artifacts. With no sharding flags it still runs every selected module locally. `python3 -m unittest discover -s scripts` is not a substitute: with no `__init__.py` under `scripts/` it reads only the files directly in `scripts/`, where no test sits, so it finds none of those in `scripts/boinc/`, `scripts/azure/` and the other directories. The runner leaves out the tests that need something the generic job lacks (Pillow, the ops venv, the C++ headers, or a workflow of their own) and the archived scripts under `scripts/archive/`, with the reason for each in its `EXCLUDE` table; those run in steps of their own. Run one file with `python3 -m unittest -v scripts/boinc/test_install.py`.
 
 ### Data that is not in the tree
