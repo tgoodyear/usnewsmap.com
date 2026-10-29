@@ -218,6 +218,7 @@ def run_pinned(root_fd, work, config, max_entries, max_seconds):
                     observed_until = saved[2]
             inventory.sync_dir(work)
             processed = 0
+            previous_observed_until = observed_until
             deadline = time.monotonic() + max_seconds
             with conn:
                 while processed < max_entries and time.monotonic() < deadline:
@@ -234,6 +235,7 @@ def run_pinned(root_fd, work, config, max_entries, max_seconds):
                                   f"directory changed: {relative}; use a new inventory")
                         if not row[3]:
                             capture_listing(conn, fd, relative)
+                            observed_until = now()
                         while processed < max_entries and time.monotonic() < deadline:
                             next_entry = conn.execute(
                                 "SELECT path FROM pending WHERE directory=? ORDER BY path LIMIT 1",
@@ -254,7 +256,7 @@ def run_pinned(root_fd, work, config, max_entries, max_seconds):
                                          (relative, child))
                             processed += 1
                             observed_until = now()
-                if processed:
+                if observed_until != previous_observed_until:
                     conn.execute("UPDATE metadata SET observed_until=?", (observed_until,))
             result = summary(conn, config, processed, started, observed_until)
             inventory.publish(work / "report.json", (json.dumps(result, indent=2) + "\n").encode())

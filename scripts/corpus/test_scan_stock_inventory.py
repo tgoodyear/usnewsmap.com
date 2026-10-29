@@ -67,6 +67,17 @@ class StockTests(unittest.TestCase):
         self.assertEqual(report["cache_sets"]["keep"]["entry_kinds"], {"symlink": 1})
         self.assertEqual(report["distinct_observed_inodes"], 0)
 
+    def test_empty_cache_listings_have_durable_evidence_time_without_noop_refresh(self):
+        first = self.run_stock()
+        self.assertTrue(first["finished"])
+        self.assertEqual(first["entries_this_invocation"], 0)
+        self.assertEqual(first["distinct_observed_inodes"], 0)
+        self.assertIsNotNone(first["observed_until"])
+        with patch.object(stock, "now", return_value="2099-01-01T00:00:00+00:00"):
+            resumed = self.run_stock()
+        self.assertEqual(resumed["observed_until"], first["observed_until"])
+        self.assertEqual(resumed["generated_at"], "2099-01-01T00:00:00+00:00")
+
     def test_error_rolls_back_slice_and_retry_does_not_double_count(self):
         self.scan("keep/1.jpg")
         self.scan("keep/2.jpg")
