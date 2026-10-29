@@ -1,13 +1,16 @@
 [Unit]
 Description=usnm BOINC: Apache's port 80 for loopback only (#1357)
-# Reapplied whenever nftables.service flushes the ruleset.
+# nftables.service flushes the ruleset on start, restart and reload: PartOf= follows the first
+# two, ReloadPropagatedFrom= the third, and ExecReload= reapplies the table.
 After=nftables.service
 PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/usnm-boinc/lan-guard.nft
+ExecReload=/usr/sbin/nft -f /etc/usnm-boinc/lan-guard.nft
 ExecStop=-/usr/sbin/nft delete table inet usnm_boinc_lan
 
 [Install]

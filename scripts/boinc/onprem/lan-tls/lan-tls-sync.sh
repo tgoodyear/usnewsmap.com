@@ -27,6 +27,9 @@ while [ $# -gt 0 ]; do
 done
 [[ $VAULT =~ ^[a-z0-9-]{3,24}$ && $SECRET =~ ^[A-Za-z0-9-]{1,127}$ ]] || fail "bad --vault or --secret"
 [[ $DIR =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "--dir: an absolute path"
+# The Arc key file's contents go to this endpoint: loopback only, as lib.sh's kv_token checks.
+[[ $IDENTITY_ENDPOINT =~ ^http://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\])(:[0-9]{1,5})?/[^[:space:]?#]*$ ]] ||
+  fail "IDENTITY_ENDPOINT must be plain HTTP on a loopback address"
 
 kv_token() {
   local url realm
@@ -43,6 +46,17 @@ kv_token() {
     -H @<(printf 'Authorization: Basic %s\n' "$(cat "$realm")") "$url" | jq -er .access_token
 }
 
+# Caddy runs whenever a validated pair is installed. Called on every run, so a restart that
+# failed once (or a first certificate after setup) is retried without the files changing.
+activate() {
+  [ -s "$DIR/fullchain.pem" ] || return 0
+  systemctl is-enabled -q caddy 2>/dev/null || systemctl enable -q caddy
+  if [ "${1:-}" = restart ] || ! systemctl is-active -q caddy; then
+    # Caddy keeps loaded certificates across a reload of an unchanged config; restart instead.
+    systemctl restart caddy || fail "caddy failed to start"
+  fi
+}
+
 umask 077
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -52,6 +66,7 @@ curl -fsS --max-time 30 -H @<(printf 'Authorization: Bearer %s\n' "$token") \
   fail "can't read secret $SECRET"
 if [ "$(cat "$work/bundle")" = uninitialized ]; then
   log "no certificate published yet"
+  activate
   exit 0
 fi
 awk -v key="$work/privkey.pem" -v crt="$work/fullchain.pem" -v leaf="$work/leaf.pem" '
@@ -69,6 +84,7 @@ openssl verify -purpose sslserver -untrusted "$work/fullchain.pem" "$work/leaf.p
   fail "chain does not verify against the system trust store"
 
 if cmp -s "$work/fullchain.pem" "$DIR/fullchain.pem" && cmp -s "$work/privkey.pem" "$DIR/privkey.pem"; then
+  activate
   exit 0
 fi
 if [ -s "$DIR/fullchain.pem" ]; then
@@ -83,7 +99,4 @@ install -m 0644 -o root -g "$GROUP" "$work/fullchain.pem" "$DIR/.fullchain.pem.n
 mv -f "$DIR/.privkey.pem.new" "$DIR/privkey.pem"
 mv -f "$DIR/.fullchain.pem.new" "$DIR/fullchain.pem"
 log "installed $(openssl x509 -in "$DIR/fullchain.pem" -noout -enddate)"
-# Caddy keeps loaded certificates across a reload of an unchanged config; restart instead.
-if systemctl is-enabled -q caddy 2>/dev/null; then
-  systemctl restart caddy
-fi
+activate restart

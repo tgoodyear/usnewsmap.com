@@ -20,12 +20,10 @@ install -m 0644 "$here/usnm-boinc-lan-guard.service" "$here/usnm-boinc-lan-tls.s
 systemctl daemon-reload
 systemctl enable --now usnm-boinc-lan-guard.service
 systemctl restart usnm-boinc-lan-guard.service
-# Caddy runs only once a certificate is installed; until then it would fail on every boot.
-systemctl disable --now caddy >/dev/null 2>&1 || true
-/usr/local/sbin/usnm-boinc-lan-tls-sync
-if [ -s /etc/usnm-boinc/lan-tls/fullchain.pem ]; then
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
-  systemctl enable caddy >/dev/null 2>&1
-  systemctl restart caddy
+# Without a certificate Caddy can't start, so keep it off until the sync installs one; the
+# sync then enables and starts it. A listener that already has one is left running.
+if [ ! -s /etc/usnm-boinc/lan-tls/fullchain.pem ]; then
+  systemctl disable --now caddy >/dev/null 2>&1 || true
 fi
 systemctl enable --now usnm-boinc-lan-tls.timer
+/usr/local/sbin/usnm-boinc-lan-tls-sync
