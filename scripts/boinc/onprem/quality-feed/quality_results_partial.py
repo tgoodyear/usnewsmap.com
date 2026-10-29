@@ -350,6 +350,8 @@ def host_pass(args):
                  else "collection_failed" if acquired else "remote_admission_failed")
         print(json.dumps({"phase": phase, "exit": response.returncode}),
               file=sys.stderr, flush=True)
+        if phase == "step_lock_busy":
+            raise SystemExit(75)
     response.check_returncode()
     if not acquired:
         raise RuntimeError("Missing step-lock acquisition receipt; refusing snapshot transfer")
@@ -442,7 +444,12 @@ def main(argv=None):
         report = verified_load(args)
     else:
         with args.lock.open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(json.dumps({"phase": "host_lock_busy", "exit": 75}),
+                      file=sys.stderr, flush=True)
+                raise SystemExit(75) from None
             report = host_pass(args)
     print(json.dumps(report, sort_keys=True), flush=True)
 

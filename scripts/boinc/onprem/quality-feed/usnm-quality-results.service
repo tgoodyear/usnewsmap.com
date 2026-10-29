@@ -8,6 +8,7 @@ ConditionPathExists=/etc/usnm/quality-ship.env
 
 [Service]
 Type=oneshot
+SuccessExitStatus=75
 EnvironmentFile=/etc/usnm/quality-ship.env
 Environment=CTID=215
 Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
