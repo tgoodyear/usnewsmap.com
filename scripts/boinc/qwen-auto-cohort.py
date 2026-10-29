@@ -180,8 +180,6 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
     require(type(job["v"]) is int and job["v"] == 1 and type(job["prompt_version"]) is int
             and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
             and job["group"] == "qwen-nonenglish-v1", "Unreviewed prompt/budget/cohort")
-    if job["language"] not in COHORT_LANGUAGES:
-        raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(job["language"]))
     crops = job["crops"]
     require(1 <= len(crops) <= 12 and len({crop["id"] for crop in crops}) == len(crops)
             and all(isinstance(crop["id"], str) and crop["id"] and
@@ -205,6 +203,9 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
             and re.fullmatch("[a-f0-9]{64}", provenance["sha256"])
             and provenance["archive"] and provenance["member"] and int(provenance["archive_bytes"]) > 0,
             "Source-quality/archive-provenance binding mismatch")
+    # Checked last: an out-of-cohort job is only passed over once every integrity check holds.
+    if job["language"] not in COHORT_LANGUAGES:
+        raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(job["language"]))
     return {"workunit": int(wu["id"]), "job_id": job_id, "doc_id": doc, "crops": len(crops),
             "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]),
             "quality_sha256": sha(quality_raw), "provenance_sha256": sha(provenance_raw),
@@ -418,6 +419,12 @@ def run(args):
             if skipped:
                 output |= {"out_of_cohort_skipped": skipped}
             if not selected:
+                if skipped and ids:
+                    # Every fresh unit in this page is out of cohort and never becomes admissible:
+                    # move past it so later in-cohort work is reached.
+                    state["scan_after"] = ids[-1]
+                    if args.apply:
+                        persist(state_path, state)
                 return output | {"status": "no-fresh-verified-pairs"}
             if available:
                 # The left-behind replicas stay ordinary unsent work for every other eligible class;
