@@ -15,7 +15,7 @@ from pathlib import Path
 PAGE_METRICS = ("cer_vs_loc", "dice_vs_loc", "wer_vs_loc", "total_ms")
 CROP_METRICS = ("cer_vs_vlm", "dice_vs_vlm")
 DOC_ID = re.compile(
-    r"(sn\d{8})_(\d{4}-\d{2}-\d{2})_ed-[1-9]\d*_seq-[1-9]\d*"
+    r"([a-z0-9]{1,16})_(\d{4}-\d{2}-\d{2})_ed-([1-9]\d*)_seq-([1-9]\d*)"
 )
 
 
@@ -26,6 +26,8 @@ def page_id(value):
     match = DOC_ID.fullmatch(local)
     if not match:
         raise ValueError(f"invalid LoC doc_id: {value!r}")
+    if any(int(match[index]) > 65535 for index in (3, 4)):
+        raise ValueError(f"LoC edition/sequence exceeds u16: {value!r}")
     date = datetime.date.fromisoformat(match[2])
     return f"loc:{local}", match[1], date.year
 
@@ -69,23 +71,57 @@ def stats(rows, name):
     }
 
 
-def summarize(ids, readers, pages, crops, crops_per_page):
+def page_stats(successes, pages, name):
+    if name == "total_ms":
+        return stats([row for _, row in successes], name)
+    count_field = "chars" if name == "cer_vs_loc" else "words"
+    eligible = []
+    empty = 0
+    unknown = 0
+    for doc, row in successes:
+        reference = row if row["reader"] in {"loc", "loc-hist"} else (
+            pages.get((doc, "loc")) or pages.get((doc, "loc-hist"))
+        )
+        count = (
+            reference.get(count_field)
+            if reference is not None and reference["outcome"] == "ok" else None
+        )
+        if count is None:
+            unknown += 1
+        elif count == 0:
+            empty += 1
+        else:
+            eligible.append(row)
+    return {
+        **stats(eligible, name),
+        "empty_reference_rows": empty,
+        "unknown_reference_rows": unknown,
+    }
+
+
+def summarize(ids, readers, pages, crops, max_crops_per_page):
     page_report = {}
     crop_report = {}
     crop_keys = {(doc, crop) for doc, crop, _ in crops if doc in ids}
     for reader in readers:
         outcomes = collections.Counter()
         successes = []
+        present = []
         for doc in sorted(ids):
             row = pages.get((doc, reader))
-            outcome = row["outcome"] if row is not None else "missing"
+            outcome = row["outcome"] if row is not None else "unknown_no_reader_row"
             outcomes[outcome] += 1
+            if row is not None:
+                present.append(row)
             if outcome == "ok":
-                successes.append(row)
+                successes.append((doc, row))
         page_report[reader] = {
             "outcomes": dict(sorted(outcomes.items())),
+            "reported_reader_row_languages": dict(sorted(collections.Counter(
+                row.get("language") or "unreported" for row in present
+            ).items())),
             "metrics_on_successes": {
-                name: stats(successes, name) for name in PAGE_METRICS
+                name: page_stats(successes, pages, name) for name in PAGE_METRICS
             },
         }
         selected = [
@@ -110,22 +146,23 @@ def summarize(ids, readers, pages, crops, crops_per_page):
         }
     return {
         "pages": len(ids),
-        "planned_crops": len(ids) * crops_per_page,
+        "crop_upper_bound": len(ids) * max_crops_per_page,
         "observed_crops": len(crop_keys),
-        "unobserved_planned_crops": len(ids) * crops_per_page - len(crop_keys),
+        "unused_crop_capacity": len(ids) * max_crops_per_page - len(crop_keys),
+        "unobserved_staged_crops": None,
         "page_readers": page_report,
         "crop_readers": crop_report,
     }
 
 
-def report(sample, page_rows, crop_rows, readers, crops_per_page):
+def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
     if not readers or len(set(readers)) != len(readers) or any(
         not isinstance(reader, str) or not reader.strip() or reader == "vlm"
         for reader in readers
     ):
         raise ValueError("provide distinct nonempty OCR reader names, not vlm")
-    if isinstance(crops_per_page, bool) or not isinstance(crops_per_page, int) or crops_per_page < 1:
-        raise ValueError("crops per page must be a positive integer")
+    if isinstance(max_crops_per_page, bool) or not isinstance(max_crops_per_page, int) or max_crops_per_page < 1:
+        raise ValueError("maximum crops per page must be a positive integer")
     cohort = {}
     for row in sample:
         doc, title, year = page_id(row.get("doc_id"))
@@ -166,10 +203,19 @@ def report(sample, page_rows, crop_rows, readers, crops_per_page):
                     raise ValueError(f"{doc}/{crop}: invalid vlm_model")
                 if text is not None and text.strip() and model is None:
                     raise ValueError(f"{doc}/{crop}: a nonempty VLM reference needs its model identifier")
-                reference = (text, model)
+                rectangle = tuple(row.get(name) for name in ("x0", "y0", "x1", "y1"))
+                if any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or not 0 <= value <= 4294967295 for value in rectangle
+                ) or rectangle[0] >= rectangle[2] or rectangle[1] >= rectangle[3]:
+                    raise ValueError(f"{doc}/{crop}: invalid exported crop rectangle")
+                stratum = row.get("stratum")
+                if not isinstance(stratum, str) or not stratum.strip():
+                    raise ValueError(f"{doc}/{crop}: missing exported crop stratum")
+                reference = (rectangle, stratum, text, model)
                 previous = references.setdefault((doc, crop), reference)
                 if previous != reference:
-                    raise ValueError(f"{doc}/{crop}: inconsistent VLM reference")
+                    raise ValueError(f"{doc}/{crop}: inconsistent VLM reference or crop geometry/stratum")
                 if model is not None:
                     models.add(model)
                 else:
@@ -177,8 +223,14 @@ def report(sample, page_rows, crop_rows, readers, crops_per_page):
                 key = (doc, crop, reader)
             else:
                 outcome = row.get("outcome")
-                if not isinstance(outcome, str) or not outcome.strip() or outcome == "missing":
-                    raise ValueError(f"{doc}/{reader}: missing or reserved outcome")
+                if outcome not in ("ok", "timeout", "failed", "unit_error"):
+                    raise ValueError(f"{doc}/{reader}: invalid reported reader-row outcome")
+                for count_field in ("chars", "words"):
+                    count = row.get(count_field)
+                    if count is not None and (
+                        isinstance(count, bool) or not isinstance(count, int) or count < 0
+                    ):
+                        raise ValueError(f"{doc}/{reader}: invalid {count_field} count")
                 language = row.get("language")
                 if language is not None and (not isinstance(language, str) or not language.strip()):
                     raise ValueError(f"{doc}/{reader}: invalid reported language")
@@ -189,8 +241,8 @@ def report(sample, page_rows, crop_rows, readers, crops_per_page):
     if len(models) > 1:
         raise ValueError("do not pool comparisons against different VLM models")
     per_page_crops = collections.Counter(doc for doc, _ in references)
-    if any(count > crops_per_page for count in per_page_crops.values()):
-        raise ValueError("observed crops exceed the declared crops-per-page plan")
+    if any(count > max_crops_per_page for count in per_page_crops.values()):
+        raise ValueError("observed crops exceed the declared maximum crops per page")
     groups = collections.defaultdict(set)
     for doc, (title, year) in cohort.items():
         groups[(title, year)].add(doc)
@@ -203,28 +255,31 @@ def report(sample, page_rows, crop_rows, readers, crops_per_page):
             "VLM identifiers are reported metadata, not verified executable/model digests.",
             "total_ms is reported per reader; do not sum it as campaign wall or CPU time.",
             "An absent crop is unobserved, not a successful comparison or a known timeout.",
+            "k_crops is an upper bound; without staged crop manifests actual missing crops are unknown.",
+            "Absent reader rows do not distinguish failed, timeout, pending or given-up pages.",
+            "LoC comparisons exclude empty or unknown reference counts; timings are retained.",
             "Stratum summaries are unweighted; the frozen sample controls representativeness.",
             "The sample declares German pages; reported scorer languages are retained separately.",
         ],
         "sample_pages": sorted(cohort),
-        "reported_page_languages": dict(sorted(collections.Counter(
+        "reported_reader_row_languages": dict(sorted(collections.Counter(
             row.get("language") or "unreported" for row in pages.values()
         ).items())),
         "reported_vlm_models": sorted(models),
         "crop_rows_without_model_identity": unreported_models,
-        "overall": summarize(set(cohort), readers, pages, crops, crops_per_page),
+        "overall": summarize(set(cohort), readers, pages, crops, max_crops_per_page),
         "by_title_year": [
             {
                 "title": title,
                 "year": year,
-                **summarize(ids, readers, pages, crops, crops_per_page),
+                **summarize(ids, readers, pages, crops, max_crops_per_page),
             }
             for (title, year), ids in sorted(groups.items())
         ],
         "per_page": [
             {
                 "page_id": doc,
-                **summarize({doc}, readers, pages, crops, crops_per_page),
+                **summarize({doc}, readers, pages, crops, max_crops_per_page),
             }
             for doc in sorted(cohort)
         ],
@@ -237,14 +292,14 @@ def main():
     parser.add_argument("--pages", required=True, type=Path, help="Collected page rows as JSONL")
     parser.add_argument("--crops", required=True, type=Path, help="Collected crop rows as JSONL")
     parser.add_argument("--reader", action="append", required=True, help="Expected OCR reader; repeat")
-    parser.add_argument("--crops-per-page", required=True, type=int, help="Frozen staging plan's k_crops")
+    parser.add_argument("--max-crops-per-page", required=True, type=int, help="Staging k_crops upper bound")
     parser.add_argument("--out", required=True, type=Path, help="New report; existing files are refused")
     args = parser.parse_args()
     try:
         sample, sample_sha = read_jsonl(args.sample)
         pages, pages_sha = read_jsonl(args.pages)
         crops, crops_sha = read_jsonl(args.crops)
-        result = report(sample, pages, crops, args.reader, args.crops_per_page)
+        result = report(sample, pages, crops, args.reader, args.max_crops_per_page)
         result["input_sha256"] = {
             "sample": sample_sha,
             "pages": pages_sha,

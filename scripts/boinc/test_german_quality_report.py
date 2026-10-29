@@ -24,11 +24,16 @@ class Report(unittest.TestCase):
              "cer_vs_loc": 1.2, "dice_vs_loc": 0.9, "language": "und"},
             {"doc_id": OTHER, "reader": "ours", "outcome": "timeout",
              "cer_vs_loc": 0.0, "dice_vs_loc": 1.0},
+            {"doc_id": DOC, "reader": "loc", "outcome": "ok",
+             "chars": 10, "words": 2, "language": "und",
+             "cer_vs_loc": 0.0, "wer_vs_loc": 0.0, "dice_vs_loc": 1.0},
         ]
         self.crops = [
             {"doc_id": DOC, "crop_id": "crop-1", "reader": "ours",
+             "x0": 0, "y0": 0, "x1": 10, "y1": 10, "stratum": "low/top",
              "vlm_text": "reference", "vlm_model": "model-a", "cer_vs_vlm": 0.25},
             {"doc_id": DOC, "crop_id": "crop-2", "reader": "ours",
+             "x0": 0, "y0": 10, "x1": 10, "y1": 20, "stratum": "low/bottom",
              "vlm_text": "", "vlm_model": "model-a", "cer_vs_vlm": 0.0},
         ]
 
@@ -39,19 +44,21 @@ class Report(unittest.TestCase):
         result = self.run_report()
         overall = result["overall"]
         self.assertEqual(overall["page_readers"]["ours"]["outcomes"], {"ok": 1, "timeout": 1})
-        self.assertEqual(overall["page_readers"]["loc"]["outcomes"], {"missing": 2})
+        self.assertEqual(overall["page_readers"]["loc"]["outcomes"], {"ok": 1, "unknown_no_reader_row": 1})
         metrics = overall["page_readers"]["ours"]["metrics_on_successes"]
         self.assertEqual(metrics["cer_vs_loc"]["mean"], 1.2)
         self.assertEqual(metrics["dice_vs_loc"]["mean"], 0.9)
         self.assertEqual(len(result["by_title_year"]), 2)
         self.assertEqual(result["sample_pages"], ["loc:" + DOC, "loc:" + OTHER])
-        self.assertEqual(result["reported_page_languages"], {"und": 1, "unreported": 1})
+        self.assertEqual(result["reported_reader_row_languages"], {"und": 2, "unreported": 1})
         crops = overall["crop_readers"]["ours"]
         self.assertEqual(crops["empty_reference_rows"], 1)
         self.assertEqual(crops["metrics_with_nonempty_reference"]["cer_vs_vlm"]["mean"], 0.25)
-        self.assertEqual(overall["unobserved_planned_crops"], 2)
+        self.assertEqual(overall["crop_upper_bound"], 4)
+        self.assertEqual(overall["unused_crop_capacity"], 2)
+        self.assertIsNone(overall["unobserved_staged_crops"])
         self.assertEqual(overall["crop_readers"]["loc"]["missing_rows_for_observed_crops"], 2)
-        self.assertIsNone(overall["page_readers"]["loc"]["metrics_on_successes"]["cer_vs_loc"]["mean"])
+        self.assertEqual(overall["page_readers"]["loc"]["metrics_on_successes"]["cer_vs_loc"]["mean"], 0.0)
 
     def test_duplicate_aliases_and_outside_sample_are_errors(self):
         for kind in ("sample", "pages", "crops", "outside"):
@@ -84,8 +91,9 @@ class Report(unittest.TestCase):
         self.crops = []
         result = self.run_report()["overall"]
         self.assertEqual(result["observed_crops"], 0)
-        self.assertEqual(result["unobserved_planned_crops"], 4)
-        self.assertEqual(result["page_readers"]["ours"]["outcomes"], {"missing": 2})
+        self.assertEqual(result["unused_crop_capacity"], 4)
+        self.assertIsNone(result["unobserved_staged_crops"])
+        self.assertEqual(result["page_readers"]["ours"]["outcomes"], {"unknown_no_reader_row": 2})
 
     def test_comparator_identity_cannot_be_missing_or_mixed(self):
         for model in (None, "different-model"):
@@ -94,7 +102,7 @@ class Report(unittest.TestCase):
                 crops[1]["vlm_text"] = "reference"
                 crops[1]["vlm_model"] = model
                 with self.assertRaises(ValueError):
-                    REPORT.report(self.sample, self.pages, crops, ["ours"], 2)
+                    REPORT.report(self.sample, self.pages, crops, ["ours", "loc"], 2)
 
     def test_native_null_reference_is_missing_not_an_empty_or_successful_reading(self):
         self.crops[1]["vlm_text"] = None
@@ -111,7 +119,54 @@ class Report(unittest.TestCase):
             with self.subTest(sample=sample), self.assertRaises(ValueError):
                 REPORT.report(sample, [], [], ["ours"], 2)
         with self.assertRaisesRegex(ValueError, "exceed"):
-            REPORT.report(self.sample, self.pages, self.crops, ["ours"], 1)
+            REPORT.report(self.sample, self.pages, self.crops, ["ours", "loc"], 1)
+
+    def test_numeric_and_long_lccns_follow_the_native_title_contract(self):
+        for title in ("2010270504", "sn2001063133", "a" * 16):
+            doc = DOC.replace("sn84027101", title)
+            with self.subTest(title=title):
+                result = REPORT.report([{"doc_id": doc, "lang": "deu"}], [], [], ["ours"], 2)
+                self.assertEqual(result["sample_pages"], ["loc:" + doc])
+        for doc in (DOC.replace("sn84027101", "a" * 17),
+                    DOC.replace("sn84027101", "SN84027101"),
+                    DOC.replace("ed-1", "ed-65536"),
+                    DOC.replace("seq-10", "seq-65536")):
+            with self.subTest(doc=doc), self.assertRaises(ValueError):
+                REPORT.report([{"doc_id": doc, "lang": "deu"}], [], [], ["ours"], 2)
+
+    def test_empty_or_unknown_loc_reference_excludes_comparisons_not_timing(self):
+        self.pages[0]["total_ms"] = 12
+        for count, exclusion in ((0, "empty_reference_rows"), (None, "unknown_reference_rows")):
+            with self.subTest(count=count):
+                self.pages[2]["chars"] = count
+                self.pages[2]["words"] = count
+                result = self.run_report()["overall"]["page_readers"]
+                for reader in ("ours", "loc"):
+                    metrics = result[reader]["metrics_on_successes"]
+                    for name in ("cer_vs_loc", "wer_vs_loc", "dice_vs_loc"):
+                        self.assertEqual(metrics[name]["observed"], 0)
+                        self.assertEqual(metrics[name][exclusion], 1)
+                        self.assertIsNone(metrics[name]["mean"])
+                self.assertEqual(result["ours"]["metrics_on_successes"]["total_ms"]["mean"], 12)
+        self.pages[2].update(chars=2, words=0)
+        metrics = self.run_report()["overall"]["page_readers"]["ours"]["metrics_on_successes"]
+        self.assertEqual(metrics["cer_vs_loc"]["observed"], 1)
+        self.assertEqual(metrics["dice_vs_loc"]["empty_reference_rows"], 1)
+
+    def test_crop_join_binds_exported_rectangle_and_stratum(self):
+        for change in ({"x1": 11}, {"stratum": "high/top"}):
+            with self.subTest(change=change):
+                crops = self.crops + [dict(self.crops[0], reader="vlm", **change)]
+                with self.assertRaisesRegex(ValueError, "geometry/stratum"):
+                    REPORT.report(self.sample, self.pages, crops, ["ours", "loc"], 2)
+
+    def test_languages_remain_attributed_to_each_page_and_reader(self):
+        self.pages[2]["language"] = "deu"
+        result = self.run_report()
+        self.assertEqual(result["reported_reader_row_languages"], {"deu": 1, "und": 1, "unreported": 1})
+        page = next(row for row in result["per_page"] if row["page_id"] == "loc:" + DOC)
+        self.assertEqual(page["page_readers"]["ours"]["reported_reader_row_languages"], {"und": 1})
+        self.assertEqual(page["page_readers"]["loc"]["reported_reader_row_languages"], {"deu": 1})
 
     def test_cli_is_deterministic_hash_bound_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,7 +175,7 @@ class Report(unittest.TestCase):
                 (root / name).write_text("".join(json.dumps(row) + "\n" for row in rows))
             args = [sys.executable, str(SCRIPT), "--sample", str(root / "sample"),
                     "--pages", str(root / "pages"), "--crops", str(root / "crops"),
-                    "--reader", "ours", "--reader", "loc", "--crops-per-page", "2"]
+                    "--reader", "ours", "--reader", "loc", "--max-crops-per-page", "2"]
             subprocess.run([*args, "--out", str(root / "first")], check=True, capture_output=True)
             subprocess.run([*args, "--out", str(root / "second")], check=True, capture_output=True)
             first = (root / "first").read_bytes()

@@ -20,7 +20,7 @@ python3 scripts/boinc/german-quality-report.py \
   --sample german-sample.jsonl \
   --pages pages.jsonl --crops crops.jsonl \
   --reader loc --reader ours-tesseract --reader tess-deulatf \
-  --crops-per-page 12 --out german-report.json
+  --max-crops-per-page 12 --out german-report.json
 ```
 
 Keep the frozen `quality sample` JSONL, with `doc_id` and `lang=deu`, separately
@@ -28,8 +28,9 @@ from the results. For an explicitly labelled retrospective reproduction, a list
 of those fields from the original **input** cohort also works; deriving it from
 successful result rows would hide missing pages. Export the collector's page
 and crop tables to JSONL without changing their field names or values. The
-historical experiment already has these two JSONL exports. `--crops-per-page`
-must match the staging plan, and every expected OCR reader must be named.
+historical experiment already has these two JSONL exports. `--max-crops-per-page`
+must match the staging plan's `k_crops` upper bound, and every expected OCR reader
+must be named, including `loc` or `loc-hist` for reference character/word counts.
 
 The create-only JSON report binds the sample, both exports and reporter source
 by SHA-256. It emits source-qualified page IDs, per-title/year and per-page
@@ -40,16 +41,23 @@ normalization; they are not the old `crops.py` script's separately normalized
 scores. Distinct comparator model identifiers cannot be pooled. Identifiers
 such as `qwen3-vl-8b-q4km` are metadata, **not immutable model-file digests**.
 
-Missing readers/pages, failed/timeout page outcomes, missing metrics,
-unobserved planned crops, null VLM references and empty readings remain explicit. An absent
-crop does not identify a timeout; retain native diagnostics for that. Means
-and medians use only successful pages or crops with nonempty VLM references,
-with their observed/missing denominators. Summaries are unweighted. Reader
+Absent reader rows have **unknown outcomes**, not inferred failures or timeouts:
+the collector emits no reader rows for failed, timed-out or given-up units.
+Keep an independent unit-outcome inventory to distinguish these from pending work.
+Reported reader-row outcomes, missing metrics, null VLM references and empty
+readings remain explicit. `k_crops` is only an upper bound: unused crop capacity
+is **not missing work**, and actual unobserved staged crops remain unknown without
+the staging manifests. Crop joins require identical exported rectangles, strata
+and VLM reference metadata. An absent crop does not identify a timeout.
+Means and medians use only successful pages with nonempty, known LoC reference
+counts, or crops with nonempty VLM references. CER requires reference characters;
+WER/Dice require reference words. Empty/unknown reference exclusions and
+observed/missing metric denominators are separate. Summaries are unweighted. Reader
 `total_ms` is kept as reported, not summed into a fictitious campaign duration.
 Layout and hat-derived accuracy metrics are deliberately omitted.
-The scorer's reported page languages are preserved separately from the sample's
-declared German cohort: a historical `und` score must not be relabelled as a
-German-configured run.
+Scorer languages retain page/reader attribution and explicitly labelled
+**reader-row** histograms, separately from the sample's declared German cohort:
+a historical `und` score must not be relabelled as a German-configured run.
 
 This extracts reporting, **not `build_units.py` or a completed 100-page
 benchmark**. Continue to use the native `quality sample`, `texts-export`,
