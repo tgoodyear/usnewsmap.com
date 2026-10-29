@@ -67,3 +67,57 @@ test("unlisted searches and other pages use the dynamic app directly", () => {
   expect(enhanceSearchLanding(mount)).toBe(false);
   expect(mount).not.toHaveBeenCalled();
 });
+
+test.each([
+  ["empty results", '<div class="notice" role="status"><strong>No pages match.</strong> Try widening the dates.</div>'],
+  ["non-WebGL tables", '<div class="tables"><table><tbody><tr><td>Washington</td></tr></tbody></table></div>'],
+])("reveals search controls only after %s are ready", async (_, content) => {
+  shell();
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+  try {
+    const root = document.getElementById("root")!;
+    enhanceSearchLanding(() => {
+      root.innerHTML = `<main data-share-ready="false"><input type="search">${content}</main>`;
+    });
+    await mutations();
+    expect(frames).toHaveLength(0);
+    root.querySelector("main")!.dataset.shareReady = "true";
+    await mutations();
+    frames.shift()!(0);
+    frames.shift()!(0);
+    expect(document.getElementById("search-landing")).toBeNull();
+    expect(root.inert).toBe(false);
+    expect(root.classList.contains("search-hydrating")).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("keeps the static view if readiness regresses before the replacement paints", async () => {
+  shell();
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+  try {
+    const root = document.getElementById("root")!;
+    enhanceSearchLanding(() => {
+      root.innerHTML = '<main data-share-ready="true"><div class="tables"></div></main>';
+    });
+    await mutations();
+    frames.shift()!(0);
+    root.querySelector("main")!.dataset.shareReady = "false";
+    frames.shift()!(0);
+    expect(document.getElementById("search-landing")).not.toBeNull();
+    expect(root.inert).toBe(true);
+    await mutations();
+    expect(frames).toHaveLength(0);
+    root.querySelector("main")!.dataset.shareReady = "true";
+    await mutations();
+    frames.shift()!(0);
+    frames.shift()!(0);
+    expect(document.getElementById("search-landing")).toBeNull();
+    expect(root.inert).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
