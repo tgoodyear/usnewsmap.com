@@ -181,7 +181,8 @@ def inspect(args, record):
         counts[status] += 1
     unfinished_sources = sum(counts[k] for k in ("pending_audit", "awaiting_preparation", "awaiting_publication"))
     unresolved_jobs = native["published_workunits"] - native["agreed_workunits"]
-    if native["error_workunits"] or native["history_unavailable_workunits"]:
+    if (native["error_workunits"] or native["history_unavailable_workunits"]
+            or native["source_conflict_pages"]):
         state = "needs_science_review"
     elif unfinished_sources:
         state = "preparing_and_publishing"
@@ -205,6 +206,7 @@ def inspect(args, record):
         "returned_replicas": native["returned_replicas"], "invalid_replicas": native["invalid_replicas"],
         "error_workunits": native["error_workunits"],
         "history_unavailable_workunits": native["history_unavailable_workunits"],
+        "source_conflict_pages": native["source_conflict_pages"],
         "waiting_source_pages": len(waiting),
         "waiting_original_archive_pages": sum(
             p["doc_id"] in waiting_set

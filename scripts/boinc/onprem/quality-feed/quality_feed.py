@@ -330,6 +330,11 @@ def write_chunk(camp_dir, name, pages, prepared, alto_cache=None):
         put(f"scans/{p['doc_id']}.jpg", jpg)
         put(f"scans/{p['doc_id']}.xml", alto)
         put(f"texts/{p['doc_id']}.json", json.dumps(texts).encode())
+        put(f"texts/{p['doc_id']}.image-provenance.json", json.dumps({
+            "schema": 1,
+            "source": {k: p[k] for k in ("doc_id", "batch", "batch_version", "bytes", "sha256")},
+            "jpeg": {"bytes": len(jpg), "sha256": hashlib.sha256(jpg).hexdigest()},
+        }, sort_keys=True).encode())
         if ours:
             with open(ours, "rb") as f:
                 put(f"texts/{p['doc_id']}.ours.xml", f.read())

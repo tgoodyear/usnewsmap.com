@@ -34,6 +34,11 @@ source = load("qwen_source")
 DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
+def frozen_page(doc=DOC):
+    return {"doc_id": doc, "batch": "xx_test", "batch_version": 1,
+            "bytes": 12, "sha256": "a" * 64}
+
+
 class SourceRequestTest(unittest.TestCase):
     def test_concurrent_progress_saves_publish_complete_unique_atomic_files(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -169,18 +174,21 @@ class SourceRequestTest(unittest.TestCase):
             campaign = root / "qwen/test"
             unit = campaign / "units" / DOC
             unit.mkdir(parents=True)
-            job = {"id": "a" * 64, "doc_id": DOC}
+            image = {"bytes": 3, "sha256": "b" * 64}
+            binding = {"schema": 1, "source": frozen_page(), "jpeg": image}
+            job = {"id": "a" * 64, "doc_id": DOC, "input": image}
             raw = json.dumps(job).encode()
             (unit / "qwen.json").write_bytes(raw)
             (unit / "submitted").touch()
             entry = {"workunit_id": 42, "job_sha256": hashlib.sha256(raw).hexdigest(),
-                     "batch": 8, "min_quorum": 2, "target_nresults": 2}
+                     "batch": 8, "min_quorum": 2, "target_nresults": 2,
+                     "source_bindings": {DOC: binding}}
             (campaign / "audit.json").write_text(json.dumps({job["id"]: entry}))
             rejected = "sn2_1900-01-02_ed-1_seq-3"
             no_crops = campaign / "units" / rejected
             no_crops.mkdir()
             (no_crops / "no_crops").touch()
-            sample = "\n".join(json.dumps({"doc_id": d}) for d in (DOC, rejected))
+            sample = "\n".join(json.dumps(frozen_page(d)) for d in (DOC, rejected))
             response = json.dumps([{"id": 42, "canonical_resultid": 0, "error_mask": 0,
                                     "unsent": 2, "running": 0, "returned": 0, "invalid": 0}])
             with mock.patch.object(submit.subprocess, "check_output", return_value=response):
@@ -193,22 +201,38 @@ class SourceRequestTest(unittest.TestCase):
             other = "sn3_1900-01-02_ed-1_seq-3"
             other_unit = campaign / "units" / other
             other_unit.mkdir()
-            other_job = {"id": "b" * 64, "doc_id": other}
+            other_job = {"id": "b" * 64, "doc_id": other, "input": image}
             other_raw = json.dumps(other_job).encode()
             (other_unit / "qwen.json").write_bytes(other_raw)
             (other_unit / "submitted").touch()
             (campaign / "audit.json").write_text(json.dumps({
                 job["id"]: entry,
                 other_job["id"]: {**entry, "workunit_id": 43,
-                                  "job_sha256": hashlib.sha256(other_raw).hexdigest()},
+                                  "job_sha256": hashlib.sha256(other_raw).hexdigest(),
+                                  "source_bindings": {other: {**binding, "source": frozen_page(other)}}},
             }))
             with mock.patch.object(submit.subprocess, "check_output", return_value=response):
-                status = submit.source_status(root, root, sample + "\n" + json.dumps({"doc_id": other}))
+                status = submit.source_status(root, root, sample + "\n" + json.dumps(frozen_page(other)))
             self.assertEqual(status["published_workunits"], 2)
             self.assertEqual(status["unsent_replicas"], 2)
             self.assertEqual(status["history_unavailable_workunits"], 1)
             self.assertEqual(status["pages"][DOC]["status"], "published")
             self.assertEqual(status["pages"][other]["status"], "native_history_unavailable")
+            for change in ({"sha256": "c" * 64}, {"bytes": 13}, {"batch": "xx_other"}, {"batch_version": 2}):
+                with mock.patch.object(submit.subprocess, "check_output") as query:
+                    conflict = submit.source_status(root, root, json.dumps({**frozen_page(), **change}))
+                self.assertEqual(conflict["pages"][DOC]["status"], "source_conflict")
+                self.assertEqual(conflict["published_workunits"], 0)
+                self.assertEqual(conflict["agreed_workunits"], 0)
+                self.assertEqual(conflict["source_conflict_pages"], 1)
+                query.assert_not_called()
+            (campaign / "audit.json").write_text(json.dumps({job["id"]: {
+                k: v for k, v in entry.items() if k != "source_bindings"}}))
+            with mock.patch.object(submit.subprocess, "check_output") as query:
+                legacy = submit.source_status(root, root, sample)
+            self.assertEqual(legacy["pages"][DOC]["status"], "source_provenance_unavailable")
+            self.assertEqual(legacy["published_workunits"], 0)
+            query.assert_not_called()
             (unit / "qwen.json").write_bytes(raw + b" ")
             with self.assertRaisesRegex(ValueError, "changed or unbound"):
                 submit.source_status(root, root, sample)
@@ -225,19 +249,51 @@ class SourceRequestTest(unittest.TestCase):
                     if disposition == "too_large":
                         (page / "qwen.json").write_text(json.dumps({"id": "a" * 64, "doc_id": DOC}))
                     with mock.patch.object(submit.subprocess, "check_output") as query:
-                        result = submit.source_status(root, root, json.dumps({"doc_id": DOC}))
+                        result = submit.source_status(root, root, json.dumps(frozen_page()))
                     self.assertEqual(result["pages"][DOC]["status"], disposition)
                     self.assertEqual(result["published_workunits"], 0)
                     query.assert_not_called()
                     if disposition == "too_large":
                         (page / "qwen.json").unlink()
-                        self.assertEqual(submit.source_status(root, root, json.dumps({"doc_id": DOC}))[
+                        self.assertEqual(submit.source_status(root, root, json.dumps(frozen_page()))[
                             "pages"][DOC]["status"], "too_large")
+
+    def test_native_audit_retains_original_to_jpeg_binding_after_handoff_cleanup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            share = Path(folder)
+            root = share / "qwen/test"
+            unit = root / "units" / DOC
+            unit.mkdir(parents=True)
+            image = {"bytes": 3, "sha256": hashlib.sha256(b"jpg").hexdigest()}
+            job = {"id": "a" * 64, "doc_id": DOC, "input": image}
+            raw = json.dumps(job).encode()
+            (unit / "qwen.json").write_bytes(raw)
+            (unit / "submitted").touch()
+            source = share / "quality/test/texts" / (DOC + ".image-provenance.json")
+            source.parent.mkdir(parents=True)
+            binding = {"schema": 1, "source": frozen_page(), "jpeg": image}
+            source.write_text(json.dumps({**binding, "jpeg": {**image, "sha256": "c" * 64}}))
+            with self.assertRaisesRegex(ValueError, "does not bind"):
+                submit.audit(root, share)
+            source.write_text(json.dumps(binding))
+            receipt = {job["id"]: {"job_sha256": hashlib.sha256(raw).hexdigest(),
+                                  "workunit_id": 42, "batch": 8, "min_quorum": 2, "target_nresults": 2}}
+            with mock.patch.object(submit.subprocess, "check_output", return_value=json.dumps(receipt)):
+                submit.audit(root, share)
+            source.unlink()
+            with mock.patch.object(submit.subprocess, "check_output", return_value=json.dumps([
+                    {"id": 42, "canonical_resultid": 43, "error_mask": 0, "unsent": 0,
+                     "running": 0, "returned": 2, "invalid": 0}])):
+                progress = submit.source_status(share, share, json.dumps(frozen_page()))
+            self.assertEqual(progress["published_workunits"], 1)
+            self.assertEqual(progress["agreed_workunits"], 1)
+            self.assertEqual(progress["source_conflict_pages"], 0)
+            self.assertEqual(progress["pages"][DOC]["status"], "published")
 
     def test_source_progress_exists_before_the_first_native_campaign_is_staged(self):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch.object(submit.subprocess, "check_output") as query:
-            result = submit.source_status(Path(folder), Path(folder), json.dumps({"doc_id": DOC}))
+            result = submit.source_status(Path(folder), Path(folder), json.dumps(frozen_page()))
         self.assertEqual(result["pages"][DOC]["status"], "pending")
         self.assertEqual(result["published_workunits"], 0)
         query.assert_not_called()
@@ -255,13 +311,14 @@ class SourceRequestTest(unittest.TestCase):
             base = {"pages": {DOC: {"status": "published"}}, "published_workunits": 1,
                     "agreed_workunits": 0, "unsent_replicas": 2, "running_replicas": 0,
                     "returned_replicas": 0, "invalid_replicas": 0, "error_workunits": 0,
-                    "history_unavailable_workunits": 0}
+                    "history_unavailable_workunits": 0, "source_conflict_pages": 0}
             for delta, expected in (
                     ({}, "awaiting_dispatch_or_admission"),
                     ({"running_replicas": 1}, "awaiting_host_results"),
                     ({"agreed_workunits": 1}, "native_consensus_complete"),
                     ({"error_workunits": 1}, "needs_science_review"),
                     ({"history_unavailable_workunits": 1}, "needs_science_review"),
+                    ({"source_conflict_pages": 1}, "needs_science_review"),
                     *[({"pages": {DOC: {"status": disposition}}, "published_workunits": 0},
                        "needs_science_review")
                       for disposition in ("no_crops", "too_large", "preparation_rejected")]):
@@ -468,7 +525,8 @@ class SourceTest(unittest.TestCase):
             (root / (DOC + ".provenance.json")).write_text(json.dumps({
                 "doc_id": DOC, "sha256": hashlib.sha256(alto).hexdigest()}))
             p = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1, "lccn": "sn1",
-                 "date": "1900-01-02", "lang": "rus", "scan": "keep/test.jpg", "damage_rate": 0.9}
+                 "date": "1900-01-02", "lang": "rus", "scan": "keep/test.jpg", "damage_rate": 0.9,
+                 "bytes": 6, "sha256": hashlib.sha256(b"source").hexdigest()}
             tx = mock.Mock()
             tx.loc.return_value = ({DOC: "original text"}, True)
             tx.american_stories.return_value = {}

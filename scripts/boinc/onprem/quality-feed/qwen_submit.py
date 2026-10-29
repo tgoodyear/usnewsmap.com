@@ -8,6 +8,7 @@ quorum, retry identity or manually generated BOINC result.
 import argparse
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import shutil
@@ -65,11 +66,41 @@ def assert_submitted(root):
         raise RuntimeError(f"Qwen submission incomplete: {len(uncertain)} uncertain, {len(pending)} without receipts")
 
 
-def source_status(share, project, sample):
-    pages = [json.loads(line)["doc_id"] for line in sample.splitlines() if line.strip()]
-    if (not pages or len(pages) > 10000 or len(set(pages)) != len(pages)
-            or any(not re.fullmatch(r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", p) for p in pages)):
+def source_fingerprint(page):
+    if (not isinstance(page, dict)
+            or not re.fullmatch(r"sn\d+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+", page.get("doc_id", ""))
+            or not re.fullmatch(r"[a-z]+_[a-zA-Z0-9]+", page.get("batch", ""))
+            or type(page.get("batch_version")) is not int or not 1 <= page["batch_version"] <= 99
+            or type(page.get("bytes")) is not int or page["bytes"] < 1
+            or not re.fullmatch(r"[a-f0-9]{64}", page.get("sha256", ""))):
         raise ValueError("invalid bounded source-status membership")
+    return {k: page[k] for k in ("doc_id", "batch", "batch_version", "bytes", "sha256")}
+
+
+def source_bindings(root, job):
+    bindings = {}
+    for member in job.get("pages") or [job]:
+        path = root.parent.parent / "quality" / root.name / "texts" / (
+            member["doc_id"] + ".image-provenance.json")
+        if not path.exists():
+            logging.warning("Native source provenance unavailable: %s", path)
+            continue
+        binding = json.loads(path.read_text())
+        image = member["input"]
+        source = source_fingerprint(binding["source"])
+        if (binding["schema"] != 1 or source != binding["source"] or source["doc_id"] != member["doc_id"]
+                or binding["jpeg"] != {k: image[k] for k in ("bytes", "sha256")}):
+            raise ValueError("native image provenance does not bind to job: " + str(path))
+        bindings[member["doc_id"]] = binding
+    return bindings
+
+
+def source_status(share, project, sample):
+    frozen = [source_fingerprint(json.loads(line)) for line in sample.splitlines() if line.strip()]
+    pages = [page["doc_id"] for page in frozen]
+    if not pages or len(pages) > 10000 or len(set(pages)) != len(pages):
+        raise ValueError("invalid bounded source-status membership")
+    expected = {p["doc_id"]: p for p in frozen}
     wanted = set(pages)
     states = {doc: {"status": "pending", "workunit_ids": []} for doc in pages}
     audited = {}
@@ -89,11 +120,24 @@ def source_status(share, project, sample):
                         or row["batch"] != 8 or row["min_quorum"] != 2 or row["target_nresults"] != 2
                         or type(row["workunit_id"]) is not int or row["workunit_id"] < 1):
                     raise ValueError("changed or unbound native source audit: " + str(path))
-                audited[row["workunit_id"]] = row
             for doc in members:
-                states[doc]["status"] = "published" if row else "pending_audit"
-                if row:
-                    states[doc]["workunit_ids"].append(row["workunit_id"])
+                if not row:
+                    if not states[doc]["workunit_ids"]:
+                        states[doc]["status"] = "pending_audit"
+                    continue
+                states[doc]["workunit_ids"].append(row["workunit_id"])
+                binding = row.get("source_bindings", {}).get(doc)
+                member = next(p for p in job.get("pages") or [job] if p["doc_id"] == doc)
+                if binding is None:
+                    states[doc]["status"] = "source_provenance_unavailable"
+                elif (not isinstance(binding, dict) or binding.get("schema") != 1
+                      or binding.get("source") != expected[doc]
+                      or binding.get("jpeg") != {k: member["input"][k] for k in ("bytes", "sha256")}):
+                    states[doc]["status"] = "source_conflict"
+                else:
+                    if states[doc]["status"] not in ("source_conflict", "source_provenance_unavailable"):
+                        states[doc]["status"] = "published"
+                    audited[row["workunit_id"]] = row
         for layout in ("units", "pages"):
             for disposition in ("no_crops", "too_large"):
                 for marker in (campaign / layout).glob("*/" + disposition):
@@ -103,7 +147,9 @@ def source_status(share, project, sample):
     ids = sorted(audited)
     totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
               "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
-              "error_workunits": 0, "history_unavailable_workunits": 0}
+              "error_workunits": 0, "history_unavailable_workunits": 0,
+              "source_conflict_pages": sum(state["status"] in (
+                  "source_conflict", "source_provenance_unavailable") for state in states.values())}
     if ids:
         php = """
 chdir(%s);
@@ -198,11 +244,13 @@ def audit(root, project):
     verified = json.loads(receipt.read_text()) if receipt.exists() else {}
     pending = {}
     expected = {}
+    bindings = {}
     for path, job in jobs(root / "units"):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if verified.get(job["id"], {}).get("job_sha256") != digest:
             pending[str(path)] = digest
             expected[job["id"]] = digest
+            bindings[job["id"]] = source_bindings(root, job)
     if not pending:
         return {"verified_new": 0, "verified_total": len(verified)}
     php = """
@@ -226,8 +274,10 @@ echo json_encode($verified);
     new = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(pending), text=True))
     if set(new) != set(expected) or any(row["job_sha256"] != expected[job] for job, row in new.items()):
         raise RuntimeError("Incomplete or changed scientific audit receipt")
-    for result in new.values():
+    for identity, result in new.items():
         result["audited_at"] = time.time()
+        if bindings[identity]:
+            result["source_bindings"] = bindings[identity]
     verified.update(new)
     tmp = receipt.with_suffix(".tmp")
     with tmp.open("w") as f:

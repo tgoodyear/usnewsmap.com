@@ -39,10 +39,20 @@ markers are read from both single-page and bundled layouts. Purged BOINC history
 is explicitly `native_history_unavailable` and needs review, while available
 members keep reporting real progress; retained audit alone never implies agreement.
 
+New handoffs retain a SHA256SUMS-covered original-index-to-JPEG provenance receipt.
+The native audit copies it only when its JPEG bytes/hash match the audited job.
+Source inspection checks that binding against the frozen batch/version and original
+scan bytes/hash, not just the document ID. A changed binding or a legacy job without
+one needs science review and cannot satisfy source consensus; deduplication remains
+in force and no historical source receipt is invented or backfilled.
+
 Deploy `qwen_submit.py` on the native server and `qwen_source.py` on the producer
 before activating the Temporal source entry. Replace `qwen_feed.py` only at an
 idle boundary; keep its existing service and receipts. Other callers can keep
 using the ordinary inventory/preflight/submit interfaces.
+Deploy the matching `quality_feed.py` in preparation CT215 so new handoffs retain
+their original-image binding before native audit. Legacy READY chunks still ship,
+but their unverifiable original provenance remains explicit in source progress.
 
 This slice deliberately uses the **already indexed image corpus**. An identifier
 without indexed eligible pages fails with an explicit acquisition requirement;
