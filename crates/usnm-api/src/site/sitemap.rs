@@ -30,6 +30,20 @@ pub(crate) struct Service {
 }
 
 impl Service {
+    pub(super) fn search_paths(&self) -> Vec<String> {
+        let mut paths: BTreeSet<String> = super::CURATED_SEARCHES.iter().cloned().collect();
+        if let Some(checkpoint) = self.committed.load().as_ref() {
+            paths.extend(
+                checkpoint
+                    .pages
+                    .keys()
+                    .filter(|path| path.starts_with("/search/"))
+                    .cloned(),
+            );
+        }
+        paths.into_iter().collect()
+    }
+
     pub(super) fn contains(&self, path: &str) -> bool {
         self.committed
             .load()

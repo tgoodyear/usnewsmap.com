@@ -1,42 +1,56 @@
-import { parseViewUrl, searchParams } from "./state/url";
-
-function searchIdentity(): string {
-  const params = searchParams(parseViewUrl(window.location.pathname + window.location.search));
-  return JSON.stringify({ ...params, bucket: undefined });
-}
-
-/** Keep server-rendered results outside React, even when the API is unavailable. */
+/** Keep the static map visible until the equivalent interactive view has painted. */
 export function enhanceSearchLanding(mount: () => void): boolean {
   const landing = document.getElementById("search-landing");
-  const button = landing?.querySelector<HTMLButtonElement>("#explore-map");
-  if (!landing || !button) return false;
-  const identity = searchIdentity();
-  window.addEventListener("popstate", () => {
-    landing.hidden = searchIdentity() !== identity;
-  });
-  button.hidden = false;
-  button.addEventListener(
-    "click",
-    () => {
-      button.hidden = true;
-      mount();
-    },
-    { once: true },
-  );
-  return true;
-}
+  const root = document.getElementById("root");
+  if (!landing || !root) return false;
+  root.classList.add("search-hydrating");
+  root.setAttribute("aria-hidden", "true");
+  root.inert = true;
+  const status = document.createElement("p");
+  status.className = "empty";
+  status.setAttribute("role", "status");
+  status.textContent = "Loading interactive map. The static map and newspaper results are available below.";
+  landing.prepend(status);
 
-export function focusInteractiveSearch(): void {
-  const landingMain = document.querySelector("#search-landing main");
-  if (!landingMain) return;
-  const region = document.createElement("section");
-  region.className = landingMain.className;
-  region.setAttribute("aria-label", "Original newspaper search results");
-  region.append(...landingMain.childNodes);
-  landingMain.replaceWith(region);
-  const footer = document.querySelector<HTMLElement>("#search-landing footer");
-  if (footer) footer.hidden = true;
-  if ("__USNM_SHARE_CAPTURE__" in window) return;
-  const search = document.querySelector<HTMLInputElement>('#root input[type="search"]');
-  search?.focus();
+  const ready = () => {
+    const results = root.querySelector('[data-share-ready="true"]');
+    const map = results?.querySelector('[data-testid="map"]');
+    const painted =
+      map?.getAttribute("data-basemap-ready") === "true" &&
+      map.getAttribute("data-overlay-ready") === "true" &&
+      map.getAttribute("data-basemap-error") !== "true";
+    const empty =
+      results && [...results.querySelectorAll(".notice strong")].some((n) => n.textContent === "No pages match.");
+    return !!results && (painted || !!empty || !!results.querySelector(".tables"));
+  };
+  let presenting = false;
+  const observer = new MutationObserver(() => {
+    if (!ready()) {
+      if (root.querySelector('[role="alert"], [data-basemap-error="true"]')) {
+        status.textContent =
+          "The interactive map is unavailable. The static map and newspaper results remain available.";
+      }
+      return;
+    }
+    if (presenting) return;
+    presenting = true;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!ready()) {
+          presenting = false;
+          return;
+        }
+        const hadFocus = landing.contains(document.activeElement);
+        landing.remove();
+        root.classList.remove("search-hydrating");
+        root.removeAttribute("aria-hidden");
+        root.inert = false;
+        if (hadFocus) root.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+        observer.disconnect();
+      }),
+    );
+  });
+  observer.observe(root, { subtree: true, childList: true, attributes: true });
+  mount();
+  return true;
 }

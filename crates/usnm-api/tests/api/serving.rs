@@ -780,7 +780,9 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(body.contains(r#"<div id="root"></div><div id="search-landing">"#));
     assert!(!body.contains(r#"id="site-fallback""#));
     assert!(!body.contains(r#"class="visually-hidden" inert"#));
-    assert!(body.contains(r#"id="explore-map""#));
+    assert!(body.contains(r#"src="/search-map.png?q=cross+of+gold""#));
+    assert!(body.contains("Map and timeline of newspaper matches for cross of gold"));
+    assert!(!body.contains("Explore interactive map"));
     assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
     for href in ["/privacy", "/datasets", "/credits"] {
         assert!(body.contains(&format!("href=\"{href}\"")), "{href}");

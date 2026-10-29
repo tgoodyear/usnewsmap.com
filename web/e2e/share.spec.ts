@@ -79,6 +79,26 @@ test("search previews are rendered PNGs of the linked view and cached", async ({
   expect(await screenshot(request, `${imagePath}&state=GA&t=1896-08-01`)).not.toEqual(png);
 });
 
+test("the no-JavaScript map uses the same rendered search view, never the generic share image", async ({
+  request,
+  isMobile,
+}) => {
+  test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app and Chromium");
+  test.setTimeout(60_000);
+  const map = await request.get("/search-map.png?q=cross+of+gold", { timeout: 50_000 });
+  expect(map.status()).toBe(200);
+  expect(map.headers()["content-type"]).toBe("image/png");
+  expect(map.headers()["cache-control"]).toContain("max-age=300");
+  const png = await map.body();
+  expect(png.readUInt32BE(16)).toBe(1200);
+  expect(png.readUInt32BE(20)).toBe(630);
+  const shared = await screenshot(request, "/share-image.png?page=%2F&q=cross+of+gold&v=2");
+  expect(png).toEqual(shared);
+  const generic = await (await request.get("/og-image.png")).body();
+  expect(png).not.toEqual(generic);
+  expect((await request.get("/search-map.png?q=not-a-listed-search")).status()).toBe(404);
+});
+
 test("selected-place screenshots wait for page results and reject failed panels", async ({ page, isMobile }) => {
   test.skip(!process.env.PW_BASE_URL || isMobile, "requires the API serving the built app");
   let release: () => void = () => {};

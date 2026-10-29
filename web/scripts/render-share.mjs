@@ -52,7 +52,9 @@ try {
     const url = new URL(route.request().url());
     const local = url.origin === target.origin;
     const basemap = url.protocol === "https:" && url.hostname === "tiles.openfreemap.org";
-    if ((local || basemap) && url.pathname !== "/share-image.png") return route.continue();
+    if ((local || basemap) && !["/share-image.png", "/search-map.png"].includes(url.pathname)) {
+      return route.continue();
+    }
     return route.abort();
   });
   const response = await page.goto(target.href, { waitUntil: "domcontentloaded" });

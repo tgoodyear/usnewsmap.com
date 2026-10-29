@@ -72,4 +72,9 @@ function mount() {
   );
 }
 
-if ("__USNM_SHARE_CAPTURE__" in window || !enhanceSearchLanding(mount)) mount();
+if ("__USNM_SHARE_CAPTURE__" in window) {
+  document.getElementById("search-landing")?.remove();
+  mount();
+} else if (!enhanceSearchLanding(mount)) {
+  mount();
+}

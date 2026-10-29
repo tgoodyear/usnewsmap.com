@@ -78,6 +78,7 @@ test("the static description is in the HTML before the app runs", async ({ reque
 
 test("curated searches expose top-city results and homepage links without JavaScript", async ({ browser }) => {
   test.skip(!withApi, "the API renders the search preview");
+  test.setTimeout(60_000);
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
   try {
@@ -93,6 +94,13 @@ test("curated searches expose top-city results and homepage links without JavaSc
     await expect(samples.locator("ol > li")).toHaveCount(10);
     await expect(samples).toContainText("cross of gold");
     await expect(samples).toContainText("1896-07-18");
+    const map = page.getByRole("img", { name: "Map and timeline of newspaper matches for cross of gold" });
+    await expect(map).toBeVisible();
+    await expect
+      .poll(() => map.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth === 1200), {
+        timeout: 50_000,
+      })
+      .toBe(true);
   } finally {
     await context.close();
   }
@@ -112,22 +120,39 @@ test("sitemap searches remain readable with JavaScript enabled and API access bl
   await expect(samples).toBeVisible();
   await expect(samples.locator("ol > li")).toHaveCount(10);
   await expect(samples).toContainText("1896-07-18");
-  await expect(page.locator("#root")).toBeEmpty();
+  await expect(page.locator("#root")).toBeHidden();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  expect(apiRequests.filter((url) => !url.endsWith("/beacon"))).toEqual([]);
-  await landing.getByRole("button", { name: "Explore interactive map" }).click();
-  await expect(page.locator("#root .app")).toBeVisible();
-  await expect(page.getByRole("searchbox", { name: "Word or phrase", exact: true })).toBeFocused();
+  await expect(landing.getByRole("img", { name: /Map and timeline/ })).toBeVisible();
   await expect(page.getByRole("main")).toHaveCount(1);
   await expect.poll(() => apiRequests.some((url) => new URL(url).pathname === "/v1/meta")).toBe(true);
   await expect(samples).toBeVisible();
   await expect(samples.locator("ol > li")).toHaveCount(10);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await page.getByRole("searchbox", { name: "Word or phrase", exact: true }).fill("unlisted search");
-  await page.getByRole("searchbox", { name: "Word or phrase", exact: true }).press("Enter");
-  await expect(landing).toBeHidden();
-  await page.goBack();
-  await expect(samples).toBeVisible();
+});
+
+test("the static map upgrades automatically only after the matching interactive map paints", async ({ page }) => {
+  test.skip(!withApi, "the API renders the static map");
+  test.setTimeout(60_000);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/v1/meta", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto("/search/cross-of-gold", { waitUntil: "domcontentloaded" });
+  const landing = page.locator("#search-landing");
+  await expect(landing).toBeVisible();
+  await expect(page.locator("#root")).toBeHidden();
+  await expect(landing.getByRole("region", { name: "Sample results" })).toContainText("1896-07-18");
+  release();
+  await expect(page.getByTestId("map")).toBeVisible({ timeout: 50_000 });
+  await expect(landing).toHaveCount(0);
+  await expect(page.getByTestId("map")).toHaveAttribute("data-basemap-ready", "true");
+  await expect(page.getByTestId("map")).toHaveAttribute("data-overlay-ready", "true");
+  await expect(page.getByRole("main")).toHaveCount(1);
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue("cross of gold");
 });
 
 test("an unknown path shows the not-found page", async ({ page }) => {
