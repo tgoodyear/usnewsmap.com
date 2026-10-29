@@ -35,7 +35,7 @@ class ShadowTest(unittest.TestCase):
         raw = json.dumps(job).encode()
         (unit / "qwen.json").write_bytes(raw)
         if submitted:
-            (unit / "submitted").write_text("native publication marker")
+            (unit / "submitted").write_text(f"usnm_qwen_{job_id}")
             self.audit[job_id] = {"job_sha256": hashlib.sha256(raw).hexdigest(),
                                   "workunit_id": workunit_id, "batch": 8,
                                   "min_quorum": 2, "target_nresults": 2}
@@ -162,6 +162,27 @@ class ShadowTest(unittest.TestCase):
         self.assertFalse(observed["dispositions"][0]["evidence_verified"])
         (unit / "submitted").write_text("conflicting receipt")
         with self.assertRaisesRegex(shadow.ObservationError, "conflicting terminal"):
+            shadow.observe(self.root)
+
+    def test_partial_bundled_layout_is_not_silently_omitted(self):
+        self.job("first")
+        pages = self.root / "pages"
+        pages.mkdir()
+        (pages / "no_crops").write_text("new disposition")
+        with self.assertRaisesRegex(shadow.ObservationError, "bundled campaign layout"):
+            shadow.observe(self.root)
+
+    def test_null_audit_is_not_an_absent_receipt(self):
+        _, job_id = self.job("pending", submitted=False)
+        self.audit[job_id] = None
+        self.save_audit()
+        with self.assertRaisesRegex(shadow.ObservationError, "receipt must be an object"):
+            shadow.observe(self.root)
+
+    def test_crossed_submission_marker_is_rejected(self):
+        unit, _ = self.job("first")
+        (unit / "submitted").write_text("usnm_qwen_" + "f" * 64)
+        with self.assertRaisesRegex(shadow.ObservationError, "marker names another"):
             shadow.observe(self.root)
 
 

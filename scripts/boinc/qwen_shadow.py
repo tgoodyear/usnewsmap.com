@@ -76,11 +76,15 @@ def unit_directories(units, max_units):
 def observe(root, max_units=MAX_UNITS):
     require(1 <= max_units <= MAX_UNITS, "max-units must be between 1 and 10000")
     require(not root.is_symlink() and root.is_dir(), "missing or symlink campaign root")
+    require(not (root / "pages").exists() and not (root / "pages").is_symlink(),
+            "bundled campaign layout not supported yet")
     raw_audit = read_file(root / "audit.json", MAX_AUDIT_BYTES)
     audit = decode(raw_audit)
     require(isinstance(audit, dict), "audit must be an object")
     require(len(audit) <= max_units, "audit entry limit exceeded")
     require(all(SHA256.fullmatch(key) for key in audit), "invalid audited job identity")
+    require(all(isinstance(receipt, dict) for receipt in audit.values()),
+            "every audit receipt must be an object")
     directories = unit_directories(root / "units", max_units)
     observations = []
     observed_jobs = set()
@@ -123,6 +127,8 @@ def observe(root, max_units=MAX_UNITS):
         require((receipt is not None) == (before["submitted"] is not None),
                 f"submission marker/audit mismatch: {unit.name}")
         if receipt is not None:
+            require(read_file(unit / "submitted", 4096) == f"usnm_qwen_{job_id}".encode(),
+                    f"submitted marker names another workunit: {unit.name}")
             require(isinstance(receipt, dict) and receipt.get("job_sha256") == job_sha,
                     f"audited manifest changed: {unit.name}")
             require(all(type(receipt.get(key)) is int and receipt[key] == expected
@@ -148,6 +154,8 @@ def observe(root, max_units=MAX_UNITS):
         checks.append((unit, job_sha, before))
     require(set(audit) <= observed_jobs, "audited job missing from campaign snapshot")
     require(unit_directories(root / "units", max_units) == directories, "unit set changed during observation")
+    require(not (root / "pages").exists() and not (root / "pages").is_symlink(),
+            "bundled campaign layout appeared during observation")
     require(read_file(root / "audit.json", MAX_AUDIT_BYTES) == raw_audit, "audit changed during observation")
     for unit, expected, before in checks:
         require({name: marker(unit, name) for name in before} == before,

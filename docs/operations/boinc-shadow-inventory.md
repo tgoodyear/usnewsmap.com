@@ -37,11 +37,14 @@ acceptance. Every record explicitly sets `source_bytes_verified=false`.
 Unaudited staged jobs remain `staged_unverified`; they are not eligible work
 authorizations.
 
-Uncertain `submitting` markers, submitted/audit mismatches, missing or changed
+Uncertain `submitting` markers, submitted/audit mismatches, cross-job submission
+marker names, null audit receipts, missing or changed
 audited manifests, repeated job/workunit identities, unsupported bundles, symlink entries and duplicate JSON keys fail
 explicitly. Do not repair markers or audits to make the observer pass. Reconcile
 using the existing native publication procedure, preserving uncertainty/evidence.
 The first slice deliberately supports only current single-page native jobs.
+Campaign roots containing `pages/` are rejected even without bundle manifests,
+so partial bundle-layout dispositions cannot be silently omitted.
 No-crops and oversized markers are retained as hash-bound disposition observations,
 not jobs; their underlying source/rejection evidence is explicitly unverified.
 Bundle membership/page quorum remains separately owned and reviewed work.
