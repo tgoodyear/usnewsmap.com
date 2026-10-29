@@ -180,18 +180,25 @@ def inspect(args, record):
                 waiting.append(doc)
         counts[status] += 1
     unfinished_sources = sum(counts[k] for k in ("pending_audit", "awaiting_preparation", "awaiting_publication"))
-    unresolved_jobs = native["published_workunits"] - native["agreed_workunits"]
-    if (native["error_workunits"] or native["history_unavailable_workunits"]
-            or native["source_conflict_pages"]):
-        state = "needs_science_review"
-    elif unfinished_sources:
+    excluded_reasons = (
+        "no_crops", "too_large", "preparation_rejected", "source_conflict",
+        "source_provenance_unavailable", "native_history_unavailable", "native_error",
+    )
+    excluded_by_reason = {reason: counts[reason] for reason in excluded_reasons if counts[reason]}
+    excluded_pages = sum(excluded_by_reason.values())
+    unresolved_jobs = max(
+        0, native["published_workunits"] - native["agreed_workunits"]
+        - native["error_workunits"] - native["history_unavailable_workunits"])
+    if unfinished_sources:
         state = "preparing_and_publishing"
     elif not native["published_workunits"]:
-        state = "needs_science_review"
+        state = "no_eligible_jobs"
     elif unresolved_jobs and native["unsent_replicas"] and not native["running_replicas"]:
         state = "awaiting_dispatch_or_admission"
     elif unresolved_jobs:
         state = "awaiting_host_results"
+    elif excluded_pages:
+        state = "completed_with_exclusions"
     else:
         state = "native_consensus_complete"
     waiting_set = set(waiting)
@@ -200,6 +207,7 @@ def inspect(args, record):
         "pages_sha256": record["pages_sha256"], "selected_pages": len(pages),
         "selection_cap_reached": len(pages) == record["spec"]["max_pages"],
         "state": state, "source_dispositions": dict(counts),
+        "excluded_pages": excluded_pages, "excluded_by_reason": excluded_by_reason,
         "published_workunits": native["published_workunits"],
         "agreed_workunits": native["agreed_workunits"],
         "unsent_replicas": native["unsent_replicas"], "running_replicas": native["running_replicas"],
@@ -211,8 +219,11 @@ def inspect(args, record):
         "waiting_original_archive_pages": sum(
             p["doc_id"] in waiting_set
             and f"{p['batch']}_ver{int(p['batch_version']):02d}.tar.bz2" not in retained for p in pages),
-        "note": "Consensus is not accuracy; existing collectors retain alternatives. "
-                "GPU cohort/finite admission and all source/storage/quorum guards remain unchanged.",
+        "note": "Excluded pages are never consensus and remain auditable; source conflicts, "
+                "legacy provenance, native errors/history loss, and permanent source rejections "
+                "do not block the rest of the request. Consensus is not accuracy; existing "
+                "collectors retain alternatives. GPU cohort/finite admission and all source, "
+                "storage, and quorum guards remain unchanged.",
     }
     save(args.state / "requests" / (record["request_id"] + ".progress"), result)
     return result

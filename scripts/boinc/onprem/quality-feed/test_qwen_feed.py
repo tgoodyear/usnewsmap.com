@@ -197,6 +197,12 @@ class SourceRequestTest(unittest.TestCase):
             self.assertEqual(status["unsent_replicas"], 2)
             self.assertEqual(status["agreed_workunits"], 0)
             self.assertEqual(status["pages"][rejected]["status"], "no_crops")
+            error_response = json.dumps([{"id": 42, "canonical_resultid": 0, "error_mask": 1,
+                                          "unsent": 0, "running": 0, "returned": 2, "invalid": 2}])
+            with mock.patch.object(submit.subprocess, "check_output", return_value=error_response):
+                errored = submit.source_status(root, root, json.dumps(frozen_page()))
+            self.assertEqual(errored["error_workunits"], 1)
+            self.assertEqual(errored["pages"][DOC]["status"], "native_error")
             (unit / "too_large").touch()
             other = "sn3_1900-01-02_ed-1_seq-3"
             other_unit = campaign / "units" / other
@@ -288,7 +294,7 @@ class SourceRequestTest(unittest.TestCase):
             self.assertEqual(progress["published_workunits"], 1)
             self.assertEqual(progress["agreed_workunits"], 1)
             self.assertEqual(progress["source_conflict_pages"], 0)
-            self.assertEqual(progress["pages"][DOC]["status"], "published")
+            self.assertEqual(progress["pages"][DOC]["status"], "native_consensus")
 
     def test_source_progress_exists_before_the_first_native_campaign_is_staged(self):
         with tempfile.TemporaryDirectory() as folder, \
@@ -316,20 +322,63 @@ class SourceRequestTest(unittest.TestCase):
                     ({}, "awaiting_dispatch_or_admission"),
                     ({"running_replicas": 1}, "awaiting_host_results"),
                     ({"agreed_workunits": 1}, "native_consensus_complete"),
-                    ({"error_workunits": 1}, "needs_science_review"),
-                    ({"history_unavailable_workunits": 1}, "needs_science_review"),
-                    ({"source_conflict_pages": 1}, "needs_science_review"),
+                    ({"error_workunits": 1,
+                      "pages": {DOC: {"status": "native_error"}}}, "completed_with_exclusions"),
+                    ({"history_unavailable_workunits": 1,
+                      "pages": {DOC: {"status": "native_history_unavailable"}}},
+                     "completed_with_exclusions"),
+                    ({"source_conflict_pages": 1,
+                      "published_workunits": 0, "unsent_replicas": 0,
+                      "pages": {DOC: {"status": "source_provenance_unavailable"}}},
+                     "no_eligible_jobs"),
                     *[({"pages": {DOC: {"status": disposition}}, "published_workunits": 0},
-                       "needs_science_review")
+                       "no_eligible_jobs")
                       for disposition in ("no_crops", "too_large", "preparation_rejected")]):
-                with mock.patch("qwen_feed.remote", side_effect=[
+                with self.subTest(delta=delta), mock.patch("qwen_feed.remote", side_effect=[
                         json.dumps({**base, **delta}).encode(),
                         b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
                         mock.patch("qwen_feed.command",
                                    return_value=b'{"done.txt":{},"skipped.txt":{}}'):
                     result = source.inspect(args, record)
-                self.assertEqual(result["state"], expected)
-                self.assertEqual(result["selected_pages"], 1)
+                    self.assertEqual(result["state"], expected)
+                    self.assertEqual(result["selected_pages"], 1)
+                    self.assertEqual(result["excluded_pages"],
+                                     int(expected in ("completed_with_exclusions", "no_eligible_jobs")))
+
+    def test_completed_with_exclusions_keeps_agreed_pages_distinct_from_quarantined_pages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            args = types.SimpleNamespace(state=root, prep_ct=215, server_ct=230,
+                                         campaign="test", server_host="server", archive_host="archive")
+            spec = source.specification("xx_test_ver01", 2, "test")
+            pages = [
+                {"doc_id": "sn1_1900-01-02_ed-1_seq-3", "batch": "xx_test", "batch_version": 1},
+                {"doc_id": "sn2_1900-01-02_ed-1_seq-3", "batch": "xx_test", "batch_version": 1},
+            ]
+            record = {"request_id": source.digest(spec), "spec": spec,
+                      "pages": pages, "pages_sha256": source.digest(pages)}
+            native = {
+                "pages": {
+                    pages[0]["doc_id"]: {"status": "native_consensus", "workunit_ids": [42]},
+                    pages[1]["doc_id"]: {"status": "source_conflict", "workunit_ids": []},
+                },
+                "published_workunits": 1, "agreed_workunits": 1, "unsent_replicas": 0,
+                "running_replicas": 0, "returned_replicas": 2, "invalid_replicas": 0,
+                "error_workunits": 0, "history_unavailable_workunits": 0,
+                "source_conflict_pages": 1,
+            }
+            with mock.patch("qwen_feed.remote", side_effect=[
+                    json.dumps(native).encode(),
+                    b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
+                    mock.patch("qwen_feed.command",
+                               return_value=b'{"done.txt":{},"skipped.txt":{}}'):
+                result = source.inspect(args, record)
+            self.assertEqual(result["state"], "completed_with_exclusions")
+            self.assertEqual(result["excluded_pages"], 1)
+            self.assertEqual(result["excluded_by_reason"], {"source_conflict": 1})
+            self.assertEqual(result["agreed_workunits"], 1)
+            self.assertEqual(result["published_workunits"], 1)
 
 
 class ArchiveTest(unittest.TestCase):

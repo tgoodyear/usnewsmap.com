@@ -33,18 +33,23 @@ remain visible. Workflow progress contains only selectors, hashes and aggregate
 counts, not private file contents or credentials.
 
 If requested images become ineligible after registration, that tick tries later
-requests and then ordinary selection without mutating frozen membership. An
-all-rejected request needs science review; it is not native consensus. Rejection
-markers are read from both single-page and bundled layouts. Purged BOINC history
-is explicitly `native_history_unavailable` and needs review, while available
-members keep reporting real progress; retained audit alone never implies agreement.
+requests and then ordinary selection without mutating frozen membership.
+Rejection markers are read from both single-page and bundled layouts. Source
+conflicts, missing legacy provenance, purged BOINC history, native workunit
+errors, and permanent preparation rejections are automatically isolated as
+excluded pages with reason counts. They do not block preparation or result
+collection for other pages in the request, and they are never counted as
+consensus. When no eligible work remains, the request ends as
+`completed_with_exclusions` or `no_eligible_jobs`; only an entirely
+source-bound, agreed request ends as `native_consensus_complete`. Retained audit
+alone never implies agreement.
 
 New handoffs retain a SHA256SUMS-covered original-index-to-JPEG provenance receipt.
 The native audit copies it only when its JPEG bytes/hash match the audited job.
 Source inspection checks that binding against the frozen batch/version and original
 scan bytes/hash, not just the document ID. A changed binding or a legacy job without
-one needs science review and cannot satisfy source consensus; deduplication remains
-in force and no historical source receipt is invented or backfilled.
+one is automatically excluded and cannot satisfy source consensus; deduplication
+remains in force and no historical source receipt is invented or backfilled.
 
 Deploy `qwen_submit.py` on the native server and `qwen_source.py` on the producer
 before activating the Temporal source entry. Replace `qwen_feed.py` only at an
