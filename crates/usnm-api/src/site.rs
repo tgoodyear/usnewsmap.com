@@ -392,6 +392,34 @@ fn insert_content(body: Vec<u8>, content: &str) -> Vec<u8> {
     }
 }
 
+fn search_landing(body: Vec<u8>, preview: &str) -> Vec<u8> {
+    let body = insert_content(body, preview);
+    match String::from_utf8(body) {
+        Ok(html) => html
+            .replacen(
+                r#"<div id="root">"#,
+                r#"<div id="root"></div><div id="search-landing">"#,
+                1,
+            )
+            .replacen(r#"id="site-fallback""#, r#"id="search-content""#, 1)
+            .replacen(
+                "The search and the map need JavaScript.",
+                "The map and interactive filters need JavaScript; the sample results below do not.",
+                1,
+            )
+            .replacen(
+                "<section aria-label=\"Sample results\">",
+                "<p><a href=\"/\">Search other newspaper topics</a></p><button id=\"explore-map\" type=\"button\" class=\"button button--primary\" hidden>Explore interactive map</button><section aria-label=\"Sample results\">",
+                1,
+            )
+            .into_bytes(),
+        Err(error) => {
+            tracing::error!("site index is not UTF-8");
+            error.into_bytes()
+        }
+    }
+}
+
 fn curated_links() -> String {
     let mut paths: Vec<_> = CURATED_SEARCHES.iter().collect();
     paths.sort();
@@ -477,7 +505,7 @@ async fn search_preview_data(
         });
         let Some(top) = top else {
             return Ok(SearchPreview {
-                html: "<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned(),
+                html: "<section aria-label=\"Sample results\"><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned(),
                 total_hits: summary.total_hits,
             });
         };
@@ -497,7 +525,7 @@ async fn search_preview_data(
                 .hits(&indexes, &search.query, &search.filters, &page),
         )
         .await?;
-        let mut html = format!("<section aria-label=\"Sample results\" class=\"visually-hidden\" inert><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
         for hit in result.hits {
             let title = rd
                 .titles
@@ -596,7 +624,7 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
             // Only admitted base searches add backend work on a page load.
             if !noindex(req.uri(), &state.sitemap) {
                 match search_preview(&state, &q).await {
-                    Ok(preview) => body = insert_content(body, &preview),
+                    Ok(preview) => body = search_landing(body, &preview),
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
                         return error.into_response();

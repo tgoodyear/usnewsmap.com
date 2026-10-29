@@ -97,6 +97,29 @@ test("curated searches expose top-city results and homepage links without JavaSc
   }
 });
 
+test("sitemap searches remain readable with JavaScript enabled and API access blocked", async ({ page }) => {
+  test.skip(!withApi, "the API renders the search landing page");
+  const apiRequests: string[] = [];
+  await page.route("**/v1/**", (route) => {
+    apiRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/search/cross-of-gold");
+  const landing = page.locator("#search-landing");
+  const samples = landing.getByRole("region", { name: "Sample results" });
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Newspaper results for cross of gold");
+  await expect(samples).toBeVisible();
+  await expect(samples.locator("ol > li")).toHaveCount(10);
+  await expect(samples).toContainText("1896-07-18");
+  await expect(page.locator("#root")).toBeEmpty();
+  expect(apiRequests.filter((url) => !url.endsWith("/beacon"))).toEqual([]);
+  await landing.getByRole("button", { name: "Explore interactive map" }).click();
+  await expect(page.locator("#root .app")).toBeVisible();
+  await expect.poll(() => apiRequests.some((url) => new URL(url).pathname === "/v1/meta")).toBe(true);
+  await expect(samples).toBeVisible();
+  await expect(samples.locator("ol > li")).toHaveCount(10);
+});
+
 test("an unknown path shows the not-found page", async ({ page }) => {
   const res = await page.goto("/does-not-exist");
   // vite preview answers every path with the shell and a 200.

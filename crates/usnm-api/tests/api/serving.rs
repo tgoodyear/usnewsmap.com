@@ -777,6 +777,23 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     );
     assert!(body.contains("cross of gold"), "{body}");
     assert!(body.contains("<ol><li>"), "{body}");
+    assert!(body.contains(r#"<div id="root"></div><div id="search-landing">"#));
+    assert!(!body.contains(r#"id="site-fallback""#));
+    assert!(!body.contains(r#"class="visually-hidden" inert"#));
+    assert!(body.contains(r#"id="explore-map""#));
+    for dynamic in [
+        "/search/not-a-listed-search",
+        "/search/cross-of-gold?from=1896-06-01",
+    ] {
+        let (status, headers, body) = get_site(&s, dynamic, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            header_str(&headers, header::HeaderName::from_static("x-robots-tag")),
+            "noindex"
+        );
+        assert!(!body.contains(r#"id="search-landing""#), "{dynamic}");
+        assert!(body.contains(r#"<div id="root">"#), "{dynamic}");
+    }
     let resp = app(s.clone())
         .oneshot(
             Request::builder()
