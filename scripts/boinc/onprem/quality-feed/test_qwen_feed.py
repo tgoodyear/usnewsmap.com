@@ -1,13 +1,16 @@
 """Regression tests for real-source Qwen replenishment; no GPU, Pillow or network."""
 import hashlib
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
 from pathlib import Path
 import sys
+import stat
 import tarfile
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -32,6 +35,24 @@ DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
 class SourceRequestTest(unittest.TestCase):
+    def test_concurrent_progress_saves_publish_complete_unique_atomic_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "request.progress"
+            barrier = threading.Barrier(2)
+            fsync = source.os.fsync
+
+            def synchronize(descriptor):
+                if stat.S_ISREG(source.os.fstat(descriptor).st_mode):
+                    barrier.wait(timeout=5)
+                fsync(descriptor)
+
+            values = [{"value": "a" * 10000}, {"value": "b" * 10000}]
+            with mock.patch.object(source.os, "fsync", side_effect=synchronize), \
+                    ThreadPoolExecutor(2) as executor:
+                list(executor.map(lambda value: source.save(path, value), values))
+            self.assertIn(json.loads(path.read_text()), values)
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+
     def test_selectors_are_exact_and_bounded(self):
         row = {"doc_id": DOC, "batch": "xx_test", "batch_version": 2}
         for value in (DOC, "sn1", "xx_test_ver02"):
@@ -87,6 +108,61 @@ class SourceRequestTest(unittest.TestCase):
                                       side_effect=AssertionError("must replay")):
                 self.assertEqual(source.register(args, spec), first)
 
+    def test_ineligible_oldest_request_falls_through_to_later_request_or_ordinary_pages(self):
+        for later_request in (False, True):
+            with self.subTest(later_request=later_request), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "requests").mkdir()
+                old = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1,
+                       "bytes": 12, "sha256": "a" * 64, "damage_rate": 0.9}
+                fresh = {**old, "doc_id": "sn2_1900-01-02_ed-1_seq-3"}
+                for page in ([old, fresh] if later_request else [old]):
+                    spec = source.specification(page["doc_id"], 1, "test")
+                    source.save(root / "requests" / (source.digest(spec) + ".json"),
+                                {"request_id": source.digest(spec), "spec": spec, "pages": [page],
+                                 "pages_sha256": source.digest([page])})
+                args = types.SimpleNamespace(
+                    state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230,
+                    server_host="server", archive_host="archive", scan_server="http://scan",
+                    archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
+                    max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64)
+                index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
+                attempts = []
+                selected = b""
+
+                def command(argv, data=None):
+                    nonlocal selected
+                    if "tee" in argv and argv[-1].endswith("/index.jsonl"):
+                        attempts.append([json.loads(line) for line in data.splitlines()])
+                    if "select" in argv:
+                        selected = b"".join((json.dumps(p) + "\n").encode()
+                                            for p in attempts[-1] if p["doc_id"] != DOC)
+                    if "cat" in argv:
+                        return selected
+                    return b"[]" if "-c" in argv else b""
+
+                remote = [
+                    {"fresh_pairs": 0, "unresolved_native": 0, "documents": [], "free_bytes": 10**12,
+                     "ready": 0},
+                    {"report": [{"lv": [{"lv_size": 10**12, "data_percent": 0}]}]},
+                    {"available_archives": ["xx_test_ver01.tar.bz2"]},
+                    {"cached": [], "missing": [], "pending": [fresh["doc_id"]]},
+                ]
+                with mock.patch.object(driver, "remote", side_effect=[
+                        json.dumps(value).encode() for value in remote]), \
+                        mock.patch.object(driver, "command", side_effect=command), \
+                        mock.patch.object(driver.shutil, "disk_usage",
+                                          return_value=types.SimpleNamespace(free=10**12)), \
+                        mock.patch.object(driver.urllib.request, "urlopen",
+                                          return_value=contextlib.closing(io.BytesIO(index))), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    driver.tick(args)
+                self.assertEqual(attempts[0], [old])
+                self.assertEqual(attempts[1], [fresh] if later_request else [old, fresh])
+                self.assertIn('"source_request_no_eligible_pages"', output.getvalue())
+                for path in (root / "requests").glob("*.json"):
+                    source.read(path)
+
     def test_native_source_status_binds_exact_audit_and_never_counts_source_rejections_as_jobs(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -113,9 +189,45 @@ class SourceRequestTest(unittest.TestCase):
             self.assertEqual(status["unsent_replicas"], 2)
             self.assertEqual(status["agreed_workunits"], 0)
             self.assertEqual(status["pages"][rejected]["status"], "no_crops")
+            other = "sn3_1900-01-02_ed-1_seq-3"
+            other_unit = campaign / "units" / other
+            other_unit.mkdir()
+            other_job = {"id": "b" * 64, "doc_id": other}
+            other_raw = json.dumps(other_job).encode()
+            (other_unit / "qwen.json").write_bytes(other_raw)
+            (other_unit / "submitted").touch()
+            (campaign / "audit.json").write_text(json.dumps({
+                job["id"]: entry,
+                other_job["id"]: {**entry, "workunit_id": 43,
+                                  "job_sha256": hashlib.sha256(other_raw).hexdigest()},
+            }))
+            with mock.patch.object(submit.subprocess, "check_output", return_value=response):
+                status = submit.source_status(root, root, sample + "\n" + json.dumps({"doc_id": other}))
+            self.assertEqual(status["published_workunits"], 2)
+            self.assertEqual(status["unsent_replicas"], 2)
+            self.assertEqual(status["history_unavailable_workunits"], 1)
+            self.assertEqual(status["pages"][DOC]["status"], "published")
+            self.assertEqual(status["pages"][other]["status"], "native_history_unavailable")
             (unit / "qwen.json").write_bytes(raw + b" ")
             with self.assertRaisesRegex(ValueError, "changed or unbound"):
                 submit.source_status(root, root, sample)
+
+    def test_source_rejections_are_reported_in_single_page_and_bundle_layouts(self):
+        for layout in ("units", "pages"):
+            for disposition in ("no_crops", "too_large"):
+                with self.subTest(layout=layout, disposition=disposition), \
+                        tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    page = root / "qwen/test" / layout / DOC
+                    page.mkdir(parents=True)
+                    (page / disposition).touch()
+                    if disposition == "too_large":
+                        (page / "rejected-qwen.json").write_text("{}")
+                    with mock.patch.object(submit.subprocess, "check_output") as query:
+                        result = submit.source_status(root, root, json.dumps({"doc_id": DOC}))
+                    self.assertEqual(result["pages"][DOC]["status"], disposition)
+                    self.assertEqual(result["published_workunits"], 0)
+                    query.assert_not_called()
 
     def test_progress_distinguishes_publication_dispatch_consensus_and_error(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -129,12 +241,17 @@ class SourceRequestTest(unittest.TestCase):
                       "pages": [page], "pages_sha256": source.digest([page])}
             base = {"pages": {DOC: {"status": "published"}}, "published_workunits": 1,
                     "agreed_workunits": 0, "unsent_replicas": 2, "running_replicas": 0,
-                    "returned_replicas": 0, "invalid_replicas": 0, "error_workunits": 0}
+                    "returned_replicas": 0, "invalid_replicas": 0, "error_workunits": 0,
+                    "history_unavailable_workunits": 0}
             for delta, expected in (
                     ({}, "awaiting_dispatch_or_admission"),
                     ({"running_replicas": 1}, "awaiting_host_results"),
                     ({"agreed_workunits": 1}, "native_consensus_complete"),
-                    ({"error_workunits": 1}, "needs_science_review")):
+                    ({"error_workunits": 1}, "needs_science_review"),
+                    ({"history_unavailable_workunits": 1}, "needs_science_review"),
+                    *[({"pages": {DOC: {"status": disposition}}, "published_workunits": 0},
+                       "needs_science_review")
+                      for disposition in ("no_crops", "too_large", "preparation_rejected")]):
                 with mock.patch("qwen_feed.remote", side_effect=[
                         json.dumps({**base, **delta}).encode(),
                         b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \

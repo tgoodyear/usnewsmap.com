@@ -32,6 +32,13 @@ preparation, publication, dispatch/admission, host results and science errors
 remain visible. Workflow progress contains only selectors, hashes and aggregate
 counts, not private file contents or credentials.
 
+If requested images become ineligible after registration, that tick tries later
+requests and then ordinary selection without mutating frozen membership. An
+all-rejected request needs science review; it is not native consensus. Rejection
+markers are read from both single-page and bundled layouts. Purged BOINC history
+is explicitly `native_history_unavailable` and needs review, while available
+members keep reporting real progress; retained audit alone never implies agreement.
+
 Deploy `qwen_submit.py` on the native server and `qwen_source.py` on the producer
 before activating the Temporal source entry. Replace `qwen_feed.py` only at an
 idle boundary; keep its existing service and receipts. Other callers can keep

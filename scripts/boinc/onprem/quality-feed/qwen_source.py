@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -50,12 +51,16 @@ def matches(row, spec):
 
 
 def save(path, value):
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w") as stream:
-        json.dump(value, stream, sort_keys=True)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".",
+                                     suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(value, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
@@ -77,13 +82,13 @@ def read(path):
     return record
 
 
-def priority_index(index, state, campaign, seen):
+def priority_index(index, state, campaign, seen, excluded_requests=()):
     """Prioritize frozen request members while retaining normal idle replenishment."""
     rows = [json.loads(line) for line in index.splitlines()]
     indexed = {row["doc_id"]: row for row in rows}
     for path in sorted((state / "requests").glob("*.json"), key=lambda p: p.stat().st_mtime_ns):
         record = read(path)
-        if record["spec"]["campaign"] != campaign:
+        if record["spec"]["campaign"] != campaign or record["request_id"] in excluded_requests:
             continue
         wanted = []
         for page in record["pages"]:
@@ -176,10 +181,12 @@ def inspect(args, record):
         counts[status] += 1
     unfinished_sources = sum(counts[k] for k in ("pending_audit", "awaiting_preparation", "awaiting_publication"))
     unresolved_jobs = native["published_workunits"] - native["agreed_workunits"]
-    if native["error_workunits"]:
+    if native["error_workunits"] or native["history_unavailable_workunits"]:
         state = "needs_science_review"
     elif unfinished_sources:
         state = "preparing_and_publishing"
+    elif not native["published_workunits"]:
+        state = "needs_science_review"
     elif unresolved_jobs and native["unsent_replicas"] and not native["running_replicas"]:
         state = "awaiting_dispatch_or_admission"
     elif unresolved_jobs:
@@ -197,6 +204,7 @@ def inspect(args, record):
         "unsent_replicas": native["unsent_replicas"], "running_replicas": native["running_replicas"],
         "returned_replicas": native["returned_replicas"], "invalid_replicas": native["invalid_replicas"],
         "error_workunits": native["error_workunits"],
+        "history_unavailable_workunits": native["history_unavailable_workunits"],
         "waiting_source_pages": len(waiting),
         "waiting_original_archive_pages": sum(
             p["doc_id"] in waiting_set

@@ -94,19 +94,18 @@ def source_status(share, project, sample):
                 states[doc]["status"] = "published" if row else "pending_audit"
                 if row:
                     states[doc]["workunit_ids"].append(row["workunit_id"])
-        for marker in (campaign / "units").glob("*/no_crops"):
-            doc = marker.parent.name
-            if doc in wanted and states[doc]["status"] == "pending":
-                states[doc]["status"] = "no_crops"
-        for marker in (campaign / "units").glob("*/too_large"):
-            doc = marker.parent.name
-            if (doc in wanted and states[doc]["status"] == "pending"
-                    and (marker.parent / "rejected-qwen.json").is_file()):
-                states[doc]["status"] = "too_large"
+        for layout in ("units", "pages"):
+            for disposition in ("no_crops", "too_large"):
+                for marker in (campaign / layout).glob("*/" + disposition):
+                    doc = marker.parent.name
+                    if (doc in wanted and states[doc]["status"] == "pending"
+                            and (disposition == "no_crops"
+                                 or (marker.parent / "rejected-qwen.json").is_file())):
+                        states[doc]["status"] = disposition
     ids = sorted(audited)
     totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
               "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
-              "error_workunits": 0}
+              "error_workunits": 0, "history_unavailable_workunits": 0}
     if ids:
         php = """
 chdir(%s);
@@ -120,8 +119,14 @@ $rows = BoincDb::get()->enum_general('stdClass',
 echo json_encode($rows);
 """ % (json.dumps(str(project / "html/inc")), ",".join(map(str, ids)))
         rows = json.loads(subprocess.check_output(["php", "-r", php], text=True))
-        if {int(row["id"]) for row in rows} != set(ids):
-            raise ValueError("native source audit references missing workunits")
+        observed = {int(row["id"]) for row in rows}
+        if not observed <= set(ids):
+            raise ValueError("native source report returned unexpected workunits")
+        missing = set(ids) - observed
+        totals["history_unavailable_workunits"] = len(missing)
+        for state in states.values():
+            if missing.intersection(state["workunit_ids"]):
+                state["status"] = "native_history_unavailable"
         for row in rows:
             totals["agreed_workunits"] += int(row["canonical_resultid"]) > 0
             totals["error_workunits"] += int(row["error_mask"]) != 0

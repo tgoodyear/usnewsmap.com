@@ -112,17 +112,23 @@ def _tick(a):
     with urllib.request.urlopen(a.scan_server.rstrip("/") + "/index/full.jsonl", timeout=300) as r:
         index, total, retained = available_source_index(r, archive_inventory)
     from qwen_source import priority_index
-    index, request_id = priority_index(index, a.state, a.campaign, seen)
-    command(ct + ["tee", work + "/index.jsonl"], index)
-    phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
-          source_request=request_id)
-    command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
-                     "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(count),
-                     "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
-                     "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
-                     "--scan-server", a.scan_server])
-    raw = command(ct + ["cat", work + "/selected.jsonl"])
-    pages = [json.loads(line) for line in raw.splitlines() if line]
+    excluded_requests = set()
+    while True:
+        selected_index, request_id = priority_index(index, a.state, a.campaign, seen, excluded_requests)
+        command(ct + ["tee", work + "/index.jsonl"], selected_index)
+        phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
+              source_request=request_id)
+        command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
+                         "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(count),
+                         "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
+                         "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
+                         "--scan-server", a.scan_server])
+        raw = command(ct + ["cat", work + "/selected.jsonl"])
+        pages = [json.loads(line) for line in raw.splitlines() if line]
+        if pages or request_id is None:
+            break
+        phase("source_request_no_eligible_pages", source_request=request_id)
+        excluded_requests.add(request_id)
     phase("source_selection", selected=len(pages))
     if not pages:
         print(json.dumps({"status": "waiting_for_crop_sources", "deferred": len(deferred)}))
