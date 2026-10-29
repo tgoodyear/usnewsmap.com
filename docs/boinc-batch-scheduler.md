@@ -223,6 +223,17 @@ identity and controller start grants; `boincOnPrem` grants and shared exchange
 storage must remain. Do not remove the setting or provision until a main-based
 what-if, live API pin comparison and serialized maintainer apply are approved.
 
+The on-prem launcher remains fail-fast on the shared project mutex by default.
+For owner-coordinated rollout only, the host can set
+`USNM_BOINC_STEP_LOCK_WAIT_SECS=120` in the controller's fixed SSH forced-command
+environment to tolerate a concurrent ordinary producer. The permitted range is
+0..300 seconds and must be shorter than `--wait-mins`. Lock waiting subtracts from
+the container's existing runtime budget; timeout still fails explicitly and never
+starts a container without the mutex. Do not stop a producer, remove the lock or
+edit an immutable plan to avoid contention. Deploy the reviewed launcher before
+enabling this host option, retain the previous launcher/forced command for rollback,
+and begin the clean-day window only after the actual rollout.
+
 ### Production priority canary
 
 On 19 October 2026, cached English page

@@ -6,8 +6,10 @@ USNM_BOINC_CONF directory.
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -334,7 +336,7 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(message, done.stderr)
 
-    def run_for_real(self, *args):
+    def run_for_real(self, *args, lock_wait=None, flock_script="exit 0\n"):
         # A fake podman copies the env file it is given; flock always gets the lock.
         bin_dir = Path(self.conf.name, "bin")
         bin_dir.mkdir(exist_ok=True)
@@ -345,13 +347,66 @@ class OnpremStep(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$@\" > " + str(Path(self.conf.name, "podman-args")) + "\n"
             "while [ $# -gt 0 ]; do [ \"$1\" = --env-file ] && cp \"$2\" " + str(captured) + "; shift; done\n")
-        (bin_dir / "flock").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (bin_dir / "flock").write_text("#!/usr/bin/env bash\n"
+                                      "printf '%s\\n' \"$@\" > " +
+                                      str(Path(self.conf.name, "flock-args")) + "\n" + flock_script)
         for tool in ("podman", "flock"):
             (bin_dir / tool).chmod(0o755)
         env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "USNM_BOINC_CONF": self.conf.name,
                "USNM_BOINC_STEP_RUN": str(run_dir)}
+        if lock_wait is not None:
+            env["USNM_BOINC_STEP_LOCK_WAIT_SECS"] = lock_wait
         done = subprocess.run(["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=30)
         return done, captured.read_text() if captured.exists() else None
+
+    def test_lock_wait_is_opt_in_and_consumes_the_existing_deadline(self):
+        args = ("--env", "prod", "--step", "submit", "--wait-mins", "1")
+        done, _ = self.run_for_real(*args)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(Path(self.conf.name, "flock-args").read_text().splitlines(), ["-n", "9"])
+        done, _ = self.run_for_real(*args, lock_wait="2", flock_script="sleep 1.1\nexit 0\n")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(Path(self.conf.name, "flock-args").read_text().splitlines(), ["-w", "2", "9"])
+        argv = Path(self.conf.name, "podman-args").read_text().splitlines()
+        timeout = int(argv[argv.index("--timeout") + 1])
+        self.assertGreater(timeout, 0)
+        self.assertLessEqual(timeout, 59)
+
+    def test_lock_timeout_and_invalid_wait_never_start_a_container(self):
+        args = ("--env", "prod", "--step", "submit", "--wait-mins", "1")
+        for wait, message in (("2", "still holds the lock"), ("60", "shorter"),
+                              ("301", "0..300"), ("-1", "0..300"), ("1.5", "0..300")):
+            with self.subTest(wait=wait):
+                done, captured = self.run_for_real(*args, lock_wait=wait, flock_script="exit 1\n")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+                self.assertIsNone(captured)
+                self.assertFalse(Path(self.conf.name, "podman-args").exists())
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_real_mutex_refuses_overlap_times_out_and_then_accepts_a_released_lock(self):
+        import fcntl
+        import shlex
+
+        args = ("--env", "prod", "--step", "submit", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for wait in (None, "1"):
+                done, captured = self.run_for_real(*args, lock_wait=wait, flock_script=script)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIsNone(captured)
+                self.assertFalse(Path(self.conf.name, "podman-args").exists())
+            release = threading.Timer(0.3, lambda: fcntl.flock(lock, fcntl.LOCK_UN))
+            release.start()
+            try:
+                done, captured = self.run_for_real(*args, lock_wait="2", flock_script=script)
+            finally:
+                release.join()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("BRIDGE_STEP=submit", captured)
 
     def test_pgmq_handoff_mounts_only_fixed_certificate_files_read_only(self):
         url = ("postgres://queue.example/usnm_queue?user=boinc_claim"
