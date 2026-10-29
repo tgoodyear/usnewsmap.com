@@ -1407,6 +1407,50 @@ class TimingsTests(unittest.TestCase):
     J1, J2 = "a" * 64, "b" * 64
     S1, S2 = "/project/usnmocr/results/1", "/project/usnmocr/results/2"
 
+    def test_execution_routes_follow_actual_launcher_and_retain_failures(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example"]
+        transport = batch.Transport(cfg, directory, onprem_handoff=("claim", "export"))
+        with patch.object(batch.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")):
+            transport.step("handoff", "claim")
+            transport.step("handoff", "collect")
+            transport.step("bridge", "batch-inventory")
+        with patch.object(batch.subprocess, "run", side_effect=OSError("cannot start")), \
+                self.assertRaises(RuntimeError):
+            transport.step("handoff", "export")
+        routes = transport.timings.summary()["execution_routes"]
+        self.assertEqual(set(routes), {
+            "onprem/handoff/claim", "azure/handoff/collect",
+            "onprem/bridge/batch-inventory", "onprem/handoff/export",
+        })
+        self.assertEqual(routes["onprem/handoff/export"]["failed"], 1)
+        routes["onprem/handoff/claim"]["count"] = 99
+        self.assertEqual(transport.timings.summary()["execution_routes"]
+                         ["onprem/handoff/claim"]["count"], 1)
+        # A bridge without a custom launcher still uses Azure.
+        del cfg["step_command"]
+        transport = batch.Transport(cfg, directory)
+        with patch.object(batch.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")):
+            transport.step("bridge", "batch-inventory")
+        self.assertIn("azure/bridge/batch-inventory",
+                      transport.timings.summary()["execution_routes"])
+
+    def test_scan_route_records_the_actual_queue_destination(self):
+        for choices, route in (((), "azure/scans"), (("export",), "onprem/scans")):
+            with self.subTest(choices=choices):
+                cfg = queue_config()
+                cfg["step_command"] = ["ssh", "boinc.example"]
+                transport = batch.Transport(cfg, Path("."), onprem_handoff=choices)
+                base = "keep/batch/sn1/1900-01-01/1/1"
+                done = subprocess.CompletedProcess([], 0, f"pushed {base}.jpg\n", "")
+                with patch.object(batch.subprocess, "run", return_value=done):
+                    self.assertEqual(transport.push_pages([base]), ({base: base + ".jpg"}, []))
+                self.assertEqual(set(transport.timings.summary()["execution_routes"]), {route})
+                self.assertEqual(transport.timings.summary()["execution_routes"][route]["count"], 1)
+
     def test_phases_add_up_and_report_as_they_end(self):
         ticker, lines = Ticker(), []
         timings = ticker.timings(report=lines.append)
