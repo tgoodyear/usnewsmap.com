@@ -36,6 +36,10 @@ def validation(images, annotations):
 
 
 class VerifiedBaseline(unittest.TestCase):
+    def test_bundled_provenance_retains_the_independently_verified_bytes(self):
+        self.assertEqual(hashlib.sha256(baseline.NN_PROVENANCE.read_bytes()).hexdigest(),
+                         baseline.NN_PROVENANCE_SHA256)
+
     def test_coco_xywh_and_prediction_xyxy_are_not_confused(self):
         self.assertEqual(baseline.coco_box([10, 20, 30, 40], 100, 200), (0.1, 0.1, 0.4, 0.3))
         self.assertAlmostEqual(baseline.iou((0, 0, 0.5, 0.5), (0.25, 0.25, 0.75, 0.75)), 1 / 7)
