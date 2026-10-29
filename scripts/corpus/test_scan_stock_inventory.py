@@ -50,7 +50,11 @@ class StockTests(unittest.TestCase):
         self.assertFalse(report["checksum_verified"])
         self.assertFalse(report["atomic_snapshot"])
         self.assertFalse(report["corpus_complete"])
-        self.assertEqual(self.run_stock()["entries_this_invocation"], 0)
+        with patch.object(stock, "now", return_value="2099-01-01T00:00:00+00:00"):
+            no_op = self.run_stock()
+        self.assertEqual(no_op["entries_this_invocation"], 0)
+        self.assertEqual(no_op["observed_until"], report["observed_until"])
+        self.assertEqual(no_op["generated_at"], "2099-01-01T00:00:00+00:00")
         self.assertEqual(json.loads((self.work / "report.json").read_text())["finished"], True)
         self.assertEqual(scan.read_bytes(), b"scan")
 
@@ -81,7 +85,7 @@ class StockTests(unittest.TestCase):
 
     def test_deadline_checkpoints_and_changed_configuration_refused(self):
         self.scan("keep/1.jpg")
-        with patch.object(stock.time, "monotonic", side_effect=[0, 0, 21]):
+        with patch.object(stock.time, "monotonic", side_effect=[0, 0, 21, 21]):
             report = self.run_stock(max_seconds=20)
         self.assertFalse(report["finished"])
         self.assertEqual(report["entries_this_invocation"], 0)
@@ -106,6 +110,51 @@ class StockTests(unittest.TestCase):
         directory.mkdir()
         with self.assertRaisesRegex(stock.inventory.c.CatalogError, "directory changed"):
             self.run_stock()
+
+    def test_wide_directory_resumes_without_relisting_and_reports_without_history_scans(self):
+        for number in range(10):
+            self.scan(f"keep/{number}.jpg")
+        self.run_stock(max_entries=1)
+        original_capture = stock.capture_listing
+
+        def capture(conn, fd, relative):
+            self.assertNotEqual(relative, "keep", "unfinished directory must not be relisted")
+            return original_capture(conn, fd, relative)
+
+        original_summary = stock.summary
+        queries = []
+
+        def summary(conn, *args):
+            conn.set_trace_callback(queries.append)
+            return original_summary(conn, *args)
+
+        with patch.object(stock, "capture_listing", side_effect=capture), \
+                patch.object(stock, "summary", side_effect=summary):
+            for _ in range(12):
+                report = self.run_stock(max_entries=1)
+                if report["finished"]:
+                    break
+        self.assertTrue(report["finished"])
+        self.assertEqual(report["cache_sets"]["keep"]["scan_files"], 10)
+        self.assertFalse(any("FROM inodes" in query or "FROM pages" in query for query in queries))
+
+    def test_oversized_listing_fails_explicitly_without_partial_counts(self):
+        for number in range(3):
+            self.scan(f"keep/{number}.jpg")
+        with patch.object(stock, "MAX_DIRECTORY_ENTRIES", 2), \
+                self.assertRaisesRegex(stock.inventory.c.CatalogError, "directory exceeds"):
+            self.run_stock()
+        self.assertEqual(self.run_stock()["cache_sets"]["keep"]["scan_files"], 3)
+
+    def test_inode_size_disagreement_updates_totals_once(self):
+        scan = self.scan("keep/1.jpg")
+        os.link(scan, self.scans / "keep/2.jpg")
+        self.run_stock(max_entries=1)
+        scan.write_bytes(b"longer")
+        report = self.run_stock()
+        self.assertEqual(report["distinct_observed_inodes"], 1)
+        self.assertEqual(report["distinct_inode_max_bytes"], 6)
+        self.assertEqual(report["inodes_with_size_disagreement"], 1)
 
 
 if __name__ == "__main__":

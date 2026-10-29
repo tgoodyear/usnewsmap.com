@@ -345,6 +345,14 @@ metadata calls can still block: use an external process deadline, admit only
 quiet I/O windows, and stop rather than compete with a rebuild. A killed slice
 rolls back; the next invocation resumes without duplicate observations.
 
+Each directory's names-only listing is captured once into a durable pending
+queue, capped at 10,000 names (an oversized directory fails explicitly).
+Resumes consume that queue without replaying an already observed prefix. A
+partial pending-directory index and transactional incremental counters keep
+selection and reporting independent of completed history. An unchanged resume
+retains `observed_until`; `generated_at` is only the report-generation time.
+Checkpoint schema changes require a new work directory; retain old evidence.
+
 The report separates KEEP/buffer scan-file bytes, distinct page paths across
 formats/resolutions, unplaced paths and other entry kinds. Distinct device/inode
 counts deduplicate hardlinks across both sets; maximum observed inode sizes are

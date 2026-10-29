@@ -19,6 +19,9 @@ except ModuleNotFoundError:
     import scan_cache_inventory as inventory
 
 
+MAX_DIRECTORY_ENTRIES = 10000
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -61,35 +64,79 @@ def observe(root, relative, parent_fd=None):
     return ("other", None, None, None, None)
 
 
-def summary(conn, config, processed, started):
-    sets = {}
-    for cache_set in config["cache_sets"]:
-        rows = conn.execute(
-            "SELECT kind,count(*) FROM entries WHERE cache_set=? GROUP BY kind", (cache_set,)
-        ).fetchall()
-        scans, size, pages, unplaced = conn.execute(
-            "SELECT count(*),coalesce(sum(bytes),0),count(DISTINCT page),"
-            "coalesce(sum(page IS NULL),0) FROM entries WHERE cache_set=? AND kind='scan'",
-            (cache_set,),
-        ).fetchone()
-        sets[cache_set] = {
-            "entry_kinds": dict(rows), "scan_files": scans, "scan_file_bytes": size,
-            "distinct_page_paths": pages, "scan_files_without_page_path": unplaced,
-        }
-    inodes, inode_bytes, changed_sizes = conn.execute(
-        "SELECT count(*),coalesce(sum(largest),0),coalesce(sum(smallest!=largest),0) FROM "
-        "(SELECT min(bytes) AS smallest,max(bytes) AS largest FROM entries WHERE kind='scan' "
-        "GROUP BY device,inode)"
+def increment(conn, name, amount=1, cache_set="*"):
+    conn.execute(
+        "INSERT INTO totals VALUES (?,?,?) ON CONFLICT(cache_set,name) DO UPDATE "
+        "SET value=value+excluded.value", (cache_set, name, amount),
+    )
+
+
+def record(conn, cache_set, observation):
+    kind, size, device, inode, page = observation
+    increment(conn, "kind:" + kind, cache_set=cache_set)
+    if kind != "scan":
+        return
+    increment(conn, "scan_files", cache_set=cache_set)
+    increment(conn, "scan_file_bytes", size, cache_set)
+    if page is None:
+        increment(conn, "scan_files_without_page_path", cache_set=cache_set)
+    elif conn.execute("INSERT OR IGNORE INTO pages VALUES (?,?)", (cache_set, page)).rowcount:
+        increment(conn, "distinct_page_paths", cache_set=cache_set)
+    previous = conn.execute(
+        "SELECT smallest,largest FROM inodes WHERE device=? AND inode=?", (device, inode)
     ).fetchone()
-    pending = conn.execute("SELECT count(*) FROM directories WHERE done=0").fetchone()[0]
+    if previous is None:
+        conn.execute("INSERT INTO inodes VALUES (?,?,?,?)", (device, inode, size, size))
+        increment(conn, "distinct_observed_inodes")
+        increment(conn, "distinct_inode_max_bytes", size)
+    else:
+        smallest, largest = previous
+        increment(conn, "distinct_inode_max_bytes", max(largest, size) - largest)
+        if smallest == largest and size != largest:
+            increment(conn, "inodes_with_size_disagreement")
+        conn.execute("UPDATE inodes SET smallest=?,largest=? WHERE device=? AND inode=?",
+                     (min(smallest, size), max(largest, size), device, inode))
+
+
+def capture_listing(conn, fd, relative):
+    # One bounded names-only snapshot; later stat slices consume this durable queue, not readdir.
+    names = []
+    with os.scandir(fd) as children:
+        for entry in children:
+            inventory.c.require(len(names) < MAX_DIRECTORY_ENTRIES,
+                                f"directory exceeds {MAX_DIRECTORY_ENTRIES} entries: {relative}")
+            names.append(entry.name)
+    conn.executemany("INSERT INTO pending VALUES (?,?)",
+                     [(relative, str(Path(relative) / name)) for name in names])
+    conn.execute("UPDATE directories SET listed=1 WHERE path=?", (relative,))
+
+
+def summary(conn, config, processed, started, observed_until):
+    totals = {(cache_set, name): value for cache_set, name, value in conn.execute(
+        "SELECT cache_set,name,value FROM totals"
+    )}
+    value = lambda name, cache_set="*": totals.get((cache_set, name), 0)
+    sets = {
+        cache_set: {
+            "entry_kinds": {name[5:]: amount for (scope, name), amount in totals.items()
+                            if scope == cache_set and name.startswith("kind:")},
+            **{name: value(name, cache_set) for name in (
+                "scan_files", "scan_file_bytes", "distinct_page_paths", "scan_files_without_page_path"
+            )},
+        } for cache_set in config["cache_sets"]
+    }
+    pending = value("pending_directories")
     return {
-        "schema_version": 1, "coverage": "selected local cache trees, observed over an interval",
+        "schema_version": 2, "coverage": "selected local cache trees, observed over an interval",
         "checksum_verified": False, "corpus_complete": False, "atomic_snapshot": False,
-        "finished": pending == 0, "started_at": started, "observed_until": now(),
+        "finished": pending == 0, "started_at": started, "observed_until": observed_until,
+        "generated_at": now(),
         "root": config["root"], "cache_sets": sets, "pending_directories": pending,
-        "entries_this_invocation": processed, "distinct_observed_inodes": inodes,
-        "distinct_inode_max_bytes": inode_bytes, "inodes_with_size_disagreement": changed_sizes,
-        "limits": "metadata calls may block; use an external process deadline and idle I/O priority",
+        "entries_this_invocation": processed,
+        **{name: value(name) for name in ("distinct_observed_inodes", "distinct_inode_max_bytes",
+                                        "inodes_with_size_disagreement")},
+        "limits": f"at most {MAX_DIRECTORY_ENTRIES} names per directory; metadata calls may block; "
+                  "use an external process deadline and idle I/O priority",
     }
 
 
@@ -116,59 +163,86 @@ def run(scan_root, work, cache_sets, max_entries=1000, max_seconds=20):
     with inventory.lock(work):
         db = work / "stock.sqlite"
         c.require(not db.is_symlink(), "checkpoint cannot be a symlink")
+        existing = db.exists()
         with closing(sqlite3.connect(db)) as conn:
+            c.require(not existing or conn.execute("PRAGMA user_version").fetchone()[0] == 2,
+                      "checkpoint schema changed; use a new work directory")
             conn.execute("PRAGMA synchronous=FULL")
             with conn:
-                conn.execute("CREATE TABLE IF NOT EXISTS metadata (config TEXT, started TEXT)")
+                conn.execute("PRAGMA user_version=2")
+                conn.execute("CREATE TABLE IF NOT EXISTS metadata "
+                             "(config TEXT, started TEXT, observed_until TEXT)")
                 conn.execute("CREATE TABLE IF NOT EXISTS directories "
-                             "(path TEXT PRIMARY KEY, done INTEGER NOT NULL, device TEXT, inode TEXT)")
-                conn.execute("CREATE TABLE IF NOT EXISTS entries "
-                             "(path TEXT PRIMARY KEY, cache_set TEXT, kind TEXT, bytes INTEGER,"
-                             "device TEXT, inode TEXT, page TEXT)")
-                saved = conn.execute("SELECT config,started FROM metadata").fetchone()
+                             "(path TEXT PRIMARY KEY, done INTEGER NOT NULL, device TEXT, inode TEXT,"
+                             "listed INTEGER NOT NULL)")
+                conn.execute("CREATE INDEX IF NOT EXISTS pending_directories "
+                             "ON directories(path) WHERE done=0")
+                conn.execute("CREATE TABLE IF NOT EXISTS pending "
+                             "(directory TEXT, path TEXT, PRIMARY KEY(directory,path))")
+                conn.execute("CREATE TABLE IF NOT EXISTS totals "
+                             "(cache_set TEXT, name TEXT, value INTEGER, PRIMARY KEY(cache_set,name))")
+                conn.execute("CREATE TABLE IF NOT EXISTS pages "
+                             "(cache_set TEXT, page TEXT, PRIMARY KEY(cache_set,page))")
+                conn.execute("CREATE TABLE IF NOT EXISTS inodes "
+                             "(device TEXT, inode TEXT, smallest INTEGER, largest INTEGER,"
+                             "PRIMARY KEY(device,inode))")
+                saved = conn.execute("SELECT config,started,observed_until FROM metadata").fetchone()
                 if saved is None:
                     started = now()
-                    conn.execute("INSERT INTO metadata VALUES (?,?)", (json.dumps(config), started))
+                    observed_until = None
+                    conn.execute("INSERT INTO metadata VALUES (?,?,NULL)", (json.dumps(config), started))
                     for value in sorted(cache_sets):
                         observation = observe(root, value)
                         c.require(observation[0] == "directory", "cache set changed")
-                        conn.execute("INSERT INTO directories VALUES (?,0,?,?)",
+                        conn.execute("INSERT INTO directories VALUES (?,0,?,?,0)",
                                      (value, observation[2], observation[3]))
+                        increment(conn, "pending_directories")
                 else:
                     c.require(json.loads(saved[0]) == config,
                               "inventory configuration/root changed; use a new work directory")
                     started = saved[1]
+                    observed_until = saved[2]
             inventory.sync_dir(work)
             processed = 0
             deadline = time.monotonic() + max_seconds
             with conn:
                 while processed < max_entries and time.monotonic() < deadline:
                     row = conn.execute(
-                        "SELECT path,device,inode FROM directories WHERE done=0 ORDER BY path LIMIT 1"
+                        "SELECT path,device,inode,listed FROM directories "
+                        "WHERE done=0 ORDER BY path LIMIT 1"
                     ).fetchone()
                     if row is None:
                         break
                     relative = row[0]
-                    with directory_fd(root, relative) as fd, os.scandir(fd) as children:
+                    with directory_fd(root, relative) as fd:
                         info = os.fstat(fd)
-                        c.require((str(info.st_dev), str(info.st_ino)) == row[1:],
+                        c.require((str(info.st_dev), str(info.st_ino)) == row[1:3],
                                   f"directory changed: {relative}; use a new inventory")
-                        for entry in children:
-                            if processed >= max_entries or time.monotonic() >= deadline:
+                        if not row[3]:
+                            capture_listing(conn, fd, relative)
+                        while processed < max_entries and time.monotonic() < deadline:
+                            next_entry = conn.execute(
+                                "SELECT path FROM pending WHERE directory=? ORDER BY path LIMIT 1",
+                                (relative,),
+                            ).fetchone()
+                            if next_entry is None:
+                                conn.execute("UPDATE directories SET done=1 WHERE path=?", (relative,))
+                                increment(conn, "pending_directories", -1)
                                 break
-                            child = str(Path(relative) / entry.name)
-                            if conn.execute("SELECT 1 FROM entries WHERE path=?", (child,)).fetchone():
-                                continue
+                            child = next_entry[0]
                             observation = observe(root, child, fd)
-                            conn.execute("INSERT INTO entries VALUES (?,?,?,?,?,?,?)",
-                                         (child, Path(child).parts[0], *observation))
+                            record(conn, Path(child).parts[0], observation)
                             if observation[0] == "directory":
-                                conn.execute("INSERT INTO directories VALUES (?,0,?,?)",
+                                conn.execute("INSERT INTO directories VALUES (?,0,?,?,0)",
                                              (child, observation[2], observation[3]))
+                                increment(conn, "pending_directories")
+                            conn.execute("DELETE FROM pending WHERE directory=? AND path=?",
+                                         (relative, child))
                             processed += 1
-                        else:
-                            conn.execute("UPDATE directories SET done=1 WHERE path=?", (relative,))
-            result = summary(conn, config, processed, started)
+                            observed_until = now()
+                if processed:
+                    conn.execute("UPDATE metadata SET observed_until=?", (observed_until,))
+            result = summary(conn, config, processed, started, observed_until)
             inventory.publish(work / "report.json", (json.dumps(result, indent=2) + "\n").encode())
             return result
 
