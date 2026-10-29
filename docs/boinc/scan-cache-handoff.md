@@ -204,8 +204,12 @@ container is already disabled. For the remote converter on the laptop **host**,
 first verify it is inactive, retain its unit and enablement receipt, then:
 
 ```sh
-test "$(systemctl show usnm-quality-jpeg-cache-remote.service -p ActiveState --value)" = inactive
-systemctl disable usnm-quality-jpeg-cache-remote.service
+if test "$(systemctl show usnm-quality-jpeg-cache-remote.service -p ActiveState --value)" = inactive; then
+  systemctl disable usnm-quality-jpeg-cache-remote.service
+else
+  printf '%s\n' 'Refusing retirement: legacy converter is not confirmed inactive.' >&2
+  false
+fi
 ```
 
 Verify the batch container's `usnm-quality-follow.service` remains running and
