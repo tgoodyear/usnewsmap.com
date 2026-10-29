@@ -824,7 +824,9 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         .is_empty());
     let (_, _, home) = get_site(&s, "/", None).await;
     assert!(home.contains(r#"<nav id="common-searches" aria-label="Common newspaper searches">"#));
-    assert!(home.contains(r#"<a href="/search/whigs">whigs</a>"#));
+    assert!(home.contains(r#"<details><summary>Show newspaper searches</summary>"#));
+    assert!(home.contains(r#"<ul class="examples">"#));
+    assert!(home.contains(r#"<a class="example" href="/search/whigs"><strong>whigs</strong>"#));
 }
 
 #[tokio::test]
