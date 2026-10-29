@@ -495,6 +495,34 @@ fn dead_letter_key(d: &DeadLetter) -> String {
 /// [`DEAD_LETTER_HIDE`], so none comes back while the run holds it.
 const DEAD_LETTER_BATCH: usize = 100;
 
+#[derive(Default)]
+struct OutcomeLog {
+    rows: Vec<Outcome>,
+    times: HashMap<String, DateTime<Utc>>,
+}
+
+impl OutcomeLog {
+    // Allocate order without settling the snapshot used to validate this run's parts.
+    fn reserve_time(
+        &mut self,
+        ledger: &ledger::Ledger,
+        doc_id: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        let at = match self.times.get(doc_id) {
+            Some(previous) => at.max(
+                previous
+                    .checked_add_signed(chrono::Duration::microseconds(1))
+                    .context("outcome order exhausted")?,
+            ),
+            None => at,
+        };
+        let at = ledger.next_event_time(doc_id, at)?;
+        self.times.insert(doc_id.to_owned(), at);
+        Ok(at)
+    }
+}
+
 fn same_attempt(message: &usnm_ocr_contract::message::OcrMessage, queued: &ledger::Queued) -> bool {
     let Some(expected) = queued.retry_message_at else {
         return true;
@@ -511,7 +539,7 @@ async fn drain_dead_letters(
     run: &str,
     max: usize,
     counts: &mut Counts,
-    written: &mut Vec<Outcome>,
+    written: &mut OutcomeLog,
     lease: &Lease,
     ledger: &ledger::Ledger,
 ) -> anyhow::Result<()> {
@@ -537,7 +565,7 @@ async fn drain_batch(
     run: &str,
     max: usize,
     counts: &mut Counts,
-    written: &mut Vec<Outcome>,
+    written: &mut OutcomeLog,
     lease: &Lease,
     ledger: &ledger::Ledger,
 ) -> anyhow::Result<usize> {
@@ -603,7 +631,7 @@ async fn drain_batch(
                         cause: d.cause.map(|c| c.as_str().to_owned()),
                         kind: d.kind.clone(),
                         source: msg.id.clone(),
-                        at: ledger.next_event_time(&key.doc_id(), now)?,
+                        at: written.reserve_time(ledger, &key.doc_id(), now)?,
                         run: run.to_owned(),
                         message_sha256: Some(usnm_ocr_contract::boinc::sha256(
                             &serde_json::to_vec(m)?,
@@ -621,7 +649,7 @@ async fn drain_batch(
             bail!("{path} already exists");
         }
         ledger::write_outcomes(stores.curated.as_ref(), &outcomes, now, run).await?;
-        written.extend(outcomes);
+        written.rows.extend(outcomes);
         tracing::info!(path, dead_letters = valid.len(), "dead letters written");
     }
     for msg in valid.iter().map(|(m, _)| m).chain(rejected.iter()) {
@@ -702,7 +730,7 @@ async fn run_locked(
         .collect();
 
     // Outcomes this run writes, for the status's outstanding count.
-    let mut written: Vec<Outcome> = Vec::new();
+    let mut written = OutcomeLog::default();
     drain_dead_letters(
         stores,
         &run,
@@ -851,7 +879,7 @@ async fn run_locked(
             };
             let after = reread.unwrap_or_else(|| {
                 let mut after = ctx.ledger.clone();
-                for o in written {
+                for o in written.rows {
                     after.add_outcome(o);
                 }
                 after
@@ -913,7 +941,7 @@ async fn import(
     runs_by_path: &HashMap<String, ObjectInfo>,
     counts: &mut Counts,
     taken: &mut HashSet<String>,
-    written_outcomes: &mut Vec<Outcome>,
+    written_outcomes: &mut OutcomeLog,
     lease: &Lease,
 ) -> anyhow::Result<()> {
     let metrics = crate::metrics::metrics();
@@ -1139,7 +1167,7 @@ async fn import(
                 cause: None,
                 kind: None,
                 source: i.source_part.clone(),
-                at: ctx.ledger.next_event_time(&i.row.key.doc_id(), now)?,
+                at: written_outcomes.reserve_time(&ctx.ledger, &i.row.key.doc_id(), now)?,
                 run: run.to_owned(),
                 message_sha256: None,
             })
@@ -1147,7 +1175,7 @@ async fn import(
         .collect::<anyhow::Result<_>>()?;
     let outcomes_path =
         ledger::write_outcomes(stores.curated.as_ref(), &outcomes, now, run).await?;
-    written_outcomes.extend(outcomes);
+    written_outcomes.rows.extend(outcomes);
     let record = ImportRecord {
         run: run.to_owned(),
         at: now,

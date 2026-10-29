@@ -1383,6 +1383,90 @@ async fn ordinary_import_settles_a_reservation_ahead_of_the_wall_clock() {
 }
 
 #[tokio::test]
+async fn future_reservation_settlements_advance_across_deadletter_batches_and_import_chunks() {
+    let fx = fixture(false).await;
+    let mut reservation = queued(&key(3).doc_id(), BATCH, "bulk");
+    reservation.queued_at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).unwrap();
+    reservation.retry_message_at = Some(reservation.queued_at);
+    fx.ask(std::slice::from_ref(&reservation)).await;
+    let message = OcrMessage {
+        v: 1,
+        page: key(3).to_string(),
+        batch: BATCH.into(),
+        language: "deu".into(),
+        reason: Reason::Bulk,
+        score: None,
+        queued_at: reservation.queued_at.to_rfc3339(),
+    };
+    for n in 0..101 {
+        let dead = DeadLetter::new(
+            BULK,
+            &format!("old-failure-{n}"),
+            Some(&message),
+            Cause::Permanent,
+            None,
+            None,
+            "BOINC error mask 0x2",
+            1,
+            NODE,
+        );
+        fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    }
+    for n in 1..=2 {
+        fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(n))
+            .await;
+    }
+    let options = Options {
+        chunk: 1,
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &options)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.dead_letters.get("permanent"), Some(&101));
+    assert_eq!(status.last_run.imported, 2, "{:?}", status.last_run);
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(
+        loaded.outcomes[&reservation.doc_id].outcome,
+        ledger::IMPORTED
+    );
+    assert!(loaded.outstanding(&reservation.doc_id).is_none());
+    let mut times = std::collections::HashSet::new();
+    for path in fx
+        .stores
+        .curated
+        .list(&format!("{ROOT}/outcomes"))
+        .await
+        .unwrap()
+    {
+        let body = fx.stores.curated.get(&path).await.unwrap().unwrap();
+        for outcome in ledger::decode_outcomes(bytes::Bytes::from(body)).unwrap() {
+            assert!(outcome.at > reservation.queued_at);
+            assert!(times.insert(outcome.at), "settlement ordering must not tie");
+        }
+    }
+    assert_eq!(times.len(), 103);
+    let requeued = enqueue::requeue(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+        &fx.queue,
+        &RequeueOptions {
+            cause: "permanent".into(),
+            kind: None,
+            since: None,
+            plan: "requeue".into(),
+            max_pages: 1,
+            dry_run: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(requeued.queued, 0);
+    assert_eq!(requeued.skipped.get("imported"), Some(&1));
+}
+
+#[tokio::test]
 async fn drains_dead_letters_and_quarantines_bad_ones() {
     let fx = fixture(false).await;
     let msg = OcrMessage {
