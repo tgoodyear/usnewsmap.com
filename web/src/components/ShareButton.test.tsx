@@ -35,11 +35,12 @@ describe("Share preview preparation", () => {
     expect(copy).toHaveBeenCalledWith(window.location.href);
     expect(fetch).toHaveBeenCalledWith(window.location.href, { signal: expect.any(AbortSignal), cache: "no-store" });
     await waitFor(() => expect(screen.getByRole("button").textContent).toBe("Link copied"));
-    expect(screen.getByRole("status").textContent).toBe("Preparing preview…");
+    expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(screen.getByRole("button"));
     expect(fetch).toHaveBeenCalledTimes(1);
     await act(async () => release(metadata()));
-    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Preview ready for copied link"));
+    await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
     expect(fetch).toHaveBeenLastCalledWith(new URL(image, window.location.href).href, {
       signal: expect.any(AbortSignal),
       cache: "no-store",
@@ -59,13 +60,15 @@ describe("Share preview preparation", () => {
     vi.stubGlobal("fetch", fetch);
     render(<ShareButton />);
     await act(async () => fireEvent.click(screen.getByRole("button")));
-    expect(screen.getByRole("status").textContent).toBe("Preparing preview…");
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(48_000));
-    expect(screen.getByRole("status").textContent).toContain("Preview unavailable");
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByRole("status")).toBeNull();
     expect(fetch.mock.calls.length).toBeLessThan(25);
   });
 
-  it("only reports readiness after a fallback is replaced by a completed screenshot", async () => {
+  it("finishes background preparation only after a fallback is replaced by a completed screenshot", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
     const fetch = vi
@@ -76,20 +79,21 @@ describe("Share preview preparation", () => {
     vi.stubGlobal("fetch", fetch);
     render(<ShareButton />);
     await act(async () => fireEvent.click(screen.getByRole("button")));
-    expect(screen.getByRole("status").textContent).toBe("Preparing preview…");
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(2000));
-    expect(screen.getByRole("status").textContent).toBe("Preview ready for copied link");
+    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByRole("status")).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
-  it("reports copying and preview failures without losing the usable link", async () => {
+  it("still reports clipboard failures without showing preview status", async () => {
     vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("unavailable", { status: 503 })));
     render(<ShareButton />);
     fireEvent.click(screen.getByRole("button"));
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Preview unavailable"));
-    expect(screen.getByRole("status").textContent).toContain("Copy failed");
-    expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
+    await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
+    expect(screen.getByRole("status").textContent).toBe("Copy failed. Copy the address bar link.");
   });
 
   it("does not fetch an external image advertised by unexpected metadata", async () => {
@@ -100,7 +104,8 @@ describe("Share preview preparation", () => {
     vi.stubGlobal("fetch", fetch);
     render(<ShareButton />);
     fireEvent.click(screen.getByRole("button"));
-    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Preview unavailable"));
+    await waitFor(() => expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -116,10 +121,10 @@ describe("Share preview preparation", () => {
     vi.stubGlobal("fetch", fetch);
     const { rerender } = render(<ShareButton key="old-view" />);
     fireEvent.click(screen.getByRole("button"));
-    expect(screen.getByRole("status").textContent).toBe("Preparing preview…");
+    expect(screen.queryByRole("status")).toBeNull();
     await act(async () => rerender(<ShareButton key="new-view" />));
     expect(signal.aborted).toBe(true);
-    expect(screen.getByRole("status").textContent).toBe("");
+    expect(screen.queryByRole("status")).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
