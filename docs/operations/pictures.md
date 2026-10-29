@@ -53,18 +53,18 @@ Licence and credit: the dataset is CC0, and the paper places the dataset, the mo
 
 `scripts/pictures/beyond_words.py` evaluates the retained Newspaper Navigator predictions, not an OCR engine, against the verified classes of the canonical Beyond Words validation split. It does not fetch anything, train or tune a model, join frames to page sequence numbers, or change a store.
 
-Use Python with `scripts/pictures/requirements.txt` installed (validated with PyArrow 20). Retain the two metadata files `data/train_80_percent.json` and `data/val_20_percent.json` from [`biglam/loc_beyond_words` at `6c7f5fb3c60f02d9fe925cfc14aa7008f6c89099`](https://huggingface.co/datasets/biglam/loc_beyond_words/tree/6c7f5fb3c60f02d9fe925cfc14aa7008f6c89099/data). Only those JSON files are needed, about 7 MB; do not download the image archive or image Parquet. Their pinned SHA256s are checked before scoring; their Git blobs also match the canonical LibraryOfCongress/newspaper-navigator files. Independently hash and pin the finished picture provenance before running:
+Use Python 3.12 with `scripts/pictures/requirements.txt` installed (validated with PyArrow 20). Retain the two metadata files `data/train_80_percent.json` and `data/val_20_percent.json` from [`biglam/loc_beyond_words` at `6c7f5fb3c60f02d9fe925cfc14aa7008f6c89099`](https://huggingface.co/datasets/biglam/loc_beyond_words/tree/6c7f5fb3c60f02d9fe925cfc14aa7008f6c89099/data). Only those JSON files are needed, about 7 MB; do not download the image archive or image Parquet. Their pinned SHA256s are checked before scoring; their Git blobs also match the canonical LibraryOfCongress/newspaper-navigator files.
+
+The evaluator defaults to the bundled `scripts/pictures/newspaper-navigator-baseline.lock.json`, the independently verified finished provenance with SHA256 `2caffb480c70a8b21d77cffafc3366620e25adc0be009bd9233611c21ebc625c`. Its input and derived-part hashes bind this measurement to the recorded source artifact; a caller cannot substitute another provenance by supplying its own hash. `--provenance` accepts only an identical copy. A fresh ingest with different metadata or parts needs a separately reviewed baseline update, not a caller-selected trust pin:
 
 ```sh
 python3 scripts/pictures/beyond_words.py \
   --curated /var/lib/usnm-pictures/curated \
-  --provenance /var/lib/usnm-pictures/curated/pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/provenance.json \
-  --provenance-sha256 <independently-recorded-SHA256> \
   --annotations /var/lib/usnm-pictures/beyond-words \
   --out /var/lib/usnm-pictures/beyond-words-baseline.json
 ```
 
-The output is create-only. Every curated part's bytes, hash and row count are checked, as are per-kind and total counts; the exact hashed bytes are passed to Arrow. Only local files are read, about one part at a time; the actual one-CPU run used a 3 GiB cap. Ordinary unit tests need no Arrow installation and run automatically through `scripts/ci/run-unit-tests.py`.
+The output is create-only. Every curated part's bytes, hash and row count are checked, as are per-kind and total counts; the exact hashed bytes are passed to Arrow. Only local files are read, about one part at a time; the actual one-CPU run used a 3 GiB cap. Unit tests include real tiny Parquet parts and require the pinned dependency; CI installs it before `scripts/ci/run-unit-tests.py`.
 
 The split stays at 2,846 training and 712 validation images. Training/validation image-id overlap is an error; physical scan overlap is excluded even when the ids differ. Drop pages added after 1 December 2019, unverified headline/ad classes, and crowd annotations. Identity includes batch version, LCCN, date, edition, reel and frame. Newspaper Navigator boxes are normalized XYXY; COCO boxes are pixel XYWH. Coordinates are clipped to the page. A predeclared 0.5 prediction threshold and confidence-greedy one-to-one IoU at least 0.5 are used, both class-aware and geometry-only.
 

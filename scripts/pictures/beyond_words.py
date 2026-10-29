@@ -25,6 +25,8 @@ COCO_BLOBS = {
 KINDS = {"photo": 0, "illustration": 1, "map": 2, "comic": 3, "cartoon": 4}
 CUTOFF = dt.date(2019, 12, 1)
 NN_REVISION = "e2e585824cdd28d52755c481dca69ed0bfa992a1"
+NN_PROVENANCE_SHA256 = "2caffb480c70a8b21d77cffafc3366620e25adc0be009bd9233611c21ebc625c"
+NN_PROVENANCE = Path(__file__).with_name("newspaper-navigator-baseline.lock.json")
 MAX_METADATA_BYTES = 8 * 1024 * 1024
 
 
@@ -162,12 +164,12 @@ def evaluate(args):
     documents = load_annotations(args.annotations)
     gold, excluded = verified_holdout(documents["train_80_percent.json"], documents["val_20_percent.json"])
     provenance_bytes = args.provenance.read_bytes()
-    require(hashlib.sha256(provenance_bytes).hexdigest() == args.provenance_sha256,
+    require(hashlib.sha256(provenance_bytes).hexdigest() == NN_PROVENANCE_SHA256,
             "Picture provenance SHA256 mismatch")
     provenance = json.loads(provenance_bytes)
     require(provenance["schema"] == 1 and provenance["source"] == "biglam/newspaper-navigator"
             and provenance["license"] == "cc0-1.0" and provenance["revision"] == NN_REVISION
-            and provenance["rows"] == 3274561 and set(provenance["kinds"]) == set(KINDS),
+            and set(provenance["kinds"]) == set(KINDS),
             "Not the supported finished Newspaper Navigator source")
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -213,7 +215,7 @@ def evaluate(args):
         "verified_holdout_images": len(gold), "excluded": excluded,
         "holdout_scans_with_any_retained_prediction": len(seen_pages),
         "holdout_scans_without_retained_predictions_coverage_unknown": len(gold) - len(seen_pages),
-        "newspaper_navigator_revision": NN_REVISION, "provenance_sha256": args.provenance_sha256,
+        "newspaper_navigator_revision": NN_REVISION, "provenance_sha256": NN_PROVENANCE_SHA256,
         "verified_picture_part_sha256": hashes, "picture_rows_scanned": scanned,
         "threshold_fixed_before_evaluation": 0.5,
         "class_aware": agreement(gold, predictions, True),
@@ -232,13 +234,11 @@ def evaluate(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--curated", type=Path, required=True, help="Local curated store root")
-    parser.add_argument("--provenance", type=Path, required=True, help="Finished picture provenance")
-    parser.add_argument("--provenance-sha256", required=True, help="Independently pinned provenance SHA256")
+    parser.add_argument("--provenance", type=Path, default=NN_PROVENANCE,
+                        help="Exact independently verified provenance (defaults to the bundled source lock)")
     parser.add_argument("--annotations", type=Path, required=True, help="Directory holding the two pinned COCO JSONs")
     parser.add_argument("--out", type=Path, required=True, help="Create-only result JSON")
     args = parser.parse_args(argv)
-    if not re.fullmatch(r"[a-f0-9]{64}", args.provenance_sha256):
-        parser.error("--provenance-sha256 must be 64 lowercase hex characters")
     require(not args.out.exists(), f"Output already exists: {args.out}")
     result = evaluate(args)
     with args.out.open("x") as stream:

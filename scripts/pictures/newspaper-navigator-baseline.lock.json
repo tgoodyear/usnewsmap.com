@@ -1,0 +1,474 @@
+{
+  "schema": 1,
+  "source": "biglam/newspaper-navigator",
+  "license": "cc0-1.0",
+  "revision": "e2e585824cdd28d52755c481dca69ed0bfa992a1",
+  "attempt": 1,
+  "written_at": "2026-10-28T14:06:02.615479216Z",
+  "ingest_version": "0.1.0",
+  "inputs": [
+    {
+      "path": "cartoons/train-00000-of-00001.parquet",
+      "bytes": 71381230,
+      "sha256": "bbe78ed320d8abb23aa49cdf6bf28c854fa6081af6f2989b31ee1c08eb79083f",
+      "rows": 206054
+    },
+    {
+      "path": "comics/train-00000-of-00002.parquet",
+      "bytes": 162343180,
+      "sha256": "d084d2cdd6a9a830ab5f3fe4037a8f36555f9bf47eddb21766d3cb42e2df9e13",
+      "rows": 263160
+    },
+    {
+      "path": "comics/train-00001-of-00002.parquet",
+      "bytes": 190421367,
+      "sha256": "93119d86c4228ea3cbd6b2b1bdd955b8f2af8814e5d37a8c34c2d8e082bd5a99",
+      "rows": 263159
+    },
+    {
+      "path": "illustrations/train-00000-of-00002.parquet",
+      "bytes": 104227766,
+      "sha256": "1ea1f3c33893a882958bf69a51d79d2b76c956dedf0321200c3152f24b477af5",
+      "rows": 399238
+    },
+    {
+      "path": "illustrations/train-00001-of-00002.parquet",
+      "bytes": 153897473,
+      "sha256": "f41595f5818ea4c8ba7e92289485a535d6acaef136a744ae1ad6dcfa5b3845e9",
+      "rows": 399237
+    },
+    {
+      "path": "maps/train-00000-of-00001.parquet",
+      "bytes": 150128611,
+      "sha256": "8d48f36055fbe253fda71c8b37437adacd5b9aecc0d0a2076ec4beb66a826f5b",
+      "rows": 200188
+    },
+    {
+      "path": "photos/train-00000-of-00004.parquet",
+      "bytes": 137492852,
+      "sha256": "7c2dd312f9b1413099151b0b3eef7d8e608b66ef2d263fb77823110f842c9ec3",
+      "rows": 385882
+    },
+    {
+      "path": "photos/train-00001-of-00004.parquet",
+      "bytes": 151619422,
+      "sha256": "e5a32194b500e85dc6536ba4d134d2df24b4eaf030f96dd1b7ce45daebaca01e",
+      "rows": 385881
+    },
+    {
+      "path": "photos/train-00002-of-00004.parquet",
+      "bytes": 160849449,
+      "sha256": "d2072781699a6f9ee771bec3cce19cfe1b2b0d42ec7d69cb42d116c8ddde6520",
+      "rows": 385881
+    },
+    {
+      "path": "photos/train-00003-of-00004.parquet",
+      "bytes": 146800656,
+      "sha256": "90b4a98d3fa05369ced8c146b33ac89f4b07a1e16c9777e66ce2826bc0f6b939",
+      "rows": 385881
+    }
+  ],
+  "kinds": {
+    "cartoon": {
+      "config": "cartoons",
+      "rows": 206054,
+      "parts": [
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/cartoon-0000.parquet",
+          "sha256": "2fe0a677a81d53e3a7af0830b5fbd9ad13a42ff42bcc1a1b6bdff070c08a00f3",
+          "bytes": 17946430,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/cartoon-0001.parquet",
+          "sha256": "561ba462beedd4bdc205ab811aa3beeec9c1cf098b369f9c86231e35c8d265ce",
+          "bytes": 18970507,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/cartoon-0002.parquet",
+          "sha256": "e211c4cc639f7b753514d01717da09529fb9d30ac43355f1ff462c8c2e9205ca",
+          "bytes": 1123144,
+          "rows": 6054
+        }
+      ],
+      "quality": {
+        "rows": 206054,
+        "unplaced_rows": 4,
+        "batch_missing": 0,
+        "page_url_unplaced": 0,
+        "crop_url_missing": 0,
+        "crop_url_unplaced": 4,
+        "crop_url_mismatch": 0,
+        "box_unusable": 0,
+        "score_missing": 0,
+        "page_seq_num_missing": 0,
+        "frame_differs_from_page_seq_num": 0,
+        "without_crop_by_batch": {
+          "wa_auklet_ver01": 1,
+          "wa_bittern_ver01": 3
+        }
+      }
+    },
+    "comic": {
+      "config": "comics",
+      "rows": 526319,
+      "parts": [
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/comic-0000.parquet",
+          "sha256": "92a14baf33c7f860a0da6176c960ad8d947b8c302fbf85aa8d6e43cca1cbbec5",
+          "bytes": 38301980,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/comic-0001.parquet",
+          "sha256": "1be0fbfecf8f79977e240dd08b672689a08186ddf69f7734f034ce5e7e5fa6ad",
+          "bytes": 36050298,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/comic-0002.parquet",
+          "sha256": "a1da413f73eaa12ec7113f3160fc6d098693906d391e358ed03ea3d7ac06f921",
+          "bytes": 22203662,
+          "rows": 63160
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/comic-0003.parquet",
+          "sha256": "40270fa0babef5c8e2810d32d59aff6e91ade894050a1dc480e0770bc82a58db",
+          "bytes": 37485097,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/comic-0004.parquet",
+          "sha256": "0f2f2e2164b8158a383966c75f339d4f45ace2057d0bafa14db5d2dca6ab0dd5",
+          "bytes": 47774059,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/comic-0005.parquet",
+          "sha256": "0102346bedaac5f47fe01df25ddcd4a03b77a0966bd194afb8279b1bc6aa9151",
+          "bytes": 33647939,
+          "rows": 63159
+        }
+      ],
+      "quality": {
+        "rows": 526319,
+        "unplaced_rows": 126,
+        "batch_missing": 0,
+        "page_url_unplaced": 0,
+        "crop_url_missing": 0,
+        "crop_url_unplaced": 126,
+        "crop_url_mismatch": 0,
+        "box_unusable": 0,
+        "score_missing": 0,
+        "page_seq_num_missing": 0,
+        "frame_differs_from_page_seq_num": 0,
+        "without_crop_by_batch": {
+          "dlc_addison_ver02": 9,
+          "dlc_belmont_ver02": 5,
+          "dlc_division_ver02": 36,
+          "dlc_edgewater_ver02": 13,
+          "dlc_fullerton_ver02": 3,
+          "dlc_halsted_ver02": 17,
+          "dlc_illinois_ver02": 2,
+          "dlc_jefferson_ver02": 3,
+          "dlc_kedzie_ver02": 5,
+          "dlc_michigan_ver01": 2,
+          "dlc_north_ver02": 2,
+          "dlc_ogden_ver03": 3,
+          "dlc_pulaski_ver01": 1,
+          "dlc_quincy_ver01": 8,
+          "wa_auklet_ver01": 3,
+          "wa_bittern_ver01": 14
+        }
+      }
+    },
+    "illustration": {
+      "config": "illustrations",
+      "rows": 798475,
+      "parts": [
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0000.parquet",
+          "sha256": "95d2a73d8a346d59a568b9b06e1598e071ef5ffbb7b7d200dcafea208432f233",
+          "bytes": 11849289,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0001.parquet",
+          "sha256": "c4a9b2fb67d1083470f664e0f78d832aac65b8d9adf71333b9bc24899d1fc17d",
+          "bytes": 11452319,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0002.parquet",
+          "sha256": "602a088ee4454572c480dc4fb7fd3d66949b0d9c99d5e9ffd1906fb3f873d6b7",
+          "bytes": 13494720,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0003.parquet",
+          "sha256": "cba274e49de8d57f5cb2ab47a6403d81bb835b68cb7afe2d6d15c92e23ba918f",
+          "bytes": 16658482,
+          "rows": 99238
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0004.parquet",
+          "sha256": "38169de68d6e13d58526329315a8e6e21116fc686f59829c4b0e2f91703a8ef6",
+          "bytes": 23025161,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0005.parquet",
+          "sha256": "411d716e66489c9e8c3245f85f6b424a3009e85eafbd4dde79890613c54b3f66",
+          "bytes": 20656067,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0006.parquet",
+          "sha256": "2c2f8f10158df4ef7516ab8c3d671f61dcbb722fa5c51577dca8029a1ca35481",
+          "bytes": 21521737,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/illustration-0007.parquet",
+          "sha256": "e1f4f641607ae4a2ab7c23a1ad155f73654addb76737a4c922cbe9808507b2a0",
+          "bytes": 22854086,
+          "rows": 99237
+        }
+      ],
+      "quality": {
+        "rows": 798475,
+        "unplaced_rows": 403,
+        "batch_missing": 0,
+        "page_url_unplaced": 0,
+        "crop_url_missing": 0,
+        "crop_url_unplaced": 403,
+        "crop_url_mismatch": 0,
+        "box_unusable": 0,
+        "score_missing": 0,
+        "page_seq_num_missing": 0,
+        "frame_differs_from_page_seq_num": 0,
+        "without_crop_by_batch": {
+          "dlc_edgewater_ver02": 3,
+          "dlc_fullerton_ver02": 1,
+          "dlc_jefferson_ver02": 1,
+          "dlc_michigan_ver01": 2,
+          "dlc_pulaski_ver01": 1,
+          "wa_auklet_ver01": 186,
+          "wa_bittern_ver01": 209
+        }
+      }
+    },
+    "map": {
+      "config": "maps",
+      "rows": 200188,
+      "parts": [
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/map-0000.parquet",
+          "sha256": "2240a12deb9abb98e4b93c9b298e3aea2b2b2d0392b1eb3e10c9af84db6f007d",
+          "bytes": 50552715,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/map-0001.parquet",
+          "sha256": "d4978c1eed1b4d03402ef8be51e7815f1cf96bc55744dc2033b73632b9e42a99",
+          "bytes": 41478885,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/map-0002.parquet",
+          "sha256": "d0ffa60c007adceb5465b98d35d1a2a545b5b72823151fe7f20121b247393f1e",
+          "bytes": 78026,
+          "rows": 188
+        }
+      ],
+      "quality": {
+        "rows": 200188,
+        "unplaced_rows": 104,
+        "batch_missing": 0,
+        "page_url_unplaced": 0,
+        "crop_url_missing": 0,
+        "crop_url_unplaced": 104,
+        "crop_url_mismatch": 0,
+        "box_unusable": 0,
+        "score_missing": 0,
+        "page_seq_num_missing": 0,
+        "frame_differs_from_page_seq_num": 0,
+        "without_crop_by_batch": {
+          "dlc_belmont_ver02": 1,
+          "dlc_clark_ver03": 4,
+          "dlc_division_ver02": 11,
+          "dlc_edgewater_ver02": 9,
+          "dlc_fullerton_ver02": 9,
+          "dlc_grand_ver02": 3,
+          "dlc_halsted_ver02": 5,
+          "dlc_illinois_ver02": 14,
+          "dlc_jefferson_ver02": 5,
+          "dlc_kedzie_ver02": 13,
+          "dlc_lake_ver02": 5,
+          "dlc_michigan_ver01": 4,
+          "dlc_north_ver02": 11,
+          "dlc_ogden_ver03": 1,
+          "dlc_pulaski_ver01": 3,
+          "dlc_quincy_ver01": 3,
+          "wa_auklet_ver01": 1,
+          "wa_bittern_ver01": 2
+        }
+      }
+    },
+    "photo": {
+      "config": "photos",
+      "rows": 1543525,
+      "parts": [
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0000.parquet",
+          "sha256": "96f4a95446eb5434f1eafe81617340d011c9c034a6e68568c42eb44c9b4ea497",
+          "bytes": 18606483,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0001.parquet",
+          "sha256": "c70bb503f512c942a163455eecb6e36dba62b7d728914b5aa2085b1bb17570a6",
+          "bytes": 20448908,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0002.parquet",
+          "sha256": "080e775abd41dee03c3f13e0b37145830f53e3cee0acd8c59182e39a263bb487",
+          "bytes": 20765070,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0003.parquet",
+          "sha256": "38bd28bb72d983052fa6e4c4db233820501c55265d7426ae7b7dd49bcab3674e",
+          "bytes": 17647641,
+          "rows": 85882
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0004.parquet",
+          "sha256": "f425f861f6306e2cd2fa6e356f11a14a0d7bccabd4fe7d99d4e13d72c4e14af0",
+          "bytes": 21605028,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0005.parquet",
+          "sha256": "731cc9b883ad5a78ea895b02cffab7e8c5f2dc1665e4fa3bb3b648ab85352351",
+          "bytes": 21379796,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0006.parquet",
+          "sha256": "063e0a429b337f97dbdc520976f3099213ec0e1ad6425c3dd586d5fad1f8ab64",
+          "bytes": 23668643,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0007.parquet",
+          "sha256": "ba0c97331cd41322224a54dc314c92ac9d867a1b850719afff18fd96986ac39e",
+          "bytes": 20620606,
+          "rows": 85881
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0008.parquet",
+          "sha256": "799014a3ea37757e9b1cda6202813801098e55719a8e118a7b03f14ea5289019",
+          "bytes": 23705314,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0009.parquet",
+          "sha256": "caf2afce2f887cfa05dea9067f0c6608f26e19f70aafca9cfd1ecd01b6964676",
+          "bytes": 23514272,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0010.parquet",
+          "sha256": "b665695251d7389e004f4f01c8a22adf55365cd07b0976a577b67fb3b74a3105",
+          "bytes": 24678181,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0011.parquet",
+          "sha256": "0d2b3d39eb1755475099054f46b7c4a22425a696f8deafcc07d5fe1d9ac268be",
+          "bytes": 21575934,
+          "rows": 85881
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0012.parquet",
+          "sha256": "0e9fc88fc8f7b1c7ac31f2343040d956d16c62be731e036ea369104142dce661",
+          "bytes": 23793474,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0013.parquet",
+          "sha256": "77fb306551dbce1d436f93c19514b9e5c2017d70161f935ca3973fbb48dcb502",
+          "bytes": 22328019,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0014.parquet",
+          "sha256": "921912f153b8ef925c2d4772d62c4020d31d17c91ad339d6522b920936a19926",
+          "bytes": 20515975,
+          "rows": 100000
+        },
+        {
+          "path": "pictures/newspaper-navigator/e2e585824cdd28d52755c481dca69ed0bfa992a1/0001/photo-0015.parquet",
+          "sha256": "da0270e1bd98009118f99caf797a8aae4827d5c5bcae0deec05aed2d69f93c25",
+          "bytes": 18111334,
+          "rows": 85881
+        }
+      ],
+      "quality": {
+        "rows": 1543525,
+        "unplaced_rows": 20,
+        "batch_missing": 0,
+        "page_url_unplaced": 0,
+        "crop_url_missing": 0,
+        "crop_url_unplaced": 20,
+        "crop_url_mismatch": 0,
+        "box_unusable": 0,
+        "score_missing": 0,
+        "page_seq_num_missing": 0,
+        "frame_differs_from_page_seq_num": 0,
+        "without_crop_by_batch": {
+          "wa_auklet_ver01": 5,
+          "wa_bittern_ver01": 15
+        }
+      }
+    }
+  },
+  "rows": 3274561,
+  "quality": {
+    "rows": 3274561,
+    "unplaced_rows": 657,
+    "batch_missing": 0,
+    "page_url_unplaced": 0,
+    "crop_url_missing": 0,
+    "crop_url_unplaced": 657,
+    "crop_url_mismatch": 0,
+    "box_unusable": 0,
+    "score_missing": 0,
+    "page_seq_num_missing": 0,
+    "frame_differs_from_page_seq_num": 0,
+    "without_crop_by_batch": {
+      "dlc_addison_ver02": 9,
+      "dlc_belmont_ver02": 6,
+      "dlc_clark_ver03": 4,
+      "dlc_division_ver02": 47,
+      "dlc_edgewater_ver02": 25,
+      "dlc_fullerton_ver02": 13,
+      "dlc_grand_ver02": 3,
+      "dlc_halsted_ver02": 22,
+      "dlc_illinois_ver02": 16,
+      "dlc_jefferson_ver02": 9,
+      "dlc_kedzie_ver02": 18,
+      "dlc_lake_ver02": 5,
+      "dlc_michigan_ver01": 8,
+      "dlc_north_ver02": 13,
+      "dlc_ogden_ver03": 4,
+      "dlc_pulaski_ver01": 5,
+      "dlc_quincy_ver01": 11,
+      "wa_auklet_ver01": 196,
+      "wa_bittern_ver01": 243
+    }
+  }
+}
