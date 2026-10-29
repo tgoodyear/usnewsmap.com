@@ -1,15 +1,13 @@
-/** Keep the static map visible until the equivalent interactive view has painted. */
+/** Show the app immediately, retaining static results only as an error fallback. */
 export function enhanceSearchLanding(mount: () => void): boolean {
   const landing = document.getElementById("search-landing");
   const root = document.getElementById("root");
   if (!landing || !root) return false;
-  root.classList.add("search-hydrating");
-  root.setAttribute("aria-hidden", "true");
-  root.inert = true;
+  landing.hidden = true;
   const status = document.createElement("p");
   status.className = "empty";
   status.setAttribute("role", "status");
-  status.textContent = "Loading interactive map. The static map and newspaper results are available below.";
+  status.textContent = "The interactive map is unavailable. The static map and newspaper results remain available.";
   landing.prepend(status);
 
   const ready = () => {
@@ -23,34 +21,26 @@ export function enhanceSearchLanding(mount: () => void): boolean {
       results && [...results.querySelectorAll(".notice strong")].some((n) => n.textContent === "No pages match.");
     return !!results && (painted || !!empty || !!results.querySelector(".tables"));
   };
-  let presenting = false;
+  const discard = () => {
+    const hadFocus = landing.contains(document.activeElement);
+    landing.remove();
+    root.hidden = false;
+    if (hadFocus) root.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+    observer.disconnect();
+    window.removeEventListener("popstate", discard);
+  };
   const observer = new MutationObserver(() => {
-    if (!ready()) {
-      if (root.querySelector('[role="alert"], [data-basemap-error="true"]')) {
-        status.textContent =
-          "The interactive map is unavailable. The static map and newspaper results remain available.";
-      }
+    if (ready()) {
+      discard();
       return;
     }
-    if (presenting) return;
-    presenting = true;
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (!ready()) {
-          presenting = false;
-          return;
-        }
-        const hadFocus = landing.contains(document.activeElement);
-        landing.remove();
-        root.classList.remove("search-hydrating");
-        root.removeAttribute("aria-hidden");
-        root.inert = false;
-        if (hadFocus) root.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
-        observer.disconnect();
-      }),
-    );
+    const failed = !!root.querySelector('[data-search-error="true"], [data-basemap-error="true"]');
+    if (root.hidden !== failed) root.hidden = failed;
+    landing.classList.toggle("search-static-fallback", failed);
+    landing.hidden = !failed;
   });
   observer.observe(root, { subtree: true, childList: true, attributes: true });
+  window.addEventListener("popstate", discard);
   mount();
   return true;
 }

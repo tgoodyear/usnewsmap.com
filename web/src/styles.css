@@ -525,6 +525,18 @@ select {
   font-size: clamp(1.6rem, 4vw, 2.4rem);
   margin-bottom: 8px;
 }
+.search-links {
+  columns: 2 16rem;
+}
+.search-links li {
+  break-inside: avoid;
+  margin-bottom: 4px;
+}
+.search-links a {
+  display: block;
+  min-height: 24px;
+  padding-block: 4px;
+}
 .static-search-map {
   margin: 0;
 }
@@ -537,13 +549,6 @@ select {
   padding: 8px 16px;
   text-align: center;
   color: var(--muted);
-}
-.search-hydrating {
-  position: fixed;
-  inset: 0;
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
 }
 .examples {
   list-style: none;

@@ -403,7 +403,7 @@ fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
         .append_pair("q", query)
         .finish();
     let map = format!(
-        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" fetchpriority=\"high\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
+        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
         escape_html(&image_query),
         escape_html(query),
     );
@@ -438,17 +438,20 @@ fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
     }
 }
 
-fn curated_links() -> String {
-    let mut paths: Vec<_> = CURATED_SEARCHES.iter().collect();
-    paths.sort();
-    let links: String = paths
+fn search_links(sitemap: &sitemap::Service) -> String {
+    let links: String = sitemap
+        .search_paths()
         .into_iter()
         .map(|path| {
-            let q = search_query(path).expect("curated search path");
-            format!(r#"<li><a href="{path}">{}</a></li>"#, escape_html(&q))
+            let q = search_query(&path).expect("sitemap search path");
+            format!(
+                r#"<li><a href="{}">{}</a></li>"#,
+                escape_html(&path),
+                escape_html(&q)
+            )
         })
         .collect();
-    format!("<nav aria-label=\"Common newspaper searches\"><h2>Common searches</h2><ul>{links}</ul></nav>")
+    format!("<nav id=\"common-searches\" aria-label=\"Common newspaper searches\"><h2>Common searches</h2><ul class=\"search-links\">{links}</ul></nav>")
 }
 
 fn preview_query(q: &str) -> String {
@@ -689,7 +692,7 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
                 }
             }
         } else if matches!(path, "/" | "/index.html") {
-            body = insert_content(body, &curated_links());
+            body = insert_content(body, &search_links(&state.sitemap));
         }
     }
     let mut headers = HeaderMap::new();

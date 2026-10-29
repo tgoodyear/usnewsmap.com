@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { enhanceSearchLanding } from "./searchLanding";
 
 afterEach(() => {
+  window.dispatchEvent(new PopStateEvent("popstate"));
   document.body.innerHTML = "";
 });
 
@@ -14,51 +15,74 @@ async function mutations() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test("automatically mounts offscreen and retains the static map when API requests fail", async () => {
+test("mounts the normal visible app immediately without waiting for results or the static image", async () => {
+  shell();
+  const root = document.getElementById("root")!;
+  const mount = vi.fn(() => {
+    root.innerHTML =
+      '<main data-share-ready="false"><input type="search"><div data-testid="map" data-basemap-ready="false" data-overlay-ready="false"></div></main>';
+  });
+  expect(enhanceSearchLanding(mount)).toBe(true);
+  expect(mount).toHaveBeenCalledOnce();
+  await mutations();
+  expect(root.hidden).toBe(false);
+  expect(root.inert).not.toBe(true);
+  expect(root.hasAttribute("aria-hidden")).toBe(false);
+  expect(document.getElementById("search-landing")!.hidden).toBe(true);
+});
+
+test("reveals the static map and excerpts when API requests fail, then recovers", async () => {
   shell();
   const mount = vi.fn(() => {
-    document.getElementById("root")!.innerHTML = '<p role="alert">Could not load metadata</p>';
+    document.getElementById("root")!.innerHTML =
+      '<div data-search-error="true"><p role="alert">Could not load metadata</p></div>';
   });
   expect(enhanceSearchLanding(mount)).toBe(true);
   expect(mount).toHaveBeenCalledOnce();
   await mutations();
   expect(document.querySelector("#search-landing img")).not.toBeNull();
   expect(document.querySelector("#search-landing a")?.textContent).toBe("A newspaper page");
-  expect(document.getElementById("root")!.inert).toBe(true);
-  expect(document.getElementById("root")!.getAttribute("aria-hidden")).toBe("true");
+  const root = document.getElementById("root")!;
+  expect(root.hidden).toBe(true);
+  expect(document.getElementById("search-landing")!.hidden).toBe(false);
+  expect(document.getElementById("search-landing")!.classList.contains("search-static-fallback")).toBe(true);
   expect(document.querySelector('[role="status"]')?.textContent).toContain("unavailable");
+  root.innerHTML = '<main data-share-ready="false">Retrying</main>';
+  await mutations();
+  expect(root.hidden).toBe(false);
+  expect(document.getElementById("search-landing")!.hidden).toBe(true);
 });
 
-test("replaces all static elements only after the actual basemap and result overlay are ready", async () => {
+test("keeps the normal app usable when optional newspaper or sample requests fail", async () => {
   shell();
-  const frames: FrameRequestCallback[] = [];
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
-  try {
-    const root = document.getElementById("root")!;
-    enhanceSearchLanding(() => {
-      root.innerHTML =
-        '<main data-share-ready="false"><div data-testid="map" data-basemap-ready="false" data-overlay-ready="false"></div></main>';
-    });
-    const results = root.querySelector("main")!;
-    const map = root.querySelector("[data-testid]")!;
-    results.dataset.shareReady = "true";
-    await mutations();
-    expect(frames).toHaveLength(0);
-    map.setAttribute("data-basemap-ready", "true");
-    map.setAttribute("data-overlay-ready", "true");
-    await mutations();
-    expect(frames).toHaveLength(1);
-    expect(document.getElementById("search-landing")).not.toBeNull();
-    frames.shift()!(0);
-    expect(document.getElementById("search-landing")).not.toBeNull();
-    frames.shift()!(0);
-    expect(document.getElementById("search-landing")).toBeNull();
-    expect(root.inert).toBe(false);
-    expect(root.hasAttribute("aria-hidden")).toBe(false);
-    expect(root.classList.contains("search-hydrating")).toBe(false);
-  } finally {
-    vi.unstubAllGlobals();
-  }
+  const root = document.getElementById("root")!;
+  enhanceSearchLanding(() => {
+    root.innerHTML =
+      '<main data-share-ready="false"><input type="search"><p role="alert">Newspaper list unavailable</p><section class="visually-hidden" inert><p role="alert">Sample results unavailable</p></section></main>';
+  });
+  await mutations();
+  expect(root.hidden).toBe(false);
+  expect(document.getElementById("search-landing")!.hidden).toBe(true);
+});
+
+test("discards the hidden static elements once the basemap and result overlay are ready", async () => {
+  shell();
+  const root = document.getElementById("root")!;
+  enhanceSearchLanding(() => {
+    root.innerHTML =
+      '<main data-share-ready="false"><div data-testid="map" data-basemap-ready="false" data-overlay-ready="false"></div></main>';
+  });
+  const results = root.querySelector("main")!;
+  const map = root.querySelector("[data-testid]")!;
+  results.dataset.shareReady = "true";
+  await mutations();
+  expect(document.getElementById("search-landing")!.hidden).toBe(true);
+  expect(root.hidden).toBe(false);
+  map.setAttribute("data-basemap-ready", "true");
+  map.setAttribute("data-overlay-ready", "true");
+  await mutations();
+  expect(document.getElementById("search-landing")).toBeNull();
+  expect(root.hidden).toBe(false);
 });
 
 test("unlisted searches and other pages use the dynamic app directly", () => {
@@ -71,53 +95,30 @@ test("unlisted searches and other pages use the dynamic app directly", () => {
 test.each([
   ["empty results", '<div class="notice" role="status"><strong>No pages match.</strong> Try widening the dates.</div>'],
   ["non-WebGL tables", '<div class="tables"><table><tbody><tr><td>Washington</td></tr></tbody></table></div>'],
-])("reveals search controls only after %s are ready", async (_, content) => {
+])("shows the controls immediately and discards the fallback when %s are ready", async (_, content) => {
   shell();
-  const frames: FrameRequestCallback[] = [];
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
-  try {
-    const root = document.getElementById("root")!;
-    enhanceSearchLanding(() => {
-      root.innerHTML = `<main data-share-ready="false"><input type="search">${content}</main>`;
-    });
-    await mutations();
-    expect(frames).toHaveLength(0);
-    root.querySelector("main")!.dataset.shareReady = "true";
-    await mutations();
-    frames.shift()!(0);
-    frames.shift()!(0);
-    expect(document.getElementById("search-landing")).toBeNull();
-    expect(root.inert).toBe(false);
-    expect(root.classList.contains("search-hydrating")).toBe(false);
-  } finally {
-    vi.unstubAllGlobals();
-  }
+  const root = document.getElementById("root")!;
+  enhanceSearchLanding(() => {
+    root.innerHTML = `<main data-share-ready="false"><input type="search">${content}</main>`;
+  });
+  await mutations();
+  expect(root.hidden).toBe(false);
+  expect(document.getElementById("search-landing")!.hidden).toBe(true);
+  root.querySelector("main")!.dataset.shareReady = "true";
+  await mutations();
+  expect(document.getElementById("search-landing")).toBeNull();
+  expect(root.hidden).toBe(false);
 });
 
-test("keeps the static view if readiness regresses before the replacement paints", async () => {
+test("navigation prevents the original fallback from appearing for a different query or filters", async () => {
   shell();
-  const frames: FrameRequestCallback[] = [];
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
-  try {
-    const root = document.getElementById("root")!;
-    enhanceSearchLanding(() => {
-      root.innerHTML = '<main data-share-ready="true"><div class="tables"></div></main>';
-    });
-    await mutations();
-    frames.shift()!(0);
-    root.querySelector("main")!.dataset.shareReady = "false";
-    frames.shift()!(0);
-    expect(document.getElementById("search-landing")).not.toBeNull();
-    expect(root.inert).toBe(true);
-    await mutations();
-    expect(frames).toHaveLength(0);
-    root.querySelector("main")!.dataset.shareReady = "true";
-    await mutations();
-    frames.shift()!(0);
-    frames.shift()!(0);
-    expect(document.getElementById("search-landing")).toBeNull();
-    expect(root.inert).toBe(false);
-  } finally {
-    vi.unstubAllGlobals();
-  }
+  const root = document.getElementById("root")!;
+  enhanceSearchLanding(() => {
+    root.innerHTML = '<main data-share-ready="false"><input type="search"></main>';
+  });
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  root.innerHTML = '<p role="alert">New query failed</p>';
+  await mutations();
+  expect(document.getElementById("search-landing")).toBeNull();
+  expect(root.hidden).toBe(false);
 });

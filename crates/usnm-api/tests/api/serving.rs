@@ -823,7 +823,7 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         .to_bytes()
         .is_empty());
     let (_, _, home) = get_site(&s, "/", None).await;
-    assert!(home.contains(r#"<nav aria-label="Common newspaper searches">"#));
+    assert!(home.contains(r#"<nav id="common-searches" aria-label="Common newspaper searches">"#));
     assert!(home.contains(r#"<a href="/search/whigs">whigs</a>"#));
 }
 
