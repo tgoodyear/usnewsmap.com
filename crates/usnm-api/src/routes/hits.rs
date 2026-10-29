@@ -182,9 +182,33 @@ struct CongressOut {
 /// Who made a page's text when it isn't LoC's OCR.
 #[derive(Serialize, JsonSchema)]
 #[schemars(rename = "PageOcr")]
-struct Ocr {
+pub(crate) struct Ocr {
     source: String,
-    engine: Option<String>,
+    pub(crate) engine: Option<String>,
+}
+
+pub(crate) fn ocr_for_hit(h: &Hit, rd: &RefData) -> Option<Ocr> {
+    match &h.ocr_source {
+        Some(source) => Some(Ocr {
+            source: source.clone(),
+            engine: h.ocr_engine.clone(),
+        }),
+        None => rd
+            .ja_latin
+            .get(&h.doc_id)
+            .map(|p| Ocr {
+                source: p.ocr_source.clone(),
+                engine: Some(p.ocr_engine.clone()),
+            })
+            .or_else(|| {
+                let e = rd.ocr_local.get(&h.doc_id)?;
+                let engine = rd.ocr_local.engine(e)?;
+                Some(Ocr {
+                    source: engine.source.clone(),
+                    engine: Some(engine.engine.clone()),
+                })
+            }),
+    }
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -230,27 +254,7 @@ impl Item {
         // A Japanese page says so itself; a main-index page with our Latin
         // text, or with our own OCR in place of LoC's (12 §12.5 Step 9), is
         // in the snapshot's lists.
-        let ocr = match h.ocr_source {
-            Some(source) => Some(Ocr {
-                source,
-                engine: h.ocr_engine,
-            }),
-            None => rd
-                .ja_latin
-                .get(&h.doc_id)
-                .map(|p| Ocr {
-                    source: p.ocr_source.clone(),
-                    engine: Some(p.ocr_engine.clone()),
-                })
-                .or_else(|| {
-                    let e = rd.ocr_local.get(&h.doc_id)?;
-                    let engine = rd.ocr_local.engine(e)?;
-                    Some(Ocr {
-                        source: engine.source.clone(),
-                        engine: Some(engine.engine.clone()),
-                    })
-                }),
-        };
+        let ocr = ocr_for_hit(&h, rd);
         Item {
             date: date_from_day(h.day).to_string(),
             title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),

@@ -412,6 +412,11 @@ fn search_landing(body: Vec<u8>, preview: &str) -> Vec<u8> {
                 "<p><a href=\"/\">Search other newspaper topics</a></p><button id=\"explore-map\" type=\"button\" class=\"button button--primary\" hidden>Explore interactive map</button><section aria-label=\"Sample results\">",
                 1,
             )
+            .replacen(
+                "</main>",
+                "</main><footer class=\"empty\" aria-label=\"Search landing information\"><nav aria-label=\"Site information\"><p><a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>",
+                1,
+            )
             .into_bytes(),
         Err(error) => {
             tracing::error!("site index is not UTF-8");
@@ -498,6 +503,11 @@ async fn search_preview_data(
             ),
         )
         .await?;
+        let demo = if rd.current.synthetic {
+            "<p class=\"notice notice--demo\" role=\"note\">Demo data: this server is running on a small synthetic corpus, not real newspapers.</p>"
+        } else {
+            ""
+        };
         let top = summary.places.iter().max_by(|a, b| {
             a.hits
                 .cmp(&b.hits)
@@ -505,7 +515,7 @@ async fn search_preview_data(
         });
         let Some(top) = top else {
             return Ok(SearchPreview {
-                html: "<section aria-label=\"Sample results\"><h2>Sample results</h2><p>No matching newspaper pages.</p></section>".to_owned(),
+                html: format!("<section aria-label=\"Sample results\"><h2>Sample results</h2>{demo}<p>No matching newspaper pages.</p></section>"),
                 total_hits: summary.total_hits,
             });
         };
@@ -525,7 +535,7 @@ async fn search_preview_data(
                 .hits(&indexes, &search.query, &search.filters, &page),
         )
         .await?;
-        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2><p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2>{demo}<p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
         for hit in result.hits {
             let title = rd
                 .titles
@@ -542,6 +552,7 @@ async fn search_preview_data(
                 None => label,
             };
             html.push_str(&format!("<li><p>{citation}</p>"));
+            html.push_str(&preview_sources(&hit, rd));
             for snippet in hit.snippets {
                 // Backend snippets already escape text; only highlight tags are markup.
                 html.push_str(&format!(
@@ -574,6 +585,39 @@ async fn search_preview_data(
     let body = body.ok_or(ApiError::Busy)?;
     serde_json::from_slice(&body)
         .map_err(|error| ApiError::Backend(format!("invalid search preview cache: {error}")))
+}
+
+fn preview_sources(hit: &usnm_search::Hit, rd: &crate::refdata::RefData) -> String {
+    let mut html = String::new();
+    if let Some(ocr) = crate::routes::ocr_for_hit(hit, rd) {
+        let href = ocr.engine.as_deref().map_or_else(
+            || "/credits".to_owned(),
+            |engine| {
+                let fragment: String = form_urlencoded::byte_serialize(engine.as_bytes()).collect();
+                format!("/credits#{}", fragment.replace('+', "%20"))
+            },
+        );
+        html.push_str(&format!("<p>Our OCR: machine-read text replacing missing or poorly read Library of Congress text. Expect some misread characters. <a href=\"{}\">Engine and model credits</a>.</p>", escape_html(&href)));
+    }
+    let matched = hit.matched_in.as_deref().unwrap_or_default();
+    if matched == [usnm_search::SNIPPETS_FROM_AMERICAN_STORIES] {
+        html.push_str("<p>The Library of Congress text does not contain the match. It was found in American Stories (Dell et al. 2023), a second machine reading of the scans. <a href=\"/credits\">OCR credits</a>.</p>");
+    }
+    if matched.contains(&usnm_search::SNIPPETS_FROM_LOC_ORIGINAL)
+        && !matched.contains(&usnm_search::MATCHED_IN_LOC)
+    {
+        html.push_str("<p>Our OCR text does not contain the match. It was found in the original Library of Congress OCR text retained beside ours.</p>");
+    }
+    match hit.snippet_source {
+        Some(usnm_search::SNIPPETS_FROM_AMERICAN_STORIES) => {
+            html.push_str("<p>These excerpts come from American Stories OCR.</p>");
+        }
+        Some(usnm_search::SNIPPETS_FROM_LOC_ORIGINAL) => {
+            html.push_str("<p>These excerpts come from the original Library of Congress OCR.</p>");
+        }
+        _ => {}
+    }
+    html
 }
 
 /// A path with no file behind it: `index.html` for app routes (404 unless

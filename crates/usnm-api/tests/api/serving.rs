@@ -781,6 +781,10 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(!body.contains(r#"id="site-fallback""#));
     assert!(!body.contains(r#"class="visually-hidden" inert"#));
     assert!(body.contains(r#"id="explore-map""#));
+    assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
+    for href in ["/privacy", "/datasets", "/credits"] {
+        assert!(body.contains(&format!("href=\"{href}\"")), "{href}");
+    }
     for dynamic in [
         "/search/not-a-listed-search",
         "/search/cross-of-gold?from=1896-06-01",
@@ -832,12 +836,16 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
     .unwrap();
     let mut doc = load_docs("pages-base-fixture").remove(0);
     doc.text = "Reader's & Co. <archive>. cross of gold.".to_owned();
+    doc.ocr_source = Some("usnm-tesseract".to_owned());
+    doc.ocr_engine = Some("tesseract-test/model".to_owned());
     let mut backend = MemoryBackend::new();
     backend.add_index("pages-base-fixture", vec![doc]);
     backend.add_index("pages-delta-fixture-1", vec![]);
     let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
     let (status, _, body) = get_site(&s, "/search/cross-of-gold", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Our OCR: machine-read text"));
+    assert!(body.contains("href=\"/credits#tesseract-test%2Fmodel\""));
     assert!(
         body.contains("Reader&#39;s &amp; Co. &lt;archive&gt;"),
         "{body}"
@@ -850,6 +858,42 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
         !body.contains("<archive>") && !body.contains("<mark>"),
         "{body}"
     );
+}
+
+#[tokio::test]
+async fn static_searches_explain_alternate_ocr_and_empty_demo_results() {
+    for source in ["american_stories", "loc_original", "empty"] {
+        let mut cfg = config();
+        cfg.site_dir = Some(site_dir(&format!("static-source-{source}")));
+        std::fs::write(
+            cfg.site_dir.as_ref().unwrap().join("index.html"),
+            include_str!("../../../../web/index.html"),
+        )
+        .unwrap();
+        let mut doc = load_docs("pages-base-fixture").remove(0);
+        doc.text = "unrelated text".to_owned();
+        if source == "american_stories" {
+            doc.text_as = Some("cross of gold".to_owned());
+        } else if source == "loc_original" {
+            doc.text_loc = Some("cross of gold".to_owned());
+        }
+        let mut backend = MemoryBackend::new();
+        backend.add_index("pages-base-fixture", vec![doc]);
+        backend.add_index("pages-delta-fixture-1", vec![]);
+        let mut rd = refdata().await;
+        rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+        rd.current.text_layout = Some(usnm_core::text_layout::TextLayout::SingleWithLoc.version());
+        let state = Arc::new(AppState::new(cfg, Arc::new(backend), rd));
+        let (status, _, body) = get_site(&state, "/search/cross-of-gold", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
+        let expected = match source {
+            "american_stories" => "These excerpts come from American Stories OCR.",
+            "loc_original" => "These excerpts come from the original Library of Congress OCR.",
+            _ => "No matching newspaper pages.",
+        };
+        assert!(body.contains(expected), "{body}");
+    }
 }
 
 async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::response::Response {
