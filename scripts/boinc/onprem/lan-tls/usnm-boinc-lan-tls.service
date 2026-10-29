@@ -1,0 +1,8 @@
+[Unit]
+Description=usnm BOINC LAN certificate sync (#1357)
+Wants=network-online.target
+After=network-online.target himdsd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usnm-boinc-lan-tls-sync
