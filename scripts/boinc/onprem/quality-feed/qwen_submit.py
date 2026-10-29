@@ -145,6 +145,8 @@ def source_status(share, project, sample):
                     if doc in wanted and not states[doc]["workunit_ids"]:
                         states[doc]["status"] = disposition
     ids = sorted(audited)
+    agreed_ids = set()
+    errored_ids = set()
     totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
               "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
               "error_workunits": 0, "history_unavailable_workunits": 0,
@@ -172,10 +174,24 @@ echo json_encode($rows);
             if missing.intersection(state["workunit_ids"]):
                 state["status"] = "native_history_unavailable"
         for row in rows:
-            totals["agreed_workunits"] += int(row["canonical_resultid"]) > 0
-            totals["error_workunits"] += int(row["error_mask"]) != 0
+            agreed = int(row["canonical_resultid"]) > 0
+            errored = int(row["error_mask"]) != 0 and not agreed
+            totals["agreed_workunits"] += agreed
+            totals["error_workunits"] += errored
+            if agreed:
+                agreed_ids.add(int(row["id"]))
+            elif errored:
+                errored_ids.add(int(row["id"]))
             for name in ("unsent", "running", "returned", "invalid"):
                 totals[name + "_replicas"] += int(row[name] or 0)
+        for state in states.values():
+            if state["status"] in (
+                    "source_conflict", "source_provenance_unavailable", "native_history_unavailable"):
+                continue
+            if agreed_ids.intersection(state["workunit_ids"]):
+                state["status"] = "native_consensus"
+            elif errored_ids.intersection(state["workunit_ids"]):
+                state["status"] = "native_error"
     return {"pages": states, **totals}
 
 
