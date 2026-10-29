@@ -819,7 +819,9 @@ class Transport:
                     os.close(fd)
             if delta is not None:
                 for name in set(previous) - set(names):
-                    (cache / name).unlink()
+                    path = cache / name
+                    path.unlink()
+                    path.parent.rmdir()
                 for name in delta:
                     path = cache / name
                     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)

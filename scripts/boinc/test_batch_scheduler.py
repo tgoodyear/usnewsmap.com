@@ -547,6 +547,7 @@ class SchedulerTests(unittest.TestCase):
                     self.assertEqual(restarted.records(), rows)
                 self.assertEqual(downloaded, [current[0], current[-1]])
                 self.assertFalse((cache / names[-1]).exists())
+                self.assertFalse((cache / names[-1]).parent.exists())
                 self.assertEqual(hashlib.sha256((cache / names[1]).read_bytes()).hexdigest(), checksums[names[1]])
                 final = batch.Transport(self.config, directory)
                 with patch.object(final, "az", return_value=json.dumps(listing)) as az, \
