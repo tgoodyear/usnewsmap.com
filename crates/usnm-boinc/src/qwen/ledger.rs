@@ -407,6 +407,67 @@ mod tests {
     }
 
     #[test]
+    fn changed_bundle_contents_cannot_reuse_old_pair_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("pages");
+        let a = result(tmp.path(), &job, "a", |d, c| format!("{d} {c} words"));
+        let b = result(tmp.path(), &job, "b", |d, c| format!("{d} {c} words"));
+        validate::compare(&a, &b, 0.5, None, Some(&pages)).unwrap();
+        assert!(run(&root, &pages)
+            .unwrap()
+            .iter()
+            .all(|p| p.status == "accepted"));
+        let path = units(&root).join("bundle-00001").join(JOB_FILE);
+        for change_crop in [false, true] {
+            let mut changed = job.clone();
+            if change_crop {
+                changed.crops[0].loc_text.push_str(" changed");
+                changed.pages[0].crops[0].loc_text.push_str(" changed");
+            } else {
+                changed.max_tokens_per_1000px2 += 1;
+            }
+            assert_ne!(changed.identity().unwrap(), job.id);
+            std::fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert!(run(&root, &pages)
+                .unwrap()
+                .iter()
+                .all(|p| p.status == "membership_invalid" && p.page_job_id.is_none()));
+        }
+    }
+
+    #[test]
+    fn a_source_job_checksum_does_not_replace_identity_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("pages");
+        let a = result(tmp.path(), &job, "a", |d, c| format!("{d} {c} words"));
+        let b = result(tmp.path(), &job, "b", |d, c| format!("{d} {c} words"));
+        validate::compare(&a, &b, 0.5, None, Some(&pages)).unwrap();
+        assert!(run(&root, &pages)
+            .unwrap()
+            .iter()
+            .all(|p| p.status == "accepted"));
+        let membership_path = units(&root).join("bundle-00001").join(MEMBERSHIP_FILE);
+        let mut membership: Membership =
+            serde_json::from_slice(&std::fs::read(&membership_path).unwrap()).unwrap();
+        let source = root.join("pages").join(DOCS[0]).join(JOB_FILE);
+        let mut changed: Job = serde_json::from_slice(&std::fs::read(&source).unwrap()).unwrap();
+        changed.max_tokens_per_1000px2 += 1;
+        assert_ne!(changed.identity().unwrap(), changed.id);
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        membership.pages[0].job_sha256 = sha256(&bytes);
+        std::fs::write(source, bytes).unwrap();
+        std::fs::write(membership_path, serde_json::to_vec(&membership).unwrap()).unwrap();
+        assert!(run(&root, &pages)
+            .unwrap()
+            .iter()
+            .all(|p| p.status == "membership_invalid" && p.page_job_id.is_none()));
+    }
+
+    #[test]
     fn a_pair_compared_either_way_round_writes_one_record() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");

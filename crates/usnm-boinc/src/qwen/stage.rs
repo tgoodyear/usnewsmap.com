@@ -710,6 +710,7 @@ impl Membership {
     /// Checks the manifest against the bundle job it was written with:
     /// the same job, blob and pages, in order, at the same slices.
     pub fn check(&self, job: &Job) -> anyhow::Result<()> {
+        job.validate().context("membership bundle job")?;
         ensure!(
             self.v == MEMBERSHIP_VERSION,
             "unsupported membership version"
@@ -762,6 +763,8 @@ impl Membership {
                 m.doc_id
             );
             let pj: Job = serde_json::from_slice(&bytes)?;
+            pj.validate()
+                .with_context(|| format!("membership page {} source job", m.doc_id))?;
             ensure!(
                 pj.pages.is_empty()
                     && pj.id == m.job_id
