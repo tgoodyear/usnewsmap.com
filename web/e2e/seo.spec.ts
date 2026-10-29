@@ -130,29 +130,49 @@ test("sitemap searches remain readable with JavaScript enabled and API access bl
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
-test("the static map upgrades automatically only after the matching interactive map paints", async ({ page }) => {
+test("JavaScript browsers skip the static view before the bundle loads and show controls before API readiness", async ({
+  page,
+}) => {
   test.skip(!withApi, "the API renders the static map");
   test.setTimeout(60_000);
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
+  let releaseBundle: () => void = () => {};
+  const bundleGate = new Promise<void>((resolve) => {
+    releaseBundle = resolve;
+  });
+  await page.route(/\/assets\/index-[^/]+\.js$/, async (route) => {
+    await bundleGate;
+    await route.continue();
+  });
   await page.route("**/v1/meta", async (route) => {
     await gate;
     await route.continue();
   });
-  await page.goto("/search/cross-of-gold", { waitUntil: "domcontentloaded" });
+  const imageRequests: string[] = [];
+  await page.route("**/search-map.png?**", (route) => {
+    imageRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/search/cross-of-gold", { waitUntil: "commit" });
   const landing = page.locator("#search-landing");
-  await expect(landing).toBeVisible();
-  await expect(page.locator("#root")).toBeHidden();
-  await expect(landing.getByRole("region", { name: "Sample results" })).toContainText("1896-07-18");
+  await expect(landing).toHaveCount(1);
+  await expect(landing).toBeHidden();
+  releaseBundle();
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toBeVisible();
+  await expect(page.locator("#root")).toBeVisible();
+  await expect(landing).toBeHidden();
+  await expect(page.locator('[data-share-ready="true"]')).toHaveCount(0);
   release();
+  await expect(landing).toHaveCount(0, { timeout: 50_000 });
   await expect(page.getByTestId("map")).toBeVisible({ timeout: 50_000 });
-  await expect(landing).toHaveCount(0);
   await expect(page.getByTestId("map")).toHaveAttribute("data-basemap-ready", "true");
   await expect(page.getByTestId("map")).toHaveAttribute("data-overlay-ready", "true");
   await expect(page.getByRole("main")).toHaveCount(1);
   await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue("cross of gold");
+  expect(imageRequests).toEqual([]);
 });
 
 test("an unknown path shows the not-found page", async ({ page }) => {

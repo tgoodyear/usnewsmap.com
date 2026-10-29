@@ -403,7 +403,7 @@ fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
         .append_pair("q", query)
         .finish();
     let map = format!(
-        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" fetchpriority=\"high\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
+        "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
         escape_html(&image_query),
         escape_html(query),
     );

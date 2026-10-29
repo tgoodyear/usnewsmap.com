@@ -538,13 +538,6 @@ select {
   text-align: center;
   color: var(--muted);
 }
-.search-hydrating {
-  position: fixed;
-  inset: 0;
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-}
 .examples {
   list-style: none;
   padding: 0;
