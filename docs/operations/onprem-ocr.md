@@ -339,7 +339,10 @@ nice -n 19 ionice -c 3 python3 scripts/corpus/scan_stock_inventory.py \
 
 Repeat with the same work directory until `finished` is true. SQLite checkpoints
 and `report.json` are private outputs outside the cache; no service, scan,
-sidecar, source budget or fetch index is changed. Each invocation limits newly
+sidecar, source budget or fetch index is changed. An existing work directory
+must be owned by the invoking user and deny all group/other access (mode 0700).
+The root descriptor is identity-checked and pinned for the whole invocation;
+renaming its path cannot redirect the traversal. Each invocation limits newly
 observed directory entries and cooperatively checks elapsed time. Filesystem
 metadata calls can still block: use an external process deadline, admit only
 quiet I/O windows, and stop rather than compete with a rebuild. A killed slice

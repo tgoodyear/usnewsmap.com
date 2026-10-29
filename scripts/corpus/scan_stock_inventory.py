@@ -36,7 +36,9 @@ def page_key(path):
 
 @contextmanager
 def directory_fd(root, relative):
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = os.dup(root) if isinstance(root, int) else os.open(
+        root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
     try:
         for part in Path(relative).parts:
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -156,10 +158,22 @@ def run(scan_root, work, cache_sets, max_entries=1000, max_seconds=20):
     info = root.stat()
     config = {"root": str(root), "identity": [info.st_dev, info.st_ino],
               "cache_sets": sorted(cache_sets)}
-    for cache_set in cache_sets:
-        path = root / cache_set
-        c.require(path.is_dir() and not path.is_symlink(), "cache set must be a real directory")
-    inventory.durable_mkdir(work)
+    with directory_fd(root, ".") as root_fd:
+        opened = os.fstat(root_fd)
+        c.require((opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino),
+                  "scan root changed while opening; use a new inventory")
+        for cache_set in cache_sets:
+            c.require(observe(root_fd, cache_set)[0] == "directory",
+                      "cache set must be a real directory")
+        inventory.durable_mkdir(work)
+        permissions = work.stat()
+        c.require(permissions.st_uid == os.geteuid() and permissions.st_mode & 0o077 == 0,
+                  "work directory must be private and owned by the current user")
+        return run_pinned(root_fd, work, config, max_entries, max_seconds)
+
+
+def run_pinned(root_fd, work, config, max_entries, max_seconds):
+    c = inventory.c
     with inventory.lock(work):
         db = work / "stock.sqlite"
         c.require(not db.is_symlink(), "checkpoint cannot be a symlink")
@@ -191,8 +205,8 @@ def run(scan_root, work, cache_sets, max_entries=1000, max_seconds=20):
                     started = now()
                     observed_until = None
                     conn.execute("INSERT INTO metadata VALUES (?,?,NULL)", (json.dumps(config), started))
-                    for value in sorted(cache_sets):
-                        observation = observe(root, value)
+                    for value in config["cache_sets"]:
+                        observation = observe(root_fd, value)
                         c.require(observation[0] == "directory", "cache set changed")
                         conn.execute("INSERT INTO directories VALUES (?,0,?,?,0)",
                                      (value, observation[2], observation[3]))
@@ -214,7 +228,7 @@ def run(scan_root, work, cache_sets, max_entries=1000, max_seconds=20):
                     if row is None:
                         break
                     relative = row[0]
-                    with directory_fd(root, relative) as fd:
+                    with directory_fd(root_fd, relative) as fd:
                         info = os.fstat(fd)
                         c.require((str(info.st_dev), str(info.st_ino)) == row[1:3],
                                   f"directory changed: {relative}; use a new inventory")
@@ -230,7 +244,7 @@ def run(scan_root, work, cache_sets, max_entries=1000, max_seconds=20):
                                 increment(conn, "pending_directories", -1)
                                 break
                             child = next_entry[0]
-                            observation = observe(root, child, fd)
+                            observation = observe(root_fd, child, fd)
                             record(conn, Path(child).parts[0], observation)
                             if observation[0] == "directory":
                                 conn.execute("INSERT INTO directories VALUES (?,0,?,?,0)",

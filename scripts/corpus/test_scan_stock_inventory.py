@@ -111,6 +111,54 @@ class StockTests(unittest.TestCase):
         with self.assertRaisesRegex(stock.inventory.c.CatalogError, "directory changed"):
             self.run_stock()
 
+    def test_root_replaced_between_stat_and_open_refused_before_outputs(self):
+        original_open = os.open
+        opened_root = self.scans.resolve()
+        replaced = False
+
+        def open_root(path, *args, **kwargs):
+            nonlocal replaced
+            if path == opened_root and not replaced:
+                replaced = True
+                self.scans.rename(self.root / "original")
+                for value in ("keep", "buffer"):
+                    (self.scans / value).mkdir(parents=True)
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(stock.os, "open", side_effect=open_root), \
+                self.assertRaisesRegex(stock.inventory.c.CatalogError, "scan root changed"):
+            self.run_stock()
+        self.assertFalse(self.work.exists())
+
+    def test_root_descriptor_stays_pinned_if_path_is_replaced_during_run(self):
+        self.scan("keep/original.jpg", b"original")
+        original_mkdir = stock.inventory.durable_mkdir
+
+        def replace(path):
+            self.scans.rename(self.root / "original")
+            for value in ("keep", "buffer"):
+                (self.scans / value).mkdir(parents=True)
+            self.scan("keep/replacement.jpg", b"replacement")
+            self.scan("keep/another.jpg", b"replacement")
+            return original_mkdir(path)
+
+        with patch.object(stock.inventory, "durable_mkdir", side_effect=replace):
+            report = self.run_stock()
+        self.assertTrue(report["finished"])
+        self.assertEqual(report["cache_sets"]["keep"]["scan_files"], 1)
+        self.assertEqual(report["cache_sets"]["keep"]["scan_file_bytes"], len(b"original"))
+        with self.assertRaisesRegex(stock.inventory.c.CatalogError, "configuration/root changed"):
+            self.run_stock()
+
+    def test_nonprivate_existing_work_directory_refused_before_outputs(self):
+        self.work.mkdir(mode=0o755)
+        self.work.chmod(0o755)
+        with self.assertRaisesRegex(stock.inventory.c.CatalogError, "work directory must be private"):
+            self.run_stock()
+        self.assertEqual(list(self.work.iterdir()), [])
+        self.work.chmod(0o700)
+        self.assertTrue(self.run_stock()["finished"])
+
     def test_wide_directory_resumes_without_relisting_and_reports_without_history_scans(self):
         for number in range(10):
             self.scan(f"keep/{number}.jpg")
