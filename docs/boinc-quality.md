@@ -38,7 +38,13 @@ comparisons, whole-page word-bag Dice alongside order-sensitive CER/WER, and
 crop CER/Dice against the reported VLM model. These are **model agreement, not
 human CER or calibrated accuracy**. Crop scores retain the collector's
 normalization; they are not the old `crops.py` script's separately normalized
-scores. Distinct comparator model identifiers cannot be pooled. Identifiers
+scores. Distinct comparator model identifiers with comparable nonempty references
+cannot be pooled; attempted models without usable references remain metadata.
+Conflicting reported sources for one page-reader name are rejected, including
+different Tesseract profiles hidden behind `ours-tesseract`. Source identities
+and known job IDs remain in each reader summary; conflicting page job IDs are
+rejected before joining LoC reference rows. Both job IDs may be absent in older
+exports, but one known and one unknown are not treated as the same job. Identifiers
 such as `qwen3-vl-8b-q4km` are metadata, **not immutable model-file digests**.
 
 Absent reader rows have **unknown outcomes**, not inferred failures or timeouts:
@@ -50,14 +56,24 @@ is **not missing work**, and actual unobserved staged crops remain unknown witho
 the staging manifests. Crop joins require identical exported rectangles, strata
 and VLM reference metadata. An absent crop does not identify a timeout.
 Means and medians use only successful pages with nonempty, known LoC reference
-counts, or crops with nonempty VLM references. CER requires reference characters;
-WER/Dice require reference words. Empty/unknown reference exclusions and
+counts, or crops with known nonempty normalized VLM references. Page CER/WER
+require normalized reference characters; page Dice requires reference words.
+`loc-hist` self-scores are excluded as ambiguous when a distinct `loc` reader
+is present, rather than mislabelled as comparisons against it.
+Crop CER requires `vlm_reference_chars` and crop Dice `vlm_reference_words`,
+exported by the native collector using its canonical normalization and Dice
+word bags. Older exports without these counts have **unknown denominators**;
+raw non-whitespace text is not proof of a nonempty normalized reference.
+The derived row-cache format is advanced without deleting previous parts.
+Empty/unknown reference exclusions and
 observed/missing metric denominators are separate. Summaries are unweighted. Reader
 `total_ms` is kept as reported, not summed into a fictitious campaign duration.
 Layout and hat-derived accuracy metrics are deliberately omitted.
 Scorer languages retain page/reader attribution and explicitly labelled
 **reader-row** histograms, separately from the sample's declared German cohort:
 a historical `und` score must not be relabelled as a German-configured run.
+Use `--crop-reader surya` for an additional crop-only reader, not `--reader surya`.
+Unselected native Surya crop rows are counted as ignored, not expected page work.
 
 This extracts reporting, **not `build_units.py` or a completed 100-page
 benchmark**. Continue to use the native `quality sample`, `texts-export`,

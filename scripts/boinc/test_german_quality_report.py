@@ -21,7 +21,7 @@ class Report(unittest.TestCase):
         self.sample = [{"doc_id": DOC, "lang": "deu"}, {"doc_id": OTHER, "lang": "deu"}]
         self.pages = [
             {"doc_id": DOC, "reader": "ours", "outcome": "ok",
-             "cer_vs_loc": 1.2, "dice_vs_loc": 0.9, "language": "und"},
+             "cer_vs_loc": 1.2, "wer_vs_loc": 0.7, "dice_vs_loc": 0.9, "language": "und"},
             {"doc_id": OTHER, "reader": "ours", "outcome": "timeout",
              "cer_vs_loc": 0.0, "dice_vs_loc": 1.0},
             {"doc_id": DOC, "reader": "loc", "outcome": "ok",
@@ -31,9 +31,11 @@ class Report(unittest.TestCase):
         self.crops = [
             {"doc_id": DOC, "crop_id": "crop-1", "reader": "ours",
              "x0": 0, "y0": 0, "x1": 10, "y1": 10, "stratum": "low/top",
+             "vlm_reference_chars": 9, "vlm_reference_words": 1,
              "vlm_text": "reference", "vlm_model": "model-a", "cer_vs_vlm": 0.25},
             {"doc_id": DOC, "crop_id": "crop-2", "reader": "ours",
              "x0": 0, "y0": 10, "x1": 10, "y1": 20, "stratum": "low/bottom",
+             "vlm_reference_chars": 0, "vlm_reference_words": 0,
              "vlm_text": "", "vlm_model": "model-a", "cer_vs_vlm": 0.0},
         ]
 
@@ -100,6 +102,7 @@ class Report(unittest.TestCase):
             with self.subTest(model=model):
                 crops = copy.deepcopy(self.crops)
                 crops[1]["vlm_text"] = "reference"
+                crops[1].update(vlm_reference_chars=9, vlm_reference_words=1)
                 crops[1]["vlm_model"] = model
                 with self.assertRaises(ValueError):
                     REPORT.report(self.sample, self.pages, crops, ["ours", "loc"], 2)
@@ -107,6 +110,7 @@ class Report(unittest.TestCase):
     def test_native_null_reference_is_missing_not_an_empty_or_successful_reading(self):
         self.crops[1]["vlm_text"] = None
         self.crops[1]["vlm_model"] = None
+        self.crops[1].update(vlm_reference_chars=None, vlm_reference_words=None)
         result = self.run_report()["overall"]["crop_readers"]["ours"]
         self.assertEqual(result["missing_reference_rows"], 1)
         self.assertEqual(result["empty_reference_rows"], 0)
@@ -151,6 +155,7 @@ class Report(unittest.TestCase):
         self.pages[2].update(chars=2, words=0)
         metrics = self.run_report()["overall"]["page_readers"]["ours"]["metrics_on_successes"]
         self.assertEqual(metrics["cer_vs_loc"]["observed"], 1)
+        self.assertEqual(metrics["wer_vs_loc"]["observed"], 1)
         self.assertEqual(metrics["dice_vs_loc"]["empty_reference_rows"], 1)
 
     def test_crop_join_binds_exported_rectangle_and_stratum(self):
@@ -167,6 +172,71 @@ class Report(unittest.TestCase):
         page = next(row for row in result["per_page"] if row["page_id"] == "loc:" + DOC)
         self.assertEqual(page["page_readers"]["ours"]["reported_reader_row_languages"], {"und": 1})
         self.assertEqual(page["page_readers"]["loc"]["reported_reader_row_languages"], {"deu": 1})
+
+    def test_normalized_crop_denominators_are_metric_specific_or_explicitly_unknown(self):
+        for text, chars, words, cer, dice in (
+            ("-\n", 0, 0, 0, 0), ("...", 3, 0, 1, 0),
+            ("reference", None, None, 0, 0),
+        ):
+            with self.subTest(text=text):
+                self.crops[0].update(vlm_text=text, vlm_reference_chars=chars, vlm_reference_words=words,
+                                     cer_vs_vlm=0.0, dice_vs_vlm=1.0)
+                metrics = self.run_report()["overall"]["crop_readers"]["ours"]["metrics_with_nonempty_reference"]
+                self.assertEqual(metrics["cer_vs_vlm"]["observed"], cer)
+                self.assertEqual(metrics["dice_vs_vlm"]["observed"], dice)
+                if chars is None:
+                    self.assertEqual(metrics["cer_vs_vlm"]["unknown_reference_rows"], 1)
+
+    def test_loc_hist_self_scores_are_not_compared_with_a_distinct_loc_reference(self):
+        historical = dict(self.pages[2], reader="loc-hist")
+        self.pages.append(historical)
+        row = self.run_report(("ours", "loc", "loc-hist"))["overall"]["page_readers"]["loc-hist"]
+        for name in ("cer_vs_loc", "wer_vs_loc", "dice_vs_loc"):
+            self.assertIsNone(row["metrics_on_successes"][name]["mean"])
+            self.assertEqual(row["metrics_on_successes"][name]["ambiguous_loc_hist_self_rows"], 1)
+        self.pages.remove(self.pages[2])
+        row = self.run_report(("ours", "loc-hist"))["overall"]["page_readers"]["loc-hist"]
+        self.assertEqual(row["metrics_on_successes"]["cer_vs_loc"]["observed"], 1)
+
+    def test_reader_sources_cannot_be_silently_pooled(self):
+        self.pages[0]["source"] = "tesseract;profile=frak2021"
+        self.pages[1]["source"] = "tesseract;profile=deu_latf"
+        with self.assertRaisesRegex(ValueError, "conflicting reader sources"):
+            self.run_report()
+        self.pages[1]["source"] = self.pages[0]["source"]
+        row = self.run_report()["overall"]["page_readers"]["ours"]
+        self.assertEqual(row["reported_source"], "tesseract;profile=frak2021")
+        self.assertEqual(row["unknown_source_rows"], 0)
+
+    def test_reference_jobs_must_match_including_known_unknown_mixtures(self):
+        self.pages[0]["job_id"] = "job-a"
+        for job in ("job-b", None):
+            with self.subTest(job=job):
+                self.pages[2]["job_id"] = job
+                with self.assertRaisesRegex(ValueError, "conflicting page job IDs"):
+                    self.run_report()
+        self.pages[2]["job_id"] = "job-a"
+        self.assertEqual(self.run_report()["overall"]["page_readers"]["ours"]["reported_job_ids"], ["job-a"])
+
+    def test_surya_crop_only_rows_do_not_create_expected_page_readers(self):
+        self.crops.append(dict(self.crops[0], reader="surya"))
+        result = self.run_report()
+        self.assertEqual(result["ignored_unselected_crop_rows"], {"surya": 1})
+        self.assertNotIn("surya", result["overall"]["page_readers"])
+        result = REPORT.report(self.sample, self.pages, self.crops, ["ours", "loc"], 2,
+                               crop_only_readers=["surya"])
+        self.assertEqual(result["ignored_unselected_crop_rows"], {})
+        self.assertNotIn("surya", result["overall"]["page_readers"])
+        self.assertEqual(result["overall"]["crop_readers"]["surya"]["observed_rows"], 1)
+
+    def test_attempted_empty_reference_models_are_metadata_not_comparison_pools(self):
+        for text, count in (("", 0), (None, None)):
+            with self.subTest(text=text):
+                self.crops[1].update(vlm_text=text, vlm_model="model-b",
+                                     vlm_reference_chars=count, vlm_reference_words=count)
+                result = self.run_report()
+                self.assertEqual(result["reported_vlm_models"], ["model-a", "model-b"])
+                self.assertEqual(result["compared_vlm_models"], ["model-a"])
 
     def test_cli_is_deterministic_hash_bound_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as tmp:

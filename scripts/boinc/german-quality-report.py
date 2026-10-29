@@ -74,11 +74,15 @@ def stats(rows, name):
 def page_stats(successes, pages, name):
     if name == "total_ms":
         return stats([row for _, row in successes], name)
-    count_field = "chars" if name == "cer_vs_loc" else "words"
+    count_field = "words" if name == "dice_vs_loc" else "chars"
     eligible = []
     empty = 0
     unknown = 0
+    ambiguous = 0
     for doc, row in successes:
+        if row["reader"] == "loc-hist" and (doc, "loc") in pages:
+            ambiguous += 1
+            continue
         reference = row if row["reader"] in {"loc", "loc-hist"} else (
             pages.get((doc, "loc")) or pages.get((doc, "loc-hist"))
         )
@@ -96,10 +100,22 @@ def page_stats(successes, pages, name):
         **stats(eligible, name),
         "empty_reference_rows": empty,
         "unknown_reference_rows": unknown,
+        "ambiguous_loc_hist_self_rows": ambiguous,
     }
 
 
-def summarize(ids, readers, pages, crops, max_crops_per_page):
+def crop_stats(rows, name):
+    field = "vlm_reference_chars" if name == "cer_vs_vlm" else "vlm_reference_words"
+    present = [row for row in rows if row["vlm_text"] is not None]
+    return {
+        **stats([row for row in present if (row.get(field) or 0) > 0], name),
+        "missing_reference_rows": len(rows) - len(present),
+        "empty_reference_rows": sum(row.get(field) == 0 for row in present),
+        "unknown_reference_rows": sum(row.get(field) is None for row in present),
+    }
+
+
+def summarize(ids, readers, crop_readers, pages, crops, max_crops_per_page):
     page_report = {}
     crop_report = {}
     crop_keys = {(doc, crop) for doc, crop, _ in crops if doc in ids}
@@ -117,6 +133,11 @@ def summarize(ids, readers, pages, crops, max_crops_per_page):
                 successes.append((doc, row))
         page_report[reader] = {
             "outcomes": dict(sorted(outcomes.items())),
+            "reported_source": present[0].get("source") if present else None,
+            "unknown_source_rows": sum(row.get("source") is None for row in present),
+            "reported_job_ids": sorted({
+                row["job_id"] for row in present if row.get("job_id") is not None
+            }),
             "reported_reader_row_languages": dict(sorted(collections.Counter(
                 row.get("language") or "unreported" for row in present
             ).items())),
@@ -124,13 +145,10 @@ def summarize(ids, readers, pages, crops, max_crops_per_page):
                 name: page_stats(successes, pages, name) for name in PAGE_METRICS
             },
         }
+    for reader in crop_readers:
         selected = [
             row for (doc, _, rd), row in crops.items()
             if doc in ids and rd == reader
-        ]
-        comparable = [
-            row for row in selected
-            if row["vlm_text"] is not None and row["vlm_text"].strip()
         ]
         crop_report[reader] = {
             "observed_rows": len(selected),
@@ -141,7 +159,7 @@ def summarize(ids, readers, pages, crops, max_crops_per_page):
                 for row in selected
             ),
             "metrics_with_nonempty_reference": {
-                name: stats(comparable, name) for name in CROP_METRICS
+                name: crop_stats(selected, name) for name in CROP_METRICS
             },
         }
     return {
@@ -155,12 +173,18 @@ def summarize(ids, readers, pages, crops, max_crops_per_page):
     }
 
 
-def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
+def report(sample, page_rows, crop_rows, readers, max_crops_per_page, crop_only_readers=()):
     if not readers or len(set(readers)) != len(readers) or any(
         not isinstance(reader, str) or not reader.strip() or reader == "vlm"
         for reader in readers
     ):
         raise ValueError("provide distinct nonempty OCR reader names, not vlm")
+    crop_readers = [*readers, *crop_only_readers]
+    if len(set(crop_readers)) != len(crop_readers) or any(
+        not isinstance(reader, str) or not reader.strip() or reader == "vlm"
+        for reader in crop_only_readers
+    ):
+        raise ValueError("provide distinct additional crop-only OCR readers, not vlm")
     if isinstance(max_crops_per_page, bool) or not isinstance(max_crops_per_page, int) or max_crops_per_page < 1:
         raise ValueError("maximum crops per page must be a positive integer")
     cohort = {}
@@ -177,7 +201,11 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
     crops = {}
     references = {}
     models = set()
+    comparison_models = set()
     unreported_models = 0
+    ignored_crop_rows = collections.Counter()
+    page_jobs = {}
+    reader_sources = collections.defaultdict(set)
     for rows, dest, metrics, is_crop in (
         (page_rows, pages, PAGE_METRICS, False),
         (crop_rows, crops, CROP_METRICS, True),
@@ -185,7 +213,12 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
         for row in rows:
             doc, _, _ = page_id(row.get("doc_id"))
             reader = row.get("reader")
-            if doc not in cohort or reader not in [*readers, *(["vlm"] if is_crop else [])]:
+            if doc not in cohort:
+                raise ValueError(f"{doc}: row outside the declared sample")
+            if is_crop and reader == "surya" and reader not in crop_readers:
+                ignored_crop_rows[reader] += 1
+                continue
+            if reader not in ([*crop_readers, "vlm"] if is_crop else readers):
                 raise ValueError(f"{doc}: row outside the declared sample/readers")
             for name in metrics:
                 metric(row, name)
@@ -203,6 +236,14 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
                     raise ValueError(f"{doc}/{crop}: invalid vlm_model")
                 if text is not None and text.strip() and model is None:
                     raise ValueError(f"{doc}/{crop}: a nonempty VLM reference needs its model identifier")
+                counts = tuple(row.get(name) for name in ("vlm_reference_chars", "vlm_reference_words"))
+                for count in counts:
+                    if count is not None and (
+                        isinstance(count, bool) or not isinstance(count, int) or count < 0
+                    ):
+                        raise ValueError(f"{doc}/{crop}: invalid normalized reference count")
+                if text is None and any(count is not None for count in counts):
+                    raise ValueError(f"{doc}/{crop}: reference counts without a reading")
                 rectangle = tuple(row.get(name) for name in ("x0", "y0", "x1", "y1"))
                 if any(
                     isinstance(value, bool) or not isinstance(value, int)
@@ -212,12 +253,14 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
                 stratum = row.get("stratum")
                 if not isinstance(stratum, str) or not stratum.strip():
                     raise ValueError(f"{doc}/{crop}: missing exported crop stratum")
-                reference = (rectangle, stratum, text, model)
+                reference = (rectangle, stratum, text, model, counts)
                 previous = references.setdefault((doc, crop), reference)
                 if previous != reference:
                     raise ValueError(f"{doc}/{crop}: inconsistent VLM reference or crop geometry/stratum")
                 if model is not None:
                     models.add(model)
+                    if text is not None and any((count or 0) > 0 for count in counts):
+                        comparison_models.add(model)
                 else:
                     unreported_models += 1
                 key = (doc, crop, reader)
@@ -225,6 +268,17 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
                 outcome = row.get("outcome")
                 if outcome not in ("ok", "timeout", "failed", "unit_error"):
                     raise ValueError(f"{doc}/{reader}: invalid reported reader-row outcome")
+                job = row.get("job_id")
+                if job is not None and (not isinstance(job, str) or not job.strip()):
+                    raise ValueError(f"{doc}/{reader}: invalid job_id")
+                if page_jobs.setdefault(doc, job) != job:
+                    raise ValueError(f"{doc}: conflicting page job IDs")
+                source = row.get("source")
+                if source is not None and (not isinstance(source, str) or not source.strip()):
+                    raise ValueError(f"{doc}/{reader}: invalid reader source")
+                reader_sources[reader].add(source)
+                if len(reader_sources[reader]) > 1:
+                    raise ValueError(f"{reader}: conflicting reader sources")
                 for count_field in ("chars", "words"):
                     count = row.get(count_field)
                     if count is not None and (
@@ -238,7 +292,7 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
             if key in dest:
                 raise ValueError(f"duplicate result row: {key}")
             dest[key] = row
-    if len(models) > 1:
+    if len(comparison_models) > 1:
         raise ValueError("do not pool comparisons against different VLM models")
     per_page_crops = collections.Counter(doc for doc, _ in references)
     if any(count > max_crops_per_page for count in per_page_crops.values()):
@@ -258,6 +312,9 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
             "k_crops is an upper bound; without staged crop manifests actual missing crops are unknown.",
             "Absent reader rows do not distinguish failed, timeout, pending or given-up pages.",
             "LoC comparisons exclude empty or unknown reference counts; timings are retained.",
+            "loc-hist self-scores are excluded when a distinct loc reference is present.",
+            "Historical crop exports without normalized reference counts have unknown comparison denominators.",
+            "Unselected crop-only Surya rows are counted separately, not treated as page readers.",
             "Stratum summaries are unweighted; the frozen sample controls representativeness.",
             "The sample declares German pages; reported scorer languages are retained separately.",
         ],
@@ -266,20 +323,22 @@ def report(sample, page_rows, crop_rows, readers, max_crops_per_page):
             row.get("language") or "unreported" for row in pages.values()
         ).items())),
         "reported_vlm_models": sorted(models),
+        "compared_vlm_models": sorted(comparison_models),
+        "ignored_unselected_crop_rows": dict(sorted(ignored_crop_rows.items())),
         "crop_rows_without_model_identity": unreported_models,
-        "overall": summarize(set(cohort), readers, pages, crops, max_crops_per_page),
+        "overall": summarize(set(cohort), readers, crop_readers, pages, crops, max_crops_per_page),
         "by_title_year": [
             {
                 "title": title,
                 "year": year,
-                **summarize(ids, readers, pages, crops, max_crops_per_page),
+                **summarize(ids, readers, crop_readers, pages, crops, max_crops_per_page),
             }
             for (title, year), ids in sorted(groups.items())
         ],
         "per_page": [
             {
                 "page_id": doc,
-                **summarize({doc}, readers, pages, crops, max_crops_per_page),
+                **summarize({doc}, readers, crop_readers, pages, crops, max_crops_per_page),
             }
             for doc in sorted(cohort)
         ],
@@ -292,6 +351,7 @@ def main():
     parser.add_argument("--pages", required=True, type=Path, help="Collected page rows as JSONL")
     parser.add_argument("--crops", required=True, type=Path, help="Collected crop rows as JSONL")
     parser.add_argument("--reader", action="append", required=True, help="Expected OCR reader; repeat")
+    parser.add_argument("--crop-reader", action="append", default=[], help="Additional crop-only OCR reader; repeat")
     parser.add_argument("--max-crops-per-page", required=True, type=int, help="Staging k_crops upper bound")
     parser.add_argument("--out", required=True, type=Path, help="New report; existing files are refused")
     args = parser.parse_args()
@@ -299,7 +359,7 @@ def main():
         sample, sample_sha = read_jsonl(args.sample)
         pages, pages_sha = read_jsonl(args.pages)
         crops, crops_sha = read_jsonl(args.crops)
-        result = report(sample, pages, crops, args.reader, args.max_crops_per_page)
+        result = report(sample, pages, crops, args.reader, args.max_crops_per_page, args.crop_reader)
         result["input_sha256"] = {
             "sample": sample_sha,
             "pages": pages_sha,

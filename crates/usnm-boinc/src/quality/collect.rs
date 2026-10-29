@@ -113,6 +113,8 @@ pub struct CropRow {
     pub vlm_text: Option<String>,
     pub vlm_model: Option<String>,
     pub vlm_device: Option<String>,
+    pub vlm_reference_chars: Option<usize>,
+    pub vlm_reference_words: Option<usize>,
     /// The reader as the hypothesis against the vision-language reading.
     pub cer_vs_vlm: Option<f64>,
     pub dice_vs_vlm: Option<f64>,
@@ -161,6 +163,13 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
         let vlm = readings
             .get(crop.id.as_str())
             .filter(|r| !r.text.trim().is_empty());
+        let reference_counts = vlm.map(|v| {
+            let normalized = usnm_ocr_quality::text::normalize(&v.text, false);
+            (
+                normalized.chars().count(),
+                align::bag(&normalized).values().sum::<usize>(),
+            )
+        });
         // Each reader's text in the box, where it has boxes.
         let mut texts: Vec<ReaderInBox> = Vec::new();
         for name in inputs.readers {
@@ -236,6 +245,8 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             vlm_text: vlm.map(|v| v.text.clone()),
             vlm_model: inputs.readings.and_then(|r| r.model.clone()),
             vlm_device: inputs.readings.map(|r| r.device.clone()),
+            vlm_reference_chars: reference_counts.map(|(chars, _)| chars),
+            vlm_reference_words: reference_counts.map(|(_, words)| words),
             cer_vs_vlm: None,
             dice_vs_vlm: None,
             hat_est_cer: None,
@@ -1450,6 +1461,8 @@ pub(super) mod tests {
         let loc_row = rows.iter().find(|r| r.reader == "loc").unwrap();
         assert!(loc_row.text.as_deref().is_some_and(|t| !t.is_empty()));
         assert!(loc_row.cer_vs_vlm.is_some());
+        assert!(loc_row.vlm_reference_chars.is_some_and(|n| n > 0));
+        assert!(loc_row.vlm_reference_words.is_some_and(|n| n > 0));
         // Only LoC and the reading have text in the box: the hat has two
         // members and no estimate.
         assert_eq!(loc_row.hat_readers, 2);
@@ -1472,6 +1485,9 @@ pub(super) mod tests {
         });
         assert_eq!(rows.len(), crops.len() * 3);
         assert!(rows.iter().all(|r| r.vlm_text.is_none()));
+        assert!(rows
+            .iter()
+            .all(|r| r.vlm_reference_chars.is_none() && r.vlm_reference_words.is_none()));
         // Surya's crop texts join as a reader of their own, in the hat with
         // LoC and the reading; a crop Surya did not read gets no row.
         let mut surya = BTreeMap::new();
@@ -1529,6 +1545,73 @@ pub(super) mod tests {
         assert_eq!(loc_row.hat_readers, 3);
         assert!(overlaps([0, 0, 10, 10], [5, 5, 20, 20]));
         assert!(!overlaps([0, 0, 10, 10], [10, 0, 20, 20]));
+    }
+
+    #[test]
+    fn crop_reference_counts_follow_canonical_normalization_and_dice_bags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let (w, h) = image::load_from_memory(&l.page).unwrap().dimensions();
+        let loc = parse_alto(&l.alto, f64::from(w), f64::from(h)).unwrap();
+        let crops = crate::qwen::stage::cut(&l.page, &l.alto, job.crop_seed, job.k_crops).unwrap();
+        let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
+        for (text, chars, words) in [("-\n", 0, 0), ("...", 3, 0), ("The council", 11, 2)] {
+            let readings = Readings {
+                v: qwen::VERSION,
+                job_id: job.id.clone(),
+                device: "cpu".into(),
+                diag: Default::default(),
+                model: Some("qwen3-vl-2b".into()),
+                outcome: qwen::Outcome::Ok,
+                prompt_version: qwen::PROMPT_VERSION,
+                readings: crops
+                    .iter()
+                    .map(|c| qwen::Reading {
+                        id: c.id.clone(),
+                        ms: 1,
+                        text: text.into(),
+                        tokens: 5,
+                    })
+                    .collect(),
+            };
+            let rows = crop_rows(&CropInputs {
+                doc_id: "p1",
+                loc: &loc,
+                ours: None,
+                texts: &l.texts,
+                readers: &readers,
+                crops: &crops,
+                readings: Some(&readings),
+                surya: None,
+            });
+            assert!(!rows.is_empty());
+            assert!(rows.iter().all(|r| {
+                r.vlm_reference_chars == Some(chars) && r.vlm_reference_words == Some(words)
+            }));
+            let mut legacy = serde_json::to_value(&rows[0]).unwrap();
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("vlm_reference_chars");
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("vlm_reference_words");
+            let legacy: CropRow = serde_json::from_value(legacy).unwrap();
+            assert!(legacy.vlm_reference_chars.is_none() && legacy.vlm_reference_words.is_none());
+            let parquet = to_parquet(&rows).unwrap();
+            let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                bytes::Bytes::from(parquet),
+            )
+            .unwrap();
+            for name in ["vlm_reference_chars", "vlm_reference_words"] {
+                assert_eq!(
+                    reader.schema().field_with_name(name).unwrap().data_type(),
+                    &DataType::Int64
+                );
+            }
+        }
     }
 
     /// A campaign with Surya crop units and no Qwen unit still gets its
