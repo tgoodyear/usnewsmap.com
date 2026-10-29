@@ -30,6 +30,15 @@ DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
 class ArchiveTest(unittest.TestCase):
+    def test_inventory_lists_only_retained_supported_archive_files_without_opening_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ("xx_present_ver01.tar.bz2", "xx_invalid_ver00.tar.bz2", "unrelated.tar.bz2"):
+                (root / name).write_bytes(b"not an archive; inventory never reads contents")
+            (root / "xx_directory_ver01.tar.bz2").mkdir()
+            with mock.patch.object(archive.tarfile, "open", side_effect=AssertionError("not metadata-only")):
+                self.assertEqual(archive.available_archives(root), ["xx_present_ver01.tar.bz2"])
+
     def test_budget_yields_between_archives_without_deferring_unread_pages(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -93,6 +102,23 @@ class ArchiveTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
+    def test_source_index_skips_absent_archives_without_claiming_member_verification(self):
+        rows = [
+            {"doc_id": "absent", "batch": "xx_absent", "batch_version": 1},
+            {"doc_id": "wrong-version", "batch": "xx_present", "batch_version": 2},
+            {"doc_id": "candidate-not-member-proven", "batch": "xx_present", "batch_version": 1},
+        ]
+        lines = [(json.dumps(row) + "\n").encode() for row in rows]
+        selected, total, retained = driver.available_source_index(
+            lines, {"available_archives": ["xx_present_ver01.tar.bz2"]})
+        self.assertEqual((total, retained), (3, 1))
+        self.assertEqual(json.loads(selected), rows[-1])
+        self.assertEqual(driver.available_source_index(lines, {"available_archives": []}), (b"", 3, 0))
+        for inventory in ({}, {"available_archives": ["../xx_present_ver01.tar.bz2"]},
+                          {"available_archives": ["xx_present_ver01.tar.bz2"] * 2}):
+            with self.assertRaisesRegex(ValueError, "valid fresh"):
+                driver.available_source_index(lines, inventory)
+
     def test_bounded_staging_cannot_acknowledge_unattempted_chunk_sources(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -283,6 +309,7 @@ class SourceTest(unittest.TestCase):
                    "documents": [], "free_bytes": 100 * 1024**3}
             pool = {"report": [{"lv": [{"lv_size": str(200 * 1024**3), "data_percent": "50"}]}]}
             receipt = {"cached": [DOC], "missing": [], "pending": []}
+            archive_inventory = {"available_archives": ["xx_test_ver01.tar.bz2"]}
 
             def run(args, data=None):
                 if any("ocr_manifest.py" in arg for arg in args):
@@ -294,12 +321,13 @@ class SourceTest(unittest.TestCase):
                 return b""
 
             with mock.patch.object(driver, "remote", side_effect=[
-                    json.dumps(inv), json.dumps(pool), json.dumps(receipt)]), \
+                    json.dumps(inv), json.dumps(pool), json.dumps(archive_inventory), json.dumps(receipt)]), \
                     mock.patch.object(driver.shutil, "disk_usage",
                                       return_value=types.SimpleNamespace(free=100 * 1024**3)), \
                     mock.patch.object(driver, "command", side_effect=run) as command, \
                     mock.patch.object(driver.urllib.request, "urlopen") as source:
-                source.return_value.__enter__.return_value.read.return_value = b"index"
+                source.return_value.__enter__.return_value.__iter__.return_value = iter([
+                    b'{"doc_id":"candidate","batch":"xx_test","batch_version":1}\n'])
                 driver.tick(a)
             prepared = [call for call in command.call_args_list
                         if "run" in call.args[0] and any(
