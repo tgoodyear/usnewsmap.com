@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Operator-only bootstrap: provision narrowly scoped DNS and Entra permissions."""
 
+import argparse
 import datetime
 import json
 from pathlib import Path
@@ -127,9 +128,11 @@ def read_existing_token(timeout=300):
             time.sleep(min(10, max(0, deadline - time.monotonic())))
 
 
-def bootstrap_credentials():
+def rotate_dns_token(force=False):
     existing = read_existing_token()
-    if not existing or existing.get("attributes", {}).get("exp", 0) < time.time() + 30 * 86400:
+    if force and not existing.get("tags", {}).get("cloudflare-token-id"):
+        raise RuntimeError("Explicit rotation requires an existing tracked DNS token")
+    if force or not existing or existing.get("attributes", {}).get("exp", 0) < time.time() + 30 * 86400:
         expires = int(time.time()) + 90 * 86400
         # The IP-restricted operator token never leaves this process or reaches CI.
         result = tls.request(
@@ -167,6 +170,10 @@ def bootstrap_credentials():
             if not revoked.get("success"):
                 raise RuntimeError("New DNS token saved but old token revocation failed")
         print("Created zone-scoped DNS-only token in Key Vault; expires after 90 days.")
+
+
+def bootstrap_credentials():
+    rotate_dns_token()
     if tls.secret(tls.STATE_SECRET, missing_ok=True) is None:
         tls.secret(tls.STATE_SECRET, "uninitialized")
     for name, role in (
@@ -202,7 +209,16 @@ def bootstrap_credentials():
     print("Production OIDC identity has secret-level state/DNS access and certificate upload access.")
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--rotate-dns-token", action="store_true",
+        help="Replace the tracked DNS token now, without provisioning or changing Entra grants",
+    )
+    args = parser.parse_args(argv)
+    if args.rotate_dns_token:
+        rotate_dns_token(force=True)
+        return
     provision_vault()
     bootstrap_credentials()
 
