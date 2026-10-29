@@ -327,6 +327,45 @@ Have the producer atomically publish a readable snapshot file and configure `--p
 
 Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
 
+**Physical cache stock (#368).** The index-driven inventory below does not
+enumerate unindexed files or establish unique disk occupancy. For that separate
+question, run the read-only stock walker on the POSIX cache host:
+
+```bash
+nice -n 19 ionice -c 3 python3 scripts/corpus/scan_stock_inventory.py \
+  --scan-root scans --work-dir stock-20261029 \
+  --cache-set keep --cache-set buffer --max-entries 1000 --max-seconds 20
+```
+
+Repeat with the same work directory until `finished` is true. SQLite checkpoints
+and `report.json` are private outputs outside the cache; no service, scan,
+sidecar, source budget or fetch index is changed. An existing work directory
+must be owned by the invoking user and deny all group/other access (mode 0700).
+The root descriptor is identity-checked and pinned for the whole invocation;
+renaming its path cannot redirect the traversal. Each invocation limits newly
+observed directory entries and cooperatively checks elapsed time. Filesystem
+metadata calls can still block: use an external process deadline, admit only
+quiet I/O windows, and stop rather than compete with a rebuild. A killed slice
+rolls back; the next invocation resumes without duplicate observations.
+
+Each directory's names-only listing is captured once into a durable pending
+queue, capped at 10,000 names (an oversized directory fails explicitly).
+Resumes consume that queue without replaying an already observed prefix. A
+partial pending-directory index and transactional incremental counters keep
+selection and reporting independent of completed history. An unchanged resume
+retains `observed_until`; `generated_at` is only the report-generation time.
+Checkpoint schema changes require a new work directory; retain old evidence.
+
+The report separates KEEP/buffer scan-file bytes, distinct page paths across
+formats/resolutions, unplaced paths and other entry kinds. Distinct device/inode
+counts deduplicate hardlinks across both sets; maximum observed inode sizes are
+logical bytes, not allocated ZFS blocks. Symlinks are reported, not traversed.
+Errors fail explicitly. Counts describe an interval, not an atomic snapshot:
+finished directories are not rescanned for later arrivals or removals. Resume
+checks the root identity/configuration; a changed pending directory fails.
+Use a new work directory for a fresh observation. No image checksum, complete
+manifest coverage, native import, reclamation or corpus acceptance is implied.
+
 **Resumable local scan-cache inventory (#704).** For indexes larger than the
 single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator
 **on the POSIX machine holding the scan files**:
