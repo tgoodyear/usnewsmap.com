@@ -399,7 +399,7 @@ Work that ran as Azure jobs, and where it runs now:
 ## LAN access (#1357)
 
 Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
-DNS answers `boinc.usnewsmap.com` with CT230's LAN address, which has a DHCP reservation, the same
+DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation, the same
 as `ocr.tjg.fyi`. The address isn't written here. Anywhere else, the name is still Cloudflare's.
 Clients keep the master URL, scheduler, download and upload URLs, and normal certificate
 checks. The controller's `--server-status-url` is unchanged.
@@ -420,6 +420,22 @@ tar -C scripts/boinc/onprem/lan-tls -cf - . | ssh root@pve.tjg.fyi 'cat > /root/
 ssh root@pve.tjg.fyi 'pct push 230 /root/lan-tls.tar /root/lan-tls.tar && pct exec 230 -- sh -c "mkdir -p /root/lan-tls && tar -C /root/lan-tls -xf /root/lan-tls.tar && /root/lan-tls/lan-tls-setup.sh"'
 ```
 
-Then add the gateway's local DNS record. **Rollback:** delete that record, and clients go back
+Then add the gateway's local A and AAAA records (using CT230's current LAN addresses).
+Wait for both cached public record types to expire before checking the cutover.
+**Rollback:** delete both local records, and clients go back
 through Cloudflare when their resolver cache expires. Caddy and the guard can stay. To remove the
 guard, `systemctl disable --now usnm-boinc-lan-guard`.
+
+### Live acceptance (30 October 2026 UTC)
+
+The public certificate expires 27 January 2027. Both local DNS record types now resolve to
+CT230; public resolvers still return Cloudflare. Direct HTTPS passes normal certificate
+validation from the Mac, CT100, CT214 and CT211. Caddy recorded actual BOINC scheduler RPCs,
+downloads and uploads returning 200, including Linux and Mac clients, without changing their
+master URL or work-acquisition settings. The public tunnel still returns 200.
+
+Non-loopback port 80 is refused. Reloading nftables preserved the guard; its enabled boot
+dependencies include nftables, and nftables wants the guard. The certificate sync succeeded
+again with an unchanged certificate. The BOINC server's PID and startup timestamp did not
+change. A CT230 reboot was deliberately not performed during active work; boot ordering was
+checked with systemd instead.
