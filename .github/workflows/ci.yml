@@ -858,7 +858,7 @@ jobs:
         if: needs.changes.outputs.infra == 'true'
         run: |
           shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh \
-            scripts/boinc/onprem/image-security-check.sh
+            scripts/boinc/onprem/image-security-check.sh scripts/boinc/onprem/lan-tls/*.sh
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json

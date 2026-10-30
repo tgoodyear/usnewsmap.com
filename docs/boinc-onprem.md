@@ -205,6 +205,9 @@ and record all identities. Code tests or a merged PR do not prove this live gate
 | `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job; `--target scans --step receive` takes the controller's scan push | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
 | `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                                                                                      | Public ingress with no inbound port                                                                                       |
 | `usnm-image-security-check.timer`  | A daily check of the server image against `bookworm-security`, and of the MySQL pin                                                                                 | A failed `usnm-image-security-check.service` is the alert ([Security updates](#security-updates), #969)                   |
+| `caddy`                            | TLS for `boinc.usnewsmap.com` on the LAN, on 443, in front of `http://localhost:80`                                                                                 | [LAN access](#lan-access-1357)                                                                                            |
+| `usnm-boinc-lan-tls.timer`         | Daily pull of the LAN certificate from the TLS vault                                                                                                                | Fails closed: a bad certificate leaves the installed one                                                                  |
+| `usnm-boinc-lan-guard.service`     | nftables: port 80 answers loopback only                                                                                                                             | Apache stays reachable to cloudflared, not the LAN                                                                        |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
@@ -392,3 +395,31 @@ Work that ran as Azure jobs, and where it runs now:
 ## Cloudflare
 
 `boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone has Bot Fight Mode off. A configuration rule skips Browser Integrity Check for requests from the on-prem public IP to `boinc.usnewsmap.com`, because Browser Integrity Check answers `Python-urllib` with 403. An IP Access allow rule covers the same IP. Both rules name that IP, so update them if it changes. [ADR-0024](design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
+
+## LAN access (#1357)
+
+Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
+DNS answers `boinc.usnewsmap.com` with CT230's LAN address, which has a DHCP reservation, the same
+as `ocr.tjg.fyi`. The address isn't written here. Anywhere else, the name is still Cloudflare's.
+Clients keep the master URL, scheduler, download and upload URLs, and normal certificate
+checks. The controller's `--server-status-url` is unchanged.
+
+On CT230, Debian's Caddy serves 443 with a public Let's Encrypt certificate for the name and
+reverse-proxies to `localhost:80`, Apache's only allowed path, which cloudflared also uses. There's
+no image change or server restart. `origin-tls.yml` issues the certificate (`origin_tls.py --target
+boinc-lan`, with its own ACME state) into the deploy-only secret `usnm-prod-boinc-lan-tls`. The
+host's Arc identity can read only that secret, never the DNS token or the ACME account.
+`usnm-boinc-lan-tls.timer` pulls it daily, checks name, expiry, key, chain and that it's not older
+than the installed one, and restarts Caddy when it changes. Caddy's access log,
+`/var/log/caddy/boinc-lan.log`, shows the LAN clients; Apache sees `::1` for both paths.
+
+```sh
+python3 scripts/azure/origin_tls_bootstrap.py --boinc-lan   # operator, once: the secrets and grants
+gh workflow run origin-tls.yml -f validate-dns=true         # then check the run
+tar -C scripts/boinc/onprem/lan-tls -cf - . | ssh root@pve.tjg.fyi 'cat > /root/lan-tls.tar'
+ssh root@pve.tjg.fyi 'pct push 230 /root/lan-tls.tar /root/lan-tls.tar && pct exec 230 -- sh -c "mkdir -p /root/lan-tls && tar -C /root/lan-tls -xf /root/lan-tls.tar && /root/lan-tls/lan-tls-setup.sh"'
+```
+
+Then add the gateway's local DNS record. **Rollback:** delete that record, and clients go back
+through Cloudflare when their resolver cache expires. Caddy and the guard can stay. To remove the
+guard, `systemctl disable --now usnm-boinc-lan-guard`.

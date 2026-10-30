@@ -67,6 +67,15 @@ and `USNM_WWW_CERT_ID` settings to the uploaded certificate ID using
 `scripts/azure/settings.sh`, so subsequent provisioning preserves the bindings.
 Do not delete the previous managed certificates until cutover is validated.
 
+### BOINC LAN certificate (#1357)
+
+`origin_tls.py --target boinc-lan` issues a separate certificate for `boinc.usnewsmap.com`
+over the same DNS-01 path, with its own ACME state (`usnm-prod-boinc-lan-acme-state`). It never
+touches Azure ingress: it writes the private key and full chain only to the deploy secret
+`usnm-prod-boinc-lan-tls`, which CT230's Arc identity can read (Secrets User on that secret
+alone). The weekly workflow renews it after the origin certificate. Grants:
+`origin_tls_bootstrap.py --boinc-lan`. The host side is in [boinc-onprem.md](../boinc-onprem.md#lan-access-1357).
+
 ## Renewal and credential maintenance
 
 `.github/workflows/origin-tls.yml` runs weekly on main using the existing prod

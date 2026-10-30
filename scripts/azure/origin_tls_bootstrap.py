@@ -16,6 +16,9 @@ else:
 
 ACCOUNT = "14b06d73ae737d2512564c89dfb1e4a3"
 PRINCIPAL = "4d3deafd-dffb-4bc6-98ee-484b2bf61c89"
+# CT230's Arc machine identity, usnm-boinc-arcs-prod (#1357): it reads only the
+# BOINC LAN deploy secret.
+BOINC_HOST_PRINCIPAL = "0dd45a40-23bb-45e0-b205-b704bd10f3c6"
 VAULT_SCOPE = (
     f"/subscriptions/{tls.SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
     f"/providers/Microsoft.KeyVault/vaults/{tls.VAULT}"
@@ -209,18 +212,45 @@ def bootstrap_credentials():
     print("Production OIDC identity has secret-level state/DNS access and certificate upload access.")
 
 
+def bootstrap_boinc_lan():
+    spec = tls.TARGETS["boinc-lan"]
+    # Secret-scoped assignments need the secrets to exist; the host's sync
+    # ignores the placeholder until the first certificate is published.
+    for name in (spec["state"], spec["deploy"]):
+        if tls.secret(name, missing_ok=True) is None:
+            tls.secret(name, "uninitialized")
+    for name, principal, role in (
+        (spec["state"], PRINCIPAL, "Key Vault Secrets Officer"),
+        (spec["deploy"], PRINCIPAL, "Key Vault Secrets Officer"),
+        (spec["deploy"], BOINC_HOST_PRINCIPAL, "Key Vault Secrets User"),
+    ):
+        az("role", "assignment", "create", "--assignee-object-id", principal,
+           "--assignee-principal-type", "ServicePrincipal", "--role", role,
+           "--scope", VAULT_SCOPE + "/secrets/" + name)
+    print("BOINC LAN certificate: OIDC identity writes its state and deploy secrets; "
+          "the BOINC host reads only the deploy secret.")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--rotate-dns-token", action="store_true",
         help="Replace the tracked DNS token now, without provisioning or changing Entra grants",
     )
+    parser.add_argument(
+        "--boinc-lan", action="store_true",
+        help="Only create the BOINC LAN certificate secrets and their secret-scoped grants",
+    )
     args = parser.parse_args(argv)
     if args.rotate_dns_token:
         rotate_dns_token(force=True)
         return
+    if args.boinc_lan:
+        bootstrap_boinc_lan()
+        return
     provision_vault()
     bootstrap_credentials()
+    bootstrap_boinc_lan()
 
 
 if __name__ == "__main__":
