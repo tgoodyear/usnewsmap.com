@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import copy
 import fcntl
+import stat
 import functools
 import hashlib
 import json
@@ -698,7 +699,8 @@ class Transport:
                 and all(part not in (".", "..") for part in name.split("/")),
                 "invalid local handoff object path")
         path = self.handoff_root / name
-        require(path.resolve() == path and path.is_file(), "missing or unsafe local handoff object")
+        require(path.resolve() == path and stat.S_ISREG(path.stat().st_mode),
+                "missing or unsafe local handoff object")
         return path
 
     @contextlib.contextmanager
@@ -775,10 +777,18 @@ class Transport:
             listing = {}
             jobs = self.handoff_root / "dispatch/jobs"
             require(jobs.is_dir() and jobs.resolve() == jobs, "local dispatch inventory is missing or unsafe")
-            for path in jobs.glob("*/record.json"):
-                name = str(path.relative_to(self.handoff_root))
-                if not re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name):
+            for entry in jobs.iterdir():
+                if not re.fullmatch(r"[0-9a-f]{64}", entry.name):
                     continue
+                require(entry.resolve() == entry and stat.S_ISDIR(entry.stat().st_mode),
+                        "unsafe local job directory")
+                path = entry / "record.json"
+                try:
+                    info = path.stat()
+                except FileNotFoundError:
+                    continue
+                require(stat.S_ISREG(info.st_mode), "unsafe local journal")
+                name = str(path.relative_to(self.handoff_root))
                 path = self._local_object(name)
                 require(path.stat().st_size <= 131072, "invalid/oversized journal metadata")
                 listing[name] = hashlib.sha256(path.read_bytes()).hexdigest()

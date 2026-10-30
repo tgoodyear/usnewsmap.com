@@ -157,6 +157,11 @@ class LocalHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mode 0700"):
             self.make_transport()
 
+    def test_inventory_propagates_directory_permission_errors(self):
+        with patch.object(Path, "iterdir", side_effect=PermissionError("unreadable journal directory")):
+            with self.assertRaisesRegex(PermissionError, "unreadable journal directory"):
+                self.transport.records()
+
     def test_changed_journal_fails_instead_of_using_inconsistent_snapshot(self):
         row = record("sn12345678/1900-01-01/ed-1/seq-1", 1)
         job = self.store / "dispatch/jobs" / row["job"]["id"]
