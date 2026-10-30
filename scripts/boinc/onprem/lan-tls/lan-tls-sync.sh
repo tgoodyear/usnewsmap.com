@@ -104,6 +104,7 @@ activate restart
 }
 
 if [[ ${BASH_SOURCE[0]} = "$0" ]]; then
+  umask 077
   # One run at a time from fetch to activation, so two versions' key and chain never mix.
   exec 9>/run/usnm-boinc-lan-tls.lock
   flock 9
