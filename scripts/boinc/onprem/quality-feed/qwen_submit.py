@@ -16,6 +16,8 @@ import subprocess
 import sys
 import time
 
+from qwen_provenance import recovered_binding
+
 
 def jobs(root):
     for path in sorted(root.glob("**/qwen.json")):
@@ -128,6 +130,10 @@ def source_status(share, project, sample):
                 states[doc]["workunit_ids"].append(row["workunit_id"])
                 binding = row.get("source_bindings", {}).get(doc)
                 member = next(p for p in job.get("pages") or [job] if p["doc_id"] == doc)
+                if binding is None:
+                    binding = recovered_binding(campaign, job, row, member)
+                    if binding is not None:
+                        states[doc]["provenance"] = "verified_reconstruction"
                 if binding is None:
                     states[doc]["status"] = "source_provenance_unavailable"
                 elif (not isinstance(binding, dict) or binding.get("schema") != 1
