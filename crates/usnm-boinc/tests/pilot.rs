@@ -1819,6 +1819,73 @@ async fn an_onprem_export_leaves_the_page_out_of_the_container() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn local_handoff_process_restart_replays_without_regressing_stage() {
+    let fx = Fixture::new("eng").await;
+    let id = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap()
+    .remove(0);
+    let shared = fx.tmp.path().join("shared");
+    let server = fx.tmp.path().join("server");
+    let invoke = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_usnm-boinc"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    invoke(&[
+        "handoff",
+        "put",
+        "--from",
+        fx.options.root.to_str().unwrap(),
+        "--to-url",
+        shared.to_str().unwrap(),
+        "--prefix",
+        "dispatch",
+    ]);
+    let args = [
+        "handoff",
+        "pull",
+        "--from-url",
+        shared.to_str().unwrap(),
+        "--root",
+        server.to_str().unwrap(),
+        "--job",
+        &id,
+    ];
+    assert_eq!(invoke(&args).trim(), "reserved");
+    let mut record = usnm_boinc::load(&server, &id).unwrap();
+    record.stage = Stage::Submitted;
+    usnm_boinc::save(&server, &record).unwrap();
+    let page = std::fs::read(server.join("jobs").join(&id).join("page")).unwrap();
+    for _ in 0..2 {
+        assert_eq!(invoke(&args).trim(), "submitted");
+        assert_eq!(
+            usnm_boinc::load(&server, &id).unwrap().stage,
+            Stage::Submitted
+        );
+        assert_eq!(
+            std::fs::read(server.join("jobs").join(&id).join("page")).unwrap(),
+            page
+        );
+    }
+    let records = std::fs::read_dir(server.join("jobs")).unwrap().count();
+    assert_eq!(records, 1, "replay must not duplicate a submitted job");
+}
+
 /// The #469 route on synthetic data, with a local directory standing in for the hand-off
 /// container: the fetcher's scans and manifest in, export and the dispatch root put, the
 /// bridge's pull and submit, the spool and trust list back, and the trusted collect.
