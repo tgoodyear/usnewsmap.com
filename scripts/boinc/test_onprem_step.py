@@ -70,6 +70,53 @@ class OnpremStep(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(message, done.stderr)
 
+    def test_local_lake_mounts_are_fixed_and_fail_closed(self):
+        root = Path(self.conf.name).resolve()
+        lake = root / "lake"
+        lake.mkdir(mode=0o700)
+        settings = {**HANDOFF_SETTINGS, "CURATED_URL": "/lake-state/curated",
+                    "REFERENCE_URL": "/lake-state/reference", "OUT_URL": "/lake-state/ocr-out"}
+        (root / "handoff.env").write_text("".join(f"{key}={value}\n" for key, value in settings.items()))
+        for store in ("curated", "reference", "ocr-out"):
+            (lake / store).mkdir()
+        binaries = root / "bin"
+        binaries.mkdir()
+        for name, body in (("flock", "exit 0"), ("podman", "printf '%s\\n' \"$@\"")):
+            path = binaries / name
+            path.write_text("#!/bin/sh\n" + body + "\n")
+            path.chmod(0o755)
+        env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+               "USNM_BOINC_CONF": str(root), "USNM_BOINC_STEP_RUN": str(root),
+               "USNM_BOINC_LAKE_ROOT": str(lake)}
+        argv = ["bash", str(SCRIPT), "--env", "prod", "--target", "handoff", "--step", "collect",
+                "--wait-mins", "1"]
+
+        def invoke():
+            return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+
+        done = invoke()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for store in ("curated", "reference", "ocr-out"):
+            self.assertIn(f"{lake}/{store}:/lake-state/{store}", done.stdout)
+        lake.chmod(0o755)
+        done = invoke()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("mode 0700", done.stderr)
+        lake.chmod(0o700)
+        (lake / "reference").rmdir()
+        done = invoke()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("existing directory", done.stderr)
+        (lake / "reference").symlink_to(lake / "curated")
+        done = invoke()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("without symlinks", done.stderr)
+        settings["CURATED_URL"] = "/etc"
+        (root / "handoff.env").write_text("".join(f"{key}={value}\n" for key, value in settings.items()))
+        done = invoke()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("must use /lake-state/curated", done.stderr)
+
     def test_ssh_takes_only_controller_inputs(self):
         ok = self.run_step(ssh="usnm-boinc-step --env prod --target bridge --step spool-out "
                                "--var JOB_ID=" + "b" * 64 + " --var HANDOFF_SPOOL=/project/x --what-if")
