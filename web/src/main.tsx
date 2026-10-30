@@ -19,7 +19,7 @@ const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
 const searchLinks = [...document.querySelectorAll<HTMLAnchorElement>("#common-searches a")].map((link) => ({
   href: link.getAttribute("href")!,
-  label: link.textContent ?? "",
+  label: link.querySelector("strong")?.textContent ?? link.textContent ?? "",
 }));
 const page = pageFor(window.location.pathname);
 // The old path, where a server didn't redirect it: show the new one.

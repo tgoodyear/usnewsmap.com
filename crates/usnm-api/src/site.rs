@@ -445,13 +445,13 @@ fn search_links(sitemap: &sitemap::Service) -> String {
         .map(|path| {
             let q = search_query(&path).expect("sitemap search path");
             format!(
-                r#"<li><a href="{}">{}</a></li>"#,
+                r#"<li><a class="example" href="{}"><strong>{}</strong><span>Explore matching newspaper pages on the map.</span></a></li>"#,
                 escape_html(&path),
                 escape_html(&q)
             )
         })
         .collect();
-    format!("<nav id=\"common-searches\" aria-label=\"Common newspaper searches\"><h2>Common searches</h2><ul class=\"search-links\">{links}</ul></nav>")
+    format!("<nav id=\"common-searches\" aria-label=\"Common newspaper searches\"><details><summary>Show newspaper searches</summary><ul class=\"examples\">{links}</ul></details></nav>")
 }
 
 fn preview_query(q: &str) -> String {

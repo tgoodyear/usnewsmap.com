@@ -81,15 +81,18 @@ test("the interactive homepage links every sitemap search after React mounts", a
   await page.goto("/");
   await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toBeVisible();
   await expect(page.locator("#site-fallback")).toHaveCount(0);
-  const nav = page.getByRole("navigation", { name: "Common newspaper searches" });
+  const cards = page.locator("ul.examples a.example");
+  await expect(cards).toHaveCount(3);
+  while (await page.getByRole("button", { name: "Show more examples" }).count()) {
+    await page.getByRole("button", { name: "Show more examples" }).click();
+  }
   const xml = await (await request.get("/sitemap.xml")).text();
   const searches = [...xml.matchAll(/<loc>https:\/\/usnewsmap\.com(\/search\/[^<]+)<\/loc>/g)].map((match) =>
     match[1]!.replaceAll("&amp;", "&"),
   );
   expect(searches.length).toBeGreaterThan(0);
-  await expect(nav.getByRole("link")).toHaveCount(searches.length);
   for (const href of searches) {
-    await expect(nav.locator(`a[href="${href}"]`)).toBeVisible();
+    await expect(page.locator(`ul.examples a.example[href="${href}"]`)).toBeVisible();
   }
   const accessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
@@ -105,11 +108,11 @@ test("curated searches expose top-city results and homepage links without JavaSc
   try {
     await page.goto(`${process.env.PW_BASE_URL}/`);
     const home = page.getByRole("navigation", { name: "Common newspaper searches" });
-    await expect(home.getByRole("link", { name: "cross of gold", exact: true })).toHaveAttribute(
-      "href",
-      "/search/cross-of-gold",
-    );
-    await home.getByRole("link", { name: "cross of gold", exact: true }).click();
+    await expect(home.locator("details")).not.toHaveAttribute("open", "");
+    await home.locator("summary").click();
+    const gold = home.locator('a.example[href="/search/cross-of-gold"]');
+    await expect(gold).toContainText("cross of gold");
+    await gold.click();
     const samples = page.getByRole("region", { name: "Sample results" });
     await expect(samples).toContainText("has the most hits");
     await expect(samples.locator("ol > li")).toHaveCount(10);

@@ -143,9 +143,13 @@ it("keeps the server's curated and promoted search links on the interactive home
     { href: "/search/whigs", label: "whigs" },
     { href: "/search/cobalt-jubilee", label: "cobalt jubilee" },
   ]);
-  const nav = screen.getByRole("navigation", { name: "Common newspaper searches" });
-  expect(within(nav).getByRole("link", { name: "whigs" }).getAttribute("href")).toBe("/search/whigs");
-  expect(within(nav).getByRole("link", { name: "cobalt jubilee" }).getAttribute("href")).toBe("/search/cobalt-jubilee");
+  expect(document.querySelectorAll("ul.examples a.example")).toHaveLength(3);
+  expect(screen.queryByRole("link", { name: /cobalt jubilee/ })).toBeNull();
+  while (screen.queryByRole("button", { name: "Show more examples" })) {
+    fireEvent.click(screen.getByRole("button", { name: "Show more examples" }));
+  }
+  expect(document.querySelector('ul.examples a.example[href="/search/whigs"]')).not.toBeNull();
+  expect(screen.getByRole("link", { name: /cobalt jubilee/ }).getAttribute("href")).toBe("/search/cobalt-jubilee");
 });
 
 describe("App under the Congress source (#229)", () => {

@@ -677,19 +677,8 @@ export function App({ searchLinks = [] }: { searchLinks?: readonly { href: strin
             clicks={exampleClicks}
             onMore={() => setExampleClicks((c) => c + 1)}
             onPick={search}
+            searchLinks={searchLinks}
           />
-          {searchLinks.length > 0 && (
-            <nav aria-label="Common newspaper searches">
-              <h2>Common searches</h2>
-              <ul className="search-links">
-                {searchLinks.map(({ href, label }) => (
-                  <li key={href}>
-                    <a href={href}>{label}</a>
-                  </li>
-                ))}
-              </ul>
-            </nav>
-          )}
         </main>
       ) : (
         <main
