@@ -28,6 +28,26 @@ fn io(path: &Path, e: std::io::Error) -> StoreError {
     StoreError::Io(format!("{}: {e}", path.display()))
 }
 
+fn sync_directory(path: &Path) -> Result<(), StoreError> {
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
+    std::fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io(path, error))
+}
+
+fn create_directories(path: &Path) -> Result<(), StoreError> {
+    std::fs::create_dir_all(path).map_err(|error| io(path, error))?;
+    // An existing ancestor may still be unsynced after another writer or a failed attempt.
+    for ancestor in path.ancestors() {
+        sync_directory(ancestor)?;
+    }
+    Ok(())
+}
+
 /// A local object's ETag: the file's identity (device and inode on Unix),
 /// size and modification time. Every write makes a new file (a temp file
 /// renamed or linked into place), so the identity changes with each one
@@ -84,7 +104,7 @@ fn write_temp(tmp: &Path, body: &[u8]) -> Result<(), StoreError> {
         .create_new(true)
         .open(tmp)
         .map_err(|e| io(tmp, e))?;
-    f.write_all(body).map_err(|e| {
+    f.write_all(body).and_then(|()| f.sync_all()).map_err(|e| {
         let _ = std::fs::remove_file(tmp);
         io(tmp, e)
     })
@@ -113,14 +133,15 @@ impl ObjectStore for LocalStore {
         let full = self.root.join(path);
         tokio::task::spawn_blocking(move || {
             let dir = full.parent().expect("validated paths have a parent");
-            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+            create_directories(dir)?;
             // Readers see the old object or the new one, never a partial write.
             let tmp = temp_path(&full);
             write_temp(&tmp, &body)?;
             std::fs::rename(&tmp, &full).map_err(|e| {
                 let _ = std::fs::remove_file(&tmp);
                 io(&full, e)
-            })
+            })?;
+            sync_directory(dir)
         })
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
@@ -136,7 +157,7 @@ impl ObjectStore for LocalStore {
         let full = self.root.join(path);
         tokio::task::spawn_blocking(move || {
             let dir = full.parent().expect("validated paths have a parent");
-            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+            create_directories(dir)?;
             // Write a private temp file, then hard-link it into place: the
             // link fails if the object exists, so creation is atomic.
             let tmp = temp_path(&full);
@@ -144,8 +165,14 @@ impl ObjectStore for LocalStore {
             let linked = std::fs::hard_link(&tmp, &full);
             let _ = std::fs::remove_file(&tmp);
             match linked {
-                Ok(()) => Ok(true),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(false),
+                Ok(()) => {
+                    sync_directory(dir)?;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    sync_directory(dir)?;
+                    Ok(false)
+                }
                 Err(e) => Err(io(&full, e)),
             }
         })
@@ -190,9 +217,10 @@ impl ObjectStore for LocalStore {
         validate_path(path)?;
         let full = self.root.join(path);
         let dir = full.parent().expect("validated paths have a parent");
-        tokio::fs::create_dir_all(dir)
+        let directory = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || create_directories(&directory))
             .await
-            .map_err(|e| io(dir, e))?;
+            .map_err(|e| StoreError::Io(e.to_string()))??;
         let tmp = temp_path(&full);
         // Fails if the name is taken, like `write_temp`: never another
         // writer's file, so never one to remove below.
@@ -223,6 +251,12 @@ impl ObjectStore for LocalStore {
         .await;
         drop(f);
         let _ = tokio::fs::remove_file(&tmp).await;
+        if written.is_ok() {
+            let directory = dir.to_path_buf();
+            tokio::task::spawn_blocking(move || sync_directory(&directory))
+                .await
+                .map_err(|e| StoreError::Io(e.to_string()))??;
+        }
         written
     }
 
