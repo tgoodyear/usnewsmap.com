@@ -143,7 +143,8 @@ def main() -> int:
         try:
             urllib.request.urlopen(request, timeout=10).close()
         except OSError as e:
-            sys.stderr.write(f"warning: can't push to {args.push_url}: {e}\n")
+            sys.stderr.write(f"error: can't push to {args.push_url}: {e}\n")
+            return 1
     return 0
 
 
