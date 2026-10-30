@@ -46,7 +46,7 @@ class DaemonConfig(unittest.TestCase):
             [cmd for cmd in commands if cmd[0] == "feeder"],
             [["feeder", "-d", "2", "--allapps", "--purge_stale", "5"]],
         )
-        self.assertEqual(root.findtext("./config/shmem_work_items"), "1000")
+        self.assertEqual(root.findtext("./config/shmem_work_items"), "4096")
 
     def test_feeder_query_covers_weighted_cache_and_qwen_backlog_with_headroom(self):
         root = Path(__file__).parent
@@ -65,8 +65,8 @@ class DaemonConfig(unittest.TestCase):
             if weight > 0:
                 with self.subTest(app=name):
                     self.assertGreaterEqual(budgets[name], 2 * cache_size)
-        # Measured 28 October sizing baseline: all unsent Qwen replicas, including blocked ones.
-        qwen_ready_results = 635
+        # 30 October: 1788-1798 unsent replicas exceeded the former 666-slot Qwen share.
+        qwen_ready_results = 1800
         self.assertGreaterEqual(budgets["usnm_qwen"], 4 * qwen_ready_results)
 
         # Pinned feeder.cpp weighted_interleave(): purge_stale rotation alone cannot expose
@@ -83,7 +83,7 @@ class DaemonConfig(unittest.TestCase):
         for name, weight in weights.items():
             if weight > 0 and name != "usnm_qwen":
                 with self.subTest(app=name):
-                    self.assertGreaterEqual(slots[name], 40)
+                    self.assertGreaterEqual(slots[name], 160)
 
     def test_replicas_need_different_hosts_not_different_accounts(self):
         # The project's hosts share one account; a per-account rule starves them on quorum-2 work.
