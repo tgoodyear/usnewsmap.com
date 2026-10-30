@@ -770,28 +770,33 @@ mod tests {
             assert_ne!(key, overview_key(&format!("{}&state=IL", card.image)));
         }
         let example = EXAMPLE_CARDS.iter().find(|(id, _)| id == "whigs").unwrap();
+        let preset = crate::prewarm::examples()
+            .iter()
+            .find(|example| example.id == "whigs")
+            .unwrap();
+        let path = super::super::search_path(preset.view["q"].as_str().unwrap());
         assert_eq!(
             overview_key(&example.1.image),
-            overview_key(
-                &Card::new(
-                    "/search/whigs",
-                    "from=1834-01-01&to=1856-12-31&bucket=month"
-                )
-                .unwrap()
-                .image
-            )
+            overview_key(&Card::new(&path, &preset.aggregate).unwrap().image)
         );
         let abolitionists = EXAMPLE_CARDS
             .iter()
             .find(|(id, _)| id == "abolitionists")
             .unwrap();
+        let preset = crate::prewarm::examples()
+            .iter()
+            .find(|example| example.id == "abolitionists")
+            .unwrap();
+        let path = super::super::search_path(preset.view["q"].as_str().unwrap());
+        let without_bucket = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(
+                form_urlencoded::parse(preset.aggregate.as_bytes())
+                    .filter(|(key, _)| key != "bucket"),
+            )
+            .finish();
         assert_ne!(
             overview_key(&abolitionists.1.image),
-            overview_key(
-                &Card::new("/search/abolitionists", "from=1830-01-01&to=1860-12-31")
-                    .unwrap()
-                    .image
-            )
+            overview_key(&Card::new(&path, &without_bucket).unwrap().image)
         );
     }
 
