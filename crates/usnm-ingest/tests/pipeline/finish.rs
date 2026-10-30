@@ -493,6 +493,38 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
     assert!(err.contains("isn't complete"), "{err}");
     std::fs::write(&main, &full).unwrap();
 
+    let input = e.root.join("curated").join(usnm_ocr_local::pages_path(
+        "sn99000001",
+        "20261011T000000Z-aaaa",
+    ));
+    let original = std::fs::read(&input).unwrap();
+    let modified = std::fs::metadata(&input).unwrap().modified().unwrap();
+    let mut changed = original.clone();
+    let writer = changed
+        .windows(b"parquet-rs".len())
+        .position(|w| w == b"parquet-rs")
+        .expect("Parquet writer metadata");
+    changed[writer] = b'P';
+    std::fs::write(&input, &changed).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&input)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let err = finish(Arc::new(AsOf::new(e.curated.clone(), started)))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("inputs_sha256"), "{err}");
+    std::fs::write(&input, &original).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&input)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+
     // As of the run's start, it finishes into the version the whole run made.
     let got = finish(Arc::new(AsOf::new(e.curated.clone(), started)))
         .await

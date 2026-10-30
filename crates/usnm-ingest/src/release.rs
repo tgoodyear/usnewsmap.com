@@ -1842,11 +1842,13 @@ impl Release {
                             &l.revoked,
                         )
                         .await?;
+                    let inputs_sha256 = hex(&Sha256::digest(serde_json::to_vec(&loaded.parts)?));
                     tracing::info!(
                         batch = %b.batch,
                         pages = loaded.pages.len(),
                         revoked = loaded.revoked.len(),
                         parts = loaded.parts.len(),
+                        inputs_sha256 = %inputs_sha256,
                         "our OCR for the batch's titles"
                     );
                     if let Some(r) = resume {
@@ -1857,10 +1859,11 @@ impl Release {
                                 "pages": loaded.pages.len(),
                                 "revoked": loaded.revoked.len(),
                                 "parts": loaded.parts.len(),
+                                "inputs_sha256": inputs_sha256,
                             })),
                         )?;
                     }
-                    local_tally.add_parts(&loaded.parts);
+                    local_tally.add_parts(&loaded.parts)?;
                     loaded
                 }
                 _ => {
@@ -1964,7 +1967,7 @@ impl Release {
                     without_locs,
                 } = part;
                 replaced.extend(part_replaced);
-                local_tally.merge(tally);
+                local_tally.merge(tally)?;
                 local_replaced.extend(part_local);
                 // The pages that move to another set than their title's
                 // (05 §5.5.8); their own languages were found as they were built.
@@ -2854,6 +2857,7 @@ impl Release {
             let summary = tally.parts_summary();
             let mut record = ocr_local::rule::record();
             record["parts"] = summary.clone();
+            record["inputs"] = serde_json::to_value(tally.inputs())?;
             record["pages"] = serde_json::to_value(tally)?;
             record["version"] = json!({
                 "pages": pages.len(),
