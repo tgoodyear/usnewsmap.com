@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Examples } from "./Examples";
 import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_MORE, EXAMPLES_SHOWN } from "../examples";
 import { DEFAULTS, parseViewUrl, viewUrl, type ViewState } from "../state/url";
+import { searchPath } from "../route";
 
 /** The cards as App shows them, with the press count held in state. */
 function Home({ onPick = () => undefined }: { onPick?: (view: ViewState) => void }) {
@@ -74,6 +75,40 @@ describe("Examples", () => {
     fireEvent.click(link);
     expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...EXAMPLE_ORDER[1]!.view });
     expect(viewUrl(onPick.mock.calls[0]![0])).toBe(link.getAttribute("href"));
+  });
+
+  it("filters by canonical base query without losing historical filters or promoted links", () => {
+    const example = EXAMPLE_ORDER[0]!;
+    const query = example.view.q ?? DEFAULTS.q;
+    const base = searchPath(query);
+    const onPick = vi.fn();
+    render(
+      <Examples
+        order={EXAMPLE_ORDER}
+        clicks={100}
+        onMore={() => undefined}
+        onPick={onPick}
+        searchLinks={[
+          { href: base, label: query },
+          { href: "/search/cobalt-jubilee", label: "cobalt jubilee" },
+        ]}
+      />,
+    );
+    const card = screen.getByRole("link", { name: `${example.title}${example.blurb}` });
+    expect(card.getAttribute("href")).toBe(viewUrl({ ...DEFAULTS, ...example.view }));
+    fireEvent.click(card);
+    expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...example.view });
+    expect(screen.queryByRole("link", { name: new RegExp(EXAMPLE_ORDER[1]!.title) })).toBeNull();
+    expect(screen.getByRole("link", { name: /cobalt jubilee/ }).getAttribute("href")).toBe("/search/cobalt-jubilee");
+  });
+
+  it("distinguishes verified empty eligibility from unavailable eligibility", () => {
+    const props = { order: EXAMPLE_ORDER, clicks: 0, onMore: () => undefined, onPick: () => undefined };
+    const { rerender } = render(<Examples {...props} searchLinks={[]} />);
+    expect(titles()).toEqual([]);
+    expect(more()).toBeNull();
+    rerender(<Examples {...props} />);
+    expect(titles()).toEqual(EXAMPLE_ORDER.slice(0, 3).map((ex) => ex.title));
   });
 
   it.each([

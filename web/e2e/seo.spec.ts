@@ -1,8 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import examples from "../src/examples.json" with { type: "json" };
-import { searchPath } from "../src/route";
 import AxeBuilder from "@axe-core/playwright";
 import { indexSummary } from "../src/lib/indexSummary";
 
@@ -118,7 +116,7 @@ test("the interactive homepage links every sitemap search after React mounts", a
   const searches = [...xml.matchAll(/<loc>https:\/\/usnewsmap\.com(\/search\/[^<]+)<\/loc>/g)].map((match) =>
     match[1]!.replaceAll("&amp;", "&"),
   );
-  expect(searches.length).toBeGreaterThan(0);
+  if (xml.includes("<lastmod>")) expect(searches.length).toBeGreaterThan(0);
   for (const href of searches) {
     await expect(page.locator(`ul.examples a.example[href="${href}"]`)).toBeVisible();
   }
@@ -308,24 +306,32 @@ test("the API's OpenAPI document is served on the site's origin too", async ({ r
   expect(Object.keys(doc.paths)).toContain("/v1/aggregate");
 });
 
-test("sitemap.xml lists canonical site pages and curated base searches", async ({ request }) => {
+test("sitemap.xml lists canonical static pages and only evaluated search pages", async ({ request }) => {
   const res = await request.get("/sitemap.xml");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/xml/);
-  const locs = [...(await res.text()).matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  expect(locs).toEqual([
-    `${SITE}/`,
-    `${SITE}/privacy`,
-    `${SITE}/datasets`,
-    `${SITE}/credits`,
-    ...[...new Set(examples.map(({ view }) => searchPath(view.q)))].map((path) => `${SITE}${path}`),
-  ]);
+  const xml = await res.text();
+  const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]!);
+  const staticPages = [`${SITE}/`, `${SITE}/privacy`, `${SITE}/datasets`, `${SITE}/credits`];
+  if (!xml.includes("<lastmod>")) {
+    expect(locs, "no-backend fallback cannot verify search eligibility").toEqual(staticPages);
+  } else {
+    expect(locs).toEqual(expect.arrayContaining(staticPages));
+    expect(new Set(locs).size).toBe(locs.length);
+    expect(locs.every((url) => staticPages.includes(url) || url.startsWith(`${SITE}/search/`))).toBe(true);
+  }
   if (withApi) {
     for (const loc of locs) {
-      const page = await request.get(loc!.replace(SITE, ""));
+      const page = await request.get(loc.replace(SITE, ""), { maxRedirects: 0 });
       expect(page.status(), loc).toBe(200);
       expect(page.headers()["x-robots-tag"], loc).toBeUndefined();
-      expect(await page.text(), loc).toContain(`<link rel="canonical" href="${loc}" />`);
+      const html = await page.text();
+      expect(html, loc).toContain(`<link rel="canonical" href="${loc}" />`);
+      if (loc.startsWith(`${SITE}/search/`)) {
+        expect(html, loc).not.toContain("No matching newspaper pages.");
+        expect(html, loc).toContain('aria-label="Sample results"');
+        expect(html, loc).toContain("<ol>");
+      }
     }
   }
 });

@@ -108,7 +108,7 @@ const noHits: HitsResponse = {
   next_cursor: null,
 } as unknown as HitsResponse;
 
-function show(search: string, searchLinks: { href: string; label: string }[] = []) {
+function show(search: string, searchLinks?: { href: string; label: string }[]) {
   window.history.replaceState(null, "", `/${search}`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -138,18 +138,20 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-it("keeps the server's curated and promoted search links on the interactive homepage", () => {
+it("keeps only the server's eligible search links on the interactive homepage", () => {
   show("", [
     { href: "/search/whigs", label: "whigs" },
     { href: "/search/cobalt-jubilee", label: "cobalt jubilee" },
   ]);
-  expect(document.querySelectorAll("ul.examples a.example")).toHaveLength(3);
-  expect(screen.queryByRole("link", { name: /cobalt jubilee/ })).toBeNull();
-  while (screen.queryByRole("button", { name: "Show more examples" })) {
-    fireEvent.click(screen.getByRole("button", { name: "Show more examples" }));
-  }
+  expect(document.querySelectorAll("ul.examples a.example")).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: "Show more examples" })).toBeNull();
   expect(document.querySelector('ul.examples a.example[href="/search/whigs"]')).not.toBeNull();
   expect(screen.getByRole("link", { name: /cobalt jubilee/ }).getAttribute("href")).toBe("/search/cobalt-jubilee");
+});
+
+it("does not restore curated cards when the server evaluated every search as empty", () => {
+  show("", []);
+  expect(document.querySelectorAll("ul.examples a.example")).toHaveLength(0);
 });
 
 describe("App under the Congress source (#229)", () => {

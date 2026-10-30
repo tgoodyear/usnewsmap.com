@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { examplesShown, type Example } from "../examples";
+import { searchPath } from "../route";
 import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
 
 interface Props {
@@ -9,6 +10,7 @@ interface Props {
   clicks: number;
   onMore: () => void;
   onPick: (view: ViewState) => void;
+  /** Undefined when no server discovery list is available; [] is verified empty. */
   searchLinks?: readonly { href: string; label: string }[];
 }
 
@@ -16,13 +18,16 @@ interface Props {
  * The home page's example cards: the first few of `order`, and a button that
  * adds the next ones below them until every example has shown.
  */
-export function Examples({ order, clicks, onMore, onPick, searchLinks = [] }: Props) {
-  const cards = order.map((ex) => {
-    const view = { ...DEFAULTS, ...ex.view };
-    return { title: ex.title, blurb: ex.blurb, href: viewUrl(view), view };
-  });
+export function Examples({ order, clicks, onMore, onPick, searchLinks }: Props) {
+  const eligible = searchLinks === undefined ? null : new Set(searchLinks.map(({ href }) => href));
+  const cards = order
+    .map((ex) => {
+      const view = { ...DEFAULTS, ...ex.view };
+      return { title: ex.title, blurb: ex.blurb, href: viewUrl(view), view };
+    })
+    .filter((card) => eligible === null || eligible.has(searchPath(card.view.q)));
   const linked = new Set(cards.map((card) => card.href));
-  const additional = searchLinks
+  const additional = (searchLinks ?? [])
     .filter(({ href }) => !linked.has(href))
     .map(({ href, label }) => ({
       title: label,
