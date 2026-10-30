@@ -3,6 +3,7 @@ Description=usnm BOINC: Apache's port 80 for loopback only (#1357)
 # nftables.service flushes the ruleset on start, restart and reload: PartOf= follows the first
 # two, ReloadPropagatedFrom= the third, and ExecReload= reapplies the table.
 After=nftables.service
+Wants=nftables.service
 PartOf=nftables.service
 ReloadPropagatedFrom=nftables.service
 

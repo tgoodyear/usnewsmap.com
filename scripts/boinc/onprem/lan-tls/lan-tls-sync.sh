@@ -35,14 +35,14 @@ kv_token() {
   local url realm
   url="$IDENTITY_ENDPOINT?api-version=2020-06-01&resource=https://vault.azure.net"
   # himds answers first with a 401 naming a root-only key file; its contents are the password.
-  realm="$(curl --noproxy '*' -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
+  realm="$(curl --noproxy '*' --connect-timeout 5 --max-time 30 -sS -o /dev/null -D - -H "Metadata: true" "$url" | tr -d '\r' |
     sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *Basic realm=\([^[:space:]]*\).*/\1/p')"
   realm=${realm#\"}; realm=${realm%\"}
   case "$realm" in
     /var/opt/azcmagent/tokens/*.key) [[ $realm != *..* ]] && [ -f "$realm" ] || fail "unexpected Arc challenge file" ;;
     *) fail "no Arc challenge from $IDENTITY_ENDPOINT" ;;
   esac
-  curl --noproxy '*' -fsS -H "Metadata: true" \
+  curl --noproxy '*' --connect-timeout 5 --max-time 30 -fsS -H "Metadata: true" \
     -H @<(printf 'Authorization: Basic %s\n' "$(cat "$realm")") "$url" | jq -er .access_token
 }
 

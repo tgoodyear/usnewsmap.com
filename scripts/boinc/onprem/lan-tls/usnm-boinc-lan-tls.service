@@ -5,4 +5,5 @@ After=network-online.target himdsd.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=180
 ExecStart=/usr/local/sbin/usnm-boinc-lan-tls-sync
