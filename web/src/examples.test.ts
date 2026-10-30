@@ -168,7 +168,8 @@ describe("example queries and copy", () => {
       expect(q.trim(), ex.id).not.toBe("");
       expect(q.length, ex.id).toBeLessThanOrEqual(LIMITS.maxQueryChars);
       expect(q.split('"').length % 2, `${ex.id}: balanced quotes`).toBe(1);
-      const words = q.split(/\s+/);
+      // Proximity slop values are not query terms.
+      const words = q.replace(/"~\d+/g, '"').split(/\s+/);
       const terms = words
         .filter((w) => !OPERATORS.has(w))
         .flatMap((w) => w.split(/[^\p{L}\p{N}]+/u))

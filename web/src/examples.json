@@ -578,7 +578,7 @@
     "view": { "bucket": "week", "from": "1915-01-01", "q": "Lusitania", "to": "1916-12-31" }
   },
   {
-    "aggregate": "q=%22Wilson+fourteen+points%22%7E5+OR+%22fourteen+peace+points%22%7E3+OR+%22Wilson+14+points%22%7E5&from=1918-01-01&to=1920-12-31&bucket=month",
+    "aggregate": "q=%22Wilson+fourteen+points%22%7E5+OR+%22fourteen+points+peace%22%7E10+OR+%22Wilson+14+points+peace%22%7E10&from=1918-01-01&to=1920-12-31&bucket=month",
     "blurb": "Wilson's January 1918 peace plan, and the Paris peace talks of 1919.",
     "era": "1900-1929",
     "id": "fourteen-points",
@@ -586,7 +586,7 @@
     "view": {
       "bucket": "month",
       "from": "1918-01-01",
-      "q": "\"Wilson fourteen points\"~5 OR \"fourteen peace points\"~3 OR \"Wilson 14 points\"~5",
+      "q": "\"Wilson fourteen points\"~5 OR \"fourteen points peace\"~10 OR \"Wilson 14 points peace\"~10",
       "to": "1920-12-31"
     }
   },
@@ -1193,12 +1193,17 @@
     }
   },
   {
-    "aggregate": "q=%22Port+Royal%22+AND+school*&from=1862-01-01&to=1865-12-31&bucket=month",
+    "aggregate": "q=%28%22Port+Royal+school%22%7E10+OR+%22Port+Royal+schools%22%7E10+OR+%22Port+Royal+teachers%22%7E10%29+AND+%28freed*+OR+contraband*%29&from=1862-01-01&to=1865-12-31&bucket=month",
     "blurb": "Schools on South Carolina's Sea Islands supported formerly enslaved people's education.",
     "era": "1860-1865",
     "id": "port-royal-schools",
     "title": "Port Royal schools",
-    "view": { "bucket": "month", "from": "1862-01-01", "q": "\"Port Royal\" AND school*", "to": "1865-12-31" }
+    "view": {
+      "bucket": "month",
+      "from": "1862-01-01",
+      "q": "(\"Port Royal school\"~10 OR \"Port Royal schools\"~10 OR \"Port Royal teachers\"~10) AND (freed* OR contraband*)",
+      "to": "1865-12-31"
+    }
   },
   {
     "aggregate": "q=%22Sand+Creek%22+AND+%28massacre+OR+battle+OR+Chivington%29&from=1864-11-29&to=1865-12-31&bucket=month",
@@ -1324,7 +1329,7 @@
     }
   },
   {
-    "aggregate": "q=%28Molly+OR+Mollie+OR+Molley%29+AND+Maguire*&from=1875-01-01&to=1879-12-31&bucket=month",
+    "aggregate": "q=%22Molly+Maguire%22+OR+%22Molly+Maguires%22+OR+%22Mollie+Maguire%22+OR+%22Mollie+Maguires%22&from=1875-01-01&to=1879-12-31&bucket=month",
     "blurb": "Trials in Pennsylvania's coal region intertwined labor conflict and anti-Irish prejudice.",
     "era": "1865-1877",
     "id": "molly-maguires",
@@ -1332,7 +1337,7 @@
     "view": {
       "bucket": "month",
       "from": "1875-01-01",
-      "q": "(Molly OR Mollie OR Molley) AND Maguire*",
+      "q": "\"Molly Maguire\" OR \"Molly Maguires\" OR \"Mollie Maguire\" OR \"Mollie Maguires\"",
       "to": "1879-12-31"
     }
   },
@@ -1472,20 +1477,30 @@
     "view": { "bucket": "month", "from": "1896-01-01", "q": "X rays", "to": "1897-12-31" }
   },
   {
-    "aggregate": "q=Tesla&mode=phrase&from=1888-01-01&to=1900-12-31&bucket=month",
+    "aggregate": "q=%22Nikola+Tesla%22+OR+%22Nicola+Tesla%22+OR+%22Tesla+electrical%22%7E10+OR+%22Tesla+coil%22%7E5&from=1888-01-01&to=1900-12-31&bucket=month",
     "blurb": "Tesla's alternating-current inventions and 1890s electrical experiments drew notice.",
     "era": "1877-1900",
     "id": "nikola-tesla",
     "title": "Nikola Tesla's experiments",
-    "view": { "bucket": "month", "from": "1888-01-01", "q": "Tesla", "to": "1900-12-31" }
+    "view": {
+      "bucket": "month",
+      "from": "1888-01-01",
+      "q": "\"Nikola Tesla\" OR \"Nicola Tesla\" OR \"Tesla electrical\"~10 OR \"Tesla coil\"~5",
+      "to": "1900-12-31"
+    }
   },
   {
-    "aggregate": "q=Esperanto&mode=phrase&from=1887-01-01&to=1900-12-31&bucket=month",
+    "aggregate": "q=%22Esperanto+language%22%7E10+OR+%22langue+Esperanto%22%7E10+OR+%22lengua+Esperanto%22%7E10+OR+%22Esperanto+Sprache%22%7E10&from=1887-01-01&to=1900-12-31&bucket=month",
     "blurb": "A proposed international language sought readers beyond national and linguistic borders.",
     "era": "1877-1900",
     "id": "esperanto",
     "title": "Esperanto's early readers",
-    "view": { "bucket": "month", "from": "1887-01-01", "q": "Esperanto", "to": "1900-12-31" }
+    "view": {
+      "bucket": "month",
+      "from": "1887-01-01",
+      "q": "\"Esperanto language\"~10 OR \"langue Esperanto\"~10 OR \"lengua Esperanto\"~10 OR \"Esperanto Sprache\"~10",
+      "to": "1900-12-31"
+    }
   },
   {
     "aggregate": "q=Carnegie+AND+librar*&from=1886-01-01&to=1919-12-31&bucket=year",
@@ -1549,12 +1564,17 @@
     }
   },
   {
-    "aggregate": "q=%22Mary+Mallon%22+OR+%22Mary+Ilverson%22&from=1907-01-01&to=1915-12-31&bucket=month",
+    "aggregate": "q=%28%22Mary+Mallon%22+OR+%22Mary+Ilverson%22%29+AND+typhoid&from=1907-01-01&to=1915-12-31&bucket=month",
     "blurb": "Mary Mallon's forced isolation, release in 1910, and renewed quarantine in 1915.",
     "era": "1900-1929",
     "id": "typhoid-mary",
     "title": "Mary Mallon and typhoid",
-    "view": { "bucket": "month", "from": "1907-01-01", "q": "\"Mary Mallon\" OR \"Mary Ilverson\"", "to": "1915-12-31" }
+    "view": {
+      "bucket": "month",
+      "from": "1907-01-01",
+      "q": "(\"Mary Mallon\" OR \"Mary Ilverson\") AND typhoid",
+      "to": "1915-12-31"
+    }
   },
   {
     "aggregate": "q=%22Major+Taylor+bicycle%22%7E15+OR+%22Major+Taylor+cyclist%22%7E10+OR+%22Major+Taylor+cycling%22%7E10&from=1895-01-01&to=1910-12-31&bucket=month",
