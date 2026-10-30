@@ -395,7 +395,8 @@ queue receipts.
 
 The on-prem runner mounts `/srv/usnm-boinc/handoff-state` read-write when present.
 An operator can select its host path with `USNM_BOINC_HANDOFF_ROOT`; SSH callers
-cannot choose a container mount. The controller must see the same filesystem,
+cannot choose a container mount. The runner independently requires a canonical,
+non-symlinked root owned by its service user with mode `0700`. The controller must see the same filesystem,
 whether it runs beside the BOINC server or uses an existing shared mount. Set
 `HANDOFF_URL=/handoff-state` in the host's handoff settings at cutover. Bridge
 calls use this fixed container path, never a caller-selected local directory.
