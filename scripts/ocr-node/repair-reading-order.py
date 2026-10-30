@@ -143,6 +143,15 @@ def reflow(data, layout, scan_sha256):
     root = ET.fromstring(xml)
     if root.tag != tag("alto"):
         raise ValueError("expected stored ALTO v3")
+    for element in root.iter():
+        if "ROTATION" in element.attrib:
+            rotation = float(element.attrib["ROTATION"])
+            if not math.isfinite(rotation) or rotation != 0:
+                raise ValueError("rotated content needs separate layout review")
+        if (element.tag == tag("ComposedBlock") and "STYLEREFS" in element.attrib
+                or element.tag == tag("TextLine")
+                and any(key in element.attrib for key in ("LANG", "STYLEREFS"))):
+            raise ValueError("inherited line/composed-block language or styles need separate review")
     if root.findall(".//a:ReadingOrder", NS) or any(
             "IDNEXT" in element.attrib or "IDPREV" in element.attrib for element in root.iter()):
         raise ValueError("existing explicit reading-order references need separate review")

@@ -129,6 +129,22 @@ class ReadingOrder(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     repair.reflow(data, bad, IMAGE_SHA)
 
+    def test_refuses_rotation_and_inherited_styles_instead_of_silently_flattening_them(self):
+        data, layout = fixture()
+        for marker, attribute in [
+            (b'ID="composed"', b' ROTATION="90"'),
+            (b'ID="body"', b' ROTATION="90"'),
+            (b'ID="composed"', b' STYLEREFS="composed-font"'),
+            (b'ID="mixed"', b' LANG="fra"'),
+            (b'ID="mixed"', b' STYLEREFS="line-font"'),
+        ]:
+            with self.subTest(marker=marker, attribute=attribute):
+                changed = data.replace(marker, marker + attribute)
+                bad = copy.deepcopy(layout)
+                bad["alto_sha256"] = repair.sha256(changed)
+                with self.assertRaises(ValueError):
+                    repair.reflow(changed, bad, IMAGE_SHA)
+
     def test_rejects_mismatched_alto_image_and_page_size(self):
         data, layout = fixture()
         for field, value in [("alto_sha256", "0" * 64), ("image_sha256", "0" * 64),

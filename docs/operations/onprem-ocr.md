@@ -24,6 +24,9 @@ to another page or derive a global seven-column default from it.
 The tool rejects mismatched image/ALTO hashes, ambiguous source image identifiers,
 overlapping/out-of-page regions, uncovered word centres, non-pixel or multi-page
 ALTO, explicit reading-order references and existing cross-line substitutions.
+Nonzero rotation, composed-block style inheritance and line-level language/style
+overrides also require separate review rather than silently losing their meaning
+when flattening or rebuilding lines.
 Regions use half-open pixel rectangles `[x0,y0,x1,y1]`, in reading order;
 word centres determine membership. Wide or already fused recognized words are
 **not** split or corrected. Within a region, line fragments use visual rows
