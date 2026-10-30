@@ -122,6 +122,17 @@ class ProvenanceRecoveryTest(unittest.TestCase):
         self.assertEqual(status["pages"][self.doc]["status"], "source_conflict")
         self.assertEqual(status["published_workunits"], 0)
 
+    def test_present_null_original_binding_never_falls_back_to_recovered_evidence(self):
+        recovery.install(self.share, [self.proof()])
+        audit = {**self.audit, "source_bindings": {self.doc: None}}
+        (self.campaign / "audit.json").write_text(json.dumps({self.job["id"]: audit}))
+        with mock.patch.object(submit.subprocess, "check_output") as query:
+            status = submit.source_status(self.share, self.share, json.dumps(self.fingerprint))
+        query.assert_not_called()
+        self.assertEqual(status["pages"][self.doc]["status"], "source_provenance_unavailable")
+        self.assertNotIn("provenance", status["pages"][self.doc])
+        self.assertEqual(status["published_workunits"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

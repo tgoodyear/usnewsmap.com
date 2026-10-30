@@ -87,7 +87,10 @@ Run the reviewed verifier in a bounded maintenance directory on the preparation
 host, using its existing pinned Pillow/OpenJPEG environment and LAN scan server:
 
 ```sh
-python qwen_provenance.py verify --input targets.json --output verified.json \
+# In a private maintenance directory in preparation CT215 on pve-laptop:
+install -m 0644 /path/to/reviewed/qwen_provenance.py /path/to/reviewed/qwen_submit.py .
+/opt/usnm-quality-feed/venv/bin/python qwen_provenance.py \
+  verify --input targets.json --output verified.json \
   --scan-server http://usnm-scanfetch.tjg.fyi:8380
 ```
 
@@ -101,7 +104,11 @@ Transfer the reviewed proofs to a native maintenance directory, coordinate with
 the existing publication owner and install under the existing bridge mutex:
 
 ```sh
-python qwen_provenance.py install --input verified.json --share /project
+# On pve.tjg.fyi, with the proofs already at this explicit container-visible path:
+pct exec 230 -- flock -x -w 120 /run/usnm-boinc-step.lock \
+  podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_provenance.py \
+  install --input /project/ops/qwen-feed/maintenance/source-recovery/verified.json \
+  --share /project
 ```
 
 Installation validates every target against retained native job bytes, actual
@@ -113,6 +120,9 @@ rechecks the job/audit/source binding, and explicitly marks page provenance as
 `verified_reconstruction`. These trusted operator receipts have the same
 filesystem protection requirement as native audits; never install untrusted
 or manually fabricated proofs.
+Source-request progress exposes `reconstructed_source_pages` separately so that
+the dashboard's full status does not confuse recovered evidence with original
+handoff receipts; deploy the matching `qwen_source.py` on the producer as well.
 
 Recovery can establish source identity, not BOINC agreement or OCR accuracy.
 Missing native history/errors, independent-host quorum, admission and downstream

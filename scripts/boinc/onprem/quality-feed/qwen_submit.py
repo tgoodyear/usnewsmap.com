@@ -130,10 +130,8 @@ def source_status(share, project, sample):
                 states[doc]["workunit_ids"].append(row["workunit_id"])
                 binding = row.get("source_bindings", {}).get(doc)
                 member = next(p for p in job.get("pages") or [job] if p["doc_id"] == doc)
-                if binding is None:
+                if doc not in row.get("source_bindings", {}):
                     binding = recovered_binding(campaign, job, row, member)
-                    if binding is not None:
-                        states[doc]["provenance"] = "verified_reconstruction"
                 if binding is None:
                     states[doc]["status"] = "source_provenance_unavailable"
                 elif (not isinstance(binding, dict) or binding.get("schema") != 1
@@ -143,6 +141,8 @@ def source_status(share, project, sample):
                 else:
                     if states[doc]["status"] not in ("source_conflict", "source_provenance_unavailable"):
                         states[doc]["status"] = "published"
+                        if "reconstructed_at" in binding:
+                            states[doc]["provenance"] = "verified_reconstruction"
                     audited[row["workunit_id"]] = row
         for layout in ("units", "pages"):
             for disposition in ("no_crops", "too_large"):
