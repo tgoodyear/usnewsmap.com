@@ -2,6 +2,60 @@
 
 Part of the [operations guide](README.md).
 
+## Offline reading-order reconstruction
+
+`scripts/ocr-node/repair-reading-order.py` addresses retained multi-column ALTO
+whose **lines**, not merely blocks, mix columns (#925). It requires the exact
+retained scan, its stored pixel ALTO, and an explicitly ordered region annotation:
+
+```sh
+python3 scripts/ocr-node/repair-reading-order.py \
+  --alto /private/original.alto.xml --image /private/original.jp2 \
+  --layout scripts/ocr-node/fixtures/reading-order/19101018.json \
+  --out /private/new-reconstruction
+```
+
+The three annotations freeze the original 1910 regression input hashes and
+scan-inspected candidate physical regions. They are **not** accepted article-order
+transcriptions. Review boundaries against the full scan before using them;
+headlines, portraits and advertisements can span columns. Never apply this layout
+to another page or derive a global seven-column default from it.
+
+The tool rejects mismatched image/ALTO hashes, ambiguous source image identifiers,
+overlapping/out-of-page regions, uncovered word centres, non-pixel or multi-page
+ALTO, explicit reading-order references and existing cross-line substitutions.
+Nonzero rotation, composed-block style inheritance and line-level language/style
+overrides also require separate review rather than silently losing their meaning
+when flattening or rebuilding lines.
+Regions use half-open pixel rectangles `[x0,y0,x1,y1]`, in reading order;
+word centres determine membership. Wide or already fused recognized words are
+**not** split or corrected. Within a region, line fragments use visual rows
+(half the median word height, as in survey crop inspection) and left-to-right
+order. Region geometry does not itself establish a correct editorial order.
+The annotation must also supply named `order_checks`, each with a `word_ids`
+sequence checked against the scan. Every sequence must be recovered consecutively;
+the receipt records whether it was consecutive in the original. These are bounded
+ordering checks, not corrected spellings, reference CER, or whole-page acceptance.
+
+The output is a **new private directory**, never an overwritten source. It holds
+derived `page.alto.xml`, literal unnormalized `page.txt`, and a last-written
+`receipt.json` binding exact input/output hashes and preservation counts.
+Original word attributes (including content, coordinates, confidence and IDs),
+hyphen ownership, illustrations and original recognition provenance are retained.
+Line/block IDs and bounds are rebuilt; stale line-level layout attributes and
+spacing elements are not copied. The appended post-processing record binds the
+parent ALTO and canonical JSON layout; the receipt also hashes the exact layout
+file bytes. No new recognition or accuracy measurement is claimed.
+
+This command never runs a worker, submits BOINC work, replaces curated output,
+publishes search text or changes layout3's retained-source separation. A successful
+receipt proves mechanical preservation, **not scientific or publication
+acceptance**. Fused cross-column tokens require a separately recorded segmented
+recognition pass. Before shipping any ordering change, verify scan-supported
+phrase adjacency and snippet/source attribution on the named originals and
+the broader multi-title German cohort (#926); do not treat agreement with another
+OCR system as human-reference accuracy.
+
 ## Rebuilding the dashboard data-flow observer and catalog
 
 The read-only observer/catalog scripts and their three systemd units are installed

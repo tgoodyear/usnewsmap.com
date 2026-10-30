@@ -1,0 +1,24 @@
+{
+  "method": "reviewed-regions/1",
+  "direction": "ltr",
+  "doc_id": "sn84027101_1910-08-16_ed-1_seq-10",
+  "annotation_basis": "Visual inspection of the retained scan; candidate physical reading regions, not scientific acceptance or an article-order transcription.",
+  "alto_sha256": "ce51b36ef1ac422c020ee1ca055bad3847704549434dfe9b03454a620466425f",
+  "image_sha256": "7a4ca4bcd82786072403e05bc97d714369519e4fc27a48b350f7df127521926c",
+  "page_size": [6031, 7619],
+  "order_checks": [
+    { "name": "first-column-John-Origer", "word_ids": ["string_277", "string_285"] },
+    { "name": "first-column-Hostert-continuation", "word_ids": ["string_288", "string_295"] }
+  ],
+  "regions": [
+    { "name": "masthead", "box": [0, 0, 6031, 340] },
+    { "name": "column-1", "box": [0, 340, 1106, 7619] },
+    { "name": "column-2", "box": [1106, 340, 1868, 7619] },
+    { "name": "column-3", "box": [1868, 340, 2652, 7619] },
+    { "name": "column-4", "box": [2652, 340, 3417, 7619] },
+    { "name": "column-5", "box": [3417, 340, 4200, 7619] },
+    { "name": "spanning-college-advertisements", "box": [4200, 340, 6031, 3750] },
+    { "name": "column-6-below-college-advertisements", "box": [4200, 3750, 4974, 7619] },
+    { "name": "column-7-below-college-advertisements", "box": [4974, 3750, 6031, 7619] }
+  ]
+}

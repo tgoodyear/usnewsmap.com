@@ -1,0 +1,26 @@
+{
+  "method": "reviewed-regions/1",
+  "direction": "ltr",
+  "doc_id": "sn84027101_1910-10-18_ed-1_seq-2",
+  "annotation_basis": "Visual inspection of the retained scan; candidate physical reading regions, not scientific acceptance or an article-order transcription.",
+  "alto_sha256": "9744e9b77b8ba1e9123fc22cda90fdeb485eca4981ad9479aeaf1a3aa473a544",
+  "image_sha256": "1726cede1061eca5d2806ee42db9517ed9fb8ec2e384705ece53fb725723780f",
+  "page_size": [6067, 7635],
+  "order_checks": [
+    { "name": "first-column-quoted-dialogue", "word_ids": ["string_223", "string_236", "string_237", "string_238"] },
+    { "name": "first-column-players-at-table", "word_ids": ["string_283", "string_373", "string_374", "string_375"] }
+  ],
+  "regions": [
+    { "name": "masthead", "box": [0, 0, 6067, 440] },
+    { "name": "spanning-story-headline", "box": [0, 440, 2588, 900] },
+    { "name": "column-1-story", "box": [0, 900, 1037, 7635] },
+    { "name": "column-2-story", "box": [1037, 900, 1810, 7635] },
+    { "name": "column-3-story", "box": [1810, 900, 2588, 7635] },
+    { "name": "column-4-story", "box": [2588, 440, 3361, 7635] },
+    { "name": "column-5-story-and-column-advertisement", "box": [3361, 440, 4130, 7635] },
+    { "name": "spanning-shoe-advertisement", "box": [4130, 440, 6067, 1870] },
+    { "name": "column-6-story", "box": [4130, 1870, 4925, 4550] },
+    { "name": "column-7-story-and-advertisements", "box": [4925, 1870, 6067, 4550] },
+    { "name": "spanning-lower-advertisements", "box": [4130, 4550, 6067, 7635] }
+  ]
+}
