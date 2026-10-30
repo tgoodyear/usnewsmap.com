@@ -51,9 +51,9 @@ class OnpremStep(unittest.TestCase):
         self.assertIn("BRIDGE_STEP=submit", done.stdout)
 
     def test_local_handoff_mount_is_fixed_and_rejects_symlink_source(self):
-        root = Path(self.conf.name)
+        root = Path(self.conf.name).resolve()
         store = root / "store"
-        store.mkdir()
+        store.mkdir(mode=0o700)
         binaries = root / "bin"
         binaries.mkdir()
         for name, body in (("flock", "exit 0"), ("podman", "printf '%s\\n' \"$@\"")):
@@ -67,6 +67,11 @@ class OnpremStep(unittest.TestCase):
         done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn(f"{store}:/handoff-state", done.stdout)
+        store.chmod(0o755)
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("mode 0700", done.stderr)
+        store.chmod(0o700)
         store.rename(root / "real-store")
         store.symlink_to(root / "real-store")
         done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)

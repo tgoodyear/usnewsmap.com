@@ -342,6 +342,17 @@ run+=(${QUEUE_MOUNTS[@]+"${QUEUE_MOUNTS[@]}"})
 HANDOFF_ROOT=${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}
 if [ -d "$HANDOFF_ROOT" ]; then
   [ ! -L "$HANDOFF_ROOT" ] || die "local handoff root must not be a symlink"
+  python3 - "$HANDOFF_ROOT" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+info = root.stat()
+if (not root.is_absolute() or root.resolve() != root or info.st_uid != os.geteuid()
+        or info.st_mode & 0o777 != 0o700):
+    raise SystemExit("local handoff root must be canonical, owned by the runner user and mode 0700")
+PY
   run+=(-v "$HANDOFF_ROOT:/handoff-state")
 fi
 # The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
