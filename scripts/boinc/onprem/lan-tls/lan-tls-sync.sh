@@ -12,7 +12,6 @@
 set -euo pipefail
 VAULT=usnmtlskvprodffapzy SECRET=usnm-prod-boinc-lan-tls HOST=boinc.usnewsmap.com
 DIR=/etc/usnm-boinc/lan-tls GROUP=caddy
-LOCK_FILE=${RUNTIME_DIRECTORY:-/run}/usnm-boinc-lan-tls.lock
 IDENTITY_ENDPOINT=${IDENTITY_ENDPOINT:-http://localhost:40342/metadata/identity/oauth2/token}
 log() { echo "lan-tls-sync: $*" >&2; }
 fail() { log "$*"; exit 1; }
@@ -106,8 +105,10 @@ activate restart
 
 run_locked() {
   umask 077
-  # One run at a time from fetch to activation, so two versions' key and chain never mix.
-  exec 9>"$LOCK_FILE"
+  # Lock the destination, not a caller's runtime directory: every writer of this pair must
+  # serialize, whether launched by systemd or manually.
+  mkdir -p "$DIR"
+  exec 9>"$DIR/.sync.lock"
   flock 9
   sync_certificate
 }

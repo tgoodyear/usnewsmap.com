@@ -93,7 +93,6 @@ class LanTlsSyncTests(unittest.TestCase):
             "SSL_CERT_DIR": str(self.work / "no-system-certificates"),
             "IDENTITY_ENDPOINT": "http://localhost:40342/metadata/identity/oauth2/token",
             "FETCH_LOG": str(self.work / "fetch.log"),
-            "TEST_LOCK": str(self.work / "sync.lock"),
             "START_LOG": str(self.work / "started.log"),
         }
         if locked:
@@ -101,7 +100,7 @@ class LanTlsSyncTests(unittest.TestCase):
                        RELEASE_ACTIVATION=str(self.work / "release"))
         args = [
             "bash", "-c",
-            'source "$SCRIPT"; DIR="$INSTALLED"; LOCK_FILE="$TEST_LOCK"; '
+            'source "$SCRIPT"; DIR="$INSTALLED"; '
             'kv_token() { echo fake-token; }; '
             + ('echo started >> "$START_LOG"; run_locked' if locked else 'sync_certificate'),
         ]
@@ -150,7 +149,7 @@ class LanTlsSyncTests(unittest.TestCase):
             first = self.run_sync("current", locked=True)
             processes.append(first)
             wait_for(lambda: (self.work / "activating").exists())
-            self.assertEqual((self.work / "sync.lock").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((self.installed / ".sync.lock").stat().st_mode & 0o777, 0o600)
             second = self.run_sync("current", locked=True)
             processes.append(second)
             wait_for(lambda: len((self.work / "started.log").read_text().splitlines()) == 2)
@@ -175,7 +174,7 @@ class LanTlsSyncTests(unittest.TestCase):
         marker = self.work / "identity-request"
         curl = self.bin / "curl"
         curl.write_text('#!/bin/sh\ntouch "$IDENTITY_REQUEST"\n')
-        lock_path = self.work / "usnm-boinc-lan-tls.lock"
+        lock_path = self.installed / ".sync.lock"
         with lock_path.open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             process = subprocess.Popen(
@@ -183,7 +182,7 @@ class LanTlsSyncTests(unittest.TestCase):
                 env={
                     **os.environ,
                     "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
-                    "RUNTIME_DIRECTORY": str(self.work),
+                    "RUNTIME_DIRECTORY": str(self.work / "unrelated-runtime"),
                     "IDENTITY_ENDPOINT": "http://localhost:40342/metadata/identity/oauth2/token",
                     "IDENTITY_REQUEST": str(marker),
                 },
@@ -199,7 +198,8 @@ class LanTlsSyncTests(unittest.TestCase):
                 self.assertNotEqual(process.returncode, 0)
                 self.assertIn("no Key Vault token", stderr)
                 self.assertEqual(
-                    {p.name: p.read_bytes() for p in self.installed.iterdir()}, self.before)
+                    {name: (self.installed / name).read_bytes() for name in self.before},
+                    self.before)
             finally:
                 if process.poll() is None:
                     process.terminate()
