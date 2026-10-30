@@ -1517,6 +1517,46 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(report["verified_better_published_searchable"], 0)
         self.assertEqual(report["pages"][0]["search_verified_at"], "2026-10-18T03:00:00.000000000Z")
         self.assertEqual(before_report, self.db.read_bytes())
+        originals = {(item["source"], item["event_id"]): item
+                     for path in self.work.glob("*.jsonl")
+                     for line in path.read_text().splitlines()
+                     if (item := json.loads(line)).get("schema_version") == 1}
+        proof_items = [
+            next(item for item in complete["artifact"]["items"]
+                 if item["data"]["sha256"] == worker_sha),
+            complete["execution"]["executions"][0],
+            complete["execution"]["runs"][0],
+            complete["imported"]["items"][-1],
+            complete["release_decision"]["items"][-1],
+            complete["search_provenance"]["items"][-1],
+        ]
+        domain_paths = [
+            ("fetched_at",), ("worker_metadata", "finished_at"),
+            ("run_record", "node_finished_at"), ("committed_at",),
+            ("decided_at",), ("published_at",),
+        ]
+        for item, domain_path in zip(proof_items, domain_paths):
+            for change in ("observed_at", "domain_timestamp"):
+                with self.subTest(kind=item["kind"], stage=item["data"].get("stage"), change=change):
+                    copied_db = self.work / "cutoff.sqlite"
+                    copied_db.write_bytes(before_report)
+                    updated = copy.deepcopy(originals[(item["source"], item["event_id"])])
+                    updated["event_id"] = "zz-cutoff-" + item["event_id"]
+                    future_time = "2026-10-18T03:01:00.000000001Z"
+                    if change == "observed_at":
+                        updated["observed_at"] = future_time
+                    else:
+                        target = updated["payload"]
+                        for key in domain_path[:-1]:
+                            target = target[key]
+                        target[domain_path[-1]] = future_time
+                    c.ingest(copied_db, self.batch([updated]))
+                    self.assertTrue(c.trace(copied_db, page_id, run_a)["publication_proof_complete"])
+                    bounded = c.acceptance_report(copied_db, cohort, "pages-v20261018-1",
+                                                  "2026-10-18T03:01:00Z", 60)
+                    self.assertEqual(bounded["delivery_verified"], 0)
+                    self.assertFalse(bounded["pages"][0]["publication_proof_complete"])
+                    self.assertIn("evidence_after_cutoff", bounded["pages"][0]["delivery_blockers"])
         wrong_index = c.acceptance_report(self.db, cohort, "pages-new",
                                           "2026-10-18T03:01:00Z", 60)
         self.assertEqual(wrong_index["delivery_verified"], 0)
@@ -1526,7 +1566,7 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("stale_search_verification", stale["pages"][0]["delivery_blockers"])
         future = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
                                     "2026-10-18T02:59:59Z", 60)
-        self.assertIn("future_search_verification", future["pages"][0]["delivery_blockers"])
+        self.assertIn("evidence_after_cutoff", future["pages"][0]["delivery_blockers"])
 
         # Mismatch 1: search receipt from a different index/release leaves accepted=true & published=true,
         # but publication_proof_complete=false.

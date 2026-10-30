@@ -389,6 +389,11 @@ The command neither fetches live data nor establishes that the operator-supplied
 index is still current, and its individual page traces are not a transactional
 cross-page snapshot. Retain the cohort, catalog evidence and dated metadata
 response together; rerun after importing new search receipts or a version change.
+The cutoff applies to observation and source timestamps across artifacts,
+execution, runs, imports, release decisions and search proof, including nested
+engine observations. Post-cutoff evidence is excluded and reported as a blocker.
+This filters the current catalog; it does not reconstruct superseded historical
+states that are no longer in its latest-observation table.
 
 **Verified delivery is not independently verified better transcription.**
 `quality` remains `unknown` and `verified_better_published_searchable` remains

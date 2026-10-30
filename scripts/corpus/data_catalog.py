@@ -1124,13 +1124,26 @@ def page(db, page_id, limit=50, after=""):
     return bounded_query(db, read)
 
 
-def trace(db, page_id, run_id=None):
+def trace(db, page_id, run_id=None, *, as_of=None):
     """Reconcile one page across artifact, execution, import, release decision and search provenance."""
     token(page_id)
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:.+", page_id) is not None,
             "page_id must be source-qualified, e.g. loc:sn..._seq-1")
     if run_id is not None:
         token(run_id)
+    cutoff = timestamp(as_of) if as_of is not None else None
+
+    def within_cutoff(value):
+        if isinstance(value, dict):
+            return all(
+                (timestamp(item) <= cutoff if key in (
+                    "observed_at", "fetched_at", "started_at", "finished_at", "node_finished_at",
+                    "engine_started_at", "engine_finished_at", "committed_at", "decided_at",
+                    "published_at", "verified_at") and item is not None else within_cutoff(item))
+                for key, item in value.items())
+        if isinstance(value, list):
+            return all(within_cutoff(item) for item in value)
+        return True
 
     def read(conn):
         found = conn.execute("""SELECT latest.*,events.batch_id,events.line_number,
@@ -1142,6 +1155,11 @@ def trace(db, page_id, run_id=None):
         items = [{k: row[k] for k in ("key", "kind", "source", "page_id", "event_id", "observed_at",
                                       "batch_id", "line_number", "event_sha256")}
                  | {"data": load_json(row["data"])} for row in found]
+        excluded = 0
+        if cutoff is not None:
+            eligible = [item for item in items if within_cutoff(item)]
+            excluded = len(items) - len(eligible)
+            items = eligible
         artifacts = [i for i in items if i["kind"] == "artifact"]
         artifact_states = {i["data"]["state"] for i in artifacts}
         artifact_state = ("verified" if "verified" in artifact_states else
@@ -1401,6 +1419,7 @@ def trace(db, page_id, run_id=None):
             "accepted": release_decision["accepted"],
             "published": search_provenance["published"],
             "publication_proof_complete": publication_proof_complete,
+            "evidence_after_cutoff": excluded,
             "artifact": {"state": artifact_state, "items": artifacts},
             "execution": {"state": "observed" if (executions or runs) else "unknown",
                           "executions": executions, "runs": runs},
@@ -1430,10 +1449,12 @@ def acceptance_report(db, cohort, index_version, as_of, max_age_seconds):
     now = dt.datetime.fromisoformat(as_of.replace("Z", "+00:00"))
     pages = []
     for member in cohort:
-        result = trace(db, member["page_id"], member["run_id"])
+        result = trace(db, member["page_id"], member["run_id"], as_of=as_of)
         search = result["search_provenance"]
         receipt = search["search_receipt"]
         blockers = []
+        if result["evidence_after_cutoff"]:
+            blockers.append("evidence_after_cutoff")
         if not result["publication_proof_complete"]:
             blockers.append("incomplete_publication_chain")
         if search["index_id"] != index_version:
