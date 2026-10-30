@@ -833,6 +833,21 @@ async fn one_run_at_a_time() {
     );
 }
 
+#[test]
+fn dropping_owner_unlocks_even_with_an_inherited_descriptor() {
+    let dest = tempfile::tempdir().unwrap();
+    let o = options(dest.path(), "2026-10-21T06:00:00Z");
+    let owner = prepare(&o).unwrap();
+    let inherited = owner.dir.try_clone().unwrap();
+    assert!(prepare(&o).is_err());
+    drop(owner);
+    let next = prepare(&o).unwrap();
+    drop(inherited);
+    assert!(prepare(&o).is_err());
+    drop(next);
+    assert!(prepare(&o).is_ok());
+}
+
 #[tokio::test]
 async fn a_lake_that_will_not_list_fails_the_run() {
     #[derive(Debug)]

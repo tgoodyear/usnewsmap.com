@@ -327,6 +327,16 @@ struct DaysDir {
     path: PathBuf,
 }
 
+impl Drop for DaysDir {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open file description until exec.
+        // Closing only our descriptor would leave its lock held in that child.
+        if let Err(error) = rustix::fs::flock(&self.dir, FlockOperation::Unlock) {
+            tracing::warn!(%error, "releasing the search log copy lock failed");
+        }
+    }
+}
+
 impl DaysDir {
     /// Make `{dest}/days` if the destination has none, and open it. A `days` that is a symbolic
     /// link is refused: the service's state directory is writable, so a link to it would take
