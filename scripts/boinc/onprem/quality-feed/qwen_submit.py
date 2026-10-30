@@ -16,8 +16,6 @@ import subprocess
 import sys
 import time
 
-from qwen_provenance import recovered_binding
-
 
 def jobs(root):
     for path in sorted(root.glob("**/qwen.json")):
@@ -130,8 +128,9 @@ def source_status(share, project, sample):
                 states[doc]["workunit_ids"].append(row["workunit_id"])
                 binding = row.get("source_bindings", {}).get(doc)
                 member = next(p for p in job.get("pages") or [job] if p["doc_id"] == doc)
-                if doc not in row.get("source_bindings", {}):
-                    binding = recovered_binding(campaign, job, row, member)
+                if doc not in row.get("source_bindings", {}) and (campaign / "recovered-provenance").is_dir():
+                    from qwen_provenance import recovered_binding
+                    binding = recovered_binding(campaign, job, row, member, path.parent / "submitted")
                 if binding is None:
                     states[doc]["status"] = "source_provenance_unavailable"
                 elif (not isinstance(binding, dict) or binding.get("schema") != 1
@@ -175,7 +174,8 @@ echo json_encode($rows);
         missing = set(ids) - observed
         totals["history_unavailable_workunits"] = len(missing)
         for state in states.values():
-            if missing.intersection(state["workunit_ids"]):
+            if (missing.intersection(state["workunit_ids"])
+                    and state["status"] not in ("source_conflict", "source_provenance_unavailable")):
                 state["status"] = "native_history_unavailable"
         for row in rows:
             totals["agreed_workunits"] += int(row["canonical_resultid"]) > 0

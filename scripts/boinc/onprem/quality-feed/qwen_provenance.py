@@ -73,10 +73,16 @@ def decoder_info():
 
 
 
-def recovered_binding(campaign, job, audit, member):
+def check_submitted(path, job_id):
+    if not path.is_file() or path.read_bytes() != ("usnm_qwen_" + job_id).encode():
+        raise ValueError("submitted marker does not bind to native job")
+
+
+def recovered_binding(campaign, job, audit, member, submitted):
     path = campaign / "recovered-provenance" / job["id"] / (member["doc_id"] + ".json")
     if not path.exists():
         return None
+    check_submitted(submitted, job["id"])
     proof = json.loads(path.read_bytes())
     target = proof["target"]
     validate_target(target)
@@ -97,17 +103,25 @@ def install(share, proofs):
 
     pending = []
     seen = set()
+    campaigns = {}
     for proof in proofs:
         target = proof["target"]
         validate_target(target)
         campaign = share / "qwen" / target["campaign"]
-        matches = [(p, job) for p, job in jobs(campaign) if job["id"] == target["job_id"]]
+        if campaign not in campaigns:
+            indexed = {}
+            for path, job in jobs(campaign):
+                indexed.setdefault(job["id"], []).append((path, job))
+            campaigns[campaign] = (indexed, json.loads((campaign / "audit.json").read_bytes()))
+        indexed, audits = campaigns[campaign]
+        matches = indexed.get(target["job_id"], [])
         if len(matches) != 1:
             raise ValueError("recovery needs exactly one retained native job")
         path, job = matches[0]
         if job.get("pages"):
             raise ValueError("recovery currently supports only single-page native jobs")
-        audit = json.loads((campaign / "audit.json").read_bytes())[job["id"]]
+        audit = audits[job["id"]]
+        check_submitted(path.parent / "submitted", job["id"])
         member = next(p for p in job.get("pages") or [job] if p["doc_id"] == target["source"]["doc_id"])
         image = path.parent / "page.jpg"
         raw = image.read_bytes()

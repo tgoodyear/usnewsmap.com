@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 
@@ -31,7 +32,7 @@ class ProvenanceRecoveryTest(unittest.TestCase):
         self.job_raw = json.dumps(self.job).encode()
         (self.unit / "qwen.json").write_bytes(self.job_raw)
         (self.unit / "page.jpg").write_bytes(self.jpeg)
-        (self.unit / "submitted").touch()
+        (self.unit / "submitted").write_text("usnm_qwen_" + self.job["id"])
         self.audit = {"workunit_id": 42, "job_sha256": hashlib.sha256(self.job_raw).hexdigest(),
                       "batch": 8, "min_quorum": 2, "target_nresults": 2}
         self.audit_raw = json.dumps({self.job["id"]: self.audit}).encode()
@@ -46,7 +47,8 @@ class ProvenanceRecoveryTest(unittest.TestCase):
             return recovery.verify(self.target, self.original)
 
     def test_exact_reconstruction_resolves_only_provenance_and_preserves_audits_and_quorum(self):
-        self.assertIsNone(recovery.recovered_binding(self.campaign, self.job, self.audit, self.job))
+        self.assertIsNone(recovery.recovered_binding(
+            self.campaign, self.job, self.audit, self.job, self.unit / "submitted"))
         proof = self.proof()
         recovery.install(self.share, [proof])
         recovery.install(self.share, [proof])
@@ -100,15 +102,17 @@ class ProvenanceRecoveryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overwrite"):
             recovery.install(self.share, [wrong])
         with self.assertRaisesRegex(ValueError, "bind to native audit"):
-            recovery.recovered_binding(self.campaign, self.job, {**self.audit, "workunit_id": 43}, self.job)
+            recovery.recovered_binding(self.campaign, self.job, {**self.audit, "workunit_id": 43},
+                                       self.job, self.unit / "submitted")
 
     def test_batch_is_validated_before_publication_and_duplicate_targets_are_rejected(self):
         proof = self.proof()
         wrong = copy.deepcopy(proof)
         wrong["target"]["workunit_id"] = 43
         for batch in ([proof, wrong], [proof, proof]):
-            with self.assertRaises(ValueError):
+            with mock.patch.object(submit, "jobs", wraps=submit.jobs) as scan, self.assertRaises(ValueError):
                 recovery.install(self.share, batch)
+            self.assertEqual(scan.call_count, 1)
             self.assertFalse((self.campaign / "recovered-provenance").exists())
 
     def test_recovered_evidence_cannot_override_a_conflicting_original_binding(self):
@@ -132,6 +136,55 @@ class ProvenanceRecoveryTest(unittest.TestCase):
         self.assertEqual(status["pages"][self.doc]["status"], "source_provenance_unavailable")
         self.assertNotIn("provenance", status["pages"][self.doc])
         self.assertEqual(status["published_workunits"], 0)
+
+    def test_empty_or_mismatched_submission_marker_blocks_install_and_receipt_use(self):
+        proof = self.proof()
+        marker = self.unit / "submitted"
+        for value in ("", "usnm_qwen_" + "b" * 64):
+            marker.write_text(value)
+            with self.assertRaisesRegex(ValueError, "submitted marker"):
+                recovery.install(self.share, [proof])
+        marker.write_text("usnm_qwen_" + self.job["id"])
+        recovery.install(self.share, [proof])
+        marker.write_text("")
+        with self.assertRaisesRegex(ValueError, "submitted marker"):
+            submit.source_status(self.share, self.share, json.dumps(self.fingerprint))
+
+    def test_conflicting_other_binding_keeps_precedence_when_recovered_job_history_is_missing(self):
+        recovery.install(self.share, [self.proof()])
+        other = self.unit.parent / "second-job"
+        other.mkdir()
+        job = {**self.job, "id": "b" * 64}
+        raw = json.dumps(job).encode()
+        (other / "qwen.json").write_bytes(raw)
+        (other / "submitted").write_text("usnm_qwen_" + job["id"])
+        audit = {**self.audit, "workunit_id": 43, "job_sha256": hashlib.sha256(raw).hexdigest(),
+                 "source_bindings": {self.doc: {
+                     "schema": 1, "source": {**self.fingerprint, "batch_version": 2}, "jpeg": self.input}}}
+        (self.campaign / "audit.json").write_text(json.dumps({self.job["id"]: self.audit, job["id"]: audit}))
+        with mock.patch.object(submit.subprocess, "check_output", return_value="[]"):
+            status = submit.source_status(self.share, self.share, json.dumps(self.fingerprint))
+        self.assertEqual(status["pages"][self.doc]["status"], "source_conflict")
+        self.assertEqual(status["source_conflict_pages"], 1)
+        self.assertEqual(status["history_unavailable_workunits"], 1)
+
+    def test_standalone_existing_inventory_deployment_does_not_require_recovery_module(self):
+        isolated = self.share / "isolated"
+        isolated.mkdir()
+        (isolated / "qwen_submit.py").write_bytes(Path(submit.__file__).read_bytes())
+        program = (
+            "import json,sys; from pathlib import Path; from types import SimpleNamespace; "
+            "from unittest.mock import patch; sys.path.insert(0,sys.argv[1]); import qwen_submit as q; "
+            "root=Path(sys.argv[1]); "
+            "counts=patch.object(q.subprocess,'check_output',return_value='{}'); "
+            "disk=patch.object(q.shutil,'disk_usage',return_value=SimpleNamespace(free=100)); "
+            "counts.start(); disk.start(); print(json.dumps(q.inventory(root,root))); "
+            "assert 'qwen_provenance' not in sys.modules"
+        )
+        result = subprocess.run([sys.executable, "-B", "-c", program, str(isolated)],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"documents": [], "free_bytes": 100})
 
 
 if __name__ == "__main__":

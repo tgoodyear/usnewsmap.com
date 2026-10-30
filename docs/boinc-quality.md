@@ -733,7 +733,7 @@ Install `qwen_feed.py`, `quality-ship.sh` and `quality_receive.py` into a Qwen-o
 `/opt/usnm-quality-feed/qwen-throughput/` directory, leaving other campaigns'
 installed shared helpers unchanged. Install the updated `quality_feed.py` and `ocr_manifest.py` in
 the preparation CT's `/opt/usnm-quality-feed/`. Install `archive_alto.py` on the archive
-host at `/opt/usnm-quality-feed/`, and `qwen_submit.py` inside the server container at
+host at `/opt/usnm-quality-feed/`, and both `qwen_submit.py` and `qwen_provenance.py` inside the server container at
 `/project/ops/qwen-feed/`. The existing pinned preparation venv suffices; no new
 packages or LoC clients are needed. Both SSH destinations must have verified host keys
 and the existing host trust, never `StrictHostKeyChecking=no`.
