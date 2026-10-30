@@ -25,3 +25,20 @@ Acceptance requires actual claim, export, submission, returned-result collection
 process restart and duplicate-free replay, plus successful off-host backup and
 isolated restore. Keep Azure Key Vault and managed-identity credential access.
 Do not delete cloud state or alter production web routing as part of this change.
+
+## Local lake mounts
+
+The on-prem handoff runner accepts `CURATED_URL=/lake-state/curated`,
+`REFERENCE_URL=/lake-state/reference`, and `OUT_URL=/lake-state/ocr-out`.
+Each uses an existing child directory of `/srv/usnm-boinc/lake-state`, or the
+host-owned `USNM_BOINC_LAKE_ROOT` override. The root must be canonical, owned by
+the runner user and mode `0700`. Symlinked or absent stores fail before Podman
+starts. Caller-selected container paths are refused; HTTPS stores retain their
+existing behavior. Each configured local store is mounted read-write at its
+fixed path.
+
+This only exposes staged files; it does not switch settings or establish
+authority. Reconcile existing on-prem content using source checksums and retained
+transfer receipts before downloading missing or changed objects. Qualify atomic
+writes and crash durability on the actual backing filesystem, and preserve
+single-writer coordination during the final delta.

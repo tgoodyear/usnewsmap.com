@@ -222,6 +222,39 @@ while IFS= read -r line || [ -n "$line" ]; do
     [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
   fi
 done < "$SETTINGS"
+LAKE_MOUNTS=()
+if [ "$TARGET" = handoff ]; then
+  for line in "${LINES[@]}"; do
+    case $line in
+      CURATED_URL=*) store=curated ;;
+      REFERENCE_URL=*) store=reference ;;
+      OUT_URL=*) store=ocr-out ;;
+      *) continue ;;
+    esac
+    location=${line#*=}
+    case $location in
+      https://*) continue ;;
+      "/lake-state/$store") ;;
+      *) die "local $store must use /lake-state/$store" ;;
+    esac
+    root=${USNM_BOINC_LAKE_ROOT:-/srv/usnm-boinc/lake-state}
+    python3 - "$root" "$store" <<'PY' || die "invalid local lake store"
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+store = root / sys.argv[2]
+info = root.stat()
+if (not root.is_absolute() or root.resolve() != root or info.st_uid != os.geteuid()
+        or info.st_mode & 0o777 != 0o700):
+    raise SystemExit("local lake root must be canonical, owned by the runner user and mode 0700")
+if not store.is_dir() or store.resolve() != store:
+    raise SystemExit("local lake store must be an existing directory without symlinks")
+PY
+    LAKE_MOUNTS+=(-v "$root/$store:/lake-state/$store")
+  done
+fi
 QUEUE_MOUNTS=()
 if [ "$TARGET" = handoff ] && [[ $QUEUE_LOCATION == postgres://* || $QUEUE_LOCATION == postgresql://* ]]; then
   # Certificate paths in the URL are container paths, never caller-selected host mounts.
@@ -323,6 +356,7 @@ run=(podman run --rm --name "$name" --network host
   --log-driver journald --log-opt tag=usnm-boinc-step --env-file "$envfile"
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
 run+=(${QUEUE_MOUNTS[@]+"${QUEUE_MOUNTS[@]}"})
+run+=(${LAKE_MOUNTS[@]+"${LAKE_MOUNTS[@]}"})
 # The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
 [ "$TARGET" = handoff ] || run+=(--add-host usnm-boinc-mysql:127.0.0.1
   -v /srv/usnm-boinc/project:/project
