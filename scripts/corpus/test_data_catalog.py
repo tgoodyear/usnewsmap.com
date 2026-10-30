@@ -1517,6 +1517,17 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(report["verified_better_published_searchable"], 0)
         self.assertEqual(report["pages"][0]["search_verified_at"], "2026-10-18T03:00:00.000000000Z")
         self.assertEqual(before_report, self.db.read_bytes())
+        for cutoff, fresh in [
+            ("2026-10-18T03:00:59.999999999Z", True),
+            ("2026-10-18T03:01:00.000000000Z", True),
+            ("2026-10-18T03:01:00.000000001Z", False),
+            ("2026-10-18T04:01:00.000000001+01:00", False),
+        ]:
+            with self.subTest(freshness_cutoff=cutoff):
+                boundary = c.acceptance_report(self.db, cohort, "pages-v20261018-1", cutoff, 60)
+                self.assertEqual(boundary["delivery_verified"], int(fresh))
+                self.assertEqual("stale_search_verification" in
+                                 boundary["pages"][0]["delivery_blockers"], not fresh)
         originals = {(item["source"], item["event_id"]): item
                      for path in self.work.glob("*.jsonl")
                      for line in path.read_text().splitlines()

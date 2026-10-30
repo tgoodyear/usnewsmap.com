@@ -124,6 +124,14 @@ def timestamp(value):
         raise CatalogError("invalid timestamp") from exc
 
 
+def timestamp_ns(value):
+    normalized = timestamp(value)
+    parsed = dt.datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    elapsed = parsed - dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    return ((elapsed.days * 86400 + elapsed.seconds) * 1_000_000_000 +
+            elapsed.microseconds * 1000 + int(normalized[-4:-1]))
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -1446,7 +1454,7 @@ def acceptance_report(db, cohort, index_version, as_of, max_age_seconds):
         token(member["run_id"])
         require(member["page_id"] not in seen, "acceptance cohort contains duplicate pages")
         seen.add(member["page_id"])
-    now = dt.datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    cutoff_ns = timestamp_ns(as_of)
     pages = []
     for member in cohort:
         result = trace(db, member["page_id"], member["run_id"], as_of=as_of)
@@ -1463,12 +1471,10 @@ def acceptance_report(db, cohort, index_version, as_of, max_age_seconds):
         if verified_at is None:
             blockers.append("missing_search_verification")
         else:
-            timestamp(verified_at)
-            verified = dt.datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
-            age = (now - verified).total_seconds()
-            if age < 0:
+            age_ns = cutoff_ns - timestamp_ns(verified_at)
+            if age_ns < 0:
                 blockers.append("future_search_verification")
-            elif age > max_age_seconds:
+            elif age_ns > max_age_seconds * 1_000_000_000:
                 blockers.append("stale_search_verification")
         pages.append({
             **member,
