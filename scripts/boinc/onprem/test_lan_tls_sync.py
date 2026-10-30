@@ -93,6 +93,7 @@ class LanTlsSyncTests(unittest.TestCase):
             "SSL_CERT_DIR": str(self.work / "no-system-certificates"),
             "IDENTITY_ENDPOINT": "http://localhost:40342/metadata/identity/oauth2/token",
             "FETCH_LOG": str(self.work / "fetch.log"),
+            "TEST_LOCK": str(self.work / "sync.lock"),
             "START_LOG": str(self.work / "started.log"),
         }
         if locked:
@@ -100,7 +101,7 @@ class LanTlsSyncTests(unittest.TestCase):
                        RELEASE_ACTIVATION=str(self.work / "release"))
         args = [
             "bash", "-c",
-            'source "$SCRIPT"; DIR="$INSTALLED"; '
+            'source "$SCRIPT"; DIR="$INSTALLED"; LOCK_FILE="$TEST_LOCK"; '
             'kv_token() { echo fake-token; }; '
             + ('echo started >> "$START_LOG"; run_locked' if locked else 'sync_certificate'),
         ]
@@ -149,7 +150,7 @@ class LanTlsSyncTests(unittest.TestCase):
             first = self.run_sync("current", locked=True)
             processes.append(first)
             wait_for(lambda: (self.work / "activating").exists())
-            self.assertEqual((self.installed / ".sync.lock").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((self.work / "sync.lock").stat().st_mode & 0o777, 0o600)
             second = self.run_sync("current", locked=True)
             processes.append(second)
             wait_for(lambda: len((self.work / "started.log").read_text().splitlines()) == 2)
@@ -168,14 +169,15 @@ class LanTlsSyncTests(unittest.TestCase):
                     process.terminate()
                 process.communicate(timeout=10)
 
+    @unittest.skipUnless(os.geteuid() == 0, "the fixed service lock requires root; CI runs this with sudo")
     def test_service_executable_waits_for_lock_before_requesting_identity(self):
         import fcntl
 
         marker = self.work / "identity-request"
         curl = self.bin / "curl"
         curl.write_text('#!/bin/sh\ntouch "$IDENTITY_REQUEST"\n')
-        lock_path = self.installed / ".sync.lock"
-        with lock_path.open("w") as lock:
+        lock_path = Path("/run/usnm-boinc-lan-tls.lock")
+        with os.fdopen(os.open(lock_path, os.O_CREAT | os.O_WRONLY, 0o600), "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             process = subprocess.Popen(
                 ["bash", str(SCRIPT.resolve()), "--dir", str(self.installed)],
