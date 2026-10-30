@@ -78,8 +78,11 @@ For each retained **single-page** native job, assemble a recovery target with:
 `campaign`, `job_id`, `job_sha256`, `workunit_id`, the exact frozen `source`
 fingerprint (`doc_id`, `batch`, `batch_version`, `bytes`, `sha256`), original
 `scan` path, audited `jpeg` bytes/SHA256, and `transform`. Supported explicit
-transforms are `reduced-gray`, `full-gray` and `full-rgb`; all encode JPEG at
-quality 75. Reduced grayscale uses the existing JPEG2000 half-resolution rule.
+transforms are `reduced-gray`, `full-gray` and `full-rgb`, which encode JPEG at
+quality 75, plus `passthrough` for unchanged grayscale JPEGs within the feeder's
+20 MB / 40 megapixel limits. Reduced grayscale uses the existing JPEG2000
+half-resolution rule. Both retained `keep/` and `buffer/` scan paths are accepted
+only when their full path matches the frozen source identity.
 These are reproducible representations, not an assertion of which software
 invocation originally made the image.
 

@@ -1,6 +1,8 @@
 """Reconstructed provenance never substitutes identity assertions for byte verification."""
 import copy
 import hashlib
+import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -74,10 +76,67 @@ class ProvenanceRecoveryTest(unittest.TestCase):
 
     def test_invalid_frozen_identity_path_or_transform_is_rejected(self):
         for change in ({"scan": "../../etc/passwd"}, {"scan": "keep/xx_other/sn1/1900-01-02/1/3.jp2"},
+                       {"scan": "buffer/xx_test/sn1/1900-01-02/1/../3.jp2"},
+                       {"scan": "buffer/xx_other/sn1/1900-01-02/1/3.jp2"},
                        {"campaign": "../other"}, {"transform": "guess"},
                        {"source": {**self.fingerprint, "batch_version": 0}}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 recovery.validate_target({**self.target, **change})
+
+    def test_retained_buffer_scan_can_be_verified_without_relaxing_source_identity(self):
+        self.target["scan"] = self.target["scan"].replace("keep/", "buffer/", 1)
+        self.assertEqual(self.proof()["target"]["scan"], self.target["scan"])
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow required for real-image verification")
+    def test_real_jpeg2000_transforms_preserve_full_geometry_or_reduce_only_above_threshold(self):
+        from PIL import Image
+
+        for width in (4000, 4100):
+            image = Image.frombytes("RGB", (width, 12),
+                                    bytes((i * 37) % 256 for i in range(width * 12 * 3)))
+            encoded = io.BytesIO()
+            image.save(encoded, "JPEG2000")
+            raw = encoded.getvalue()
+            for transform in ("reduced-gray", "full-gray", "full-rgb"):
+                with self.subTest(width=width, transform=transform):
+                    with Image.open(io.BytesIO(raw)) as original:
+                        if transform == "reduced-gray" and width > 4000:
+                            original.reduce = 1
+                        expected = io.BytesIO()
+                        original.convert("RGB" if transform == "full-rgb" else "L").save(
+                            expected, "JPEG", quality=75)
+                    target = {**self.target, "transform": transform,
+                              "source": {**self.fingerprint, "bytes": len(raw),
+                                         "sha256": hashlib.sha256(raw).hexdigest()},
+                              "jpeg": {"bytes": len(expected.getvalue()),
+                                       "sha256": hashlib.sha256(expected.getvalue()).hexdigest()}}
+                    self.assertEqual(recovery.verify(target, raw)["target"], target)
+                    with Image.open(io.BytesIO(recovery.derive_jpeg(raw, transform))) as result:
+                        reduced = transform == "reduced-gray" and width > 4000
+                        self.assertEqual(result.size, (width // 2, 6) if reduced else (width, 12))
+                        self.assertEqual(result.mode, "RGB" if transform == "full-rgb" else "L")
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow required for real-image verification")
+    def test_passthrough_verifies_unchanged_gray_jpeg_but_rejects_color_and_non_jpeg(self):
+        from PIL import Image
+
+        for mode, fmt in (("L", "JPEG"), ("RGB", "JPEG"), ("L", "JPEG2000")):
+            encoded = io.BytesIO()
+            Image.new(mode, (64, 48)).save(encoded, fmt, quality=91)
+            raw = encoded.getvalue()
+            target = {**self.target, "transform": "passthrough",
+                      "source": {**self.fingerprint, "bytes": len(raw),
+                                 "sha256": hashlib.sha256(raw).hexdigest()},
+                      "jpeg": {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}}
+            with self.subTest(mode=mode, fmt=fmt):
+                if mode == "L" and fmt == "JPEG":
+                    self.assertEqual(recovery.verify(target, raw)["target"], target)
+                    self.assertEqual(recovery.derive_jpeg(raw, "passthrough"), raw)
+                    with self.assertRaisesRegex(ValueError, "reproduced JPEG"):
+                        recovery.verify({**target, "jpeg": self.input}, raw)
+                else:
+                    with self.assertRaisesRegex(ValueError, "bounded grayscale JPEG"):
+                        recovery.verify(target, raw)
 
     def test_changed_native_image_audit_or_submitted_identity_cannot_be_installed(self):
         proof = self.proof()

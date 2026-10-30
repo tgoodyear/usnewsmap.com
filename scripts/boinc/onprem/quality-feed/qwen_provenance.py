@@ -12,7 +12,7 @@ import tempfile
 import urllib.request
 
 
-TRANSFORMS = ("reduced-gray", "full-gray", "full-rgb")
+TRANSFORMS = ("reduced-gray", "full-gray", "full-rgb", "passthrough")
 MAX_SCAN = 32 * 1024**2
 
 
@@ -23,12 +23,14 @@ def validate_target(target):
     if source != target["source"]:
         raise ValueError("recovery requires an exact source fingerprint")
     title, date, edition, sequence = source["doc_id"].split("_")
-    prefix = f"keep/{source['batch']}/{title}/{date}/{edition[3:]}/{sequence[4:]}"
+    suffix = f"{source['batch']}/{title}/{date}/{edition[3:]}/{sequence[4:]}"
+    scans = {f"{storage}/{suffix}.{extension}"
+             for storage in ("keep", "buffer") for extension in ("jp2", "jpg")}
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", target["campaign"])
             or any(not re.fullmatch(r"[a-f0-9]{64}", target[key])
                    for key in ("job_id", "job_sha256"))
             or type(target["workunit_id"]) is not int or target["workunit_id"] < 1
-            or target["scan"] not in (prefix + ".jp2", prefix + ".jpg")
+            or target["scan"] not in scans
             or target["transform"] not in TRANSFORMS
             or type(target["jpeg"]["bytes"]) is not int or target["jpeg"]["bytes"] < 1
             or not re.fullmatch(r"[a-f0-9]{64}", target["jpeg"]["sha256"])):
@@ -41,6 +43,11 @@ def derive_jpeg(raw, transform):
     with Image.open(io.BytesIO(raw)) as image:
         if image.width * image.height > 100_000_000:
             raise ValueError("recovery image exceeds 100 megapixels")
+        if transform == "passthrough":
+            if (image.format != "JPEG" or image.mode != "L"
+                    or len(raw) > 20_000_000 or image.width * image.height > 40_000_000):
+                raise ValueError("passthrough requires a bounded grayscale JPEG")
+            return raw
         if transform == "reduced-gray" and image.format == "JPEG2000" and max(image.size) > 4000:
             image.reduce = 1
         with image.convert("RGB" if transform == "full-rgb" else "L") as converted:
