@@ -22,6 +22,8 @@ enum Commands {
     HostTrust(host_trust::cli::HostTrustCommands),
     /// Export selected cached pages and reserve their native requested-work ledger entries.
     Export(job::ExportArgs),
+    /// Prepare exactly one fresh attempt of a reviewed, permanently failed single-page job.
+    Retry(job::RetryArgs),
     /// BOINC as a consumer of the OCR work queues (#296).
     #[command(subcommand)]
     Claim(claim::cli::ClaimCommands),
@@ -84,12 +86,16 @@ fn log_to_stderr() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let command = Cli::parse().command;
-    if matches!(command, Commands::Export(_) | Commands::Claim(_)) {
+    if matches!(
+        command,
+        Commands::Export(_) | Commands::Retry(_) | Commands::Claim(_)
+    ) {
         log_to_stderr();
     }
-    match command {
+    let result = match command {
         Commands::HostTrust(command) => host_trust::cli::run(command).await,
         Commands::Export(args) => job::export(args).await,
+        Commands::Retry(args) => job::retry(args).await,
         Commands::Claim(command) => claim::cli::run(command).await,
         Commands::Work(args) => job::work(args).await,
         Commands::PrepareDownload(args) => job::prepare_download(args),
@@ -108,7 +114,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Ndlocr(command) => ndlocr::cli::run(command).await,
         Commands::Handoff(command) => handoff::cli::run(command).await,
         Commands::Status(args) => job::status(args),
+    };
+    if let Err(error) = &result {
+        if error.downcast_ref::<qwen::retain::CaptureError>().is_some() {
+            eprintln!("{error:#}");
+            std::process::exit(3);
+        }
     }
+    result
 }
 
 #[cfg(test)]

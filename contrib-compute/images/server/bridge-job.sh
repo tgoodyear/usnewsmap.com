@@ -612,6 +612,14 @@ else
 fi
 render_config
 umask 0002
+submit_ocr_job() {
+  local native_args=()
+  if [ -n "${COSMOS_ENDPOINT:-}${CURATED_URL:-}" ]; then
+    [ -n "${COSMOS_ENDPOINT:-}" ] && [ -n "${CURATED_URL:-}" ] || fail "retry native stores require COSMOS_ENDPOINT and CURATED_URL"
+    native_args=(--cosmos "$COSMOS_ENDPOINT" --curated-url "$CURATED_URL")
+  fi
+  exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"}
+}
 case "$step" in
   iris-bundle-cancel)
     apply=()
@@ -757,11 +765,11 @@ case "$step" in
       log "job $JOB_ID is already $state on the server; nothing submitted"
       exit 0
     fi
-    exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ;;
+    submit_ocr_job ;;
   submit)
     # Submission publishes readable download inputs before create_work. The
     # hand-off journal stays private; no permission repair happens afterwards.
-    exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ;;
+    submit_ocr_job ;;
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;

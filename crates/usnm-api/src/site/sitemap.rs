@@ -1,26 +1,55 @@
 //! Durable sitemap generations. The search log store is create-only and has no
 //! expiry; response-cache blobs deliberately are NOT used for these dates.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use axum::extract::Request;
 use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use crate::{AppState, Snapshot};
 
+mod recurring;
+
 const PREFIX: &str = "sitemap/state";
 const STATIC: [&str; 4] = ["/", "/privacy", "/credits", "/datasets"];
+const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
+const ORIGIN: &str = "https://usnewsmap.com";
+const XML_START: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+const XML_END: &str = "</urlset>\n";
 
 #[derive(Default)]
 pub(crate) struct Service {
     committed: ArcSwapOption<Checkpoint>,
+}
+
+impl Service {
+    pub(super) fn search_paths(&self) -> Vec<String> {
+        let mut paths: BTreeSet<String> = super::CURATED_SEARCHES.iter().cloned().collect();
+        if let Some(checkpoint) = self.committed.load().as_ref() {
+            paths.extend(
+                checkpoint
+                    .pages
+                    .keys()
+                    .filter(|path| path.starts_with("/search/"))
+                    .cloned(),
+            );
+        }
+        paths.into_iter().collect()
+    }
+
+    pub(super) fn contains(&self, path: &str) -> bool {
+        self.committed
+            .load()
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.pages.contains_key(path))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -31,6 +60,8 @@ struct Page {
     /// so their first changed page conservatively uses observation time.
     #[serde(default)]
     content_provenance: String,
+    #[serde(default)]
+    promoted: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -134,6 +165,7 @@ struct Generation {
     pages: BTreeMap<String, String>,
     content_provenance: BTreeMap<String, String>,
     snapshot: String,
+    promoted: BTreeSet<String>,
 }
 
 impl Generation {
@@ -185,6 +217,7 @@ impl Generation {
                         fingerprint: fingerprint.clone(),
                         lastmod,
                         content_provenance,
+                        promoted: self.promoted.contains(path),
                     },
                 )
             })
@@ -243,7 +276,25 @@ async fn commit(
     // Re-read and re-compare fingerprints/dates, never overwrite its checkpoint.
     for _ in 0..16 {
         let previous = latest(store).await?;
+        if previous.as_ref().is_some_and(|checkpoint| {
+            checkpoint
+                .pages
+                .iter()
+                .any(|(path, page)| page.promoted && !generation.pages.contains_key(path))
+        }) {
+            return Err(backend(
+                "concurrent search promotion; retry full generation",
+            ));
+        }
         let next = generation.checkpoint(previous.as_ref())?;
+        if next.pages.keys().any(|path| !valid_url(path)) {
+            return Err(backend("sitemap URL must be shorter than 2,048 characters"));
+        }
+        if next.pages.len() > 50_000 || xml_size(&next) > MAX_SITEMAP_BYTES {
+            return Err(backend(
+                "sitemap exceeds the 50,000 URL or 50 MiB protocol limit",
+            ));
+        }
         still_current(state, snap).await?;
         let path = format!("{PREFIX}/{:020}.json", next.sequence);
         if store
@@ -288,6 +339,7 @@ async fn generate(
         pages: BTreeMap::new(),
         content_provenance: BTreeMap::new(),
         snapshot: snapshot_identity(&snap)?,
+        promoted: BTreeSet::new(),
     };
     generation.check_freshness(state.sitemap.committed.load_full().as_deref())?;
     let mut pages = manifest.pages.clone();
@@ -314,15 +366,46 @@ async fn generate(
         let content = pages.get_mut(path).expect("validated manifest");
         *content = fingerprint(format!("{content}\0{provenance}"));
     }
-    let mut paths: Vec<_> = super::CURATED_SEARCHES.iter().collect();
-    paths.sort();
+    let mut paths: BTreeSet<String> = super::CURATED_SEARCHES.iter().cloned().collect();
+    if let Some(checkpoint) = state.sitemap.committed.load_full() {
+        paths.extend(
+            checkpoint
+                .pages
+                .iter()
+                .filter(|(_, page)| page.promoted)
+                .map(|(path, _)| path.clone()),
+        );
+    }
+    let retained = paths.clone();
+    if let Some(url) = &state.config.search_log_url {
+        let log = usnm_store::open(url).map_err(backend)?;
+        let mut keys = paths
+            .iter()
+            .map(|path| query_key(&snap, path))
+            .collect::<Result<BTreeSet<_>>>()?;
+        for path in recurring::candidates(log.as_ref(), &snap, observed_at.date_naive()).await? {
+            if keys.insert(query_key(&snap, &path)?) {
+                paths.insert(path);
+            }
+        }
+    }
     for path in paths {
         if !Arc::ptr_eq(&state.snapshot.load_full(), &snap) {
             return Err(backend("snapshot changed during refresh"));
         }
-        let query = super::search_query(path).expect("curated path");
-        let html = super::search_preview_snapshot(state, snap.clone(), &query, true).await?;
-        pages.insert(path.clone(), fingerprint(format!("{html}\0{policy}")));
+        let query =
+            super::search_query(&path).ok_or_else(|| backend("invalid saved search path"))?;
+        let preview = super::search_preview_data(state, snap.clone(), &query, true).await?;
+        if !retained.contains(&path) && preview.total_hits <= 50 {
+            continue;
+        }
+        if !super::CURATED_SEARCHES.contains(&path) {
+            generation.promoted.insert(path.clone());
+        }
+        pages.insert(
+            path.clone(),
+            fingerprint(format!("{}\0{policy}", preview.html)),
+        );
         generation.content_provenance.insert(
             path.clone(),
             fingerprint(format!("{}\0{policy}", renderer())),
@@ -333,11 +416,21 @@ async fn generate(
     Ok(generation)
 }
 
+fn query_key(snap: &Snapshot, path: &str) -> Result<String> {
+    let query = super::search_query(path).ok_or_else(|| backend("invalid saved search path"))?;
+    let raw = usnm_core::params::RawParams::parse(&super::preview_query(&query))?;
+    Ok(snap.refdata.search_request(&raw)?.query.to_string())
+}
+
+fn valid_url(path: &str) -> bool {
+    ORIGIN.len() + path.len() < 2048
+}
+
 async fn refresh(
     state: &Arc<AppState>,
     store: &dyn ObjectStore,
     dir: &std::path::Path,
-    finished: &mut Option<(String, DateTime<Utc>, String)>,
+    finished: &mut Option<(String, DateTime<Utc>, String, chrono::NaiveDate, u32)>,
 ) -> Result<()> {
     if let Some(checkpoint) = latest(store).await? {
         state.sitemap.committed.store(Some(Arc::new(checkpoint)));
@@ -352,6 +445,8 @@ async fn refresh(
         snap.refdata.version().to_owned(),
         manifest.generated_at,
         snapshot.clone(),
+        Utc::now().date_naive(),
+        Utc::now().hour(),
     );
     let committed = state.sitemap.committed.load_full();
     if finished.as_ref() == Some(&identity)
@@ -366,6 +461,25 @@ async fn refresh(
         return Ok(());
     }
     let generation = generate(state, snap.clone(), &manifest).await?;
+    if finished.as_ref().is_some_and(|previous| {
+        previous.0 == identity.0 && previous.1 == identity.1 && previous.2 == identity.2
+    }) && committed.as_ref().is_some_and(|checkpoint| {
+        checkpoint.version == generation.version
+            && checkpoint.snapshot == generation.snapshot
+            && checkpoint.web_at == generation.web_at
+            && checkpoint.build_at == generation.build_at
+            && checkpoint.renderer == renderer()
+            && checkpoint.pages.len() == generation.pages.len()
+            && generation.pages.iter().all(|(path, hash)| {
+                checkpoint
+                    .pages
+                    .get(path)
+                    .is_some_and(|page| page.fingerprint == *hash)
+            })
+    }) {
+        *finished = Some(identity);
+        return Ok(());
+    }
     let checkpoint = commit(state, &snap, store, &generation).await?;
     tracing::info!(
         sequence = checkpoint.sequence,
@@ -439,19 +553,32 @@ pub(super) fn response(state: &AppState, req: &Request) -> Response {
 }
 
 fn xml(checkpoint: &Checkpoint) -> String {
-    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n".to_owned();
+    let mut xml = XML_START.to_owned();
     for (path, page) in &checkpoint.pages {
-        xml.push_str(&format!(
-            "  <url><loc>https://usnewsmap.com{}</loc><lastmod>{}</lastmod></url>\n",
-            super::escape_html(path),
-            page.lastmod
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        ));
+        xml.push_str(&xml_entry(path, page));
     }
-    xml.push_str("</urlset>\n");
+    xml.push_str(XML_END);
     xml
 }
 
+fn xml_entry(path: &str, page: &Page) -> String {
+    format!(
+        "  <url><loc>{ORIGIN}{}</loc><lastmod>{}</lastmod></url>\n",
+        super::escape_html(path),
+        page.lastmod
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
+}
+
+fn xml_size(checkpoint: &Checkpoint) -> usize {
+    XML_START.len()
+        + XML_END.len()
+        + checkpoint
+            .pages
+            .iter()
+            .map(|(path, page)| xml_entry(path, page).len())
+            .sum::<usize>()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +615,7 @@ mod tests {
             .map(|p| (p.to_owned(), "same renderer and copy".to_owned()))
             .collect(),
             snapshot: String::new(),
+            promoted: BTreeSet::new(),
         }
     }
 
@@ -868,6 +996,258 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recurring_searches_promote_at_51_with_indexable_ssr_and_survive_restart_and_failure() {
+        let dir = Directory::new();
+        std::fs::write(
+            dir.0.join("index.html"),
+            std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.0.join("sitemap-pages.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "generated_at": Utc::now() - chrono::Duration::hours(1),
+                "pages": STATIC.into_iter().map(|p| (p, fingerprint(p))).collect::<BTreeMap<_, _>>()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/indexes/pages-base-fixture.jsonl");
+        let text = std::fs::read_to_string(fixtures).unwrap();
+        let mut doc: usnm_search::PageDoc =
+            serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        doc.text = "Cobalt jubilee and amber jubilee. California gold diggings.".into();
+        let documents: Vec<_> = (0..51)
+            .map(|i| {
+                let mut doc = doc.clone();
+                doc.doc_id = format!("synthetic-promotion-{i}");
+                if i == 50 {
+                    doc.text = "Cobalt jubilee. California gold diggings.".into();
+                }
+                doc
+            })
+            .collect();
+        let st = state(&dir, Some(Vec::new())).await;
+        let refdata = crate::refdata::RefData::load(&LocalStore::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data"),
+        ))
+        .await
+        .unwrap();
+        let mut backend = MemoryBackend::new();
+        for (i, id) in refdata.current.indexes.iter().enumerate() {
+            backend.add_index(
+                id,
+                if i == 0 {
+                    documents.clone()
+                } else {
+                    Vec::new()
+                },
+            );
+        }
+        st.snapshot.store(Arc::new(Snapshot {
+            refdata,
+            backend: Arc::new(backend),
+            congress_dropped: false,
+        }));
+        let snap = st.snapshot.load_full();
+        let store = LocalStore::new(dir.0.join("searches"));
+        let example_query = |id: &str| {
+            crate::prewarm::examples()
+                .iter()
+                .find(|example| example.id == id)
+                .unwrap()
+                .view["q"]
+                .as_str()
+                .unwrap()
+        };
+        let curated_gold = super::super::search_path(example_query("california-gold-rush"));
+        let curated_whigs = super::super::search_path(example_query("whigs"));
+        let canonical_gold = query_key(&snap, &curated_gold).unwrap();
+        let alternate_gold = super::super::search_path(&canonical_gold);
+        assert_ne!(
+            curated_gold, alternate_gold,
+            "canonical AST ordering differs from curated wording"
+        );
+        let today = Utc::now().date_naive();
+        for day in [
+            today.pred_opt().unwrap(),
+            today.pred_opt().unwrap().pred_opt().unwrap(),
+        ] {
+            recurring::tests::write(
+                &store,
+                day,
+                &[
+                    recurring::tests::record(&snap, day, "\"cobalt jubilee\""),
+                    recurring::tests::record(&snap, day, "\"amber jubilee\""),
+                    recurring::tests::record(&snap, day, example_query("whigs")),
+                    recurring::tests::record(&snap, day, &canonical_gold),
+                ],
+            )
+            .await;
+        }
+        let response = crate::app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/search/cobalt-jubilee")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.headers()["x-robots-tag"], "noindex");
+        let mut finished = None;
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+        assert_eq!(
+            first.pages.len(),
+            STATIC.len() + super::super::CURATED_SEARCHES.len() + 1
+        );
+        assert!(first.pages["/search/cobalt-jubilee"].promoted);
+        assert!(first.pages.contains_key(&curated_gold));
+        assert!(
+            !first.pages.contains_key(&alternate_gold),
+            "keep the curated URL for equivalent normalized queries"
+        );
+        assert!(
+            !first.pages.contains_key("/search/amber-jubilee"),
+            "exactly 50 is excluded"
+        );
+        assert_eq!(
+            first.pages.keys().filter(|p| *p == &curated_whigs).count(),
+            1
+        );
+        let response = crate::app(st.clone())
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let home = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(home.contains(r#"<nav id="common-searches""#));
+        for path in first
+            .pages
+            .keys()
+            .filter(|path| path.starts_with("/search/"))
+        {
+            assert!(
+                home.contains(&format!(r#"href="{}""#, super::super::escape_html(path))),
+                "{path}"
+            );
+        }
+        assert!(!home.contains(r#"href="/search/amber-jubilee""#));
+        let response = crate::app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/search/cobalt-jubilee")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key("x-robots-tag"));
+        let html = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("51 matching newspaper pages in total."));
+        assert!(html.contains("href=\"https://usnewsmap.com/search/cobalt-jubilee\""));
+        assert!(html.contains(r#"<div id="root"></div><div id="search-landing">"#));
+        assert!(!html.contains(r#"class="visually-hidden" inert"#));
+        let filtered = crate::app(st.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/search/cobalt-jubilee?state=NY")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(filtered.headers()["x-robots-tag"], "noindex");
+        let lastmod = first.pages["/search/cobalt-jubilee"].lastmod;
+        // The next hourly scan with no additions does not append another checkpoint.
+        finished.as_mut().unwrap().4 = (Utc::now().hour() + 23) % 24;
+        refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            first.sequence
+        );
+        // A restart reuses the saved admission, even with logging disabled and no results.
+        let mut restarted = state(&dir, Some(Vec::new())).await;
+        let config = &mut Arc::get_mut(&mut restarted).unwrap().config;
+        config.sitemap_state_url = config.search_log_url.take();
+        refresh(&restarted, &store, &dir.0, &mut None)
+            .await
+            .unwrap();
+        let retained = latest(&store).await.unwrap().unwrap();
+        assert!(retained.pages["/search/cobalt-jubilee"].promoted);
+        assert!(retained.pages["/search/cobalt-jubilee"].lastmod >= lastmod);
+        assert!(http(&restarted, "/search/cobalt-jubilee")
+            .await
+            .1
+            .contains("No matching newspaper pages."));
+        // Corruption of a finalized day fails the refresh without publishing partial state.
+        let before = http(&st, "/sitemap.xml").await.1;
+        store
+            .put(
+                &format!("days/{}.jsonl", today.pred_opt().unwrap()),
+                b"invalid".to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        assert!(refresh(&st, &store, &dir.0, &mut None).await.is_err());
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            retained.sequence
+        );
+        // Loading a peer's newer committed generation is allowed before a failed refresh.
+        assert_eq!(http(&st, "/sitemap.xml").await.1, xml(&retained));
+        assert!(before.contains("/search/cobalt-jubilee"));
+    }
+
+    #[tokio::test]
+    async fn oversized_xml_does_not_replace_the_committed_generation() {
+        let dir = Directory::new();
+        let st = state(&dir, Some(Vec::new())).await;
+        let snap = st.snapshot.load_full();
+        let store = LocalStore::new(dir.0.join("searches"));
+        let mut g = generation();
+        let first = commit(&st, &snap, &store, &g).await.unwrap();
+        assert_eq!(xml_size(&first), xml(&first).len());
+        g.observed_at = at(3);
+        let encoded = "%E6%96%87".repeat(215);
+        for n in 0..27_000 {
+            g.pages
+                .insert(format!("/search/{encoded}{n}"), "results".into());
+        }
+        assert!(g.pages.len() < 50_000, "URL count alone would allow this");
+        let error = commit(&st, &snap, &store, &g).await.unwrap_err();
+        assert!(
+            matches!(error, crate::error::ApiError::Backend(message) if message.contains("50 MiB"))
+        );
+        assert_eq!(xml(&latest(&store).await.unwrap().unwrap()), xml(&first));
+    }
+
+    #[tokio::test]
     async fn background_retry_reuses_successful_immutable_previews() {
         let dir = Directory::new();
         let st = state(&dir, Some(Vec::new())).await;
@@ -1214,6 +1594,8 @@ mod tests {
     #[tokio::test]
     async fn same_image_search_policy_changes_refresh_dates_and_cannot_use_pending_publication_time(
     ) {
+        let curated =
+            super::super::search_path(crate::prewarm::examples()[0].view["q"].as_str().unwrap());
         let dir = Directory::new();
         write_manifest(&dir);
         let st = state(&dir, Some(Vec::new())).await;
@@ -1253,7 +1635,7 @@ mod tests {
             "finished marker must include policy"
         );
         assert_ne!(off.snapshot, first.snapshot);
-        for path in ["/datasets", "/search/whigs"] {
+        for path in ["/datasets", curated.as_str()] {
             assert_ne!(off.pages[path].fingerprint, first.pages[path].fingerprint);
             assert_ne!(
                 off.pages[path].content_provenance,
@@ -1289,7 +1671,7 @@ mod tests {
         );
         refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
         let pending = latest(&store).await.unwrap().unwrap();
-        for path in ["/datasets", "/search/whigs"] {
+        for path in ["/datasets", curated.as_str()] {
             assert_eq!(pending.pages[path].lastmod, pending.observed_at);
             assert!(pending.pages[path].lastmod > published_at);
         }
@@ -1330,7 +1712,7 @@ mod tests {
         refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
         let ignored_setting = latest(&store).await.unwrap().unwrap();
         assert_eq!(ignored_setting.sequence, unchanged_policy.sequence);
-        for path in ["/datasets", "/search/whigs"] {
+        for path in ["/datasets", curated.as_str()] {
             assert_eq!(
                 ignored_setting.pages[path].lastmod,
                 unchanged_policy.pages[path].lastmod

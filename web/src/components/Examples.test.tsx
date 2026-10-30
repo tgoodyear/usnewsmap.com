@@ -3,7 +3,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Examples } from "./Examples";
 import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_MORE, EXAMPLES_SHOWN } from "../examples";
-import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
+import { DEFAULTS, parseViewUrl, viewUrl, type ViewState } from "../state/url";
 
 /** The cards as App shows them, with the press count held in state. */
 function Home({ onPick = () => undefined }: { onPick?: (view: ViewState) => void }) {
@@ -74,5 +74,24 @@ describe("Examples", () => {
     fireEvent.click(link);
     expect(onPick).toHaveBeenCalledWith({ ...DEFAULTS, ...EXAMPLE_ORDER[1]!.view });
     expect(viewUrl(onPick.mock.calls[0]![0])).toBe(link.getAttribute("href"));
+  });
+
+  it.each([
+    { label: "Relative rate", norm: "skew", layer: "points" },
+    { label: "States", norm: "raw", layer: "states" },
+  ])("preserves $label and historical filters in both the card click and permalink", ({ norm, layer }) => {
+    const example = EXAMPLES.find(
+      (ex) => (ex.view.norm ?? DEFAULTS.norm) === norm && (ex.view.layer ?? DEFAULTS.layer) === layer,
+    );
+    expect(example).toBeDefined();
+    const onPick = vi.fn();
+    render(<Examples order={[example!]} clicks={0} onMore={() => undefined} onPick={onPick} />);
+    const link = screen.getByRole("link");
+    const expected = { ...DEFAULTS, ...example!.view };
+    expect(link.getAttribute("href")).toBe(viewUrl(expected));
+    const linked = parseViewUrl(link.getAttribute("href")!);
+    expect({ ...linked, q: expected.q }).toEqual(expected);
+    fireEvent.click(link);
+    expect(onPick).toHaveBeenCalledWith(expected);
   });
 });

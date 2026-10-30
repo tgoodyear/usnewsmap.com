@@ -236,9 +236,13 @@ pub fn parse_with(input: &str, analyzer: Analyzer) -> Result<Node, QueryError> {
 pub fn is_plain(q: &str) -> bool {
     !q.chars()
         .any(|c| matches!(c, '"' | '(' | ')' | '~' | '*' | ':'))
-        && !q
-            .split_whitespace()
-            .any(|w| w == "AND" || w == "OR" || w == "NOT" || w.starts_with('-') || has_wildcard(w))
+        && !q.split_whitespace().any(|w| {
+            w == "AND"
+                || w == "OR"
+                || w == "NOT"
+                || (w != "-" && w.starts_with('-'))
+                || has_wildcard(w)
+        })
 }
 
 fn exact(text: String) -> Node {
@@ -309,6 +313,11 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                     tok: Tok::RParen,
                     pos,
                 });
+                i += 1;
+            }
+            '-' if (i == 0 || chars[i - 1].is_whitespace())
+                && chars.get(i + 1).is_none_or(|c| c.is_whitespace()) =>
+            {
                 i += 1;
             }
             '-' if i + 1 < chars.len() && !chars[i + 1].is_whitespace() => {
@@ -1748,6 +1757,67 @@ mod tests {
                 slop: 0
             }
         );
+    }
+
+    #[test]
+    fn standalone_hyphens_separate_words_without_changing_exclusions() {
+        let expected = parse("45 0").unwrap();
+        for q in ["45 - 0", " - 45 - 0 - ", "45\t-\n0"] {
+            assert_eq!(parse(q).unwrap(), expected, "{q:?}");
+        }
+        assert_eq!(parse("- gold -").unwrap(), term("gold"));
+        assert_eq!(parse("45 - -0").unwrap(), parse("45 -0").unwrap());
+        assert_eq!(
+            parse("gold - -silver").unwrap(),
+            parse("gold -silver").unwrap()
+        );
+        assert_eq!(
+            parse(r#""45 - 0""#).unwrap(),
+            Node::Phrase {
+                terms: vec!["45".into(), "0".into()],
+                slop: 0,
+            }
+        );
+        for q in ["45 -- 0", "-- 0", "45 - OR", "45 AND -", "45 - ~1", "-"] {
+            assert!(parse(q).is_err(), "{q:?}");
+        }
+    }
+
+    #[test]
+    fn standalone_hyphens_remain_plain_in_every_search_mode() {
+        assert!(is_plain("45 - 0"));
+        assert!(!is_plain("45 -0"));
+        assert!(!is_plain("gold -silver"));
+        for mode in [
+            None,
+            Some(Mode::All),
+            Some(Mode::Any),
+            Some(Mode::Phrase),
+            Some(Mode::Near),
+        ] {
+            assert_eq!(
+                build("45 - 0", mode, 3, 0).unwrap(),
+                build("45 0", mode, 3, 0).unwrap(),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_hyphens_do_not_bypass_query_limits() {
+        let too_many = (0..=MAX_TERMS)
+            .map(|n| format!("word{n}"))
+            .collect::<Vec<_>>()
+            .join(" - ");
+        assert!(build(&too_many, None, 0, 0)
+            .unwrap_err()
+            .message
+            .contains("limit is 12"));
+        let too_long = format!("gold{}", " -".repeat(MAX_QUERY_CHARS));
+        assert!(build(&too_long, None, 0, 0)
+            .unwrap_err()
+            .message
+            .contains("longer than"));
     }
 
     #[test]

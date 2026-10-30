@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep reviewed finite native Qwen GPU windows replenished
+
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+RandomizedDelaySec=5s
+Unit=usnm-qwen-cohort-auto.service
+
+[Install]
+WantedBy=timers.target

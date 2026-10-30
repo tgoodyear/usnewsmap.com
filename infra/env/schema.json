@@ -219,6 +219,16 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_JA_OCR_ALERTS": {
+      "x-usnm-visibility": "public",
+      "description": "Alert on supervised on-prem Japanese OCR failures (#1164) through the existing action group, independent of ingest jobs. Requires USNM_JA_OCR_ONPREM and alert emails. Install and verify the Entra-authenticated native supervisor before enabling.",
+      "type": "boolean"
+    },
+    "USNM_JA_OCR_EXPECT_ACTIVE": {
+      "x-usnm-visibility": "public",
+      "description": "Explicitly arm the Japanese OCR freshness alert while an active run is expected. Disarm during intentional idle, completion or a documented source-rate hold; never infer expectation from old activity.",
+      "type": "boolean"
+    },
     "USNM_JA_OCR_ONPREM": {
       "x-usnm-visibility": "public",
       "description": "Run the Japanese OCR on-prem (#917): grants for the on-prem hosts' group and the data lake open to the node IPs. Pair with USNM_JA_OCR_JOB false.",

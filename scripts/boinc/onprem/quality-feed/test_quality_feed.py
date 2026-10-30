@@ -1,5 +1,6 @@
 """Tests for the on-prem quality feeder (#962): the parts that need no Pillow, pyarrow or network."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -55,7 +56,8 @@ class FeedTest(unittest.TestCase):
     def test_chunk_is_written_with_sums_and_ready_last(self):
         with tempfile.TemporaryDirectory() as d:
             p = {"batch": "b", "batch_version": 1, "damage_rate": 0.3, "date": "1900-01-01",
-                 "doc_id": "sn1_1900-01-01_ed-1_seq-1", "lang": "eng"}
+                 "doc_id": "sn1_1900-01-01_ed-1_seq-1", "lang": "eng",
+                 "bytes": 6, "sha256": hashlib.sha256(b"source").hexdigest()}
             texts = {"page": None, "readers": [{"name": "loc-hist", "text": "x"}]}
             feed.write_chunk(d, "c00001", [p], {p["doc_id"]: (b"jpg", b"<alto/>", texts, None)})
             c = Path(d, "c00001")
@@ -63,6 +65,10 @@ class FeedTest(unittest.TestCase):
             self.assertEqual(feed.pending_chunks(d), [str(c)])
             sums = c.joinpath("SHA256SUMS").read_text().split("\n")
             self.assertIn(f"scans/{p['doc_id']}.jpg", " ".join(sums))
+            receipt = json.loads(c.joinpath("texts", p["doc_id"] + ".image-provenance.json").read_text())
+            self.assertEqual(receipt["source"]["sha256"], p["sha256"])
+            self.assertEqual(receipt["jpeg"]["sha256"], hashlib.sha256(b"jpg").hexdigest())
+            self.assertIn(f"texts/{p['doc_id']}.image-provenance.json", " ".join(sums))
             # The receiver accepts it.
             share = Path(d, "share")
             inc = share / "quality" / "v1-test" / "incoming"

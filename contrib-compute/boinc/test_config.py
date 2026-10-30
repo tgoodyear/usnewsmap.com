@@ -44,7 +44,7 @@ class DaemonConfig(unittest.TestCase):
         commands = [shlex.split(cmd.text) for cmd in root.findall("./daemons/daemon/cmd")]
         self.assertEqual(
             [cmd for cmd in commands if cmd[0] == "feeder"],
-            [["feeder", "-d", "2", "--allapps"]],
+            [["feeder", "-d", "2", "--allapps", "--purge_stale", "5"]],
         )
         self.assertEqual(root.findtext("./config/shmem_work_items"), "1000")
 
@@ -65,10 +65,25 @@ class DaemonConfig(unittest.TestCase):
             if weight > 0:
                 with self.subTest(app=name):
                     self.assertGreaterEqual(budgets[name], 2 * cache_size)
-        # Synthetic sizing baseline: all Qwen batches combined, not just container8B.
-        # Cover the whole 455-result prefix with 4x headroom, including blocked replicas.
-        qwen_ready_results = 455
+        # Measured 28 October sizing baseline: all unsent Qwen replicas, including blocked ones.
+        qwen_ready_results = 635
         self.assertGreaterEqual(budgets["usnm_qwen"], 4 * qwen_ready_results)
+
+        # Pinned feeder.cpp weighted_interleave(): purge_stale rotation alone cannot expose
+        # a backlog larger than the app's static cache share to an eligible host request.
+        names = list(weights)
+        credit = [1e-100 if weights[name] == 0 else 0.0 for name in names]
+        slots = dict.fromkeys(names, 0)
+        for _ in range(cache_size):
+            best = max(range(len(names)), key=lambda i: (credit[i], -i))
+            # C divides by zero to infinity: a zero-weight app takes one slot, then no more.
+            credit[best] -= 1 / weights[names[best]] if weights[names[best]] else math.inf
+            slots[names[best]] += 1
+        self.assertGreaterEqual(slots["usnm_qwen"], qwen_ready_results)
+        for name, weight in weights.items():
+            if weight > 0 and name != "usnm_qwen":
+                with self.subTest(app=name):
+                    self.assertGreaterEqual(slots[name], 40)
 
     def test_replicas_need_different_hosts_not_different_accounts(self):
         # The project's hosts share one account; a per-account rule starves them on quorum-2 work.

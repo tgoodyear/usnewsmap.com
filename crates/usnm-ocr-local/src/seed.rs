@@ -649,6 +649,9 @@ pub fn auto_window(pages_a_day: f64) -> u64 {
 
 /// Why a page of the plan is queued again, if it is.
 fn retry_kind(q: &Queued, ledger: &Ledger, now: DateTime<Utc>) -> Option<(&'static str, bool)> {
+    if q.retry_run.is_some() {
+        return None;
+    }
     let after = ledger
         .outcomes
         .get(&q.doc_id)
@@ -688,7 +691,8 @@ fn in_flight(q: &Queued, ledger: &Ledger, now: DateTime<Utc>) -> bool {
         .outcomes
         .get(&q.doc_id)
         .is_some_and(|o| o.at >= q.queued_at && o.outcome == DEAD_LETTERED);
-    !unroutable && now - q.queued_at < chrono::Duration::days(REQUEUE_AFTER_DAYS)
+    !unroutable
+        && (q.retry_run.is_some() || now - q.queued_at < chrono::Duration::days(REQUEUE_AFTER_DAYS))
 }
 
 /// What a seeding run queued from one unit.
@@ -1104,7 +1108,6 @@ pub(super) async fn seed(
         .window
         .saturating_sub(outstanding)
         .min(MAX_PAGES as u64);
-    let queued_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut out: Vec<(Queued, OcrMessage)> = Vec::new();
     let attempt = |doc_id: &str| {
         ledger
@@ -1155,7 +1158,9 @@ pub(super) async fn seed(
             language: q.language.clone(),
             reason: Reason::Bulk,
             score: None,
-            queued_at: queued_at.clone(),
+            queued_at: ledger
+                .next_message_time(&q.doc_id, now)?
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         };
         if let Err(e) = msg.validate() {
             skip(&mut report, e.kind(), 1);
@@ -1175,7 +1180,11 @@ pub(super) async fn seed(
                 plan: opts.plan.clone(),
                 attempt: attempt(&q.doc_id),
                 request_day: None,
-                queued_at: now,
+                queued_at: ledger.next_event_time(&q.doc_id, now)?,
+                retry_message_at: Some(
+                    DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                ),
+                retry_run: None,
             },
             msg,
         ));
@@ -1247,7 +1256,9 @@ pub(super) async fn seed(
                 language: language.clone(),
                 reason: Reason::Bulk,
                 score: Some(row.damage_rate).filter(|s| (0.0..=1.0).contains(s)),
-                queued_at: queued_at.clone(),
+                queued_at: ledger
+                    .next_message_time(doc_id, now)?
+                    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             };
             if let Err(e) = msg.validate() {
                 skip(&mut report, e.kind(), 1);
@@ -1284,7 +1295,11 @@ pub(super) async fn seed(
                     plan: opts.plan.clone(),
                     attempt: attempt(doc_id),
                     request_day: None,
-                    queued_at: now,
+                    queued_at: ledger.next_event_time(doc_id, now)?,
+                    retry_message_at: Some(
+                        DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                    ),
+                    retry_run: None,
                 },
                 msg,
             ));
@@ -1425,7 +1440,9 @@ pub(super) async fn seed(
                     language: language.clone(),
                     reason: Reason::Bulk,
                     score: row.damage_rate.filter(|s| (0.0..=1.0).contains(s)),
-                    queued_at: queued_at.clone(),
+                    queued_at: ledger
+                        .next_message_time(doc_id, now)?
+                        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
                 };
                 if let Err(e) = msg.validate() {
                     skip(&mut report, e.kind(), 1);
@@ -1446,7 +1463,11 @@ pub(super) async fn seed(
                         plan: opts.plan.clone(),
                         attempt: attempt(doc_id),
                         request_day: None,
-                        queued_at: now,
+                        queued_at: ledger.next_event_time(doc_id, now)?,
+                        retry_message_at: Some(
+                            DateTime::parse_from_rfc3339(&msg.queued_at)?.with_timezone(&Utc),
+                        ),
+                        retry_run: None,
                     },
                     msg,
                 ));

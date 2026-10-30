@@ -138,7 +138,7 @@ Both are described in the [development guide](../docs/development.md).
 
 ## Running the tests
 
-`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, each in its own `python3 -m unittest` process from the repository root, so a new test file runs in CI without being added to a list. It is the "script unit tests" step of the `infra` job in `ci.yml`.
+`scripts/ci/run-unit-tests.py` runs every `scripts/**/test_*.py`, each in its own `python3 -m unittest` process from the repository root, so a new test file runs in CI without being added to a list. CI runs three isolated script-test shards. First follow the [Python 3.12 virtual-environment setup](../docs/development.md#script-tests), including installation of `scripts/pictures/requirements.txt` for the real-Parquet picture tests.
 
 ```sh
 scripts/ci/run-unit-tests.py --list                          # what it runs and what it leaves out

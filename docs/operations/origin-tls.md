@@ -67,6 +67,15 @@ and `USNM_WWW_CERT_ID` settings to the uploaded certificate ID using
 `scripts/azure/settings.sh`, so subsequent provisioning preserves the bindings.
 Do not delete the previous managed certificates until cutover is validated.
 
+### BOINC LAN certificate (#1357)
+
+`origin_tls.py --target boinc-lan` issues a separate certificate for `boinc.usnewsmap.com`
+over the same DNS-01 path, with its own ACME state (`usnm-prod-boinc-lan-acme-state`). It never
+touches Azure ingress: it writes the private key and full chain only to the deploy secret
+`usnm-prod-boinc-lan-tls`, which CT230's Arc identity can read (Secrets User on that secret
+alone). The weekly workflow renews it after the origin certificate. Grants:
+`origin_tls_bootstrap.py --boinc-lan`. The host side is in [boinc-onprem.md](../boinc-onprem.md#lan-access-1357).
+
 ## Renewal and credential maintenance
 
 `.github/workflows/origin-tls.yml` runs weekly on main using the existing prod
@@ -88,6 +97,19 @@ Actions notifications for `origin-tls`: failures include the explicit rotation
 instruction once token validity falls below 14 days. The token expiration is
 also recorded in Key Vault secret attributes. Rotation needs the authorized
 operator IP; do not broaden or give the operator token to CI.
+
+For an actual maintenance rotation before the automatic 30-day threshold, use:
+
+```sh
+python3 scripts/azure/origin_tls_bootstrap.py --rotate-dns-token
+```
+
+This requires a tracked predecessor, replaces only the zone-DNS credential in
+the dedicated TLS vault, then revokes its predecessor after the replacement is
+saved. It does not provision resources, alter Entra grants or touch ACME state.
+Dispatch `origin-tls` with `validate-dns=true` afterward and require successful
+staging DNS-01 and reuse of the production certificate. Record the new token's
+expiration and next rotation deadline; never log either token value.
 
 Certificate/account keys exist on disk only under `.origin-tls-work` (0700,
 files 0600) during execution. Normal exit removes them; the workflow's always

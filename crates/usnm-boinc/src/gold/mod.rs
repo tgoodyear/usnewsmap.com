@@ -90,21 +90,9 @@ async fn command_text(
         .kill_on_drop(true)
         .spawn()
         .context("could not start engine command")?;
-    struct ProcessGroup(rustix::process::Pid);
-    impl Drop for ProcessGroup {
-        fn drop(&mut self) {
-            let _ = rustix::process::kill_process_group(self.0, rustix::process::Signal::KILL);
-        }
-    }
     // The guard also covers cancellation and adapters that exit leaving a worker
     // behind. A separate session or container created by an adapter is not a sandbox.
-    let _group = ProcessGroup(
-        child
-            .id()
-            .and_then(|id| i32::try_from(id).ok())
-            .and_then(rustix::process::Pid::from_raw)
-            .context("engine process group missing")?,
-    );
+    let _group = crate::ProcessGroup::new(child.id())?;
     let mut stdout = child.stdout.take().context("engine stdout missing")?;
     let output = tokio::time::timeout(timeout, async {
         let mut bytes = Vec::new();

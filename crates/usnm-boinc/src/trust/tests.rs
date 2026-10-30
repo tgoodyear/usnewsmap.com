@@ -257,6 +257,8 @@ fn rejects_missing_or_invalid_policy_scope() {
 
 fn job(image: &str, language: &str, profile: &str) -> usnm_ocr_contract::boinc::Job {
     usnm_ocr_contract::boinc::Job {
+        retry_of: None,
+        attempt: 0,
         v: 1,
         id: "a".repeat(64),
         message: usnm_ocr_contract::message::OcrMessage {

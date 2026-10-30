@@ -2,6 +2,58 @@
 
 Part of the [operations guide](README.md).
 
+## Rebuilding the dashboard data-flow observer and catalog
+
+The read-only observer/catalog scripts and their three systemd units are installed
+separately from OCR workers. On the operator's checkout, select a reviewed full
+commit SHA, then stage an immutable Git archive (not dirty working-tree files):
+
+```sh
+COMMIT=<reviewed-40-character-commit>
+git archive --format=tar --output=data-flow.tar "$COMMIT" \
+  scripts/corpus/data_catalog.py scripts/corpus/data_flow_observer.py \
+  scripts/ocr-node/usnm-data-catalog.service \
+  scripts/ocr-node/usnm-data-flow-observer.service \
+  scripts/ocr-node/usnm-data-flow-observer.timer scripts/ocr-node/install-data-flow.py
+git show "$COMMIT:scripts/ocr-node/install-data-flow.py" > install-data-flow.py
+shasum -a 256 data-flow.tar
+```
+
+Transfer the archive and installer to the dashboard host, and independently record
+that digest. With Python 3.11+, validate before a maintenance window:
+
+```sh
+python3 install-data-flow.py --archive data-flow.tar --commit FULL_SHA --sha256 ARCHIVE_SHA256
+```
+
+`--apply` requires root, the existing `ocrdash` account, and the catalog service,
+observer service and observer timer all inactive. Coordinate a read-only dashboard
+maintenance window: stop only those units, wait for an in-flight observer to finish,
+and record their original active/enabled states. The installer does not stop, start
+or enable units. On first installation only, supply `--ocr-url` with the
+credential-free dashboard JSON endpoint (for example
+`http://127.0.0.1:8090/api/view.json`), not its HTML base URL; subsequent installations preserve the entire
+existing environment and reject an overwrite.
+
+Validation-only mode also stages and verifies the systemd units, so run it on a
+systemd host. The installer checks the archive digest, Git archive commit header,
+exact regular file set, Python syntax and systemd units. The header records the operator's
+selected source; it is not a signature or substitute for reviewing that commit.
+It atomically replaces code/units, records `COMMIT`, retains private rollback
+copies under `/var/lib/usnm-data-flow-install`, and restores old files if
+verification or daemon reload fails. Same-directory recovery hard links retain
+the original inodes, ownership and modes without allocating replacement file
+contents if the disk fills. If an individual restoration fails, the installer
+still attempts every remaining restoration and daemon reload, reports all errors
+and retains the needed recovery links. Restore the original unit activation after
+success or failure; enable the observer timer explicitly for a new installation.
+The catalog listener remains loopback-only (`127.0.0.1:8764`).
+
+No SQLite database, pipeline/catalog snapshot, retained evidence, producer timer,
+queue backend or source budget is migrated, deleted or reset. Restore/migrate a
+catalog copy through its separately reviewed procedure before starting the catalog
+on a rebuilt host; this installer never initializes or migrates it.
+
 ## On-prem OCR nodes
 
 **Local OCR runs through BOINC only** (#917, #942, #966): see the [BOINC pages](../boinc/README.md). No node runs `usnm-ocr-worker` as a direct queue worker any more, and the worker's systemd unit, its installers (`install-worker.sh`, `install-worker-node.sh`) and its nightly update (`update-worker.sh`) are removed. This section keeps what is still in use: the exchange account, whose queues and `ocr-out` container BOINC's hand-off uses, and the nodes' Arc lifecycle and monitoring, which offboarding the remaining nodes needs.
@@ -23,6 +75,12 @@ scripts/azure/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_
 **The nodes' group.** The nodes get their roles through the Entra security group `usnm-ocr-nodes-grp-<env>` (`usnm-ocr-nodes-<env>` before the operator rename). The provision grants it Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, the no-delete writer role on `ocr-out`, and Monitoring Metrics Publisher on the nodes' own component `usnm-ocr-appi-<env>`, not the main component. Each node's Arc identity is a member. `group.sh` creates a group once, saves its object ID in `USNM_OCR_NODE_GROUP` and makes you an owner. On rerun it uses that same ID, lists owners and updates `displayName`/`mailNickname` in place: no identity, member or grant changes. `--dry-run` only describes the rename. It never adopts a group by name or creates a duplicate of an unsaved legacy group: check its members and owners (`az ad group member list --group <id>`; `az ad group owner list --group <id>`) and save the verified ID by hand. Every member gets node roles, and owners can add members. Creating it needs the right to create security groups (default user setting or Groups Administrator); renaming requires rights to update the saved group. Deployment stacks cannot manage it (ADR-0015), and teardown leaves it. Delete by the saved object ID (`az ad group delete --group <id>`), never by display name.
 
 **Prepared-host prerequisites.** Supply an AlmaLinux 9 or RHEL 10 host with key-based SSH and passwordless sudo. RHEL must already be registered, with BaseOS, AppStream and CodeReady Builder enabled. VM creation, OS registration, hardware and hypervisor configuration belong to the infrastructure operator, not application onboarding. Use a new node ID after rebuilding a host so provenance cannot mix the old and new machine.
+
+**Publication monitoring.** `usnm-ocrdash --publish-status /existing/publish-fetched.json` (`USNM_OCRDASH_PUBLISH_STATUS`) reads a bounded native JSON record or fresh status-mirror envelope. The home-infra v2 status transport obtains only five named systemd properties from the real `usnm-loc-publish-fetched.service`, using individual typed D-Bus reads (`busctl get-property`), not `GetAll` or `systemctl show`. It never invokes the publisher or reads its environment/journal. Completion timestamps retain systemd's actual UTC microseconds; intervening state/completion changes are rejected as unknown. Operational details show the last completion time, result and exit status, independently of fetched markers. Missing/expired/unreadable metadata is unknown, never successful empty output; source observation time is not the run time. A successful run does not establish that it published new pages. Retained metadata can disappear across a manager/host restart, in which case wait for the next ordinary run rather than forcing publication. Install a compatible reviewed release before adding the optional setting, and preserve existing access controls and source budgets.
+
+The transport contract is `Unit.LoadState` and `Unit.ActiveState` (signature `s`), `Service.Result` (`s`), `Service.ExecMainStatus` (`i`), and `Service.ExecMainExitTimestamp` (`t`). `busctl --json=short get-property` returns scalar `data`, not an array: a native Debian 12 observation returned `{"type":"t","data":1793191480159818}` for the completion timestamp. Interpret that integer as UTC microseconds since the epoch, not seconds; zero means no retained completion. Read the completion timestamp before the other properties and again afterward, then recheck active state; reject disagreement rather than mixing runs. The [collector](https://github.com/tgoodyear/home-infra/blob/d14176e9ba9798930244dfd2716e1fb7d2ff3d51/scripts/lab/ocrdash-source-status-v2.py) and [focused tests](https://github.com/tgoodyear/home-infra/blob/d14176e9ba9798930244dfd2716e1fb7d2ff3d51/scripts/lab/test_ocrdash_sources.py) pin the implementation used for this contract.
+
+**Verification boundary:** those companion links require home-infra repository access. The dashboard validates the received record and its freshness; it cannot establish which systemd calls an external collector made. Before deployment, the operator must inspect the exact reviewed collector, run its tests, and confirm the typed API on the source host. An inaccessible companion repository is not evidence that these collection guarantees have been verified.
 
 **Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. Its name (`--name`) must be `usnm-ocr-node<digits>-arcs-<env>`, match `--env` and be at most 32 characters (ADR-0017). A legacy node must first be drained and offboarded, renamed in the VM, its hostname and DNS, and onboarded again; changing only `--name` is not a migration. Run from your machine with rights to create app registrations (Application Developer or the default user setting), assign roles and write Arc machines, extensions and DCR associations (Owner, or User Access Administrator plus Contributor, or plus Azure Connected Machine Resource Administrator and Monitoring Contributor), and add group members (its owner, as `group.sh` makes you). Automatic agent upgrade requires `Microsoft.HybridCompute/machines/write`. The first onboarding also registers three providers, a subscription-level action (Contributor or Owner); with only resource-group rights, have them registered first:
 
@@ -268,6 +326,45 @@ Have the producer atomically publish a readable snapshot file and configure `--p
 **Public view.** `--public-listen` / `USNM_OCRDASH_PUBLIC_LISTEN` (an address and port, unset by default) starts a second, plain-HTTP listener for a Cloudflare Tunnel. It serves GET and HEAD of `/`, `/healthz`, `/api/view.json`, `/api/pipeline.json` and `/api/fetch.json` only, redacted (no workbook link, host, node or guest names, container numbers, paths, addresses or seed plan), with `Cache-Control: public, max-age=60`. Pushes and every other route are not on it. It has no `--allow` check: bind it to loopback or an address only cloudflared can reach. See [12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard).
 
 Input is limited to 1 MiB and schema version 1, producer `corpus-catalog`; unknown fields, invalid UTC RFC3339 times, times more than 60 seconds ahead, negative/fractional or over-trillion counts, and `verified + missing > locations` are rejected. Bounds: 32 coverage strings (128 characters), 64 stages (id 256, label 128, detail 512), 128 issues (code 64, detail 512). No control characters; stage ids must be unique; unknown stage counts must be null. The wrapper reports `retrieved_at`, `last_error`, `age_secs`, `stale`, optional `snapshot`, and `stage_freshness`. Source `observed_at`, not `generated_at` or retrieval time, determines freshness; null means unknown/unavailable. Optional stage `observed_at` supplies independent evidence times (explicit null is unknown; omission uses the snapshot evidence time). Stale stage evidence remains visible even when another source was just observed. Missing, oversized or malformed files retain the last valid snapshot with an explicit error indication and suppress its live summary counts; no valid snapshot shows unavailable, never a silent fallback to worker totals. The API's aggregate `stale` flag remains unchanged; the diagnostic heading says "Some evidence old or unknown", with actual read errors shown beneath it.
+
+**Physical cache stock (#368).** The index-driven inventory below does not
+enumerate unindexed files or establish unique disk occupancy. For that separate
+question, run the read-only stock walker on the POSIX cache host:
+
+```bash
+nice -n 19 ionice -c 3 python3 scripts/corpus/scan_stock_inventory.py \
+  --scan-root scans --work-dir stock-20261029 \
+  --cache-set keep --cache-set buffer --max-entries 1000 --max-seconds 20
+```
+
+Repeat with the same work directory until `finished` is true. SQLite checkpoints
+and `report.json` are private outputs outside the cache; no service, scan,
+sidecar, source budget or fetch index is changed. An existing work directory
+must be owned by the invoking user and deny all group/other access (mode 0700).
+The root descriptor is identity-checked and pinned for the whole invocation;
+renaming its path cannot redirect the traversal. Each invocation limits newly
+observed directory entries and cooperatively checks elapsed time. Filesystem
+metadata calls can still block: use an external process deadline, admit only
+quiet I/O windows, and stop rather than compete with a rebuild. A killed slice
+rolls back; the next invocation resumes without duplicate observations.
+
+Each directory's names-only listing is captured once into a durable pending
+queue, capped at 10,000 names (an oversized directory fails explicitly).
+Resumes consume that queue without replaying an already observed prefix. A
+partial pending-directory index and transactional incremental counters keep
+selection and reporting independent of completed history. An unchanged resume
+retains `observed_until`; `generated_at` is only the report-generation time.
+Checkpoint schema changes require a new work directory; retain old evidence.
+
+The report separates KEEP/buffer scan-file bytes, distinct page paths across
+formats/resolutions, unplaced paths and other entry kinds. Distinct device/inode
+counts deduplicate hardlinks across both sets; maximum observed inode sizes are
+logical bytes, not allocated ZFS blocks. Symlinks are reported, not traversed.
+Errors fail explicitly. Counts describe an interval, not an atomic snapshot:
+finished directories are not rescanned for later arrivals or removals. Resume
+checks the root identity/configuration; a changed pending directory fails.
+Use a new work directory for a fresh observation. No image checksum, complete
+manifest coverage, native import, reclamation or corpus acceptance is implied.
 
 **Resumable local scan-cache inventory (#704).** For indexes larger than the
 single-batch adapter's 10,000-row/16 MiB limits, run the stdlib orchestrator

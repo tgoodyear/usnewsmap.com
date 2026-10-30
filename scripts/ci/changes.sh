@@ -27,10 +27,12 @@
 # the changed files can't be worked out; everything but ops, which runs only
 # when its own files change (the snapshots, the index history, their schemas,
 # checkers and writers, its requirements, or ci.yml, which defines the job).
-# quickwit: what the Quickwit job's two tests build or load: the workspace
-# crates usnm-search and usnm-ingest depend on (from cargo metadata), the
+# quickwit_parity / quickwit_pipeline: what each Quickwit test builds or loads:
+# the workspace crates their tests and fixture generators depend on (from cargo metadata), the
 # workspace manifest and lock file only when the packages Cargo resolves for
 # those crates change, and the fixtures, index configs and Quickwit scripts.
+# quickwit is their union, gating the required aggregate; quickwit_suites is
+# the selected-suite JSON matrix, so an unrelated suite never starts.
 # image and e2e are narrowed the same way: image for the workspace crates
 # usnm-api (docker/Dockerfile.api) and usnm-ingest (docker/Dockerfile.ingest) build, e2e (the web
 # end-to-end job) for those usnm-api builds, the API that
@@ -66,7 +68,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -78,10 +80,11 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages edge; do
+      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages edge; do
         case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
+      echo 'quickwit_suites=[]' >> "$out"
       echo "OCR worker checks and attested release only; no application rollout"
       exit 0
       ;;
@@ -189,8 +192,14 @@ rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$ru
 # cover; editing them doesn't change what Quickwit is asked to do. The job
 # targets only these integration tests; tests in crates that are merely
 # dependencies (such as usnm-api) are not built or run. The ingest pipeline
-# target is a module tree, not a single pipeline.rs file.
-quickwit='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/(install-quickwit\.sh|rust-test-times\.py)$|crates/usnm-search/tests/quickwit_parity\.rs$|crates/usnm-ingest/tests/pipeline/)'
+# target is a module tree, not a single pipeline.rs file. Its API calls load
+# RefData and assemble status sources; they do not serve the site. Parity's
+# setup also runs core/ingest examples, but those do not call the API. Their
+# normal/build source closure excludes ingest's API dev-dependency; resolution
+# still includes dev-dependencies, which Cargo builds for examples.
+quickwit_common='^(rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/dev/quickwit-fixtures\.sh$|scripts/ci/(install-quickwit\.sh|rust-test-times\.py)$)'
+quickwit_parity="$quickwit_common|^crates/usnm-search/tests/quickwit_parity\.rs$"
+quickwit_pipeline="$quickwit_common|^crates/usnm-ingest/tests/pipeline/"
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
@@ -355,7 +364,13 @@ _narrow() {
   local kind=$1 part=$2 dirs='' embeds listed=true; shift 2
   matches_built "${!part}" && return 0
   case $kind in
-    test) dirs=$(closure_crates "$@") || listed=false ;;
+    test)
+      if [ "$part" = quickwit_parity ]; then
+        dirs=$(closure_build_crates false "$@") || listed=false
+      else
+        dirs=$(closure_crates "$@") || listed=false
+      fi
+      ;;
     release) dirs=$(closure_build_crates false "$@") || listed=false ;;
     examples) dirs=$(closure_build_crates true "$@") || listed=false ;;
   esac
@@ -365,9 +380,14 @@ _narrow() {
     return 0
   elif {
     local crate_changes=$built
-    if [ "$part" = quickwit ]; then
-      crate_changes=$(grep -Ev '^crates/[^/]+/tests/' <<< "$crate_changes" || true)
-    fi
+    case "$part" in
+      quickwit_*)
+        crate_changes=$(grep -Ev '^crates/[^/]+/tests/' <<< "$crate_changes" || true)
+        if [ "$part" = quickwit_pipeline ]; then
+          crate_changes=$(grep -Ev '^crates/usnm-api/src/(site\.rs$|site/)' <<< "$crate_changes" || true)
+        fi
+        ;;
+    esac
     [ -n "$crate_changes" ] && grep -Eq "^($(paste -sd'|' - <<< "$dirs"))" <<< "$crate_changes"
   }; then
     printf -v "$part" '.'
@@ -384,14 +404,30 @@ _narrow() {
       return 0
     fi
   fi
-  if matches_built '^Cargo\.(toml|lock)$' && lock_changed "$kind" "$@"; then
+  local resolution_files='^Cargo\.(toml|lock)$'
+  # Example builds resolve the roots' dev-dependencies too, even though their
+  # unused source code cannot change fixture output. Recheck that resolution
+  # for manifests outside parity's normal/build source closure.
+  if [ "$part" = quickwit_parity ]; then
+    resolution_files="$resolution_files|^crates/[^/]+/Cargo\.toml$"
+  fi
+  if matches_built "$resolution_files" && {
+    if [ "$part" = quickwit_parity ]; then
+      # Parity tests and fixture examples run in separate Cargo invocations;
+      # a combined tree could hide a feature change through unification.
+      lock_changed "$kind" usnm-search || lock_changed "$kind" usnm-ingest
+    else
+      lock_changed "$kind" "$@"
+    fi
+  }; then
     echo "the packages resolved for $* changed: running $part"; printf -v "$part" '.'
   fi
 }
 narrow() { _narrow test "$@"; }
 narrow_release() { _narrow release "$@"; }
 narrow_examples() { _narrow examples "$@"; }
-narrow quickwit usnm-search usnm-ingest
+narrow quickwit_parity usnm-search usnm-ingest
+narrow quickwit_pipeline usnm-ingest
 narrow image usnm-api usnm-ingest
 narrow e2e usnm-api
 narrow_release ocr_worker usnm-ocr-worker
@@ -402,11 +438,30 @@ narrow_release boinc_qwen usnm-boinc
 narrow_release boinc_surya usnm-boinc
 narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
 narrow_examples boinc_native usnm-quality-app usnm-qwen-app usnm-ocr-quality usnm-ocr-contract
-for part in rust quickwit web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native; do
+# Changes to the shared Quickwit workflow/action or its matrix force both
+# suites; suite-specific workflow inputs can force just their own flag.
+if [[ " $forced " == *" quickwit "* ]] || [[ " $forced " == *" quickwit_suites "* ]]; then
+  forced="$forced quickwit_parity quickwit_pipeline"
+fi
+selected_parity=false
+selected_pipeline=false
+for part in rust quickwit_parity quickwit_pipeline web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native; do
   if matches_built "${!part}" ||
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
-    [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
+    [[ " $forced " == *" $part "* ]]; then
+    echo "$part=true" >> "$out"
+    case "$part" in
+      quickwit_parity) selected_parity=true ;;
+      quickwit_pipeline) selected_pipeline=true ;;
+    esac
+  else echo "$part=false" >> "$out"; fi
 done
+case "$selected_parity/$selected_pipeline" in
+  true/true) echo 'quickwit=true'; echo 'quickwit_suites=["parity","pipeline"]' ;;
+  true/false) echo 'quickwit=true'; echo 'quickwit_suites=["parity"]' ;;
+  false/true) echo 'quickwit=true'; echo 'quickwit_suites=["pipeline"]' ;;
+  false/false) echo 'quickwit=false'; echo 'quickwit_suites=[]' ;;
+esac >> "$out"
 for part in page_language contrib ocr_gold edge; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done

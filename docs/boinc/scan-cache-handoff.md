@@ -190,10 +190,43 @@ The grant opens no network path: the exchange account takes the home IP through
 
 ### The quality wave's page JPEG cache
 
+**Legacy Azure-wave optimization, not the current on-prem quality feed.**
+The `v1-wave10` follower in the batch container derives page JPEGs directly
+from the scan server with `quality_feed.py page_jpeg`; it does not read either
+legacy converter's fixed list or the `quality-jpeg/` blob cache. Its fetched-time,
+then doc-id order, cross-campaign database deduplication, durable completion
+records and READY-chunk backpressure replace that list's replenishment role.
+Do not install another list-refresh producer alongside this follower.
+
+Retire the exhausted legacy services without deleting their scripts, lists,
+completion ledgers or cached blobs. The local converter in the scan-fetch
+container is already disabled. For the remote converter on the laptop **host**,
+first verify it is inactive, retain its unit and enablement receipt, then:
+
+```sh
+if test "$(systemctl show usnm-quality-jpeg-cache-remote.service -p ActiveState --value)" = inactive; then
+  systemctl disable usnm-quality-jpeg-cache-remote.service
+else
+  printf '%s\n' 'Refusing retirement: legacy converter is not confirmed inactive.' >&2
+  false
+fi
+```
+
+Verify the batch container's `usnm-quality-follow.service` remains running and
+the host's quality ship/results timers remain enabled and active. Disabling an
+already-inactive converter must not start, stop or restart any of those units.
+Rollback restores only its prior boot enablement with
+`systemctl enable usnm-quality-jpeg-cache-remote.service`; it does not start
+the exhausted list or establish recipe provenance. In particular, never
+relabel the retained `done.txt` as `done-l-q75-r2.txt`.
+
+The following recipe and installation procedure remain available for an
+explicitly selected legacy runner; they are not the current feed's prerequisites.
+
 A quality wave's runner turns each archived page into the worker's `page.jpg`: grayscale,
 JPEG quality 75, and a JPEG2000 master over 4000 px decoded at half resolution. Decoding
-JPEG2000 is most of its CPU, and its Container Apps job has 4 vCPUs (#850; the wave job is
-removed with the Azure server and does not run on-prem yet). The scan-fetch
+JPEG2000 is most of its CPU; the former Container Apps job had 4 vCPUs (#850).
+The scan-fetch
 container holds the masters, so `scripts/ocr-node/quality-jpeg-cache.py` does the same
 conversion there and puts each page in the hand-off container as
 `quality-jpeg/l-q75-r2/<blob name>.jpg`. Blob metadata carries the master's sha256, the

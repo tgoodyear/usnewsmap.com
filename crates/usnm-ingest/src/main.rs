@@ -8,7 +8,8 @@ mod cli;
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
 use cli::{
-    batches, congress, curate, ocr, onprem, pictures, prune, release, run, searchlog_copy, titles,
+    batches, congress, curate, ja_ocr, ocr, onprem, pictures, prune, release, run, searchlog_copy,
+    titles,
 };
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
@@ -60,7 +61,10 @@ enum Command {
     OcrAgreement(ocr::OcrAgreementArgs),
     OcrPrefetchManifest(ocr::OcrPrefetchManifestArgs),
     OcrSync(ocr::OcrSyncArgs),
+    JaOcrRun(ja_ocr::JaOcrRunArgs),
     OcrAlternateStage(ocr::OcrAlternateStageArgs),
+    OcrAlternateDecide(ocr::OcrAlternateDecideArgs),
+    OcrAlternatePreview(ocr::OcrAlternatePreviewArgs),
     OcrSeed(ocr::OcrSeedArgs),
     OcrEnqueue(ocr::OcrEnqueueArgs),
     OcrRequeue(ocr::OcrRequeueArgs),
@@ -83,7 +87,13 @@ const EXIT_SIGTERM: u8 = 143;
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let telemetry = telemetry::init();
-    let result = run(&cli).await;
+    let result = if matches!(&cli.command, Command::JaOcrRun(_)) && !telemetry.is_on() {
+        Err(anyhow::anyhow!(
+            "Japanese OCR supervision requires usable APPLICATIONINSIGHTS_CONNECTION_STRING"
+        ))
+    } else {
+        run(&cli).await
+    };
     // Every failure ends with one JSON line (the whole error chain), which
     // the job-failure alert and the `errors-by-batch` query look for. Its
     // `outcome` is `titles_left` for the expected stop of a full run that
@@ -143,7 +153,10 @@ impl Command {
             Command::OcrAgreement { .. } => "ocr-agreement",
             Command::OcrPrefetchManifest { .. } => "ocr-prefetch-manifest",
             Command::OcrSync { .. } => "ocr-sync",
+            Command::JaOcrRun { .. } => "ja-ocr-run",
             Command::OcrAlternateStage { .. } => "ocr-alternate-stage",
+            Command::OcrAlternateDecide { .. } => "ocr-alternate-decide",
+            Command::OcrAlternatePreview { .. } => "ocr-alternate-preview",
             Command::OcrSeed { .. } => "ocr-seed",
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
@@ -182,7 +195,10 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrAgreement { .. }
         | Command::OcrPrefetchManifest { .. }
         | Command::OcrSync { .. }
+        | Command::JaOcrRun { .. }
         | Command::OcrAlternateStage { .. }
+        | Command::OcrAlternateDecide { .. }
+        | Command::OcrAlternatePreview { .. }
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
@@ -226,6 +242,9 @@ fn outcome(result: &anyhow::Result<Option<Published>>) -> (Outcome, Option<Strin
 }
 
 async fn run(cli: &Cli) -> anyhow::Result<()> {
+    if let Command::JaOcrRun(args) = &cli.command {
+        return ja_ocr::ja_ocr_run(args).await.map(drop);
+    }
     let start = tokio::time::Instant::now();
     let state = state(&cli.stores)?;
     let report = match first_step(&cli.command) {
@@ -265,9 +284,14 @@ async fn command(
         Command::OcrAgreement(args) => ocr::ocr_agreement_command(cli, start, args).await,
         Command::OcrPrefetchManifest(args) => ocr::ocr_prefetch_manifest_command(cli, args).await,
         Command::OcrSync(args) => ocr::ocr_sync_command(cli, state, start, args).await,
+        Command::JaOcrRun(args) => ja_ocr::ja_ocr_run(args).await,
         Command::OcrAlternateStage(args) => {
             ocr::ocr_alternate_stage_command(cli, state, args).await
         }
+        Command::OcrAlternateDecide(args) => {
+            ocr::ocr_alternate_decide_command(cli, state, args).await
+        }
+        Command::OcrAlternatePreview(args) => ocr::ocr_alternate_preview_command(cli, args).await,
         Command::OcrSeed(args) => ocr::ocr_seed_command(cli, state, start, args).await,
         Command::OcrEnqueue(args) => ocr::ocr_enqueue_command(cli, state, args).await,
         Command::OcrRequeue(args) => ocr::ocr_requeue_command(cli, state, args).await,

@@ -386,6 +386,39 @@ pub(super) fn downloads(v: &View, o: &mut String) {
     } else if let Some(e) = &f.pacer.error {
         let _ = write!(o, "<p class=\"err\">LoC pacer: {}</p>", esc(e));
     }
+    if f.publish.configured {
+        o.push_str("<h3>Publish fetched</h3>");
+        if let Some(p) = &f.publish.value {
+            let state = p.state(now);
+            let _ = write!(
+                o,
+                "<p>{} Last completion: {}. Systemd result: {}; exit status: {}.</p>",
+                badge(
+                    match state {
+                        "succeeded" => "good",
+                        "running" => "warning",
+                        _ => "critical",
+                    },
+                    state,
+                ),
+                p.finished_at
+                    .map_or_else(|| "not observed".to_owned(), time),
+                esc(p.result.as_deref().unwrap_or("not observed")),
+                p.exit_status
+                    .map_or_else(|| "not observed".to_owned(), |s| s.to_string()),
+            );
+            if let Some(error) = &p.error {
+                let _ = write!(o, "<p class=\"err\">{}</p>", esc(error));
+            }
+        } else if let Some(error) = &f.publish.error {
+            let _ = write!(
+                o,
+                "<p class=\"err\">Publisher metadata unknown: {}</p>",
+                esc(error)
+            );
+        }
+        o.push_str("<p class=\"note\">Completion is observed from systemd, not inferred from fetched markers. A successful run does not prove that new pages were published. Metadata may be unavailable after a restart.</p>");
+    }
     let _ = write!(
         o,
         "<table><tr><th></th><th class=\"r\">Pages</th><th class=\"r\">Pages/h</th><th class=\"r\">MB/s</th><th class=\"r\">Data</th><th class=\"r\">LoC holds</th><th class=\"r\">Failures</th></tr>\
@@ -862,7 +895,9 @@ pub(super) fn queues(v: &View, o: &mut String) {
                 );
             }
             o.push_str("</table>");
-            if q.dead_letters.is_empty() {
+            if v.azure.queues_metrics_only {
+                o.push_str("<p class=\"muted\">Dead-letter message bodies are not read by this metrics-only source.</p>");
+            } else if q.dead_letters.is_empty() {
                 o.push_str("<p class=\"muted\">No dead letters visible.</p>");
             } else {
                 let _ = write!(
@@ -893,7 +928,19 @@ pub(super) fn queues(v: &View, o: &mut String) {
             }
         }
         _ => {
-            o.push_str("<p class=\"muted\">No queue counts: no configured worker reports them.</p>")
+            if let Some(error) = &v.azure.queues_error {
+                let _ = write!(
+                    o,
+                    "<p class=\"err\">Queue metrics unavailable: {}</p>",
+                    esc(error)
+                );
+            } else if v.azure.queues_metrics_only {
+                o.push_str("<p class=\"muted\">No successful pgmq observation yet.</p>");
+            } else {
+                o.push_str(
+                    "<p class=\"muted\">No queue counts: no configured worker reports them.</p>",
+                );
+            }
         }
     }
     let _ = write!(

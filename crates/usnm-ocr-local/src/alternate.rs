@@ -93,7 +93,7 @@ pub struct Receipt {
     pub selected: bool,
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(super) fn digest(bytes: &[u8]) -> String {
     usnm_core::digest::hex(&Sha256::digest(bytes))
 }
 
@@ -404,7 +404,7 @@ fn validate(binding: &Binding, input: &Inputs<'_>) -> anyhow::Result<Receipt> {
 }
 
 /// A lost response or interrupted write can replay only byte-identical objects.
-async fn put_exact(
+pub(super) async fn put_exact(
     store: &dyn ObjectStore,
     path: &str,
     bytes: &[u8],
@@ -469,6 +469,115 @@ pub async fn stage(
     let receipt = result?;
     unlocked?;
     Ok(receipt)
+}
+
+/// Read and revalidate a committed candidate, including every retained artifact.
+pub async fn read(
+    curated: &dyn ObjectStore,
+    doc_id: &str,
+    candidate: &str,
+) -> anyhow::Result<Receipt> {
+    ensure!(
+        PageKey::from_doc_id(doc_id)?.doc_id() == doc_id,
+        "noncanonical page identity"
+    );
+    ensure!(
+        candidate.len() == 64
+            && candidate
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "invalid candidate identity"
+    );
+    let prefix = format!("{ROOT}/alternates/{doc_id}/{candidate}");
+    let objects = curated.list_info(&prefix).await?;
+    let get = |name, max| {
+        let path = format!("{prefix}/{name}");
+        let object = objects.iter().find(|o| o.path == path);
+        async move {
+            read_retained(
+                curated,
+                object.context("candidate has no committed receipt or retained artifact")?,
+                max,
+            )
+            .await
+        }
+    };
+    let bytes = get("receipt.json", 65536).await?;
+    let receipt: Receipt = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("invalid retained staging receipt JSON"))?;
+    ensure!(
+        receipt.binding.doc_id == doc_id && receipt.candidate == candidate,
+        "candidate receipt identity mismatch"
+    );
+    let image = get("source-image", MAX_IMAGE as u64).await?;
+    let baseline = get("baseline.txt", checks::MAX_TEXT_BYTES as u64).await?;
+    let alto = get("source.alto.xml", checks::MAX_ALTO_BYTES).await?;
+    let text = get("source.txt", checks::MAX_TEXT_BYTES as u64).await?;
+    let registration = get("registration", MAX_EVIDENCE as u64).await?;
+    let rights = get("rights", MAX_EVIDENCE as u64).await?;
+    let checked = validate(
+        &receipt.binding,
+        &Inputs {
+            image: &image,
+            baseline: &baseline,
+            alto: &alto,
+            text: &text,
+            registration: &registration,
+            rights: &rights,
+        },
+    )
+    .map_err(|_| {
+        anyhow::anyhow!("retained alternate refused: invalid binding or source artifacts")
+    })?;
+    ensure!(
+        checked == receipt,
+        "candidate receipt differs from retained artifacts"
+    );
+    Ok(receipt)
+}
+
+pub(super) async fn read_identity(
+    curated: &dyn ObjectStore,
+    doc_id: &str,
+    candidate: &str,
+) -> anyhow::Result<Receipt> {
+    ensure!(
+        PageKey::from_doc_id(doc_id)?.doc_id() == doc_id
+            && candidate.len() == 64
+            && candidate
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "invalid candidate identity"
+    );
+    let prefix = format!("{ROOT}/alternates/{doc_id}/{candidate}");
+    let objects = curated.list_info(&prefix).await?;
+    let object = objects
+        .iter()
+        .find(|o| o.path == format!("{prefix}/receipt.json"))
+        .context("candidate has no committed staging receipt")?;
+    let receipt: Receipt = serde_json::from_slice(&read_retained(curated, object, 65536).await?)
+        .map_err(|_| anyhow::anyhow!("invalid retained staging receipt JSON"))?;
+    ensure!(
+        receipt.binding.doc_id == doc_id
+            && receipt.candidate == candidate
+            && receipt.candidate == digest(&serde_json::to_vec(&receipt.binding)?)
+            && receipt.format == "usnm-ocr-alternate-stage/1"
+            && !receipt.selected,
+        "candidate receipt identity mismatch"
+    );
+    Ok(receipt)
+}
+
+pub(super) async fn read_retained(
+    curated: &dyn ObjectStore,
+    object: &usnm_store::ObjectInfo,
+    max: u64,
+) -> anyhow::Result<Vec<u8>> {
+    ensure!(object.size <= max, "retained object exceeds size bound");
+    curated
+        .get_if_match(&object.path, &object.etag, max)
+        .await?
+        .context("retained object missing or changed during read")
 }
 
 #[cfg(test)]
@@ -568,6 +677,18 @@ mod tests {
             rights["alto_sha256"] = self.binding.alto_sha256.clone().into();
             self.rights = serde_json::to_vec(&rights).unwrap();
             self.binding.rights_sha256 = digest(&self.rights);
+        }
+
+        fn clear_synthetic_rights(&mut self) {
+            let mut rights: serde_json::Value = serde_json::from_slice(&self.rights).unwrap();
+            for name in ["text", "alto", "layout"] {
+                rights[name] = "cleared".into();
+            }
+            self.rights = serde_json::to_vec(&rights).unwrap();
+            self.binding.rights_sha256 = digest(&self.rights);
+            self.binding.text_rights = Rights::Cleared;
+            self.binding.alto_rights = Rights::Cleared;
+            self.binding.layout_rights = Rights::Cleared;
         }
     }
 
@@ -856,5 +977,439 @@ mod tests {
                 .unwrap(),
             b"conflicting"
         );
+    }
+
+    #[tokio::test]
+    async fn alternate_decisions_keep_evidence_and_revoke_to_baseline_without_release_effect() {
+        use crate::alternate_decisions::{self as decisions, Action, Decision, Subject};
+        let temp = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(temp.path().to_str().unwrap()).unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        let mut f = Fixture::new("first reading");
+        f.clear_synthetic_rights();
+        let a = stage(&state, "stage", store.as_ref(), &f.binding, &f.inputs())
+            .await
+            .unwrap();
+        let mut other = Fixture::new("second reading");
+        other.clear_synthetic_rights();
+        let b = stage(
+            &state,
+            "stage",
+            store.as_ref(),
+            &other.binding,
+            &other.inputs(),
+        )
+        .await
+        .unwrap();
+        let subject = Subject {
+            doc_id: f.binding.doc_id.clone(),
+            source_image_sha256: f.binding.source_image_sha256.clone(),
+            baseline_sha256: f.binding.baseline_sha256.clone(),
+        };
+        assert!(decisions::read(store.as_ref(), &subject)
+            .await
+            .unwrap()
+            .is_none());
+        let comparison = |candidate: &str| {
+            serde_json::to_vec(&serde_json::json!({
+            "subject":subject,"candidate":candidate,"reference_sha256":digest(b"synthetic human reference"),
+            "reference_status":"human-verified","reviewed_by":"synthetic-fixture-only",
+            "compatibility_accepted":true,
+            "legacy_ws_v1":{"reference_chars":100,"baseline_edits":20,"candidate_edits":10},
+            "raw_v1":{"reference_chars":110,"baseline_edits":25,"candidate_edits":12}
+        })).unwrap()
+        };
+        let evidence_a = comparison(&a.candidate);
+        let mut request = Decision {
+            subject: subject.clone(),
+            previous: None,
+            action: Action::Select {
+                candidate: a.candidate.clone(),
+                comparison_sha256: digest(&evidence_a),
+            },
+            reason: "Synthetic reviewed comparison, not production acceptance".into(),
+            evidence: "https://example.invalid/synthetic-review".into(),
+        };
+        let first = decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.selected, Some(a.candidate.clone()));
+        assert_eq!(
+            first,
+            decisions::decide(
+                &state,
+                "decide",
+                store.as_ref(),
+                &request,
+                Some(&evidence_a)
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            decisions::read(store.as_ref(), &subject).await.unwrap(),
+            Some(first.clone())
+        );
+        let evidence_b = comparison(&b.candidate);
+        request.action = Action::Select {
+            candidate: b.candidate.clone(),
+            comparison_sha256: digest(&evidence_b),
+        };
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_b)
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("stale"));
+        request.previous = Some(first.id);
+        let second = decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_b),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.selected, Some(b.candidate.clone()));
+        request.previous = Some(second.id);
+        request.action = Action::Revoke {
+            candidate: b.candidate.clone(),
+        };
+        let revoked = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(revoked.selected, None);
+        request.previous = Some(revoked.id.clone());
+        request.action = Action::Select {
+            candidate: b.candidate.clone(),
+            comparison_sha256: digest(&evidence_b),
+        };
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_b)
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("revoked"));
+        request.action = Action::Select {
+            candidate: a.candidate.clone(),
+            comparison_sha256: digest(&evidence_a),
+        };
+        let restored = decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a),
+        )
+        .await
+        .unwrap();
+        let evidence_path = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/evidence/{}.json",
+            subject.doc_id,
+            subject.source_image_sha256,
+            subject.baseline_sha256,
+            digest(&evidence_a)
+        );
+        store
+            .put(&evidence_path, b"{}".to_vec(), "application/json")
+            .await
+            .unwrap();
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a),
+        )
+        .await
+        .is_err());
+        store
+            .put(&evidence_path, evidence_a.clone(), "application/json")
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions::read(store.as_ref(), &subject).await.unwrap(),
+            Some(restored.clone())
+        );
+        let commit_prefix = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/commit",
+            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
+        );
+        let commits = store.list_info(&commit_prefix).await.unwrap();
+        let last_commit = commits.last().unwrap();
+        assert!(store
+            .delete_if_match(&last_commit.path, &last_commit.etag)
+            .await
+            .unwrap());
+        let source_path = format!(
+            "{ROOT}/alternates/{}/{}/source.txt",
+            subject.doc_id, a.candidate
+        );
+        store
+            .put(
+                &source_path,
+                b"damaged pending selection".to_vec(),
+                "text/plain",
+            )
+            .await
+            .unwrap();
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a)
+        )
+        .await
+        .is_err());
+        request.previous = Some(restored.id);
+        request.action = Action::RetainBaseline;
+        let baseline = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(baseline.selected, None);
+        let commits = store.list_info(&commit_prefix).await.unwrap();
+        for object in commits.iter().rev().take(2) {
+            assert!(store
+                .delete_if_match(&object.path, &object.etag)
+                .await
+                .unwrap());
+        }
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        assert_eq!(
+            decisions::decide(&state, "decide", store.as_ref(), &request, None)
+                .await
+                .unwrap(),
+            baseline
+        );
+        store
+            .put(&source_path, f.text.clone(), "text/plain")
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions::read(store.as_ref(), &subject).await.unwrap(),
+            Some(baseline)
+        );
+        assert_eq!(
+            read(store.as_ref(), &subject.doc_id, &a.candidate)
+                .await
+                .unwrap(),
+            a
+        );
+        assert_eq!(
+            read(store.as_ref(), &subject.doc_id, &b.candidate)
+                .await
+                .unwrap(),
+            b
+        );
+        assert_eq!(
+            crate::replace::Listing::list(store.as_ref())
+                .await
+                .unwrap()
+                .parts(),
+            0
+        );
+        let history_path = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/history",
+            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
+        );
+        let objects = store.list_info(&history_path).await.unwrap();
+        let last = objects.last().unwrap();
+        let last_bytes = store.get(&last.path).await.unwrap().unwrap();
+        assert!(store.delete_if_match(&last.path, &last.etag).await.unwrap());
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        store
+            .put_new(&last.path, last_bytes, "application/json")
+            .await
+            .unwrap();
+        let commits = store.list_info(&commit_prefix).await.unwrap();
+        let last_commit = commits.last().unwrap();
+        assert!(store
+            .delete_if_match(&last_commit.path, &last_commit.etag)
+            .await
+            .unwrap());
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+        let mut wrong_recovery = request.clone();
+        wrong_recovery.reason = "not the pending decision".into();
+        assert!(
+            decisions::decide(&state, "decide", store.as_ref(), &wrong_recovery, None)
+                .await
+                .is_err()
+        );
+        let recovered = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(recovered.selected, None);
+        request.previous = Some(recovered.id);
+        for index in objects.len()..254 {
+            request.reason = format!("Synthetic bounded-history event {index}");
+            let record = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+                .await
+                .unwrap();
+            request.previous = Some(record.id);
+        }
+        request.action = Action::Select {
+            candidate: a.candidate.clone(),
+            comparison_sha256: digest(&evidence_a),
+        };
+        let penultimate = decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a),
+        )
+        .await
+        .unwrap();
+        request.previous = Some(penultimate.id);
+        assert!(decisions::decide(
+            &state,
+            "decide",
+            store.as_ref(),
+            &request,
+            Some(&evidence_a)
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("final decision slot"));
+        request.action = Action::RetainBaseline;
+        let final_baseline = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(final_baseline.selected, None);
+        for object in store.list_info(&history_path).await.unwrap() {
+            assert!(store
+                .delete_if_match(&object.path, &object.etag)
+                .await
+                .unwrap());
+        }
+        assert!(decisions::read(store.as_ref(), &subject).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn alternate_decisions_refuse_unknown_rights_and_misbound_comparison() {
+        use crate::alternate_decisions::{self as decisions, Action, Decision, Subject};
+        let temp = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(temp.path().to_str().unwrap()).unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        let mut f = Fixture::new("reading");
+        let mut a = stage(&state, "stage", store.as_ref(), &f.binding, &f.inputs())
+            .await
+            .unwrap();
+        let subject = Subject {
+            doc_id: f.binding.doc_id.clone(),
+            source_image_sha256: f.binding.source_image_sha256.clone(),
+            baseline_sha256: f.binding.baseline_sha256.clone(),
+        };
+        let mut request = Decision {
+            subject: subject.clone(),
+            previous: None,
+            action: Action::Select {
+                candidate: a.candidate,
+                comparison_sha256: digest(b"{}"),
+            },
+            reason: "Synthetic decision".into(),
+            evidence: "Synthetic evidence".into(),
+        };
+        assert!(
+            decisions::decide(&state, "decide", store.as_ref(), &request, Some(b"{}"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("rights")
+        );
+        assert!(decisions::read(store.as_ref(), &subject)
+            .await
+            .unwrap()
+            .is_none());
+        f.clear_synthetic_rights();
+        a = stage(&state, "stage", store.as_ref(), &f.binding, &f.inputs())
+            .await
+            .unwrap();
+        let mut report = serde_json::json!({
+            "subject":subject,"candidate":a.candidate,
+            "reference_sha256":digest(b"synthetic"),"reference_status":"machine-output",
+            "reviewed_by":"synthetic","compatibility_accepted":true,
+            "legacy_ws_v1":{"reference_chars":100,"baseline_edits":20,"candidate_edits":10},
+            "raw_v1":{"reference_chars":100,"baseline_edits":20,"candidate_edits":10}});
+        for case in 0..3 {
+            if case == 1 {
+                report["reference_status"] = "human-verified".into();
+                report["raw_v1"]["candidate_edits"] = 30.into();
+            }
+            if case == 2 {
+                report["raw_v1"]["candidate_edits"] = 10.into();
+                report["subject"]["source_image_sha256"] = "0".repeat(64).into();
+            }
+            let bytes = serde_json::to_vec(&report).unwrap();
+            request.action = Action::Select {
+                candidate: a.candidate.clone(),
+                comparison_sha256: digest(&bytes),
+            };
+            assert!(
+                decisions::decide(&state, "decide", store.as_ref(), &request, Some(&bytes))
+                    .await
+                    .is_err()
+            );
+            assert!(decisions::read(store.as_ref(), &subject)
+                .await
+                .unwrap()
+                .is_none());
+        }
+        let prefix = format!("{ROOT}/alternates/{}/{}", subject.doc_id, a.candidate);
+        store
+            .put(
+                &format!("{prefix}/source.txt"),
+                b"corrupt".to_vec(),
+                "text/plain",
+            )
+            .await
+            .unwrap();
+        assert!(read(store.as_ref(), &subject.doc_id, &a.candidate)
+            .await
+            .is_err());
+        request.action = Action::Reject {
+            candidate: a.candidate.clone(),
+        };
+        let rejected = decisions::decide(&state, "decide", store.as_ref(), &request, None)
+            .await
+            .unwrap();
+        assert_eq!(rejected.selected, None);
+        let history_gap = format!(
+            "{ROOT}/alternate-decisions/{}/{}/{}/history/000002.json",
+            subject.doc_id, subject.source_image_sha256, subject.baseline_sha256
+        );
+        store
+            .put_new(
+                &history_gap,
+                serde_json::to_vec(&rejected).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        assert!(decisions::read(store.as_ref(), &subject)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("gap"));
     }
 }

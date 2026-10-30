@@ -53,6 +53,10 @@ pub struct Queued {
     /// The UTC request day, for the daily cap. Queue ordering uses `queued_at`.
     pub request_day: Option<chrono::NaiveDate>,
     pub queued_at: DateTime<Utc>,
+    /// Exact message time for newly queued work, including BOINC retries.
+    /// Legacy rows omit it; queue time can differ from ledger time.
+    pub retry_message_at: Option<DateTime<Utc>>,
+    pub retry_run: Option<String>,
 }
 
 pub const IMPORTED: &str = "imported";
@@ -76,6 +80,7 @@ pub struct Outcome {
     pub source: String,
     pub at: DateTime<Utc>,
     pub run: String,
+    pub message_sha256: Option<String>,
 }
 
 fn queued_schema() -> SchemaRef {
@@ -94,6 +99,12 @@ fn queued_schema() -> SchemaRef {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             false,
         ),
+        Field::new(
+            "retry_message_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new("retry_run", DataType::Utf8, true),
     ]))
 }
 
@@ -111,6 +122,7 @@ fn outcome_schema() -> SchemaRef {
             false,
         ),
         s("run", false),
+        s("message_sha256", true),
     ]))
 }
 
@@ -135,6 +147,8 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
     let mut attempt = Int32Builder::new();
     let mut request_day = StringBuilder::new();
     let mut at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
+    let mut retry_at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
+    let mut retry_run = StringBuilder::new();
     for r in rows {
         doc_id.append_value(&r.doc_id);
         batch.append_value(&r.batch);
@@ -145,6 +159,8 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
         attempt.append_value(i32::try_from(r.attempt).unwrap_or(i32::MAX));
         request_day.append_option(r.request_day.map(|d| d.format("%Y-%m-%d").to_string()));
         at.append_value(r.queued_at.timestamp_micros());
+        retry_at.append_option(r.retry_message_at.map(|at| at.timestamp_micros()));
+        retry_run.append_option(r.retry_run.as_deref());
     }
     write(
         queued_schema(),
@@ -158,6 +174,8 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
             Arc::new(attempt.finish()),
             Arc::new(request_day.finish()),
             Arc::new(at.finish()),
+            Arc::new(retry_at.finish()),
+            Arc::new(retry_run.finish()),
         ],
     )
 }
@@ -170,6 +188,7 @@ pub fn encode_outcomes(rows: &[Outcome]) -> anyhow::Result<Vec<u8>> {
     let mut source = StringBuilder::new();
     let mut at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
     let mut run = StringBuilder::new();
+    let mut message = StringBuilder::new();
     for r in rows {
         doc_id.append_value(&r.doc_id);
         outcome.append_value(&r.outcome);
@@ -178,6 +197,7 @@ pub fn encode_outcomes(rows: &[Outcome]) -> anyhow::Result<Vec<u8>> {
         source.append_value(&r.source);
         at.append_value(r.at.timestamp_micros());
         run.append_value(&r.run);
+        message.append_option(r.message_sha256.as_deref());
     }
     write(
         outcome_schema(),
@@ -189,6 +209,7 @@ pub fn encode_outcomes(rows: &[Outcome]) -> anyhow::Result<Vec<u8>> {
             Arc::new(source.finish()),
             Arc::new(at.finish()),
             Arc::new(run.finish()),
+            Arc::new(message.finish()),
         ],
     )
 }
@@ -225,6 +246,24 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
             })
             .transpose()?;
         let at = col!(b, "queued_at", TimestampMicrosecondArray);
+        let retry_run = b
+            .column_by_name("retry_run")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("column `retry_run` has an unexpected type")
+            })
+            .transpose()?;
+        let retry_at = b
+            .column_by_name("retry_message_at")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .context("column `retry_message_at` has an unexpected type")
+            })
+            .transpose()?;
         for i in 0..b.num_rows() {
             let request_day = request_day
                 .filter(|days| !days.is_null(i))
@@ -243,6 +282,12 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
                 attempt: u32::try_from(attempt.value(i)).unwrap_or(0),
                 request_day,
                 queued_at: from_micros(at.value(i)),
+                retry_message_at: retry_at
+                    .filter(|times| !times.is_null(i))
+                    .map(|times| from_micros(times.value(i))),
+                retry_run: retry_run
+                    .filter(|runs| !runs.is_null(i))
+                    .map(|runs| runs.value(i).to_owned()),
             });
         }
     }
@@ -260,6 +305,15 @@ pub fn decode_outcomes(bytes: Bytes) -> anyhow::Result<Vec<Outcome>> {
         let source = col!(b, "source", StringArray);
         let at = col!(b, "at", TimestampMicrosecondArray);
         let run = col!(b, "run", StringArray);
+        let message = b
+            .column_by_name("message_sha256")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("column `message_sha256` has an unexpected type")
+            })
+            .transpose()?;
         let opt = |a: &StringArray, i: usize| (!a.is_null(i)).then(|| a.value(i).to_owned());
         for i in 0..b.num_rows() {
             out.push(Outcome {
@@ -270,6 +324,7 @@ pub fn decode_outcomes(bytes: Bytes) -> anyhow::Result<Vec<Outcome>> {
                 source: source.value(i).to_owned(),
                 at: from_micros(at.value(i)),
                 run: run.value(i).to_owned(),
+                message_sha256: message.and_then(|m| opt(m, i)),
             });
         }
     }
@@ -279,6 +334,7 @@ pub fn decode_outcomes(bytes: Bytes) -> anyhow::Result<Vec<Outcome>> {
 /// The ledger's latest state per page.
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
+    message_times: HashMap<(String, chrono::NaiveDate), DateTime<Utc>>,
     /// Each page's latest queued row.
     pub queued: HashMap<String, Queued>,
     /// Each page's latest outcome.
@@ -300,11 +356,38 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    /// Lease-serialized reservation/settlement order, independent of request day
+    /// and robust to clock rollback and equal-microsecond writes.
+    pub fn next_event_time(
+        &self,
+        doc_id: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        let mut micros = at.timestamp_micros();
+        let previous = self
+            .queued
+            .get(doc_id)
+            .map(|q| q.queued_at)
+            .into_iter()
+            .chain(self.outcomes.get(doc_id).map(|o| o.at))
+            .map(|at| at.timestamp_micros())
+            .max();
+        if let Some(previous) = previous.filter(|previous| *previous >= micros) {
+            micros = previous.checked_add(1).context("ledger order exhausted")?;
+        }
+        DateTime::from_timestamp_micros(micros).context("ledger time is out of range")
+    }
+
     pub fn add_queued(&mut self, q: Queued) {
         self.add_queued_from_run(q, "");
     }
 
     fn add_queued_from_run(&mut self, q: Queued, run: &str) {
+        let at = q.retry_message_at.unwrap_or(q.queued_at);
+        self.message_times
+            .entry((q.doc_id.clone(), at.date_naive()))
+            .and_modify(|previous| *previous = (*previous).max(at))
+            .or_insert(at);
         if q.plan == "hit-results" {
             let day = q.request_day.unwrap_or_else(|| q.queued_at.date_naive());
             self.user_requests_by_day
@@ -323,6 +406,36 @@ impl Ledger {
                 self.queued.insert(q.doc_id.clone(), q);
             }
         }
+    }
+
+    /// Mint a distinct microsecond fence across retained reservations, including
+    /// other plans and historical rows. Closed hit requests keep their UTC day.
+    pub fn next_message_time(
+        &self,
+        doc_id: &str,
+        at: DateTime<Utc>,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        let day = at.date_naive();
+        let mut next = DateTime::from_timestamp_micros(at.timestamp_micros())
+            .context("message timestamp is out of range")?;
+        if let Some(previous) = self.message_times.get(&(doc_id.to_owned(), day)) {
+            if *previous >= next {
+                next = previous
+                    .checked_add_signed(chrono::Duration::microseconds(1))
+                    .context("message timestamp exhausted")?;
+            }
+        }
+        // Historical producers emitted whole seconds, including request-day midnight.
+        if next.timestamp_subsec_micros() == 0 {
+            next = next
+                .checked_add_signed(chrono::Duration::microseconds(1))
+                .context("message timestamp exhausted")?;
+        }
+        anyhow::ensure!(
+            next.date_naive() == day,
+            "message identities exhausted for UTC day"
+        );
+        Ok(next)
     }
 
     pub fn add_outcome(&mut self, o: Outcome) {

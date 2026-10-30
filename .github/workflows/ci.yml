@@ -41,6 +41,9 @@ jobs:
     outputs:
       rust: ${{ steps.f.outputs.rust }}
       quickwit: ${{ steps.f.outputs.quickwit }}
+      quickwit_parity: ${{ steps.f.outputs.quickwit_parity }}
+      quickwit_pipeline: ${{ steps.f.outputs.quickwit_pipeline }}
+      quickwit_suites: ${{ steps.f.outputs.quickwit_suites }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
       e2e: ${{ steps.f.outputs.e2e }}
@@ -356,8 +359,8 @@ jobs:
       - run: cargo test -p usnm-core --test page_language_samples --locked -- --ignored
 
   # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
-  # run offline on Node's own test runner with no dependencies, and shellcheck of its deploy
-  # script. No package.json and no npm cache, so it does not use setup-node-web.
+  # run offline on Node's own test runner, native Cache API/HTMLRewriter integration with
+  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache.
   edge:
     name: edge (fallback worker tests)
     needs: changes
@@ -371,6 +374,9 @@ jobs:
         with:
           node-version: 24
       - run: node --test edge/fallback-worker/*.test.mjs
+      - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
+        env:
+          WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
 
   quickwit-tests:
@@ -381,7 +387,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [parity, pipeline]
+        suite: ${{ fromJSON(needs.changes.outputs.quickwit_suites) }}
     # Upstream's v0.9.1 release binary, not our build (ADR-0013): our one
     # commit changes only the Azure Blob client, which these tests don't
     # reach (they index and search local files), and building ours takes an
@@ -431,7 +437,7 @@ jobs:
     if: always() && needs.changes.outputs.quickwit == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Both isolated suites must pass
+      - name: All selected isolated suites must pass
         env:
           RESULT: ${{ needs.quickwit-tests.result }}
         run: test "$RESULT" = success
@@ -841,6 +847,7 @@ jobs:
       - name: The OCR node scripts pass their image tests and shellcheck
         if: needs.changes.outputs.infra == 'true'
         run: |
+          python3 -m unittest -v scripts/ocr-node/test_install_data_flow.py
           python3 -m pip install --quiet --break-system-packages pillow==13.0.0
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
@@ -851,7 +858,8 @@ jobs:
         if: needs.changes.outputs.infra == 'true'
         run: |
           shellcheck -x -S warning scripts/boinc/start-boinc-bridge.sh scripts/boinc/provision-boinc.sh scripts/boinc/boinc-app-release.sh \
-            scripts/boinc/onprem/image-security-check.sh
+            scripts/boinc/onprem/image-security-check.sh scripts/boinc/onprem/lan-tls/*.sh
+          sudo python3 -m unittest -v scripts/boinc/onprem/test_lan_tls_sync.py
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).
       - name: Each environment's committed settings match infra/env/schema.json
@@ -907,6 +915,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install pinned picture evaluation dependency
+        run: python -m pip install -r scripts/pictures/requirements.txt
       - name: Install pinned Bicep for ARM contract tests
         run: scripts/ci/install-bicep.sh
       - name: Every selected script module runs in exactly one isolated shard

@@ -49,6 +49,7 @@
 //! Logs carry page ids, paths, counts and reason codes, never text.
 
 pub mod alternate;
+pub mod alternate_decisions;
 pub mod checks;
 pub mod enqueue;
 pub mod ledger;

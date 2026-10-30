@@ -614,6 +614,76 @@ async fn get_if_none_match(
 }
 
 #[tokio::test]
+async fn site_embeds_metadata_and_summary_from_the_served_snapshot() {
+    let mut cfg = config();
+    let dir = site_dir("metadata");
+    std::fs::write(
+        dir.join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    cfg.site_dir = Some(dir);
+    let mut rd = refdata().await;
+    rd.pages = 23_766_177;
+    rd.current.bounds.from = "1736-01-01".parse().unwrap();
+    rd.current.bounds.to = "1963-12-31".parse().unwrap();
+    rd.current.published_at = "</script><script>alert(1)</script>".into();
+    let s = Arc::new(AppState::new(cfg, Arc::new(fixture_backend()), rd));
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    let mut home_tag = String::new();
+    for path in [
+        "/",
+        "/index.html",
+        "/search/gold",
+        "/datasets",
+        "/privacy",
+        "/credits",
+    ] {
+        let (status, headers, html) = get_site(&s, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        let embedded = html
+            .split_once("<script id=\"site-meta\" type=\"application/json\">")
+            .unwrap()
+            .1
+            .split_once("</script>")
+            .unwrap()
+            .0;
+        assert_eq!(serde_json::from_str::<Value>(embedded).unwrap(), meta);
+        assert!(
+            !embedded.contains('<'),
+            "script data cannot close its element"
+        );
+        assert!(
+            html.contains(
+                "<p id=\"index-summary\">23,766,177 pages from 6 newspapers, 1736–1963.</p>"
+            ),
+            "{path}"
+        );
+        if path == "/" {
+            home_tag = header_str(&headers, header::ETAG).to_owned();
+        }
+    }
+
+    // A publish updates both the HTML and its validator without a frontend build.
+    let mut rd = refdata().await;
+    rd.current.index_version = "fixture-v2".into();
+    rd.pages = 1;
+    rd.titles = rd.titles.into_iter().take(1).collect();
+    rd.current.bounds.from = "1963-01-01".parse().unwrap();
+    rd.current.bounds.to = "1963-12-31".parse().unwrap();
+    s.snapshot.store(Arc::new(usnm_api::Snapshot {
+        refdata: rd,
+        backend: s.snapshot.load().backend.clone(),
+        congress_dropped: false,
+    }));
+    let (status, headers, html) = get_if_none_match(&s, "/", &home_tag).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(header_str(&headers, header::ETAG), home_tag);
+    assert!(html.contains("<p id=\"index-summary\">1 page from 1 newspaper, 1963.</p>"));
+    assert!(html.contains("\"index_version\":\"fixture-v2\""));
+}
+
+#[tokio::test]
 async fn the_apps_pages_revalidate_with_an_etag() {
     let mut cfg = config();
     let dir = site_dir("etag");
@@ -726,7 +796,7 @@ async fn uncurated_searches_are_noindex_and_site_pages_are_indexable() {
         "/",
         "/?t=1896-07-01",
         "/favicon.svg",
-        "/search/whigs",
+        "/search/cross-of-gold",
         "/datasets",
         "/credits",
     ] {
@@ -777,6 +847,29 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     );
     assert!(body.contains("cross of gold"), "{body}");
     assert!(body.contains("<ol><li>"), "{body}");
+    assert!(body.contains(r#"<div id="root"></div><div id="search-landing">"#));
+    assert!(!body.contains(r#"id="site-fallback""#));
+    assert!(!body.contains(r#"class="visually-hidden" inert"#));
+    assert!(body.contains(r#"src="/search-map.png?q=cross+of+gold""#));
+    assert!(body.contains("Map and timeline of newspaper matches for cross of gold"));
+    assert!(!body.contains("Explore interactive map"));
+    assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
+    for href in ["/privacy", "/datasets", "/credits"] {
+        assert!(body.contains(&format!("href=\"{href}\"")), "{href}");
+    }
+    for dynamic in [
+        "/search/not-a-listed-search",
+        "/search/cross-of-gold?from=1896-06-01",
+    ] {
+        let (status, headers, body) = get_site(&s, dynamic, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            header_str(&headers, header::HeaderName::from_static("x-robots-tag")),
+            "noindex"
+        );
+        assert!(!body.contains(r#"id="search-landing""#), "{dynamic}");
+        assert!(body.contains(r#"<div id="root">"#), "{dynamic}");
+    }
     let resp = app(s.clone())
         .oneshot(
             Request::builder()
@@ -800,8 +893,12 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         .to_bytes()
         .is_empty());
     let (_, _, home) = get_site(&s, "/", None).await;
-    assert!(home.contains(r#"<nav aria-label="Common newspaper searches">"#));
-    assert!(home.contains(r#"<a href="/search/whigs">whigs</a>"#));
+    assert!(home.contains(r#"<nav id="common-searches" aria-label="Common newspaper searches">"#));
+    assert!(home.contains(r#"<details><summary>Show newspaper searches</summary>"#));
+    assert!(home.contains(r#"<ul class="examples">"#));
+    assert!(home.contains(
+        r#"<a class="example" href="/search/cross-of-gold"><strong>cross of gold</strong>"#
+    ));
 }
 
 #[tokio::test]
@@ -815,12 +912,16 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
     .unwrap();
     let mut doc = load_docs("pages-base-fixture").remove(0);
     doc.text = "Reader's & Co. <archive>. cross of gold.".to_owned();
+    doc.ocr_source = Some("usnm-tesseract".to_owned());
+    doc.ocr_engine = Some("tesseract-test/model".to_owned());
     let mut backend = MemoryBackend::new();
     backend.add_index("pages-base-fixture", vec![doc]);
     backend.add_index("pages-delta-fixture-1", vec![]);
     let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
     let (status, _, body) = get_site(&s, "/search/cross-of-gold", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Our OCR: machine-read text"));
+    assert!(body.contains("href=\"/credits#tesseract-test%2Fmodel\""));
     assert!(
         body.contains("Reader&#39;s &amp; Co. &lt;archive&gt;"),
         "{body}"
@@ -833,6 +934,42 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
         !body.contains("<archive>") && !body.contains("<mark>"),
         "{body}"
     );
+}
+
+#[tokio::test]
+async fn static_searches_explain_alternate_ocr_and_empty_demo_results() {
+    for source in ["american_stories", "loc_original", "empty"] {
+        let mut cfg = config();
+        cfg.site_dir = Some(site_dir(&format!("static-source-{source}")));
+        std::fs::write(
+            cfg.site_dir.as_ref().unwrap().join("index.html"),
+            include_str!("../../../../web/index.html"),
+        )
+        .unwrap();
+        let mut doc = load_docs("pages-base-fixture").remove(0);
+        doc.text = "unrelated text".to_owned();
+        if source == "american_stories" {
+            doc.text_as = Some("cross of gold".to_owned());
+        } else if source == "loc_original" {
+            doc.text_loc = Some("cross of gold".to_owned());
+        }
+        let mut backend = MemoryBackend::new();
+        backend.add_index("pages-base-fixture", vec![doc]);
+        backend.add_index("pages-delta-fixture-1", vec![]);
+        let mut rd = refdata().await;
+        rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+        rd.current.text_layout = Some(usnm_core::text_layout::TextLayout::SingleWithLoc.version());
+        let state = Arc::new(AppState::new(cfg, Arc::new(backend), rd));
+        let (status, _, body) = get_site(&state, "/search/cross-of-gold", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("Demo data: this server is running on a small synthetic corpus"));
+        let expected = match source {
+            "american_stories" => "These excerpts come from American Stories OCR.",
+            "loc_original" => "These excerpts come from the original Library of Congress OCR.",
+            _ => "No matching newspaper pages.",
+        };
+        assert!(body.contains(expected), "{body}");
+    }
 }
 
 async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::response::Response {

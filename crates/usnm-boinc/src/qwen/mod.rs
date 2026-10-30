@@ -11,12 +11,16 @@
 //! - [`validate`] is what stock `script_validator` calls: a copy of every
 //!   result, and per-crop word-bag Dice between two hosts.
 //! - [`summary`] reads those copies back into one table.
+//! - [`ledger`] lists each bundle page with its own pair verdicts.
 use anyhow::ensure;
 use std::path::{Path, PathBuf};
 use usnm_ocr_contract::qwen::Model;
 
 pub mod benchmark;
+pub mod candidates;
 pub mod cli;
+pub mod ledger;
+pub mod retain;
 pub mod stage;
 pub mod submit;
 pub mod summary;

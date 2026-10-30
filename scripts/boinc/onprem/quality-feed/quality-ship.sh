@@ -8,12 +8,13 @@
 #     [--readers loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract]
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
-#     [--qwen-max-ready 1000]
+#     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while the server has more than --max-unsent results ready to send (the public
 #     server_status.php?counts=1), so quality never crowds out OCR's units, or while CT230's
-#     project tree has less than --min-free-gb free.
+#     project tree has less than --min-free-gb free. Native Qwen instead preflights strict
+#     fresh-pair capacity plus the whole READY reservation before transfer (exit 75 defers).
 #  2. Copies the chunk into CT230's <share>/quality/<campaign>/incoming/<chunk>/ (tar over ssh).
 #  3. Runs quality_receive.py there: every file against SHA256SUMS, every page's scan present
 #     (so quality-stage never falls back to tile.loc.gov), then files the scans and texts.
@@ -69,13 +70,23 @@ if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
   [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
     die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
 fi
+if [ -n "$QWEN_PLAN" ]; then
+  # Migration-safe: old inline and new independent ship units cannot copy/clean one chunk concurrently.
+  exec 9>"$OUTBOX/.qwen-ship-$CAMPAIGN.lock"
+  flock -n 9 || exit 75
+fi
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SERVER")
-in_ct() { "${SSH[@]}" pct exec "$CT" -- "$@"; }
+in_ct() {
+  local quoted
+  printf -v quoted '%q ' "$@"
+  "${SSH[@]}" "pct exec $CT -- $quoted"
+}
 # One bridge step, waiting its turn: the host runs one step at a time, and the priority
 # controller's steps come every few minutes. Tries for up to 30 minutes.
 run_step() {
   local i err
-  err=$(mktemp)
+  err="$OUTBOX/.step-$CAMPAIGN-$$.err"
+  (set -o noclobber; : > "$err") || die "step log already exists"
   for i in $(seq 60); do
     if in_ct "$STEP" --env prod --target bridge "$@" > /dev/null 2> "$err"; then
       rm -f "$err"
@@ -94,12 +105,19 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   [ -f "$dir/READY" ] || continue
   [ "$shipped" -lt "$MAX_CHUNKS" ] || break
   chunk=$(basename "$dir")
-  unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
-    sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
-  [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
-  if [ "$unsent" -gt "$MAX_UNSENT" ]; then
-    log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
-    break
+  pages=$(cat "$dir/READY")
+  if [ -n "$QWEN_PLAN" ]; then
+    [[ $pages =~ ^[1-9][0-9]*$ && $pages -le 490 ]] || die "$chunk: invalid bounded READY page count"
+  fi
+  unsent=native-fresh-pair-gated
+  if [ -z "$QWEN_PLAN" ]; then
+    unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
+      sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
+    [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
+    if [ "$unsent" -gt "$MAX_UNSENT" ]; then
+      log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
+      break
+    fi
   fi
   free=$(in_ct df --output=avail -B1G "$SHARE" "$SHARE/quality" "$SHARE/usnmocr/download" |
     tail -n +2 | sort -n | head -1 | tr -d ' G')
@@ -110,13 +128,22 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   fi
   if [ -n "$QWEN_PLAN" ]; then
     pool=$("${SSH[@]}" lvs --reportformat json --units b --nosuffix -o lv_size,data_percent pve/data |
-      python3 -c 'import json,sys; p=json.load(sys.stdin)["report"][0]["lv"][0]; print(int(float(p["lv_size"])*(1-float(p["data_percent"])/100)//1024**3))')
-    if [ "$pool" -lt "$MIN_FREE" ]; then
-      log "thin pool has $pool GiB free (under $MIN_FREE); $chunk waits"
+      python3 -c 'import json,sys; p=json.load(sys.stdin)["report"][0]["lv"][0]; print(int(float(p["lv_size"])*(1-float(p["data_percent"])/100)))')
+    need=$((MIN_FREE * 1024**3 + pages * 64 * 1024**2))
+    if [ "$pool" -lt "$need" ]; then
+      log "thin pool has $pool bytes free, needs $need including per-page reservation; $chunk waits"
       break
     fi
+    if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
+      --preflight --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --max-pages "$pages" --max-ready "$QWEN_MAX_READY"; then
+      :
+    else
+      rc=$?
+      [ "$rc" -ne 75 ] || log "$chunk: preflight deferred; transferred 0 pages; READY retained"
+      exit "$rc"
+    fi
   fi
-  pages=$(cat "$dir/READY")
   log "$chunk: $pages pages, server unsent $unsent"
   if $WHAT_IF; then
     log "would copy $dir to CT $CT on $SERVER, stage it and submit it"
@@ -141,10 +168,18 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   if [ -n "$QWEN_PLAN" ]; then
     # Native admission, shared models, scientific identities and DB quorum are checked
     # before cleanup; failures leave the original READY chunk and receipts intact.
-    in_ct flock -n /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
-      python3 /project/ops/qwen-feed/qwen_submit.py --campaign "$CAMPAIGN" \
-      --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" --max-pages "$((n + 10))" \
-      --max-ready "$QWEN_MAX_READY"
+    log "$chunk: native submission waiting for normal project mutex"
+    if in_ct flock -w 900 -E 75 /run/usnm-boinc-step.lock sh -c \
+      'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
+      podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
+      --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY"; then
+      :
+    else
+      rc=$?
+      [ "$rc" -ne 75 ] || log "$chunk: native publication deferred; READY retained; no acknowledgement"
+      exit "$rc"
+    fi
   fi
   run_step --step quality-submit \
     --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30

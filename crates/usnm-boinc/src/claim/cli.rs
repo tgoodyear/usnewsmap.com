@@ -248,11 +248,19 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                     .await?
                     .with_context(|| format!("no {path} in the hand-off container"))?;
                 let record: crate::Record = serde_json::from_slice(&bytes)?;
+                record.job.validate()?;
+                crate::retry::validate(&record)?;
                 anyhow::ensure!(
                     record.job.id == job && record.stage == crate::Stage::Failed,
                     "job {job} has not failed; nothing to dead-letter"
                 );
                 let doc_id = record.job.message.key()?.doc_id();
+                if record.retry.is_some() || record.ledger.is_none() {
+                    let done = crate::retry::dead_letter(&record, handoff.as_ref(), queue.as_ref())
+                        .await?;
+                    println!("{doc_id} {done:?}");
+                    continue;
+                }
                 let error = record
                     .error
                     .unwrap_or_else(|| "BOINC workunit failed for good".into());

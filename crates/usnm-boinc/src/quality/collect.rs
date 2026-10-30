@@ -986,6 +986,77 @@ impl Summary {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct InventoryUnit {
+    /// Scheduling hint only. The normal collector must still validate every canonical output.
+    pub fingerprint: Option<String>,
+    pub status: &'static str,
+}
+
+pub fn inventory(
+    opts: &Options,
+    selected: Option<&str>,
+) -> anyhow::Result<BTreeMap<String, InventoryUnit>> {
+    let cache = super::collect_cache::Cache::new(
+        opts.cache.as_ref().context("inventory requires --cache")?,
+        opts,
+    )?;
+    // Fail on unavailable roots and directory entry errors, never report unknown as empty.
+    std::fs::read_dir(&opts.spool)?;
+    let mut result = BTreeMap::new();
+    for (index, entry) in std::fs::read_dir(units(&opts.root))?.enumerate() {
+        anyhow::ensure!(index < 10_000, "inventory exceeds 10000 unit entries");
+        let unit = entry?.path();
+        if !unit.join("submitted").try_exists()? {
+            continue;
+        }
+        let name = unit
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("non-UTF8 unit name")?
+            .to_owned();
+        if selected.is_some_and(|selected| selected != name) {
+            continue;
+        }
+        let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
+        let files = spool_files(&opts.spool, &job.workunit(), &super::outputs());
+        let failed = ["error", "no_output_files"]
+            .iter()
+            .try_fold(false, |failed, suffix| {
+                Ok::<_, std::io::Error>(
+                    failed
+                        || opts
+                            .spool
+                            .join(format!("{}_{suffix}", job.workunit()))
+                            .try_exists()?,
+                )
+            })?;
+        let present = files.iter().try_fold(true, |present, path| {
+            Ok::<_, std::io::Error>(path.try_exists()? && present)
+        })?;
+        let fingerprint = if present && !failed {
+            Some(cache.inventory_key(&unit, &job, &files)?)
+        } else {
+            None
+        };
+        result.insert(
+            name,
+            InventoryUnit {
+                fingerprint,
+                status: if failed {
+                    "failed"
+                } else if present {
+                    "canonical-present"
+                } else {
+                    "pending"
+                },
+            },
+        );
+    }
+    cache.verify()?;
+    Ok(result)
+}
+
 pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     anyhow::ensure!(
         opts.max_dirty_units > 0,
@@ -1022,6 +1093,10 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     };
     unit_dirs.sort();
     for unit in unit_dirs {
+        if cache.is_some() && dirty >= opts.max_dirty_units {
+            deferred += 1;
+            break;
+        }
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)
             .with_context(|| format!("{}", unit.display()))?;
         let wu = job.workunit();
@@ -1044,10 +1119,6 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 summary.add(&part.summary);
                 pages.extend(part.pages);
                 crop_table.extend(part.crops);
-                continue;
-            }
-            if dirty >= opts.max_dirty_units {
-                deferred += 1;
                 continue;
             }
             dirty += 1;
@@ -1224,7 +1295,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     }
     anyhow::ensure!(
         deferred == 0,
-        "collection cache warmed {dirty} dirty units; {deferred} deferred; no incomplete snapshot published"
+        "collection cache warmed {dirty} dirty units; at least {deferred} deferred; no incomplete snapshot published"
     );
     if let Some(cache) = &cache {
         cache.verify()?;
@@ -1749,13 +1820,85 @@ pub(super) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn inventory_tracks_pending_completion_and_changed_inputs_without_publishing() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        let first = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+        assert!(first.is_some());
+        assert!(!opts.out_dir.as_ref().unwrap().exists());
+        let canonical_path = opts.spool.join(format!(
+            "{}__file_{}",
+            job.workunit(),
+            crate::quality::RESULT_FILE
+        ));
+        let bytes = std::fs::read(&canonical_path).unwrap();
+        std::fs::remove_file(&canonical_path).unwrap();
+        let pending = inventory(&opts, None).unwrap();
+        assert_eq!(pending["page"].status, "pending");
+        assert!(pending["page"].fingerprint.is_none());
+        std::fs::write(&canonical_path, bytes).unwrap();
+        assert_eq!(
+            inventory(&opts, Some("page")).unwrap()["page"].fingerprint,
+            first
+        );
+        std::fs::write(unit.join(OURS_FILE), b"late independent sidecar").unwrap();
+        assert_ne!(inventory(&opts, None).unwrap()["page"].fingerprint, first);
+        let failed = opts.spool.join(format!("{}_error", job.workunit()));
+        std::fs::write(&failed, b"failed").unwrap();
+        assert_eq!(inventory(&opts, None).unwrap()["page"].status, "failed");
+        std::fs::remove_file(failed).unwrap();
+        let unavailable = dir.path().join("unavailable-spool");
+        std::fs::rename(&opts.spool, &unavailable).unwrap();
+        assert!(inventory(&opts, None).is_err());
+        std::fs::rename(unavailable, &opts.spool).unwrap();
+        std::fs::write(unit.join(JOB_FILE), b"corrupt").unwrap();
+        assert!(inventory(&opts, None).is_err());
+    }
+
     fn parts(opts: &Options) -> Vec<PathBuf> {
         let mut files = std::fs::read_dir(opts.cache.as_ref().unwrap())
             .unwrap()
             .map(|p| p.unwrap().path())
+            .filter(|p| p.is_file())
             .collect::<Vec<_>>();
         files.sort();
         files
+    }
+
+    #[tokio::test]
+    async fn warming_budget_stops_before_reading_any_further_unit() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, _) = cached_fixture(dir.path()).await;
+        for name in ["zz-deferred", "zzz-not-visited"] {
+            let other = units(&opts.root).join(name);
+            let mut job = crate::quality::work::tests::unit(&other);
+            job.doc_id = name.into();
+            job.id = job.identity().unwrap();
+            std::fs::write(other.join(JOB_FILE), serde_json::to_vec(&job).unwrap()).unwrap();
+            std::fs::write(other.join("submitted"), b"").unwrap();
+            for output in crate::quality::outputs() {
+                std::fs::copy(
+                    unit.join(output),
+                    opts.spool
+                        .join(format!("{}__file_{output}", job.workunit())),
+                )
+                .unwrap();
+            }
+            if name == "zz-deferred" {
+                std::fs::remove_file(other.join(PAGE_FILE)).unwrap();
+                std::fs::create_dir(other.join(PAGE_FILE)).unwrap();
+            }
+        }
+        let error = run(&opts).await.unwrap_err().to_string();
+        assert!(error.contains("deferred"), "{error}");
+        assert_eq!(parts(&opts).len(), 1);
+        assert!(!opts
+            .out_dir
+            .as_ref()
+            .unwrap()
+            .join("pages.parquet")
+            .exists());
     }
 
     #[tokio::test]
@@ -1823,6 +1966,8 @@ pub(super) mod tests {
         uncached.cache = Some(dir.path().join("another-cache"));
         assert_eq!(collect(&uncached).unwrap().summary.pending, 1);
         canonical(&unit, &job, &uncached.spool);
+        let error = collect(&uncached).err().unwrap().to_string();
+        assert!(error.contains("1 deferred"), "{error}");
         assert_eq!(collect(&uncached).unwrap().summary.pages, 2);
     }
 
@@ -1865,6 +2010,7 @@ pub(super) mod tests {
         let job = crate::qwen::stage::write_bundle(&qunit, &[first, second]).unwrap();
         assert_eq!(job.pages.len(), 2);
         let before = collect(&opts).unwrap();
+        let mut previous_key = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
         assert_eq!(before.summary.with_readings, 0);
         assert!(before.crops.iter().all(|r| r.cer_vs_vlm.is_none()));
         std::fs::create_dir_all(&opts.qwen_spool).unwrap();
@@ -1929,6 +2075,9 @@ pub(super) mod tests {
                 .unwrap();
             }
             let after = collect(&opts).unwrap();
+            let key = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+            assert_ne!(key, previous_key);
+            previous_key = key;
             assert_eq!(after.summary.with_readings, 1);
             assert!(after.crops.iter().any(|r| r.cer_vs_vlm.is_some()));
             assert_ne!(after.crops, before.crops);

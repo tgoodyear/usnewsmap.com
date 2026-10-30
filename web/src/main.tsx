@@ -8,6 +8,8 @@ import { trackPageView } from "./pageview";
 import { DATASETS_PATH, OLD_DATASETS_PATH, pageFor } from "./route";
 import "./styles.css";
 import { preloadBasemap } from "./lib/preloadBasemap";
+import { enhanceSearchLanding } from "./searchLanding";
+import type { Meta } from "./api/types";
 
 // The dataset details, privacy and credits pages load only when visited.
 // The API serves index.html for app paths, so all work as direct links;
@@ -16,8 +18,11 @@ import { preloadBasemap } from "./lib/preloadBasemap";
 const DatasetsPage = lazy(() => import("./status/StatusPage"));
 const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
+const searchLinks = [...document.querySelectorAll<HTMLAnchorElement>("#common-searches a")].map((link) => ({
+  href: link.getAttribute("href")!,
+  label: link.querySelector("strong")?.textContent ?? link.textContent ?? "",
+}));
 const page = pageFor(window.location.pathname);
-if (page === "search" && !("__USNM_SHARE_CAPTURE__" in window)) void preloadBasemap();
 // The old path, where a server didn't redirect it: show the new one.
 if (page === "datasets" && window.location.pathname.replace(/\/+$/, "") === OLD_DATASETS_PATH) {
   window.history.replaceState(null, "", `${DATASETS_PATH}${window.location.search}${window.location.hash}`);
@@ -45,26 +50,39 @@ const client: QueryClient = new QueryClient({
   },
 });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={client}>
-      {page === "datasets" ? (
-        <Suspense fallback={<p role="status">Loading…</p>}>
-          <DatasetsPage />
-        </Suspense>
-      ) : page === "credits" ? (
-        <Suspense fallback={<p role="status">Loading…</p>}>
-          <CreditsPage />
-        </Suspense>
-      ) : page === "privacy" ? (
-        <Suspense fallback={<p role="status">Loading…</p>}>
-          <PrivacyPage />
-        </Suspense>
-      ) : page === "not-found" ? (
-        <NotFound />
-      ) : (
-        <App />
-      )}
-    </QueryClientProvider>
-  </StrictMode>,
-);
+const initialMeta = document.getElementById("site-meta")?.textContent;
+if (initialMeta) client.setQueryData<Meta>(["meta"], JSON.parse(initialMeta));
+
+function mount() {
+  if (page === "search" && !("__USNM_SHARE_CAPTURE__" in window)) void preloadBasemap();
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={client}>
+        {page === "datasets" ? (
+          <Suspense fallback={<p role="status">Loading…</p>}>
+            <DatasetsPage />
+          </Suspense>
+        ) : page === "credits" ? (
+          <Suspense fallback={<p role="status">Loading…</p>}>
+            <CreditsPage />
+          </Suspense>
+        ) : page === "privacy" ? (
+          <Suspense fallback={<p role="status">Loading…</p>}>
+            <PrivacyPage />
+          </Suspense>
+        ) : page === "not-found" ? (
+          <NotFound />
+        ) : (
+          <App searchLinks={searchLinks} />
+        )}
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+}
+
+if ("__USNM_SHARE_CAPTURE__" in window) {
+  document.getElementById("search-landing")?.remove();
+  mount();
+} else if (!enhanceSearchLanding(mount)) {
+  mount();
+}

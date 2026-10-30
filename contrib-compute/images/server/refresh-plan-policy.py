@@ -4,6 +4,8 @@ import argparse
 import fcntl
 import os
 from pathlib import Path
+import re
+import time
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -15,6 +17,7 @@ AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
 GENERAL_MARKERS = {"amd_vulkan_8b": AMD_GENERAL_MARKER, "nvidia_vulkan_8b": NVIDIA_GENERAL_MARKER}
+AMD_FIRST_MARKER = "usnm-amd-first-reservation-v1"
 
 
 def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
@@ -32,7 +35,7 @@ def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
 
 def merge_policy(source: bytes, current: bytes) -> bytes:
     root, reviewed = parse_policy(source)
-    _, existing = parse_policy(current)
+    old_root, existing = parse_policy(current)
     for name in COHORT_CLASSES:
         if name not in existing:
             continue
@@ -67,6 +70,31 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
                 raise ValueError(f"Duplicate reviewed cohort field for {name}")
             field = targets[0] if targets else ET.SubElement(reviewed[name], tag)
             field.text = str(value)
+    markers = [node for node in old_root.iter() if node.tag is ET.Comment
+               and AMD_FIRST_MARKER in (node.text or "")]
+    if markers:
+        if len(markers) != 1 or markers[0] not in list(old_root):
+            raise ValueError("Invalid AMD-first reservation marker")
+        match = re.fullmatch(AMD_FIRST_MARKER + r":([a-f0-9]{32}):([1-9][0-9]*):([1-9][0-9]*)",
+                             (markers[0].text or "").strip())
+        if not match:
+            raise ValueError("Malformed AMD-first reservation marker")
+        workunit, expires = int(match[2]), int(match[3])
+        apple = existing.get("apple_gpu_8b")
+        fields = apple.findall("max_wu_id") if apple is not None else []
+        if (len(fields) != 1 or fields[0].text != str(workunit - 1)
+                or apple.findall("min_wu_id") or "apple_gpu_8b" not in reviewed):
+            raise ValueError("Invalid AMD-first Apple ceiling")
+        if expires > int(time.time()):
+            target = reviewed["apple_gpu_8b"]
+            if target.findall("min_wu_id") or target.findall("max_wu_id"):
+                raise ValueError("Reviewed Apple policy conflicts with AMD-first lease")
+            ET.SubElement(target, "max_wu_id").text = str(workunit - 1)
+            root.append(ET.Comment((markers[0].text or "").strip()))
+        else:
+            amd = reviewed["amd_vulkan_8b"]
+            if (amd.findtext("min_wu_id"), amd.findtext("max_wu_id")) == (str(workunit), str(workunit)):
+                amd.find("min_wu_id").text, amd.find("max_wu_id").text = "2", "1"
     ET.indent(root, space="    ")
     return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
 

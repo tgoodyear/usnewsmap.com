@@ -525,6 +525,19 @@ select {
   font-size: clamp(1.6rem, 4vw, 2.4rem);
   margin-bottom: 8px;
 }
+.static-search-map {
+  margin: 0;
+}
+.static-search-map img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.static-search-map figcaption {
+  padding: 8px 16px;
+  text-align: center;
+  color: var(--muted);
+}
 .examples {
   list-style: none;
   padding: 0;

@@ -12,7 +12,7 @@ import {
   shuffle,
 } from "./examples";
 import raw from "./examples.json";
-import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./state/url";
+import { DEFAULTS, isIsoDate, parseView, parseViewUrl, searchParams, serializeView, viewUrl } from "./state/url";
 import type { ViewState } from "./state/url";
 
 /** Sorted `key=value` pairs, so parameter order doesn't matter. */
@@ -21,8 +21,8 @@ function pairs(query: URLSearchParams | string): string[] {
 }
 
 describe("examples", () => {
-  it("contains 200 distinct curated searches", () => {
-    expect(EXAMPLES).toHaveLength(200);
+  it("contains at least 200 distinct curated searches", () => {
+    expect(EXAMPLES.length).toBeGreaterThanOrEqual(200);
     const queries = EXAMPLES.map((e) => (e.view.q ?? "").toLowerCase().replaceAll('"', "").replace(/\s+/g, " ").trim());
     expect(new Set(queries).size).toBe(EXAMPLES.length);
   });
@@ -31,7 +31,25 @@ describe("examples", () => {
     expect(new Set(EXAMPLES.map((e) => e.id)).size).toBe(EXAMPLES.length);
     for (const ex of EXAMPLES) {
       const view = { ...DEFAULTS, ...ex.view };
-      expect(parseView(serializeView(view))).toEqual(view);
+      expect(parseView(serializeView(view)), ex.id).toEqual(view);
+      const linked = parseViewUrl(viewUrl(view));
+      // Readable search paths normalize case and phrase quotes, but not filters.
+      expect({ ...linked, q: view.q }, ex.id).toEqual(view);
+      expect(viewUrl(linked), ex.id).toBe(viewUrl(view));
+    }
+  });
+
+  it("can display the requested Relative rate and States showcases without falling back", () => {
+    const relative = EXAMPLES.filter((ex) => ex.view.norm === "skew");
+    const states = EXAMPLES.filter((ex) => ex.view.layer === "states");
+    expect(relative.length).toBeGreaterThan(0);
+    expect(states.length).toBeGreaterThan(0);
+    for (const ex of [...relative, ...states]) {
+      const view = { ...DEFAULTS, ...ex.view };
+      expect(view.source, ex.id).toBe("news");
+      expect(view.lccn, ex.id).toEqual([]);
+      expect(view.state, `${ex.id}: compare publication states, not one selected state`).toEqual([]);
+      if (view.layer === "states") expect(view.norm, ex.id).toBe("raw");
     }
   });
 
@@ -150,7 +168,8 @@ describe("example queries and copy", () => {
       expect(q.trim(), ex.id).not.toBe("");
       expect(q.length, ex.id).toBeLessThanOrEqual(LIMITS.maxQueryChars);
       expect(q.split('"').length % 2, `${ex.id}: balanced quotes`).toBe(1);
-      const words = q.split(/\s+/);
+      // Proximity slop values are not query terms.
+      const words = q.replace(/"~\d+/g, '"').split(/\s+/);
       const terms = words
         .filter((w) => !OPERATORS.has(w))
         .flatMap((w) => w.split(/[^\p{L}\p{N}]+/u))
@@ -227,6 +246,15 @@ describe("example rotation", () => {
         });
       }
     }
+  });
+
+  it("keeps unequal eras mixed instead of exhausting the smaller ones first", () => {
+    const items = [2, 9, 5, 8, 6].flatMap((size, era) =>
+      Array.from({ length: size }, (_, i) => ({ era: String(era), id: `${era}-${i}` })),
+    );
+    const order = mixByEra(items, () => 0.5);
+    expect(new Set(order)).toEqual(new Set(items));
+    for (const set of setsOf(order)) expect(new Set(set.map((item) => item.era)).size).toBe(set.length);
   });
 
   it("are spread across eras", () => {

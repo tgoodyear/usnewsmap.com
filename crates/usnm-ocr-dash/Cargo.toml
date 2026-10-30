@@ -14,7 +14,9 @@ path = "src/main.rs"
 usnm-core.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
+usnm-store.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 axum-server.workspace = true
 bytes.workspace = true

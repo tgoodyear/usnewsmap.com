@@ -10,7 +10,8 @@
     <meta name="color-scheme" content="light dark" />
     <style>
       @media (scripting: enabled) {
-        #site-fallback {
+        #site-fallback,
+        #search-landing:not(.search-static-fallback) {
           display: none;
         }
       }
@@ -83,6 +84,7 @@
             <a href="https://goodyeartechnical.com/">Trevor Goodyear</a>.
           </p>
           <noscript><p>The search and the map need JavaScript.</p></noscript>
+          <p id="index-summary"></p>
         </main>
       </div>
     </div>

@@ -1,9 +1,11 @@
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -102,6 +104,30 @@ class SchedulerTests(unittest.TestCase):
     def tick(self, *, drain=False):
         return batch.tick(self.config, self.state, self.fake,
                           lambda: self.saved.append(copy.deepcopy(self.state)), NOW, drain=drain)
+
+    def test_reviewed_retry_lineage_is_owned_but_never_automatically_submitted(self):
+        page = self.config["pages"][0]["page"]
+        self.config["pages"] = self.config["pages"][:1]
+        parent = record(page, 1, "failed")
+        child = record(page, 2)
+        child["job"].update(v=2, attempt=1, retry_of=parent["job"]["id"])
+        child["job"]["engine"]["image"] = "sha256:" + "b" * 64
+        child["retry"] = {"previous_job": parent["job"]["id"], "previous_attempt": 0,
+                          "app_version_num": 27}
+        self.fake.rows = [child, parent]
+        self.assertEqual(batch.owned_records(self.config, self.fake.rows), {page: child})
+        self.tick()
+        self.assertEqual(self.fake.actions, [])
+        self.fake.jobs[child["job"]["id"]] = {
+            "stage": "submitted", "spool": "/project/usnmocr/results/one"}
+        child["stage"] = "submitted"
+        self.tick()
+        self.assertEqual(self.fake.actions, [("collect", child["job"]["id"])])
+        self.assertEqual(parent["stage"], "failed")
+        branch = copy.deepcopy(child)
+        branch["job"]["id"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "branching"):
+            batch.owned_records(self.config, [parent, child, branch])
 
     def test_drain_does_not_allocate_or_dispatch(self):
         event = self.tick(drain=True)
@@ -337,7 +363,17 @@ class SchedulerTests(unittest.TestCase):
                     path.write_text(json.dumps(row))
                 return ""
 
-            with patch.object(transport, "az", side_effect=lambda *args: json.dumps(listing)) as az, \
+            def storage(*args):
+                if args[0] == "list":
+                    return json.dumps(listing)
+                self.assertEqual(args[0], "download")
+                self.assertFalse((directory / "journal-snapshot.json").exists())
+                name = args[args.index("--name") + 1]
+                path = Path(args[args.index("--file") + 1])
+                path.write_text(json.dumps(rows[names.index(name)]))
+                return ""
+
+            with patch.object(transport, "az", side_effect=storage) as az, \
                     patch.object(transport, "run", side_effect=download) as run, \
                     patch.object(transport, "blob", side_effect=AssertionError("per-record CLI")):
                 self.assertEqual(transport.records(), rows)
@@ -345,18 +381,20 @@ class SchedulerTests(unittest.TestCase):
                 returned[0]["stage"] = "must-not-poison-cache"
                 self.assertEqual(transport.records(), rows)
                 self.assertEqual(run.call_count, 1)
-                self.assertEqual(az.call_count, 3)
+                self.assertEqual(az.call_count, 4)
                 self.assertFalse(stale.exists())
                 listing[0]["etag"] = '"version-2"'
                 rows[0]["stage"] = "published"
                 self.assertEqual(transport.records(), rows)
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(sum(call.args[0] == "download" for call in az.call_args_list), 1)
                 listing.pop()
                 names.pop()
                 rows.pop()
                 self.assertEqual(transport.records(), rows)
-                self.assertEqual(run.call_count, 3)
+                self.assertEqual(run.call_count, 1)
             listing[0]["etag"] = '"version-3"'
+            (directory / "journal-snapshot.json").unlink()
             with patch.object(transport, "az", return_value=json.dumps(listing)), \
                     patch.object(transport, "run", return_value=""), \
                     self.assertRaisesRegex(ValueError, "changed during download"):
@@ -365,6 +403,26 @@ class SchedulerTests(unittest.TestCase):
                     patch.object(transport, "run", side_effect=download) as run:
                 self.assertEqual(transport.records(), rows)
                 self.assertEqual(run.call_count, 1)
+            restarted = batch.Transport(self.config, directory)
+            with patch.object(restarted, "az", return_value=json.dumps(listing)) as az, \
+                    patch.object(restarted, "run", side_effect=AssertionError("unchanged restart downloaded")):
+                self.assertEqual(restarted.records(), rows)
+                az.assert_called_once()
+            for entry in listing[:33]:
+                entry["etag"] = '"version-4"'
+            for row in rows[:33]:
+                row["stage"] = "published"
+            broad = batch.Transport(self.config, directory)
+            with patch.object(broad, "az", side_effect=storage) as az, \
+                    patch.object(broad, "run", side_effect=download) as run:
+                self.assertEqual(broad.records(), rows)
+                run.assert_called_once()
+                self.assertTrue(all(call.args[0] == "list" for call in az.call_args_list))
+            foreign = batch.Transport({**self.config, "account": "otheraccount"}, directory)
+            with patch.object(foreign, "az", return_value=json.dumps(listing)), \
+                    patch.object(foreign, "run", side_effect=download) as run:
+                self.assertEqual(foreign.records(), rows)
+                run.assert_called_once()
             listing[0]["etag"] = None
             with patch.object(transport, "az", return_value=json.dumps(listing)), \
                     patch.object(transport, "run", side_effect=AssertionError("invalid inventory")), \
@@ -373,6 +431,157 @@ class SchedulerTests(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(directory)
+
+    def test_journal_download_race_never_persists_a_reusable_snapshot(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        transport = batch.Transport(self.config, directory)
+        row = record("page-1", 1)
+        name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
+        first = [{"name": name, "etag": '"version-1"'}]
+        changed = [{"name": name, "etag": '"version-2"'}]
+
+        def download(argv, label):
+            path = directory / "journal-cache" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(row))
+            return ""
+
+        with patch.object(transport, "az", side_effect=[json.dumps(first), json.dumps(changed)]), \
+                patch.object(transport, "run", side_effect=download):
+            with self.assertRaisesRegex(ValueError, "ETags changed during download"):
+                transport.records()
+        self.assertFalse((directory / "journal-snapshot.json").exists())
+        restarted = batch.Transport(self.config, directory)
+        with patch.object(restarted, "az", return_value=json.dumps(changed)), \
+                patch.object(restarted, "run", side_effect=download) as run:
+            self.assertEqual(restarted.records(), [row])
+            run.assert_called_once()
+        changed[0]["etag"] = '"version-3"'
+
+        def interrupted(*args):
+            if args[0] == "download":
+                raise RuntimeError("download interrupted")
+            return json.dumps(changed)
+
+        with patch.object(restarted, "az", side_effect=interrupted), \
+                patch.object(restarted, "run", side_effect=AssertionError("unexpected batch")):
+            with self.assertRaisesRegex(RuntimeError, "download interrupted"):
+                restarted.records()
+        self.assertFalse((directory / "journal-snapshot.json").exists())
+        with patch.object(transport, "az", return_value=json.dumps(changed)), \
+                patch.object(transport, "run", side_effect=download) as run:
+            self.assertEqual(transport.records(), [row])
+            run.assert_called_once()
+        changed[0]["etag"] = '"version-4"'
+        newer = [{"name": name, "etag": '"version-5"'}]
+        inventories = iter((changed, newer))
+
+        def racing_delta(*args):
+            if args[0] == "list":
+                return json.dumps(next(inventories))
+            self.assertEqual(args[0], "download")
+            self.assertFalse((directory / "journal-snapshot.json").exists())
+            (directory / "journal-cache" / name).write_text(json.dumps(row))
+            return ""
+
+        restarted = batch.Transport(self.config, directory)
+        with patch.object(restarted, "az", side_effect=racing_delta), \
+                patch.object(restarted, "run", side_effect=AssertionError("unexpected batch")):
+            with self.assertRaisesRegex(ValueError, "ETags changed during download"):
+                restarted.records()
+        self.assertFalse((directory / "journal-snapshot.json").exists())
+
+    def test_small_journal_delta_after_restart_preserves_only_verified_files(self):
+        for corruption in ("none", "bytes", "directory-symlink"):
+            with self.subTest(corruption=corruption):
+                directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+                cache = directory / "journal-cache"
+                rows = [record("page-" + str(number), number) for number in range(1, 5)]
+                names = [f'dispatch/jobs/{row["job"]["id"]}/record.json' for row in rows]
+                checksums = {}
+                for name, row in zip(names, rows):
+                    path = cache / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(row))
+                    checksums[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+                manifest = directory / "journal-snapshot.json"
+                batch.save(manifest, {
+                    "schema_version": 1, "account": self.config["account"],
+                    "container": "boinc-handoff", "entries": {name: "old" for name in names},
+                    "files": checksums,
+                })
+                rows[0]["stage"] = "published"
+                rows[-1] = record("page-5", 5)
+                current = names[:-1] + [f'dispatch/jobs/{rows[-1]["job"]["id"]}/record.json']
+                listing = [{"name": name, "etag": "new" if i in (0, 3) else "old"}
+                           for i, name in enumerate(current)]
+                if corruption == "bytes":
+                    path = cache / names[1]
+                    path.write_bytes(path.read_bytes() + b" ")
+                elif corruption == "directory-symlink":
+                    external = directory / "external"
+                    external.mkdir()
+                    (cache / "unused").symlink_to(external, target_is_directory=True)
+                downloaded = []
+
+                def storage(*args):
+                    if args[0] == "list":
+                        return json.dumps(listing)
+                    self.assertEqual(args[0], "download")
+                    self.assertFalse(manifest.exists())
+                    name = args[args.index("--name") + 1]
+                    Path(args[args.index("--file") + 1]).write_text(json.dumps(rows[current.index(name)]))
+                    downloaded.append(name)
+                    return ""
+
+                restarted = batch.Transport(self.config, directory)
+                with patch.object(restarted, "az", side_effect=storage), \
+                        patch.object(restarted, "run", side_effect=AssertionError("unexpected batch")):
+                    if corruption != "none":
+                        error = "content digest mismatch" if corruption == "bytes" else "invalid journal cache path"
+                        with self.assertRaisesRegex(ValueError, error):
+                            restarted.records()
+                        self.assertTrue(manifest.exists())
+                        self.assertEqual(downloaded, [])
+                        continue
+                    self.assertEqual(restarted.records(), rows)
+                self.assertEqual(downloaded, [current[0], current[-1]])
+                self.assertFalse((cache / names[-1]).exists())
+                self.assertFalse((cache / names[-1]).parent.exists())
+                self.assertEqual(hashlib.sha256((cache / names[1]).read_bytes()).hexdigest(), checksums[names[1]])
+                final = batch.Transport(self.config, directory)
+                with patch.object(final, "az", return_value=json.dumps(listing)) as az, \
+                        patch.object(final, "run", side_effect=AssertionError("unexpected download")):
+                    self.assertEqual(final.records(), rows)
+                    az.assert_called_once()
+
+    def test_matching_journal_snapshot_with_changed_local_identity_fails_closed(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        row = record("page-1", 1)
+        name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
+        snapshot = {name: '"version-1"'}
+        path = directory / "journal-cache" / name
+        path.parent.mkdir(parents=True)
+        row["job"]["id"] = "f" * 64
+        path.write_text(json.dumps(row))
+        batch.save(directory / "journal-snapshot.json", {
+            "schema_version": 1, "account": self.config["account"],
+            "container": "boinc-handoff", "entries": snapshot,
+            "files": {name: hashlib.sha256(path.read_bytes()).hexdigest()},
+        })
+        transport = batch.Transport(self.config, directory)
+        with patch.object(transport, "az", return_value=json.dumps([
+            {"name": name, "etag": snapshot[name]},
+        ])), patch.object(transport, "run", side_effect=AssertionError("must fail closed")):
+            with self.assertRaisesRegex(ValueError, "filename/identity mismatch"):
+                transport.records()
+        row["job"]["id"] = name.split("/")[2]
+        path.write_text(json.dumps(row))
+        with patch.object(transport, "az", return_value=json.dumps([
+            {"name": name, "etag": snapshot[name]},
+        ])), patch.object(transport, "run", side_effect=AssertionError("must fail closed")):
+            with self.assertRaisesRegex(ValueError, "content digest mismatch"):
+                transport.records()
 
     def test_stale_inventory(self):
         with self.assertRaisesRegex(ValueError, "fresh"):
@@ -1382,6 +1591,64 @@ class TimingsTests(unittest.TestCase):
     J1, J2 = "a" * 64, "b" * 64
     S1, S2 = "/project/usnmocr/results/1", "/project/usnmocr/results/2"
 
+    def test_execution_routes_follow_actual_launcher_and_retain_failures(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example"]
+        transport = batch.Transport(cfg, directory, onprem_handoff=("claim", "export"))
+        with patch.object(batch.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")):
+            transport.step("handoff", "claim")
+            transport.step("handoff", "collect")
+            transport.step("bridge", "batch-inventory")
+        with patch.object(batch.subprocess, "run", side_effect=OSError("cannot start")), \
+                self.assertRaises(RuntimeError):
+            transport.step("handoff", "export")
+        routes = transport.timings.summary()["execution_routes"]
+        self.assertEqual(set(routes), {
+            "onprem/handoff/claim", "azure/handoff/collect",
+            "onprem/bridge/batch-inventory", "onprem/handoff/export",
+        })
+        self.assertEqual(routes["onprem/handoff/export"]["failed"], 1)
+        routes["onprem/handoff/claim"]["count"] = 99
+        self.assertEqual(transport.timings.summary()["execution_routes"]
+                         ["onprem/handoff/claim"]["count"], 1)
+        # A bridge without a custom launcher still uses Azure.
+        del cfg["step_command"]
+        transport = batch.Transport(cfg, directory)
+        with patch.object(batch.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")):
+            transport.step("bridge", "batch-inventory")
+        self.assertIn("azure/bridge/batch-inventory",
+                      transport.timings.summary()["execution_routes"])
+
+    def test_scan_route_records_the_actual_queue_destination(self):
+        for choices, route in (((), "azure/scans"), (("export",), "onprem/scans")):
+            with self.subTest(choices=choices):
+                cfg = queue_config()
+                cfg["step_command"] = ["ssh", "boinc.example"]
+                transport = batch.Transport(cfg, Path("."), onprem_handoff=choices)
+                base = "keep/batch/sn1/1900-01-01/1/1"
+                done = subprocess.CompletedProcess([], 0, f"pushed {base}.jpg\n", "")
+                with patch.object(batch.subprocess, "run", return_value=done):
+                    self.assertEqual(transport.push_pages([base]), ({base: base + ".jpg"}, []))
+                self.assertEqual(set(transport.timings.summary()["execution_routes"]), {route})
+                self.assertEqual(transport.timings.summary()["execution_routes"][route]["count"], 1)
+                self.assertEqual(transport.timings.summary()["scan_pages"][route.split("/")[0]],
+                                 {"pushed": 1, "missing": 0})
+
+    def test_missing_only_push_is_not_counted_as_a_transferred_page(self):
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example"]
+        transport = batch.Transport(cfg, Path("."), onprem_handoff=("export",))
+        base = "keep/batch/sn1/1900-01-01/1/1"
+        done = subprocess.CompletedProcess([], 3, f"missing {base.removeprefix('keep/')}\n", "")
+        with patch.object(batch.subprocess, "run", return_value=done):
+            self.assertEqual(transport.push_pages([base]), ({}, [base]))
+        summary = transport.timings.summary()
+        self.assertEqual(summary["execution_routes"]["onprem/scans"]["failed"], 0)
+        self.assertEqual(summary["scan_pages"]["onprem"], {"pushed": 0, "missing": 1})
+
     def test_phases_add_up_and_report_as_they_end(self):
         ticker, lines = Ticker(), []
         timings = ticker.timings(report=lines.append)
@@ -1413,7 +1680,8 @@ class TimingsTests(unittest.TestCase):
 
     def test_transport_counts_each_command_and_the_outer_phase_once(self):
         ticker = Ticker()
-        t = batch.Transport(queue_config(), Path("."), timings=ticker.timings())
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory, timings=ticker.timings())
         calls = []
 
         def run(argv, **kwargs):
@@ -1449,11 +1717,153 @@ class TimingsTests(unittest.TestCase):
         self.assertEqual(set(summary["phases"]), {"lock", "unlock"})
 
     def test_a_command_that_cannot_start_is_counted_as_failed(self):
-        t = batch.Transport(queue_config(), Path("."), timings=Ticker().timings())
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory, timings=Ticker().timings())
         with patch.object(batch.subprocess, "run", side_effect=OSError("no az")), \
                 self.assertRaisesRegex(RuntimeError, "hand-off storage"):
             t.az("exists", "--name", "x")
         self.assertEqual(t.timings.summary()["commands"]["storage exists"]["failed"], 1)
+
+    def test_command_failure_receipt_is_private_bounded_and_not_in_public_error(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        secret = "private-command-output"
+        failed = subprocess.CompletedProcess(["secret-argv"], 17, "x" * 20000, secret)
+        with patch.object(batch.subprocess, "run", return_value=failed), \
+                self.assertRaises(RuntimeError) as caught:
+            t.run(["secret-argv"], "handoff/collect")
+        path = directory / "last-command-failure.json"
+        receipt = json.loads(path.read_text())
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(receipt["returncode"], 17)
+        self.assertEqual(receipt["stderr_tail"], secret)
+        self.assertEqual(len(receipt["stdout_tail"]), batch.MAX_FAILURE_OUTPUT_CHARS)
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn("secret-argv", path.read_text())
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ok", "")):
+            self.assertEqual(t.run([], "success"), "ok")
+        self.assertEqual(json.loads(path.read_text()), receipt)
+
+    def test_timeout_keeps_partial_bytes_and_atomically_replaces_previous_receipt(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path = directory / "last-command-failure.json"
+        path.write_text("previous")
+        path.chmod(0o644)
+        t = batch.Transport(queue_config(), directory)
+        failure = subprocess.TimeoutExpired(["private-argv"], 30, output=b"partial", stderr=b"timeout\xff")
+        with patch.object(batch.subprocess, "run", side_effect=failure), \
+                self.assertRaisesRegex(RuntimeError, "bridge/batch-inventory failed"):
+            t.run(["private-argv"], "bridge/batch-inventory")
+        receipt = json.loads(path.read_text())
+        self.assertEqual(receipt["exception"], "TimeoutExpired")
+        self.assertEqual(receipt["stdout_tail"], "partial")
+        self.assertEqual(receipt["stderr_tail"], "timeout\ufffd")
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(directory.glob(".command-failure-*")), [])
+
+    def test_nonzero_child_with_invalid_utf8_retains_output(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        with self.assertRaisesRegex(RuntimeError, "handoff/collect failed"):
+            t.run([sys.executable, "-c",
+                   "import os; os.write(1,b'out\\xff'); os.write(2,b'err\\xfe'); raise SystemExit(7)"],
+                  "handoff/collect")
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["returncode"], 7)
+        self.assertEqual(receipt["stdout_tail"], "out\ufffd")
+        self.assertEqual(receipt["stderr_tail"], "err\ufffd")
+
+    def test_batch_keeps_collecting_and_reports_later_receipt_write_failure(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory, batch_spool_out=True)
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "private-output")
+
+        replace = batch.os.replace
+        replacements = []
+
+        def replace_receipt(source, target):
+            replacements.append(target)
+            if len(replacements) > 1:
+                raise OSError("private-path")
+            return replace(source, target)
+
+        with patch.object(batch.subprocess, "run", side_effect=run), \
+                patch.object(batch.os, "replace", side_effect=replace_receipt), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        self.assertEqual(len(calls), 3)
+        self.assertIn("bridge/spool-out failed", str(caught.exception))
+        self.assertIn("handoff/collect failed; private command failure receipt could not be saved",
+                      str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["label"], "bridge/spool-out")
+        self.assertEqual(list(directory.glob(".command-failure-*")), [])
+
+    def test_receipt_write_failure_is_explicit_and_does_not_expose_output(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        failed = subprocess.CompletedProcess([], 1, "", "private-output")
+        with patch.object(batch.subprocess, "run", return_value=failed), \
+                patch.object(batch.os, "replace", side_effect=OSError("private-path")), \
+                self.assertRaisesRegex(RuntimeError, "receipt could not be saved") as caught:
+            t.run([], "handoff/collect")
+        self.assertNotIn("private", str(caught.exception).replace("private command", ""))
+        self.assertEqual(list(directory.glob(".command-failure-*")), [])
+
+    def test_receipt_cleanup_failure_still_allows_remaining_batch_collection(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory, batch_spool_out=True)
+        failed = subprocess.CompletedProcess([], 1, "", "private-output")
+        unlink = Path.unlink
+        leftover = []
+
+        def refuse_cleanup(path, **kwargs):
+            leftover.append(path)
+            raise OSError("private-path")
+
+        with patch.object(batch.subprocess, "run", return_value=failed) as run, \
+                patch.object(batch.os, "replace", side_effect=OSError("private-path")), \
+                patch.object(Path, "unlink", refuse_cleanup), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            t.collect_batch([(self.J1, self.S1), (self.J2, self.S2)])
+        self.assertEqual(run.call_count, 3)
+        self.assertIn("receipt cleanup failed", str(caught.exception))
+        self.assertNotIn("private-path", str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        for path in leftover:
+            unlink(path)
+
+    def test_failed_lease_release_preserves_collection_receipt_loss_warning(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        t = batch.Transport(queue_config(), directory)
+        replacements = []
+        replace = batch.os.replace
+
+        def replace_receipt(source, target):
+            replacements.append(target)
+            if len(replacements) == 1:
+                raise OSError("private-path")
+            return replace(source, target)
+
+        with patch.object(t, "_acquire", return_value="lease"), \
+                patch.object(batch.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 1, "", "private-output")) as run, \
+                patch.object(batch.os, "replace", side_effect=replace_receipt), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            with t.lock():
+                t.run([], "handoff/collect")
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("handoff/collect failed; private command failure receipt could not be saved",
+                      str(caught.exception))
+        self.assertIn("hand-off storage failed", str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["label"], "hand-off storage")
 
     def test_the_tick_line_carries_the_timings(self):
         fake = Fake()
@@ -1552,6 +1962,30 @@ class QueueTransportTests(unittest.TestCase):
                 patch.object(self.transport, "blob", return_value={**summary, "nonce": "other"}), \
                 self.assertRaisesRegex(ValueError, "stale/concurrent"):
             self.transport.claim(1)
+
+    def test_claim_recovery_preserves_later_receipt_write_warning(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        transport = batch.Transport(self.config, directory)
+        failed = subprocess.CompletedProcess([], 1, "", "private-output")
+        replace = batch.os.replace
+        replacements = []
+
+        def replace_receipt(source, target):
+            replacements.append(target)
+            if len(replacements) > 1:
+                raise OSError("private-path")
+            return replace(source, target)
+
+        with patch.object(batch.subprocess, "run", return_value=failed) as run, \
+                patch.object(batch.os, "replace", side_effect=replace_receipt), \
+                self.assertRaises(batch.FailureReceiptError) as caught:
+            transport.claim(1)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("handoff/claim failed", str(caught.exception))
+        self.assertIn("receipt could not be saved", str(caught.exception))
+        self.assertNotIn("private-output", str(caught.exception))
+        receipt = json.loads((directory / "last-command-failure.json").read_text())
+        self.assertEqual(receipt["label"], "handoff/claim")
 
     def test_claim_languages_reach_the_claim_step(self):
         sent = {}

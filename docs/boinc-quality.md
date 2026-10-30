@@ -26,9 +26,13 @@ Every float in the record is rounded to six decimals; the computation is single-
 
 ### usnm_qwen
 
-One page per workunit. Inputs: `page.jpg` and `qwen.json` (`usnm_ocr_contract::qwen::Job`): `v`, `id`, `doc_id`, `language`, `group`, `input` (the page), `crops` (`[{id, box, stratum, loc_text}]`, at most 64), `engine {image, llama, models: [{name, file, mmproj, min_gpu_mb}], weights}`, `prompt_version` (1), `gpu_timeout_secs`, `cpu_timeout_secs` and `max_tokens_per_1000px2`. The crops are the same ones the quality unit of the page names (the same `crop_seed` and `k_crops`), with LoC's words in each box in visual line order.
+One page per workunit. Inputs: `page.jpg` and `qwen.json` (`usnm_ocr_contract::qwen::Job`): `v`, `id`, `doc_id`, `language`, `group`, `input` (the page), `crops` (`[{id, box, stratum, loc_text}]`, at most 64), `engine {image, llama, models: [{name, file, mmproj, min_gpu_mb}], weights}`, `prompt_version` (1 or 2; below), `gpu_timeout_secs`, `cpu_timeout_secs` and `max_tokens_per_1000px2`. The crops are the same ones the quality unit of the page names (the same `crop_seed` and `k_crops`), with LoC's words in each box in visual line order.
 
 Outputs: `readings.json` (`qwen::Readings`: `v`, `job_id`, `outcome`, `device`, `model`, `prompt_version`, `readings: [{id, text, tokens, ms}]`, `diag`), `result.json` (`qwen::ResultManifest`: the outcome, device, model, times, crops read, host, and the checksums of the other two) and `diag.txt`. Outcomes: `ok` (every crop read), `timeout` (the crops read so far are in the readings), `failed`, `no_gpu` (the GPU version ran without a visible GPU) and `unit_error`.
+
+`prompt_version` fixes the whole request a reading is made with, so two readings of a job always used the same one. Version 1 sends the prompt with llama.cpp's default image encoding: a crop at its native resolution, one token per 32x32 pixels, about 200-400 tokens for a newspaper crop. Version 2 sends the same prompt and starts `llama-server` with `--image-min-tokens 1024`, the minimum llama.cpp gives for Qwen-VL; the crop is upscaled to it. On the #529 benchmark (39 crops, one GPU, equal token budgets) version 2 took the words of the six image-checked Yiddish crops from 23% to 59%, cut the loops on crops whose 1.14 reading looped from 14 of 14 to 5 of 14, and left the English, Serbian and repeated-print crops as they were. Staging stays at version 1 until every dispatchable app version reads version 2.
+
+Readings are kept as read. `diag.txt` has each crop's generation record (`generation_v1/<crop>`, schema 2), with `tail_periodic_repetition` when the raw output ends in a run repeated at least three times over at least 30 characters, and `repetition_loop_at_token_budget` when that run also used up the token budget. Printed text can repeat (a shelf of book spines); a model that loops runs out of tokens. The readings' `diag` names the looped crops in `repetition_loop_crops` (a count if the names do not fit) and, always complete, `repetition_loop_crop_bits` (hex; bit `i % 8` of byte `i / 8` is the job's crop `i`), and the request's `image_min_tokens`.
 
 ## The estimator
 
@@ -275,8 +279,8 @@ Both apps: `min_quorum` 2, `target_nresults` 2, at most 4 results. `script_valid
 
 - `usnm_quality_check` (`usnm-boinc quality check`): shape, sizes, UTF-8, the checksums of `confusions.json` and `diag.txt`, the record's consistency with its outcome. Every result is copied to `<project>/quality/seen/<result>/`.
 - `usnm_quality_compare` (`usnm-boinc quality compare`): the same job and engine, the same outcome, and the canonical records equal: keys sorted, floats to six decimals, without the host, the timings, the time and the diagnostics. Every pair is appended to `<project>/quality/pairs.jsonl` with the verdict and, when they differ, which part differs.
-- `usnm_qwen_check` (`usnm-boinc qwen check`): shape, sizes, the checksums of `readings.json` and `diag.txt`, the readings against the result (count, device, model, outcome). Every result is copied to `<project>/qwen/seen/<result>/`.
-- `usnm_qwen_compare` (`usnm-boinc qwen compare`): the same job and engine, both read the page or neither, and per crop both read or neither and a word-bag Dice of at least the threshold. Until the probe has measured it, the threshold is 0.5 (`PROBE_MIN_DICE`), which only rejects unrelated text. Every pair is appended to `<project>/qwen/pairs.jsonl` with the Dice per crop and both hosts' devices and models.
+- `usnm_qwen_check` (`usnm-boinc qwen check`): shape, sizes, the checksums of `readings.json` and `diag.txt`, the readings against the result (count, device, model, outcome). Every checked result, not only the eventual canonical, is retained in `<project>/qwen/seen/<uploaded-result-manifest-name>/` before validation succeeds. New captures commit a complete fsynced directory; `capture-v1.json` binds original upload names, byte counts and SHA-256 hashes, including exact `result.raw.json` serialization and versioned generation sections in `diag.txt`. `readings-metrics-v1.json` records per-reading uncertainty/repetition/token metrics, not accuracy; source-image/damage measurements remain explicitly unavailable until the offline `candidates` join below. Legacy normalized `result.json` files are preserved and completed with the raw manifest and receipt. Replay checks existing evidence rather than overwriting mismatches. Capture/storage conflicts return stock `script_validator` transient exit **3**, deferring validation and cleanup instead of marking a volunteer invalid; malformed science retains its existing non-transient failure behavior. This does not change quorum, agreement thresholds, canonical selection, or deletion policy, and cannot recover original JSON formatting already normalized by an older validator.
+- `usnm_qwen_compare` (`usnm-boinc qwen compare`): the same job and engine, both read the page or neither, and per crop both read or neither and a word-bag Dice of at least the threshold. Until the probe has measured it, the threshold is 0.5 (`PROBE_MIN_DICE`), which only rejects unrelated text. Every pair is appended to `<project>/qwen/pairs.jsonl` with the Dice per crop and both hosts' devices and models. For a bundle unit, the same rule is also applied to each page on its own (`<doc_id>:` crop prefix), but only when both results ran to the end (`ok`): the pair line gains `pages` (verdict per page), and with `--pages` (`<project>/qwen/pages` in the bridge wrapper) each page's verdict and both hosts' readings of it are written once to `<pages>/<job_id>/<doc_id>/<pair>.json` (`page_agreed` or `page_disagreed`, `accuracy_established: false`). A page whose every crop is blank in both is not agreed. The unit's verdict still needs every page, so a bundle with one disagreeing page stays inconclusive in BOINC while the pages two hosts agreed on are kept; the BOINC database is not changed.
 
 The daemons are in `ocr/boinc/daemons.xml` and `contrib-compute/images/server/lib.sh`; the wrappers in `contrib-compute/images/bridge/`.
 
@@ -296,7 +300,7 @@ The daemons are in `ocr/boinc/daemons.xml` and `contrib-compute/images/server/li
 - `rehat`: recomputes the page hat, version 1 and version 2, from a staging root's texts (`--root`, `--out` JSON lines, `--min-readers` 3, `--threads`), with no results or scans, to compare the two versions on a campaign whose units are still staged.
 - `rescore`: computes the text part of single-page units again from corrected LoC texts, with no new volunteer work (#1079). Takes `--campaign`, `--root` (the staging root), `--spool` (the canonical results), `--loc-texts` (JSON lines `{"doc_id", "text"}`, LoC's curated text, which replaces the `loc-hist` reader's), `--places`, `--out-dir` (new, outside the root) and `--threads`. The text part is everything in a unit's result except the scan's features: it is `slot::text_analysis`, the function the unit itself runs with no image and no ALTO, so a rescored page gets the numbers a unit would give it. The result's image and layout features are kept. Writes the re-staged units (`<out-dir>/units/<doc_id>/{quality.json, texts.json}`, which `rehat` reads) and `pages.parquet` and `summary.md` as `collect` writes them, with hat version 2. Bundles, units with no result, and pages with no LoC text are counted and skipped.
 
-`stage` refuses an exported `loc` or `loc-hist` text that is one of ocr-local's `loc_text` labels (`bulk`, `user`, `priority`, `missing`, `empty`, `short`, `garbled`, `mixed`): it stops at the page and writes `HOLD`. The `loc_text` column of `ocr-local/pages` says why we OCRed the page. It is never LoC's text. v1-wave6's hand-off texts were built outside the repo from that column, so all 10,000 of its pages were staged with `loc-hist` as `bulk`. #1079 has the repair.
+`stage` refuses an exported `loc` or `loc-hist` text that is one of ocr-local's reason labels (`bulk`, `user`, `priority`, `missing`, `empty`, `short`, `garbled`, `mixed`): it stops at the page and writes `HOLD`. Merged `ocr-local/pages` schema v2 names the queue reason `ocr_reason`; `loc_text` and `reason` are deprecated, equal compatibility aliases, never LoC's text. Readers validate the schema version and reject conflicting labels, including on historical parts. Node exchange and Japanese schemas are unchanged. Export LoC's text from the original curated LoC page's `text`, never from a reason column. v1-wave6's hand-off texts were built outside the repo from that legacy column, so all 10,000 of its pages were staged with `loc-hist` as `bulk`. #1079 has the repair.
 
 ### The page hat, version 2 (#962)
 
@@ -310,7 +314,7 @@ The unit and its record don't change, so no app version is needed: `collect` rea
 
 ### usnm-boinc qwen
 
-- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 14400, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20, `--bundle-size` default 1 on CLI and `16` in `bridge-job.sh`, at most 32 pages and 256 crops per bundle), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}` (or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`). `stage` closes a bundle before its `qwen.json` would pass 512 KiB, the limit submit and the workers read it with, or before its longest possible `readings.json` would pass 2 MiB, the output upload limit (every crop read at 8 KiB of text that all escapes to two bytes, about 16 KiB a crop). That holds a bundle to about 125 crops: 10 pages at 12 crops a page. A page whose `qwen.json`, alone or as a one-page bundle, would pass 512 KiB gets a `too_large` marker and is not published. Pages staged with different engine, deadline or token settings go in separate bundles. A root staged with `--bundle-size` above 1 refuses `--bundle-size 1`, which would stage its pages again as single-page units. The container worker and `usnm-qwen-app` check every bundle page before the model loads, then decode one page at a time, so a bundle needs the memory of its largest page, not of all its pages.
+- `stage`: reads staged `usnm_quality` units from `--quality-root` (`--root`, `--engine-image`, `--engine-llama`, `--engine-weights`, `--gpu-timeout-secs` default 14400, `--cpu-timeout-secs` default 7200, `--max-tokens-per-1000px2` default 4, `--max-pages` default 20, `--bundle-size` default 1 on CLI and `16` in `bridge-job.sh`, at most 32 pages and 256 crops per bundle), cuts the same deterministic crops from each unit's `page.jpg` and `loc.xml` (`crop_seed` and `k_crops` from `quality.json`) without contacting LoC again, and writes `<root>/units/<doc_id>/{page.jpg, qwen.json}` (or `<root>/pages/<doc_id>/` packed into `<root>/units/bundle-<idx>-<first_doc_id>/` when `--bundle-size > 1`). A bundle unit also gets `membership.json`, written before its `qwen.json` and never changed: for each page, in order, the page unit it came from, that unit's job id and `qwen.json` sha256, the page sha256 and its slice of the bundled `page.jpg`. A bundling run holds `<root>/.bundle-lock` from staging pages to publishing its last bundle and claims each bundle directory, so a concurrent run fails rather than rewriting a page unit or bundling the same pages twice. A bundle's deadlines are each page's deadline times its pages, at most 14,400 s, and `submit` scales `rsc_fpops_est`/`rsc_fpops_bound` by its pages (`1e13`/`1e16` a page). `stage` closes a bundle before its `qwen.json` would pass 512 KiB, the limit submit and the workers read it with, or before its longest possible `readings.json` would pass 2 MiB, the output upload limit (every crop read at 8 KiB of text that all escapes to two bytes, about 16 KiB a crop). That holds a bundle to about 125 crops: 10 pages at 12 crops a page. A page whose `qwen.json`, alone or as a one-page bundle, would pass 512 KiB gets a `too_large` marker and is not published. Pages staged with different engine, deadline or token settings go in separate bundles. A root staged with `--bundle-size` above 1 refuses `--bundle-size 1`, which would stage its pages again as single-page units. The container worker and `usnm-qwen-app` check every bundle page before the model loads, then decode one page at a time, so a bundle needs the memory of its largest page, not of all its pages.
 
 The GPU budget is four hours of application runtime for the entire page,
 not a BOINC task-duration limit. It accommodates slower volunteer GPUs without
@@ -336,7 +340,55 @@ cache lasts one workunit.
 - `probe`: runs `/app/llama-server --version` and checks that every model and multimodal projector in `usnm_boinc::qwen::default_models()` exists under `/opt/qwen/models`, printing their sizes without loading weights into memory.
 - `check`: `script_validator`'s `--init_script` (`--files <readings.json> <result.json> <diag.txt>`, optional `--keep <dir>`).
 - `compare`: `script_validator`'s `--compare_script` (`--files <r1...> --files2 <r2...>`, `--min-dice` default `0.5`, optional `--log <pairs.jsonl>`).
+- `compare --pages <dir>`: also keeps each bundle page's verdict, as above.
+- `page-ledger`: `--root` and `--pages`; prints one JSON line per bundle page under `<root>/units/` with its page unit's job id and checksum from `membership.json` and a status: `accepted` (some pair agreed on the page), `disagreed` (every pair so far differed), `pending` (no pair yet) or `membership_invalid` (the bundle's `membership.json` is missing, does not match its job, or names a page unit whose `qwen.json` no longer has the recorded checksum, id and page, so no page of it is kept). A record not naming that job and page, or whose crop verdicts and two sides' readings do not each hold exactly the page's staged crops once, is ignored. `accepted` means two hosts agree, not that the reading is right.
 - `summary`: reads `<root>/units/`, `<project>/qwen/seen` (`--seen`), and `<project>/qwen/pairs.jsonl` (`--pairs`) and prints a Markdown summary table of kept results and compared pairs.
+- `candidates --job <qwen.json> --page <page.jpg> --candidate <seen/result-a> <seen/result-b> ... --out <report.json>`:
+  a bounded offline audit of up to 16 explicitly selected retained results from
+  one single-page job. It verifies the input hash, job/engine/prompt identity,
+  model membership and crop IDs before publishing. The report retains every
+  candidate's text, manifest, client-reported host metadata, diagnostics and
+  hashes, with per-crop pixel features, pairwise CER/WER/Dice, comparisons to
+  LoC, forced-language damage counts, uncertainty markers, repetition indicators
+  and token-budget saturation. Missing readings remain distinct from empty
+  readings. Quality pair metrics use NFC, joined line-end hyphens and collapsed
+  whitespace; the separate `validator_dice` uses the validator's unmodified
+  word-bag computation. These are **noncanonical observations**, not replacements for the
+  canonical spool or inputs to `quality collect`. Keep the original `seen`
+  files; supplying selected results is not proof of database completeness.
+
+  Damage estimates with few head/near words are weak evidence; unsupported
+  language models and zero denominators remain null, not zero damage. A
+  mixed-language crop may not fit the job language. LoC is another fallible
+  reader; pixel blur/contrast are not annotated physical damage. Exact text
+  equality is not required by the existing validator, which already uses
+  per-crop Dice. Do not lower that floor to accept token-limit repetition,
+  shared hallucinations or agreed `[?]` as accurate transcription. Calibrate
+  any new acceptance margin on independent, image-grounded transcriptions
+  stratified by language and legibility; this command changes neither BOINC
+  validation nor class admission.
+
+  **Generation failure investigation (WU21128).** All three platforms consumed
+  the full 1,304-token budget on c07. AMD and Intel repeated a word over many
+  lines; Apple emitted 643 `[?]` markers. Their raw readings remain retained.
+  The report labels token-budget exhaustion, consecutive duplicate lines,
+  uncertainty-only and empty readings independently of pair agreement, and
+  records the longest identical-token run. No unflagged output is labeled
+  scientifically accepted. These flags describe observations, not calibrated
+  failure probabilities; repeated lines can also exist in the source.
+
+  The native request uses prompt v1, temperature 0, seed 42, `top_p=1` and
+  an area-derived completion budget (4 tokens per 1,000 crop pixels). There
+  is no explicit request-level stop or repetition penalty. The response reader
+  currently ignores `finish_reason` and retains completion count plus cleaned
+  text; a successful request is not proof of an accurate crop. Increasing the
+  budget could prolong this loop, and arbitrary stop strings or a repeat penalty
+  could truncate real print. Before a generation-policy release, retain stop/
+  length metadata in a versioned compatible contract and compare bounded
+  alternatives on the same image-grounded multilingual/legibility benchmark.
+  Treat length-limited or degenerating generations as uncertain observations,
+  preserve their raw text, and require independent legible transcription for
+  accuracy—not a lower Dice floor or another agreeing repetitive replica.
 
 ## Running a campaign
 
@@ -391,6 +443,10 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
      --var QWEN_ENGINE_WEIGHTS=sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd \
      --var QWEN_MAX=20 --wait-mins 15
    ```
+
+   Crop source text has a separate, unchanged 8192-byte UTF-8 limit. If any selected crop exceeds it, staging retains the complete candidate as `rejected-qwen.json`, the original `loc.xml`, `quality.json`, `page.jpg` and available `sample.json`, then writes the existing `too_large` terminal marker. Its reason names every oversized crop, box, byte count, text hash and source hashes. No `qwen.json` is published, no text is truncated, and other pages continue within `--max-pages`. Repeats preserve that evidence; feed inventory remembers rejected documents without counting them as submitted work. Other schema errors still fail closed.
+
+   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. Submission and collectors continue using their existing binary. Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
 
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
@@ -448,16 +504,123 @@ no LoC request:
    nothing while the server has more than 300 results unsent, and waits its turn on the step
    lock.
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
-   On the preparation host, `usnm-quality-results.timer` runs every 15 minutes:
-   `quality_results.py` collects the configured campaign's canonical spool into a fresh
-   `out/pages.parquet` under CT230's bridge lock, uses `quality-results-pull.sh
---snapshot-only` to copy it to the preparation CT215, then runs the existing
-   `load.py results` with that container's certificate-authenticated loader DSN.
-   The whole pass has its own host lock and bounded phase timeouts; any failed phase
-   prevents loading an old snapshot. A busy bridge retries at the next tick.
-   Transfers use a unique per-pass snapshot directory; timeout terminates the local
-   transfer process group and extraction is bounded inside CT215. Failed snapshots
-   remain for diagnosis; successful loads remove only their own redundant snapshot.
+   On the preparation host, `usnm-quality-results.timer` runs two minutes after
+   the previous pass finishes, with up to 15 seconds of jitter:
+   `quality_results_partial.py` collects **one submitted unit** under CT230's normal
+   nonblocking bridge lock. Collection is bounded to 120 seconds, with a 180-second
+   remote phase bound including metadata enumeration. It writes immutable per-pass
+   `out/{pages.parquet,crops.parquet,summary.md}` and `coverage.json` under
+   `/project/ops/quality-results/scoped/<campaign>/<unit-key>/snapshots/<snapshot>/`.
+   It never replaces `<campaign>/out` or claims a whole campaign is current.
+   Coverage explicitly says `campaign_complete=false`, identifies the selected job
+   and documents, and counts submitted and unvisited units for **this pass only**.
+   Table schemas and the existing complete-snapshot consumer contract are unchanged.
+   All three files are checksum-verified in preparation CT215; Parquet documents
+   and job identity must match coverage before the existing certificate-authenticated
+   `load.py results` is allowed to upsert. Missing or unvisited rows are never deleted.
+   A pending unit yields zero rows, not a loaded result. The host pass lock also
+   serializes collection, transfer and loading. A busy bridge retries next tick;
+   no active producer is preempted. The shorter interval avoids a structural
+   backlog: one unit per 15 minutes cannot match the shipper's maximum two units
+   per 15-minute interval even without contention. Actual throughput still depends
+   on collection time and free lock windows; verify cursor and load receipts,
+   rather than treating the timer frequency as proof of campaign coverage.
+   Source and preparation snapshots, coverage and host load receipts are retained.
+   The host cursor advances only after successful verification and loading. Failure
+   after a database commit but before cursor update safely repeats the same upserts.
+   The ordinary service explicitly enables `--completion-frontier`: three of every
+   four successful collections prioritize canonical-present units whose dependency
+   fingerprint has not been acknowledged by a verified, nonempty certificate load.
+   The fourth visit fairly revisits all submitted units, including pending, failed
+   and unchanged units. With no priority work, every visit is fair. Each lane fixes
+   an upper-name fence for its finite cycle; continuous arrivals cannot postpone
+   wrapping to earlier units. Thus a pending unit becoming canonical is immediately
+   priority-eligible rather than waiting for its fair visit. Priority selection is
+   cyclic, not newest-only. None of these scheduling hints constitutes scientific
+   validation, independent truth, quorum, or campaign completeness.
+   `usnm-boinc quality collect --inventory-only --cache ...` produces these hints
+   using a **separate scheduling namespace**, covering the binary, staged inputs,
+   canonical QUALITY outputs and late/changed Qwen dependencies. Fine-resolution
+   Unix staged PAGE/ALTO/TEXTS identities use device/inode/size/mtime/ctime hints,
+   rechecking both the descriptor and reopened path before publication. Coarse
+   timestamps and non-Unix inputs retain content hashing. Canonical outputs,
+   sidecars and reading dependencies remain content-checked; selected collection
+   still uses full content-validated row-cache keys. Scheduling hints cannot be
+   used as row keys or scientific acceptance.
+   It computes no rows and publishes no Parquet. It examines only the configured
+   campaign and its reading dependencies, with at most 10,000 QUALITY directory
+   entries; larger campaigns fail explicitly. The selected scheduling key is
+   rechecked after collection (`--inventory-unit`); inventory errors, missing
+   configured roots, corrupt metadata, or changed selected inputs fail closed,
+   without silently falling back to an old cursor. All inventory and collection
+   remain inside the unchanged nonblocking bridge lock and 180-second remote bound.
+   On filesystems requiring content fallback, cold digest warming can still time
+   out; completed digest receipts survive the retry.
+   No pass verifies/loads more than one scope.
+
+   **Migration:** install the matching collector binary before this driver/service;
+   old binaries reject inventory flags. Without `--completion-frontier`, the driver
+   retains its original frozen-prefix cursor behavior, including programmatic
+   `host_pass(Namespace(...))` reconciliation callers. Do not enable the flag for
+   explicit isolated prefix reconciliation. Existing host `after`/`through` fields
+   remain compatible; frontier progress is separate schema-1
+   `scoped/<campaign>/frontier.json`, bounded by the campaign limit. A host receipt
+   carries the selected fingerprint; only after successful nonempty load does the
+   host cursor carry `frontier_ack`, applied idempotently next admission. A crash
+   before acknowledgement repeats safe upserts. Remote lane progress alone never
+   marks a scope loaded; zero-row visits remain pending/failed, not success.
+   Collector validation failures and collector timeouts persist scheduling-only
+   progress before failing the pass, so a poison canonical result cannot pin the
+   priority lane or suppress fair revisits. Its fingerprint remains unacknowledged
+   and is retried in later cycles. Inventory and selected-dependency recheck errors
+   still abort without advancing either lane.
+   Frontier inventory, collection and selected-key recheck share a 160-second
+   monotonic work budget inside the existing 180-second remote limit. Each native
+   invocation gets at most 120 seconds and at most the remaining budget, reserving
+   20 seconds for subprocess teardown and durable scheduling progress. A slow
+   inventory therefore reduces the collector's timeout rather than allowing outer
+   termination to interrupt its failure-progress write. This reserve is not a
+   guarantee against unavailable storage, process kill, or host failure.
+   No prior cursor, DB count, or output timestamp proves an exact dependency key
+   was loaded: the first opt-in conservatively re-verifies canonical-present units
+   once. Do not seed acknowledgements from guessed historical coverage.
+   Each visit invokes the collector's current dependency and content-addressed cache
+   checks; old parts are never published just because a receipt exists.
+   This is independent per-page science, not a globally consistent campaign snapshot
+   or a database-wide freshness guarantee. Old science stays queryable; consult
+   coverage/load receipts for what was freshly observed. Whole-campaign collectors
+   still refuse incomplete publication and must not consume these partial directories
+   as complete snapshots.
+
+   **Read-only native inventory measurement (2026-10-28):** candidate source
+   `2a77f08223b21acd1623154456cf54c5ef0e18fc`, binary SHA256
+   `fefad24a826370e57f0c1e9f8fa4bc2976f4b0adf973cb2317605334d5936108`,
+   inventoried all 136 submitted native units in **10.093 seconds**, with 130
+   canonical-present and six pending. This used an initially empty private cache,
+   the real project mounted read-only, no network, one CPU and 2 GiB; its disposable
+   container was removed. It neither took the production bridge lock nor activated
+   the candidate; the installed collector and ordinary timer remained unchanged.
+   This passes the isolated 120-second inventory timing gate, **not** the real
+   collection/load or sustained priority/fair/late-reader acceptance below.
+   A scheduling namespace change conservatively invalidates old acknowledgements;
+   never rewrite them to claim historical coverage.
+
+   **Native acceptance (not demonstrated by offline tests):** record installed
+   driver/binary hashes, timer settings, lock admissions/busy exits, inventory and
+   collection durations (including cold digest warming), and receipt/ack progression.
+   After conservative bootstrap, observe at least two hours spanning ordinary
+   two-chunk/15-minute arrivals and real competing producers; compare exact submitted
+   job/page IDs with certificate DB coverage and measure completion-to-verified-load
+   lag, not just cursor position. Observe a previously pending completion and a
+   genuine late independent-reading change reaching a new verified key, and show
+   unchanged jobs no longer consume priority slots while fair visits continue.
+   With a frozen fair fence of N units, revisitation takes at most N+1 fair visits
+   (at most four times that many successful collections), not a wall-clock guarantee.
+   Sustainability requires usable lock windows for arrivals plus the reserved fair
+   share: roughly eight arriving jobs/hour require at least 10.7 successful scopes/hour
+   under continuous priority demand. This selector cannot repair insufficient lock
+   availability; do not close #962 until measured lag stays bounded. No producer,
+   source budget, timer, quorum, floor, or shared lock should be weakened for acceptance.
    The installer records its selected preparation container in
    `/etc/usnm/quality-results.env` (`CTID`, default 215), never pve-big's CT215.
    Collection does not submit work or alter quorum. Repeated loads upsert the same
@@ -467,7 +630,8 @@ no LoC request:
 
    Native Qwen requires a separate scheduled join, not just the image-pass campaign:
    install and enable `usnm-qwen-results.{service,timer}` on the preparation host.
-   It uses the same locked driver with `--campaign qwen-nonenglish-v1
+   It continues using the complete-snapshot `quality_results.py` driver with
+   `--campaign qwen-nonenglish-v1
 --qwen-campaign qwen-nonenglish-v1`, joining QUALITY canonical outputs from batch 0
    with `/project/qwen/<campaign>` and native batch-8 canonical readings from
    `/project/usnmocr/results/8`. Override `NATIVE_QWEN_CAMPAIGN` (and, if needed, the
@@ -477,16 +641,27 @@ no LoC request:
    pending quorum remain pending and join on a later pass; they are not reported as
    loaded Qwen science. The two collectors share the host pass lock and server bridge
    lock. Neither changes work identities, submission, source selection or quorum.
+   The native service waits at most 60 seconds for the ordinary bridge lock
+   (`--step-lock-wait-secs 60`); the waiter holds no bridge lock until admitted.
+   Acquisition is explicitly logged, and only collection runs under that lock,
+   never transfer or loading. Exhausted admission remains a failed invocation
+   without pulling or loading; genuine collection errors are not retried as
+   contention. Collection stays bounded to 20 minutes and the service to 40 minutes.
+   The SSH phase allows only the configured admission budget in addition to its
+   existing collection bound; the maximum sequential phase budgets remain below
+   the service limit. Other callers retain nonblocking admission by default.
 
-   Both services opt into native incremental collection (`--incremental` on the
-   host driver). Deploy the matching `usnm-boinc` collector binary at the
+   Both services use native content-addressed row parts; the partial driver passes
+   a single-unit root and its persistent isolated cache. Deploy the matching
+   `usnm-boinc` collector binary at the
    dedicated persistent `/project/ops/quality-results/usnm-boinc` path **before**
    installing these service units. Only collectors use this binary; do not
    replace the server's shared executable or restart the BOINC server container.
    `QUALITY_COLLECTOR` in the results environment selects a different path if
    needed (`--collector` on the driver). A missing or old binary rejects the cache flags and
    safely prevents pulling or loading a stale snapshot. Each campaign retains
-   immutable JSON row parts under `collected-parts/`. Keys include the collector
+   immutable JSON row parts (complete campaigns under `collected-parts/`, partial
+   unit scopes under `ops/quality-results/scoped/`). Keys include the collector
    executable and format version, staged scientific inputs and optional OCR
    sidecars, canonical QUALITY outputs, and the relevant Qwen jobs/canonical
    outputs (including missing-to-present transitions). Surya dependencies
@@ -502,9 +677,32 @@ no LoC request:
    clean pass assembles the complete current campaign and uses the existing
    idempotent certificate loader. Corrupt parts fail closed and remain available
    for operator diagnosis. No scientific inputs, historical parts or database rows
-   are deleted. This bounds recomputation, not the linear input hashing,
-   table assembly, transfer or loader costs; measure end-to-end pass duration
-   after warming before claiming capacity for a larger campaign.
+   are deleted. Large staged `page.jpg`, `loc.xml`, and `texts.json` blobs
+   additionally have immutable checksum-protected SHA-256 receipts under
+   `collected-parts/input-digests/`. On Unix, unchanged opened-file device,
+   inode, size, nanosecond mtime and ctime allow reuse of the digest; identity
+   is checked again after hashing or lookup and against a freshly opened path.
+   Rewrites (even same-size with restored mtime) and replacements invalidate it.
+   This requires normal filesystem change-time and close-to-open coherence
+   (including the production NFS mount); coarse whole-second ctime or non-Unix
+   filesystems fall back to content hashing. Job descriptors, canonical outputs,
+   optional sidecars, and collector versions remain content-hashed each pass.
+   Corrupt digest receipts fail closed and are retained, never silently rebuilt.
+   Once the dirty-unit limit is reached, a warming pass stops before reading or
+   hashing any further unit. It does not hash another cold bundle merely to
+   discover that it must defer it. Even cached or pending trailing units require
+   a subsequent pass; an all-clean pass can publish the complete campaign.
+   Cold digest warming can still require multiple bounded passes; successful
+   publication still requires a complete current campaign and final dependency
+   revalidation. File enumeration, metadata checks, table assembly, transfer and
+   loading remain linear; measure end-to-end pass duration after warming before
+   claiming capacity for a larger campaign.
+   Before deploying digest reuse on another filesystem, retain an isolated
+   fixture receipt from the actual mount/client: verify nonzero nanosecond ctime,
+   same-size rewrites with restored mtime, atomic replacement, and fresh-open
+   visibility. Mount version alone is not acceptance. Then verify cold progress,
+   a complete ordinary publication/load, clean-pass idempotence and late canonical
+   reading invalidation before restoring any paused results timer.
 
 ```sh
 # On pve-laptop, once: the trust and the mounts (home-infra).
@@ -523,12 +721,19 @@ scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
 
 ### Sustained non-English Qwen crop feed
 
-The opt-in `usnm-qwen-feed.timer` runs on the quality shipper host every ten minutes
-after the previous run finishes. It does not replace the ordinary quality feeder.
-Install `qwen_feed.py` and the updated `quality-ship.sh` beside that host's existing
-`quality_receive.py`; install the updated `quality_feed.py` and `ocr_manifest.py` in
+The opt-in `usnm-qwen-feed.timer` prepares sources on the quality shipper host every
+ten minutes after preparation finishes. The separate `usnm-qwen-ship.timer` drains
+at most two immutable READY chunks every minute after shipping finishes. Neither
+unit orders itself after the other: archive extraction, scan preparation or their
+failure cannot hold already-READY native work behind preparation. A campaign-local
+ship lock also prevents an old inline shipper and the independent shipper from
+copying/cleaning the same chunk concurrently; normal project mutexes still serialize
+server staging/submission. This does not replace the ordinary quality feeder.
+Install `qwen_feed.py`, `quality-ship.sh` and `quality_receive.py` into a Qwen-owned
+`/opt/usnm-quality-feed/qwen-throughput/` directory, leaving other campaigns'
+installed shared helpers unchanged. Install the updated `quality_feed.py` and `ocr_manifest.py` in
 the preparation CT's `/opt/usnm-quality-feed/`. Install `archive_alto.py` on the archive
-host at `/opt/usnm-quality-feed/`, and `qwen_submit.py` inside the server container at
+host at `/opt/usnm-quality-feed/`, and both `qwen_submit.py` and `qwen_provenance.py` inside the server container at
 `/project/ops/qwen-feed/`. The existing pinned preparation venv suffices; no new
 packages or LoC clients are needed. Both SSH destinations must have verified host keys
 and the existing host trust, never `StrictHostKeyChecking=no`.
@@ -537,8 +742,15 @@ Configure `/etc/usnm/qwen-feed.env` on the shipper host with `CAMPAIGN` (a new c
 `SERVER_HOST`, `ARCHIVE_HOST`, `SCAN_SERVER`, the existing quality `ENGINE_IMAGE`,
 `QWEN_ENGINE_PLAN` (a reviewed `/project/.../plan.json` containing the pinned `engine`),
 and `QWEN_MODELS` (the existing checksum-pinned shared-model directory, not another
-model copy). Install the service/timer from `scripts/boinc/onprem/quality-feed/`, verify
-one service execution and its authoritative workunit audit, then enable the timer.
+model copy). `QWEN_MAX_READY` defaults to 1000 **fresh original replicas** (500
+untouched native pairs); it is not the global unsent-replica headline. Install both
+service/timer pairs from `scripts/boinc/onprem/quality-feed/` at an actual old
+Qwen-service idle boundary, after the old inline invocation completes. Do not start
+a competing consumer while an old unguarded shipper is active. Enable the new
+ship timer without manually invoking feed/ship; verify its genuine ordinary run
+and authoritative native audit. The preparation timer and source/archive budgets
+are unchanged. Phase JSON distinguishes inventory, selection, original ALTO and
+READY preparation; native shipping logs normal mutex acquisition.
 
 Each tick excludes all retained Qwen single-page/bundle documents and the campaign's
 completed source chunks, selects explicitly non-English **available** scans by descending
@@ -558,16 +770,54 @@ pages remain eligible immediately; only confirmed missing sources get the daily 
 The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
 staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.
 It refuses submission uncertainty, cross-campaign duplicate documents, changed hashes,
-incorrect database routing/quorum, more than 1,000 ready Qwen replicas (including a
-per-chunk reservation), or less than 50 GiB free in either the project filesystem or
-the host thin pool. Up to three unshipped chunks are buffered. Failures retain READY
+incorrect database routing/quorum, the configured fresh-original-replica target
+(including a per-chunk reservation), or more than 2000 unresolved native workunits
+(including retries, counted separately). A fresh pair is batch 8, quorum/target two,
+canonical/error zero, exactly two total results, both unsent/host zero/outcome zero/
+unvalidated, and no assignment row. Retry replicas and unrelated applications never
+masquerade as useful fresh supply or block it via a global ready headline. The
+ordinary non-Qwen shipper's global unsent ceiling is unchanged.
+
+Before transferring or staging a native READY chunk, the shipper calls the same
+read-only admission helper with `--preflight` and reserves its **whole** page count.
+Normal capacity pressure emits JSON `status=deferred` with the phase, reason,
+fresh-pair count, reservation, limits and existing audit SHA256, then exits 75
+(already a normal deferred exit for `usnm-qwen-ship.service`). Preflight deferral
+transfers zero pages; it neither acknowledges READY nor reports a publication.
+Unchanged full-watermark ticks only recheck admission, not recopy the sources.
+Admission is always checked again under the normal project mutex before native
+publication: a capacity race also defers with JSON/exit 75 and retains READY and
+staged partials. Uncertain `submitting` markers or changes to previously audited
+job bytes remain hard errors, not normal backpressure. No audit is rewritten by a
+deferred decision; the logged SHA256 binds the existing immutable receipt.
+
+The 50 GiB project/bulk/thin-pool floors remain; native admission additionally
+reserves at least 64 MiB **per candidate page** before staging on the least-free
+backing filesystem. Preparation uses the same conservative per-page reservation to
+bound its selection. Up to three unshipped chunks are buffered. Failures retain READY
 chunks and submission journals; never delete `submitting` to replay work.
 The filesystem floor uses the minimum available space across the project root,
 `quality/`, and `usnmocr/download/`, so a separate bulk-data mount or NFS quota
 cannot be hidden by free space on the local root filesystem.
 Successful native workunit audits are retained in `audit.json`, bound to the exact job
 SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
-new or changed jobs always require a fresh authoritative audit.
+new jobs always require a fresh authoritative audit; changed previously audited
+job bytes require explicit reconciliation, never automatic replay.
+
+Ramp the configured target only after measured automatic runs, not to manufacture
+10,000 via a number change. For example, start at 200 fresh replicas (100 pairs),
+verify new app-6/batch-8 original jobs, zero uncertain submissions, immutable inputs,
+phase/rate receipts and post-cleanup floors, then use 1000 replicas (500 pairs).
+A later 2000-replica stage is still only 1000 fresh pairs and must fit the unresolved
+ceiling plus the existing jobs. At the 28 October measurement, 189 unique READY
+sources occupied 523,298,131 bytes, worst page 4,708,052 bytes; 19 native download
+page/job inputs occupied 42,208,871 bytes and the two shared models 5,780,074,528 bytes
+once. This supports a conservative 64-MiB/page incremental budget, not an assertion
+that all source candidates are input-valid or scientifically accepted.
+The indexed scan ceiling was 262,920 unique pages, **not** a count of non-English,
+original-ALTO-available, crop-valid pages. Language/source/crop checks still decide
+eligibility. A measured 19-job arrival is not 10,000 useful jobs, and a trailing
+zero-job hour must be reported as zero even when old replicas remain ready.
 
 The separate `usnm-qwen-manifest.timer` in the preparation CT runs
 `build-quality --non-english` every ten minutes after its previous execution finishes.
@@ -577,8 +827,8 @@ database DSN, and `/var/lib/usnm-ocr-manifest/qwen-nonenglish` state. When upgra
 let the old Qwen feed's inline manifest finish before starting this timer, so the two
 versions never write that checkpoint concurrently. Verify one manifest pass, then
 enable its timer independently of `usnm-qwen-feed.timer`.
-Manifest failure or slowness cannot prevent the feed service's `ExecStartPost` from
-shipping already-ready native work. Its separate service lock prevents concurrent
+Manifest or source-preparation failure/slowness cannot prevent the separate ship
+timer from shipping already-ready native work. Its separate service lock prevents concurrent
 manifest runs.
 
 This checkpoint requests missing

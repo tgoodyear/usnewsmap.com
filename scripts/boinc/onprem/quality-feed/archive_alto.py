@@ -20,6 +20,14 @@ import time
 DOC = re.compile(r"^[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+$")
 BATCH = re.compile(r"^[a-z]+_[a-zA-Z0-9]+$")
 MAX_ALTO = 32 * 1024 * 1024
+ARCHIVE = re.compile(r"^[a-z]+_[a-zA-Z0-9]+_ver(?:0[1-9]|[1-9][0-9])\.tar\.bz2$")
+
+
+def available_archives(archives):
+    names = sorted(p.name for p in archives.glob("*.tar.bz2") if ARCHIVE.fullmatch(p.name) and p.is_file())
+    if len(names) > 100000:
+        raise ValueError("archive inventory exceeds bounded source catalog")
+    return names
 
 
 def member_doc(name):
@@ -125,7 +133,8 @@ def main():
         ap.error("--max-seconds must be positive")
     with (sys.stdin if args.pages == "-" else open(args.pages)) as f:
         pages = [json.loads(line) for line in f if line.strip()]
-    print(json.dumps(extract(pages, args.archives, args.out, args.max_seconds), sort_keys=True))
+    print(json.dumps({**extract(pages, args.archives, args.out, args.max_seconds),
+                      "available_archives": available_archives(args.archives)}, sort_keys=True))
 
 
 if __name__ == "__main__":

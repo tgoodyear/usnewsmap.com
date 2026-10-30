@@ -4,6 +4,7 @@
 //! that came off the work queues (`usnm-boinc claim`): their ledger rows
 //! exist already, so it only checks them and writes nothing.
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ledger, sync::Lease, LOCK};
@@ -205,6 +206,178 @@ pub async fn reserve(
     let unlock = state.unlock(LOCK, &owner).await;
     result?;
     unlock
+}
+
+pub fn next_attempt(
+    previous: &ledger::Queued,
+    at: chrono::DateTime<chrono::Utc>,
+    node: &str,
+) -> anyhow::Result<ledger::Queued> {
+    anyhow::ensure!(
+        previous.attempt > 0
+            && node
+                .strip_prefix("boinc-")
+                .is_some_and(|id| id.len() == 12 && id.bytes().all(|b| b.is_ascii_hexdigit())),
+        "invalid previous attempt or retry node"
+    );
+    let at = chrono::DateTime::from_timestamp_micros(at.timestamp_micros())
+        .ok_or_else(|| anyhow::anyhow!("retry time is not representable in the native ledger"))?;
+    let mut next = previous.clone();
+    next.attempt = previous
+        .attempt
+        .checked_add(1)
+        .filter(|n| *n <= i32::MAX as u32)
+        .ok_or_else(|| anyhow::anyhow!("native attempt overflow"))?;
+    anyhow::ensure!(
+        at > previous.queued_at,
+        "retry must follow previous queued row"
+    );
+    next.queued_at = at;
+    next.retry_message_at = Some(at);
+    next.retry_run = Some(format!("{node}.{}", at.format("%Y%m%dT%H%M%S%6fZ")));
+    if next.plan == "hit-results" && next.request_day.is_none() {
+        next.request_day = Some(previous.queued_at.date_naive());
+    }
+    Ok(next)
+}
+
+/// Reserve exactly the next attempt after a permanent terminal outcome.
+pub async fn retry<F>(
+    state: &State,
+    curated: &dyn ObjectStore,
+    snapshot: &Snapshot,
+    previous: &ledger::Queued,
+    next: &ledger::Queued,
+    parent_message: &usnm_ocr_contract::message::OcrMessage,
+    prepare: F,
+) -> anyhow::Result<ledger::Queued>
+where
+    F: FnOnce(&ledger::Queued) -> anyhow::Result<()>,
+{
+    let node = next
+        .retry_run
+        .as_deref()
+        .and_then(|run| run.split_once('.'))
+        .map(|(node, _)| node)
+        .ok_or_else(|| anyhow::anyhow!("missing retry output identity"))?;
+    anyhow::ensure!(
+        next_attempt(previous, next.queued_at, node)? == *next,
+        "retry changes more than attempt, time and original request-day attribution"
+    );
+    let owner = usnm_state::owner_id();
+    let lease = take_waiting(state, &owner).await?;
+    let result = async {
+        anyhow::ensure!(
+            state.current_version().await?.as_deref() == Some(&snapshot.version),
+            "published snapshot changed during retry"
+        );
+        anyhow::ensure!(
+            snapshot.batch_version(&next.batch) == Some(next.batch_version),
+            "retry batch version is not published"
+        );
+        let key = usnm_core::ids::PageKey::from_doc_id(&next.doc_id)?;
+        anyhow::ensure!(
+            snapshot.titles.contains_key(&key.lccn) && !snapshot.is_japanese(&key.lccn),
+            "retry title is unavailable or uses the Japanese OCR pipeline"
+        );
+        let ledger = ledger::load(curated).await?;
+        anyhow::ensure!(!ledger.imported(&next.doc_id), "page was already imported");
+        if ledger.queued.get(&next.doc_id) == Some(next) {
+            anyhow::ensure!(
+                ledger.outstanding(&next.doc_id) == Some(next),
+                "retry reservation already settled; reconcile"
+            );
+            lease.check()?;
+            return Ok(next.clone());
+        }
+        anyhow::ensure!(
+            ledger.queued.get(&next.doc_id) == Some(previous),
+            "previous attempt is no longer the latest ledger row"
+        );
+        let outcome = ledger
+            .outcomes
+            .get(&next.doc_id)
+            .ok_or_else(|| anyhow::anyhow!("previous attempt has no settled outcome"))?;
+        anyhow::ensure!(
+            outcome.outcome == ledger::DEAD_LETTERED
+                && outcome.cause.as_deref() == Some("permanent")
+                && outcome.at >= previous.queued_at
+                && outcome.message_sha256.as_deref()
+                    == Some(
+                        usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(parent_message)?)
+                            .as_str()
+                    ),
+            "only a message-bound settled permanent failure may be retried"
+        );
+        let next = if next.queued_at <= outcome.at {
+            next_attempt(
+                previous,
+                chrono::Utc::now().max(outcome.at + chrono::Duration::microseconds(1)),
+                node,
+            )?
+        } else {
+            next.clone()
+        };
+        lease.check()?;
+        prepare(&next)?;
+        lease.check()?;
+        let run = format!(
+            "boinc-retry-{}",
+            usnm_ocr_contract::boinc::sha256(
+                next.retry_run.as_deref().unwrap_or_default().as_bytes()
+            )
+        );
+        ledger::write_queued(curated, std::slice::from_ref(&next), next.queued_at, &run).await?;
+        Ok(next)
+    }
+    .await;
+    drop(lease);
+    let unlock = state.unlock(LOCK, &owner).await;
+    let next = result?;
+    unlock?;
+    Ok(next)
+}
+
+#[derive(Clone)]
+pub struct SubmissionLease(Arc<Lease>);
+
+impl SubmissionLease {
+    pub fn check(&self) -> anyhow::Result<()> {
+        self.0.check()
+    }
+}
+
+/// Hold the native lease across a deliberate retry's external submission.
+pub async fn with_retry_reservation<T, F: std::future::Future<Output = anyhow::Result<T>>>(
+    state: &State,
+    curated: &dyn ObjectStore,
+    expected: &ledger::Queued,
+    operation: impl FnOnce(SubmissionLease) -> F,
+) -> anyhow::Result<T> {
+    anyhow::ensure!(
+        expected.retry_run.is_some(),
+        "not a deliberate retry reservation"
+    );
+    let owner = usnm_state::owner_id();
+    let lease = SubmissionLease(Arc::new(take_waiting(state, &owner).await?));
+    let result = async {
+        let ledger = ledger::load(curated).await?;
+        anyhow::ensure!(
+            !ledger.imported(&expected.doc_id)
+                && ledger.outstanding(&expected.doc_id) == Some(expected),
+            "retry submission no longer owns the exact outstanding reservation"
+        );
+        lease.check()?;
+        let output = operation(lease.clone()).await?;
+        lease.check()?;
+        Ok(output)
+    }
+    .await;
+    drop(lease);
+    let unlocked = state.unlock(LOCK, &owner).await;
+    let output = result?;
+    unlocked?;
+    Ok(output)
 }
 
 /// Check, under the same lock, that every page's ledger row is still the

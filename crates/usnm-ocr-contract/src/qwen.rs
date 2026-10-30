@@ -30,11 +30,49 @@ pub const MAX_BUNDLE_PAGES: usize = 32;
 /// Maximum total crops across a multi-page `usnm_qwen` bundle workunit.
 pub const MAX_BUNDLE_CROPS: usize = 256;
 pub const MAX_MODELS: usize = 4;
+/// The longest deadline a unit, single page or bundle, may carry.
+pub const MAX_DEADLINE_SECS: u32 = 14_400;
 /// One crop's text, LoC's or the model's.
 pub const MAX_CROP_TEXT: usize = 8 * 1024;
-/// The transcription prompt this version of the job sends.
+/// The transcription request version new jobs are staged with. A job's
+/// `prompt_version` fixes the whole request a reading is made with: the
+/// prompt text and how the crop is encoded for the model.
 pub const PROMPT_VERSION: u32 = 1;
+/// Request version 2: the same [`PROMPT`], with the vision encoder's
+/// minimum image tokens raised to [`V2_IMAGE_MIN_TOKENS`]. Version 1 leaves
+/// llama.cpp's default, which encodes a newspaper crop at its native
+/// resolution of one token per 32x32 pixels (about 200-400 tokens), below
+/// the 1,024 that llama.cpp says Qwen-VL needs; that is where the
+/// unreadable, looping Hebrew-script readings came from (#529).
+pub const PROMPT_VERSION_IMAGE_MIN_TOKENS: u32 = 2;
+pub const V2_IMAGE_MIN_TOKENS: u32 = 1024;
+/// Every request version this contract's apps can read with.
+pub const SUPPORTED_PROMPT_VERSIONS: [u32; 2] = [PROMPT_VERSION, PROMPT_VERSION_IMAGE_MIN_TOKENS];
+
+/// `--image-min-tokens` for a job's request version; `None` keeps the
+/// engine default, as version 1 always has.
+pub fn image_min_tokens(prompt_version: u32) -> Option<u32> {
+    (prompt_version == PROMPT_VERSION_IMAGE_MIN_TOKENS).then_some(V2_IMAGE_MIN_TOKENS)
+}
 pub const PROMPT: &str = "Transcribe exactly the printed text in the image. Keep the original spelling, punctuation, line breaks and hyphenation. Do not correct or modernise anything, and do not add anything that is not printed. If a word is unreadable, write [?] for it. Output only the transcription.";
+/// The repeated run that ends `text`, ignoring trailing whitespace: the
+/// shortest period of at most 400 chars that repeats at least three times
+/// over at least 30 chars, as `(period, span)` in chars. Printed text can
+/// repeat (a shelf of "SHAKESPEARE'S WORKS" spines); a reading that also
+/// ran out of tokens on such a run is the model looping.
+pub fn tail_repetition(text: &str) -> Option<(usize, usize)> {
+    let s: Vec<char> = text.trim_end().chars().collect();
+    let n = s.len();
+    (1..=400.min(n / 3)).find_map(|p| {
+        let mut i = n - 1;
+        while i >= p && s[i] == s[i - p] {
+            i -= 1;
+        }
+        let span = n - 1 - i + p;
+        (span >= 3 * p && span >= 30).then_some((p, span))
+    })
+}
+
 /// The probe's acceptance floor for word-bag Dice between two hosts'
 /// readings of one crop. Vision-language output can differ between
 /// devices, so the threshold proper is measured on the probe's pairs
@@ -170,6 +208,20 @@ impl Job {
         u32::try_from((crop.area_px2() * per).div_ceil(1000).max(16)).unwrap_or(u32::MAX)
     }
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.validate_source_candidate()?;
+        for c in &self.crops {
+            ensure!(
+                c.loc_text.len() <= MAX_CROP_TEXT,
+                "crop text over size limit"
+            );
+        }
+        Ok(())
+    }
+
+    /// Validate every invariant except source crop-text size. Staging uses
+    /// this before retaining oversized evidence; publishable jobs must still
+    /// pass [`Self::validate`].
+    pub fn validate_source_candidate(&self) -> anyhow::Result<()> {
         ensure!(self.v == VERSION, "unsupported qwen job version");
         ensure!(
             is_sha256(&self.id) && self.id == self.identity()?,
@@ -286,17 +338,13 @@ impl Job {
                     && c.rect[3] <= 1 << 16,
                 "invalid crop box"
             );
-            ensure!(
-                c.loc_text.len() <= MAX_CROP_TEXT,
-                "crop text over size limit"
-            );
         }
         ensure!(
-            self.prompt_version == PROMPT_VERSION,
+            SUPPORTED_PROMPT_VERSIONS.contains(&self.prompt_version),
             "unsupported prompt version"
         );
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
-            ensure!((60..=14_400).contains(&t), "invalid deadline");
+            ensure!((60..=MAX_DEADLINE_SECS).contains(&t), "invalid deadline");
         }
         ensure!(
             (1..=4096).contains(&self.max_tokens_per_1000px2),
@@ -538,6 +586,73 @@ pub fn agree(
     (out, verdict)
 }
 
+/// One page of a bundle unit, judged on its own from a pair's per-crop
+/// agreement (#529): the unit's own verdict still needs every page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageAgreement {
+    pub doc_id: String,
+    pub agree: bool,
+    pub crops: Vec<CropAgreement>,
+    pub reason: Option<String>,
+}
+
+/// Splits a bundle pair's `crops` (from [`agree`]) by page, the
+/// `<doc_id>:` prefix of each crop id, and judges each page by the rule
+/// [`agree`] applies to a whole unit. A page is only judged when both
+/// results are for the same job and engine, both ran to the end
+/// (`Outcome::Ok`, so every crop of every page was read or left blank),
+/// and neither is a unit error; a timed-out or failed result leaves every
+/// page unjudged, since which of its pages were complete is not in the
+/// result. Single-page units have no pages.
+pub fn agree_pages(
+    a: &ResultManifest,
+    b: &ResultManifest,
+    crops: &[CropAgreement],
+    min_dice: f64,
+) -> Vec<PageAgreement> {
+    if a.job_id != b.job_id
+        || a.engine != b.engine
+        || a.outcome != Outcome::Ok
+        || b.outcome != Outcome::Ok
+        || a.unit_error.is_some()
+        || b.unit_error.is_some()
+        || crops.is_empty()
+        || !crops.iter().all(|c| c.id.contains(':'))
+    {
+        return Vec::new();
+    }
+    let mut pages: BTreeMap<&str, Vec<CropAgreement>> = BTreeMap::new();
+    for c in crops {
+        let (doc, _) = c.id.split_once(':').expect("checked above");
+        pages.entry(doc).or_default().push(c.clone());
+    }
+    pages
+        .into_iter()
+        .map(|(doc, crops)| {
+            let mut reason = None;
+            for c in &crops {
+                if c.read.0 != c.read.1 {
+                    reason = Some(format!("{}: read by one host only", c.id));
+                    break;
+                }
+                if let Some(d) = c.dice.filter(|d| *d < min_dice) {
+                    reason = Some(format!("{}: reading agreement {d:.4}", c.id));
+                    break;
+                }
+            }
+            if reason.is_none() && !crops.iter().any(|c| c.read.0) {
+                reason = Some("no crop read".into());
+            }
+            PageAgreement {
+                doc_id: doc.to_owned(),
+                agree: reason.is_none(),
+                crops,
+                reason,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -679,9 +794,28 @@ pub(crate) mod tests {
         order.engine.models.reverse();
         order.id = order.identity().unwrap();
         assert!(order.validate().is_err());
-        let mut tampered = j;
-        tampered.prompt_version = 2;
+        let mut tampered = j.clone();
+        tampered.prompt_version = PROMPT_VERSION_IMAGE_MIN_TOKENS;
         assert!(tampered.validate().is_err());
+        tampered.id = tampered.identity().unwrap();
+        assert!(tampered.validate().is_ok());
+        assert_ne!(tampered.id, j.id);
+        let mut unknown = j;
+        unknown.prompt_version = 3;
+        unknown.id = unknown.identity().unwrap();
+        assert!(unknown.validate().is_err());
+    }
+
+    #[test]
+    fn tail_repetition_finds_the_run_that_ends_a_reading() {
+        let looped = format!("Head line.\n{}", "[?] ".repeat(40));
+        assert_eq!(tail_repetition(&looped), Some((4, 159)));
+        assert_eq!(tail_repetition("word\nword\nword"), None);
+        assert_eq!(
+            tail_repetition("The ship sailed for England, and the enemy sank it."),
+            None
+        );
+        assert_eq!(tail_repetition(""), None);
     }
 
     #[test]
@@ -722,5 +856,45 @@ pub(crate) mod tests {
         let (mut short, _, sb) = result(Outcome::Ok, &[("c01", "x")]);
         short.crops = 2;
         assert!(short.check(&sb, b"").is_err());
+    }
+
+    #[test]
+    fn bundle_pages_are_judged_apart_while_the_unit_stays_inconclusive() {
+        let a_texts = [
+            ("p1:c01", "one two three four"),
+            ("p1:c02", "five six seven eight"),
+            ("p2:c01", "the ship sailed"),
+            ("p2:c02", "for england"),
+            ("p3:c01", ""),
+        ];
+        let b_texts = [
+            ("p1:c01", "one two three five"),
+            ("p1:c02", "five six seven eight"),
+            ("p2:c01", "the ship sailed"),
+            ("p2:c02", "[?] [?] [?] [?] [?] [?]"),
+            ("p3:c01", ""),
+        ];
+        let (a, ar, _) = result(Outcome::Ok, &a_texts);
+        let (b, br, _) = result(Outcome::Ok, &b_texts);
+        let (crops, unit) = agree(&a, &ar, &b, &br, 0.5);
+        assert!(
+            unit.is_err(),
+            "one disagreeing page keeps the unit inconclusive"
+        );
+        let pages = agree_pages(&a, &b, &crops, 0.5);
+        let verdicts: Vec<(&str, bool)> =
+            pages.iter().map(|p| (p.doc_id.as_str(), p.agree)).collect();
+        assert_eq!(verdicts, [("p1", true), ("p2", false), ("p3", false)]);
+        assert_eq!(pages[0].crops.len(), 2);
+        assert!(pages[1].reason.as_deref().unwrap().starts_with("p2:c02"));
+        assert_eq!(pages[2].reason.as_deref(), Some("no crop read"));
+        // A timed-out result says nothing about which of its pages were whole.
+        let (t, tr, _) = result(Outcome::Timeout, &a_texts[..2]);
+        let (crops, _) = agree(&a, &ar, &t, &tr, 0.5);
+        assert!(agree_pages(&a, &t, &crops, 0.5).is_empty());
+        // Single-page units have no pages to judge.
+        let (s, sr, _) = result(Outcome::Ok, &[("c01", "x"), ("c02", "y")]);
+        let (crops, _) = agree(&s, &sr, &s, &sr, 0.5);
+        assert!(agree_pages(&s, &s, &crops, 0.5).is_empty());
     }
 }

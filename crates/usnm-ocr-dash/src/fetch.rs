@@ -144,6 +144,51 @@ pub struct PacerState {
     pub generation: u64,
 }
 
+/// Read-only systemd completion metadata, never inferred from fetched markers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishStatus {
+    pub schema: u32,
+    pub active_state: Option<String>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub result: Option<String>,
+    pub exit_status: Option<u32>,
+    pub error: Option<String>,
+}
+
+impl PublishStatus {
+    pub fn state(&self, now: DateTime<Utc>) -> &'static str {
+        if self.schema != 1 || self.error.is_some() {
+            return "unknown";
+        }
+        if self
+            .active_state
+            .as_deref()
+            .is_some_and(|s| matches!(s, "active" | "activating" | "deactivating"))
+        {
+            return "running";
+        }
+        if !self
+            .active_state
+            .as_deref()
+            .is_some_and(|s| matches!(s, "inactive" | "failed"))
+            || self.finished_at.is_none_or(|t| t > now)
+            || self.result.is_none()
+            || self.exit_status.is_none()
+        {
+            return "unknown";
+        }
+        if self.active_state.as_deref() == Some("inactive")
+            && self.result.as_deref() == Some("success")
+            && self.exit_status == Some(0)
+        {
+            "succeeded"
+        } else {
+            "failed"
+        }
+    }
+}
+
 /// A small JSON file read at each poll, if one is configured.
 #[derive(Debug, Default)]
 pub struct Watched<T> {
@@ -154,6 +199,42 @@ pub struct Watched<T> {
     pub modified: Option<DateTime<Utc>>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusMirror<T> {
+    mirror_schema: String,
+    observed_at: DateTime<Utc>,
+    source_modified_at: DateTime<Utc>,
+    value: T,
+}
+
+fn decode_status<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    modified: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<(DateTime<Utc>, T)> {
+    anyhow::ensure!(bytes.len() <= 1 << 20, "over 1 MB");
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if value.get("mirror_schema").is_some() {
+        let mirror: StatusMirror<T> = serde_json::from_value(value)?;
+        anyhow::ensure!(
+            mirror.mirror_schema == "usnm-ocrdash-status-v1",
+            "unsupported status mirror schema"
+        );
+        anyhow::ensure!(
+            mirror.observed_at <= now && now - mirror.observed_at <= Duration::minutes(5),
+            "status mirror is stale or future-dated"
+        );
+        anyhow::ensure!(
+            mirror.source_modified_at <= mirror.observed_at,
+            "status mirror source modification is future-dated"
+        );
+        Ok((mirror.source_modified_at, mirror.value))
+    } else {
+        Ok((modified, serde_json::from_value(value)?))
+    }
+}
+
 impl<T: serde::de::DeserializeOwned> Watched<T> {
     fn poll(&mut self) {
         let Some(path) = &self.path else {
@@ -162,14 +243,11 @@ impl<T: serde::de::DeserializeOwned> Watched<T> {
         let read = std::fs::metadata(path)
             .and_then(|m| Ok((m.modified()?, std::fs::read(path)?)))
             .map_err(anyhow::Error::from)
-            .and_then(|(m, b)| {
-                anyhow::ensure!(b.len() <= 1 << 20, "over 1 MB");
-                Ok((m, serde_json::from_slice::<T>(&b)?))
-            });
+            .and_then(|(m, b)| decode_status(&b, m.into(), Utc::now()));
         match read {
             Ok((m, v)) => {
                 self.value = Some(v);
-                self.modified = Some(m.into());
+                self.modified = Some(m);
                 self.error = None;
             }
             Err(e) => {
@@ -362,6 +440,7 @@ pub struct Fetch {
     pub index_error: Option<String>,
     pub bulk: Watched<BulkStatus>,
     pub pacer: Watched<PacerState>,
+    pub publish: Watched<PublishStatus>,
     pub plan: Option<Plan>,
     pub plan_error: Option<String>,
     pub status: Option<FetchStatus>,
@@ -406,6 +485,7 @@ impl Fetch {
             index_error: None,
             bulk: Watched::default(),
             pacer: Watched::default(),
+            publish: Watched::default(),
             plan: None,
             plan_error: None,
             status: None,
@@ -438,6 +518,11 @@ impl Fetch {
         self
     }
 
+    pub fn with_publish(mut self, path: Option<PathBuf>) -> Self {
+        self.publish.path = path;
+        self
+    }
+
     /// Forget what the index said, to read it again from the start.
     fn reset_index(&mut self) {
         self.index.offset = 0;
@@ -464,6 +549,7 @@ impl Fetch {
         self.read_queue(now);
         self.bulk.poll();
         self.pacer.poll();
+        self.publish.poll();
         if let Err(e) = self.read_failures() {
             tracing::warn!(error = %e, "can't read the fetch failures");
         }
@@ -956,6 +1042,74 @@ mod tests {
         ManifestRow::new(&key, batch, 1, Some(lang.into()), "detected", 0.5)
     }
 
+    fn status_mirror(now: DateTime<Utc>) -> serde_json::Value {
+        serde_json::json!({
+            "mirror_schema": "usnm-ocrdash-status-v1",
+            "observed_at": now.to_rfc3339(),
+            "source_modified_at": (now - Duration::days(1)).to_rfc3339(),
+            "value": {"sent": 42, "hold_until_ms": 1234}
+        })
+    }
+
+    #[test]
+    fn native_and_mirrored_status_preserve_the_source_modification_time() {
+        let now = Utc::now();
+        let modified = now - Duration::days(1);
+        let (at, native): (_, PacerState) =
+            decode_status(br#"{"sent":42}"#, modified, now).unwrap();
+        assert_eq!(native.sent, 42);
+        assert_eq!(at, modified);
+        let (at, mirror): (_, PacerState) =
+            decode_status(&serde_json::to_vec(&status_mirror(now)).unwrap(), now, now).unwrap();
+        assert_eq!(mirror.sent, native.sent);
+        assert_eq!(mirror.hold_until_ms, 1234);
+        assert_eq!(at, modified);
+    }
+
+    #[test]
+    fn status_mirrors_reject_expired_future_and_unknown_observations() {
+        let now = Utc::now();
+        for (field, invalid) in [
+            ("observed_at", (now - Duration::minutes(6)).to_rfc3339()),
+            ("observed_at", (now + Duration::seconds(1)).to_rfc3339()),
+            (
+                "source_modified_at",
+                (now + Duration::seconds(1)).to_rfc3339(),
+            ),
+            ("mirror_schema", "unknown".to_owned()),
+        ] {
+            let mut mirror = status_mirror(now);
+            mirror[field] = invalid.into();
+            assert!(
+                decode_status::<PacerState>(&serde_json::to_vec(&mirror).unwrap(), now, now)
+                    .is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_expired_mirror_removes_previously_observed_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacer.json");
+        let now = Utc::now();
+        std::fs::write(&path, serde_json::to_vec(&status_mirror(now)).unwrap()).unwrap();
+        let mut watched = Watched::<PacerState> {
+            path: Some(path.clone()),
+            ..Default::default()
+        };
+        watched.poll();
+        assert_eq!(watched.value.as_ref().unwrap().sent, 42);
+        std::fs::write(
+            path,
+            serde_json::to_vec(&status_mirror(now - Duration::minutes(6))).unwrap(),
+        )
+        .unwrap();
+        watched.poll();
+        assert!(watched.value.is_none());
+        assert!(watched.error.as_ref().unwrap().contains("stale"));
+    }
+
     #[test]
     fn the_status_the_fetcher_writes_reads_here() {
         let s = prefetch::Status {
@@ -1158,6 +1312,63 @@ mod tests {
         assert!(f.plan.is_none());
         assert!(f.plan_error.is_none());
         assert_eq!(f.total.pages, 3);
+    }
+
+    #[test]
+    fn publisher_completion_is_not_inferred_from_empty_or_failed_metadata() {
+        let now = Utc::now();
+        let mut status = PublishStatus {
+            schema: 1,
+            active_state: Some("inactive".into()),
+            finished_at: Some(now - Duration::minutes(1)),
+            result: Some("success".into()),
+            exit_status: Some(0),
+            error: None,
+        };
+        assert_eq!(status.state(now), "succeeded");
+        status.result = Some("exit-code".into());
+        status.exit_status = Some(1);
+        assert_eq!(status.state(now), "failed");
+        status.active_state = Some("activating".into());
+        assert_eq!(status.state(now), "running");
+        status.error = Some("metadata unavailable".into());
+        assert_eq!(status.state(now), "unknown");
+        status.error = None;
+        status.active_state = Some("inactive".into());
+        status.finished_at = None;
+        assert_eq!(status.state(now), "unknown");
+        status.finished_at = Some(now + Duration::seconds(1));
+        assert_eq!(status.state(now), "unknown");
+        status.schema = 2;
+        assert_eq!(status.state(now), "unknown");
+    }
+
+    #[test]
+    fn publisher_mirror_expiry_clears_previous_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("publish-fetched.json");
+        let now = Utc::now();
+        let mut envelope = serde_json::json!({
+            "mirror_schema": "usnm-ocrdash-status-v1",
+            "observed_at": now,
+            "source_modified_at": now,
+            "value": {
+                "schema": 1, "active_state": "inactive", "finished_at": now,
+                "result": "success", "exit_status": 0, "error": null
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        let mut fetch = Fetch::new(dir.path().to_owned(), None).with_publish(Some(path.clone()));
+        fetch.poll(now);
+        assert_eq!(
+            fetch.publish.value.as_ref().unwrap().state(now),
+            "succeeded"
+        );
+        envelope["observed_at"] = serde_json::json!(now - Duration::minutes(6));
+        std::fs::write(path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        fetch.poll(now);
+        assert!(fetch.publish.value.is_none());
+        assert!(fetch.publish.error.as_deref().unwrap().contains("stale"));
     }
 
     #[test]

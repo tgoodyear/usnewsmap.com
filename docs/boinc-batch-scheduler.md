@@ -6,6 +6,17 @@ controller connects the existing CT 211 cache push, hand-off export, bridge
 It runs **one bounded tick**, not a daemon, and does nothing remotely without
 `--apply`. Adding this code does **not** deploy it or enable a production feed.
 
+Failed subprocesses retain `last-command-failure.json` in the controller's
+private state directory, atomically replaced with mode `0600`. It records the
+step label, timestamp, exit code or exception class, and the final 16,384
+characters of each output stream, including partial timeout output. It does not
+record command arguments. Only the latest failed command is retained; a later
+successful command does not erase it. A receipt-write failure is reported
+explicitly. Public timing/failure telemetry still excludes subprocess output.
+Treat this file as sensitive operator evidence: inspect it on the controller
+host, not in GitHub comments, CI logs or public telemetry. Check its timestamp
+and label before attributing it to a tick. No automatic retry is added.
+
 ## Recovering a contract-invalid canonical output
 
 BOINC validity alone does not establish native output integrity. Do not repair a
@@ -164,6 +175,20 @@ those are configuration, so turning them on makes a new plan.
 
 ### On-prem claim, collect and export (#967)
 
+Journal metadata uses an account-bound snapshot under the controller's private
+state directory. Every read still lists the complete current blob names and
+ETags. An identical snapshot can reuse validated disk records across ordinary
+fresh-process ticks; any added, removed or changed journal invalidates it.
+For up to 32 added or changed records, the next tick first validates every
+retained file against its recorded digest, removes deleted records and downloads
+only the changed metadata. Larger changes or a different account use the full
+batch refresh. Directory symlinks are rejected before incremental writes.
+Downloads invalidate the durable marker before modifying files and must match
+a second complete ETag inventory before publishing a reusable snapshot. A
+matching snapshot with missing, malformed or misidentified local records fails
+closed; recorded content digests also reject changed local bytes. The cache is derived metadata, never an authoritative claim or queue
+acknowledgement; do not restore controller state from it.
+
 By default the hand-off steps run as the Azure hand-off job. `--onprem-handoff claim`,
 `--onprem-handoff collect` and `--onprem-handoff export` (any of them) send them through
 `step_command` instead, to `usnm-boinc-step --target handoff` on the on-prem BOINC host
@@ -176,6 +201,63 @@ job's page from them, so no scan goes through Azure (#1116). Like the batch flag
 flags, not configuration, so turning them on or off changes no hash. They need a plan with
 `step_command`, and the host needs `/etc/usnm-boinc/handoff.env`. A dry run prints the
 choice as `onprem_handoff`.
+
+### Retirement evidence (#1116)
+
+Tick and failure summaries retain `timings.execution_routes`, alongside the existing
+command timings. These counters describe the launcher actually invoked (`onprem` or
+`azure`), not just the requested flags. They include failed launches and distinguish
+scan pushes from small journal/lease storage operations. A non-queue scan push still
+uses the Azure container even when export was selected on-prem. No argv, credentials,
+page text or scan paths enter these counters.
+
+After the last reviewed controller repair/release, retain a full unit journal export:
+
+```sh
+journalctl --all -u usnm-boinc-priority-controller.service --since "$START" --until "$END" \
+  -o json --no-pager > controller-journal.jsonl
+python3 scripts/boinc/handoff-window.py --journal controller-journal.jsonl \
+  --since "$START_UNIX_SECONDS" --until "$END_UNIX_SECONDS"
+```
+
+Use the same explicit UTC boundaries for both commands, at least 24 hours apart;
+choose quiet gaps between invocations, not a time while the unit is still running.
+Every observed systemd invocation must have its starting marker, one controller
+terminal summary and its finished marker inside the window. An invocation crossing
+either boundary, missing invocation identity or an incomplete lifecycle rejects the
+window even if nearby successful ticks are less than 20 minutes apart. Later
+out-of-window summaries cannot make an unresolved invocation acceptable.
+Never select only successful ticks. The offline audit rejects failures, held/backlog
+results, alerts, Azure launches/pushes, missing or inconsistent routing counters,
+plan changes, duplicate ticks, gaps over 20 minutes, and windows without real
+on-prem claim/collect/export/push and newly published pages. Old summaries without
+route evidence are unknown, not a clean window. Exit 0 means only that this
+**controller-routing telemetry window** passes; it never authorizes retirement.
+The export's `--all` preserves messages exceeding journald's default 4096-byte
+JSON-field limit. Native systemd failure metadata (including manager records
+associated through `UNIT`) also invalidates the window if Python died without a
+failure summary. Scan evidence requires a positive parsed pushed-page count in
+`timings.scan_pages`; an accepted missing-only push is not a transfer.
+
+Keep independent evidence of the reviewed binary/configuration/unit remaining
+unchanged throughout the window, zero Azure hand-off executions over that same
+window, local payload checksums, restart and retention behavior. Reconcile this
+with #967 before preparing retirement. The existing empty
+`USNM_BOINC_HANDOFF_IMAGE` setting already omits the Azure hand-off job, its
+identity and controller start grants; `boincOnPrem` grants and shared exchange
+storage must remain. Do not remove the setting or provision until a main-based
+what-if, live API pin comparison and serialized maintainer apply are approved.
+
+The on-prem launcher remains fail-fast on the shared project mutex by default.
+For owner-coordinated rollout only, the host can set
+`USNM_BOINC_STEP_LOCK_WAIT_SECS=120` in the controller's fixed SSH forced-command
+environment to tolerate a concurrent ordinary producer. The permitted range is
+0..300 seconds and must be shorter than `--wait-mins`. Lock waiting subtracts from
+the container's existing runtime budget; timeout still fails explicitly and never
+starts a container without the mutex. Do not stop a producer, remove the lock or
+edit an immutable plan to avoid contention. Deploy the reviewed launcher before
+enabling this host option, retain the previous launcher/forced command for rollback,
+and begin the clean-day window only after the actual rollout.
 
 ### Production priority canary
 

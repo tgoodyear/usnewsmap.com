@@ -12,8 +12,9 @@
 # project tree, the database's CA and the Arc agent's challenge directory, as the server does.
 #
 # One step at a time, as the Azure job's start guard allows: a second caller fails while a step
-# holds the lock. --wait-mins N (required) stops the step after N minutes and fails, so the
-# lock is held for exactly the step's run. --what-if prints the settings and runs nothing.
+# holds the lock. The host may opt into bounded queuing with
+# USNM_BOINC_STEP_LOCK_WAIT_SECS (0..300; default 0). Waiting consumes the --wait-mins
+# budget rather than extending it. --what-if prints the settings and runs nothing.
 # --target is bridge, publish or handoff.
 #
 # --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
@@ -208,17 +209,29 @@ IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/ser
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
 BASE=()
 LINES=()
+QUEUE_LOCATION=""
 # The last line counts even without a newline after it.
 while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
   [[ $line =~ ^([A-Z][A-Z0-9_]{0,63})=(.*)$ ]] || die "bad line in $SETTINGS"
   BASE+=("${BASH_REMATCH[1]}")
   LINES+=("$line")
+  [ "${BASH_REMATCH[1]}" != QUEUE_URL ] || QUEUE_LOCATION=${BASH_REMATCH[2]}
   if [ "$TARGET" = handoff ]; then
     [[ $HANDOFF_HOST_VARS == *" ${BASH_REMATCH[1]} "* ]] || die "$SETTINGS sets ${BASH_REMATCH[1]}; it takes only$HANDOFF_HOST_VARS"
     [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
   fi
 done < "$SETTINGS"
+QUEUE_MOUNTS=()
+if [ "$TARGET" = handoff ] && [[ $QUEUE_LOCATION == postgres://* || $QUEUE_LOCATION == postgresql://* ]]; then
+  # Certificate paths in the URL are container paths, never caller-selected host mounts.
+  for file in client.crt client.key ca.pem; do
+    [ -f "$CONF/queue/$file" ] && [ -r "$CONF/queue/$file" ] ||
+      die "pgmq requires readable $CONF/queue/$file"
+    [ ! -L "$CONF/queue/$file" ] || die "pgmq certificate files must not be symlinks"
+    QUEUE_MOUNTS+=(-v "$CONF/queue/$file:/etc/usnm/queue/$file:ro")
+  done
+fi
 if [ "$TARGET" = handoff ]; then
   for v in $HANDOFF_HOST_VARS; do
     [[ " ${BASE[*]} " == *" $v "* ]] || die "$SETTINGS doesn't set $v"
@@ -266,6 +279,9 @@ if $WHAT_IF; then
   elif [ "$TARGET" = handoff ]; then
     echo "would run $IMAGE's handoff-job.sh as $name with $SETTINGS and:"
     echo "  HANDOFF_STEP=$STEP"
+    if [ ${#QUEUE_MOUNTS[@]} -gt 0 ]; then
+      echo "  pgmq certificates mounted read-only at /etc/usnm/queue"
+    fi
     for v in ${VARS[@]+"${VARS[@]}"}; do echo "  $v"; done
   else
     echo "would run $IMAGE as $name with $CONF/bridge.env and:"
@@ -276,8 +292,21 @@ if $WHAT_IF; then
 fi
 
 [ -n "$WAIT_MINS" ] || die "--wait-mins is required on-prem"
+lock_wait=${USNM_BOINC_STEP_LOCK_WAIT_SECS:-0}
+[[ $lock_wait =~ ^[0-9]{1,3}$ ]] || die "USNM_BOINC_STEP_LOCK_WAIT_SECS must be 0..300"
+lock_wait=$((10#$lock_wait))
+[ "$lock_wait" -le 300 ] || die "USNM_BOINC_STEP_LOCK_WAIT_SECS must be 0..300"
+step_timeout=$((WAIT_MINS * 60))
+[ "$lock_wait" -lt "$step_timeout" ] || die "lock wait must be shorter than --wait-mins"
 exec 9> "$RUN_DIR/usnm-boinc-step.lock"
-flock -n 9 || die "another bridge step is running on this host - wait for it to end first"
+lock_started=$SECONDS
+if [ "$lock_wait" -eq 0 ]; then
+  flock -n 9 || die "another bridge step is running on this host - wait for it to end first"
+else
+  flock -w "$lock_wait" 9 || die "another bridge step still holds the lock after ${lock_wait}s"
+fi
+step_timeout=$((step_timeout - (SECONDS - lock_started)))
+[ "$step_timeout" -gt 0 ] || die "step deadline expired while waiting for the bridge lock"
 envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")
 trap 'rm -f "$envfile"' EXIT
 # The settings as parsed above, one per line, so a file without a final newline can't run its
@@ -293,11 +322,12 @@ fi
 run=(podman run --rm --name "$name" --network host
   --log-driver journald --log-opt tag=usnm-boinc-step --env-file "$envfile"
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
+run+=(${QUEUE_MOUNTS[@]+"${QUEUE_MOUNTS[@]}"})
 # The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
 [ "$TARGET" = handoff ] || run+=(--add-host usnm-boinc-mysql:127.0.0.1
   -v /srv/usnm-boinc/project:/project
   -v /srv/usnm-boinc/mysql-tls/ca.pem:/usr/local/share/usnm/mysql-ca.pem:ro)
-echo "running $STEP as $name for up to $WAIT_MINS minutes" >&2
+echo "running $STEP as $name for up to $step_timeout seconds after lock acquisition" >&2
 rc=0
 if [ "$TARGET" = handoff ]; then
   # export takes the scans the controller pushed here (#1116), read-only, instead of the
@@ -307,11 +337,11 @@ if [ "$TARGET" = handoff ]; then
     echo "HANDOFF_LOCAL_SCANS=1" >> "$envfile"
     run+=(-v "$STAGE:/scans:ro")
   fi
-  "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/handoff-job.sh "$IMAGE" || rc=$?
+  "${run[@]}" --timeout "$step_timeout" --entrypoint /usr/local/lib/usnm-boinc/handoff-job.sh "$IMAGE" || rc=$?
 elif [ "$TARGET" = publish ]; then
-  "${run[@]}" --timeout $((WAIT_MINS * 60)) --entrypoint /usr/local/lib/usnm-boinc/publish-appver.sh "$APPVER_IMAGE" || rc=$?
+  "${run[@]}" --timeout "$step_timeout" --entrypoint /usr/local/lib/usnm-boinc/publish-appver.sh "$APPVER_IMAGE" || rc=$?
 else
-  "${run[@]}" --timeout $((WAIT_MINS * 60)) "$IMAGE" || rc=$?
+  "${run[@]}" --timeout "$step_timeout" "$IMAGE" || rc=$?
 fi
 [ $rc -eq 0 ] || die "$name ended with status $rc; its log is in journalctl -t usnm-boinc-step"
 echo "$name succeeded" >&2

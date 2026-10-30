@@ -116,6 +116,10 @@ pub async fn submit(
         let mut together = vec![];
         for id in ids {
             let record = load(root, id)?;
+            ensure!(
+                record.retry.is_none(),
+                "retry jobs use pinned single-page submit"
+            );
             if record.unbundled.is_some() {
                 alone.push(id.clone());
             } else {
@@ -297,6 +301,8 @@ pub(crate) mod tests {
                 save(
                     &root,
                     &Record {
+                        terminal: None,
+                        retry: None,
                         job,
                         plan: "test".into(),
                         stage: Stage::Reserved,

@@ -655,7 +655,7 @@ def write_status(reference, curated, rows: list[dict], started: datetime, done_a
 
 
 def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,
-        mixed_below: float = MIXED_BELOW) -> None:
+        mixed_below: float = MIXED_BELOW, *, fail_on_issue_error: bool = False) -> None:
     replicas = max(1, int(os.environ.get("JAOCR_REPLICAS", "1")))
     api = Pacer(float(os.environ.get("JAOCR_API_GAP", "3.5")) * replicas)
     tile = Pacer(float(os.environ.get("JAOCR_TILE_GAP", "1.0")) * replicas)
@@ -683,6 +683,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,
     write_status(reference, curated, rows, started, done_at_start, engine)
     last_status = started
     pages_done = 0
+    issues_failed = 0
     for issue in todo:
         if datetime.now(timezone.utc) - last_status >= STATUS_EVERY:
             write_status(reference, curated, rows, started, done_at_start, engine)
@@ -693,16 +694,20 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,
         if not claim(curated, f"{name}/{issue}", owner, stale):
             continue
         try:
-            pages_done += ocr_issue(curated, ndl_root, issue, by_issue[issue], api, tile, engine)
+            options = {"fail_on_incomplete": True} if fail_on_issue_error else {}
+            pages_done += ocr_issue(curated, ndl_root, issue, by_issue[issue], api, tile, engine, **options)
         except Exception as e:  # noqa: BLE001 - one issue's failure mustn't end the replica
             # No part: the issue is retried once its claim goes stale.
+            issues_failed += 1
             log("issue failed", issue=issue, error=f"{type(e).__name__}: {e}"[:500])
     write_status(reference, curated, rows, started, done_at_start, engine)
     log("ocr finished", pages=pages_done)
+    if fail_on_issue_error and issues_failed:
+        raise RuntimeError(f"Japanese OCR run had {issues_failed} failed issues")
 
 
 def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pacer", tile: "Pacer",
-              engine: str) -> int:
+              engine: str, *, fail_on_incomplete: bool = False) -> int:
     """OCR one claimed issue's target pages and write its part; the number of pages written.
 
     Explicitly undigitized pages stay pending; every other requested page must have text and ALTO.
@@ -714,6 +719,8 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
         item = json.loads(fetch(item_url, api))
     except urllib.error.HTTPError as e:
         log("issue not found on loc.gov", issue=issue, status=e.code)
+        if fail_on_incomplete:
+            raise
         return 0
     images, altos = page_images(item), page_altos(item)
     files = (item.get("resources") or [{}])[0].get("files") or []
@@ -760,6 +767,8 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
     if missing:
         log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
             missing_count=len(missing))
+        if fail_on_incomplete:
+            raise RuntimeError("requested page outputs incomplete")
         return 0
     deferred = [p["page_key"] for p in pages if p["seq"] in undigitized]
     if deferred:
@@ -781,6 +790,8 @@ def main() -> None:
     ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write",
                                         "damage-parity"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
+    ap.add_argument("--fail-on-issue-error", action="store_true",
+                    help="run: finish without retries, then exit nonzero if any claimed issue failed")
     ap.add_argument("--mixed-below", type=float,
                     help=f"targets, run: OCR pages whose LoC text is under this word-like share, a whole "
                          f"percentage (default JAOCR_MIXED_BELOW or {MIXED_BELOW}; {GARBLED_BELOW} or less: "
@@ -799,6 +810,8 @@ def main() -> None:
     ap.add_argument("--audit-version", default="pages-v20261003-1",
                     help="damage-parity: the index version of the 10%% audit to sample from")
     a = ap.parse_args()
+    if a.fail_on_issue_error and a.command != "run":
+        ap.error("--fail-on-issue-error requires run")
     reference = store(os.environ["USNM_REFERENCE_URL"])
     curated = store(os.environ["USNM_CURATED_URL"])
     if a.command == "audit":
@@ -838,7 +851,8 @@ def main() -> None:
     else:
         ndl = Path(os.environ.get("NDLOCR_ROOT", "/opt/ndlocr-lite"))
         owner = os.environ.get("CONTAINER_APP_REPLICA_NAME") or os.environ.get("HOSTNAME") or "local"
-        run(reference, curated, ndl, a.limit, owner, mixed_below_setting(a.mixed_below))
+        run(reference, curated, ndl, a.limit, owner, mixed_below_setting(a.mixed_below),
+            fail_on_issue_error=a.fail_on_issue_error)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -28,6 +29,7 @@ MAX_JOBS = 10000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
 MAX_STATUS_BYTES = 1024 * 1024
+MAX_FAILURE_OUTPUT_CHARS = 16384
 OCR_APP_NAME = "usnm_ocr"
 SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
 SURYA_APP_NAME = "usnm_surya"
@@ -41,6 +43,19 @@ ZERO_WORK_LINE = re.compile(r"(?:No tasks sent|Got 0 new tasks|Sending reply to 
 
 class ConfigError(ValueError):
     """Invalid scheduler or cohort configuration."""
+
+
+class FailureReceiptError(RuntimeError):
+    """A failed command's private evidence could not be persisted."""
+
+
+def raise_transport_errors(errors):
+    receipt_errors = [error for error in errors if isinstance(error, FailureReceiptError)]
+    if receipt_errors:
+        raise FailureReceiptError("; ".join(dict.fromkeys(
+            str(error) for error in [errors[0], *receipt_errors]
+        )))
+    raise errors[0]
 
 
 def require(ok, message):
@@ -466,6 +481,8 @@ class Timings:
         self.cpu_started = self.cpu()
         self.phases = {}
         self.commands = {}
+        self.execution_routes = {}
+        self.scan_pages = {}
         self.current = None
 
     @staticmethod
@@ -505,8 +522,10 @@ class Timings:
                     # A closed or broken log stream never stops a tick or strands its lease.
                     pass
 
-    def command(self, key, seconds, cpu, ok):
+    def command(self, key, seconds, cpu, ok, execution_route=None):
         self._add(self.commands, key, seconds, cpu, ok)
+        if execution_route is not None:
+            self._add(self.execution_routes, execution_route, seconds, cpu, ok)
 
     def summary(self):
         return {
@@ -514,6 +533,8 @@ class Timings:
             "cpu_seconds": round(self.cpu() - self.cpu_started, 3),
             "phases": copy.deepcopy(self.phases),
             "commands": copy.deepcopy(self.commands),
+            "execution_routes": copy.deepcopy(self.execution_routes),
+            "scan_pages": copy.deepcopy(self.scan_pages),
         }
 
 
@@ -575,20 +596,63 @@ class Transport:
         self._journal_snapshot = None
         self._journal_records = None
 
-    def run(self, argv, label, timeout=2100, ok=(0,)):
+    def retain_failure(self, label, *, returncode=None, error=None, stdout=None, stderr=None):
+        def tail(value):
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            return (value or "")[-MAX_FAILURE_OUTPUT_CHARS:]
+
+        receipt = {
+            "schema_version": 1, "at": int(time.time()), "label": label,
+            "returncode": returncode, "exception": type(error).__name__ if error else None,
+            "stdout_tail": tail(stdout), "stderr_tail": tail(stderr),
+        }
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self.directory, prefix=".command-failure-", delete=False
+            ) as output:
+                temporary = Path(output.name)
+                json.dump(receipt, output, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.directory / "last-command-failure.json")
+            fd = os.open(self.directory, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as failure:
+            raise FailureReceiptError(f"{label} failed; private command failure receipt could not be saved") from failure
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError as failure:
+                    raise FailureReceiptError(
+                        f"{label} failed; private command failure receipt cleanup failed"
+                    ) from failure
+
+    def run(self, argv, label, timeout=2100, ok=(0,), *, execution_route=None):
         # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
         kind = f"storage {argv[3]}" if argv[:3] == ["az", "storage", "blob"] and len(argv) > 3 else label
         start, cpu, passed = self.timings.clock(), self.timings.cpu(), False
         try:
-            done = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE,
+            done = subprocess.run(argv, check=False, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
             passed = done.returncode in ok
         except (OSError, subprocess.SubprocessError) as error:
+            self.retain_failure(
+                label, error=error, stdout=getattr(error, "stdout", None),
+                stderr=getattr(error, "stderr", None),
+            )
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying") from error
         finally:
-            self.timings.command(kind, self.timings.clock() - start,
-                                 self.timings.cpu() - cpu, passed)
+            seconds, used = self.timings.clock() - start, self.timings.cpu() - cpu
+            self.timings.command(kind, seconds, used, passed, execution_route)
         if not passed:
+            self.retain_failure(label, returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
             raise RuntimeError(f"{label} failed; inspect the execution privately before retrying")
         return done.stdout
 
@@ -612,15 +676,24 @@ class Transport:
             return
         name = "scheduler/controller.lock"
         lease = None
+        failure = None
         try:
             with self.timings.phase("lock"):
                 lease = self._acquire(name)
             yield
+        except RuntimeError as error:
+            failure = error
+            raise
         finally:
             # Released whenever it was taken, even if something after the acquire failed.
             if lease is not None:
-                with self.timings.phase("unlock"):
-                    self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+                try:
+                    with self.timings.phase("unlock"):
+                        self.az("lease", "release", "--blob-name", name, "--lease-id", lease, "-o", "none")
+                except RuntimeError as error:
+                    if failure is not None:
+                        raise_transport_errors([error, failure])
+                    raise
 
     def _acquire(self, name):
         if self.az("exists", "--name", name, "--query", "exists", "-o", "tsv").strip() != "true":
@@ -646,7 +719,8 @@ class Transport:
                           "--target", target, "--step", step, "--wait-mins", "30"]
         for key, value in variables.items():
             argv += ["--var", f"{key}={value}"]
-        self.run(argv, f"{target}/{step}")
+        route = "onprem" if onprem and self.config.get("step_command") else "azure"
+        self.run(argv, f"{target}/{step}", execution_route=f"{route}/{target}/{step}")
 
     @timed("inventory")
     def inventory(self):
@@ -657,8 +731,7 @@ class Transport:
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
-    @timed("journals")
-    def records(self):
+    def journal_inventory(self):
         listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
                                      "--query", "[].{name:name,etag:properties.etag}", "-o", "json"))
         require(isinstance(listing, list), "invalid dispatch inventory")
@@ -676,6 +749,33 @@ class Transport:
         names = list(snapshot)
         require(len(names) <= MAX_JOBS and len(set(names)) == len(names),
                 "dispatch inventory limit/consistency failure; reconcile drained journals")
+        return snapshot
+
+    def read_journal_cache(self, cache, names, expected):
+        require(len(names) <= MAX_JOBS and all(
+            isinstance(name, str) and re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name)
+            for name in names), "invalid journal cache inventory")
+        paths = list(cache.rglob("*"))
+        require(not any(path.is_symlink() for path in paths), "invalid journal cache path")
+        actual = {str(path.relative_to(cache)) for path in paths if path.is_file()}
+        require(actual == set(names), "journal inventory changed during download; retry under the owner lock")
+        records, checksums = [], {}
+        for name in sorted(names):
+            path = cache / name
+            require(path.stat().st_size <= 131072, "invalid/oversized journal metadata")
+            data = path.read_bytes()
+            checksums[name] = hashlib.sha256(data).hexdigest()
+            if name in expected:
+                require(checksums[name] == expected[name], "journal cache content digest mismatch")
+            record = json.loads(data)
+            require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
+            records.append(record)
+        return records, checksums
+
+    @timed("journals")
+    def records(self):
+        snapshot = self.journal_inventory()
+        names = list(snapshot)
         # Re-list every time, but avoid the second full download within a tick
         # when every journal identity and ETag is unchanged.
         if self._journal_snapshot == snapshot:
@@ -683,27 +783,70 @@ class Transport:
         self._journal_snapshot = None
         self._journal_records = None
         cache = self.directory / "journal-cache"
-        if cache.exists():
-            shutil.rmtree(cache)
-        cache.mkdir(mode=0o700)
-        if names:
-            pattern = "dispatch/jobs/" + "[0-9a-f]" * 64 + "/record.json"
-            self.run([
-                "az", "storage", "blob", "download-batch", "--source", "boinc-handoff",
-                "--destination", str(cache), "--pattern", pattern, "--overwrite", "true",
-                "--account-name", self.config["account"], "--auth-mode", "login",
-                "--only-show-errors", "-o", "none",
-            ], "batch journal inventory")
-        actual = {str(path.relative_to(cache)) for path in cache.rglob("*") if path.is_file()}
-        require(actual == set(names), "journal inventory changed during download; retry under the owner lock")
-        records = []
-        for name in sorted(names):
-            path = cache / name
-            require(not path.is_symlink() and path.stat().st_size <= 131072,
-                    "invalid/oversized journal metadata")
-            record = json.loads(path.read_text())
-            require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
-            records.append(record)
+        manifest = self.directory / "journal-snapshot.json"
+        base = {"schema_version": 1, "account": self.config["account"], "container": "boinc-handoff"}
+        identity = {**base, "entries": snapshot}
+        require(not cache.is_symlink() and not manifest.is_symlink(), "invalid journal cache path")
+        reusable = False
+        delta = None
+        if manifest.exists():
+            require(manifest.stat().st_size <= MAX_JOBS * 512, "oversized journal cache manifest")
+            stored = json.loads(manifest.read_text())
+            require(isinstance(stored, dict), "invalid journal cache manifest")
+            reusable = {key: value for key, value in stored.items() if key != "files"} == identity
+            if reusable:
+                require(isinstance(stored.get("files"), dict) and set(stored["files"]) == set(names),
+                        "invalid journal cache content inventory")
+            elif {key: value for key, value in stored.items() if key not in ("entries", "files")} == base:
+                previous = stored.get("entries")
+                require(isinstance(previous, dict) and all(
+                    isinstance(etag, str) and bool(etag.strip()) for etag in previous.values()),
+                    "invalid journal cache inventory")
+                require(isinstance(stored.get("files"), dict) and set(stored["files"]) == set(previous),
+                        "invalid journal cache content inventory")
+                changed = [name for name in names if previous.get(name) != snapshot[name]]
+                # Bound CLI startups; broad changes keep the single batch download.
+                if len(changed) <= 32:
+                    self.read_journal_cache(cache, previous, stored["files"])
+                    delta = changed
+        if not reusable:
+            if manifest.exists():
+                manifest.unlink()
+                fd = os.open(self.directory, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            if delta is not None:
+                for name in set(previous) - set(names):
+                    path = cache / name
+                    path.unlink()
+                    path.parent.rmdir()
+                for name in delta:
+                    path = cache / name
+                    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    self.az("download", "--name", name, "--file", str(path),
+                            "--overwrite", "true", "-o", "none")
+            else:
+                if cache.exists():
+                    shutil.rmtree(cache)
+                cache.mkdir(mode=0o700)
+            if names and delta is None:
+                pattern = "dispatch/jobs/" + "[0-9a-f]" * 64 + "/record.json"
+                self.run([
+                    "az", "storage", "blob", "download-batch", "--source", "boinc-handoff",
+                    "--destination", str(cache), "--pattern", pattern, "--overwrite", "true",
+                    "--account-name", self.config["account"], "--auth-mode", "login",
+                    "--only-show-errors", "-o", "none",
+                ], "batch journal inventory")
+        expected = stored["files"] if reusable else {}
+        if delta is not None:
+            expected = {name: stored["files"][name] for name in names if name not in delta}
+        records, checksums = self.read_journal_cache(cache, names, expected)
+        if not reusable:
+            require(self.journal_inventory() == snapshot,
+                    "journal ETags changed during download; retry under the owner lock")
+            save(manifest, {**identity, "files": checksums})
         self._journal_snapshot = snapshot
         self._journal_records = copy.deepcopy(records)
         return records
@@ -748,7 +891,7 @@ class Transport:
             argv = self.push_args()
             for page in pages:
                 argv += ["--scan", page["scan"]]
-            self.run(argv, "cached scan push")
+            self.run(argv, "cached scan push", execution_route="azure/scans")
         # The exporter takes one base batch at a time; queued pages come from many.
         batches = {}
         for page in pages:
@@ -798,9 +941,9 @@ class Transport:
             summary = self.blob("scheduler/claims.json")
             require(summary.get("schema_version") == 1 and summary.get("nonce") == nonce,
                     "stale/concurrent claim summary; another controller may be active")
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as error:
             if failure:
-                raise failure
+                raise_transport_errors([failure, error])
             raise
         if failure:
             raise ClaimFailed(str(failure), summary["claims"]) from failure
@@ -815,7 +958,8 @@ class Transport:
             # The script names a page by where the fetcher files it under keep/, without "keep/".
             require(base.startswith("keep/"), "claimed scan is not under keep/")
             argv += ["--keep-page", base[len("keep/"):]]
-        output = self.run(argv, "cached scan push", ok=(0, 3))
+        route = "onprem" if "--to-onprem" in argv else "azure"
+        output = self.run(argv, "cached scan push", ok=(0, 3), execution_route=f"{route}/scans")
         pushed, missing = {}, []
         for line in output.splitlines():
             kind, _, value = line.partition(" ")
@@ -830,6 +974,9 @@ class Transport:
                 found[base] = match[0]
         require(set(found) | set(missing) == set(bases) and not (set(found) & set(missing)),
                 "scan push did not account for every claimed page")
+        counts = self.timings.scan_pages.setdefault(route, {"pushed": 0, "missing": 0})
+        counts["pushed"] += len(found)
+        counts["missing"] += len(missing)
         return found, missing
 
     @timed("release")
@@ -916,7 +1063,7 @@ class Transport:
                 except RuntimeError as error:
                     errors.append(error)
         if errors:
-            raise errors[0]
+            raise_transport_errors(errors)
 
     @timed("status")
     def server_status(self, url=None, path=None):
@@ -969,7 +1116,7 @@ def units_of(config, records):
 def owned_records(config, records):
     # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
     wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
-    owned = {}
+    by_page = {}
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
                 "invalid dispatch journal")
@@ -979,11 +1126,38 @@ def owned_records(config, records):
             require(page not in wanted,
                     "page is already allocated to another plan; reconcile the allocation before export")
             continue
-        require(wanted.get(page) == job["message"]["batch"]
-                and job["engine"]["image"] == config["image"],
+        require(wanted.get(page) == job["message"]["batch"],
                 "plan already exists with a different allocation/image; operator migration required")
-        require(page not in owned, "multiple jobs for one allocated page; reconcile before feeding")
-        owned[page] = record
+        by_page.setdefault(page, []).append(record)
+    owned = {}
+    for page, history in by_page.items():
+        roots = [record for record in history if not record.get("retry")]
+        require(len(roots) == 1, "multiple jobs for one allocated page; reconcile before feeding")
+        current = roots[0]
+        require(current["job"]["engine"]["image"] == config["image"],
+                "plan already exists with a different allocation/image; operator migration required")
+        remaining = [record for record in history if record.get("retry")]
+        while remaining:
+            children = [record for record in remaining
+                        if record["retry"].get("previous_job") == current["job"]["id"]]
+            require(len(children) == 1 and current["stage"] == "failed",
+                    "invalid or branching reviewed retry lineage")
+            child = children[0]
+            job, parent = child["job"], current["job"]
+            require(job.get("v") == 2 and job.get("retry_of") == parent["id"]
+                    and type(job.get("attempt")) is int
+                    and job["attempt"] == parent.get("attempt", 0) + 1
+                    and child["retry"].get("previous_attempt") == parent.get("attempt", 0)
+                    and type(child["retry"].get("app_version_num")) is int
+                    and child["retry"]["app_version_num"] > 0
+                    and job["message"].get("language") == parent["message"].get("language")
+                    and job["message"].get("reason") == parent["message"].get("reason")
+                    and job["engine"]["image"].startswith("sha256:")
+                    and ID.fullmatch(job["engine"]["image"][7:]),
+                    "invalid reviewed retry lineage")
+            remaining.remove(child)
+            current = child
+        owned[page] = current
     return owned
 
 
@@ -1563,7 +1737,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 selected[page["page"]] = now
             persist()
         export = [page for page in config["pages"] if page["page"] in selected and
-                  (page["page"] not in owned or owned[page["page"]]["stage"] == "prepared")]
+                  (page["page"] not in owned or
+                   (owned[page["page"]]["stage"] == "prepared"
+                    and not owned[page["page"]].get("retry")))]
         if export:
             export = export[:config["batch_size"]]
             pages = {page["page"] for page in export}
@@ -1574,7 +1750,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             records = transport.records()
             owned = owned_records(config, records)
         candidates = {record["job"]["id"] for record in owned.values()
-                      if record["stage"] == "reserved" and record["job"]["id"] not in existing_jobs
+                      if not record.get("retry") and record["stage"] == "reserved"
+                      and record["job"]["id"] not in existing_jobs
                       and server.get(record["job"]["id"], {}).get("stage") in (None, "reserved")}
         backlog = sum(record["stage"] not in ("published", "failed") and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
@@ -1585,7 +1762,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         to_submit = []
         for record in owned.values():
             job_id = record["job"]["id"]
-            if record["stage"] == "reserved" and \
+            if not record.get("retry") and record["stage"] == "reserved" and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
                     len(to_submit) < submit_limit:
                 require(job_id not in existing_jobs,

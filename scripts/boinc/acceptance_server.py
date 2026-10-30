@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -263,6 +264,60 @@ def registered_version(db, release):
     if len(alternatives) != 1 or alternatives[0]['id'] != versions[0]['id']:
         raise ValueError('ambiguous app/version routing; use distinct numeric versions per platform/plan')
     return versions[0]['id']
+
+def verify_version_files(project, image, xml_doc):
+    if isinstance(xml_doc, bytes):
+        xml_doc = xml_doc.decode("utf-8")
+    version = ET.fromstring("<version>" + xml_doc + "</version>")
+    refs = [ref for ref in version.findall(".//file_ref") if ref.findtext("open_name") == "Dockerfile"]
+    if len(refs) != 1:
+        raise ValueError("registered app version must contain one Dockerfile")
+    name = refs[0].findtext("file_name")
+    if not name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise ValueError("invalid registered Dockerfile name")
+    infos = [info for info in version.findall(".//file_info") if info.findtext("name") == name]
+    if len(infos) != 1 or not infos[0].findtext("file_signature"):
+        raise ValueError("registered Dockerfile lacks code signature")
+    path = (project / "download" / name).resolve(strict=True)
+    if not path.is_relative_to((project / "download").resolve()):
+        raise ValueError("registered Dockerfile outside download directory")
+    data = path.read_bytes()
+    if image is None:
+        match = re.fullmatch(rb"FROM (ghcr\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64})\n", data)
+        if not match:
+            raise ValueError("registered worker must have one immutable FROM")
+        image = match[1].decode()
+    if data != f"FROM {image}\n".encode():
+        raise ValueError("campaign image differs from registered signed app version")
+    with tempfile.TemporaryDirectory(prefix="worker-signature-") as directory:
+        signature = Path(directory) / "Dockerfile.sig"
+        signature.write_text(infos[0].findtext("file_signature"))
+        subprocess.run(
+            ["/usr/local/boinc/lib/crypt_prog", "-verify", str(path),
+             str(signature), str(project / "keys/code_sign_public")],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    return image
+
+
+def verify_retry_worker(project, version_num, engine):
+    db = db_connect(project)
+    try:
+        versions = query(db, 'SELECT av.id, av.xml_doc, av.plan_class, p.name AS platform '
+                        'FROM app_version av JOIN app a ON a.id=av.appid '
+                        'JOIN platform p ON p.id=av.platformid '
+                        'WHERE a.name=%s AND av.version_num=%s AND av.deprecated=0',
+                        ('usnm_ocr', version_num))
+        if len(versions) != 1 or versions[0]['plan_class'] != 'docker':
+            raise ValueError('retry requires one unambiguous active usnm_ocr container version')
+        version = versions[0]
+        registered_version(db, dict(app='usnm_ocr', version_num=version_num,
+                                   platform=version['platform'], plan_class=version['plan_class']))
+        worker = verify_version_files(project, None, version['xml_doc'])
+        if worker.split('@')[-1] != engine:
+            raise ValueError('signed worker digest differs from the requested retry image')
+    finally:
+        db.close()
 
 
 def fixture_inputs(project, manifest):

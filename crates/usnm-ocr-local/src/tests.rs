@@ -344,6 +344,8 @@ fn queued(doc_id: &str, batch: &str, reason: &str) -> Queued {
         plan: "test".into(),
         attempt: 1,
         request_day: None,
+        retry_message_at: None,
+        retry_run: None,
         queued_at: Utc::now() - chrono::Duration::hours(1),
     }
 }
@@ -456,6 +458,7 @@ async fn imports_a_page_it_asked_for() {
         assert_eq!(stored.len(), 1);
         let s = &stored[0];
         assert_eq!(s.doc_id, doc);
+        assert_eq!(s.ocr_reason, "bulk");
         assert_eq!(s.ours.lang.as_deref(), Some("ger"));
         assert_eq!(s.loc.lang.as_deref(), Some("ger"));
         let (ours, loc) = (s.ours.damage_rate.unwrap(), s.loc.damage_rate.unwrap());
@@ -923,6 +926,547 @@ async fn a_run_stopped_before_its_deletes_is_finished_without_importing_again() 
 }
 
 #[tokio::test]
+async fn deliberate_retry_requires_settlement_replays_and_keeps_original_request_day() {
+    let fx = fixture(false).await;
+    let mut previous = queued(&key(3).doc_id(), BATCH, "user");
+    previous.plan = "hit-results".into();
+    previous.queued_at = DateTime::from_timestamp(Utc::now().timestamp() - 86400, 0).unwrap();
+    let message = OcrMessage {
+        v: 1,
+        page: key(3).to_string(),
+        batch: BATCH.into(),
+        language: "deu".into(),
+        reason: Reason::User,
+        score: None,
+        queued_at: previous.queued_at.to_rfc3339(),
+    };
+    fx.ask(std::slice::from_ref(&previous)).await;
+    let snapshot = super::boinc::Snapshot::load(&fx.state, fx.stores.reference.as_ref())
+        .await
+        .unwrap();
+    let mut next = super::boinc::next_attempt(
+        &previous,
+        previous.queued_at + chrono::Duration::seconds(30),
+        "boinc-0123456789ab",
+    )
+    .unwrap();
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &next,
+        &message,
+        |_| Ok(())
+    )
+    .await
+    .is_err());
+    let at = previous.queued_at + chrono::Duration::minutes(1);
+    ledger::write_outcomes(
+        fx.stores.curated.as_ref(),
+        &[ledger::Outcome {
+            doc_id: previous.doc_id.clone(),
+            outcome: ledger::DEAD_LETTERED.into(),
+            cause: Some("permanent".into()),
+            kind: None,
+            source: "terminal-dead-letter".into(),
+            at,
+            run: "prior-failure".into(),
+            message_sha256: Some(usnm_ocr_contract::boinc::sha256(
+                &serde_json::to_vec(&message).unwrap(),
+            )),
+        }],
+        at,
+        "prior-failure",
+    )
+    .await
+    .unwrap();
+    let mut wrong_message = message.clone();
+    wrong_message.queued_at = Utc::now().to_rfc3339();
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &next,
+        &wrong_message,
+        |_| panic!("mismatched parent must not prepare a journal")
+    )
+    .await
+    .is_err());
+    let prepared = std::cell::Cell::new(0);
+    for _ in 0..2 {
+        next = super::boinc::retry(
+            &fx.state,
+            fx.stores.curated.as_ref(),
+            &snapshot,
+            &previous,
+            &next,
+            &message,
+            |reserved| {
+                assert!(reserved.queued_at > at);
+                assert_eq!(reserved.retry_message_at, Some(reserved.queued_at));
+                prepared.set(prepared.get() + 1);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(prepared.get(), 1);
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(loaded.outstanding(&previous.doc_id), Some(&next));
+    assert_eq!(next.attempt, 2);
+    assert_eq!(next.request_day, Some(previous.queued_at.date_naive()));
+    assert_eq!(
+        loaded.user_requests_for_day(previous.queued_at.date_naive()),
+        1
+    );
+    assert_eq!(loaded.user_requests_for_day(next.queued_at.date_naive()), 0);
+    let stale = super::boinc::next_attempt(
+        &previous,
+        Utc::now() + chrono::Duration::seconds(1),
+        "boinc-0123456789ab",
+    )
+    .unwrap();
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &stale,
+        &message,
+        |_| Ok(())
+    )
+    .await
+    .is_err());
+    for (offset, outcome) in [(1, ledger::IMPORTED), (2, ledger::DEAD_LETTERED)] {
+        let at = next.queued_at + chrono::Duration::seconds(offset);
+        ledger::write_outcomes(
+            fx.stores.curated.as_ref(),
+            &[ledger::Outcome {
+                doc_id: next.doc_id.clone(),
+                outcome: outcome.into(),
+                cause: Some("permanent".into()),
+                kind: None,
+                source: "later".into(),
+                at,
+                run: format!("later-{offset}"),
+                message_sha256: None,
+            }],
+            at,
+            &format!("later-{offset}"),
+        )
+        .await
+        .unwrap();
+    }
+    assert!(super::boinc::retry(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        &snapshot,
+        &previous,
+        &next,
+        &message,
+        |_| panic!("import history must not prepare a journal")
+    )
+    .await
+    .is_err());
+}
+
+#[test]
+fn legacy_ledger_without_retry_timestamp_remains_readable() {
+    let row = queued(&key(3).doc_id(), BATCH, "bulk");
+    let encoded = ledger::encode_queued(std::slice::from_ref(&row)).unwrap();
+    let batch = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::from(encoded),
+    )
+    .unwrap()
+    .build()
+    .unwrap()
+    .next()
+    .unwrap()
+    .unwrap();
+    let columns: Vec<_> = (0..batch.num_columns())
+        .filter(|&i| batch.schema().field(i).name() != "retry_message_at")
+        .collect();
+    let legacy = batch.project(&columns).unwrap();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(Vec::new(), legacy.schema(), None).unwrap();
+    writer.write(&legacy).unwrap();
+    let loaded = ledger::decode_queued(bytes::Bytes::from(writer.into_inner().unwrap())).unwrap();
+    assert_eq!(loaded[0].retry_message_at, None);
+    assert_eq!(loaded[0].doc_id, row.doc_id);
+}
+
+#[tokio::test]
+async fn stale_dead_letter_is_archived_without_settling_a_new_attempt() {
+    let fx = fixture(false).await;
+    let mut previous = queued(&key(3).doc_id(), BATCH, "bulk");
+    previous.queued_at = DateTime::from_timestamp(Utc::now().timestamp() - 3600, 0).unwrap();
+    let next = super::boinc::next_attempt(&previous, Utc::now(), "boinc-0123456789ab").unwrap();
+    fx.ask(std::slice::from_ref(&next)).await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    let stale_output = fx.sync().await;
+    assert_eq!(
+        stale_output.last_run.rejected.get("retry_attempt"),
+        Some(&1)
+    );
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .outstanding(&next.doc_id),
+        Some(&next)
+    );
+    let message = OcrMessage {
+        v: 1,
+        page: key(3).to_string(),
+        batch: BATCH.into(),
+        language: "deu".into(),
+        reason: Reason::Bulk,
+        score: None,
+        queued_at: previous.queued_at.to_rfc3339(),
+    };
+    let dead = DeadLetter::new(
+        BULK,
+        "old-attempt",
+        Some(&message),
+        Cause::Permanent,
+        None,
+        None,
+        "BOINC error mask 0x2",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    let status = fx.sync().await;
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(loaded.outstanding(&next.doc_id), Some(&next));
+    assert_eq!(
+        status.last_run.dead_letters_rejected.get("stale_attempt"),
+        Some(&1)
+    );
+    assert_eq!(fx.queue.approximate_count(DEADLETTER).await.unwrap(), 0);
+    assert_eq!(
+        fx.stores
+            .curated
+            .list(&format!("{ROOT}/deadletter"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let current = OcrMessage {
+        queued_at: next.retry_message_at.unwrap().to_rfc3339(),
+        ..message
+    };
+    let dead = DeadLetter::new(
+        BULK,
+        "current-attempt",
+        Some(&current),
+        Cause::Permanent,
+        None,
+        None,
+        "BOINC error mask 0x4",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    let status = fx.sync().await;
+    assert!(status.last_run.dead_letters_rejected.is_empty());
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert!(loaded.outstanding(&next.doc_id).is_none());
+    let mut stale_message = current.clone();
+    stale_message.language = "fra".into();
+    stale_message.queued_at = previous.queued_at.to_rfc3339();
+    let stale = DeadLetter::new(
+        BULK,
+        "late-parent",
+        Some(&stale_message),
+        Cause::Permanent,
+        None,
+        None,
+        "old failure",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &stale.encode()).await.unwrap();
+    fx.sync().await;
+    let report = enqueue::requeue(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+        &fx.queue,
+        &RequeueOptions {
+            cause: "permanent".into(),
+            kind: None,
+            since: None,
+            plan: "recovery".into(),
+            max_pages: 1,
+            dry_run: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.queued, 1);
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    let ordinary = loaded.queued[&next.doc_id].clone();
+    assert_eq!(ordinary.language, current.language);
+    assert!(ordinary.retry_message_at.is_some());
+    assert!(ordinary.retry_run.is_none());
+    fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    let status = fx.sync().await;
+    assert_eq!(
+        status.last_run.dead_letters_rejected.get("stale_attempt"),
+        Some(&1)
+    );
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .outstanding(&next.doc_id),
+        Some(&ordinary)
+    );
+}
+
+#[test]
+fn ordinary_message_fences_keep_history_and_request_day_without_reusing_legacy_seconds() {
+    let at = DateTime::parse_from_rfc3339("2026-10-14T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut ledger = ledger::Ledger::default();
+    let mut legacy = queued(&key(3).doc_id(), BATCH, "user");
+    legacy.queued_at = at;
+    ledger.add_queued(legacy.clone());
+    let first = ledger.next_message_time(&legacy.doc_id, at).unwrap();
+    assert_eq!(first, at + chrono::Duration::microseconds(1));
+    let mut ordinary = legacy.clone();
+    ordinary.retry_message_at = Some(first);
+    ledger.add_queued(ordinary.clone());
+    let second = ledger.next_message_time(&legacy.doc_id, at).unwrap();
+    assert_eq!(second, first + chrono::Duration::microseconds(1));
+    ordinary.queued_at = at - chrono::Duration::days(1);
+    ordinary.plan = "another-plan".into();
+    ordinary.retry_message_at = Some(second);
+    ledger.add_queued(ordinary);
+    let third = ledger.next_message_time(&legacy.doc_id, at).unwrap();
+    assert_eq!(third, second + chrono::Duration::microseconds(1));
+    assert_eq!(third.date_naive(), at.date_naive());
+    let end = at + chrono::Duration::days(1) - chrono::Duration::microseconds(1);
+    legacy.retry_message_at = Some(end);
+    ledger.add_queued(legacy.clone());
+    assert!(ledger.next_message_time(&legacy.doc_id, at).is_err());
+    assert_eq!(
+        ledger
+            .next_message_time(&legacy.doc_id, at + chrono::Duration::days(1))
+            .unwrap(),
+        at + chrono::Duration::days(1) + chrono::Duration::microseconds(1)
+    );
+}
+
+#[tokio::test]
+async fn same_tick_ordinary_dead_letter_cannot_settle_its_replacement() {
+    let fx = fixture(false).await;
+    // The sync clock is behind the reservations, as after a wall-clock rollback.
+    let at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).unwrap();
+    let mut ledger = ledger::Ledger::default();
+    let mut previous = queued(&key(3).doc_id(), BATCH, "bulk");
+    previous.queued_at = at;
+    previous.retry_message_at = Some(ledger.next_message_time(&previous.doc_id, at).unwrap());
+    ledger.add_queued(previous.clone());
+    let mut next = previous.clone();
+    next.attempt += 1;
+    next.queued_at = ledger.next_event_time(&next.doc_id, at).unwrap();
+    next.retry_message_at = Some(ledger.next_message_time(&next.doc_id, at).unwrap());
+    fx.ask(&[previous.clone(), next.clone()]).await;
+    for (id, fence, stale) in [
+        ("old-ordinary", previous.retry_message_at.unwrap(), true),
+        ("new-ordinary", next.retry_message_at.unwrap(), false),
+    ] {
+        let message = OcrMessage {
+            v: 1,
+            page: key(3).to_string(),
+            batch: BATCH.into(),
+            language: "deu".into(),
+            reason: Reason::Bulk,
+            score: None,
+            queued_at: fence.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        };
+        let dead = DeadLetter::new(
+            BULK,
+            id,
+            Some(&message),
+            Cause::Permanent,
+            None,
+            None,
+            "BOINC error mask 0x2",
+            1,
+            NODE,
+        );
+        fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+        let status = fx.sync().await;
+        let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+        if stale {
+            assert_eq!(
+                status.last_run.dead_letters_rejected.get("stale_attempt"),
+                Some(&1)
+            );
+            assert_eq!(loaded.outstanding(&next.doc_id), Some(&next));
+        } else {
+            assert!(loaded.outstanding(&next.doc_id).is_none());
+        }
+    }
+}
+
+#[test]
+fn reservation_and_settlement_order_survives_equal_ticks_and_clock_rollback() {
+    let at = DateTime::parse_from_rfc3339("2026-10-14T00:00:00.123456Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut ledger = ledger::Ledger::default();
+    let mut previous = queued(&key(3).doc_id(), BATCH, "user");
+    previous.queued_at = at;
+    previous.request_day = Some(at.date_naive());
+    ledger.add_queued(previous.clone());
+    let mut outcome = ledger::Outcome {
+        doc_id: previous.doc_id.clone(),
+        outcome: ledger::DEAD_LETTERED.into(),
+        cause: Some("permanent".into()),
+        kind: None,
+        source: "old-message".into(),
+        at: at + chrono::Duration::days(1),
+        run: "old".into(),
+        message_sha256: None,
+    };
+    ledger.add_outcome(outcome.clone());
+    let mut next = previous.clone();
+    next.attempt += 1;
+    next.queued_at = ledger.next_event_time(&next.doc_id, at).unwrap();
+    next.retry_message_at = Some(ledger.next_message_time(&next.doc_id, at).unwrap());
+    assert!(next.queued_at > outcome.at);
+    ledger.add_queued(next.clone());
+    assert_eq!(ledger.outstanding(&next.doc_id), Some(&next));
+    assert_eq!(next.request_day, previous.request_day);
+    outcome.at = ledger.next_event_time(&next.doc_id, at).unwrap();
+    ledger.add_outcome(outcome.clone());
+    assert!(ledger.outstanding(&next.doc_id).is_none());
+    let future = ledger
+        .next_event_time(&next.doc_id, at - chrono::Duration::days(2))
+        .unwrap();
+    assert!(future > outcome.at);
+    next.queued_at = future;
+    assert_eq!(
+        ledger::decode_queued(bytes::Bytes::from(
+            ledger::encode_queued(&[next.clone()]).unwrap()
+        ))
+        .unwrap(),
+        vec![next]
+    );
+}
+
+#[tokio::test]
+async fn ordinary_import_settles_a_reservation_ahead_of_the_wall_clock() {
+    let fx = fixture(false).await;
+    let mut reservation = queued(&key(3).doc_id(), BATCH, "bulk");
+    reservation.queued_at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).unwrap();
+    reservation.retry_message_at = Some(reservation.queued_at);
+    fx.ask(std::slice::from_ref(&reservation)).await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert!(ledger.imported(&reservation.doc_id));
+    assert!(ledger.outstanding(&reservation.doc_id).is_none());
+    assert!(ledger.outcomes[&reservation.doc_id].at > reservation.queued_at);
+}
+
+#[tokio::test]
+async fn future_reservation_settlements_advance_across_deadletter_batches_and_import_chunks() {
+    let fx = fixture(false).await;
+    let mut reservation = queued(&key(3).doc_id(), BATCH, "bulk");
+    reservation.queued_at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).unwrap();
+    reservation.retry_message_at = Some(reservation.queued_at);
+    fx.ask(std::slice::from_ref(&reservation)).await;
+    let message = OcrMessage {
+        v: 1,
+        page: key(3).to_string(),
+        batch: BATCH.into(),
+        language: "deu".into(),
+        reason: Reason::Bulk,
+        score: None,
+        queued_at: reservation.queued_at.to_rfc3339(),
+    };
+    for n in 0..101 {
+        let dead = DeadLetter::new(
+            BULK,
+            &format!("old-failure-{n}"),
+            Some(&message),
+            Cause::Permanent,
+            None,
+            None,
+            "BOINC error mask 0x2",
+            1,
+            NODE,
+        );
+        fx.queue.send(DEADLETTER, &dead.encode()).await.unwrap();
+    }
+    for n in 1..=2 {
+        fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(n))
+            .await;
+    }
+    let options = Options {
+        chunk: 1,
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &options)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.dead_letters.get("permanent"), Some(&101));
+    assert_eq!(status.last_run.imported, 2, "{:?}", status.last_run);
+    let loaded = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(
+        loaded.outcomes[&reservation.doc_id].outcome,
+        ledger::IMPORTED
+    );
+    assert!(loaded.outstanding(&reservation.doc_id).is_none());
+    let mut times = std::collections::HashSet::new();
+    for path in fx
+        .stores
+        .curated
+        .list(&format!("{ROOT}/outcomes"))
+        .await
+        .unwrap()
+    {
+        let body = fx.stores.curated.get(&path).await.unwrap().unwrap();
+        for outcome in ledger::decode_outcomes(bytes::Bytes::from(body)).unwrap() {
+            assert!(outcome.at > reservation.queued_at);
+            assert!(times.insert(outcome.at), "settlement ordering must not tie");
+        }
+    }
+    assert_eq!(times.len(), 103);
+    let requeued = enqueue::requeue(
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+        &fx.queue,
+        &RequeueOptions {
+            cause: "permanent".into(),
+            kind: None,
+            since: None,
+            plan: "requeue".into(),
+            max_pages: 1,
+            dry_run: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(requeued.queued, 0);
+    assert_eq!(requeued.skipped.get("imported"), Some(&1));
+}
+
+#[tokio::test]
 async fn drains_dead_letters_and_quarantines_bad_ones() {
     let fx = fixture(false).await;
     let msg = OcrMessage {
@@ -1055,6 +1599,7 @@ async fn drains_dead_letters_and_quarantines_bad_ones() {
             source: "m9".into(),
             at: Utc::now() + chrono::Duration::seconds(5),
             run: "later".into(),
+            message_sha256: None,
         }],
         Utc::now(),
         "later",
@@ -1343,6 +1888,17 @@ async fn enqueue_finds_the_page_and_writes_the_ledger_first() {
     assert_eq!(retry.queued, 1);
     let l = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
     assert_eq!(l.outstanding(&doc).unwrap().attempt, 2);
+    assert!(l.outstanding(&doc).unwrap().retry_message_at.is_some());
+    assert!(l.outstanding(&doc).unwrap().retry_run.is_none());
+    let mut answer = row(4, &GERMAN.repeat(4));
+    answer.loc_text = "user".into();
+    fx.node_writes(&answer, ALTO, &stamp(2)).await;
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    assert!(ledger::load(fx.stores.curated.as_ref())
+        .await
+        .unwrap()
+        .imported(&doc));
 }
 
 #[test]
@@ -1562,7 +2118,7 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_complete_the_day(
         assert_eq!(page, expected);
         assert_eq!(message.reason, Reason::User);
         assert!(message.score.is_some_and(|score| score >= 0.1));
-        assert_eq!(message.queued_at, "2026-10-14T00:00:00Z");
+        assert_eq!(message.queued_at().unwrap().date_naive(), request_day);
         let queued = ledger.queued.get(&expected.doc_id()).unwrap();
         assert_eq!(queued.request_day, Some(request_day));
         assert!(queued.queued_at > request_day.and_hms_opt(0, 0, 0).unwrap().and_utc());

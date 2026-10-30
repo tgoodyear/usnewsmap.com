@@ -8,6 +8,45 @@ use usnm_ingest::telemetry::SERVICE;
 use usnm_telemetry::providers;
 use usnm_telemetry::testing::{fake_ingestion, Plain};
 
+#[test]
+#[cfg(unix)]
+fn japanese_supervision_refuses_to_launch_without_telemetry() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("launched");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_usnm-ingest"))
+        .env_remove("APPLICATIONINSIGHTS_CONNECTION_STRING")
+        .current_dir(directory.path())
+        .args([
+            "--curated",
+            "unused-curated",
+            "--reference",
+            "unused-reference",
+        ])
+        .args([
+            "ja-ocr-run",
+            "--executable",
+            "/bin/sh",
+            "--arg=-c",
+            "--arg=touch \"$1\"",
+            "--arg=runner",
+        ])
+        .arg("--arg")
+        .arg(&marker)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!marker.exists(), "an unmonitored runner was launched");
+    let messages = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        messages.contains("Japanese OCR supervision requires usable"),
+        "{messages}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exports_with_a_bearer_token_and_flushes_on_shutdown() {
     let (endpoint, seen) = fake_ingestion().await;

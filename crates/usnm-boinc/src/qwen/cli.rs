@@ -6,6 +6,18 @@ use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub enum QwenCommands {
+    /// Audit explicitly selected retained readings, never selecting a canonical result.
+    Candidates {
+        #[arg(long)]
+        job: PathBuf,
+        #[arg(long)]
+        page: PathBuf,
+        /// Directories written by `qwen check --keep`, at most 16.
+        #[arg(long, required = true, num_args = 1..)]
+        candidate: Vec<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Stage public gold crops without sending reference text to volunteers.
     BenchmarkStage {
         #[arg(long)]
@@ -120,6 +132,14 @@ pub enum QwenCommands {
         #[arg(long)]
         keep: Option<PathBuf>,
     },
+    /// Every bundle page under --root with its own pair verdict (JSON Lines).
+    PageLedger {
+        #[arg(long)]
+        root: PathBuf,
+        /// The directory `compare --pages` writes to.
+        #[arg(long)]
+        pages: PathBuf,
+    },
     /// script_validator's compare script: two results of one unit; --log appends the pair.
     Compare {
         #[arg(long, num_args = 3, required = true)]
@@ -130,6 +150,9 @@ pub enum QwenCommands {
         min_dice: f64,
         #[arg(long)]
         log: Option<PathBuf>,
+        /// Keep each bundle page's verdict and both readings of it here.
+        #[arg(long)]
+        pages: Option<PathBuf>,
     },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
@@ -145,6 +168,14 @@ pub enum QwenCommands {
 pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
     use crate::qwen as x;
     match command {
+        QwenCommands::Candidates {
+            job,
+            page,
+            candidate,
+            out,
+        } => {
+            x::candidates::run(&job, &page, &candidate, &out)?;
+        }
         QwenCommands::BenchmarkStage {
             crops,
             root,
@@ -261,7 +292,13 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             files2,
             min_dice,
             log,
-        } => x::validate::compare(&files, &files2, min_dice, log.as_deref())?,
+            pages,
+        } => x::validate::compare(&files, &files2, min_dice, log.as_deref(), pages.as_deref())?,
+        QwenCommands::PageLedger { root, pages } => {
+            for p in x::ledger::run(&root, &pages)? {
+                println!("{}", serde_json::to_string(&p)?);
+            }
+        }
         QwenCommands::Summary { root, seen, pairs } => {
             print!("{}", x::summary::run(&root, &seen, &pairs)?)
         }

@@ -45,6 +45,12 @@ jobs:
         # The stable certificate ID is already bound by infrastructure. Renewal
         # must never race a deployment by patching application configuration.
         run: python3 scripts/azure/origin_tls.py renew --no-bind
+      - name: Validate BOINC LAN DNS-01 issuance against staging
+        if: inputs.validate-dns == true
+        run: python3 scripts/azure/origin_tls.py renew --staging --target boinc-lan
+      - name: Renew the BOINC LAN certificate (#1357)
+        # Publishes only to its deploy secret, which CT230 pulls; never touches Azure ingress.
+        run: python3 scripts/azure/origin_tls.py renew --target boinc-lan
       - name: Remove private working state after cancellation
         if: always()
         run: rm -rf -- .origin-tls-work

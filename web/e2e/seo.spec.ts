@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import examples from "../src/examples.json" with { type: "json" };
 import { searchPath } from "../src/route";
+import AxeBuilder from "@axe-core/playwright";
+import { indexSummary } from "../src/lib/indexSummary";
 
 // SEO smoke tests: the head that search engines and link previews read, the
 // page structure once the app renders, and what the API sends crawlers.
@@ -75,26 +77,154 @@ test("the static description is in the HTML before the app runs", async ({ reque
   expect(html).toContain('href="https://goodyeartechnical.com/"');
 });
 
+test("the footer has its index counts on first render and reload without fetching metadata", async ({ page }) => {
+  test.skip(!withApi, "the API embeds the published index metadata");
+  const metaRequests: string[] = [];
+  await page.route("**/v1/meta", (route) => {
+    metaRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.addInitScript(() => {
+    new MutationObserver((_, observer) => {
+      const footer = document.querySelector("footer.credits");
+      if (footer) {
+        document.documentElement.dataset.firstFooter = footer.textContent ?? "";
+        observer.disconnect();
+      }
+    }).observe(document, { childList: true, subtree: true });
+  });
+  await page.goto("/");
+  for (let load = 0; load < 2; load++) {
+    const meta = JSON.parse((await page.locator("#site-meta").textContent())!);
+    const summary = indexSummary(meta);
+    await expect(page.locator("footer.credits")).toContainText(summary);
+    await expect.poll(() => page.locator("html").getAttribute("data-first-footer")).toContain(summary);
+    expect(metaRequests).toEqual([]);
+    if (load === 0) await page.reload();
+  }
+});
+
+test("the interactive homepage links every sitemap search after React mounts", async ({ page, request }) => {
+  test.skip(!withApi, "the API provides the admitted search links");
+  await page.goto("/");
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toBeVisible();
+  await expect(page.locator("#site-fallback")).toHaveCount(0);
+  const cards = page.locator("ul.examples a.example");
+  await expect(cards).toHaveCount(3);
+  while (await page.getByRole("button", { name: "Show more examples" }).count()) {
+    await page.getByRole("button", { name: "Show more examples" }).click();
+  }
+  const xml = await (await request.get("/sitemap.xml")).text();
+  const searches = [...xml.matchAll(/<loc>https:\/\/usnewsmap\.com(\/search\/[^<]+)<\/loc>/g)].map((match) =>
+    match[1]!.replaceAll("&amp;", "&"),
+  );
+  expect(searches.length).toBeGreaterThan(0);
+  for (const href of searches) {
+    await expect(page.locator(`ul.examples a.example[href="${href}"]`)).toBeVisible();
+  }
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+});
+
 test("curated searches expose top-city results and homepage links without JavaScript", async ({ browser }) => {
   test.skip(!withApi, "the API renders the search preview");
+  test.setTimeout(60_000);
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
   try {
     await page.goto(`${process.env.PW_BASE_URL}/`);
     const home = page.getByRole("navigation", { name: "Common newspaper searches" });
-    await expect(home.getByRole("link", { name: "cross of gold", exact: true })).toHaveAttribute(
-      "href",
-      "/search/cross-of-gold",
-    );
-    await home.getByRole("link", { name: "cross of gold", exact: true }).click();
+    await expect(home.locator("details")).not.toHaveAttribute("open", "");
+    await home.locator("summary").click();
+    const gold = home.locator('a.example[href="/search/cross-of-gold"]');
+    await expect(gold).toContainText("cross of gold");
+    await gold.click();
     const samples = page.getByRole("region", { name: "Sample results" });
     await expect(samples).toContainText("has the most hits");
     await expect(samples.locator("ol > li")).toHaveCount(10);
     await expect(samples).toContainText("cross of gold");
     await expect(samples).toContainText("1896-07-18");
+    const map = page.getByRole("img", { name: "Map and timeline of newspaper matches for cross of gold" });
+    await expect(map).toBeVisible();
+    await expect
+      .poll(() => map.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth === 1200), {
+        timeout: 50_000,
+      })
+      .toBe(true);
   } finally {
     await context.close();
   }
+});
+
+test("sitemap searches remain readable with JavaScript enabled and API access blocked", async ({ page }) => {
+  test.skip(!withApi, "the API renders the search landing page");
+  const apiRequests: string[] = [];
+  await page.route("**/v1/**", (route) => {
+    apiRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/search/cross-of-gold");
+  const landing = page.locator("#search-landing");
+  const samples = landing.getByRole("region", { name: "Sample results" });
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Newspaper results for cross of gold");
+  await expect(samples).toBeVisible();
+  await expect(samples.locator("ol > li")).toHaveCount(10);
+  await expect(samples).toContainText("1896-07-18");
+  await expect(page.locator("#root")).toBeHidden();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await expect(landing.getByRole("img", { name: /Map and timeline/ })).toBeVisible();
+  await expect(page.getByRole("main")).toHaveCount(1);
+  await expect.poll(() => apiRequests.some((url) => new URL(url).pathname === "/v1/places")).toBe(true);
+  await expect(samples).toBeVisible();
+  await expect(samples.locator("ol > li")).toHaveCount(10);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
+test("JavaScript browsers skip the static view before the bundle loads and show controls before API readiness", async ({
+  page,
+}) => {
+  test.skip(!withApi, "the API renders the static map");
+  test.setTimeout(60_000);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let releaseBundle: () => void = () => {};
+  const bundleGate = new Promise<void>((resolve) => {
+    releaseBundle = resolve;
+  });
+  await page.route(/\/assets\/index-[^/]+\.js$/, async (route) => {
+    await bundleGate;
+    await route.continue();
+  });
+  await page.route("**/v1/places?**", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  const imageRequests: string[] = [];
+  await page.route("**/search-map.png?**", (route) => {
+    imageRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/search/cross-of-gold", { waitUntil: "commit" });
+  const landing = page.locator("#search-landing");
+  await expect(landing).toHaveCount(1);
+  await expect(landing).toBeHidden();
+  releaseBundle();
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toBeVisible();
+  await expect(page.locator("#root")).toBeVisible();
+  await expect(landing).toBeHidden();
+  await expect(page.locator('[data-share-ready="true"]')).toHaveCount(0);
+  release();
+  await expect(landing).toHaveCount(0, { timeout: 50_000 });
+  await expect(page.getByTestId("map")).toBeVisible({ timeout: 50_000 });
+  await expect(page.getByTestId("map")).toHaveAttribute("data-basemap-ready", "true");
+  await expect(page.getByTestId("map")).toHaveAttribute("data-overlay-ready", "true");
+  await expect(page.getByRole("main")).toHaveCount(1);
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue("cross of gold");
+  expect(imageRequests).toEqual([]);
 });
 
 test("an unknown path shows the not-found page", async ({ page }) => {

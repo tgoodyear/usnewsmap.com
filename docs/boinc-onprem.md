@@ -117,6 +117,83 @@ an ambiguous publication or acceptance reservation.
 Native binary/auxiliary inputs are rehashed after copying into private staging;
 only those verified copies are transferred for signing and appver construction.
 
+## Deliberate terminal OCR retry (#1159)
+
+`usnm-boinc retry` prepares **one explicitly reviewed single-page retry**, not an
+automatic recovery loop. Attempt 0 keeps its existing v1 JSON and job/workunit ID.
+Retry contract v2 binds a new attempt to its parent ID. Never edit an old request,
+signed app version, journal, assimilator marker or accepted result to force a replay.
+
+Before activation, deploy the reviewed reader to **every** strict journal consumer
+(controller, server, bridge, native sync and seeder), and sign/install a matching `usnm_ocr` worker
+supporting contract v2. Old workers reject v2; a new CLI alone is insufficient.
+Record the supporting BOINC worker's full released image digest (not its separate
+Tesseract base image digest) and
+BOINC app version number. Existing trust, routing, source budgets and validation
+still apply. Do not retry a bundle or bypass its reconciliation.
+Submission verifies its registered Dockerfile signature, requires an unambiguous
+active app/version/platform/plan mapping, and compares the signed Dockerfile's
+immutable worker `FROM` digest against `Job.engine.image`. No Podman socket or
+host image store is required. Missing registration or signature proof refuses
+submission before its uncertain state.
+
+After confirming BOINC's actual terminal disposition and that native sync has
+settled the exact previous native row as a permanent failure:
+
+```sh
+usnm-boinc retry --root /private/jobs --spool /private/assimilated \
+  --job PARENT_JOB_ID --expected-error-mask 2 \
+  --image sha256:SUPPORTING_WORKER_DIGEST --app-version-num SUPPORTING_APP_VERSION \
+  --reviewed-reason 'Reviewed terminal 0x2; supporting worker release recorded' \
+  --handoff-url /private/handoff \
+  --state-file /private/state.json \
+  --curated-url /private/curated --reference-url /private/reference
+```
+
+Use `--expected-no-output-files` instead of `--expected-error-mask` only for an
+actual `_no_output_files` marker. Unknown and zero masks are refused, not treated
+as missing output. An error mask is decimal on the CLI (`2` reviews `0x2`).
+Accepted/canonical/partial output, changed terminal proof, nonterminal work and a
+newer native reservation all require reconciliation, not retry.
+Historical imports always veto retry, even if a later dead letter became the
+latest outcome. Legacy journals without terminal proof require collection of
+the unchanged actual marker; a later collect cannot overwrite the first proof.
+The permanent outcome must carry the exact parent message digest; historical
+unbound outcomes cannot authorize retry. For queue-fed parents, the exact handoff
+claim must be conclusively `dead_lettered`, not lease-lost or still outstanding.
+
+The command prints the new child ID and reserves it without submission. It
+preserves the original scan, failed journal and request-day quota attribution.
+An identical invocation resumes its durable prepared/reserved child; it never
+creates another workunit for that parent. Submit that child through the existing
+single-page `submit` path, which pins `--app_version_num` from the retry journal.
+Pass `--curated-url` and exactly one of `--state-file` or `--cosmos` again on
+submission. For both `submit` and `submit-remote`, the on-prem bridge forwards
+host-owned `COSMOS_ENDPOINT` and `CURATED_URL` from `bridge.env`; configure its
+existing identity with the native lock/ledger permissions before activation.
+Submission holds the native lease while revalidating the exact outstanding
+child, verifying the signed worker, and crossing the write-ahead/create-work
+boundary. A replaced or settled child is refused without submission.
+Uncertain submission still requires authoritative BOINC lookup and explicit
+`reconcile`; never delete its journal and repeat. A retry of a failed child needs
+a fresh terminal review naming that child.
+Preparation validates settlement under the native lease before persisting the
+child timestamp, scan and journal, then writes its reservation. An unreserved
+prepared child may refresh its timestamp after later settlement; a reserved
+replay must still match the exact outstanding native row. The controller retains
+the parent/child chain but never automatically exports or submits manual retries.
+
+If that child fails, the existing handoff `claim dead-letter` step publishes the
+child's terminal mask and new message timestamp without touching the old claim.
+Its private durable payload/sent receipt makes a completed repeat a no-op; lost
+send acknowledgement retains at-least-once delivery. Native sync fences duplicate
+old-attempt events from subsequent retries.
+
+First acceptance is one reviewed failed-page canary: preserve its original real
+mask through collect/journal/dead letter, verify the one new workunit and supporting
+app version, collect/import via ordinary validation, verify native settlement,
+and record all identities. Code tests or a merged PR do not prove this live gate.
+
 ## What runs on the host
 
 | Unit                               | What                                                                                                                                                                | Notes                                                                                                                     |
@@ -128,6 +205,9 @@ only those verified copies are transferred for signing and appver construction.
 | `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job; `--target scans --step receive` takes the controller's scan push | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
 | `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                                                                                      | Public ingress with no inbound port                                                                                       |
 | `usnm-image-security-check.timer`  | A daily check of the server image against `bookworm-security`, and of the MySQL pin                                                                                 | A failed `usnm-image-security-check.service` is the alert ([Security updates](#security-updates), #969)                   |
+| `caddy`                            | TLS for `boinc.usnewsmap.com` on the LAN, on 443, in front of `http://localhost:80`                                                                                 | [LAN access](#lan-access-1357)                                                                                            |
+| `usnm-boinc-lan-tls.timer`         | Daily pull of the LAN certificate from the TLS vault                                                                                                                | Fails closed: a bad certificate leaves the installed one                                                                  |
+| `usnm-boinc-lan-guard.service`     | nftables: port 80 answers loopback only                                                                                                                             | Apache stays reachable to cloudflared, not the LAN                                                                        |
 
 All containers use the host network. Podman 4.3's CNI backend has no DNS for container names, so
 `usnm-boinc-mysql` is mapped to 127.0.0.1 in `/etc/hosts` and with `--add-host`.
@@ -315,3 +395,47 @@ Work that ran as Azure jobs, and where it runs now:
 ## Cloudflare
 
 `boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone has Bot Fight Mode off. A configuration rule skips Browser Integrity Check for requests from the on-prem public IP to `boinc.usnewsmap.com`, because Browser Integrity Check answers `Python-urllib` with 403. An IP Access allow rule covers the same IP. Both rules name that IP, so update them if it changes. [ADR-0024](design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
+
+## LAN access (#1357)
+
+Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
+DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation, the same
+as `ocr.tjg.fyi`. The address isn't written here. Anywhere else, the name is still Cloudflare's.
+Clients keep the master URL, scheduler, download and upload URLs, and normal certificate
+checks. The controller's `--server-status-url` is unchanged.
+
+On CT230, Debian's Caddy serves 443 with a public Let's Encrypt certificate for the name and
+reverse-proxies to `localhost:80`, Apache's only allowed path, which cloudflared also uses. There's
+no image change or server restart. `origin-tls.yml` issues the certificate (`origin_tls.py --target
+boinc-lan`, with its own ACME state) into the deploy-only secret `usnm-prod-boinc-lan-tls`. The
+host's Arc identity can read only that secret, never the DNS token or the ACME account.
+`usnm-boinc-lan-tls.timer` pulls it daily, checks name, expiry, key, chain and that it's not older
+than the installed one, and restarts Caddy when it changes. Caddy's access log,
+`/var/log/caddy/boinc-lan.log`, shows the LAN clients; Apache sees `::1` for both paths.
+
+```sh
+python3 scripts/azure/origin_tls_bootstrap.py --boinc-lan   # operator, once: the secrets and grants
+gh workflow run origin-tls.yml -f validate-dns=true         # then check the run
+tar -C scripts/boinc/onprem/lan-tls -cf - . | ssh root@pve.tjg.fyi 'cat > /root/lan-tls.tar'
+ssh root@pve.tjg.fyi 'pct push 230 /root/lan-tls.tar /root/lan-tls.tar && pct exec 230 -- sh -c "mkdir -p /root/lan-tls && tar -C /root/lan-tls -xf /root/lan-tls.tar && /root/lan-tls/lan-tls-setup.sh"'
+```
+
+Then add the gateway's local A and AAAA records (using CT230's current LAN addresses).
+Wait for both cached public record types to expire before checking the cutover.
+**Rollback:** delete both local records, and clients go back
+through Cloudflare when their resolver cache expires. Caddy and the guard can stay. To remove the
+guard, `systemctl disable --now usnm-boinc-lan-guard`.
+
+### Live acceptance (30 October 2026 UTC)
+
+The public certificate expires 27 January 2027. Both local DNS record types now resolve to
+CT230; public resolvers still return Cloudflare. Direct HTTPS passes normal certificate
+validation from the Mac, CT100, CT214 and CT211. Caddy recorded actual BOINC scheduler RPCs,
+downloads and uploads returning 200, including Linux and Mac clients, without changing their
+master URL or work-acquisition settings. The public tunnel still returns 200.
+
+Non-loopback port 80 is refused. Reloading nftables preserved the guard; its enabled boot
+dependencies include nftables, and nftables wants the guard. The certificate sync succeeded
+again with an unchanged certificate. The BOINC server's PID and startup timestamp did not
+change. A CT230 reboot was deliberately not performed during active work; boot ordering was
+checked with systemd instead.

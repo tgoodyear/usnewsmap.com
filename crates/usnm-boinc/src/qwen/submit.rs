@@ -131,6 +131,17 @@ pub struct Summary {
 /// until the probe measures it; each crop has the unit's deadline anyway.
 pub const FPOPS_EST: &str = "1e13";
 pub const FPOPS_BOUND: &str = "1e16";
+
+/// A unit's estimate and bound: [`FPOPS_EST`] and [`FPOPS_BOUND`] per page,
+/// so a bundle's runtime estimate and the client's work buffer scale with
+/// the pages in it.
+pub fn fpops(job: &Job) -> (String, String) {
+    let pages = job.pages.len().max(1);
+    if pages == 1 {
+        return (FPOPS_EST.into(), FPOPS_BOUND.into());
+    }
+    (format!("{pages}e13"), format!("{pages}e16"))
+}
 /// 6 GiB: the 8B model at Q4 needs about 7 GB of GPU memory and 4 GiB of
 /// RAM; the 2B model at Q8 about 3 GiB of RAM (`ocr/boinc/qwen/`).
 pub const MEMORY_BOUND: &str = "6442450944";
@@ -149,6 +160,7 @@ pub fn create_work_args_with_lock(
     target: Target,
     weights_lock_text: &str,
 ) -> anyhow::Result<Vec<String>> {
+    let (fpops_est, fpops_bound) = fpops(job);
     let mut args: Vec<String> = [
         "--appname",
         APP,
@@ -171,9 +183,9 @@ pub fn create_work_args_with_lock(
         "--max_success_results",
         "3",
         "--rsc_fpops_est",
-        FPOPS_EST,
+        &fpops_est,
         "--rsc_fpops_bound",
-        FPOPS_BOUND,
+        &fpops_bound,
         "--rsc_memory_bound",
         MEMORY_BOUND,
         "--rsc_disk_bound",

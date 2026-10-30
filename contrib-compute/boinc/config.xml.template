@@ -48,13 +48,14 @@
         <resend_lost_results>1</resend_lost_results>
         <cache_md5_info>1</cache_md5_info>
         <shmem_work_items>1000</shmem_work_items>
-        <!-- All-app interleaving divides this independently of shmem_work_items by app weight.
+        <!-- All-app interleaving divides both these cache slots and the query below by app weight.
              Keep each positive-weight app's rounded query budget >= 2 * total cache
-             slots and Qwen's >= 4 * the 455-result sizing baseline (#860).
-             Nine equal weights give 2222 candidates/app; re-size for app/weight or
-             backlog growth. This bounded window is not starvation-free scheduling.
+             slots, and Qwen's cache share >= its 635-result ready baseline (#860, #529).
+             Qwen weight 16 of 24 gives about 666 Qwen slots, 41-42 per other app and
+             2000 candidates per weight-1 app. Re-size for app/weight or backlog growth.
+             This bounded window is not starvation-free scheduling.
              See contrib-compute/docs/app-release.md, Feeder visibility. -->
-        <feeder_query_size>20000</feeder_query_size>
+        <feeder_query_size>48000</feeder_query_size>
         <delete_delay_hours>168</delete_delay_hours>
         <!-- Upload certificates on: the transitioner signs each output file_info (name and
              max_nbytes) and the upload handler enforces both. add_signatures() only finds a
@@ -86,7 +87,7 @@
     </tasks>
     <daemons>
         <daemon>
-            <cmd>feeder -d 2 --allapps</cmd>
+            <cmd>feeder -d 2 --allapps --purge_stale 5</cmd>
         </daemon>
         <daemon>
             <cmd>transitioner -d 2</cmd>
