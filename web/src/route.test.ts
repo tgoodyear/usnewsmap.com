@@ -51,6 +51,8 @@ describe("readable search paths", () => {
     expect(searchPath("-gold")).toBe("/search/-gold");
     expect(searchPath('"cross of gold"', "all")).toBe("/search/%22cross%20of%20gold%22");
     expect(searchPath("copperhead*")).toBe("/search/copperhead*");
+    expect(searchPath('"anthracite strike"~5')).toBe("/search/%22anthracite%20strike%22~5");
+    expect(queryForPath(searchPath('"anthracite strike"~5'))).toBe('"anthracite strike"~5');
   });
 
   it("reads slugs and legacy paths back to a query", () => {

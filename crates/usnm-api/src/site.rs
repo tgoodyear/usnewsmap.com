@@ -224,7 +224,12 @@ fn search_path_in_mode(q: &str, phrase_mode: bool) -> String {
         return format!("/search/{encoded}");
     }
     let encoded: String = form_urlencoded::byte_serialize(q.as_bytes()).collect();
-    format!("/search/{}", encoded.replace('+', "%20"))
+    // CDNs normalize percent-encoded unreserved characters before forwarding.
+    // Encoding '~' again would make proximity searches redirect to themselves.
+    format!(
+        "/search/{}",
+        encoded.replace('+', "%20").replace("%7E", "~")
+    )
 }
 
 /// The query a search path names, read in the default phrase mode.
@@ -524,6 +529,7 @@ async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiErr
 pub(super) struct SearchPreview {
     html: String,
     total_hits: u64,
+    sample_hits: usize,
 }
 
 pub(crate) async fn search_preview_snapshot(
@@ -586,6 +592,7 @@ async fn search_preview_data(
             return Ok(SearchPreview {
                 html: format!("<section aria-label=\"Sample results\"><h2>Sample results</h2>{demo}<p>No matching newspaper pages.</p></section>"),
                 total_hits: summary.total_hits,
+                sample_hits: 0,
             });
         };
         let place = rd
@@ -605,6 +612,7 @@ async fn search_preview_data(
         )
         .await?;
         let mut html = format!("<section aria-label=\"Sample results\"><h2>Sample results</h2>{demo}<p>{} matching newspaper pages in total. {} has the most hits ({} pages). Showing up to 10 earliest results from this city.</p><ol>", summary.total_hits, escape_html(&place), result.total);
+        let sample_hits = result.hits.len();
         for hit in result.hits {
             let title = rd
                 .titles
@@ -637,6 +645,7 @@ async fn search_preview_data(
         Ok::<_, ApiError>(SearchPreview {
             html,
             total_hits: summary.total_hits,
+            sample_hits,
         })
     };
     let job = Job::search("site-preview", background, state.config.compute_cap);
@@ -871,8 +880,7 @@ async fn cache_control(req: Request, next: Next) -> Response {
 fn noindex(uri: &Uri, sitemap: &sitemap::Service) -> bool {
     if let Some(q) = search_query(uri.path()) {
         let path = search_path(&q);
-        return !(CURATED_SEARCHES.contains(&path) || sitemap.contains(&path))
-            || uri.query().is_some_and(|q| !q.is_empty());
+        return !sitemap.contains(&path) || uri.query().is_some_and(|q| !q.is_empty());
     }
     match uri.path().trim_end_matches('/') {
         OLD_DATASETS_PATH => true,
@@ -1152,12 +1160,21 @@ mod tests {
         assert_eq!(to("/search/gold/").as_deref(), Some("/search/gold"));
         for uri in [
             "/search/gold",
+            "/search/%22anthracite%20strike%22~5",
             "/?q=",
             "/?q=.",
             "/privacy?q=gold",
             "/v1/hits?q=gold",
         ] {
             assert_eq!(to(uri), None, "{uri}");
+        }
+        assert_eq!(
+            to("/search/%22anthracite%20strike%22%7E5").as_deref(),
+            Some("/search/%22anthracite%20strike%22~5")
+        );
+        for path in CURATED_SEARCHES.iter() {
+            assert!(!path.contains("%7E"));
+            assert_eq!(to(path), None, "every curated canonical must be stable");
         }
     }
 

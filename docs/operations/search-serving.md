@@ -2,6 +2,35 @@
 
 Part of the [operations guide](README.md).
 
+## Sitemap eligibility
+
+The durable sitemap publishes the four canonical application pages and only
+unfiltered canonical search URLs with both a positive current match count and
+server-rendered sample results. Curated examples and previously promoted searches
+are rechecked against the pinned index; an empty search is omitted, removed from
+the homepage's discovery links and marked `noindex`, but remains usable as an
+interactive search. New recurring searches still require finalized activity on
+two distinct days and more than 50 matches. A backend failure does not count as an
+empty search: refresh fails explicitly and retains the last complete generation.
+Its results describe that generation, not a guarantee of perpetual availability.
+
+Redirect aliases, filtered variants and noncanonical paths are never sitemap
+entries, including when reading older saved generations. Proximity operators use
+literal `~` in canonical paths: Cloudflare normalizes unreserved `%7E` before
+forwarding, so re-encoding it would cause a permanent self-redirect. The web
+builder's no-backend fallback sitemap lists static pages only, not unverified
+search examples.
+
+When verifying a release, fetch **every** sitemap URL without following redirects:
+require HTTP 200, robots.txt crawl permission, no applicable `noindex`/`none`
+directives, a self-referencing canonical and actual nonempty search content.
+Check duplicate/alternate content rather than treating a successful fetch as
+enough. Google's [URL Inspection guidance](https://support.google.com/webmasters/answer/9012289#will_i_be_indexed)
+explicitly does not guarantee indexing even for a valid live test. Google's
+selected canonical, quality assessment, manual actions, legal removals and
+Search Console temporary blocks require separate Search Console evidence;
+public HTTP checks cannot certify them. No indexing guarantee is claimed.
+
 ## Searcher caches
 
 The Quickwit searcher (a sidecar or its own app) keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the searcher's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):

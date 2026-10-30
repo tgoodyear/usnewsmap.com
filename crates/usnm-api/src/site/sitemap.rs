@@ -31,24 +31,27 @@ pub(crate) struct Service {
 
 impl Service {
     pub(super) fn search_paths(&self) -> Vec<String> {
-        let mut paths: BTreeSet<String> = super::CURATED_SEARCHES.iter().cloned().collect();
-        if let Some(checkpoint) = self.committed.load().as_ref() {
-            paths.extend(
-                checkpoint
-                    .pages
-                    .keys()
-                    .filter(|path| path.starts_with("/search/"))
-                    .cloned(),
-            );
+        match self.committed.load().as_ref() {
+            Some(checkpoint) => checkpoint
+                .pages
+                .keys()
+                .filter(|path| path.starts_with("/search/") && canonical_path(path))
+                .cloned()
+                .collect(),
+            None => {
+                let mut paths: Vec<_> = super::CURATED_SEARCHES.iter().cloned().collect();
+                paths.sort();
+                paths
+            }
         }
-        paths.into_iter().collect()
     }
 
     pub(super) fn contains(&self, path: &str) -> bool {
-        self.committed
-            .load()
-            .as_ref()
-            .is_some_and(|checkpoint| checkpoint.pages.contains_key(path))
+        canonical_path(path)
+            && self.committed.load().as_ref().map_or_else(
+                || super::CURATED_SEARCHES.contains(path),
+                |checkpoint| checkpoint.pages.contains_key(path),
+            )
     }
 }
 
@@ -166,6 +169,7 @@ struct Generation {
     content_provenance: BTreeMap<String, String>,
     snapshot: String,
     promoted: BTreeSet<String>,
+    evaluated_promotions: BTreeSet<String>,
 }
 
 impl Generation {
@@ -277,10 +281,11 @@ async fn commit(
     for _ in 0..16 {
         let previous = latest(store).await?;
         if previous.as_ref().is_some_and(|checkpoint| {
-            checkpoint
-                .pages
-                .iter()
-                .any(|(path, page)| page.promoted && !generation.pages.contains_key(path))
+            checkpoint.pages.iter().any(|(path, page)| {
+                page.promoted
+                    && !generation.pages.contains_key(path)
+                    && !generation.evaluated_promotions.contains(path)
+            })
         }) {
             return Err(backend(
                 "concurrent search promotion; retry full generation",
@@ -288,7 +293,9 @@ async fn commit(
         }
         let next = generation.checkpoint(previous.as_ref())?;
         if next.pages.keys().any(|path| !valid_url(path)) {
-            return Err(backend("sitemap URL must be shorter than 2,048 characters"));
+            return Err(backend(
+                "sitemap URL must be canonical and shorter than 2,048 characters",
+            ));
         }
         if next.pages.len() > 50_000 || xml_size(&next) > MAX_SITEMAP_BYTES {
             return Err(backend(
@@ -340,6 +347,7 @@ async fn generate(
         content_provenance: BTreeMap::new(),
         snapshot: snapshot_identity(&snap)?,
         promoted: BTreeSet::new(),
+        evaluated_promotions: BTreeSet::new(),
     };
     generation.check_freshness(state.sitemap.committed.load_full().as_deref())?;
     let mut pages = manifest.pages.clone();
@@ -368,13 +376,12 @@ async fn generate(
     }
     let mut paths: BTreeSet<String> = super::CURATED_SEARCHES.iter().cloned().collect();
     if let Some(checkpoint) = state.sitemap.committed.load_full() {
-        paths.extend(
-            checkpoint
-                .pages
-                .iter()
-                .filter(|(_, page)| page.promoted)
-                .map(|(path, _)| path.clone()),
-        );
+        for (path, _) in checkpoint.pages.iter().filter(|(_, page)| page.promoted) {
+            let query =
+                super::search_query(path).ok_or_else(|| backend("invalid saved search path"))?;
+            paths.insert(super::search_path(&query));
+            generation.evaluated_promotions.insert(path.clone());
+        }
     }
     let retained = paths.clone();
     if let Some(url) = &state.config.search_log_url {
@@ -396,6 +403,9 @@ async fn generate(
         let query =
             super::search_query(&path).ok_or_else(|| backend("invalid saved search path"))?;
         let preview = super::search_preview_data(state, snap.clone(), &query, true).await?;
+        if preview.total_hits == 0 || preview.sample_hits == 0 {
+            continue;
+        }
         if !retained.contains(&path) && preview.total_hits <= 50 {
             continue;
         }
@@ -423,7 +433,12 @@ fn query_key(snap: &Snapshot, path: &str) -> Result<String> {
 }
 
 fn valid_url(path: &str) -> bool {
-    ORIGIN.len() + path.len() < 2048
+    ORIGIN.len() + path.len() < 2048 && canonical_path(path)
+}
+
+fn canonical_path(path: &str) -> bool {
+    STATIC.contains(&path)
+        || super::search_query(path).is_some_and(|query| super::search_path(&query) == path)
 }
 
 async fn refresh(
@@ -555,7 +570,9 @@ pub(super) fn response(state: &AppState, req: &Request) -> Response {
 fn xml(checkpoint: &Checkpoint) -> String {
     let mut xml = XML_START.to_owned();
     for (path, page) in &checkpoint.pages {
-        xml.push_str(&xml_entry(path, page));
+        if valid_url(path) {
+            xml.push_str(&xml_entry(path, page));
+        }
     }
     xml.push_str(XML_END);
     xml
@@ -616,7 +633,39 @@ mod tests {
             .collect(),
             snapshot: String::new(),
             promoted: BTreeSet::new(),
+            evaluated_promotions: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn legacy_checkpoint_cannot_advertise_redirects_or_noncanonical_routes() {
+        let service = Service::default();
+        let mut checkpoint = generation().checkpoint(None).unwrap();
+        let page = checkpoint.pages["/privacy"].clone();
+        let proximity = super::super::search_path("\"anthracite strike\"~5");
+        for path in [
+            "/search/%22anthracite%20strike%22%7E5",
+            "/search/%22Whigs%22",
+            "/search/whigs/",
+            "/search/whigs?state=NY",
+            "/status",
+            "/unknown",
+        ] {
+            checkpoint.pages.insert(path.to_owned(), page.clone());
+        }
+        checkpoint.pages.insert(proximity.clone(), page);
+        service.committed.store(Some(Arc::new(checkpoint.clone())));
+        let published = xml(&checkpoint);
+        for path in checkpoint.pages.keys() {
+            let present = published.contains(&format!("<loc>{ORIGIN}{path}</loc>"));
+            assert_eq!(present, canonical_path(path), "{path}");
+            if !canonical_path(path) {
+                assert!(!service.contains(path));
+                assert!(!service.search_paths().contains(path));
+            }
+        }
+        assert!(service.contains(&proximity));
+        assert!(service.search_paths().contains(&proximity));
     }
 
     #[test]
@@ -918,7 +967,7 @@ mod tests {
             .unwrap()
             .to_bytes()
             .is_empty());
-        let count = STATIC.len() + super::super::CURATED_SEARCHES.len();
+        let count = STATIC.len();
         assert_eq!(original.matches("<lastmod>").count(), count);
         assert!(original.contains("<loc>https://usnewsmap.com/datasets</loc>"));
         let store = LocalStore::new(dir.0.join("searches"));
@@ -996,7 +1045,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recurring_searches_promote_at_51_with_indexable_ssr_and_survive_restart_and_failure() {
+    async fn recurring_searches_promote_at_51_and_empty_searches_are_removed_after_restart() {
         let dir = Directory::new();
         std::fs::write(
             dir.0.join("index.html"),
@@ -1102,12 +1151,14 @@ mod tests {
         let mut finished = None;
         refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
         let first = latest(&store).await.unwrap().unwrap();
-        assert_eq!(
-            first.pages.len(),
-            STATIC.len() + super::super::CURATED_SEARCHES.len() + 1
-        );
+        assert_eq!(first.pages.len(), STATIC.len() + 2);
         assert!(first.pages["/search/cobalt-jubilee"].promoted);
         assert!(first.pages.contains_key(&curated_gold));
+        for path in first.pages.keys() {
+            let uri = path.parse().unwrap();
+            assert!(super::super::search_redirect(&uri).is_none());
+            assert!(!super::super::noindex(&uri, &st.sitemap));
+        }
         assert!(
             !first.pages.contains_key(&alternate_gold),
             "keep the curated URL for equivalent normalized queries"
@@ -1116,9 +1167,9 @@ mod tests {
             !first.pages.contains_key("/search/amber-jubilee"),
             "exactly 50 is excluded"
         );
-        assert_eq!(
-            first.pages.keys().filter(|p| *p == &curated_whigs).count(),
-            1
+        assert!(
+            !first.pages.contains_key(&curated_whigs),
+            "empty curated search"
         );
         let response = crate::app(st.clone())
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -1190,7 +1241,7 @@ mod tests {
             latest(&store).await.unwrap().unwrap().sequence,
             first.sequence
         );
-        // A restart reuses the saved admission, even with logging disabled and no results.
+        // A saved admission is a candidate, not permanent indexing eligibility.
         let mut restarted = state(&dir, Some(Vec::new())).await;
         let config = &mut Arc::get_mut(&mut restarted).unwrap().config;
         config.sitemap_state_url = config.search_log_url.take();
@@ -1198,12 +1249,18 @@ mod tests {
             .await
             .unwrap();
         let retained = latest(&store).await.unwrap().unwrap();
-        assert!(retained.pages["/search/cobalt-jubilee"].promoted);
-        assert!(retained.pages["/search/cobalt-jubilee"].lastmod >= lastmod);
-        assert!(http(&restarted, "/search/cobalt-jubilee")
-            .await
-            .1
-            .contains("No matching newspaper pages."));
+        assert!(!retained.pages.contains_key("/search/cobalt-jubilee"));
+        assert!(!retained.pages.contains_key(&curated_gold));
+        assert!(lastmod <= retained.observed_at);
+        for path in ["/search/cobalt-jubilee", curated_gold.as_str()] {
+            let response = crate::app(restarted.clone())
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "search remains usable");
+            assert_eq!(response.headers()["x-robots-tag"], "noindex");
+            assert!(!restarted.sitemap.search_paths().contains(&path.to_owned()));
+        }
         // Corruption of a finalized day fails the refresh without publishing partial state.
         let before = http(&st, "/sitemap.xml").await.1;
         store
@@ -1352,6 +1409,63 @@ mod tests {
         st.snapshot.store(replacement.snapshot.load_full());
         assert!(commit(&st, &snap, &store, &g).await.is_err());
         assert_eq!(latest(&store).await.unwrap().unwrap().sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_promotions_require_evaluation_before_removal() {
+        let dir = Directory::new();
+        let st = state(&dir, Some(Vec::new())).await;
+        let snap = st.snapshot.load_full();
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut winner = generation();
+        winner
+            .pages
+            .insert("/search/new-promotion".into(), "nonempty".into());
+        winner.promoted.insert("/search/new-promotion".into());
+        commit(&st, &snap, &store, &winner).await.unwrap();
+        let mut stale = generation();
+        assert!(commit(&st, &snap, &store, &stale).await.is_err());
+        assert_eq!(latest(&store).await.unwrap().unwrap().sequence, 1);
+        stale
+            .evaluated_promotions
+            .insert("/search/new-promotion".into());
+        let removed = commit(&st, &snap, &store, &stale).await.unwrap();
+        assert!(!removed.pages.contains_key("/search/new-promotion"));
+        assert_eq!(removed.sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn refresh_migrates_a_legacy_encoded_proximity_promotion() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let fixtures_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/indexes/pages-base-fixture.jsonl");
+        let text = std::fs::read_to_string(fixtures_path).unwrap();
+        let mut document: usnm_search::PageDoc =
+            serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        document.text = "Cobalt jubilee.".into();
+        let st = state(&dir, Some(vec![document])).await;
+        let store = LocalStore::new(dir.0.join("searches"));
+        let old_path = "/search/%22cobalt%20jubilee%22%7E5";
+        let new_path = "/search/%22cobalt%20jubilee%22~5";
+        let mut old = generation();
+        old.pages.insert(old_path.into(), "old-preview".into());
+        old.promoted.insert(old_path.into());
+        store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", 1),
+                serde_json::to_vec(&old.checkpoint(None).unwrap()).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        refresh(&st, &store, &dir.0, &mut None).await.unwrap();
+        let migrated = latest(&store).await.unwrap().unwrap();
+        assert!(!migrated.pages.contains_key(old_path));
+        assert!(migrated.pages[new_path].promoted);
+        assert!(st.sitemap.contains(new_path));
+        assert!(!st.sitemap.contains(old_path));
+        assert!(!xml(&migrated).contains("%7E"));
     }
 
     #[tokio::test]
@@ -1518,7 +1632,7 @@ mod tests {
         refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
         assert_eq!(
             latest(&store).await.unwrap().unwrap().pages.len(),
-            STATIC.len() + super::super::CURATED_SEARCHES.len()
+            STATIC.len() + 1
         );
         still_current(&st, &st.snapshot.load_full()).await.unwrap();
         current.indexes.push("changed-newspaper-pointer".into());
@@ -1598,7 +1712,13 @@ mod tests {
             super::super::search_path(crate::prewarm::examples()[0].view["q"].as_str().unwrap());
         let dir = Directory::new();
         write_manifest(&dir);
-        let st = state(&dir, Some(Vec::new())).await;
+        let fixtures_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/indexes/pages-base-fixture.jsonl");
+        let text = std::fs::read_to_string(fixtures_path).unwrap();
+        let mut document: usnm_search::PageDoc =
+            serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        document.text = "Whigs debated the proposal.".into();
+        let st = state(&dir, Some(vec![document])).await;
         let fixtures = LocalStore::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data"),
         );
