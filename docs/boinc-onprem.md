@@ -393,14 +393,29 @@ queue receipts.
 The on-prem runner mounts `/srv/usnm-boinc/handoff-state` read-write when present.
 An operator can select its host path with `USNM_BOINC_HANDOFF_ROOT`; SSH callers
 cannot choose a container mount. The runner independently requires a canonical,
-non-symlinked root owned by its service user with mode `0700`. The controller must see the same filesystem,
-whether it runs beside the BOINC server or uses an existing shared mount. Set
+non-symlinked root owned by its service user with mode `0700`. The controller must
+see the same filesystem as the runner. Set
 `HANDOFF_URL=/handoff-state` in the host's handoff settings at cutover. Bridge
 calls use this fixed container path, never a caller-selected local directory.
 The controller passes `EXPECTED_HANDOFF_URL` to every on-prem handoff step.
 The runner compares it with its host-owned setting before launching anything;
 a mismatch fails without hiding queue messages or modifying either backend.
 Local handoff calls without this marker are refused.
+
+For the initial local cutover, colocate the priority controller and authoritative
+handoff root on the BOINC host. Separate containers may bind the same host
+directory, but a cross-host filesystem mount is not qualified by the local
+locking tests. Do not retain an independently writing controller on CT211.
+Before enabling the replacement timer, stop the old timer, wait for its current
+tick to exit, and verify that no old controller or bridge writer remains.
+
+Qualify the intended filesystem before switching authority: reject a second
+controller while the first holds its lock, kill the disposable lock owner and
+confirm a fresh process can recover, then replay an isolated submitted job
+through separate CLI containers without changing its stage or bytes or creating
+another job. Run these checks with networking disabled against private copies;
+they do not authorize a live cutover or substitute for actual returned-result
+collection.
 
 Stop new controller starts and wait for its current tick and bridge steps to
 finish before the final state copy. Copy and independently verify dispatch
