@@ -8,6 +8,7 @@
 pub mod cosmos;
 pub mod docs;
 pub mod ocr_local;
+pub mod postgres;
 pub mod state;
 pub mod summary;
 

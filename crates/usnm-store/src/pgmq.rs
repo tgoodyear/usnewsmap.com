@@ -148,46 +148,11 @@ pub fn pg_name(queue: &str) -> anyhow::Result<String> {
 
 impl PgmqQueue {
     pub fn new(location: &str) -> anyhow::Result<Self> {
-        let loc = Location::parse(location)?;
-        let roots = CertificateDer::pem_file_iter(&loc.root)
-            .with_context(|| format!("reading {}", loc.root))?
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("parsing {}", loc.root))?;
-        let mut store = rustls::RootCertStore::empty();
-        for cert in roots {
-            store.add(cert).context("adding the queue CA")?;
-        }
-        ensure!(!store.is_empty(), "{} holds no certificate", loc.root);
-        let chain = CertificateDer::pem_file_iter(&loc.cert)
-            .with_context(|| format!("reading {}", loc.cert))?
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("parsing {}", loc.cert))?;
-        let key = PrivateKeyDer::from_pem_file(&loc.key)
-            .with_context(|| format!("reading {}", loc.key))?;
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .context("TLS 1.3")?
-        .with_root_certificates(store)
-        .with_client_auth_cert(chain, key)
-        .context("the client certificate and key")?;
-        let mut config = Config::new();
-        config
-            .host(&loc.host)
-            .port(loc.port)
-            .dbname(&loc.database)
-            .user(&loc.user)
-            .ssl_mode(tokio_postgres::config::SslMode::Require)
-            .application_name("usnm-store")
-            .connect_timeout(Duration::from_secs(15));
+        let (config, tls, label) = connection_options(location)?;
         Ok(Self {
             config,
-            tls: MakeRustlsConnect::new(tls),
-            label: format!(
-                "postgres://{}:{}/{} as {}",
-                loc.host, loc.port, loc.database, loc.user
-            ),
+            tls,
+            label,
             client: Mutex::new(None),
         })
     }
@@ -237,6 +202,51 @@ impl PgmqQueue {
         });
         Ok(client)
     }
+}
+
+/// Certificate-authenticated TLS 1.3 options shared by the queue and document stores.
+pub fn connection_options(location: &str) -> anyhow::Result<(Config, MakeRustlsConnect, String)> {
+    let loc = Location::parse(location)?;
+    let roots = CertificateDer::pem_file_iter(&loc.root)
+        .with_context(|| format!("reading {}", loc.root))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("parsing {}", loc.root))?;
+    let mut store = rustls::RootCertStore::empty();
+    for cert in roots {
+        store.add(cert).context("adding the queue CA")?;
+    }
+    ensure!(!store.is_empty(), "{} holds no certificate", loc.root);
+    let chain = CertificateDer::pem_file_iter(&loc.cert)
+        .with_context(|| format!("reading {}", loc.cert))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("parsing {}", loc.cert))?;
+    let key =
+        PrivateKeyDer::from_pem_file(&loc.key).with_context(|| format!("reading {}", loc.key))?;
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .context("TLS 1.3")?
+    .with_root_certificates(store)
+    .with_client_auth_cert(chain, key)
+    .context("the client certificate and key")?;
+    let mut config = Config::new();
+    config
+        .host(&loc.host)
+        .port(loc.port)
+        .dbname(&loc.database)
+        .user(&loc.user)
+        .ssl_mode(tokio_postgres::config::SslMode::Require)
+        .application_name("usnm-store")
+        .connect_timeout(Duration::from_secs(15));
+    Ok((
+        config,
+        MakeRustlsConnect::new(tls),
+        format!(
+            "postgres://{}:{}/{} as {}",
+            loc.host, loc.port, loc.database, loc.user
+        ),
+    ))
 }
 
 /// A message's text: a JSON string's contents, or any other JSON as written.

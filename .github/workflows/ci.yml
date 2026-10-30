@@ -122,10 +122,15 @@ jobs:
         run: |
           location=$(scripts/onprem/queue/ci-fixture.sh --workdir "$RUNNER_TEMP/queue")
           echo "USNM_TEST_PGMQ=$location" >> "$GITHUB_ENV"
+          echo "USNM_TEST_DOCUMENTS=$location" >> "$GITHUB_ENV"
       - name: usnm-store's live queue test
         env:
           USNM_TEST_PGMQ_REQUIRED: '1'
         run: cargo test -p usnm-store --locked pgmq
+      - name: Durable document state with live PostgreSQL
+        env:
+          USNM_TEST_DOCUMENTS_REQUIRED: '1'
+        run: cargo test -p usnm-state --locked postgres_documents
       # The OCR-quality results database (#962) on the same image: schema, roles, the
       # loader's upserts and the ranking queries.
       - name: usnm_quality schema and roles

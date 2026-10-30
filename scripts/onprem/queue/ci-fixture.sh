@@ -76,6 +76,9 @@ psql_admin -c 'CREATE DATABASE usnm_queue'
 psql_admin -d usnm_queue -c 'CREATE EXTENSION pgmq'
 psql_admin -d usnm_queue < "$here/setup.sql" > /dev/null
 psql_admin -d usnm_queue < "$here/setup.sql" > /dev/null # safe to run again
+psql_admin -d usnm_queue < "$here/documents.sql" > /dev/null
+psql_admin -d usnm_queue < "$here/test_documents.sql" >&2
+psql_admin -d usnm_queue < "$here/documents.sql" > /dev/null
 psql_admin -d usnm_queue < "$here/test_roles.sql" >&2
 printf 'postgres://localhost:%s/usnm_queue?user=%s&sslcert=%s&sslkey=%s&sslrootcert=%s\n' \
   "$PORT" "$ROLE" "$WORK/client/client.crt" "$WORK/client/client.key" "$WORK/client/ca.pem"

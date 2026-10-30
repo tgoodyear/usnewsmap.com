@@ -6,15 +6,13 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use usnm_ingest::cosmos::CosmosDocs;
 use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::State;
-use usnm_store::credential;
 
 #[derive(Args)]
 pub(crate) struct Stores {
-    /// Cosmos DB endpoint for pipeline state (Azure).
+    /// Pipeline state: Cosmos DB endpoint or certificate-authenticated PostgreSQL URL.
     #[arg(long, env = "USNM_COSMOS_ENDPOINT", conflicts_with = "state_file")]
     pub cosmos: Option<String>,
     /// Local JSON file for pipeline state (development).
@@ -74,13 +72,9 @@ pub(super) struct IndexTarget {
 
 pub(crate) fn state(s: &Stores) -> anyhow::Result<State> {
     let docs: Arc<dyn DocStore> = match (&s.cosmos, &s.state_file) {
-        (Some(endpoint), _) => Arc::new(CosmosDocs::new(
-            endpoint,
-            usnm_state::DATABASE,
-            credential::from_env_for(credential::COSMOS_RESOURCE),
-        )?),
+        (Some(endpoint), _) => usnm_state::docs::open_endpoint(endpoint)?,
         (None, Some(path)) => Arc::new(FileDocs::open(path)?),
-        (None, None) => bail!("set --cosmos (Azure) or --state-file (local)"),
+        (None, None) => bail!("set --cosmos (Cosmos/PostgreSQL) or --state-file (development)"),
     };
     Ok(State::new(docs))
 }
