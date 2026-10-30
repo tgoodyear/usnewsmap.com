@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -61,15 +62,22 @@ class LanTlsSyncTests(unittest.TestCase):
         self.bin = self.work / "bin"
         self.bin.mkdir()
         for name, body in {
-            "curl": 'cat "$BUNDLE_JSON"\n',
-            "systemctl": 'echo "$*" >> "$ACTIVATION_LOG"\n[ "$1" != is-active ]\n',
+            "curl": 'echo fetch >> "$FETCH_LOG"\ncat "$BUNDLE_JSON"\n',
+            "systemctl": (
+                'echo "$*" >> "$ACTIVATION_LOG"\n'
+                'if [ "$1" = restart ] && [ -n "${BLOCK_ACTIVATION:-}" ]; then\n'
+                '  touch "$BLOCK_ACTIVATION"\n'
+                '  while [ ! -e "$RELEASE_ACTIVATION" ]; do sleep 0.02; done\n'
+                'fi\n'
+                '[ "$1" != is-active ]\n'
+            ),
         }.items():
             path = self.bin / name
             path.write_text("#!/bin/sh\n" + body)
             path.chmod(0o755)
         self.activation_log = self.work / "activation.log"
 
-    def run_sync(self, name, key=None):
+    def run_sync(self, name, key=None, locked=False):
         chain = (self.root / (name + ".pem")).read_text()
         if name != "untrusted":
             chain += (self.root / "ca.pem").read_text()
@@ -83,13 +91,27 @@ class LanTlsSyncTests(unittest.TestCase):
             "ACTIVATION_LOG": str(self.activation_log),
             "SSL_CERT_FILE": str(self.root / "ca.pem"),
             "SSL_CERT_DIR": str(self.work / "no-system-certificates"),
+            "IDENTITY_ENDPOINT": "http://localhost:40342/metadata/identity/oauth2/token",
+            "FETCH_LOG": str(self.work / "fetch.log"),
+            "TEST_LOCK": str(self.work / "sync.lock"),
+            "START_LOG": str(self.work / "started.log"),
         }
-        return subprocess.run(
-            ["bash", "-c",
-             'source "$SCRIPT"; DIR="$INSTALLED"; kv_token() { echo fake-token; }; sync_certificate'],
+        if locked:
+            env.update(BLOCK_ACTIVATION=str(self.work / "activating"),
+                       RELEASE_ACTIVATION=str(self.work / "release"))
+        args = [
+            "bash", "-c",
+            'source "$SCRIPT"; DIR="$INSTALLED"; LOCK_FILE="$TEST_LOCK"; '
+            'kv_token() { echo fake-token; }; '
+            + ('echo started >> "$START_LOG"; run_locked' if locked else 'sync_certificate'),
+        ]
+        kwargs = dict(
             env={**env, "SCRIPT": str(SCRIPT.resolve()), "INSTALLED": str(self.installed)},
-            text=True, capture_output=True, timeout=20,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        if locked:
+            return subprocess.Popen(args, **kwargs)
+        return subprocess.run(args, **kwargs, timeout=20)
 
     def test_rejected_bundles_preserve_installed_pair_without_activation(self):
         for name, key, reason in (
@@ -113,6 +135,39 @@ class LanTlsSyncTests(unittest.TestCase):
         self.assertEqual(
             {p.name: p.read_bytes() for p in self.installed.iterdir()}, self.before)
         self.assertIn("restart caddy", self.activation_log.read_text())
+
+    def test_locked_entry_point_blocks_second_fetch_until_activation_finishes(self):
+        processes = []
+        release = self.work / "release"
+
+        def wait_for(predicate):
+            deadline = time.monotonic() + 5
+            while not predicate():
+                self.assertLess(time.monotonic(), deadline, "entry point did not reach checkpoint")
+                time.sleep(0.02)
+
+        try:
+            first = self.run_sync("current", locked=True)
+            processes.append(first)
+            wait_for(lambda: (self.work / "activating").exists())
+            self.assertEqual((self.work / "sync.lock").stat().st_mode & 0o777, 0o600)
+            second = self.run_sync("current", locked=True)
+            processes.append(second)
+            wait_for(lambda: len((self.work / "started.log").read_text().splitlines()) == 2)
+            time.sleep(0.2)
+            self.assertIsNone(second.poll())
+            self.assertEqual((self.work / "fetch.log").read_text().splitlines(), ["fetch"])
+            release.touch()
+            for process in processes:
+                _, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual((self.work / "fetch.log").read_text().splitlines(), ["fetch", "fetch"])
+        finally:
+            release.touch()
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                process.communicate(timeout=10)
 
 
 if __name__ == "__main__":

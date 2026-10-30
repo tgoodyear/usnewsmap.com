@@ -12,6 +12,7 @@
 set -euo pipefail
 VAULT=usnmtlskvprodffapzy SECRET=usnm-prod-boinc-lan-tls HOST=boinc.usnewsmap.com
 DIR=/etc/usnm-boinc/lan-tls GROUP=caddy
+LOCK_FILE=/run/usnm-boinc-lan-tls.lock
 IDENTITY_ENDPOINT=${IDENTITY_ENDPOINT:-http://localhost:40342/metadata/identity/oauth2/token}
 log() { echo "lan-tls-sync: $*" >&2; }
 fail() { log "$*"; exit 1; }
@@ -103,10 +104,14 @@ log "installed $(openssl x509 -in "$DIR/fullchain.pem" -noout -enddate)"
 activate restart
 }
 
-if [[ ${BASH_SOURCE[0]} = "$0" ]]; then
+run_locked() {
   umask 077
   # One run at a time from fetch to activation, so two versions' key and chain never mix.
-  exec 9>/run/usnm-boinc-lan-tls.lock
+  exec 9>"$LOCK_FILE"
   flock 9
   sync_certificate
+}
+
+if [[ ${BASH_SOURCE[0]} = "$0" ]]; then
+  run_locked
 fi
