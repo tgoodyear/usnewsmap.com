@@ -39,11 +39,29 @@ fn sync_directory(path: &Path) -> Result<(), StoreError> {
         .map_err(|error| io(path, error))
 }
 
-fn create_directories(path: &Path) -> Result<(), StoreError> {
+fn create_directories(path: &Path, root: &Path) -> Result<(), StoreError> {
+    let mut boundary = root;
+    loop {
+        let candidate = if boundary.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            boundary
+        };
+        match std::fs::metadata(candidate) {
+            Ok(_) => break,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                boundary = boundary.parent().ok_or_else(|| io(candidate, error))?;
+            }
+            Err(error) => return Err(io(candidate, error)),
+        }
+    }
     std::fs::create_dir_all(path).map_err(|error| io(path, error))?;
-    // An existing ancestor may still be unsynced after another writer or a failed attempt.
+    // Sync the store hierarchy, plus the parent that anchors a newly created root.
     for ancestor in path.ancestors() {
         sync_directory(ancestor)?;
+        if ancestor == boundary {
+            break;
+        }
     }
     Ok(())
 }
@@ -131,9 +149,10 @@ impl ObjectStore for LocalStore {
     async fn put(&self, path: &str, body: Vec<u8>, _content_type: &str) -> Result<(), StoreError> {
         validate_path(path)?;
         let full = self.root.join(path);
+        let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
             let dir = full.parent().expect("validated paths have a parent");
-            create_directories(dir)?;
+            create_directories(dir, &root)?;
             // Readers see the old object or the new one, never a partial write.
             let tmp = temp_path(&full);
             write_temp(&tmp, &body)?;
@@ -155,9 +174,10 @@ impl ObjectStore for LocalStore {
     ) -> Result<bool, StoreError> {
         validate_path(path)?;
         let full = self.root.join(path);
+        let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
             let dir = full.parent().expect("validated paths have a parent");
-            create_directories(dir)?;
+            create_directories(dir, &root)?;
             // Write a private temp file, then hard-link it into place: the
             // link fails if the object exists, so creation is atomic.
             let tmp = temp_path(&full);
@@ -218,7 +238,8 @@ impl ObjectStore for LocalStore {
         let full = self.root.join(path);
         let dir = full.parent().expect("validated paths have a parent");
         let directory = dir.to_path_buf();
-        tokio::task::spawn_blocking(move || create_directories(&directory))
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || create_directories(&directory, &root))
             .await
             .map_err(|e| StoreError::Io(e.to_string()))??;
         let tmp = temp_path(&full);
@@ -413,6 +434,25 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_stays_within_existing_store_ancestors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("execute-only");
+        let anchor = outer.join("private");
+        std::fs::create_dir_all(&anchor).unwrap();
+        for root in [anchor.clone(), anchor.join("new/root")] {
+            std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o111)).unwrap();
+            let created = create_directories(&root.join("one"), &root);
+            let retried = create_directories(&root.join("two"), &root);
+            std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o700)).unwrap();
+            created.unwrap();
+            retried.unwrap();
+        }
+    }
 
     /// Two processes with the same pid (each container's PID 1) writing at
     /// the same sequence number get different temp names from their
