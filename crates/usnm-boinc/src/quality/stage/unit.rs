@@ -45,10 +45,10 @@ pub(super) fn pack_bundles(
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.join(JOB_FILE).exists()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| !bundled_docs.contains(n))
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !bundled_docs.contains(n))
+                && p.join(JOB_FILE).exists()
         })
         .collect();
     unbundled.sort();
