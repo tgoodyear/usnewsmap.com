@@ -1,4 +1,11 @@
 -- Apply as the database owner. Import under stopped writers; retain source ETags.
+DO $$
+BEGIN
+    IF current_setting('server_encoding') <> 'UTF8' THEN
+        RAISE EXCEPTION 'Pipeline documents require a UTF8 database; create one from template0';
+    END IF;
+END
+$$;
 CREATE SCHEMA IF NOT EXISTS usnm_state;
 REVOKE ALL ON SCHEMA usnm_state FROM PUBLIC;
 CREATE SEQUENCE IF NOT EXISTS usnm_state.document_versions;
