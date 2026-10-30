@@ -11,8 +11,8 @@
 #     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
-#  1. Stops while the server has more than --max-unsent results ready to send (the public
-#     server_status.php?counts=1), so quality never crowds out OCR's units, or while CT230's
+#  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
+#     server_status.php?xml=1), or while CT230's
 #     project tree has less than --min-free-gb free. Native Qwen instead preflights strict
 #     fresh-pair capacity plus the whole READY reservation before transfer (exit 75 defers).
 #  2. Copies the chunk into CT230's <share>/quality/<campaign>/incoming/<chunk>/ (tar over ssh).
@@ -36,7 +36,7 @@ READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000
-STATUS_URL="https://boinc.usnewsmap.com/server_status.php?counts=1"
+STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
   case $1 in
     --campaign) CAMPAIGN=${2:-}; shift 2 ;;
@@ -112,10 +112,22 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   unsent=native-fresh-pair-gated
   if [ -z "$QWEN_PLAN" ]; then
     unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
-      sed -n 's:.*<results_ready_to_send>\([0-9]*\)</results_ready_to_send>.*:\1:p')
-    [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read the server's unsent count"
+      python3 -c '
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.stdin).getroot()
+apps = [app for app in root.findall("./database_file_states/tasks_by_app/app")
+        if app.findtext("name") == "usnm_quality"]
+if len(apps) != 1:
+    raise SystemExit("Expected exactly one usnm_quality application in server status")
+count = apps[0].findtext("unsent", "")
+if not count.isascii() or not count.isdecimal():
+    raise SystemExit("Invalid usnm_quality unsent count in server status")
+print(count)
+')
+    [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read usnm_quality's unsent count"
     if [ "$unsent" -gt "$MAX_UNSENT" ]; then
-      log "server has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
+      log "usnm_quality has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
       break
     fi
   fi
