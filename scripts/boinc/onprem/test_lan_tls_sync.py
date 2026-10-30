@@ -169,6 +169,42 @@ class LanTlsSyncTests(unittest.TestCase):
                     process.terminate()
                 process.communicate(timeout=10)
 
+    def test_service_executable_waits_for_lock_before_requesting_identity(self):
+        import fcntl
+
+        marker = self.work / "identity-request"
+        curl = self.bin / "curl"
+        curl.write_text('#!/bin/sh\ntouch "$IDENTITY_REQUEST"\n')
+        lock_path = self.work / "usnm-boinc-lan-tls.lock"
+        with lock_path.open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                ["bash", str(SCRIPT.resolve()), "--dir", str(self.installed)],
+                env={
+                    **os.environ,
+                    "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
+                    "RUNTIME_DIRECTORY": str(self.work),
+                    "IDENTITY_ENDPOINT": "http://localhost:40342/metadata/identity/oauth2/token",
+                    "IDENTITY_REQUEST": str(marker),
+                },
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                time.sleep(0.2)
+                self.assertIsNone(process.poll())
+                self.assertFalse(marker.exists())
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                _, stderr = process.communicate(timeout=10)
+                self.assertTrue(marker.exists())
+                self.assertNotEqual(process.returncode, 0)
+                self.assertIn("no Key Vault token", stderr)
+                self.assertEqual(
+                    {p.name: p.read_bytes() for p in self.installed.iterdir()}, self.before)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.communicate(timeout=10)
+
 
 if __name__ == "__main__":
     unittest.main()
