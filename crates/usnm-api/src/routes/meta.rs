@@ -45,9 +45,18 @@ pub async fn readyz(State(state): State<Arc<AppState>>) -> Response {
 /// Unversioned by design: it is how clients learn the current version.
 pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
     let snap = state.snapshot.load();
+    let mut resp = Json(meta_body(&state, &snap)).into_response();
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
+    resp
+}
+
+pub(crate) fn meta_body(state: &AppState, snap: &crate::Snapshot) -> serde_json::Value {
     let rd = &snap.refdata;
     let c = &rd.current;
-    let body = json!({
+    json!({
         "index_version": c.index_version,
         "indexes": c.indexes,
         "bounds": c.bounds,
@@ -96,13 +105,7 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
             "max_at_least_items": query::MAX_AT_LEAST_ITEMS,
             "max_ocr_variants": usnm_core::ocr_variants::MAX_OCR_VARIANTS
         }
-    });
-    let mut resp = Json(body).into_response();
-    resp.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=300"),
-    );
-    resp
+    })
 }
 
 /// The schema of [`meta`]'s body, which it builds as JSON, for

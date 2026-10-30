@@ -4,6 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import examples from "../src/examples.json" with { type: "json" };
 import { searchPath } from "../src/route";
 import AxeBuilder from "@axe-core/playwright";
+import { indexSummary } from "../src/lib/indexSummary";
 
 // SEO smoke tests: the head that search engines and link previews read, the
 // page structure once the app renders, and what the API sends crawlers.
@@ -74,6 +75,33 @@ test("the static description is in the HTML before the app runs", async ({ reque
   const html = await (await request.get("/")).text();
   expect(html).toContain("Chronicling America");
   expect(html).toContain('href="https://goodyeartechnical.com/"');
+});
+
+test("the footer has its index counts on first render and reload without fetching metadata", async ({ page }) => {
+  test.skip(!withApi, "the API embeds the published index metadata");
+  const metaRequests: string[] = [];
+  await page.route("**/v1/meta", (route) => {
+    metaRequests.push(route.request().url());
+    return route.abort();
+  });
+  await page.addInitScript(() => {
+    new MutationObserver((_, observer) => {
+      const footer = document.querySelector("footer.credits");
+      if (footer) {
+        document.documentElement.dataset.firstFooter = footer.textContent ?? "";
+        observer.disconnect();
+      }
+    }).observe(document, { childList: true, subtree: true });
+  });
+  await page.goto("/");
+  for (let load = 0; load < 2; load++) {
+    const meta = JSON.parse((await page.locator("#site-meta").textContent())!);
+    const summary = indexSummary(meta);
+    await expect(page.locator("footer.credits")).toContainText(summary);
+    await expect.poll(() => page.locator("html").getAttribute("data-first-footer")).toContain(summary);
+    expect(metaRequests).toEqual([]);
+    if (load === 0) await page.reload();
+  }
 });
 
 test("the interactive homepage links every sitemap search after React mounts", async ({ page, request }) => {
@@ -148,7 +176,7 @@ test("sitemap searches remain readable with JavaScript enabled and API access bl
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await expect(landing.getByRole("img", { name: /Map and timeline/ })).toBeVisible();
   await expect(page.getByRole("main")).toHaveCount(1);
-  await expect.poll(() => apiRequests.some((url) => new URL(url).pathname === "/v1/meta")).toBe(true);
+  await expect.poll(() => apiRequests.some((url) => new URL(url).pathname === "/v1/places")).toBe(true);
   await expect(samples).toBeVisible();
   await expect(samples.locator("ol > li")).toHaveCount(10);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
@@ -171,7 +199,7 @@ test("JavaScript browsers skip the static view before the bundle loads and show 
     await bundleGate;
     await route.continue();
   });
-  await page.route("**/v1/meta", async (route) => {
+  await page.route("**/v1/places?**", async (route) => {
     await gate;
     await route.continue();
   });
