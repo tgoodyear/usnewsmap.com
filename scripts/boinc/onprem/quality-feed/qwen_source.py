@@ -207,6 +207,10 @@ def inspect(args, record):
         "error_workunits": native["error_workunits"],
         "history_unavailable_workunits": native["history_unavailable_workunits"],
         "source_conflict_pages": native["source_conflict_pages"],
+        "reconstructed_source_pages": sum(
+            value.get("provenance") == "verified_reconstruction"
+            and value["status"] not in ("source_conflict", "source_provenance_unavailable")
+            for value in native["pages"].values()),
         "waiting_source_pages": len(waiting),
         "waiting_original_archive_pages": sum(
             p["doc_id"] in waiting_set

@@ -314,6 +314,10 @@ class SourceRequestTest(unittest.TestCase):
                     "history_unavailable_workunits": 0, "source_conflict_pages": 0}
             for delta, expected in (
                     ({}, "awaiting_dispatch_or_admission"),
+                    ({"pages": {DOC: {"status": "published", "provenance": "verified_reconstruction"}}},
+                     "awaiting_dispatch_or_admission"),
+                    ({"pages": {DOC: {"status": "source_conflict", "provenance": "verified_reconstruction"}},
+                      "source_conflict_pages": 1}, "needs_science_review"),
                     ({"running_replicas": 1}, "awaiting_host_results"),
                     ({"agreed_workunits": 1}, "native_consensus_complete"),
                     ({"error_workunits": 1}, "needs_science_review"),
@@ -330,6 +334,9 @@ class SourceRequestTest(unittest.TestCase):
                     result = source.inspect(args, record)
                 self.assertEqual(result["state"], expected)
                 self.assertEqual(result["selected_pages"], 1)
+                self.assertEqual(result["reconstructed_source_pages"], int(
+                    delta.get("pages", {}).get(DOC, {}) == {
+                        "status": "published", "provenance": "verified_reconstruction"}))
 
 
 class ArchiveTest(unittest.TestCase):

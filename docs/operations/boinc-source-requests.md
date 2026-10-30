@@ -44,9 +44,11 @@ The native audit copies it only when its JPEG bytes/hash match the audited job.
 Source inspection checks that binding against the frozen batch/version and original
 scan bytes/hash, not just the document ID. A changed binding or a legacy job without
 one needs science review and cannot satisfy source consensus; deduplication remains
-in force and no historical source receipt is invented or backfilled.
+in force and no historical source receipt is invented or backfilled. Missing
+bindings can instead be resolved by the explicit retrospective verification below.
 
-Deploy `qwen_submit.py` on the native server and `qwen_source.py` on the producer
+Deploy `qwen_provenance.py` beside `qwen_submit.py` on the native server, and
+`qwen_source.py` on the producer,
 before activating the Temporal source entry. Replace `qwen_feed.py` only at an
 idle boundary; keep its existing service and receipts. Other callers can keep
 using the ordinary inventory/preflight/submit interfaces.
@@ -64,3 +66,69 @@ wait for admission/host requests. A native canonical result is agreement, not
 proof of accuracy or downstream QUALITY publication. These remaining stages
 must not be represented as complete merely because the source request was
 registered or a BOINC job was published.
+
+## Recovering missing historical image bindings
+
+This is an operator-run evidence repair, not another feeder or permission to
+accept unverified history. Keep the original `audit.json`, job IDs, submitted
+markers, request membership and scientific results unchanged. Existing conflicting
+bindings are never overridden. No work is resubmitted.
+
+For each retained **single-page** native job, assemble a recovery target with:
+`campaign`, `job_id`, `job_sha256`, `workunit_id`, the exact frozen `source`
+fingerprint (`doc_id`, `batch`, `batch_version`, `bytes`, `sha256`), original
+`scan` path, audited `jpeg` bytes/SHA256, and `transform`. Supported explicit
+transforms are `reduced-gray`, `full-gray` and `full-rgb`, which encode JPEG at
+quality 75, plus `passthrough` for unchanged grayscale JPEGs within the feeder's
+20 MB / 40 megapixel limits. Reduced grayscale uses the existing JPEG2000
+half-resolution rule. Both retained `keep/` and `buffer/` scan paths are accepted
+only when their full path matches the frozen source identity.
+These are reproducible representations, not an assertion of which software
+invocation originally made the image.
+
+Run the reviewed verifier in a bounded maintenance directory on the preparation
+host, using its existing pinned Pillow/OpenJPEG environment and LAN scan server:
+
+```sh
+# In a private maintenance directory in preparation CT215 on pve-laptop:
+install -m 0644 /path/to/reviewed/qwen_provenance.py /path/to/reviewed/qwen_submit.py .
+/opt/usnm-quality-feed/venv/bin/python qwen_provenance.py \
+  verify --input targets.json --output verified.json \
+  --scan-server http://usnm-scanfetch.tjg.fyi:8380
+```
+
+Verification checks the retained original against the frozen bytes/SHA256,
+reproduces the selected representation and requires **exact submitted JPEG
+bytes/SHA256**. A mismatch fails explicitly. Output records a new verification
+time, transform and decoder/verifier versions; it is not a recreated historical
+handoff receipt. Preserve acquisition sidecars and archive evidence separately.
+
+Transfer the reviewed proofs to a native maintenance directory, coordinate with
+the existing publication owner and install under the existing bridge mutex:
+
+```sh
+# On pve.tjg.fyi, with the proofs already at this explicit container-visible path:
+pct exec 230 -- flock -x -w 120 /run/usnm-boinc-step.lock \
+  podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_provenance.py \
+  install --input /project/ops/qwen-feed/maintenance/source-recovery/verified.json \
+  --share /project
+```
+
+Installation validates every target against retained native job bytes, actual
+`page.jpg`, original audit and submitted marker before writing any receipts.
+It creates atomic, no-overwrite files in
+`qwen/<campaign>/recovered-provenance/<job_id>/<doc_id>.json`.
+Source inspection consults them **only when the original binding is absent**,
+rechecks the job/audit/source binding, and explicitly marks page provenance as
+`verified_reconstruction`. These trusted operator receipts have the same
+filesystem protection requirement as native audits; never install untrusted
+or manually fabricated proofs.
+Source-request progress exposes `reconstructed_source_pages` separately so that
+the dashboard's full status does not confuse recovered evidence with original
+handoff receipts; deploy the matching `qwen_source.py` on the producer as well.
+
+Recovery can establish source identity, not BOINC agreement or OCR accuracy.
+Missing native history/errors, independent-host quorum, admission and downstream
+QUALITY acceptance retain their existing checks. If exact reproduction fails,
+retain the gap for investigation or an explicit exclusion; do not infer a binding
+from matching page IDs or visually similar images.
