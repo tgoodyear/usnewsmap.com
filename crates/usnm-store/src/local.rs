@@ -49,6 +49,27 @@ fn create_directories_with_sync(
     root: &Path,
     sync: impl Fn(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    while !try_create_directories(path, root, &sync)? {}
+    Ok(())
+}
+
+fn sync_initialization_marker(marker: &Path) -> Result<bool, StoreError> {
+    match std::fs::File::open(marker) {
+        Ok(file) => {
+            file.sync_all().map_err(|error| io(marker, error))?;
+            Ok(true)
+        }
+        // A peer completed initialization. Rediscover its durable root and boundary.
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io(marker, error)),
+    }
+}
+
+fn try_create_directories(
+    path: &Path,
+    root: &Path,
+    sync: &impl Fn(&Path) -> Result<(), StoreError>,
+) -> Result<bool, StoreError> {
     let absolute = std::path::absolute(if root.as_os_str().is_empty() {
         Path::new(".")
     } else {
@@ -106,9 +127,9 @@ fn create_directories_with_sync(
         {
             Ok(file) => file.sync_all().map_err(|error| io(&marker, error))?,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                std::fs::File::open(&marker)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|error| io(&marker, error))?;
+                if !sync_initialization_marker(&marker)? {
+                    return Ok(false);
+                }
             }
             Err(error) => return Err(io(&marker, error)),
         }
@@ -117,9 +138,9 @@ fn create_directories_with_sync(
     // Persist recovery intent outside the new root before creating any of its directories.
     let boundary = match &pending {
         Some(marker) => {
-            std::fs::File::open(marker)
-                .and_then(|file| file.sync_all())
-                .map_err(|error| io(marker, error))?;
+            if !sync_initialization_marker(marker)? {
+                return Ok(false);
+            }
             let parent = marker.parent().expect("initialization marker parent");
             sync(parent)?;
             parent
@@ -141,7 +162,7 @@ fn create_directories_with_sync(
             Err(error) => return Err(io(&marker, error)),
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// A local object's ETag: the file's identity (device and inode on Unix),
@@ -511,6 +532,35 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_first_writes_recover_removed_initialization_markers() {
+        for _ in 0..16 {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("new/root");
+            let barrier = std::sync::Barrier::new(16);
+            std::thread::scope(|scope| {
+                for writer in 0..16 {
+                    let root = &root;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        create_directories(&root.join(writer.to_string()), root).unwrap();
+                    });
+                }
+            });
+            for writer in 0..16 {
+                assert!(root.join(writer.to_string()).is_dir());
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("removed-marker");
+        std::fs::write(&marker, b"").unwrap();
+        std::fs::remove_file(&marker).unwrap();
+        assert!(!sync_initialization_marker(&marker).unwrap());
+        std::fs::write(&marker, b"").unwrap();
+        assert!(sync_initialization_marker(&marker.join("child")).is_err());
+    }
 
     #[test]
     fn root_initialization_retry_recovers_original_sync_boundary() {
