@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 
 use bytes::Bytes;
+use sha2::Digest;
 
 use crate::{validate_path, ByteStream, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
@@ -40,27 +41,104 @@ fn sync_directory(path: &Path) -> Result<(), StoreError> {
 }
 
 fn create_directories(path: &Path, root: &Path) -> Result<(), StoreError> {
-    let mut boundary = root;
+    create_directories_with_sync(path, root, sync_directory)
+}
+
+fn create_directories_with_sync(
+    path: &Path,
+    root: &Path,
+    sync: impl Fn(&Path) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let absolute = std::path::absolute(if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    })
+    .map_err(|error| io(root, error))?;
+    let mut boundary = absolute.as_path();
     loop {
-        let candidate = if boundary.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            boundary
-        };
-        match std::fs::metadata(candidate) {
+        match std::fs::metadata(boundary) {
             Ok(_) => break,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                boundary = boundary.parent().ok_or_else(|| io(candidate, error))?;
+                boundary = boundary.parent().ok_or_else(|| io(boundary, error))?;
             }
-            Err(error) => return Err(io(candidate, error)),
+            Err(error) => return Err(io(boundary, error)),
         }
     }
+    let anchor = boundary
+        .canonicalize()
+        .map_err(|error| io(boundary, error))?;
+    let suffix = absolute.strip_prefix(boundary).expect("root ancestor");
+    let canonical_root = if suffix.as_os_str().is_empty() {
+        anchor.clone()
+    } else {
+        anchor.join(suffix)
+    };
+    let digest: String = sha2::Sha256::digest(canonical_root.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let name = format!(".usnm-root-init-{digest}");
+    let mut pending = None;
+    for ancestor in canonical_root.ancestors() {
+        let marker = ancestor.join(&name);
+        match std::fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_file() => {
+                pending = Some(marker);
+                break;
+            }
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "invalid root initialization marker: {}",
+                    marker.display()
+                )))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(io(&marker, error)),
+        }
+    }
+    if pending.is_none() && boundary != absolute {
+        let marker = anchor.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+        {
+            Ok(file) => file.sync_all().map_err(|error| io(&marker, error))?,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                std::fs::File::open(&marker)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| io(&marker, error))?;
+            }
+            Err(error) => return Err(io(&marker, error)),
+        }
+        pending = Some(marker);
+    }
+    // Persist recovery intent outside the new root before creating any of its directories.
+    let boundary = match &pending {
+        Some(marker) => {
+            std::fs::File::open(marker)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| io(marker, error))?;
+            let parent = marker.parent().expect("initialization marker parent");
+            sync(parent)?;
+            parent
+        }
+        None => canonical_root.as_path(),
+    };
     std::fs::create_dir_all(path).map_err(|error| io(path, error))?;
-    // Sync the store hierarchy, plus the parent that anchors a newly created root.
-    for ancestor in path.ancestors() {
-        sync_directory(ancestor)?;
+    let directory = path.canonicalize().map_err(|error| io(path, error))?;
+    for ancestor in directory.ancestors() {
+        sync(ancestor)?;
         if ancestor == boundary {
             break;
+        }
+    }
+    if let Some(marker) = pending {
+        match std::fs::remove_file(&marker) {
+            Ok(()) => sync(marker.parent().expect("initialization marker parent"))?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(io(&marker, error)),
         }
     }
     Ok(())
@@ -433,6 +511,35 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_initialization_retry_recovers_original_sync_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = dir.path().canonicalize().unwrap();
+        let root = anchor.join("new/root");
+        let failed = create_directories_with_sync(&root.join("one"), &root, |path| {
+            if path == anchor && root.exists() {
+                return Err(StoreError::Io("injected anchor sync failure".into()));
+            }
+            sync_directory(path)
+        });
+        assert!(failed.is_err());
+        assert!(root.is_dir());
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_directories_with_sync(&root.join("two"), &root, |path| {
+            synced.borrow_mut().push(path.to_path_buf());
+            sync_directory(path)
+        })
+        .unwrap();
+        assert!(synced.borrow().contains(&anchor));
+        assert!(!std::fs::read_dir(&anchor).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".usnm-root-init-")
+        }));
+    }
 
     #[cfg(unix)]
     #[test]
