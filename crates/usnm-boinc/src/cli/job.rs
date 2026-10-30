@@ -8,7 +8,6 @@ use anyhow::Context;
 use clap::{Args, ValueEnum};
 use std::{path::PathBuf, sync::Arc};
 use usnm_state::{
-    cosmos::CosmosDocs,
     docs::{DocStore, FileDocs},
     state::State,
 };
@@ -65,11 +64,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
         cosmos,
     } = args;
     let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
-        Arc::new(CosmosDocs::new(
-            &endpoint,
-            usnm_state::DATABASE,
-            usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
-        )?)
+        usnm_state::docs::open_endpoint(&endpoint)?
     } else {
         Arc::new(FileDocs::open(
             state_file.context("--state-file required")?,
@@ -139,11 +134,7 @@ pub struct RetryArgs {
 
 pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
     let docs: Arc<dyn DocStore> = if let Some(endpoint) = args.cosmos {
-        Arc::new(CosmosDocs::new(
-            &endpoint,
-            usnm_state::DATABASE,
-            usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
-        )?)
+        usnm_state::docs::open_endpoint(&endpoint)?
     } else {
         Arc::new(FileDocs::open(
             args.state_file.context("--state-file required")?,
@@ -256,10 +247,7 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             usnm_store::open(&curated)?,
         )),
         (Some(curated), None, Some(endpoint)) => Some((
-            State::new(Arc::new(CosmosDocs::new(
-                &endpoint, usnm_state::DATABASE,
-                usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
-            )?)),
+            State::new(usnm_state::docs::open_endpoint(&endpoint)?),
             usnm_store::open(&curated)?,
         )),
         _ => anyhow::bail!("submission native stores require --curated-url and exactly one of --state-file/--cosmos"),

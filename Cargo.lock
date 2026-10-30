@@ -3999,6 +3999,9 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tracing",
  "usnm-store",
 ]
 

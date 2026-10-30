@@ -12,6 +12,21 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde_json::Value;
 
+/// Open authoritative pipeline state, retaining certificate authentication on-prem.
+pub fn open_endpoint(endpoint: &str) -> anyhow::Result<std::sync::Arc<dyn DocStore>> {
+    if endpoint.starts_with("postgres://") || endpoint.starts_with("postgresql://") {
+        Ok(std::sync::Arc::new(crate::postgres::PostgresDocs::new(
+            endpoint,
+        )?))
+    } else {
+        Ok(std::sync::Arc::new(crate::cosmos::CosmosDocs::new(
+            endpoint,
+            crate::DATABASE,
+            usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
+        )?))
+    }
+}
+
 /// One field to read from every item with [`DocStore::select`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {

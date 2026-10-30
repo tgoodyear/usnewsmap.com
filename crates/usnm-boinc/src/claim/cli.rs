@@ -4,7 +4,6 @@ use anyhow::Context;
 use clap::Subcommand;
 use std::{path::PathBuf, sync::Arc};
 use usnm_state::{
-    cosmos::CosmosDocs,
     docs::{DocStore, FileDocs},
     state::State,
 };
@@ -128,11 +127,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
             );
             let languages: std::collections::BTreeSet<String> = languages.into_iter().collect();
             let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
-                Arc::new(CosmosDocs::new(
-                    &endpoint,
-                    usnm_state::DATABASE,
-                    usnm_store::credential::from_env_for(usnm_store::credential::COSMOS_RESOURCE),
-                )?)
+                usnm_state::docs::open_endpoint(&endpoint)?
             } else {
                 Arc::new(FileDocs::open(
                     state_file.context("--state-file required")?,
