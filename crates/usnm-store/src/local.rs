@@ -95,71 +95,84 @@ fn try_create_directories(
     } else {
         anchor.join(suffix)
     };
-    let digest: String = sha2::Sha256::digest(canonical_root.as_os_str().as_encoded_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    let name = format!(".usnm-root-init-{digest}");
-    let mut pending = None;
-    for ancestor in canonical_root.ancestors() {
-        let marker = ancestor.join(&name);
-        match std::fs::symlink_metadata(&marker) {
-            Ok(metadata) if metadata.is_file() => {
-                pending = Some(marker);
-                break;
+    // Initialize one component at a time: sibling roots must recover the same
+    // marker before depending on a newly visible shared ancestor.
+    let ancestors: Vec<_> = canonical_root.ancestors().collect();
+    for directory in ancestors.into_iter().rev() {
+        let Some(parent) = directory.parent() else {
+            continue;
+        };
+        let exists = match std::fs::metadata(directory) {
+            Ok(metadata) if metadata.is_dir() => true,
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "not a directory: {}",
+                    directory.display()
+                )))
             }
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(io(directory, error)),
+        };
+        let digest: String = sha2::Sha256::digest(directory.as_os_str().as_encoded_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let marker = parent.join(format!(".usnm-root-init-{digest}"));
+        let pending = match std::fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_file() => true,
             Ok(_) => {
                 return Err(StoreError::Io(format!(
                     "invalid root initialization marker: {}",
                     marker.display()
                 )))
             }
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(io(&marker, error)),
+        };
+        if exists && !pending {
+            continue;
+        }
+        if !pending {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker)
+            {
+                Ok(file) => file.sync_all().map_err(|error| io(&marker, error))?,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(io(&marker, error)),
+            }
+        }
+        if !sync_initialization_marker(&marker)? {
+            return Ok(false);
+        }
+        sync(parent)?;
+        match std::fs::create_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                if !std::fs::metadata(directory)
+                    .map_err(|error| io(directory, error))?
+                    .is_dir()
+                {
+                    return Err(io(directory, error));
+                }
+            }
+            Err(error) => return Err(io(directory, error)),
+        }
+        sync(directory)?;
+        sync(parent)?;
+        match std::fs::remove_file(&marker) {
+            Ok(()) => sync(parent)?,
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(io(&marker, error)),
         }
     }
-    if pending.is_none() && boundary != absolute {
-        let marker = anchor.join(name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
-            Ok(file) => file.sync_all().map_err(|error| io(&marker, error))?,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                if !sync_initialization_marker(&marker)? {
-                    return Ok(false);
-                }
-            }
-            Err(error) => return Err(io(&marker, error)),
-        }
-        pending = Some(marker);
-    }
-    // Persist recovery intent outside the new root before creating any of its directories.
-    let boundary = match &pending {
-        Some(marker) => {
-            if !sync_initialization_marker(marker)? {
-                return Ok(false);
-            }
-            let parent = marker.parent().expect("initialization marker parent");
-            sync(parent)?;
-            parent
-        }
-        None => canonical_root.as_path(),
-    };
     std::fs::create_dir_all(path).map_err(|error| io(path, error))?;
     let directory = path.canonicalize().map_err(|error| io(path, error))?;
     for ancestor in directory.ancestors() {
         sync(ancestor)?;
-        if ancestor == boundary {
+        if ancestor == canonical_root {
             break;
-        }
-    }
-    if let Some(marker) = pending {
-        match std::fs::remove_file(&marker) {
-            Ok(()) => sync(marker.parent().expect("initialization marker parent"))?,
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(io(&marker, error)),
         }
     }
     Ok(true)
@@ -568,13 +581,14 @@ mod tests {
         let anchor = dir.path().canonicalize().unwrap();
         let root = anchor.join("new/root");
         let failed = create_directories_with_sync(&root.join("one"), &root, |path| {
-            if path == anchor && root.exists() {
+            if path == anchor && anchor.join("new").exists() {
                 return Err(StoreError::Io("injected anchor sync failure".into()));
             }
             sync_directory(path)
         });
         assert!(failed.is_err());
-        assert!(root.is_dir());
+        assert!(anchor.join("new").is_dir());
+        assert!(!root.exists());
         let synced = std::cell::RefCell::new(Vec::new());
         create_directories_with_sync(&root.join("two"), &root, |path| {
             synced.borrow_mut().push(path.to_path_buf());
@@ -589,6 +603,34 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".usnm-root-init-")
         }));
+    }
+
+    #[test]
+    fn sibling_roots_recover_shared_ancestor_initialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = dir.path().canonicalize().unwrap();
+        let first = anchor.join("new/a");
+        let second = anchor.join("new/b");
+        let failed = create_directories_with_sync(&first.join("one"), &first, |path| {
+            if path == anchor && anchor.join("new").exists() {
+                return Err(StoreError::Io(
+                    "injected shared ancestor sync failure".into(),
+                ));
+            }
+            sync_directory(path)
+        });
+        assert!(failed.is_err());
+        assert!(anchor.join("new").is_dir());
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_directories_with_sync(&second.join("two"), &second, |path| {
+            synced.borrow_mut().push(path.to_path_buf());
+            sync_directory(path)
+        })
+        .unwrap();
+        assert!(synced.borrow().contains(&anchor));
+        create_directories(&first.join("one"), &first).unwrap();
+        assert!(first.join("one").is_dir());
+        assert!(second.join("two").is_dir());
     }
 
     #[cfg(unix)]
