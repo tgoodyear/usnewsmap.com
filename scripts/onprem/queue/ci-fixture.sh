@@ -79,6 +79,13 @@ psql_admin -d usnm_queue < "$here/setup.sql" > /dev/null # safe to run again
 psql_admin -d usnm_queue < "$here/documents.sql" > /dev/null
 psql_admin -d usnm_queue < "$here/test_documents.sql" >&2
 psql_admin -d usnm_queue < "$here/documents.sql" > /dev/null
+psql_admin -c "CREATE DATABASE usnm_documents_ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'"
+if docker exec -i "$NAME" psql -X -q -U postgres -d usnm_documents_ascii < "$here/documents.sql" >&2; then
+  die "documents.sql accepted SQL_ASCII without an external ON_ERROR_STOP flag"
+fi
+[ "$(psql_admin -d usnm_documents_ascii -Atc "SELECT count(*) FROM pg_namespace WHERE nspname='usnm_state'")" = 0 ] \
+  || die "documents.sql mutated SQL_ASCII schema"
+psql_admin -c 'DROP DATABASE usnm_documents_ascii'
 psql_admin -d usnm_queue < "$here/test_roles.sql" >&2
 printf 'postgres://localhost:%s/usnm_queue?user=%s&sslcert=%s&sslkey=%s&sslrootcert=%s\n' \
   "$PORT" "$ROLE" "$WORK/client/client.crt" "$WORK/client/client.key" "$WORK/client/ca.pem"

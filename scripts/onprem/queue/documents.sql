@@ -1,4 +1,5 @@
 -- Apply as the database owner. Import under stopped writers; retain source ETags.
+\set ON_ERROR_STOP on
 DO $$
 BEGIN
     IF current_setting('server_encoding') <> 'UTF8' THEN
