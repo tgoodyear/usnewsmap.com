@@ -1350,6 +1350,40 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(stages["indexed"]["state"], "observed")
         self.assertEqual(stages["indexed"]["count"], 0)
 
+    def test_acceptance_report_keeps_missing_pages_in_denominator(self):
+        self.cli("init")
+        cohort = [{"page_id": PAGE, "run_id": "unobserved-run"},
+                  {"page_id": "loc:sn124_1900-01-01_ed-1_seq-1", "run_id": "other-run"}]
+        path = self.work / "cohort.json"
+        path.write_text(json.dumps(cohort))
+        result = self.cli("acceptance-report", "--cohort", str(path),
+                          "--index-version", "pages-v1", "--as-of", T1,
+                          "--max-receipt-age-seconds", "3600")
+        self.assertEqual(result["pages_expected"], 2)
+        self.assertEqual(result["delivery_incomplete"], 2)
+        self.assertEqual(result["delivery_verified"], 0)
+        self.assertEqual(result["cohort_sha256"], c.digest(cohort))
+        for page in result["pages"]:
+            self.assertEqual(page["quality"], "unknown")
+            self.assertIn("incomplete_publication_chain", page["delivery_blockers"])
+            self.assertIn("missing_search_verification", page["delivery_blockers"])
+
+    def test_acceptance_report_rejects_invalid_cohorts_and_limits(self):
+        member = {"page_id": PAGE, "run_id": "r1"}
+        for cohort in ([], [member, member], [member] * 101,
+                       [{"page_id": PAGE}], [{"page_id": PAGE, "run_id": None}]):
+            with self.subTest(cohort=cohort), self.assertRaises(c.CatalogError):
+                c.acceptance_report(self.db, cohort, "pages-v1", T1, 3600)
+        for age in (0, -1, True):
+            with self.subTest(age=age), self.assertRaises(c.CatalogError):
+                c.acceptance_report(self.db, [member], "pages-v1", T1, age)
+        path = self.work / "cohort.json"
+        path.write_bytes(b" " * (c.MAX_LINE + 1))
+        failure = self.cli("acceptance-report", "--cohort", str(path),
+                           "--index-version", "pages-v1", "--as-of", T1,
+                           "--max-receipt-age-seconds", "3600", code=2)
+        self.assertIn("64 KiB", failure["error"])
+
     def test_two_runs_trace_resolution_and_publication_proof_completeness(self):
         doc_id = "sn83045462_1890-05-03_ed-1_seq-7"
         issue_id = "sn83045462_1890-05-03_ed-1"
@@ -1473,6 +1507,77 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(complete["accepted"])
         self.assertTrue(complete["published"])
         self.assertTrue(complete["publication_proof_complete"])
+
+        cohort = [{"page_id": page_id, "run_id": run_a}]
+        before_report = self.db.read_bytes()
+        report = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
+                                     "2026-10-18T03:01:00Z", 60)
+        self.assertEqual(report["delivery_verified"], 1)
+        self.assertEqual(report["quality_unknown"], 1)
+        self.assertEqual(report["verified_better_published_searchable"], 0)
+        self.assertEqual(report["pages"][0]["search_verified_at"], "2026-10-18T03:00:00.000000000Z")
+        self.assertEqual(before_report, self.db.read_bytes())
+        for cutoff, fresh in [
+            ("2026-10-18T03:00:59.999999999Z", True),
+            ("2026-10-18T03:01:00.000000000Z", True),
+            ("2026-10-18T03:01:00.000000001Z", False),
+            ("2026-10-18T04:01:00.000000001+01:00", False),
+        ]:
+            with self.subTest(freshness_cutoff=cutoff):
+                boundary = c.acceptance_report(self.db, cohort, "pages-v20261018-1", cutoff, 60)
+                self.assertEqual(boundary["delivery_verified"], int(fresh))
+                self.assertEqual("stale_search_verification" in
+                                 boundary["pages"][0]["delivery_blockers"], not fresh)
+        originals = {(item["source"], item["event_id"]): item
+                     for path in self.work.glob("*.jsonl")
+                     for line in path.read_text().splitlines()
+                     if (item := json.loads(line)).get("schema_version") == 1}
+        proof_items = [
+            next(item for item in complete["artifact"]["items"]
+                 if item["data"]["sha256"] == worker_sha),
+            complete["execution"]["executions"][0],
+            complete["execution"]["runs"][0],
+            complete["imported"]["items"][-1],
+            complete["release_decision"]["items"][-1],
+            complete["search_provenance"]["items"][-1],
+        ]
+        domain_paths = [
+            ("fetched_at",), ("worker_metadata", "finished_at"),
+            ("run_record", "node_finished_at"), ("committed_at",),
+            ("decided_at",), ("published_at",),
+        ]
+        for item, domain_path in zip(proof_items, domain_paths):
+            for change in ("observed_at", "domain_timestamp"):
+                with self.subTest(kind=item["kind"], stage=item["data"].get("stage"), change=change):
+                    copied_db = self.work / "cutoff.sqlite"
+                    copied_db.write_bytes(before_report)
+                    updated = copy.deepcopy(originals[(item["source"], item["event_id"])])
+                    updated["event_id"] = "zz-cutoff-" + item["event_id"]
+                    future_time = "2026-10-18T03:01:00.000000001Z"
+                    if change == "observed_at":
+                        updated["observed_at"] = future_time
+                    else:
+                        target = updated["payload"]
+                        for key in domain_path[:-1]:
+                            target = target[key]
+                        target[domain_path[-1]] = future_time
+                    c.ingest(copied_db, self.batch([updated]))
+                    self.assertTrue(c.trace(copied_db, page_id, run_a)["publication_proof_complete"])
+                    bounded = c.acceptance_report(copied_db, cohort, "pages-v20261018-1",
+                                                  "2026-10-18T03:01:00Z", 60)
+                    self.assertEqual(bounded["delivery_verified"], 0)
+                    self.assertFalse(bounded["pages"][0]["publication_proof_complete"])
+                    self.assertIn("evidence_after_cutoff", bounded["pages"][0]["delivery_blockers"])
+        wrong_index = c.acceptance_report(self.db, cohort, "pages-new",
+                                          "2026-10-18T03:01:00Z", 60)
+        self.assertEqual(wrong_index["delivery_verified"], 0)
+        self.assertIn("different_or_unknown_index", wrong_index["pages"][0]["delivery_blockers"])
+        stale = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
+                                   "2026-10-18T03:01:01Z", 60)
+        self.assertIn("stale_search_verification", stale["pages"][0]["delivery_blockers"])
+        future = c.acceptance_report(self.db, cohort, "pages-v20261018-1",
+                                    "2026-10-18T02:59:59Z", 60)
+        self.assertIn("evidence_after_cutoff", future["pages"][0]["delivery_blockers"])
 
         # Mismatch 1: search receipt from a different index/release leaves accepted=true & published=true,
         # but publication_proof_complete=false.

@@ -124,6 +124,14 @@ def timestamp(value):
         raise CatalogError("invalid timestamp") from exc
 
 
+def timestamp_ns(value):
+    normalized = timestamp(value)
+    parsed = dt.datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    elapsed = parsed - dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    return ((elapsed.days * 86400 + elapsed.seconds) * 1_000_000_000 +
+            elapsed.microseconds * 1000 + int(normalized[-4:-1]))
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -1124,13 +1132,26 @@ def page(db, page_id, limit=50, after=""):
     return bounded_query(db, read)
 
 
-def trace(db, page_id, run_id=None):
+def trace(db, page_id, run_id=None, *, as_of=None):
     """Reconcile one page across artifact, execution, import, release decision and search provenance."""
     token(page_id)
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:.+", page_id) is not None,
             "page_id must be source-qualified, e.g. loc:sn..._seq-1")
     if run_id is not None:
         token(run_id)
+    cutoff = timestamp(as_of) if as_of is not None else None
+
+    def within_cutoff(value):
+        if isinstance(value, dict):
+            return all(
+                (timestamp(item) <= cutoff if key in (
+                    "observed_at", "fetched_at", "started_at", "finished_at", "node_finished_at",
+                    "engine_started_at", "engine_finished_at", "committed_at", "decided_at",
+                    "published_at", "verified_at") and item is not None else within_cutoff(item))
+                for key, item in value.items())
+        if isinstance(value, list):
+            return all(within_cutoff(item) for item in value)
+        return True
 
     def read(conn):
         found = conn.execute("""SELECT latest.*,events.batch_id,events.line_number,
@@ -1142,6 +1163,11 @@ def trace(db, page_id, run_id=None):
         items = [{k: row[k] for k in ("key", "kind", "source", "page_id", "event_id", "observed_at",
                                       "batch_id", "line_number", "event_sha256")}
                  | {"data": load_json(row["data"])} for row in found]
+        excluded = 0
+        if cutoff is not None:
+            eligible = [item for item in items if within_cutoff(item)]
+            excluded = len(items) - len(eligible)
+            items = eligible
         artifacts = [i for i in items if i["kind"] == "artifact"]
         artifact_states = {i["data"]["state"] for i in artifacts}
         artifact_state = ("verified" if "verified" in artifact_states else
@@ -1401,6 +1427,7 @@ def trace(db, page_id, run_id=None):
             "accepted": release_decision["accepted"],
             "published": search_provenance["published"],
             "publication_proof_complete": publication_proof_complete,
+            "evidence_after_cutoff": excluded,
             "artifact": {"state": artifact_state, "items": artifacts},
             "execution": {"state": "observed" if (executions or runs) else "unknown",
                           "executions": executions, "runs": runs},
@@ -1410,6 +1437,71 @@ def trace(db, page_id, run_id=None):
         }
 
     return bounded_query(db, read)
+
+
+def acceptance_report(db, cohort, index_version, as_of, max_age_seconds):
+    """Bounded delivery evidence, not independent transcription-quality acceptance."""
+    require(isinstance(cohort, list) and 1 <= len(cohort) <= MAX_LIMIT,
+            "acceptance cohort must contain 1 to 100 page/run pairs")
+    token(index_version)
+    timestamp(as_of)
+    require(type(max_age_seconds) is int and max_age_seconds > 0,
+            "max receipt age must be a positive number of seconds")
+    seen = set()
+    for member in cohort:
+        obj(member, ("page_id", "run_id"))
+        token(member["page_id"])
+        token(member["run_id"])
+        require(member["page_id"] not in seen, "acceptance cohort contains duplicate pages")
+        seen.add(member["page_id"])
+    cutoff_ns = timestamp_ns(as_of)
+    pages = []
+    for member in cohort:
+        result = trace(db, member["page_id"], member["run_id"], as_of=as_of)
+        search = result["search_provenance"]
+        receipt = search["search_receipt"]
+        blockers = []
+        if result["evidence_after_cutoff"]:
+            blockers.append("evidence_after_cutoff")
+        if not result["publication_proof_complete"]:
+            blockers.append("incomplete_publication_chain")
+        if search["index_id"] != index_version:
+            blockers.append("different_or_unknown_index")
+        verified_at = receipt.get("verified_at") if isinstance(receipt, dict) else None
+        if verified_at is None:
+            blockers.append("missing_search_verification")
+        else:
+            age_ns = cutoff_ns - timestamp_ns(verified_at)
+            if age_ns < 0:
+                blockers.append("future_search_verification")
+            elif age_ns > max_age_seconds * 1_000_000_000:
+                blockers.append("stale_search_verification")
+        pages.append({
+            **member,
+            "delivery_verified": not blockers,
+            "publication_proof_complete": result["publication_proof_complete"],
+            "index_version": search["index_id"],
+            "search_verified_at": verified_at,
+            "search_response_sha256": receipt.get("response_sha256") if receipt else None,
+            "delivery_blockers": blockers,
+            "quality": "unknown",
+            "quality_blocker": "independent_quality_evidence_not_connected",
+            "verified_better_published_searchable": False,
+        })
+    return {
+        "schema_version": 1,
+        "scope": "explicit_cohort_not_corpus",
+        "cohort_sha256": digest(cohort),
+        "as_of": as_of,
+        "index_version": index_version,
+        "max_receipt_age_seconds": max_age_seconds,
+        "pages_expected": len(pages),
+        "delivery_verified": sum(page["delivery_verified"] for page in pages),
+        "delivery_incomplete": sum(not page["delivery_verified"] for page in pages),
+        "quality_unknown": len(pages),
+        "verified_better_published_searchable": 0,
+        "pages": pages,
+    }
 
 
 def snapshot(db):
@@ -1728,6 +1820,11 @@ def main(argv=None):
     p = subs.add_parser("trace", help="reconcile page artifact, execution, import, release decision and search provenance")
     p.add_argument("--page-id", required=True)
     p.add_argument("--run-id")
+    p = subs.add_parser("acceptance-report", help="read-only fixed-cohort delivery report; independent quality remains unknown")
+    p.add_argument("--cohort", required=True, help="JSON array of explicit page_id/run_id pairs (1 to 100)")
+    p.add_argument("--index-version", required=True, help="served index version independently observed by the operator")
+    p.add_argument("--as-of", required=True, help="report evidence cutoff, with timezone")
+    p.add_argument("--max-receipt-age-seconds", type=int, required=True)
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
     p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage", "missing"))
@@ -1764,6 +1861,14 @@ def main(argv=None):
                 args.import_id, args.published_at)
         elif args.command == "trace":
             result = trace(args.db, args.page_id, args.run_id)
+        elif args.command == "acceptance-report":
+            with Path(args.cohort).open("rb") as stream:
+                require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode),
+                        "cohort must be a regular file")
+                raw = stream.read(MAX_LINE + 1)
+            require(0 < len(raw) <= MAX_LINE, "cohort file must contain at most 64 KiB")
+            result = acceptance_report(args.db, load_json(raw), args.index_version,
+                                       args.as_of, args.max_receipt_age_seconds)
         elif args.command == "query":
             filters = {key: getattr(args, key) for key in
                        ("page_id", "source", "engine", "status", "run_id") if getattr(args, key)}
