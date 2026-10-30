@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 
 use bytes::Bytes;
+use sha2::Digest;
 
 use crate::{validate_path, ByteStream, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
@@ -26,6 +27,155 @@ impl LocalStore {
 
 fn io(path: &Path, e: std::io::Error) -> StoreError {
     StoreError::Io(format!("{}: {e}", path.display()))
+}
+
+fn sync_directory(path: &Path) -> Result<(), StoreError> {
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
+    std::fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io(path, error))
+}
+
+fn create_directories(path: &Path, root: &Path) -> Result<(), StoreError> {
+    create_directories_with_sync(path, root, sync_directory)
+}
+
+fn create_directories_with_sync(
+    path: &Path,
+    root: &Path,
+    sync: impl Fn(&Path) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    while !try_create_directories(path, root, &sync)? {}
+    Ok(())
+}
+
+fn sync_initialization_marker(marker: &Path) -> Result<bool, StoreError> {
+    match std::fs::File::open(marker) {
+        Ok(file) => {
+            file.sync_all().map_err(|error| io(marker, error))?;
+            Ok(true)
+        }
+        // A peer completed initialization. Rediscover its durable root and boundary.
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io(marker, error)),
+    }
+}
+
+fn try_create_directories(
+    path: &Path,
+    root: &Path,
+    sync: &impl Fn(&Path) -> Result<(), StoreError>,
+) -> Result<bool, StoreError> {
+    let absolute = std::path::absolute(if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    })
+    .map_err(|error| io(root, error))?;
+    let mut boundary = absolute.as_path();
+    loop {
+        match std::fs::metadata(boundary) {
+            Ok(_) => break,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                boundary = boundary.parent().ok_or_else(|| io(boundary, error))?;
+            }
+            Err(error) => return Err(io(boundary, error)),
+        }
+    }
+    let anchor = boundary
+        .canonicalize()
+        .map_err(|error| io(boundary, error))?;
+    let suffix = absolute.strip_prefix(boundary).expect("root ancestor");
+    let canonical_root = if suffix.as_os_str().is_empty() {
+        anchor.clone()
+    } else {
+        anchor.join(suffix)
+    };
+    // Initialize one component at a time: sibling roots must recover the same
+    // marker before depending on a newly visible shared ancestor.
+    let ancestors: Vec<_> = canonical_root.ancestors().collect();
+    for directory in ancestors.into_iter().rev() {
+        let Some(parent) = directory.parent() else {
+            continue;
+        };
+        let exists = match std::fs::metadata(directory) {
+            Ok(metadata) if metadata.is_dir() => true,
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "not a directory: {}",
+                    directory.display()
+                )))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(io(directory, error)),
+        };
+        let digest: String = sha2::Sha256::digest(directory.as_os_str().as_encoded_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let marker = parent.join(format!(".usnm-root-init-{digest}"));
+        let pending = match std::fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_file() => true,
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "invalid root initialization marker: {}",
+                    marker.display()
+                )))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(io(&marker, error)),
+        };
+        if exists && !pending {
+            continue;
+        }
+        if !pending {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker)
+            {
+                Ok(file) => file.sync_all().map_err(|error| io(&marker, error))?,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(io(&marker, error)),
+            }
+        }
+        if !sync_initialization_marker(&marker)? {
+            return Ok(false);
+        }
+        sync(parent)?;
+        match std::fs::create_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                if !std::fs::metadata(directory)
+                    .map_err(|error| io(directory, error))?
+                    .is_dir()
+                {
+                    return Err(io(directory, error));
+                }
+            }
+            Err(error) => return Err(io(directory, error)),
+        }
+        sync(directory)?;
+        sync(parent)?;
+        match std::fs::remove_file(&marker) {
+            Ok(()) => sync(parent)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(io(&marker, error)),
+        }
+    }
+    std::fs::create_dir_all(path).map_err(|error| io(path, error))?;
+    let directory = path.canonicalize().map_err(|error| io(path, error))?;
+    for ancestor in directory.ancestors() {
+        sync(ancestor)?;
+        if ancestor == canonical_root {
+            break;
+        }
+    }
+    Ok(true)
 }
 
 /// A local object's ETag: the file's identity (device and inode on Unix),
@@ -84,7 +234,7 @@ fn write_temp(tmp: &Path, body: &[u8]) -> Result<(), StoreError> {
         .create_new(true)
         .open(tmp)
         .map_err(|e| io(tmp, e))?;
-    f.write_all(body).map_err(|e| {
+    f.write_all(body).and_then(|()| f.sync_all()).map_err(|e| {
         let _ = std::fs::remove_file(tmp);
         io(tmp, e)
     })
@@ -111,16 +261,18 @@ impl ObjectStore for LocalStore {
     async fn put(&self, path: &str, body: Vec<u8>, _content_type: &str) -> Result<(), StoreError> {
         validate_path(path)?;
         let full = self.root.join(path);
+        let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
             let dir = full.parent().expect("validated paths have a parent");
-            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+            create_directories(dir, &root)?;
             // Readers see the old object or the new one, never a partial write.
             let tmp = temp_path(&full);
             write_temp(&tmp, &body)?;
             std::fs::rename(&tmp, &full).map_err(|e| {
                 let _ = std::fs::remove_file(&tmp);
                 io(&full, e)
-            })
+            })?;
+            sync_directory(dir)
         })
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
@@ -134,9 +286,10 @@ impl ObjectStore for LocalStore {
     ) -> Result<bool, StoreError> {
         validate_path(path)?;
         let full = self.root.join(path);
+        let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
             let dir = full.parent().expect("validated paths have a parent");
-            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+            create_directories(dir, &root)?;
             // Write a private temp file, then hard-link it into place: the
             // link fails if the object exists, so creation is atomic.
             let tmp = temp_path(&full);
@@ -144,8 +297,14 @@ impl ObjectStore for LocalStore {
             let linked = std::fs::hard_link(&tmp, &full);
             let _ = std::fs::remove_file(&tmp);
             match linked {
-                Ok(()) => Ok(true),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(false),
+                Ok(()) => {
+                    sync_directory(dir)?;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    sync_directory(dir)?;
+                    Ok(false)
+                }
                 Err(e) => Err(io(&full, e)),
             }
         })
@@ -190,9 +349,11 @@ impl ObjectStore for LocalStore {
         validate_path(path)?;
         let full = self.root.join(path);
         let dir = full.parent().expect("validated paths have a parent");
-        tokio::fs::create_dir_all(dir)
+        let directory = dir.to_path_buf();
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || create_directories(&directory, &root))
             .await
-            .map_err(|e| io(dir, e))?;
+            .map_err(|e| StoreError::Io(e.to_string()))??;
         let tmp = temp_path(&full);
         // Fails if the name is taken, like `write_temp`: never another
         // writer's file, so never one to remove below.
@@ -223,6 +384,12 @@ impl ObjectStore for LocalStore {
         .await;
         drop(f);
         let _ = tokio::fs::remove_file(&tmp).await;
+        if written.is_ok() {
+            let directory = dir.to_path_buf();
+            tokio::task::spawn_blocking(move || sync_directory(&directory))
+                .await
+                .map_err(|e| StoreError::Io(e.to_string()))??;
+        }
         written
     }
 
@@ -378,6 +545,112 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_first_writes_recover_removed_initialization_markers() {
+        for _ in 0..16 {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("new/root");
+            let barrier = std::sync::Barrier::new(16);
+            std::thread::scope(|scope| {
+                for writer in 0..16 {
+                    let root = &root;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        create_directories(&root.join(writer.to_string()), root).unwrap();
+                    });
+                }
+            });
+            for writer in 0..16 {
+                assert!(root.join(writer.to_string()).is_dir());
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("removed-marker");
+        std::fs::write(&marker, b"").unwrap();
+        std::fs::remove_file(&marker).unwrap();
+        assert!(!sync_initialization_marker(&marker).unwrap());
+        std::fs::write(&marker, b"").unwrap();
+        assert!(sync_initialization_marker(&marker.join("child")).is_err());
+    }
+
+    #[test]
+    fn root_initialization_retry_recovers_original_sync_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = dir.path().canonicalize().unwrap();
+        let root = anchor.join("new/root");
+        let failed = create_directories_with_sync(&root.join("one"), &root, |path| {
+            if path == anchor && anchor.join("new").exists() {
+                return Err(StoreError::Io("injected anchor sync failure".into()));
+            }
+            sync_directory(path)
+        });
+        assert!(failed.is_err());
+        assert!(anchor.join("new").is_dir());
+        assert!(!root.exists());
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_directories_with_sync(&root.join("two"), &root, |path| {
+            synced.borrow_mut().push(path.to_path_buf());
+            sync_directory(path)
+        })
+        .unwrap();
+        assert!(synced.borrow().contains(&anchor));
+        assert!(!std::fs::read_dir(&anchor).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".usnm-root-init-")
+        }));
+    }
+
+    #[test]
+    fn sibling_roots_recover_shared_ancestor_initialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = dir.path().canonicalize().unwrap();
+        let first = anchor.join("new/a");
+        let second = anchor.join("new/b");
+        let failed = create_directories_with_sync(&first.join("one"), &first, |path| {
+            if path == anchor && anchor.join("new").exists() {
+                return Err(StoreError::Io(
+                    "injected shared ancestor sync failure".into(),
+                ));
+            }
+            sync_directory(path)
+        });
+        assert!(failed.is_err());
+        assert!(anchor.join("new").is_dir());
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_directories_with_sync(&second.join("two"), &second, |path| {
+            synced.borrow_mut().push(path.to_path_buf());
+            sync_directory(path)
+        })
+        .unwrap();
+        assert!(synced.borrow().contains(&anchor));
+        create_directories(&first.join("one"), &first).unwrap();
+        assert!(first.join("one").is_dir());
+        assert!(second.join("two").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_sync_stays_within_existing_store_ancestors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("execute-only");
+        let anchor = outer.join("private");
+        std::fs::create_dir_all(&anchor).unwrap();
+        for root in [anchor.clone(), anchor.join("new/root")] {
+            std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o111)).unwrap();
+            let created = create_directories(&root.join("one"), &root);
+            let retried = create_directories(&root.join("two"), &root);
+            std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o700)).unwrap();
+            created.unwrap();
+            retried.unwrap();
+        }
+    }
 
     /// Two processes with the same pid (each container's PID 1) writing at
     /// the same sequence number get different temp names from their
