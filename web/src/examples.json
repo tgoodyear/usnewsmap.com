@@ -1,29 +1,19 @@
 [
   {
-    "aggregate": "q=whigs&mode=phrase&from=1834-01-01&to=1856-12-31&bucket=month",
+    "aggregate": "q=Whig+OR+Whigs&from=1834-01-01&to=1856-12-31&bucket=month",
     "blurb": "The party formed against Andrew Jackson in 1834 and split apart in the 1850s.",
     "era": "1828-1860",
     "id": "whigs",
     "title": "Whig Party",
-    "view": {
-      "bucket": "month",
-      "from": "1834-01-01",
-      "q": "whigs",
-      "to": "1856-12-31"
-    }
+    "view": { "bucket": "month", "from": "1834-01-01", "q": "Whig OR Whigs", "to": "1856-12-31" }
   },
   {
-    "aggregate": "q=abolitionists&mode=phrase&from=1830-01-01&to=1860-12-31&bucket=month",
+    "aggregate": "q=abolitionist*&from=1830-01-01&to=1860-12-31&bucket=month",
     "blurb": "Mentions of the movement to end slavery, from 1830 to the eve of the Civil War.",
     "era": "1828-1860",
     "id": "abolitionists",
     "title": "Abolitionists",
-    "view": {
-      "bucket": "month",
-      "from": "1830-01-01",
-      "q": "abolitionists",
-      "to": "1860-12-31"
-    }
+    "view": { "bucket": "month", "from": "1830-01-01", "q": "abolitionist*", "to": "1860-12-31" }
   },
   {
     "aggregate": "q=%22Mexican+war%22&from=1846-01-01&to=1849-12-31&bucket=month",
@@ -31,15 +21,10 @@
     "era": "1828-1860",
     "id": "mexican-war",
     "title": "Mexican-American War",
-    "view": {
-      "bucket": "month",
-      "from": "1846-01-01",
-      "q": "\"Mexican war\"",
-      "to": "1849-12-31"
-    }
+    "view": { "bucket": "month", "from": "1846-01-01", "q": "\"Mexican war\"", "to": "1849-12-31" }
   },
   {
-    "aggregate": "q=%22fugitive+slave%22&from=1850-01-01&to=1861-12-31&bucket=month",
+    "aggregate": "q=%22fugitive+slave%22+OR+%22fugitive+slaves%22&from=1850-01-01&to=1861-12-31&bucket=month",
     "blurb": "The 1850 law, part of the Compromise of 1850, and the cases it brought.",
     "era": "1828-1860",
     "id": "fugitive-slave",
@@ -47,12 +32,12 @@
     "view": {
       "bucket": "month",
       "from": "1850-01-01",
-      "q": "\"fugitive slave\"",
+      "q": "\"fugitive slave\" OR \"fugitive slaves\"",
       "to": "1861-12-31"
     }
   },
   {
-    "aggregate": "q=%22know+nothing%22&from=1853-01-01&to=1858-12-31&bucket=month",
+    "aggregate": "q=%28%22know+nothing%22+AND+party%29+OR+%22know+nothings%22+OR+%22American+party%22&from=1853-01-01&to=1858-12-31&bucket=month",
     "blurb": "The nativist American Party, strongest in the mid-1850s.",
     "era": "1828-1860",
     "id": "know-nothing",
@@ -60,12 +45,12 @@
     "view": {
       "bucket": "month",
       "from": "1853-01-01",
-      "q": "\"know nothing\"",
+      "q": "(\"know nothing\" AND party) OR \"know nothings\" OR \"American party\"",
       "to": "1858-12-31"
     }
   },
   {
-    "aggregate": "q=%22Kansas+Nebraska%22&from=1853-01-01&to=1858-12-31&bucket=month",
+    "aggregate": "q=%22Kansas+Nebraska%22+OR+%22Kansas+and+Nebraska%22+OR+%22Nebraska+bill%22&from=1853-01-01&to=1858-12-31&bucket=month",
     "blurb": "The 1854 law that let settlers in Kansas and Nebraska decide on slavery.",
     "era": "1828-1860",
     "id": "kansas-nebraska",
@@ -73,7 +58,7 @@
     "view": {
       "bucket": "month",
       "from": "1853-01-01",
-      "q": "\"Kansas Nebraska\"",
+      "q": "\"Kansas Nebraska\" OR \"Kansas and Nebraska\" OR \"Nebraska bill\"",
       "to": "1858-12-31"
     }
   },
@@ -83,15 +68,10 @@
     "era": "1828-1860",
     "id": "dred-scott",
     "title": "Dred Scott",
-    "view": {
-      "bucket": "month",
-      "from": "1856-01-01",
-      "q": "\"Dred Scott\"",
-      "to": "1861-12-31"
-    }
+    "view": { "bucket": "month", "from": "1856-01-01", "q": "\"Dred Scott\"", "to": "1861-12-31" }
   },
   {
-    "aggregate": "q=%22John+Brown%22&from=1859-09-01&to=1860-03-31&bucket=week",
+    "aggregate": "q=%22John+Brown%22+AND+%28%22Harpers+Ferry%22+OR+%22Harper%27s+Ferry%22%29&from=1859-09-01&to=1860-03-31&bucket=week",
     "blurb": "John Brown's raid in October 1859 and his execution that December.",
     "era": "1828-1860",
     "id": "john-brown",
@@ -99,35 +79,25 @@
     "view": {
       "bucket": "week",
       "from": "1859-09-01",
-      "q": "\"John Brown\"",
+      "q": "\"John Brown\" AND (\"Harpers Ferry\" OR \"Harper's Ferry\")",
       "to": "1860-03-31"
     }
   },
   {
     "aggregate": "q=cholera&mode=phrase&from=1830-01-01&to=1856-12-31&bucket=month",
-    "blurb": "Reports of the cholera epidemics of 1832, 1849, and 1854.",
+    "blurb": "Epidemic reports and cholera remedies around the outbreaks of 1832, 1849, and 1854.",
     "era": "1828-1860",
     "id": "cholera",
     "title": "Cholera",
-    "view": {
-      "bucket": "month",
-      "from": "1830-01-01",
-      "q": "cholera",
-      "to": "1856-12-31"
-    }
+    "view": { "bucket": "month", "from": "1830-01-01", "q": "cholera", "to": "1856-12-31" }
   },
   {
-    "aggregate": "q=Mormons&mode=phrase&from=1838-01-01&to=1858-12-31&bucket=month",
+    "aggregate": "q=Mormon*&from=1838-01-01&to=1858-12-31&bucket=month",
     "blurb": "The Latter Day Saints, from the Missouri conflict of 1838 to the Utah War of 1857.",
     "era": "1828-1860",
     "id": "mormons",
     "title": "Mormons",
-    "view": {
-      "bucket": "month",
-      "from": "1838-01-01",
-      "q": "Mormons",
-      "to": "1858-12-31"
-    }
+    "view": { "bucket": "month", "from": "1838-01-01", "q": "Mormon*", "to": "1858-12-31" }
   },
   {
     "aggregate": "q=sucre&mode=phrase&from=1840-01-01&to=1860-12-31&bucket=month&lang=fre",
@@ -135,24 +105,18 @@
     "era": "1828-1860",
     "id": "sucre-louisiana-french",
     "title": "Sucre in French papers",
-    "view": {
-      "bucket": "month",
-      "from": "1840-01-01",
-      "lang": ["fre"],
-      "q": "sucre",
-      "to": "1860-12-31"
-    }
+    "view": { "bucket": "month", "from": "1840-01-01", "lang": ["fre"], "q": "sucre", "to": "1860-12-31" }
   },
   {
-    "aggregate": "q=%22gold+diggings%22+OR+%22gold+region%22+OR+%22gold+mines%22&from=1847-06-01&to=1850-12-31&bucket=week",
+    "aggregate": "q=California+AND+%28%22gold+diggings%22+OR+%22gold+region%22+OR+%22gold+mines%22+OR+%22gold+mine%22%29&from=1848-01-01&to=1850-12-31&bucket=week",
     "blurb": "News of gold in California and the rush of 1849 that followed.",
     "era": "1828-1860",
     "id": "california-gold-rush",
     "title": "California gold rush",
     "view": {
       "bucket": "week",
-      "from": "1847-06-01",
-      "q": "\"gold diggings\" OR \"gold region\" OR \"gold mines\"",
+      "from": "1848-01-01",
+      "q": "California AND (\"gold diggings\" OR \"gold region\" OR \"gold mines\" OR \"gold mine\")",
       "to": "1850-12-31"
     }
   },
@@ -176,12 +140,7 @@
     "era": "1828-1860",
     "id": "uncle-toms-cabin",
     "title": "Uncle Tom's Cabin",
-    "view": {
-      "bucket": "month",
-      "from": "1851-06-01",
-      "q": "Uncle Tom's Cabin",
-      "to": "1855-12-31"
-    }
+    "view": { "bucket": "month", "from": "1851-06-01", "q": "Uncle Tom's Cabin", "to": "1855-12-31" }
   },
   {
     "aggregate": "q=secession&mode=phrase&from=1860-07-01&to=1861-06-30&bucket=week",
@@ -189,12 +148,7 @@
     "era": "1860-1865",
     "id": "secession",
     "title": "Secession, 1860-1861",
-    "view": {
-      "bucket": "week",
-      "from": "1860-07-01",
-      "q": "secession",
-      "to": "1861-06-30"
-    }
+    "view": { "bucket": "week", "from": "1860-07-01", "q": "secession", "to": "1861-06-30" }
   },
   {
     "aggregate": "q=%22Fort+Sumter%22&from=1860-12-01&to=1861-06-30&bucket=week",
@@ -202,38 +156,23 @@
     "era": "1860-1865",
     "id": "fort-sumter",
     "title": "Fort Sumter, 1861",
-    "view": {
-      "bucket": "week",
-      "from": "1860-12-01",
-      "q": "\"Fort Sumter\"",
-      "to": "1861-06-30"
-    }
+    "view": { "bucket": "week", "from": "1860-12-01", "q": "\"Fort Sumter\"", "to": "1861-06-30" }
   },
   {
-    "aggregate": "q=%22Bull+Run%22&from=1861-07-01&to=1862-12-31&bucket=week",
+    "aggregate": "q=%22Bull+Run%22+OR+Manassas&from=1861-07-01&to=1862-12-31&bucket=week",
     "blurb": "Both Union defeats near Manassas, Virginia, in July 1861 and August 1862.",
     "era": "1860-1865",
     "id": "bull-run",
     "title": "Bull Run, 1861-1862",
-    "view": {
-      "bucket": "week",
-      "from": "1861-07-01",
-      "q": "\"Bull Run\"",
-      "to": "1862-12-31"
-    }
+    "view": { "bucket": "week", "from": "1861-07-01", "q": "\"Bull Run\" OR Manassas", "to": "1862-12-31" }
   },
   {
-    "aggregate": "q=Antietam&mode=phrase&from=1862-09-01&to=1863-03-31&bucket=week",
+    "aggregate": "q=Antietam+OR+Sharpsburg&from=1862-09-01&to=1863-03-31&bucket=week",
     "blurb": "September 17, 1862, in Maryland: the bloodiest single day of the war.",
     "era": "1860-1865",
     "id": "antietam",
     "title": "Antietam, 1862",
-    "view": {
-      "bucket": "week",
-      "from": "1862-09-01",
-      "q": "Antietam",
-      "to": "1863-03-31"
-    }
+    "view": { "bucket": "week", "from": "1862-09-01", "q": "Antietam OR Sharpsburg", "to": "1863-03-31" }
   },
   {
     "aggregate": "q=Gettysburg&mode=phrase&from=1863-01-01&to=1863-12-31&bucket=week",
@@ -241,12 +180,7 @@
     "era": "1860-1865",
     "id": "gettysburg",
     "title": "Gettysburg, 1863",
-    "view": {
-      "bucket": "week",
-      "from": "1863-01-01",
-      "q": "Gettysburg",
-      "to": "1863-12-31"
-    }
+    "view": { "bucket": "week", "from": "1863-01-01", "q": "Gettysburg", "to": "1863-12-31" }
   },
   {
     "aggregate": "q=%22emancipation+proclamation%22&from=1862-09-01&to=1863-12-31&bucket=week",
@@ -254,12 +188,7 @@
     "era": "1860-1865",
     "id": "emancipation",
     "title": "Emancipation Proclamation",
-    "view": {
-      "bucket": "week",
-      "from": "1862-09-01",
-      "q": "\"emancipation proclamation\"",
-      "to": "1863-12-31"
-    }
+    "view": { "bucket": "week", "from": "1862-09-01", "q": "\"emancipation proclamation\"", "to": "1863-12-31" }
   },
   {
     "aggregate": "q=Andersonville&mode=phrase&from=1864-01-01&to=1866-06-30&bucket=month",
@@ -267,25 +196,15 @@
     "era": "1860-1865",
     "id": "andersonville",
     "title": "Andersonville prison",
-    "view": {
-      "bucket": "month",
-      "from": "1864-01-01",
-      "q": "Andersonville",
-      "to": "1866-06-30"
-    }
+    "view": { "bucket": "month", "from": "1864-01-01", "q": "Andersonville", "to": "1866-06-30" }
   },
   {
     "aggregate": "q=%22Wilkes+Booth%22&from=1865-04-01&to=1865-12-31&bucket=week",
-    "blurb": "John Wilkes Booth shot Lincoln on April 14, 1865, and was caught 12 days later.",
+    "blurb": "John Wilkes Booth shot Lincoln on April 14, 1865, and was killed 12 days later.",
     "era": "1860-1865",
     "id": "wilkes-booth",
     "title": "Lincoln assassinated, 1865",
-    "view": {
-      "bucket": "week",
-      "from": "1865-04-01",
-      "q": "\"Wilkes Booth\"",
-      "to": "1865-12-31"
-    }
+    "view": { "bucket": "week", "from": "1865-04-01", "q": "\"Wilkes Booth\"", "to": "1865-12-31" }
   },
   {
     "aggregate": "q=conf%C3%A9d%C3%A9r%C3%A9s&mode=phrase&from=1861-01-01&to=1865-12-31&bucket=month&lang=fre",
@@ -293,13 +212,7 @@
     "era": "1860-1865",
     "id": "confederes-french",
     "title": "Confédérés in French papers",
-    "view": {
-      "bucket": "month",
-      "from": "1861-01-01",
-      "lang": ["fre"],
-      "q": "confédérés",
-      "to": "1865-12-31"
-    }
+    "view": { "bucket": "month", "from": "1861-01-01", "lang": ["fre"], "q": "confédérés", "to": "1865-12-31" }
   },
   {
     "aggregate": "q=Rebellen&mode=phrase&from=1861-01-01&to=1865-12-31&bucket=month&lang=ger",
@@ -307,52 +220,31 @@
     "era": "1860-1865",
     "id": "rebellen-german",
     "title": "Rebellen in German papers",
-    "view": {
-      "bucket": "month",
-      "from": "1861-01-01",
-      "lang": ["ger"],
-      "q": "Rebellen",
-      "to": "1865-12-31"
-    }
+    "view": { "bucket": "month", "from": "1861-01-01", "lang": ["ger"], "q": "Rebellen", "to": "1865-12-31" }
   },
   {
-    "aggregate": "q=contrabands&mode=phrase&from=1861-05-01&to=1865-12-31&bucket=month",
+    "aggregate": "q=%22contraband+of+war%22+OR+contrabands&from=1861-05-01&to=1865-12-31&bucket=month",
     "blurb": "Enslaved people who fled to Union lines, whom the army called contraband of war.",
     "era": "1860-1865",
     "id": "contrabands",
     "title": "Contrabands",
-    "view": {
-      "bucket": "month",
-      "from": "1861-05-01",
-      "q": "contrabands",
-      "to": "1865-12-31"
-    }
+    "view": { "bucket": "month", "from": "1861-05-01", "q": "\"contraband of war\" OR contrabands", "to": "1865-12-31" }
   },
   {
-    "aggregate": "q=%22Merrimac%22+%22Monitor%22&from=1862-01-01&to=1862-12-31&bucket=week",
+    "aggregate": "q=Monitor+AND+%28Merrimac+OR+Merrimack%29&from=1862-01-01&to=1862-12-31&bucket=week",
     "blurb": "The first battle between ironclad warships, fought at Hampton Roads in March 1862.",
     "era": "1860-1865",
     "id": "monitor-merrimac",
-    "title": "Monitor and Merrimac, 1862",
-    "view": {
-      "bucket": "week",
-      "from": "1862-01-01",
-      "q": "\"Merrimac\" \"Monitor\"",
-      "to": "1862-12-31"
-    }
+    "title": "Monitor and Virginia, 1862",
+    "view": { "bucket": "week", "from": "1862-01-01", "q": "Monitor AND (Merrimac OR Merrimack)", "to": "1862-12-31" }
   },
   {
-    "aggregate": "q=copperhead%2A&from=1862-06-01&to=1865-06-30&bucket=month",
+    "aggregate": "q=copperhead*&from=1862-06-01&to=1865-06-30&bucket=month",
     "blurb": "The label for antiwar Northern Democrats, used most in 1863 and 1864.",
     "era": "1860-1865",
     "id": "copperheads",
     "title": "Copperheads",
-    "view": {
-      "bucket": "month",
-      "from": "1862-06-01",
-      "q": "copperhead*",
-      "to": "1865-06-30"
-    }
+    "view": { "bucket": "month", "from": "1862-06-01", "q": "copperhead*", "to": "1865-06-30" }
   },
   {
     "aggregate": "q=Vicksburg&mode=phrase&from=1862-06-01&to=1863-12-31&bucket=week",
@@ -360,12 +252,7 @@
     "era": "1860-1865",
     "id": "vicksburg",
     "title": "Vicksburg, 1863",
-    "view": {
-      "bucket": "week",
-      "from": "1862-06-01",
-      "q": "Vicksburg",
-      "to": "1863-12-31"
-    }
+    "view": { "bucket": "week", "from": "1862-06-01", "q": "Vicksburg", "to": "1863-12-31" }
   },
   {
     "aggregate": "q=%22pacific+railroad%22&from=1860-01-01&to=1872-12-31&bucket=month",
@@ -373,25 +260,15 @@
     "era": "1865-1877",
     "id": "pacific-railroad",
     "title": "Pacific Railroad",
-    "view": {
-      "bucket": "month",
-      "from": "1860-01-01",
-      "q": "\"pacific railroad\"",
-      "to": "1872-12-31"
-    }
+    "view": { "bucket": "month", "from": "1860-01-01", "q": "\"pacific railroad\"", "to": "1872-12-31" }
   },
   {
-    "aggregate": "q=greenback&mode=phrase&from=1862-01-01&to=1890-12-31&bucket=month",
+    "aggregate": "q=greenback*&from=1862-01-01&to=1890-12-31&bucket=month",
     "blurb": "Civil War paper money, and the Greenback Party of the 1870s and 1880s.",
     "era": "1865-1877",
     "id": "greenback",
     "title": "Greenbacks",
-    "view": {
-      "bucket": "month",
-      "from": "1862-01-01",
-      "q": "greenback",
-      "to": "1890-12-31"
-    }
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "greenback*", "to": "1890-12-31" }
   },
   {
     "aggregate": "q=%22Ku+Klux%22&from=1868-01-01&to=1872-12-31&bucket=month",
@@ -399,23 +276,18 @@
     "era": "1865-1877",
     "id": "ku-klux-1870s",
     "title": "Ku Klux Klan Act, 1871",
-    "view": {
-      "bucket": "month",
-      "from": "1868-01-01",
-      "q": "\"Ku Klux\"",
-      "to": "1872-12-31"
-    }
+    "view": { "bucket": "month", "from": "1868-01-01", "q": "\"Ku Klux\"", "to": "1872-12-31" }
   },
   {
-    "aggregate": "q=scalawag%2A&from=1866-01-01&to=1880-12-31&bucket=month",
+    "aggregate": "q=scalawag*+OR+scallawag*+OR+scallywag*&from=1867-01-01&to=1880-12-31&bucket=month",
     "blurb": "The insult for white Southerners who sided with Reconstruction's Republicans.",
     "era": "1865-1877",
     "id": "scalawag",
     "title": "Scalawags",
     "view": {
       "bucket": "month",
-      "from": "1866-01-01",
-      "q": "scalawag*",
+      "from": "1867-01-01",
+      "q": "scalawag* OR scallawag* OR scallywag*",
       "to": "1880-12-31"
     }
   },
@@ -425,12 +297,7 @@
     "era": "1865-1877",
     "id": "custer",
     "title": "Little Bighorn, 1876",
-    "view": {
-      "bucket": "week",
-      "from": "1876-01-01",
-      "q": "Custer",
-      "to": "1877-06-30"
-    }
+    "view": { "bucket": "week", "from": "1876-01-01", "q": "Custer", "to": "1877-06-30" }
   },
   {
     "aggregate": "q=%22electoral+commission%22&from=1876-11-01&to=1877-04-30&bucket=week",
@@ -438,16 +305,11 @@
     "era": "1865-1877",
     "id": "election-1876",
     "title": "Disputed election, 1876",
-    "view": {
-      "bucket": "week",
-      "from": "1876-11-01",
-      "q": "\"electoral commission\"",
-      "to": "1877-04-30"
-    }
+    "view": { "bucket": "week", "from": "1876-11-01", "q": "\"electoral commission\"", "to": "1877-04-30" }
   },
   {
     "aggregate": "q=%22Freedmen%27s+Bureau%22+OR+%22Freedmen+Bureau%22&from=1865-01-01&to=1872-12-31&bucket=month",
-    "blurb": "The agency aiding freed people, most covered when Johnson vetoed its renewal in 1866.",
+    "blurb": "The federal agency aided formerly enslaved people with education, relief, and legal help.",
     "era": "1865-1877",
     "id": "freedmens-bureau",
     "title": "Freedmen's Bureau",
@@ -464,15 +326,10 @@
     "era": "1865-1877",
     "id": "johnson-impeachment",
     "title": "Johnson impeachment, 1868",
-    "view": {
-      "bucket": "week",
-      "from": "1867-06-01",
-      "q": "impeachment",
-      "to": "1868-08-31"
-    }
+    "view": { "bucket": "week", "from": "1867-06-01", "q": "impeachment", "to": "1868-08-31" }
   },
   {
-    "aggregate": "q=%22Fifteenth+Amendment%22&from=1869-01-01&to=1870-12-31&bucket=week",
+    "aggregate": "q=%22Fifteenth+Amendment%22+OR+%2215th+Amendment%22&from=1869-01-01&to=1870-12-31&bucket=week",
     "blurb": "The amendment barring denial of the vote by race, ratified in February 1870.",
     "era": "1865-1877",
     "id": "fifteenth-amendment",
@@ -480,7 +337,7 @@
     "view": {
       "bucket": "week",
       "from": "1869-01-01",
-      "q": "\"Fifteenth Amendment\"",
+      "q": "\"Fifteenth Amendment\" OR \"15th Amendment\"",
       "to": "1870-12-31"
     }
   },
@@ -490,16 +347,10 @@
     "era": "1865-1877",
     "id": "krieg-1870",
     "title": "Krieg in German papers, 1870",
-    "view": {
-      "bucket": "week",
-      "from": "1870-01-01",
-      "lang": ["ger"],
-      "q": "Krieg",
-      "to": "1871-12-31"
-    }
+    "view": { "bucket": "week", "from": "1870-01-01", "lang": ["ger"], "q": "Krieg", "to": "1871-12-31" }
   },
   {
-    "aggregate": "q=%22Chicago+fire%22&from=1871-09-01&to=1872-06-30&bucket=week",
+    "aggregate": "q=Chicago+AND+%28%22great+fire%22+OR+conflagration%29&from=1871-09-01&to=1872-06-30&bucket=week",
     "blurb": "The October 1871 fire that burned much of Chicago, and the relief and rebuilding.",
     "era": "1865-1877",
     "id": "chicago-fire",
@@ -507,26 +358,26 @@
     "view": {
       "bucket": "week",
       "from": "1871-09-01",
-      "q": "\"Chicago fire\"",
+      "q": "Chicago AND (\"great fire\" OR conflagration)",
       "to": "1872-06-30"
     }
   },
   {
-    "aggregate": "q=Kulturkampf+OR+Culturkampf&from=1872-01-01&to=1877-12-31&bucket=month&lang=ger",
+    "aggregate": "q=Kulturkampf+OR+Culturkampf&from=1871-01-01&to=1887-12-31&bucket=month&lang=ger",
     "blurb": "Kulturkampf, Bismarck's struggle with the Catholic Church, in German-language papers.",
     "era": "1865-1877",
     "id": "kulturkampf",
     "title": "Kulturkampf in German papers",
     "view": {
       "bucket": "month",
-      "from": "1872-01-01",
+      "from": "1871-01-01",
       "lang": ["ger"],
       "q": "Kulturkampf OR Culturkampf",
-      "to": "1877-12-31"
+      "to": "1887-12-31"
     }
   },
   {
-    "aggregate": "q=%22Jay+Cooke%22&from=1873-06-01&to=1874-06-30&bucket=week",
+    "aggregate": "q=%22Jay+Cooke%22+AND+%28panic+OR+failure+OR+suspension%29&from=1873-06-01&to=1874-06-30&bucket=week",
     "blurb": "Jay Cooke & Company failed in September 1873, setting off a financial panic.",
     "era": "1865-1877",
     "id": "panic-of-1873",
@@ -534,7 +385,7 @@
     "view": {
       "bucket": "week",
       "from": "1873-06-01",
-      "q": "\"Jay Cooke\"",
+      "q": "\"Jay Cooke\" AND (panic OR failure OR suspension)",
       "to": "1874-06-30"
     }
   },
@@ -544,38 +395,23 @@
     "era": "1865-1877",
     "id": "centennial-exhibition",
     "title": "Centennial Exhibition, 1876",
-    "view": {
-      "bucket": "week",
-      "from": "1875-01-01",
-      "q": "\"Centennial Exhibition\"",
-      "to": "1877-06-30"
-    }
+    "view": { "bucket": "week", "from": "1875-01-01", "q": "\"Centennial Exhibition\"", "to": "1877-06-30" }
   },
   {
     "aggregate": "q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week",
-    "blurb": "Watch Bryan's speech spread from Chicago to both coasts, week by week.",
+    "blurb": "Compare newspaper coverage of Bryan's July 1896 speech defending free silver.",
     "era": "1877-1900",
     "id": "cross-of-gold",
     "title": "Cross of Gold, 1896",
-    "view": {
-      "bucket": "week",
-      "from": "1896-06-01",
-      "q": "\"cross of gold\"",
-      "to": "1896-12-31"
-    }
+    "view": { "bucket": "week", "from": "1896-06-01", "q": "\"cross of gold\"", "to": "1896-12-31" }
   },
   {
-    "aggregate": "q=populist&mode=phrase&from=1890-01-01&to=1900-12-31&bucket=month",
-    "blurb": "The People's Party of 1892, which backed Bryan in 1896.",
+    "aggregate": "q=populist*&from=1890-01-01&to=1900-12-31&bucket=month",
+    "blurb": "The People's Party campaigned for economic reform and backed Bryan in 1896.",
     "era": "1877-1900",
     "id": "populists",
     "title": "Populist Party",
-    "view": {
-      "bucket": "month",
-      "from": "1890-01-01",
-      "q": "populist",
-      "to": "1900-12-31"
-    }
+    "view": { "bucket": "month", "from": "1890-01-01", "q": "populist*", "to": "1900-12-31" }
   },
   {
     "aggregate": "q=%22standard+oil%22&from=1880-01-01&to=1915-12-31&bucket=month",
@@ -583,12 +419,7 @@
     "era": "1877-1900",
     "id": "standard-oil",
     "title": "Standard Oil",
-    "view": {
-      "bucket": "month",
-      "from": "1880-01-01",
-      "q": "\"standard oil\"",
-      "to": "1915-12-31"
-    }
+    "view": { "bucket": "month", "from": "1880-01-01", "q": "\"standard oil\"", "to": "1915-12-31" }
   },
   {
     "aggregate": "q=%22civil+service+reform%22&from=1870-01-01&to=1898-12-31&bucket=month",
@@ -596,25 +427,15 @@
     "era": "1877-1900",
     "id": "civil-service-reform",
     "title": "Civil service reform",
-    "view": {
-      "bucket": "month",
-      "from": "1870-01-01",
-      "q": "\"civil service reform\"",
-      "to": "1898-12-31"
-    }
+    "view": { "bucket": "month", "from": "1870-01-01", "q": "\"civil service reform\"", "to": "1898-12-31" }
   },
   {
-    "aggregate": "q=Haymarket&mode=phrase&from=1886-04-01&to=1887-12-31&bucket=week",
+    "aggregate": "q=Haymarket+AND+%28Chicago+OR+anarchist*%29&from=1886-04-01&to=1887-12-31&bucket=week",
     "blurb": "A bomb at a Chicago labor rally in May 1886, and the executions in November 1887.",
     "era": "1877-1900",
     "id": "haymarket",
     "title": "Haymarket, 1886",
-    "view": {
-      "bucket": "week",
-      "from": "1886-04-01",
-      "q": "Haymarket",
-      "to": "1887-12-31"
-    }
+    "view": { "bucket": "week", "from": "1886-04-01", "q": "Haymarket AND (Chicago OR anarchist*)", "to": "1887-12-31" }
   },
   {
     "aggregate": "q=%22pullman+strike%22&from=1894-05-01&to=1894-12-31&bucket=week",
@@ -622,12 +443,7 @@
     "era": "1877-1900",
     "id": "pullman-strike",
     "title": "Pullman strike, 1894",
-    "view": {
-      "bucket": "week",
-      "from": "1894-05-01",
-      "q": "\"pullman strike\"",
-      "to": "1894-12-31"
-    }
+    "view": { "bucket": "week", "from": "1894-05-01", "q": "\"pullman strike\"", "to": "1894-12-31" }
   },
   {
     "aggregate": "q=%22Chinese+exclusion%22&from=1880-01-01&to=1905-12-31&bucket=month",
@@ -635,28 +451,23 @@
     "era": "1877-1900",
     "id": "chinese-exclusion",
     "title": "Chinese Exclusion Act",
-    "view": {
-      "bucket": "month",
-      "from": "1880-01-01",
-      "q": "\"Chinese exclusion\"",
-      "to": "1905-12-31"
-    }
+    "view": { "bucket": "month", "from": "1880-01-01", "q": "\"Chinese exclusion\"", "to": "1905-12-31" }
   },
   {
-    "aggregate": "q=%22Jim+Crow%22&from=1890-01-01&to=1963-12-31&bucket=year",
-    "blurb": "The name for Southern laws segregating Black Americans, such as separate railroad cars.",
+    "aggregate": "q=%22Jim+Crow%22+AND+%28law+OR+laws+OR+segregat*%29&from=1880-01-01&to=1963-12-31&bucket=year",
+    "blurb": "Laws enforced racial segregation, especially in the South, including separate rail cars.",
     "era": "1877-1900",
     "id": "jim-crow",
     "title": "Jim Crow laws",
     "view": {
       "bucket": "year",
-      "from": "1890-01-01",
-      "q": "\"Jim Crow\"",
+      "from": "1880-01-01",
+      "q": "\"Jim Crow\" AND (law OR laws OR segregat*)",
       "to": "1963-12-31"
     }
   },
   {
-    "aggregate": "q=%22battleship+maine%22&from=1898-01-01&to=1898-12-31&bucket=week",
+    "aggregate": "q=%22battleship+Maine%22+OR+%22battle+ship+Maine%22&from=1898-01-01&to=1898-12-31&bucket=week",
     "blurb": "The battleship blew up in Havana harbor in February 1898; war followed in April.",
     "era": "1877-1900",
     "id": "battleship-maine",
@@ -664,7 +475,7 @@
     "view": {
       "bucket": "week",
       "from": "1898-01-01",
-      "q": "\"battleship maine\"",
+      "q": "\"battleship Maine\" OR \"battle ship Maine\"",
       "to": "1898-12-31"
     }
   },
@@ -674,13 +485,7 @@
     "era": "1877-1900",
     "id": "temperenzler",
     "title": "Temperenzler in German papers",
-    "view": {
-      "bucket": "month",
-      "from": "1877-01-01",
-      "lang": ["ger"],
-      "q": "Temperenzler",
-      "to": "1900-12-31"
-    }
+    "view": { "bucket": "month", "from": "1877-01-01", "lang": ["ger"], "q": "Temperenzler", "to": "1900-12-31" }
   },
   {
     "aggregate": "q=Guiteau&mode=phrase&from=1881-06-01&to=1882-08-31&bucket=week",
@@ -688,12 +493,7 @@
     "era": "1877-1900",
     "id": "guiteau-trial",
     "title": "Guiteau trial, 1881-1882",
-    "view": {
-      "bucket": "week",
-      "from": "1881-06-01",
-      "q": "Guiteau",
-      "to": "1882-08-31"
-    }
+    "view": { "bucket": "week", "from": "1881-06-01", "q": "Guiteau", "to": "1882-08-31" }
   },
   {
     "aggregate": "q=%22Johnstown+flood%22&from=1889-05-01&to=1890-06-30&bucket=week",
@@ -701,15 +501,10 @@
     "era": "1877-1900",
     "id": "johnstown-flood",
     "title": "Johnstown flood, 1889",
-    "view": {
-      "bucket": "week",
-      "from": "1889-05-01",
-      "q": "\"Johnstown flood\"",
-      "to": "1890-06-30"
-    }
+    "view": { "bucket": "week", "from": "1889-05-01", "q": "\"Johnstown flood\"", "to": "1890-06-30" }
   },
   {
-    "aggregate": "q=%22Wounded+Knee%22+OR+%22ghost+dance%22&from=1890-06-01&to=1891-06-30&bucket=week",
+    "aggregate": "q=%28%22Wounded+Knee%22+AND+Sioux%29+OR+%22ghost+dance%22&from=1890-06-01&to=1891-06-30&bucket=week",
     "blurb": "The Ghost Dance and the Army's killing of Lakota people at Wounded Knee in December 1890.",
     "era": "1877-1900",
     "id": "wounded-knee",
@@ -717,7 +512,7 @@
     "view": {
       "bucket": "week",
       "from": "1890-06-01",
-      "q": "\"Wounded Knee\" OR \"ghost dance\"",
+      "q": "(\"Wounded Knee\" AND Sioux) OR \"ghost dance\"",
       "to": "1891-06-30"
     }
   },
@@ -727,13 +522,7 @@
     "era": "1877-1900",
     "id": "weltausstellung-1893",
     "title": "Weltausstellung in German papers",
-    "view": {
-      "bucket": "week",
-      "from": "1892-01-01",
-      "lang": ["ger"],
-      "q": "Weltausstellung",
-      "to": "1894-06-30"
-    }
+    "view": { "bucket": "week", "from": "1892-01-01", "lang": ["ger"], "q": "Weltausstellung", "to": "1894-06-30" }
   },
   {
     "aggregate": "q=Coxey&mode=phrase&from=1894-01-01&to=1894-12-31&bucket=week",
@@ -741,12 +530,7 @@
     "era": "1877-1900",
     "id": "coxeys-army",
     "title": "Coxey's Army, 1894",
-    "view": {
-      "bucket": "week",
-      "from": "1894-01-01",
-      "q": "Coxey",
-      "to": "1894-12-31"
-    }
+    "view": { "bucket": "week", "from": "1894-01-01", "q": "Coxey", "to": "1894-12-31" }
   },
   {
     "aggregate": "q=Aguinaldo&mode=phrase&from=1898-01-01&to=1903-12-31&bucket=month",
@@ -754,15 +538,10 @@
     "era": "1900-1929",
     "id": "aguinaldo",
     "title": "Philippine-American War",
-    "view": {
-      "bucket": "month",
-      "from": "1898-01-01",
-      "q": "Aguinaldo",
-      "to": "1903-12-31"
-    }
+    "view": { "bucket": "month", "from": "1898-01-01", "q": "Aguinaldo", "to": "1903-12-31" }
   },
   {
-    "aggregate": "q=%22pure+food%22&from=1898-01-01&to=1912-12-31&bucket=month",
+    "aggregate": "q=%22pure+food+law%22%7E3+OR+%22pure+food+bill%22%7E3+OR+%22pure+food+act%22%7E3&from=1898-01-01&to=1912-12-31&bucket=month",
     "blurb": "The campaign that led to the Pure Food and Drug Act of 1906.",
     "era": "1900-1929",
     "id": "pure-food",
@@ -770,7 +549,7 @@
     "view": {
       "bucket": "month",
       "from": "1898-01-01",
-      "q": "\"pure food\"",
+      "q": "\"pure food law\"~3 OR \"pure food bill\"~3 OR \"pure food act\"~3",
       "to": "1912-12-31"
     }
   },
@@ -780,12 +559,7 @@
     "era": "1900-1929",
     "id": "woman-suffrage",
     "title": "Woman suffrage",
-    "view": {
-      "bucket": "month",
-      "from": "1869-01-01",
-      "q": "\"woman suffrage\"",
-      "to": "1925-12-31"
-    }
+    "view": { "bucket": "month", "from": "1869-01-01", "q": "\"woman suffrage\"", "to": "1925-12-31" }
   },
   {
     "aggregate": "q=%22federal+reserve%22&from=1912-01-01&to=1916-12-31&bucket=month",
@@ -793,12 +567,7 @@
     "era": "1900-1929",
     "id": "federal-reserve",
     "title": "Federal Reserve",
-    "view": {
-      "bucket": "month",
-      "from": "1912-01-01",
-      "q": "\"federal reserve\"",
-      "to": "1916-12-31"
-    }
+    "view": { "bucket": "month", "from": "1912-01-01", "q": "\"federal reserve\"", "to": "1916-12-31" }
   },
   {
     "aggregate": "q=Lusitania&mode=phrase&from=1915-01-01&to=1916-12-31&bucket=week",
@@ -806,15 +575,10 @@
     "era": "1900-1929",
     "id": "lusitania",
     "title": "Lusitania, 1915",
-    "view": {
-      "bucket": "week",
-      "from": "1915-01-01",
-      "q": "Lusitania",
-      "to": "1916-12-31"
-    }
+    "view": { "bucket": "week", "from": "1915-01-01", "q": "Lusitania", "to": "1916-12-31" }
   },
   {
-    "aggregate": "q=%22fourteen+points%22&from=1918-01-01&to=1920-12-31&bucket=month",
+    "aggregate": "q=%22Wilson+fourteen+points%22%7E5+OR+%22fourteen+peace+points%22%7E3+OR+%22Wilson+14+points%22%7E5&from=1918-01-01&to=1920-12-31&bucket=month",
     "blurb": "Wilson's January 1918 peace plan, and the Paris peace talks of 1919.",
     "era": "1900-1929",
     "id": "fourteen-points",
@@ -822,7 +586,7 @@
     "view": {
       "bucket": "month",
       "from": "1918-01-01",
-      "q": "\"fourteen points\"",
+      "q": "\"Wilson fourteen points\"~5 OR \"fourteen peace points\"~3 OR \"Wilson 14 points\"~5",
       "to": "1920-12-31"
     }
   },
@@ -832,15 +596,10 @@
     "era": "1900-1929",
     "id": "bolshevism",
     "title": "Red Scare, 1919",
-    "view": {
-      "bucket": "month",
-      "from": "1918-01-01",
-      "q": "Bolshevism",
-      "to": "1921-12-31"
-    }
+    "view": { "bucket": "month", "from": "1918-01-01", "q": "Bolshevism", "to": "1921-12-31" }
   },
   {
-    "aggregate": "q=Volstead&mode=phrase&from=1919-01-01&to=1934-12-31&bucket=month",
+    "aggregate": "q=%22Volstead+act%22%7E2+OR+%22Volstead+law%22%7E2+OR+%22loi+Volstead%22%7E2&from=1919-01-01&to=1934-12-31&bucket=month",
     "blurb": "The law that enforced Prohibition from 1920 until repeal in 1933.",
     "era": "1900-1929",
     "id": "volstead",
@@ -848,12 +607,12 @@
     "view": {
       "bucket": "month",
       "from": "1919-01-01",
-      "q": "Volstead",
+      "q": "\"Volstead act\"~2 OR \"Volstead law\"~2 OR \"loi Volstead\"~2",
       "to": "1934-12-31"
     }
   },
   {
-    "aggregate": "q=Scopes&mode=phrase&from=1925-03-01&to=1925-12-31&bucket=week",
+    "aggregate": "q=%22Scopes+trial%22%7E5+OR+%22Scopes+evolution%22%7E5&from=1925-03-01&to=1925-12-31&bucket=week",
     "blurb": "The July 1925 trial of a Tennessee teacher charged with teaching evolution.",
     "era": "1900-1929",
     "id": "scopes",
@@ -861,25 +620,25 @@
     "view": {
       "bucket": "week",
       "from": "1925-03-01",
-      "q": "Scopes",
+      "q": "\"Scopes trial\"~5 OR \"Scopes evolution\"~5",
       "to": "1925-12-31"
     }
   },
   {
-    "aggregate": "q=%22San+Francisco%22+earthquake&from=1906-01-01&to=1906-12-31&bucket=week",
+    "aggregate": "q=%22San+Francisco+earthquake%22%7E5+OR+%22San+Francisco+fire%22%7E5&from=1906-04-18&to=1906-12-31&bucket=week",
     "blurb": "The April 18 earthquake and fire that destroyed much of San Francisco.",
     "era": "1900-1929",
     "id": "san-francisco-earthquake",
     "title": "San Francisco earthquake, 1906",
     "view": {
       "bucket": "week",
-      "from": "1906-01-01",
-      "q": "\"San Francisco\" earthquake",
+      "from": "1906-04-18",
+      "q": "\"San Francisco earthquake\"~5 OR \"San Francisco fire\"~5",
       "to": "1906-12-31"
     }
   },
   {
-    "aggregate": "q=Carranza&mode=phrase&from=1911-01-01&to=1921-12-31&bucket=month&lang=spa",
+    "aggregate": "q=%22Venustiano+Carranza%22+OR+%22presidente+Carranza%22%7E2+OR+%22general+Carranza%22%7E2&from=1911-01-01&to=1921-12-31&bucket=month&lang=spa",
     "blurb": "Mexico's Venustiano Carranza in Spanish papers, from his 1913 revolt to his 1920 death.",
     "era": "1900-1929",
     "id": "carranza-spanish-press",
@@ -888,12 +647,12 @@
       "bucket": "month",
       "from": "1911-01-01",
       "lang": ["spa"],
-      "q": "Carranza",
+      "q": "\"Venustiano Carranza\" OR \"presidente Carranza\"~2 OR \"general Carranza\"~2",
       "to": "1921-12-31"
     }
   },
   {
-    "aggregate": "q=Titanic&mode=phrase&from=1912-01-01&to=1912-12-31&bucket=week",
+    "aggregate": "q=%22liner+Titanic%22%7E3+OR+%22Titanic+iceberg%22%7E10+OR+%22Titanic+disaster%22%7E3+OR+%22S+S+Titanic%22&from=1912-01-01&to=1912-12-31&bucket=week",
     "blurb": "The White Star liner that sank on its maiden voyage in April 1912.",
     "era": "1900-1929",
     "id": "titanic-1912",
@@ -901,7 +660,7 @@
     "view": {
       "bucket": "week",
       "from": "1912-01-01",
-      "q": "Titanic",
+      "q": "\"liner Titanic\"~3 OR \"Titanic iceberg\"~10 OR \"Titanic disaster\"~3 OR \"S S Titanic\"",
       "to": "1912-12-31"
     }
   },
@@ -911,40 +670,23 @@
     "era": "1900-1929",
     "id": "trieste-italian-press",
     "title": "Trieste in Italian papers",
-    "view": {
-      "bucket": "month",
-      "from": "1912-01-01",
-      "lang": ["ita"],
-      "q": "Trieste",
-      "to": "1921-12-31"
-    }
+    "view": { "bucket": "month", "from": "1912-01-01", "lang": ["ita"], "q": "Trieste", "to": "1921-12-31" }
   },
   {
-    "aggregate": "q=niepodleg%2A&from=1914-01-01&to=1921-12-31&bucket=month&lang=pol",
+    "aggregate": "q=niepodleg*&from=1914-01-01&to=1921-12-31&bucket=month&lang=pol",
     "blurb": "Niepodległość, Polish for independence, in Polish papers as Poland regained it in 1918.",
     "era": "1900-1929",
     "id": "niepodleglosc-polish",
     "title": "Niepodległość in Polish papers",
-    "view": {
-      "bucket": "month",
-      "from": "1914-01-01",
-      "lang": ["pol"],
-      "q": "niepodleg*",
-      "to": "1921-12-31"
-    }
+    "view": { "bucket": "month", "from": "1914-01-01", "lang": ["pol"], "q": "niepodleg*", "to": "1921-12-31" }
   },
   {
-    "aggregate": "q=Spanish+influenza&mode=phrase&from=1918-01-01&to=1919-06-30&bucket=week",
-    "blurb": "The influenza pandemic, which peaked in American papers in October 1918.",
+    "aggregate": "q=influenza+OR+grippe&from=1918-01-01&to=1920-12-31&bucket=week",
+    "blurb": "The pandemic brought repeated influenza waves; newspapers also called the illness grippe.",
     "era": "1900-1929",
     "id": "spanish-influenza-1918",
-    "title": "Spanish influenza, 1918",
-    "view": {
-      "bucket": "week",
-      "from": "1918-01-01",
-      "q": "Spanish influenza",
-      "to": "1919-06-30"
-    }
+    "title": "Influenza pandemic, 1918-1920",
+    "view": { "bucket": "week", "from": "1918-01-01", "q": "influenza OR grippe", "to": "1920-12-31" }
   },
   {
     "aggregate": "q=%22bank+holiday%22&from=1932-10-01&to=1933-06-30&bucket=week",
@@ -952,12 +694,7 @@
     "era": "1929-1945",
     "id": "bank-holiday",
     "title": "Bank holiday, 1933",
-    "view": {
-      "bucket": "week",
-      "from": "1932-10-01",
-      "q": "\"bank holiday\"",
-      "to": "1933-06-30"
-    }
+    "view": { "bucket": "week", "from": "1932-10-01", "q": "\"bank holiday\"", "to": "1933-06-30" }
   },
   {
     "aggregate": "q=%22new+deal%22&from=1932-01-01&to=1945-12-31&bucket=month",
@@ -965,25 +702,15 @@
     "era": "1929-1945",
     "id": "new-deal",
     "title": "New Deal",
-    "view": {
-      "bucket": "month",
-      "from": "1932-01-01",
-      "q": "\"new deal\"",
-      "to": "1945-12-31"
-    }
+    "view": { "bucket": "month", "from": "1932-01-01", "q": "\"new deal\"", "to": "1945-12-31" }
   },
   {
     "aggregate": "q=%22social+security%22&from=1934-01-01&to=1963-12-31&bucket=month",
-    "blurb": "The 1935 law, and the first monthly checks in 1940.",
+    "blurb": "The 1935 law, first monthly checks in 1940, and the program's expansion through 1963.",
     "era": "1929-1945",
     "id": "social-security",
     "title": "Social Security",
-    "view": {
-      "bucket": "month",
-      "from": "1934-01-01",
-      "q": "\"social security\"",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1934-01-01", "q": "\"social security\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22civilian+conservation+corps%22&from=1933-01-01&to=1942-12-31&bucket=month",
@@ -991,12 +718,7 @@
     "era": "1929-1945",
     "id": "ccc",
     "title": "Civilian Conservation Corps",
-    "view": {
-      "bucket": "month",
-      "from": "1933-01-01",
-      "q": "\"civilian conservation corps\"",
-      "to": "1942-12-31"
-    }
+    "view": { "bucket": "month", "from": "1933-01-01", "q": "\"civilian conservation corps\"", "to": "1942-12-31" }
   },
   {
     "aggregate": "q=%22lend+lease%22&from=1940-06-01&to=1945-12-31&bucket=month",
@@ -1004,12 +726,7 @@
     "era": "1929-1945",
     "id": "lend-lease",
     "title": "Lend-Lease",
-    "view": {
-      "bucket": "month",
-      "from": "1940-06-01",
-      "q": "\"lend lease\"",
-      "to": "1945-12-31"
-    }
+    "view": { "bucket": "month", "from": "1940-06-01", "q": "\"lend lease\"", "to": "1945-12-31" }
   },
   {
     "aggregate": "q=%22pearl+harbor%22&from=1940-01-01&to=1946-12-31&bucket=month",
@@ -1017,28 +734,18 @@
     "era": "1929-1945",
     "id": "pearl-harbor",
     "title": "Pearl Harbor",
-    "view": {
-      "bucket": "month",
-      "from": "1940-01-01",
-      "q": "\"pearl harbor\"",
-      "to": "1946-12-31"
-    }
+    "view": { "bucket": "month", "from": "1940-01-01", "q": "\"pearl harbor\"", "to": "1946-12-31" }
   },
   {
-    "aggregate": "q=rationing&mode=phrase&from=1941-06-01&to=1946-12-31&bucket=month",
-    "blurb": "Rationing of sugar, gasoline, meat and other goods during World War II.",
+    "aggregate": "q=rationing&mode=phrase&from=1941-06-01&to=1947-12-31&bucket=month",
+    "blurb": "World War II rationing and its aftermath, including U.S. sugar restrictions until 1947.",
     "era": "1929-1945",
     "id": "rationing",
     "title": "Wartime rationing",
-    "view": {
-      "bucket": "month",
-      "from": "1941-06-01",
-      "q": "rationing",
-      "to": "1946-12-31"
-    }
+    "view": { "bucket": "month", "from": "1941-06-01", "q": "rationing", "to": "1947-12-31" }
   },
   {
-    "aggregate": "q=%22relocation+center%22&from=1942-01-01&to=1946-06-30&bucket=month",
+    "aggregate": "q=%22relocation+center%22+OR+%22relocation+centers%22&from=1942-01-01&to=1946-06-30&bucket=month",
     "blurb": "Japanese Americans forced into War Relocation Authority camps during World War II.",
     "era": "1929-1945",
     "id": "relocation-centers",
@@ -1046,53 +753,42 @@
     "view": {
       "bucket": "month",
       "from": "1942-01-01",
-      "q": "\"relocation center\"",
+      "q": "\"relocation center\" OR \"relocation centers\"",
       "to": "1946-06-30"
     }
   },
   {
-    "aggregate": "q=Huey+Long&mode=phrase&from=1929-01-01&to=1936-12-31&bucket=month",
+    "aggregate": "q=Huey+Long&mode=phrase&from=1928-01-01&to=1936-12-31&bucket=month",
     "blurb": "The Louisiana governor and senator, assassinated in Baton Rouge in September 1935.",
     "era": "1929-1945",
     "id": "huey-long",
     "title": "Huey Long",
-    "view": {
-      "bucket": "month",
-      "from": "1929-01-01",
-      "q": "Huey Long",
-      "to": "1936-12-31"
-    }
+    "view": { "bucket": "month", "from": "1928-01-01", "q": "Huey Long", "to": "1936-12-31" }
   },
   {
     "aggregate": "q=repatriados&mode=phrase&from=1929-01-01&to=1939-12-31&bucket=month&lang=spa",
-    "blurb": "Repatriados, Spanish for repatriates, in Spanish papers as families left for Mexico.",
+    "blurb": "Spanish-language coverage of repatriation and forced removals of Mexican-origin families.",
     "era": "1929-1945",
     "id": "repatriados",
     "title": "Repatriados in Spanish papers",
-    "view": {
-      "bucket": "month",
-      "from": "1929-01-01",
-      "lang": ["spa"],
-      "q": "repatriados",
-      "to": "1939-12-31"
-    }
+    "view": { "bucket": "month", "from": "1929-01-01", "lang": ["spa"], "q": "repatriados", "to": "1939-12-31" }
   },
   {
-    "aggregate": "q=Works+Progress+Administration&mode=phrase&from=1934-01-01&to=1943-12-31&bucket=month",
-    "blurb": "The New Deal jobs agency created in 1935 that hired millions for public works projects.",
+    "aggregate": "q=%22Works+Progress+Administration%22+OR+%22Work+Projects+Administration%22&from=1934-01-01&to=1943-12-31&bucket=month",
+    "blurb": "The New Deal jobs agency, renamed Work Projects Administration in 1939.",
     "era": "1929-1945",
     "id": "works-progress-administration",
     "title": "Works Progress Administration",
     "view": {
       "bucket": "month",
       "from": "1934-01-01",
-      "q": "Works Progress Administration",
+      "q": "\"Works Progress Administration\" OR \"Work Projects Administration\"",
       "to": "1943-12-31"
     }
   },
   {
-    "aggregate": "q=guerra+civil&mode=phrase&from=1935-01-01&to=1940-12-31&bucket=month&lang=spa",
-    "blurb": "Guerra civil, Spanish for civil war, in Spanish-language papers during the war in Spain.",
+    "aggregate": "q=%22guerra+civil%22+AND+%28Espa%C3%B1a+OR+espa%C3%B1ola%29&from=1935-01-01&to=1940-12-31&bucket=month&lang=spa",
+    "blurb": "Spanish-language reporting on Spain's civil war, with its lead-up and aftermath.",
     "era": "1929-1945",
     "id": "guerra-civil-spain",
     "title": "Guerra civil in Spanish papers",
@@ -1100,12 +796,12 @@
       "bucket": "month",
       "from": "1935-01-01",
       "lang": ["spa"],
-      "q": "guerra civil",
+      "q": "\"guerra civil\" AND (España OR española)",
       "to": "1940-12-31"
     }
   },
   {
-    "aggregate": "q=Normandy&mode=phrase&from=1944-01-01&to=1944-12-31&bucket=week",
+    "aggregate": "q=Normandy+AND+%28invasion+OR+landing*+OR+battle*%29&from=1944-01-01&to=1944-12-31&bucket=week",
     "blurb": "The Allied landings in Normandy on June 6, 1944, and the summer campaign that followed.",
     "era": "1929-1945",
     "id": "normandy-1944",
@@ -1113,7 +809,7 @@
     "view": {
       "bucket": "week",
       "from": "1944-01-01",
-      "q": "Normandy",
+      "q": "Normandy AND (invasion OR landing* OR battle*)",
       "to": "1944-12-31"
     }
   },
@@ -1123,25 +819,15 @@
     "era": "1929-1945",
     "id": "ve-day-1945",
     "title": "V-E Day, 1945",
-    "view": {
-      "bucket": "week",
-      "from": "1945-01-01",
-      "q": "\"V-E Day\" OR \"VE Day\"",
-      "to": "1945-12-31"
-    }
+    "view": { "bucket": "week", "from": "1945-01-01", "q": "\"V-E Day\" OR \"VE Day\"", "to": "1945-12-31" }
   },
   {
     "aggregate": "q=%22atomic+bomb%22&from=1944-01-01&to=1963-12-31&bucket=month",
-    "blurb": "From Hiroshima and Nagasaki in August 1945 through the tests of the 1950s.",
+    "blurb": "From the 1945 bombings of Hiroshima and Nagasaki to weapons tests and their aftermath.",
     "era": "1945-1963",
     "id": "atomic-bomb",
     "title": "Atomic bomb",
-    "view": {
-      "bucket": "month",
-      "from": "1944-01-01",
-      "q": "\"atomic bomb\"",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1944-01-01", "q": "\"atomic bomb\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22Marshall+plan%22&from=1947-01-01&to=1952-12-31&bucket=month",
@@ -1149,49 +835,39 @@
     "era": "1945-1963",
     "id": "marshall-plan",
     "title": "Marshall Plan",
-    "view": {
-      "bucket": "month",
-      "from": "1947-01-01",
-      "q": "\"Marshall plan\"",
-      "to": "1952-12-31"
-    }
+    "view": { "bucket": "month", "from": "1947-01-01", "q": "\"Marshall plan\"", "to": "1952-12-31" }
   },
   {
     "aggregate": "q=%22iron+curtain%22&from=1946-01-01&to=1963-12-31&bucket=month",
-    "blurb": "Churchill's phrase from his 1946 speech at Fulton, Missouri, for the divide in Europe.",
+    "blurb": "Churchill popularized this image of Europe's political divide in his March 1946 speech.",
     "era": "1945-1963",
     "id": "iron-curtain",
     "title": "Iron Curtain",
-    "view": {
-      "bucket": "month",
-      "from": "1946-01-01",
-      "q": "\"iron curtain\"",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1946-01-01", "q": "\"iron curtain\"", "to": "1963-12-31" }
   },
   {
-    "aggregate": "q=Korea&mode=phrase&from=1945-01-01&to=1956-12-31&bucket=month",
-    "blurb": "The war began in June 1950 and ended in an armistice in July 1953.",
+    "aggregate": "q=%28Korea+OR+Korean%29+AND+%28war+OR+armistice%29&from=1945-01-01&to=1956-12-31&bucket=month",
+    "blurb": "The 1950-1953 fighting, with reporting on Korea's division and the armistice aftermath.",
     "era": "1945-1963",
     "id": "korea",
     "title": "Korean War",
     "view": {
       "bucket": "month",
       "from": "1945-01-01",
-      "q": "Korea",
+      "q": "(Korea OR Korean) AND (war OR armistice)",
       "to": "1956-12-31"
     }
   },
   {
-    "aggregate": "q=%22Senator+McCarthy%22&from=1950-01-01&to=1957-12-31&bucket=month",
-    "blurb": "Senator Joseph McCarthy, from his 1950 speech to his censure in 1954.",
+    "aggregate": "q=%22Senator+McCarthy%22+OR+%22Joseph+McCarthy%22+OR+McCarthyism&from=1950-01-01&to=1957-12-31&bucket=month",
+    "blurb": "Joseph McCarthy's anti-Communist investigations, his 1954 censure, and the aftermath.",
     "era": "1945-1963",
     "id": "mccarthy",
     "title": "McCarthyism",
     "view": {
       "bucket": "month",
       "from": "1950-01-01",
-      "q": "\"Senator McCarthy\"",
+      "q": "\"Senator McCarthy\" OR \"Joseph McCarthy\" OR McCarthyism",
       "to": "1957-12-31"
     }
   },
@@ -1201,15 +877,10 @@
     "era": "1945-1963",
     "id": "sputnik",
     "title": "Sputnik, 1957",
-    "view": {
-      "bucket": "week",
-      "from": "1957-07-01",
-      "q": "Sputnik",
-      "to": "1958-12-31"
-    }
+    "view": { "bucket": "week", "from": "1957-07-01", "q": "Sputnik", "to": "1958-12-31" }
   },
   {
-    "aggregate": "q=%22Little+Rock%22&from=1957-08-01&to=1958-06-30&bucket=week",
+    "aggregate": "q=%22Little+Rock%22+AND+%28school*+OR+integrat*+OR+segregat*%29&from=1957-08-01&to=1958-06-30&bucket=week",
     "blurb": "Federal troops escorted nine Black students into Central High in September 1957.",
     "era": "1945-1963",
     "id": "little-rock",
@@ -1217,7 +888,7 @@
     "view": {
       "bucket": "week",
       "from": "1957-08-01",
-      "q": "\"Little Rock\"",
+      "q": "\"Little Rock\" AND (school* OR integrat* OR segregat*)",
       "to": "1958-06-30"
     }
   },
@@ -1227,51 +898,31 @@
     "era": "1945-1963",
     "id": "civil-rights",
     "title": "Civil rights",
-    "view": {
-      "bucket": "month",
-      "from": "1945-01-01",
-      "q": "\"civil rights\"",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "\"civil rights\"", "to": "1963-12-31" }
   },
   {
-    "aggregate": "q=statehood&mode=phrase&from=1945-01-01&to=1963-12-31&bucket=month",
-    "blurb": "Mentions of statehood, peaking as the Alaska and Hawaii bills became law in 1958 and 1959.",
+    "aggregate": "q=statehood+AND+%28Alaska+OR+Hawaii%29&from=1945-01-01&to=1963-12-31&bucket=month",
+    "blurb": "Campaigns for Alaska and Hawaii culminated in statehood for both in 1959.",
     "era": "1945-1963",
     "id": "alaska-hawaii-statehood",
     "title": "Alaska and Hawaii statehood",
-    "view": {
-      "bucket": "month",
-      "from": "1945-01-01",
-      "q": "statehood",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "statehood AND (Alaska OR Hawaii)", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22juvenile+delinquency%22&from=1945-01-01&to=1963-12-31&bucket=month",
-    "blurb": "A postwar worry that peaked after the Senate formed a subcommittee on it in 1953.",
+    "blurb": "Postwar debates over youth crime led to Senate investigations of comics and media.",
     "era": "1945-1963",
     "id": "juvenile-delinquency",
     "title": "Juvenile delinquency",
-    "view": {
-      "bucket": "month",
-      "from": "1945-01-01",
-      "q": "\"juvenile delinquency\"",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "\"juvenile delinquency\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=television&mode=phrase&from=1945-01-01&to=1963-12-31&bucket=month",
-    "blurb": "Mentions of television, which rose fast from 1948, peaked around 1953, then slowly fell.",
+    "blurb": "Television spread through postwar homes, transforming entertainment and advertising.",
     "era": "1945-1963",
     "id": "television",
     "title": "Television",
-    "view": {
-      "bucket": "month",
-      "from": "1945-01-01",
-      "q": "television",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "television", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22United+Nations%22&from=1945-01-01&to=1963-12-31&bucket=month",
@@ -1279,12 +930,7 @@
     "era": "1945-1963",
     "id": "united-nations",
     "title": "United Nations",
-    "view": {
-      "bucket": "month",
-      "from": "1945-01-01",
-      "q": "\"United Nations\"",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "\"United Nations\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22flying+saucer%22+OR+%22flying+saucers%22&from=1947-01-01&to=1957-12-31&bucket=month",
@@ -1313,20 +959,15 @@
     }
   },
   {
-    "aggregate": "q=daguerreotype&mode=phrase&from=1839-01-01&to=1841-12-31&bucket=month",
+    "aggregate": "q=daguerreotyp*&from=1839-01-01&to=1841-12-31&bucket=month",
     "blurb": "The photographic process announced in 1839 reached American studios and newspapers.",
     "era": "1828-1860",
     "id": "daguerreotype",
     "title": "Daguerreotype photography",
-    "view": {
-      "bucket": "month",
-      "from": "1839-01-01",
-      "q": "daguerreotype",
-      "to": "1841-12-31"
-    }
+    "view": { "bucket": "month", "from": "1839-01-01", "q": "daguerreotyp*", "to": "1841-12-31" }
   },
   {
-    "aggregate": "q=reaping+machine&mode=phrase&from=1851-01-01&to=1853-12-31&bucket=month",
+    "aggregate": "q=%22reaping+machine%22+OR+%22reaping+machines%22&from=1851-01-01&to=1853-12-31&bucket=month",
     "blurb": "Harvesting machinery drew attention as inventors competed to mechanize farm work.",
     "era": "1828-1860",
     "id": "mechanical-reaper",
@@ -1334,77 +975,72 @@
     "view": {
       "bucket": "month",
       "from": "1851-01-01",
-      "q": "reaping machine",
+      "q": "\"reaping machine\" OR \"reaping machines\"",
       "to": "1853-12-31"
     }
   },
   {
-    "aggregate": "q=sewing+machine&mode=phrase&from=1851-01-01&to=1853-12-31&bucket=month",
+    "aggregate": "q=%22sewing+machine%22+OR+%22sewing+machines%22&from=1845-01-01&to=1856-12-31&bucket=month",
     "blurb": "Inventors and manufacturers promoted machines that changed garment production.",
     "era": "1828-1860",
     "id": "sewing-machine",
     "title": "Sewing machines",
     "view": {
       "bucket": "month",
-      "from": "1851-01-01",
-      "q": "sewing machine",
-      "to": "1853-12-31"
+      "from": "1845-01-01",
+      "q": "\"sewing machine\" OR \"sewing machines\"",
+      "to": "1856-12-31"
     }
   },
   {
-    "aggregate": "q=Goodyear+AND+rubber&from=1845-01-01&to=1847-12-31&bucket=month",
+    "aggregate": "q=Goodyear+AND+rubber&from=1844-01-01&to=1847-12-31&bucket=month",
     "blurb": "Goodyear's rubber treatment opened new uses for a once temperature-sensitive material.",
     "era": "1828-1860",
     "id": "vulcanized-rubber",
     "title": "Vulcanized rubber",
-    "view": {
-      "bucket": "month",
-      "from": "1845-01-01",
-      "q": "Goodyear AND rubber",
-      "to": "1847-12-31"
-    }
+    "view": { "bucket": "month", "from": "1844-01-01", "q": "Goodyear AND rubber", "to": "1847-12-31" }
   },
   {
-    "aggregate": "q=electric+telegraph&mode=phrase&from=1844-01-01&to=1846-12-31&bucket=month",
+    "aggregate": "q=%22electric+telegraph%22+OR+%22magnetic+telegraph%22&from=1843-01-01&to=1846-12-31&bucket=month",
     "blurb": "Morse's Washington-to-Baltimore line helped launch rapid long-distance communication.",
     "era": "1828-1860",
     "id": "electric-telegraph",
     "title": "Electric telegraph",
     "view": {
       "bucket": "month",
-      "from": "1844-01-01",
-      "q": "electric telegraph",
+      "from": "1843-01-01",
+      "q": "\"electric telegraph\" OR \"magnetic telegraph\"",
       "to": "1846-12-31"
     }
   },
   {
-    "aggregate": "q=insane+asylum&mode=phrase&from=1843-01-01&to=1845-12-31&bucket=month",
+    "aggregate": "q=%22insane+asylum%22+OR+%22insane+asylums%22+OR+%22lunatic+asylum%22+OR+%22lunatic+asylums%22&from=1841-01-01&to=1845-12-31&bucket=month",
     "blurb": "Institutions and reform campaigns shaped how newspapers discussed mental illness.",
     "era": "1828-1860",
     "id": "asylum-reform",
     "title": "Asylums and reform",
     "view": {
       "bucket": "month",
-      "from": "1843-01-01",
-      "q": "insane asylum",
+      "from": "1841-01-01",
+      "q": "\"insane asylum\" OR \"insane asylums\" OR \"lunatic asylum\" OR \"lunatic asylums\"",
       "to": "1845-12-31"
     }
   },
   {
-    "aggregate": "q=%22Dorr%22+AND+rebellion&from=1842-01-01&to=1843-12-31&bucket=month",
+    "aggregate": "q=%28Dorr+AND+%22Rhode+Island%22%29+OR+Dorrite*&from=1841-01-01&to=1845-12-31&bucket=month",
     "blurb": "Rhode Island's struggle over voting qualifications produced rival state governments.",
     "era": "1828-1860",
     "id": "dorr-rebellion",
     "title": "Dorr Rebellion",
     "view": {
       "bucket": "month",
-      "from": "1842-01-01",
-      "q": "\"Dorr\" AND rebellion",
-      "to": "1843-12-31"
+      "from": "1841-01-01",
+      "q": "(Dorr AND \"Rhode Island\") OR Dorrite*",
+      "to": "1845-12-31"
     }
   },
   {
-    "aggregate": "q=Bloomer+costume&mode=phrase&from=1851-01-01&to=1853-12-31&bucket=month",
+    "aggregate": "q=%22Bloomer+costume%22+OR+%22Bloomer+costumes%22+OR+%22Bloomer+dress%22+OR+%22Bloomer+dresses%22&from=1851-01-01&to=1853-12-31&bucket=month",
     "blurb": "Amelia Bloomer helped popularize a shorter dress worn over loose trousers.",
     "era": "1828-1860",
     "id": "bloomer-dress",
@@ -1412,22 +1048,17 @@
     "view": {
       "bucket": "month",
       "from": "1851-01-01",
-      "q": "Bloomer costume",
+      "q": "\"Bloomer costume\" OR \"Bloomer costumes\" OR \"Bloomer dress\" OR \"Bloomer dresses\"",
       "to": "1853-12-31"
     }
   },
   {
-    "aggregate": "q=Origin+of+Species&mode=phrase&from=1859-01-01&to=1860-12-31&bucket=month",
+    "aggregate": "q=Darwin+AND+%22Origin+of+Species%22&from=1859-01-01&to=1860-12-31&bucket=month",
     "blurb": "The 1859 publication introduced natural selection to a widening reading public.",
     "era": "1828-1860",
     "id": "darwin-origin",
     "title": "Darwin's Origin of Species",
-    "view": {
-      "bucket": "month",
-      "from": "1859-01-01",
-      "q": "Origin of Species",
-      "to": "1860-12-31"
-    }
+    "view": { "bucket": "month", "from": "1859-01-01", "q": "Darwin AND \"Origin of Species\"", "to": "1860-12-31" }
   },
   {
     "aggregate": "q=Leaves+of+Grass&mode=phrase&from=1855-01-01&to=1857-12-31&bucket=month",
@@ -1435,51 +1066,36 @@
     "era": "1828-1860",
     "id": "leaves-of-grass",
     "title": "Leaves of Grass",
-    "view": {
-      "bucket": "month",
-      "from": "1855-01-01",
-      "q": "Leaves of Grass",
-      "to": "1857-12-31"
-    }
+    "view": { "bucket": "month", "from": "1855-01-01", "q": "Leaves of Grass", "to": "1857-12-31" }
   },
   {
-    "aggregate": "q=Brook+Farm&mode=phrase&from=1841-01-01&to=1845-12-31&bucket=month",
+    "aggregate": "q=Brook+Farm&mode=phrase&from=1841-01-01&to=1847-12-31&bucket=month",
     "blurb": "A Massachusetts communal experiment joined intellectual life with cooperative labor.",
     "era": "1828-1860",
     "id": "brook-farm",
     "title": "Brook Farm community",
-    "view": {
-      "bucket": "month",
-      "from": "1841-01-01",
-      "q": "Brook Farm",
-      "to": "1845-12-31"
-    }
+    "view": { "bucket": "month", "from": "1841-01-01", "q": "Brook Farm", "to": "1847-12-31" }
   },
   {
-    "aggregate": "q=Chang+and+Eng&mode=phrase&from=1830-01-01&to=1832-12-31&bucket=month",
+    "aggregate": "q=%22Chang+and+Eng%22+OR+%22Siamese+twins%22&from=1829-01-01&to=1832-12-31&bucket=month",
     "blurb": "The conjoined brothers toured the United States as celebrated public performers.",
     "era": "1828-1860",
     "id": "chang-and-eng",
     "title": "Chang and Eng",
     "view": {
       "bucket": "month",
-      "from": "1830-01-01",
-      "q": "Chang and Eng",
+      "from": "1829-01-01",
+      "q": "\"Chang and Eng\" OR \"Siamese twins\"",
       "to": "1832-12-31"
     }
   },
   {
-    "aggregate": "q=menagerie&mode=phrase&from=1840-01-01&to=1842-12-31&bucket=month",
+    "aggregate": "q=menagerie+OR+menageries&from=1840-01-01&to=1842-12-31&bucket=month",
     "blurb": "Traveling animal exhibitions and circuses advertised entertainment across the country.",
     "era": "1828-1860",
     "id": "circus-menageries",
     "title": "Traveling menageries",
-    "view": {
-      "bucket": "month",
-      "from": "1840-01-01",
-      "q": "menagerie",
-      "to": "1842-12-31"
-    }
+    "view": { "bucket": "month", "from": "1840-01-01", "q": "menagerie OR menageries", "to": "1842-12-31" }
   },
   {
     "aggregate": "q=balloon+corps&mode=phrase&from=1861-01-01&to=1863-12-31&bucket=month",
@@ -1487,77 +1103,52 @@
     "era": "1860-1865",
     "id": "civil-war-ballooning",
     "title": "Civil War balloons",
-    "view": {
-      "bucket": "month",
-      "from": "1861-01-01",
-      "q": "balloon corps",
-      "to": "1863-12-31"
-    }
+    "view": { "bucket": "month", "from": "1861-01-01", "q": "balloon corps", "to": "1863-12-31" }
   },
   {
-    "aggregate": "q=blockade+runner&mode=phrase&from=1863-01-01&to=1864-12-31&bucket=month",
+    "aggregate": "q=%22blockade+runner%22+OR+%22blockade+runners%22+OR+%22blockade+running%22&from=1861-04-01&to=1865-06-30&bucket=month",
     "blurb": "Fast vessels tried to carry goods through the Union blockade of Southern ports.",
     "era": "1860-1865",
     "id": "blockade-runners",
     "title": "Blockade runners",
     "view": {
       "bucket": "month",
-      "from": "1863-01-01",
-      "q": "blockade runner",
-      "to": "1864-12-31"
+      "from": "1861-04-01",
+      "q": "\"blockade runner\" OR \"blockade runners\" OR \"blockade running\"",
+      "to": "1865-06-30"
     }
   },
   {
-    "aggregate": "q=Clara+Barton&mode=phrase&from=1863-01-01&to=1865-12-31&bucket=month",
+    "aggregate": "q=Clara+Barton&mode=phrase&from=1861-04-01&to=1865-12-31&bucket=month",
     "blurb": "Barton carried supplies and cared for wounded soldiers during the Civil War.",
     "era": "1860-1865",
     "id": "clara-barton",
     "title": "Clara Barton",
-    "view": {
-      "bucket": "month",
-      "from": "1863-01-01",
-      "q": "Clara Barton",
-      "to": "1865-12-31"
-    }
+    "view": { "bucket": "month", "from": "1861-04-01", "q": "Clara Barton", "to": "1865-12-31" }
   },
   {
-    "aggregate": "q=Sultana+AND+explosion&from=1865-04-27&to=1865-07-31&bucket=month",
+    "aggregate": "q=Sultana+AND+explosion&from=1865-04-27&to=1865-07-31&bucket=week",
     "blurb": "The Mississippi steamboat exploded in April 1865 while carrying returning prisoners.",
     "era": "1860-1865",
     "id": "sultana-disaster",
     "title": "Sultana steamboat disaster",
-    "view": {
-      "bucket": "month",
-      "from": "1865-04-27",
-      "q": "Sultana AND explosion",
-      "to": "1865-07-31"
-    }
+    "view": { "bucket": "week", "from": "1865-04-27", "q": "Sultana AND explosion", "to": "1865-07-31" }
   },
   {
-    "aggregate": "q=Belle+Boyd&mode=phrase&from=1862-01-01&to=1864-12-31&bucket=month",
+    "aggregate": "q=%22Belle+Boyd%22+OR+%22Bell+Boyd%22&from=1862-01-01&to=1865-12-31&bucket=month",
     "blurb": "The Confederate spy became a subject of wartime reports, arrests, and celebrity.",
     "era": "1860-1865",
     "id": "belle-boyd",
     "title": "Belle Boyd",
-    "view": {
-      "bucket": "month",
-      "from": "1862-01-01",
-      "q": "Belle Boyd",
-      "to": "1864-12-31"
-    }
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "\"Belle Boyd\" OR \"Bell Boyd\"", "to": "1865-12-31" }
   },
   {
-    "aggregate": "q=sanitary+commission&mode=phrase&from=1861-01-01&to=1863-12-31&bucket=month",
+    "aggregate": "q=sanitary+commission&mode=phrase&from=1861-01-01&to=1865-12-31&bucket=month",
     "blurb": "Civilian organizers raised supplies and improved care for Union soldiers.",
     "era": "1860-1865",
     "id": "sanitary-commission",
     "title": "Sanitary Commission",
-    "view": {
-      "bucket": "month",
-      "from": "1861-01-01",
-      "q": "sanitary commission",
-      "to": "1863-12-31"
-    }
+    "view": { "bucket": "month", "from": "1861-01-01", "q": "sanitary commission", "to": "1865-12-31" }
   },
   {
     "aggregate": "q=Edwin+Booth&mode=phrase&from=1863-01-01&to=1864-12-31&bucket=month",
@@ -1565,12 +1156,7 @@
     "era": "1860-1865",
     "id": "edwin-booth",
     "title": "Edwin Booth on stage",
-    "view": {
-      "bucket": "month",
-      "from": "1863-01-01",
-      "q": "Edwin Booth",
-      "to": "1864-12-31"
-    }
+    "view": { "bucket": "month", "from": "1863-01-01", "q": "Edwin Booth", "to": "1864-12-31" }
   },
   {
     "aggregate": "q=homestead+act&mode=phrase&from=1862-01-01&to=1863-12-31&bucket=month",
@@ -1578,15 +1164,10 @@
     "era": "1860-1865",
     "id": "homestead-act",
     "title": "Homestead Act",
-    "view": {
-      "bucket": "month",
-      "from": "1862-01-01",
-      "q": "homestead act",
-      "to": "1863-12-31"
-    }
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "homestead act", "to": "1863-12-31" }
   },
   {
-    "aggregate": "q=agricultural+colleges&mode=phrase&from=1862-01-01&to=1863-12-31&bucket=month",
+    "aggregate": "q=%22agricultural+college%22+OR+%22agricultural+colleges%22&from=1862-01-01&to=1863-12-31&bucket=month",
     "blurb": "The 1862 Morrill Act supported colleges teaching agriculture and mechanical arts.",
     "era": "1860-1865",
     "id": "morrill-act",
@@ -1594,38 +1175,33 @@
     "view": {
       "bucket": "month",
       "from": "1862-01-01",
-      "q": "agricultural colleges",
+      "q": "\"agricultural college\" OR \"agricultural colleges\"",
       "to": "1863-12-31"
     }
   },
   {
-    "aggregate": "q=%22New+York%22+AND+%22draft+riots%22&from=1863-07-13&to=1863-09-30&bucket=month",
+    "aggregate": "q=%22New+York%22+AND+%28%22draft+riot%22+OR+%22draft+riots%22%29&from=1863-07-01&to=1863-09-30&bucket=week",
     "blurb": "Opposition to conscription in July 1863 became deadly racist violence in New York.",
     "era": "1860-1865",
     "id": "draft-riots",
     "title": "New York draft riots",
     "view": {
-      "bucket": "month",
-      "from": "1863-07-13",
-      "q": "\"New York\" AND \"draft riots\"",
+      "bucket": "week",
+      "from": "1863-07-01",
+      "q": "\"New York\" AND (\"draft riot\" OR \"draft riots\")",
       "to": "1863-09-30"
     }
   },
   {
-    "aggregate": "q=%22Port+Royal%22+AND+freedmen+AND+school%2A&from=1862-01-01&to=1864-12-31&bucket=month",
-    "blurb": "Schools and paid labor on South Carolina's Sea Islands tested wartime emancipation.",
+    "aggregate": "q=%22Port+Royal%22+AND+school*&from=1862-01-01&to=1865-12-31&bucket=month",
+    "blurb": "Schools on South Carolina's Sea Islands supported formerly enslaved people's education.",
     "era": "1860-1865",
     "id": "port-royal-schools",
-    "title": "Port Royal experiment",
-    "view": {
-      "bucket": "month",
-      "from": "1862-01-01",
-      "q": "\"Port Royal\" AND freedmen AND school*",
-      "to": "1864-12-31"
-    }
+    "title": "Port Royal schools",
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "\"Port Royal\" AND school*", "to": "1865-12-31" }
   },
   {
-    "aggregate": "q=%22Sand+Creek%22+AND+massacre&from=1864-11-29&to=1865-12-31&bucket=month",
+    "aggregate": "q=%22Sand+Creek%22+AND+%28massacre+OR+battle+OR+Chivington%29&from=1864-11-29&to=1865-12-31&bucket=month",
     "blurb": "U.S. troops attacked a Cheyenne and Arapaho encampment in Colorado in November 1864.",
     "era": "1860-1865",
     "id": "sand-creek",
@@ -1633,12 +1209,12 @@
     "view": {
       "bucket": "month",
       "from": "1864-11-29",
-      "q": "\"Sand Creek\" AND massacre",
+      "q": "\"Sand Creek\" AND (massacre OR battle OR Chivington)",
       "to": "1865-12-31"
     }
   },
   {
-    "aggregate": "q=Yosemite+valley&mode=phrase&from=1864-01-01&to=1865-12-31&bucket=month",
+    "aggregate": "q=%22Yosemite+valley%22+OR+%22Yo+Semite+valley%22&from=1864-01-01&to=1865-12-31&bucket=month",
     "blurb": "The 1864 federal grant protected Yosemite Valley and the Mariposa Grove.",
     "era": "1860-1865",
     "id": "yosemite-grant",
@@ -1646,7 +1222,7 @@
     "view": {
       "bucket": "month",
       "from": "1864-01-01",
-      "q": "Yosemite valley",
+      "q": "\"Yosemite valley\" OR \"Yo Semite valley\"",
       "to": "1865-12-31"
     }
   },
@@ -1656,41 +1232,31 @@
     "era": "1865-1877",
     "id": "alaska-purchase",
     "title": "Alaska Purchase",
-    "view": {
-      "bucket": "month",
-      "from": "1867-01-01",
-      "q": "Russian America",
-      "to": "1868-12-31"
-    }
+    "view": { "bucket": "month", "from": "1867-01-01", "q": "Russian America", "to": "1868-12-31" }
   },
   {
-    "aggregate": "q=Fenian+AND+Canada&from=1866-05-01&to=1866-07-31&bucket=month",
+    "aggregate": "q=Fenian*+AND+Canada&from=1866-01-01&to=1871-12-31&bucket=month",
     "blurb": "Irish nationalists crossed the U.S. border to attack British rule in Canada.",
     "era": "1865-1877",
     "id": "fenian-raids",
     "title": "Fenian raids into Canada",
-    "view": {
-      "bucket": "month",
-      "from": "1866-05-01",
-      "q": "Fenian AND Canada",
-      "to": "1866-07-31"
-    }
+    "view": { "bucket": "month", "from": "1866-01-01", "q": "Fenian* AND Canada", "to": "1871-12-31" }
   },
   {
-    "aggregate": "q=%22Brooklyn%22+AND+%22theatre+fire%22&from=1876-12-05&to=1877-02-28&bucket=month",
+    "aggregate": "q=Brooklyn+AND+%28%22theatre+fire%22+OR+%22theater+fire%22%29&from=1876-12-05&to=1877-02-28&bucket=week",
     "blurb": "A December 1876 theater fire killed hundreds in Brooklyn.",
     "era": "1865-1877",
     "id": "brooklyn-theater-fire",
     "title": "Brooklyn Theater fire",
     "view": {
-      "bucket": "month",
+      "bucket": "week",
       "from": "1876-12-05",
-      "q": "\"Brooklyn\" AND \"theatre fire\"",
+      "q": "Brooklyn AND (\"theatre fire\" OR \"theater fire\")",
       "to": "1877-02-28"
     }
   },
   {
-    "aggregate": "q=Yellowstone+park&mode=phrase&from=1872-01-01&to=1873-12-31&bucket=month",
+    "aggregate": "q=%22Yellowstone+park%22+OR+%22Yellowstone+national+park%22&from=1872-01-01&to=1873-12-31&bucket=month",
     "blurb": "Congress established Yellowstone as a national park in March 1872.",
     "era": "1865-1877",
     "id": "yellowstone-park",
@@ -1698,22 +1264,17 @@
     "view": {
       "bucket": "month",
       "from": "1872-01-01",
-      "q": "Yellowstone park",
+      "q": "\"Yellowstone park\" OR \"Yellowstone national park\"",
       "to": "1873-12-31"
     }
   },
   {
-    "aggregate": "q=Navajo+AND+treaty&from=1868-01-01&to=1869-12-31&bucket=month",
+    "aggregate": "q=%28Navajo*+OR+Navaho*%29+AND+treaty&from=1868-01-01&to=1869-12-31&bucket=month",
     "blurb": "The 1868 treaty allowed Navajo people to return from imprisonment at Bosque Redondo.",
     "era": "1865-1877",
     "id": "navajo-treaty",
     "title": "Navajo return from exile",
-    "view": {
-      "bucket": "month",
-      "from": "1868-01-01",
-      "q": "Navajo AND treaty",
-      "to": "1869-12-31"
-    }
+    "view": { "bucket": "month", "from": "1868-01-01", "q": "(Navajo* OR Navaho*) AND treaty", "to": "1869-12-31" }
   },
   {
     "aggregate": "q=telephone&mode=phrase&from=1876-01-01&to=1877-12-31&bucket=month",
@@ -1721,15 +1282,10 @@
     "era": "1865-1877",
     "id": "telephone-invention",
     "title": "The telephone's debut",
-    "view": {
-      "bucket": "month",
-      "from": "1876-01-01",
-      "q": "telephone",
-      "to": "1877-12-31"
-    }
+    "view": { "bucket": "month", "from": "1876-01-01", "q": "telephone", "to": "1877-12-31" }
   },
   {
-    "aggregate": "q=%22Red+Stockings%22+AND+Cincinnati&from=1869-01-01&to=1870-12-31&bucket=month",
+    "aggregate": "q=%22Red+Stockings%22+AND+Cincinnati+AND+%28baseball+OR+%22base+ball%22%29&from=1869-01-01&to=1870-12-31&bucket=month",
     "blurb": "Cincinnati's openly professional baseball club toured and won national attention.",
     "era": "1865-1877",
     "id": "red-stockings",
@@ -1737,12 +1293,12 @@
     "view": {
       "bucket": "month",
       "from": "1869-01-01",
-      "q": "\"Red Stockings\" AND Cincinnati",
+      "q": "\"Red Stockings\" AND Cincinnati AND (baseball OR \"base ball\")",
       "to": "1870-12-31"
     }
   },
   {
-    "aggregate": "q=type+writer&mode=phrase&from=1873-01-01&to=1875-12-31&bucket=month",
+    "aggregate": "q=typewriter*+OR+%22type+writer%22+OR+%22type+writers%22&from=1873-01-01&to=1875-12-31&bucket=month",
     "blurb": "Early commercial writing machines offered a new way to produce business documents.",
     "era": "1865-1877",
     "id": "typewriter",
@@ -1750,25 +1306,25 @@
     "view": {
       "bucket": "month",
       "from": "1873-01-01",
-      "q": "type writer",
+      "q": "typewriter* OR \"type writer\" OR \"type writers\"",
       "to": "1875-12-31"
     }
   },
   {
-    "aggregate": "q=East+river+bridge&mode=phrase&from=1870-01-01&to=1872-12-31&bucket=month",
-    "blurb": "Workers laid the foundations of the suspension bridge connecting Brooklyn and New York.",
+    "aggregate": "q=%22East+river+bridge%22+OR+%22Brooklyn+bridge%22&from=1869-01-01&to=1883-12-31&bucket=month",
+    "blurb": "Construction of the East River crossing linked Brooklyn and New York in 1883.",
     "era": "1865-1877",
     "id": "brooklyn-bridge-building",
     "title": "Building the Brooklyn Bridge",
     "view": {
       "bucket": "month",
-      "from": "1870-01-01",
-      "q": "East river bridge",
-      "to": "1872-12-31"
+      "from": "1869-01-01",
+      "q": "\"East river bridge\" OR \"Brooklyn bridge\"",
+      "to": "1883-12-31"
     }
   },
   {
-    "aggregate": "q=Molly+Maguires&mode=phrase&from=1875-01-01&to=1877-12-31&bucket=month",
+    "aggregate": "q=%28Molly+OR+Mollie+OR+Molley%29+AND+Maguire*&from=1875-01-01&to=1879-12-31&bucket=month",
     "blurb": "Trials in Pennsylvania's coal region intertwined labor conflict and anti-Irish prejudice.",
     "era": "1865-1877",
     "id": "molly-maguires",
@@ -1776,8 +1332,8 @@
     "view": {
       "bucket": "month",
       "from": "1875-01-01",
-      "q": "Molly Maguires",
-      "to": "1877-12-31"
+      "q": "(Molly OR Mollie OR Molley) AND Maguire*",
+      "to": "1879-12-31"
     }
   },
   {
@@ -1786,25 +1342,15 @@
     "era": "1865-1877",
     "id": "grasshopper-plague",
     "title": "Great Plains grasshopper plague",
-    "view": {
-      "bucket": "month",
-      "from": "1874-01-01",
-      "q": "grasshoppers",
-      "to": "1875-12-31"
-    }
+    "view": { "bucket": "month", "from": "1874-01-01", "q": "grasshoppers", "to": "1875-12-31" }
   },
   {
-    "aggregate": "q=Challenger+expedition&mode=phrase&from=1873-01-01&to=1876-12-31&bucket=month",
+    "aggregate": "q=Challenger+expedition&mode=phrase&from=1872-01-01&to=1876-12-31&bucket=month",
     "blurb": "A British scientific voyage surveyed ocean depths and marine life around the world.",
     "era": "1865-1877",
     "id": "challenger-expedition",
     "title": "Challenger ocean expedition",
-    "view": {
-      "bucket": "month",
-      "from": "1873-01-01",
-      "q": "Challenger expedition",
-      "to": "1876-12-31"
-    }
+    "view": { "bucket": "month", "from": "1872-01-01", "q": "Challenger expedition", "to": "1876-12-31" }
   },
   {
     "aggregate": "q=Suez+canal&mode=phrase&from=1869-01-01&to=1870-12-31&bucket=month",
@@ -1812,25 +1358,15 @@
     "era": "1865-1877",
     "id": "suez-canal-opening",
     "title": "Suez Canal opens",
-    "view": {
-      "bucket": "month",
-      "from": "1869-01-01",
-      "q": "Suez canal",
-      "to": "1870-12-31"
-    }
+    "view": { "bucket": "month", "from": "1869-01-01", "q": "Suez canal", "to": "1870-12-31" }
   },
   {
-    "aggregate": "q=bicycle&mode=phrase&from=1885-01-01&to=1887-12-31&bucket=month",
+    "aggregate": "q=bicycl*&from=1885-01-01&to=1900-12-31&bucket=month",
     "blurb": "Cycling clubs, new machines, and road culture expanded during the bicycle boom.",
     "era": "1877-1900",
     "id": "bicycle-boom",
     "title": "Bicycle boom",
-    "view": {
-      "bucket": "month",
-      "from": "1885-01-01",
-      "q": "bicycle",
-      "to": "1887-12-31"
-    }
+    "view": { "bucket": "month", "from": "1885-01-01", "q": "bicycl*", "to": "1900-12-31" }
   },
   {
     "aggregate": "q=roller+skating&mode=phrase&from=1884-01-01&to=1886-12-31&bucket=month",
@@ -1838,25 +1374,15 @@
     "era": "1877-1900",
     "id": "roller-skating",
     "title": "Roller skating craze",
-    "view": {
-      "bucket": "month",
-      "from": "1884-01-01",
-      "q": "roller skating",
-      "to": "1886-12-31"
-    }
+    "view": { "bucket": "month", "from": "1884-01-01", "q": "roller skating", "to": "1886-12-31" }
   },
   {
-    "aggregate": "q=%22Rock+Springs%22+AND+Chinese&from=1885-09-02&to=1885-12-31&bucket=month",
+    "aggregate": "q=%22Rock+Springs%22+AND+Chinese&from=1885-09-02&to=1885-12-31&bucket=week",
     "blurb": "White miners attacked Chinese workers in Wyoming Territory in September 1885.",
     "era": "1877-1900",
     "id": "rock-springs",
     "title": "Rock Springs massacre",
-    "view": {
-      "bucket": "month",
-      "from": "1885-09-02",
-      "q": "\"Rock Springs\" AND Chinese",
-      "to": "1885-12-31"
-    }
+    "view": { "bucket": "week", "from": "1885-09-02", "q": "\"Rock Springs\" AND Chinese", "to": "1885-12-31" }
   },
   {
     "aggregate": "q=Dawes+AND+allotment&from=1887-01-01&to=1888-12-31&bucket=month",
@@ -1864,63 +1390,53 @@
     "era": "1877-1900",
     "id": "dawes-allotment",
     "title": "Dawes Act and allotment",
-    "view": {
-      "bucket": "month",
-      "from": "1887-01-01",
-      "q": "Dawes AND allotment",
-      "to": "1888-12-31"
-    }
+    "view": { "bucket": "month", "from": "1887-01-01", "q": "Dawes AND allotment", "to": "1888-12-31" }
   },
   {
-    "aggregate": "q=%22Ida+B+Wells%22+OR+%22Ida+Wells%22&from=1892-01-01&to=1894-12-31&bucket=month",
-    "blurb": "Wells's reporting challenged lynching and its justifications in the American press.",
+    "aggregate": "q=%28%22Ida+B+Wells%22+OR+%22Ida+Wells%22%29+AND+lynch*&from=1892-01-01&to=1900-12-31&bucket=month",
+    "blurb": "Wells's 1890s journalism challenged lynching and its justifications in the press.",
     "era": "1877-1900",
     "id": "ida-wells",
     "title": "Ida B. Wells's journalism",
     "view": {
       "bucket": "month",
       "from": "1892-01-01",
-      "q": "\"Ida B Wells\" OR \"Ida Wells\"",
-      "to": "1894-12-31"
+      "q": "(\"Ida B Wells\" OR \"Ida Wells\") AND lynch*",
+      "to": "1900-12-31"
     }
   },
   {
-    "aggregate": "q=Black+Patti&mode=phrase&from=1892-01-01&to=1894-12-31&bucket=month",
-    "blurb": "The acclaimed Black soprano toured under a stage name used widely in period coverage.",
+    "aggregate": "q=%22Black+Patti%22+OR+%22Sissieretta+Jones%22&from=1887-01-01&to=1915-12-31&bucket=year",
+    "blurb": "Newspapers called the acclaimed Black soprano 'Black Patti' as she toured widely.",
     "era": "1877-1900",
     "id": "sissieretta-jones",
     "title": "Sissieretta Jones sings",
     "view": {
-      "bucket": "month",
-      "from": "1892-01-01",
-      "q": "Black Patti",
-      "to": "1894-12-31"
+      "bucket": "year",
+      "from": "1887-01-01",
+      "q": "\"Black Patti\" OR \"Sissieretta Jones\"",
+      "to": "1915-12-31"
     }
   },
   {
-    "aggregate": "q=ragtime&mode=phrase&from=1897-01-01&to=1899-12-31&bucket=month",
+    "aggregate": "q=ragtime+OR+%22rag+time%22&from=1893-01-01&to=1921-12-31&bucket=year",
     "blurb": "Syncopated music moved through sheet music, performances, and debates about taste.",
     "era": "1877-1900",
     "id": "ragtime",
     "title": "Ragtime music",
-    "view": {
-      "bucket": "month",
-      "from": "1897-01-01",
-      "q": "ragtime",
-      "to": "1899-12-31"
-    }
+    "view": { "bucket": "year", "from": "1893-01-01", "q": "ragtime OR \"rag time\"", "to": "1921-12-31" }
   },
   {
-    "aggregate": "q=passenger+pigeon&mode=phrase&from=1880-01-01&to=1882-12-31&bucket=month",
+    "aggregate": "q=%22passenger+pigeon%22+OR+%22passenger+pigeons%22&from=1877-01-01&to=1900-12-31&bucket=year",
     "blurb": "Market hunting and shrinking flocks drew attention to a once abundant North American bird.",
     "era": "1877-1900",
     "id": "passenger-pigeons",
     "title": "Passenger pigeons decline",
     "view": {
-      "bucket": "month",
-      "from": "1880-01-01",
-      "q": "passenger pigeon",
-      "to": "1882-12-31"
+      "bucket": "year",
+      "from": "1877-01-01",
+      "q": "\"passenger pigeon\" OR \"passenger pigeons\"",
+      "to": "1900-12-31"
     }
   },
   {
@@ -1929,25 +1445,15 @@
     "era": "1877-1900",
     "id": "statue-liberty",
     "title": "Statue of Liberty dedication",
-    "view": {
-      "bucket": "month",
-      "from": "1885-01-01",
-      "q": "Bartholdi statue",
-      "to": "1886-12-31"
-    }
+    "view": { "bucket": "month", "from": "1885-01-01", "q": "Bartholdi statue", "to": "1886-12-31" }
   },
   {
-    "aggregate": "q=%22Nellie+Bly%22+AND+world&from=1889-11-01&to=1890-02-28&bucket=month",
+    "aggregate": "q=%22Nellie+Bly%22+AND+world&from=1889-11-01&to=1890-02-28&bucket=week",
     "blurb": "The reporter's round-the-world journey turned newspaper readers into travel spectators.",
     "era": "1877-1900",
     "id": "nellie-bly",
     "title": "Nellie Bly circles the globe",
-    "view": {
-      "bucket": "month",
-      "from": "1889-11-01",
-      "q": "\"Nellie Bly\" AND world",
-      "to": "1890-02-28"
-    }
+    "view": { "bucket": "week", "from": "1889-11-01", "q": "\"Nellie Bly\" AND world", "to": "1890-02-28" }
   },
   {
     "aggregate": "q=Homestead+strike&mode=phrase&from=1892-01-01&to=1893-12-31&bucket=month",
@@ -1955,12 +1461,7 @@
     "era": "1877-1900",
     "id": "homestead-strike",
     "title": "Homestead steel strike",
-    "view": {
-      "bucket": "month",
-      "from": "1892-01-01",
-      "q": "Homestead strike",
-      "to": "1893-12-31"
-    }
+    "view": { "bucket": "month", "from": "1892-01-01", "q": "Homestead strike", "to": "1893-12-31" }
   },
   {
     "aggregate": "q=X+rays&mode=phrase&from=1896-01-01&to=1897-12-31&bucket=month",
@@ -1968,51 +1469,31 @@
     "era": "1877-1900",
     "id": "x-rays",
     "title": "X-rays enter medicine",
-    "view": {
-      "bucket": "month",
-      "from": "1896-01-01",
-      "q": "X rays",
-      "to": "1897-12-31"
-    }
+    "view": { "bucket": "month", "from": "1896-01-01", "q": "X rays", "to": "1897-12-31" }
   },
   {
-    "aggregate": "q=Nikola+Tesla&mode=phrase&from=1893-01-01&to=1895-12-31&bucket=month",
-    "blurb": "Tesla's electrical demonstrations and inventions attracted scientific and public interest.",
+    "aggregate": "q=Tesla&mode=phrase&from=1888-01-01&to=1900-12-31&bucket=month",
+    "blurb": "Tesla's alternating-current inventions and 1890s electrical experiments drew notice.",
     "era": "1877-1900",
     "id": "nikola-tesla",
     "title": "Nikola Tesla's experiments",
-    "view": {
-      "bucket": "month",
-      "from": "1893-01-01",
-      "q": "Nikola Tesla",
-      "to": "1895-12-31"
-    }
+    "view": { "bucket": "month", "from": "1888-01-01", "q": "Tesla", "to": "1900-12-31" }
   },
   {
-    "aggregate": "q=Esperanto+AND+language&from=1897-01-01&to=1900-12-31&bucket=month",
+    "aggregate": "q=Esperanto&mode=phrase&from=1887-01-01&to=1900-12-31&bucket=month",
     "blurb": "A proposed international language sought readers beyond national and linguistic borders.",
     "era": "1877-1900",
     "id": "esperanto",
     "title": "Esperanto's early readers",
-    "view": {
-      "bucket": "month",
-      "from": "1897-01-01",
-      "q": "Esperanto AND language",
-      "to": "1900-12-31"
-    }
+    "view": { "bucket": "month", "from": "1887-01-01", "q": "Esperanto", "to": "1900-12-31" }
   },
   {
-    "aggregate": "q=Carnegie+library&mode=phrase&from=1889-01-01&to=1891-12-31&bucket=month",
-    "blurb": "Philanthropic gifts helped establish public libraries in industrial communities.",
+    "aggregate": "q=Carnegie+AND+librar*&from=1886-01-01&to=1919-12-31&bucket=year",
+    "blurb": "Carnegie's gifts helped communities across the United States build public libraries.",
     "era": "1877-1900",
     "id": "carnegie-libraries",
     "title": "Carnegie libraries",
-    "view": {
-      "bucket": "month",
-      "from": "1889-01-01",
-      "q": "Carnegie library",
-      "to": "1891-12-31"
-    }
+    "view": { "bucket": "year", "from": "1886-01-01", "q": "Carnegie AND librar*", "to": "1919-12-31" }
   },
   {
     "aggregate": "q=electric+automobile&mode=phrase&from=1900-01-01&to=1902-12-31&bucket=month",
@@ -2020,12 +1501,7 @@
     "era": "1900-1929",
     "id": "electric-cars",
     "title": "Early electric automobiles",
-    "view": {
-      "bucket": "month",
-      "from": "1900-01-01",
-      "q": "electric automobile",
-      "to": "1902-12-31"
-    }
+    "view": { "bucket": "month", "from": "1900-01-01", "q": "electric automobile", "to": "1902-12-31" }
   },
   {
     "aggregate": "q=Marconi&mode=phrase&from=1901-01-01&to=1903-12-31&bucket=month",
@@ -2033,38 +1509,23 @@
     "era": "1900-1929",
     "id": "wireless-marconi",
     "title": "Marconi's wireless",
-    "view": {
-      "bucket": "month",
-      "from": "1901-01-01",
-      "q": "Marconi",
-      "to": "1903-12-31"
-    }
+    "view": { "bucket": "month", "from": "1901-01-01", "q": "Marconi", "to": "1903-12-31" }
   },
   {
-    "aggregate": "q=radium&mode=phrase&from=1903-01-01&to=1905-12-31&bucket=month",
-    "blurb": "The Curies' discoveries prompted scientific excitement and speculative medical claims.",
+    "aggregate": "q=radium&mode=phrase&from=1898-01-01&to=1905-12-31&bucket=month",
+    "blurb": "The Curies' 1898 discovery spurred scientific excitement and speculative medical claims.",
     "era": "1900-1929",
     "id": "radium-discovery",
     "title": "Radium and radioactivity",
-    "view": {
-      "bucket": "month",
-      "from": "1903-01-01",
-      "q": "radium",
-      "to": "1905-12-31"
-    }
+    "view": { "bucket": "month", "from": "1898-01-01", "q": "radium", "to": "1905-12-31" }
   },
   {
-    "aggregate": "q=Halley%2A+AND+comet&from=1910-01-01&to=1910-12-31&bucket=month",
+    "aggregate": "q=Halley*+AND+comet&from=1909-01-01&to=1910-12-31&bucket=month",
     "blurb": "The comet's 1910 return inspired observations, publicity, and public anxiety.",
     "era": "1900-1929",
     "id": "halleys-comet",
     "title": "Halley's comet returns",
-    "view": {
-      "bucket": "month",
-      "from": "1910-01-01",
-      "q": "Halley* AND comet",
-      "to": "1910-12-31"
-    }
+    "view": { "bucket": "month", "from": "1909-01-01", "q": "Halley* AND comet", "to": "1910-12-31" }
   },
   {
     "aggregate": "q=Mount+Wilson&mode=phrase&from=1904-01-01&to=1906-12-31&bucket=month",
@@ -2072,50 +1533,40 @@
     "era": "1900-1929",
     "id": "mount-wilson",
     "title": "Mount Wilson Observatory",
-    "view": {
-      "bucket": "month",
-      "from": "1904-01-01",
-      "q": "Mount Wilson",
-      "to": "1906-12-31"
-    }
+    "view": { "bucket": "month", "from": "1904-01-01", "q": "Mount Wilson", "to": "1906-12-31" }
   },
   {
-    "aggregate": "q=tuberculosis+AND+prevention&from=1905-01-01&to=1907-12-31&bucket=month",
-    "blurb": "Public health campaigns promoted prevention, sanatorium care, and disease education.",
+    "aggregate": "q=%22prevention+of+tuberculosis%22+OR+%22tuberculosis+prevention%22+OR+%22white+plague%22&from=1904-01-01&to=1909-12-31&bucket=month",
+    "blurb": "Early national campaigns promoted prevention, sanatorium care, and tuberculosis education.",
     "era": "1900-1929",
     "id": "tuberculosis-campaign",
     "title": "Campaigns against tuberculosis",
     "view": {
       "bucket": "month",
-      "from": "1905-01-01",
-      "q": "tuberculosis AND prevention",
-      "to": "1907-12-31"
-    }
-  },
-  {
-    "aggregate": "q=Typhoid+Mary&mode=phrase&from=1907-01-01&to=1909-12-31&bucket=month",
-    "blurb": "Officials traced outbreaks to an asymptomatic cook and imposed contested isolation.",
-    "era": "1900-1929",
-    "id": "typhoid-mary",
-    "title": "Mary Mallon and typhoid",
-    "view": {
-      "bucket": "month",
-      "from": "1907-01-01",
-      "q": "Typhoid Mary",
+      "from": "1904-01-01",
+      "q": "\"prevention of tuberculosis\" OR \"tuberculosis prevention\" OR \"white plague\"",
       "to": "1909-12-31"
     }
   },
   {
-    "aggregate": "q=%22Major+Taylor%22+AND+bicycle&from=1900-01-01&to=1902-12-31&bucket=month",
+    "aggregate": "q=%22Mary+Mallon%22+OR+%22Mary+Ilverson%22&from=1907-01-01&to=1915-12-31&bucket=month",
+    "blurb": "Mary Mallon's forced isolation, release in 1910, and renewed quarantine in 1915.",
+    "era": "1900-1929",
+    "id": "typhoid-mary",
+    "title": "Mary Mallon and typhoid",
+    "view": { "bucket": "month", "from": "1907-01-01", "q": "\"Mary Mallon\" OR \"Mary Ilverson\"", "to": "1915-12-31" }
+  },
+  {
+    "aggregate": "q=%22Major+Taylor+bicycle%22%7E15+OR+%22Major+Taylor+cyclist%22%7E10+OR+%22Major+Taylor+cycling%22%7E10&from=1895-01-01&to=1910-12-31&bucket=month",
     "blurb": "The Black cycling champion raced internationally despite exclusion and discrimination.",
     "era": "1900-1929",
     "id": "major-taylor",
     "title": "Major Taylor's cycling",
     "view": {
       "bucket": "month",
-      "from": "1900-01-01",
-      "q": "\"Major Taylor\" AND bicycle",
-      "to": "1902-12-31"
+      "from": "1895-01-01",
+      "q": "\"Major Taylor bicycle\"~15 OR \"Major Taylor cyclist\"~10 OR \"Major Taylor cycling\"~10",
+      "to": "1910-12-31"
     }
   },
   {
@@ -2124,28 +1575,18 @@
     "era": "1900-1929",
     "id": "jim-thorpe",
     "title": "Jim Thorpe's Olympic fame",
-    "view": {
-      "bucket": "month",
-      "from": "1912-01-01",
-      "q": "Jim Thorpe",
-      "to": "1913-12-31"
-    }
+    "view": { "bucket": "month", "from": "1912-01-01", "q": "Jim Thorpe", "to": "1913-12-31" }
   },
   {
-    "aggregate": "q=%22Bessie+Coleman%22+AND+aviat%2A&from=1922-01-01&to=1926-12-31&bucket=month",
-    "blurb": "Coleman earned a pilot's license in France and performed at American air shows.",
+    "aggregate": "q=%22Bessie+Coleman%22+AND+aviat*&from=1920-01-01&to=1926-12-31&bucket=month",
+    "blurb": "Licensed in France in 1921, Coleman became a pioneering Black air-show pilot in the US.",
     "era": "1900-1929",
     "id": "bessie-coleman",
     "title": "Bessie Coleman flies",
-    "view": {
-      "bucket": "month",
-      "from": "1922-01-01",
-      "q": "\"Bessie Coleman\" AND aviat*",
-      "to": "1926-12-31"
-    }
+    "view": { "bucket": "month", "from": "1920-01-01", "q": "\"Bessie Coleman\" AND aviat*", "to": "1926-12-31" }
   },
   {
-    "aggregate": "q=Tulsa+riot&mode=phrase&from=1921-01-01&to=1921-12-31&bucket=month",
+    "aggregate": "q=%22Tulsa+riot%22+OR+%22Tulsa+race+riot%22+OR+%22Tulsa+race+riots%22+OR+%22Tulsa+race+war%22&from=1921-01-01&to=1921-12-31&bucket=month",
     "blurb": "White mobs destroyed Greenwood in 1921; the query follows contemporary press wording.",
     "era": "1900-1929",
     "id": "tulsa-massacre",
@@ -2153,25 +1594,20 @@
     "view": {
       "bucket": "month",
       "from": "1921-01-01",
-      "q": "Tulsa riot",
+      "q": "\"Tulsa riot\" OR \"Tulsa race riot\" OR \"Tulsa race riots\" OR \"Tulsa race war\"",
       "to": "1921-12-31"
     }
   },
   {
-    "aggregate": "q=sleeping+car+porters&mode=phrase&from=1925-01-01&to=1927-12-31&bucket=month",
-    "blurb": "Black railroad workers built a union challenging the Pullman Company's labor practices.",
+    "aggregate": "q=Brotherhood+of+Sleeping+Car+Porters&mode=phrase&from=1925-01-01&to=1937-12-31&bucket=month",
+    "blurb": "Founded in 1925 by Black railroad workers, the union won a Pullman contract in 1937.",
     "era": "1900-1929",
     "id": "sleeping-car-porters",
     "title": "Sleeping car porters organize",
-    "view": {
-      "bucket": "month",
-      "from": "1925-01-01",
-      "q": "sleeping car porters",
-      "to": "1927-12-31"
-    }
+    "view": { "bucket": "month", "from": "1925-01-01", "q": "Brotherhood of Sleeping Car Porters", "to": "1937-12-31" }
   },
   {
-    "aggregate": "q=Triangle+fire&mode=phrase&from=1911-01-01&to=1911-12-31&bucket=month",
+    "aggregate": "q=%22Triangle+fire%22+OR+%22Triangle+shirtwaist%22+OR+%22Triangle+waist%22+OR+%22Triangle+shirt+waist%22&from=1911-01-01&to=1911-12-31&bucket=month",
     "blurb": "The New York garment factory fire killed 146 workers and intensified safety campaigns.",
     "era": "1900-1929",
     "id": "triangle-fire",
@@ -2179,7 +1615,7 @@
     "view": {
       "bucket": "month",
       "from": "1911-01-01",
-      "q": "Triangle fire",
+      "q": "\"Triangle fire\" OR \"Triangle shirtwaist\" OR \"Triangle waist\" OR \"Triangle shirt waist\"",
       "to": "1911-12-31"
     }
   },
@@ -2189,38 +1625,23 @@
     "era": "1900-1929",
     "id": "panama-canal",
     "title": "Panama Canal opens",
-    "view": {
-      "bucket": "month",
-      "from": "1914-01-01",
-      "q": "Panama canal",
-      "to": "1914-12-31"
-    }
+    "view": { "bucket": "month", "from": "1914-01-01", "q": "Panama canal", "to": "1914-12-31" }
   },
   {
-    "aggregate": "q=dust+storm&mode=phrase&from=1934-01-01&to=1936-12-31&bucket=month",
+    "aggregate": "q=%22dust+storm%22+OR+%22dust+storms%22&from=1931-01-01&to=1939-12-31&bucket=month",
     "blurb": "Drought and soil erosion sent immense dust storms across the Great Plains.",
     "era": "1929-1945",
     "id": "dust-bowl",
     "title": "Dust Bowl storms",
-    "view": {
-      "bucket": "month",
-      "from": "1934-01-01",
-      "q": "dust storm",
-      "to": "1936-12-31"
-    }
+    "view": { "bucket": "month", "from": "1931-01-01", "q": "\"dust storm\" OR \"dust storms\"", "to": "1939-12-31" }
   },
   {
-    "aggregate": "q=Amelia+Earhart&mode=phrase&from=1932-05-20&to=1932-07-31&bucket=month",
+    "aggregate": "q=Amelia+Earhart&mode=phrase&from=1932-05-01&to=1932-07-31&bucket=month",
     "blurb": "Earhart became the first woman to fly solo across the Atlantic in May 1932.",
     "era": "1929-1945",
     "id": "earhart-atlantic",
     "title": "Amelia Earhart's Atlantic flight",
-    "view": {
-      "bucket": "month",
-      "from": "1932-05-20",
-      "q": "Amelia Earhart",
-      "to": "1932-07-31"
-    }
+    "view": { "bucket": "month", "from": "1932-05-01", "q": "Amelia Earhart", "to": "1932-07-31" }
   },
   {
     "aggregate": "q=Tuskegee+AND+%22fighter+pilots%22&from=1943-01-01&to=1945-12-31&bucket=month",
@@ -2228,51 +1649,31 @@
     "era": "1929-1945",
     "id": "tuskegee-airmen",
     "title": "Tuskegee airmen",
-    "view": {
-      "bucket": "month",
-      "from": "1943-01-01",
-      "q": "Tuskegee AND \"fighter pilots\"",
-      "to": "1945-12-31"
-    }
+    "view": { "bucket": "month", "from": "1943-01-01", "q": "Tuskegee AND \"fighter pilots\"", "to": "1945-12-31" }
   },
   {
-    "aggregate": "q=Lindbergh+baby&mode=phrase&from=1932-01-01&to=1932-12-31&bucket=month",
-    "blurb": "The kidnapping of Charles and Anne Lindbergh's son became a national news story.",
+    "aggregate": "q=Lindbergh+baby&mode=phrase&from=1932-01-01&to=1936-12-31&bucket=month",
+    "blurb": "The 1932 kidnapping and the investigation and trial that followed gripped newspapers.",
     "era": "1929-1945",
     "id": "lindbergh-kidnapping",
     "title": "Lindbergh kidnapping",
-    "view": {
-      "bucket": "month",
-      "from": "1932-01-01",
-      "q": "Lindbergh baby",
-      "to": "1932-12-31"
-    }
+    "view": { "bucket": "month", "from": "1932-01-01", "q": "Lindbergh baby", "to": "1936-12-31" }
   },
   {
-    "aggregate": "q=Scottsboro&mode=phrase&from=1931-01-01&to=1933-12-31&bucket=month",
+    "aggregate": "q=Scottsboro&mode=phrase&from=1931-01-01&to=1937-12-31&bucket=month",
     "blurb": "Nine Black youths faced Alabama prosecutions that exposed racism in the justice system.",
     "era": "1929-1945",
     "id": "scottsboro",
     "title": "Scottsboro defendants",
-    "view": {
-      "bucket": "month",
-      "from": "1931-01-01",
-      "q": "Scottsboro",
-      "to": "1933-12-31"
-    }
+    "view": { "bucket": "month", "from": "1931-01-01", "q": "Scottsboro", "to": "1937-12-31" }
   },
   {
-    "aggregate": "q=Bonneville+dam&mode=phrase&from=1937-01-01&to=1939-12-31&bucket=month",
+    "aggregate": "q=Bonneville+dam&mode=phrase&from=1933-01-01&to=1939-12-31&bucket=month",
     "blurb": "The Columbia River project brought hydropower, navigation changes, and ecological costs.",
     "era": "1929-1945",
     "id": "bonneville-dam",
     "title": "Bonneville Dam",
-    "view": {
-      "bucket": "month",
-      "from": "1937-01-01",
-      "q": "Bonneville dam",
-      "to": "1939-12-31"
-    }
+    "view": { "bucket": "month", "from": "1933-01-01", "q": "Bonneville dam", "to": "1939-12-31" }
   },
   {
     "aggregate": "q=Golden+Gate+bridge&mode=phrase&from=1937-01-01&to=1937-12-31&bucket=month",
@@ -2280,12 +1681,7 @@
     "era": "1929-1945",
     "id": "golden-gate-bridge",
     "title": "Golden Gate Bridge opens",
-    "view": {
-      "bucket": "month",
-      "from": "1937-01-01",
-      "q": "Golden Gate bridge",
-      "to": "1937-12-31"
-    }
+    "view": { "bucket": "month", "from": "1937-01-01", "q": "Golden Gate bridge", "to": "1937-12-31" }
   },
   {
     "aggregate": "q=Boulder+dam&mode=phrase&from=1935-01-01&to=1936-12-31&bucket=month",
@@ -2293,67 +1689,42 @@
     "era": "1929-1945",
     "id": "boulder-dam",
     "title": "Boulder Dam dedication",
-    "view": {
-      "bucket": "month",
-      "from": "1935-01-01",
-      "q": "Boulder dam",
-      "to": "1936-12-31"
-    }
+    "view": { "bucket": "month", "from": "1935-01-01", "q": "Boulder dam", "to": "1936-12-31" }
   },
   {
-    "aggregate": "q=Jesse+Owens&mode=phrase&from=1936-08-01&to=1936-09-30&bucket=month",
+    "aggregate": "q=Jesse+Owens&mode=phrase&from=1936-07-01&to=1936-09-30&bucket=month",
     "blurb": "Owens won four gold medals at the Berlin Olympics under Nazi rule.",
     "era": "1929-1945",
     "id": "jesse-owens",
     "title": "Jesse Owens in Berlin",
-    "view": {
-      "bucket": "month",
-      "from": "1936-08-01",
-      "q": "Jesse Owens",
-      "to": "1936-09-30"
-    }
+    "view": { "bucket": "month", "from": "1936-07-01", "q": "Jesse Owens", "to": "1936-09-30" }
   },
   {
-    "aggregate": "q=Marian+Anderson&mode=phrase&from=1939-03-01&to=1939-05-31&bucket=month",
+    "aggregate": "q=Marian+Anderson&mode=phrase&from=1939-01-01&to=1939-05-31&bucket=month",
     "blurb": "Denied a concert hall because of race, Anderson sang at the Lincoln Memorial.",
     "era": "1929-1945",
     "id": "marian-anderson",
     "title": "Marian Anderson at the memorial",
-    "view": {
-      "bucket": "month",
-      "from": "1939-03-01",
-      "q": "Marian Anderson",
-      "to": "1939-05-31"
-    }
+    "view": { "bucket": "month", "from": "1939-01-01", "q": "Marian Anderson", "to": "1939-05-31" }
   },
   {
-    "aggregate": "q=penicillin&mode=phrase&from=1943-01-01&to=1945-12-31&bucket=month",
+    "aggregate": "q=penicillin&mode=phrase&from=1941-01-01&to=1945-12-31&bucket=month",
     "blurb": "Wartime production expanded access to a life-saving antibiotic.",
     "era": "1929-1945",
     "id": "penicillin",
     "title": "Penicillin reaches patients",
-    "view": {
-      "bucket": "month",
-      "from": "1943-01-01",
-      "q": "penicillin",
-      "to": "1945-12-31"
-    }
+    "view": { "bucket": "month", "from": "1941-01-01", "q": "penicillin", "to": "1945-12-31" }
   },
   {
-    "aggregate": "q=braceros&mode=phrase&from=1942-01-01&to=1945-12-31&bucket=month",
+    "aggregate": "q=braceros+AND+mexic*&from=1942-01-01&to=1945-12-31&bucket=month",
     "blurb": "A wartime agreement recruited Mexican workers for U.S. farms and railroads.",
     "era": "1929-1945",
     "id": "bracero-workers",
     "title": "Bracero workers",
-    "view": {
-      "bucket": "month",
-      "from": "1942-01-01",
-      "q": "braceros",
-      "to": "1945-12-31"
-    }
+    "view": { "bucket": "month", "from": "1942-01-01", "q": "braceros AND mexic*", "to": "1945-12-31" }
   },
   {
-    "aggregate": "q=victory+garden&mode=phrase&from=1942-01-01&to=1944-12-31&bucket=month",
+    "aggregate": "q=%22victory+garden%22+OR+%22victory+gardens%22&from=1942-01-01&to=1945-12-31&bucket=month",
     "blurb": "Families and communities grew food as part of the wartime home-front effort.",
     "era": "1929-1945",
     "id": "victory-gardens",
@@ -2361,8 +1732,8 @@
     "view": {
       "bucket": "month",
       "from": "1942-01-01",
-      "q": "victory garden",
-      "to": "1944-12-31"
+      "q": "\"victory garden\" OR \"victory gardens\"",
+      "to": "1945-12-31"
     }
   },
   {
@@ -2371,12 +1742,7 @@
     "era": "1945-1963",
     "id": "jackie-robinson",
     "title": "Jackie Robinson's Dodgers debut",
-    "view": {
-      "bucket": "month",
-      "from": "1947-01-01",
-      "q": "Jackie Robinson",
-      "to": "1947-12-31"
-    }
+    "view": { "bucket": "month", "from": "1947-01-01", "q": "Jackie Robinson", "to": "1947-12-31" }
   },
   {
     "aggregate": "q=Ralph+Bunche&mode=phrase&from=1950-01-01&to=1951-12-31&bucket=month",
@@ -2384,51 +1750,31 @@
     "era": "1945-1963",
     "id": "ralph-bunche",
     "title": "Ralph Bunche's peace prize",
-    "view": {
-      "bucket": "month",
-      "from": "1950-01-01",
-      "q": "Ralph Bunche",
-      "to": "1951-12-31"
-    }
+    "view": { "bucket": "month", "from": "1950-01-01", "q": "Ralph Bunche", "to": "1951-12-31" }
   },
   {
-    "aggregate": "q=Maria+Tallchief&mode=phrase&from=1947-01-01&to=1951-12-31&bucket=month",
+    "aggregate": "q=Maria+Tallchief&mode=phrase&from=1942-01-01&to=1963-12-31&bucket=month",
     "blurb": "The Osage ballerina became a leading figure in American ballet.",
     "era": "1945-1963",
     "id": "maria-tallchief",
     "title": "Maria Tallchief's ballet career",
-    "view": {
-      "bucket": "month",
-      "from": "1947-01-01",
-      "q": "Maria Tallchief",
-      "to": "1951-12-31"
-    }
+    "view": { "bucket": "month", "from": "1942-01-01", "q": "Maria Tallchief", "to": "1963-12-31" }
   },
   {
-    "aggregate": "q=Eartha+Kitt&mode=phrase&from=1953-01-01&to=1955-12-31&bucket=month",
-    "blurb": "Recordings, cabaret, and Broadway performances brought Kitt international attention.",
+    "aggregate": "q=Eartha+Kitt&mode=phrase&from=1952-01-01&to=1955-12-31&bucket=month",
+    "blurb": "Her 1952 Broadway breakthrough and hit recordings made Kitt an international star.",
     "era": "1945-1963",
     "id": "eartha-kitt",
-    "title": "Eartha Kitt on stage",
-    "view": {
-      "bucket": "month",
-      "from": "1953-01-01",
-      "q": "Eartha Kitt",
-      "to": "1955-12-31"
-    }
+    "title": "Eartha Kitt's breakthrough",
+    "view": { "bucket": "month", "from": "1952-01-01", "q": "Eartha Kitt", "to": "1955-12-31" }
   },
   {
     "aggregate": "q=Roberto+Clemente&mode=phrase&from=1955-01-01&to=1957-12-31&bucket=month",
     "blurb": "The Puerto Rican outfielder began his Pittsburgh Pirates career in 1955.",
     "era": "1945-1963",
     "id": "roberto-clemente",
-    "title": "Roberto Clemente's rookie years",
-    "view": {
-      "bucket": "month",
-      "from": "1955-01-01",
-      "q": "Roberto Clemente",
-      "to": "1957-12-31"
-    }
+    "title": "Clemente's early Pirates years",
+    "view": { "bucket": "month", "from": "1955-01-01", "q": "Roberto Clemente", "to": "1957-12-31" }
   },
   {
     "aggregate": "q=Anna+May+Wong&mode=phrase&from=1961-01-01&to=1961-12-31&bucket=month",
@@ -2436,38 +1782,23 @@
     "era": "1945-1963",
     "id": "anna-may-wong",
     "title": "Anna May Wong remembered",
-    "view": {
-      "bucket": "month",
-      "from": "1961-01-01",
-      "q": "Anna May Wong",
-      "to": "1961-12-31"
-    }
+    "view": { "bucket": "month", "from": "1961-01-01", "q": "Anna May Wong", "to": "1961-12-31" }
   },
   {
-    "aggregate": "q=Everest&mode=phrase&from=1953-05-29&to=1953-08-31&bucket=month",
+    "aggregate": "q=Everest&mode=phrase&from=1953-03-01&to=1953-08-31&bucket=month",
     "blurb": "Tenzing Norgay and Edmund Hillary reached the summit in May 1953.",
     "era": "1945-1963",
     "id": "everest-ascent",
     "title": "Everest's first summit",
-    "view": {
-      "bucket": "month",
-      "from": "1953-05-29",
-      "q": "Everest",
-      "to": "1953-08-31"
-    }
+    "view": { "bucket": "month", "from": "1953-03-01", "q": "Everest", "to": "1953-08-31" }
   },
   {
-    "aggregate": "q=Antarctic+treaty&mode=phrase&from=1959-01-01&to=1961-12-31&bucket=month",
+    "aggregate": "q=Antarctic+treaty&mode=phrase&from=1958-01-01&to=1961-12-31&bucket=month",
     "blurb": "The treaty reserved Antarctica for peaceful activity and international scientific work.",
     "era": "1945-1963",
     "id": "antarctic-treaty",
     "title": "Antarctic Treaty",
-    "view": {
-      "bucket": "month",
-      "from": "1959-01-01",
-      "q": "Antarctic treaty",
-      "to": "1961-12-31"
-    }
+    "view": { "bucket": "month", "from": "1958-01-01", "q": "Antarctic treaty", "to": "1961-12-31" }
   },
   {
     "aggregate": "q=International+Geophysical+Year&mode=phrase&from=1957-01-01&to=1958-12-31&bucket=month",
@@ -2475,64 +1806,49 @@
     "era": "1945-1963",
     "id": "geophysical-year",
     "title": "International Geophysical Year",
-    "view": {
-      "bucket": "month",
-      "from": "1957-01-01",
-      "q": "International Geophysical Year",
-      "to": "1958-12-31"
-    }
+    "view": { "bucket": "month", "from": "1957-01-01", "q": "International Geophysical Year", "to": "1958-12-31" }
   },
   {
-    "aggregate": "q=interstate+highway&mode=phrase&from=1956-01-01&to=1958-12-31&bucket=month",
+    "aggregate": "q=%22interstate+highway%22+OR+%22interstate+highways%22&from=1954-01-01&to=1963-12-31&bucket=month",
     "blurb": "The 1956 highway law launched a vast expansion of controlled-access roads.",
     "era": "1945-1963",
     "id": "interstate-highways",
     "title": "Interstate highway program",
     "view": {
       "bucket": "month",
-      "from": "1956-01-01",
-      "q": "interstate highway",
-      "to": "1958-12-31"
+      "from": "1954-01-01",
+      "q": "\"interstate highway\" OR \"interstate highways\"",
+      "to": "1963-12-31"
     }
   },
   {
-    "aggregate": "q=Nautilus+AND+submarine&from=1954-01-01&to=1956-12-31&bucket=month",
+    "aggregate": "q=Nautilus+AND+submarine&from=1952-01-01&to=1958-12-31&bucket=month",
     "blurb": "The first nuclear-powered submarine demonstrated a new form of marine propulsion.",
     "era": "1945-1963",
     "id": "nautilus-submarine",
     "title": "Nautilus nuclear submarine",
-    "view": {
-      "bucket": "month",
-      "from": "1954-01-01",
-      "q": "Nautilus AND submarine",
-      "to": "1956-12-31"
-    }
+    "view": { "bucket": "month", "from": "1952-01-01", "q": "Nautilus AND submarine", "to": "1958-12-31" }
   },
   {
-    "aggregate": "q=transistor+radio&mode=phrase&from=1954-01-01&to=1956-12-31&bucket=month",
-    "blurb": "Small battery-powered sets helped make radio listening portable.",
+    "aggregate": "q=%22transistor+radio%22+OR+%22transistor+radios%22&from=1954-01-01&to=1963-12-31&bucket=month",
+    "blurb": "Pocket-sized transistor radios spread after the first commercial sets appeared in 1954.",
     "era": "1945-1963",
     "id": "transistor-radio",
     "title": "Pocket transistor radios",
     "view": {
       "bucket": "month",
       "from": "1954-01-01",
-      "q": "transistor radio",
-      "to": "1956-12-31"
+      "q": "\"transistor radio\" OR \"transistor radios\"",
+      "to": "1963-12-31"
     }
   },
   {
-    "aggregate": "q=hula+hoop&mode=phrase&from=1958-01-01&to=1959-12-31&bucket=month",
+    "aggregate": "q=%22hula+hoop%22+OR+%22hula+hoops%22&from=1958-01-01&to=1959-12-31&bucket=month",
     "blurb": "A plastic toy became a nationwide fad in playgrounds, stores, and newspaper features.",
     "era": "1945-1963",
     "id": "hula-hoop",
     "title": "Hula hoop craze",
-    "view": {
-      "bucket": "month",
-      "from": "1958-01-01",
-      "q": "hula hoop",
-      "to": "1959-12-31"
-    }
+    "view": { "bucket": "month", "from": "1958-01-01", "q": "\"hula hoop\" OR \"hula hoops\"", "to": "1959-12-31" }
   },
   {
     "aggregate": "q=Telstar&mode=phrase&from=1962-01-01&to=1963-12-31&bucket=month",
@@ -2540,12 +1856,7 @@
     "era": "1945-1963",
     "id": "telstar-satellite",
     "title": "Telstar relays television",
-    "view": {
-      "bucket": "month",
-      "from": "1962-01-01",
-      "q": "Telstar",
-      "to": "1963-12-31"
-    }
+    "view": { "bucket": "month", "from": "1962-01-01", "q": "Telstar", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=Albany+AND+union&from=1754-01-01&to=1754-12-31&bucket=month",
@@ -2553,12 +1864,7 @@
     "era": "1751-1828",
     "id": "albany-union",
     "title": "Albany Plan of Union",
-    "view": {
-      "bucket": "month",
-      "from": "1754-01-01",
-      "q": "Albany AND union",
-      "to": "1754-12-31"
-    }
+    "view": { "bucket": "month", "from": "1754-01-01", "q": "Albany AND union", "to": "1754-12-31" }
   },
   {
     "aggregate": "q=stamp+act&mode=phrase&from=1765-01-01&to=1766-12-31&bucket=month",
@@ -2566,28 +1872,23 @@
     "era": "1751-1828",
     "id": "stamp-act",
     "title": "Stamp Act protests",
-    "view": {
-      "bucket": "month",
-      "from": "1765-01-01",
-      "q": "stamp act",
-      "to": "1766-12-31"
-    }
+    "view": { "bucket": "month", "from": "1765-01-01", "q": "stamp act", "to": "1766-12-31" }
   },
   {
-    "aggregate": "q=Boston+AND+tea+AND+destroyed&from=1773-12-17&to=1774-03-31&bucket=month",
+    "aggregate": "q=Boston+AND+tea+AND+%28destroyed+OR+destruction%29&from=1773-12-01&to=1774-03-31&bucket=month",
     "blurb": "Colonists destroyed East India Company tea in Boston Harbor in December 1773.",
     "era": "1751-1828",
     "id": "boston-tea-party",
     "title": "Boston Tea Party",
     "view": {
       "bucket": "month",
-      "from": "1773-12-17",
-      "q": "Boston AND tea AND destroyed",
+      "from": "1773-12-01",
+      "q": "Boston AND tea AND (destroyed OR destruction)",
       "to": "1774-03-31"
     }
   },
   {
-    "aggregate": "q=%22cow+pox%22+OR+%22cow+pock%22&from=1800-01-01&to=1803-12-31&bucket=month",
+    "aggregate": "q=%22cow+pox%22+OR+%22cow+pock%22+OR+cowpox+OR+cowpock&from=1800-01-01&to=1803-12-31&bucket=month",
     "blurb": "Jenner's cowpox method offered a new way to protect people against smallpox.",
     "era": "1751-1828",
     "id": "cowpox-vaccination",
@@ -2595,7 +1896,7 @@
     "view": {
       "bucket": "month",
       "from": "1800-01-01",
-      "q": "\"cow pox\" OR \"cow pock\"",
+      "q": "\"cow pox\" OR \"cow pock\" OR cowpox OR cowpock",
       "to": "1803-12-31"
     }
   },
@@ -2605,12 +1906,7 @@
     "era": "1751-1828",
     "id": "erie-canal",
     "title": "Erie Canal opens",
-    "view": {
-      "bucket": "month",
-      "from": "1825-01-01",
-      "q": "Erie canal",
-      "to": "1826-12-31"
-    }
+    "view": { "bucket": "month", "from": "1825-01-01", "q": "Erie canal", "to": "1826-12-31" }
   },
   {
     "aggregate": "q=%22maple+sugar%22&from=1850-01-01&to=1860-12-31&bucket=month",
@@ -2618,13 +1914,7 @@
     "era": "1828-1860",
     "id": "maple-sugar-relative",
     "title": "Maple sugar: Relative rate",
-    "view": {
-      "bucket": "month",
-      "from": "1850-01-01",
-      "q": "\"maple sugar\"",
-      "to": "1860-12-31",
-      "norm": "skew"
-    }
+    "view": { "bucket": "month", "from": "1850-01-01", "q": "\"maple sugar\"", "to": "1860-12-31", "norm": "skew" }
   },
   {
     "aggregate": "q=%22boll+weevil%22&from=1892-01-01&to=1925-12-31&bucket=year",
@@ -2632,13 +1922,7 @@
     "era": "1900-1929",
     "id": "boll-weevil-relative",
     "title": "Boll weevil: Relative rate",
-    "view": {
-      "bucket": "year",
-      "from": "1892-01-01",
-      "q": "\"boll weevil\"",
-      "to": "1925-12-31",
-      "norm": "skew"
-    }
+    "view": { "bucket": "year", "from": "1892-01-01", "q": "\"boll weevil\"", "to": "1925-12-31", "norm": "skew" }
   },
   {
     "aggregate": "q=%22anthracite+strike%22%7E5&from=1902-01-01&to=1903-06-30&bucket=month",
