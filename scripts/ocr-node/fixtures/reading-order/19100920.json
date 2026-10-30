@@ -1,0 +1,28 @@
+{
+  "method": "reviewed-regions/1",
+  "direction": "ltr",
+  "doc_id": "sn84027101_1910-09-20_ed-1_seq-10",
+  "annotation_basis": "Visual inspection of the retained scan; candidate physical reading regions, not scientific acceptance or an article-order transcription.",
+  "alto_sha256": "7edc9beab6b199606f2e71d052b18674385c08fba51dbc6ae35d15b9edf4a113",
+  "image_sha256": "61429a113708157fa40cebcf6e3b7c89cc27e827b4e0609227a9a082c2743832",
+  "page_size": [6099, 7630],
+  "order_checks": [
+    { "name": "first-column-Erloser-continuation", "word_ids": ["string_3572", "string_3585", "string_3586"] },
+    { "name": "first-column-member-of-order", "word_ids": ["string_3535", "string_3568", "string_3569", "string_3570"] }
+  ],
+  "known_limitations": "Decorative-rule OCR noise remains between the obituary heading and paragraph; exact heading-to-paragraph phrase recovery is not claimed.",
+  "regions": [
+    { "name": "masthead", "box": [0, 0, 6099, 440] },
+    { "name": "column-1", "box": [0, 440, 1141, 7630] },
+    { "name": "spanning-headline", "box": [1141, 440, 2685, 830] },
+    { "name": "column-2-above-portrait", "box": [1141, 830, 1911, 1530] },
+    { "name": "column-3-above-portrait", "box": [1911, 830, 2685, 1530] },
+    { "name": "spanning-portrait-and-caption", "box": [1141, 1530, 2685, 3110] },
+    { "name": "column-2-below-portrait", "box": [1141, 3110, 1911, 7630] },
+    { "name": "column-3-below-portrait", "box": [1911, 3110, 2685, 7630] },
+    { "name": "column-4", "box": [2685, 440, 3465, 7630] },
+    { "name": "column-5", "box": [3465, 440, 4238, 7630] },
+    { "name": "column-6", "box": [4238, 440, 5003, 7630] },
+    { "name": "column-7", "box": [5003, 440, 6099, 7630] }
+  ]
+}
