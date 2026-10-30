@@ -94,6 +94,83 @@ class Fake:
         row["stage"] = "failed" if self.terminal else "published"
 
 
+class LocalHandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.store = self.root / "handoff"
+        (self.store / "dispatch/jobs").mkdir(parents=True)
+        self.store.chmod(0o700)
+        self.config = {**config(), "handoff_root": str(self.store),
+                       "step_command": ["ssh", "root@boinc.example", "--"]}
+        self.transport = self.make_transport()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make_transport(self, **kwargs):
+        return batch.Transport(self.config, self.root,
+                               onprem_handoff=("claim", "collect", "export"), **kwargs)
+
+    def test_inventory_and_journals_use_local_bytes_not_azure(self):
+        (self.store / "scheduler").mkdir()
+        (self.store / "scheduler/inventory.json").write_text(json.dumps({"nonce": "a" * 32}))
+        row = record("sn12345678/1900-01-01/ed-1/seq-1", 1)
+        job = self.store / "dispatch/jobs" / row["job"]["id"]
+        job.mkdir()
+        (job / "record.json").write_text(json.dumps(row))
+        with patch.object(self.transport, "run", side_effect=AssertionError("network call")), \
+                patch.object(self.transport, "step") as step, \
+                patch.object(batch.uuid, "uuid4", return_value=uuid.UUID("a" * 32)):
+            self.assertEqual(self.transport.inventory(), {"nonce": "a" * 32})
+            step.assert_called_once_with("bridge", "batch-inventory", BATCH_NONCE="a" * 32,
+                                         HANDOFF_URL="/handoff-state")
+            self.assertEqual(self.transport.records(), [row])
+            with self.assertRaisesRegex(ValueError, "forbidden"):
+                self.transport.az("list")
+
+    def test_second_controller_is_rejected_and_exception_releases_lock(self):
+        peer = self.make_transport()
+        with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
+            with self.transport.lock():
+                with self.assertRaises(BlockingIOError):
+                    with peer.lock():
+                        self.fail("overlapping controller acquired lock")
+                raise RuntimeError("synthetic failure")
+        with peer.lock():
+            pass
+
+    def test_missing_inventory_and_symlink_escape_fail_closed(self):
+        (self.store / "dispatch/jobs").rmdir()
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+            self.transport.records()
+        (self.root / "outside.json").write_text("{}")
+        (self.store / "escape.json").symlink_to(self.root / "outside.json")
+        for name in ("escape.json", "../outside.json", "/outside.json"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.transport.blob(name)
+
+    def test_local_store_requires_all_steps_onprem(self):
+        with self.assertRaisesRegex(ValueError, "every hand-off step"):
+            batch.Transport(self.config, self.root, onprem_handoff=("claim",))
+        self.store.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "mode 0700"):
+            self.make_transport()
+
+    def test_changed_journal_fails_instead_of_using_inconsistent_snapshot(self):
+        row = record("sn12345678/1900-01-01/ed-1/seq-1", 1)
+        job = self.store / "dispatch/jobs" / row["job"]["id"]
+        job.mkdir()
+        path = job / "record.json"
+        path.write_text(json.dumps(row))
+        snapshot = self.transport.journal_inventory()
+        row["stage"] = "published"
+        path.write_text(json.dumps(row))
+        with patch.object(self.transport, "journal_inventory", return_value=snapshot):
+            with self.assertRaisesRegex(ValueError, "changed during inventory"):
+                self.transport.records()
+
+
 class SchedulerTests(unittest.TestCase):
     def setUp(self):
         self.config = config()

@@ -379,6 +379,37 @@ for a day, a separate Bicep change retires the job's claim and collect use.
 
 ## Azure after the cutover
 
+### Local handoff journals
+
+A queue-fed priority-controller plan can set `handoff_root` to an existing local
+directory, mounted into bridge and handoff containers at `/handoff-state`. The
+controller uses filesystem locking and reads inventory and journals directly;
+Azure handoff reads are refused in this mode. Every handoff step must be routed
+on-prem. The root must contain `dispatch/jobs`, even for an empty initial queue;
+a missing inventory is an error, not an empty-backlog fallback. The root must be
+owned by the controller's service user with mode `0700`: claims hold private
+queue receipts.
+
+The on-prem runner mounts `/srv/usnm-boinc/handoff-state` read-write when present.
+An operator can select its host path with `USNM_BOINC_HANDOFF_ROOT`; SSH callers
+cannot choose a container mount. The controller must see the same filesystem,
+whether it runs beside the BOINC server or uses an existing shared mount. Set
+`HANDOFF_URL=/handoff-state` in the host's handoff settings at cutover. Bridge
+calls use this fixed container path, never a caller-selected local directory.
+
+Stop new controller starts and wait for its current tick and bridge steps to
+finish before the final state copy. Copy and independently verify dispatch
+requests and journals, claims (including live pop receipts), spools, trust,
+scheduler inventory, and any still-needed input objects. Preserve job IDs,
+scientific identities, stage history and queue leases. Then switch both the
+controller and host settings together. Keep the Azure copy read-only for
+rollback; never run one writer against each copy.
+
+Acceptance requires real submission, returned-result collection, restart and
+duplicate-free replay using the local journals. Changing this transport alone
+does not migrate the queue backend, Cosmos or lake storage. Key Vault and
+managed-identity credential access may remain in Azure.
+
 With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet (its `aca` subnet is in the main environment's storage network rules) and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL. Prod moved on 2026-10-21.
 
 `mysql-admin-password` in the vault still gets a new value on every provision. It no longer matters: the on-prem host keeps its own copy in `/etc/usnm-boinc/secrets/db-admin`.

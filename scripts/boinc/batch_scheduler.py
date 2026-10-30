@@ -75,7 +75,7 @@ SURYA_REQUIRED = {"campaign", "quality_campaign", "engine_image", "engine_llama"
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
-    "gold_onboarding", "pages_per_unit", "bundle_app_version",
+    "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root",
 }
 # OCR bundles (#1059): at most this many pages of one queue in one usnm_ocr workunit
 # (crates/usnm-ocr-contract/src/boinc.rs, bundle::MAX_PAGES), 1 (a page alone) by default.
@@ -393,6 +393,11 @@ def load_config(path):
     if "server_status_url" in config:
         _validate_status_url(config["server_status_url"])
     _validate_commands(config, ("push_command", "step_command"))
+    if "handoff_root" in config:
+        require(queue and isinstance(config["handoff_root"], str) and
+                re.fullmatch(r"/[A-Za-z0-9_./-]+", config["handoff_root"]) and
+                ".." not in config["handoff_root"] and config["handoff_root"] != "/",
+                "local handoff_root requires a queue plan and an absolute directory")
     if "gold_onboarding" in config:
         _validate_gold_onboarding(config["gold_onboarding"])
     if "pages_per_unit" in config:
@@ -592,9 +597,25 @@ class Transport:
         require(not onprem_handoff or config.get("step_command"),
                 "on-prem hand-off steps need the config's step_command")
         self.onprem_steps = {step for choice in onprem_handoff for step in ONPREM_HANDOFF[choice]}
+        self.handoff_root = Path(config["handoff_root"]) if "handoff_root" in config else None
+        if self.handoff_root is not None:
+            require(set(onprem_handoff) == set(ONPREM_HANDOFF),
+                    "local handoff needs every hand-off step on-prem")
+            require(self.handoff_root.is_dir() and
+                    self.handoff_root.resolve() == self.handoff_root,
+                    "local handoff root must exist and contain no symlinks")
+            info = self.handoff_root.stat()
+            require(info.st_uid == os.geteuid() and info.st_mode & 0o777 == 0o700,
+                    "local handoff root must be owned by the controller user with mode 0700")
         self.timings = timings or Timings()
         self._journal_snapshot = None
         self._journal_records = None
+
+    @property
+    def handoff_url(self):
+        if self.handoff_root is not None:
+            return "/handoff-state"
+        return f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
 
     def retain_failure(self, label, *, returncode=None, error=None, stdout=None, stderr=None):
         def tail(value):
@@ -657,18 +678,36 @@ class Transport:
         return done.stdout
 
     def az(self, *args):
+        require(self.handoff_root is None, "Azure handoff access forbidden in local mode")
         return self.run(["az", "storage", "blob", *args, "--auth-mode", "login",
                          "--account-name", self.config["account"], "--container-name",
                          "boinc-handoff", "--only-show-errors"], "hand-off storage")
 
     def blob(self, name):
+        if self.handoff_root is not None:
+            path = self._local_object(name)
+            require(path.stat().st_size <= 16 * 1024 * 1024, "hand-off JSON exceeds limit")
+            return json.loads(path.read_text())
         path = self.directory / "read.json"
         self.az("download", "--name", name, "--file", str(path), "--overwrite", "true", "-o", "none")
         require(path.stat().st_size <= 16 * 1024 * 1024, "hand-off JSON exceeds limit")
         return json.loads(path.read_text())
 
+    def _local_object(self, name):
+        require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*", name)
+                and all(part not in (".", "..") for part in name.split("/")),
+                "invalid local handoff object path")
+        path = self.handoff_root / name
+        require(path.resolve() == path and path.is_file(), "missing or unsafe local handoff object")
+        return path
+
     @contextlib.contextmanager
     def lock(self):
+        if self.handoff_root is not None:
+            with (self.handoff_root / ".controller.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                yield
+            return
         if self.config.get("app") == SURYA_APP_NAME:
             # A Surya plan touches no hand-off container: the host lock in main() and the
             # one-step-at-a-time lock of the bridge host are its guards.
@@ -726,12 +765,25 @@ class Transport:
     def inventory(self):
         nonce = uuid.uuid4().hex
         self.step("bridge", "batch-inventory", BATCH_NONCE=nonce,
-                  HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
+                  HANDOFF_URL=self.handoff_url)
         result = self.blob("scheduler/inventory.json")
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
     def journal_inventory(self):
+        if self.handoff_root is not None:
+            listing = {}
+            jobs = self.handoff_root / "dispatch/jobs"
+            require(jobs.is_dir() and jobs.resolve() == jobs, "local dispatch inventory is missing or unsafe")
+            for path in jobs.glob("*/record.json"):
+                name = str(path.relative_to(self.handoff_root))
+                if not re.fullmatch(r"dispatch/jobs/[0-9a-f]{64}/record.json", name):
+                    continue
+                path = self._local_object(name)
+                require(path.stat().st_size <= 131072, "invalid/oversized journal metadata")
+                listing[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            require(len(listing) <= MAX_JOBS, "dispatch inventory limit; reconcile drained journals")
+            return listing
         listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
                                      "--query", "[].{name:name,etag:properties.etag}", "-o", "json"))
         require(isinstance(listing, list), "invalid dispatch inventory")
@@ -776,6 +828,17 @@ class Transport:
     def records(self):
         snapshot = self.journal_inventory()
         names = list(snapshot)
+        if self.handoff_root is not None:
+            records = []
+            for name in sorted(names):
+                data = self._local_object(name).read_bytes()
+                require(hashlib.sha256(data).hexdigest() == snapshot[name],
+                        "local journal changed during inventory; retry under owner lock")
+                record = json.loads(data)
+                require(record["job"]["id"] == name.split("/")[2], "journal filename/identity mismatch")
+                records.append(record)
+            require(self.journal_inventory() == snapshot, "local journal inventory changed during read")
+            return records
         # Re-list every time, but avoid the second full download within a tick
         # when every journal identity and ETag is unchanged.
         if self._journal_snapshot == snapshot:
@@ -992,12 +1055,12 @@ class Transport:
     @timed("submit")
     def submit(self, job_id):
         self.step("bridge", "submit-remote", JOB_ID=job_id,
-                  HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
+                  HANDOFF_URL=self.handoff_url)
 
     @timed("collect")
     def collect(self, job_id, spool):
         self.step("bridge", "spool-out", JOB_ID=job_id, HANDOFF_SPOOL=spool,
-                  HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
+                  HANDOFF_URL=self.handoff_url)
         self.step("handoff", "collect", JOB_ID=job_id)
 
     @timed("submit")
@@ -1010,7 +1073,7 @@ class Transport:
         if not job_ids:
             return
         if units and any(len(unit) > 1 for unit in units):
-            url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
+            url = self.handoff_url
             groups = [units] if self.batch_submit else [[unit] for unit in units]
             for group in groups:
                 self.step("bridge", "submit-remote",
@@ -1022,7 +1085,7 @@ class Transport:
                 self.submit(job_id)
             return
         self.step("bridge", "submit-remote", JOB_IDS=",".join(job_ids),
-                  HANDOFF_URL=f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff")
+                  HANDOFF_URL=self.handoff_url)
 
     @timed("collect")
     def collect_batch(self, pairs):
@@ -1037,7 +1100,7 @@ class Transport:
             for job_id, spool in pairs:
                 self.collect(job_id, spool)
             return
-        url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
+        url = self.handoff_url
         errors = []
         if self.batch_spool_out:
             try:
