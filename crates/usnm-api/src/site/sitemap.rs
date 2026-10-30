@@ -1020,13 +1020,13 @@ mod tests {
         let text = std::fs::read_to_string(fixtures).unwrap();
         let mut doc: usnm_search::PageDoc =
             serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        doc.text = "Cobalt jubilee and amber jubilee. Gold diggings.".into();
+        doc.text = "Cobalt jubilee and amber jubilee. California gold diggings.".into();
         let documents: Vec<_> = (0..51)
             .map(|i| {
                 let mut doc = doc.clone();
                 doc.doc_id = format!("synthetic-promotion-{i}");
                 if i == 50 {
-                    doc.text = "Cobalt jubilee. Gold diggings.".into();
+                    doc.text = "Cobalt jubilee. California gold diggings.".into();
                 }
                 doc
             })
@@ -1055,8 +1055,17 @@ mod tests {
         }));
         let snap = st.snapshot.load_full();
         let store = LocalStore::new(dir.0.join("searches"));
-        let curated_gold =
-            super::super::search_path("\"gold diggings\" OR \"gold region\" OR \"gold mines\"");
+        let example_query = |id: &str| {
+            crate::prewarm::examples()
+                .iter()
+                .find(|example| example.id == id)
+                .unwrap()
+                .view["q"]
+                .as_str()
+                .unwrap()
+        };
+        let curated_gold = super::super::search_path(example_query("california-gold-rush"));
+        let curated_whigs = super::super::search_path(example_query("whigs"));
         let canonical_gold = query_key(&snap, &curated_gold).unwrap();
         let alternate_gold = super::super::search_path(&canonical_gold);
         assert_ne!(
@@ -1074,7 +1083,7 @@ mod tests {
                 &[
                     recurring::tests::record(&snap, day, "\"cobalt jubilee\""),
                     recurring::tests::record(&snap, day, "\"amber jubilee\""),
-                    recurring::tests::record(&snap, day, "whigs"),
+                    recurring::tests::record(&snap, day, example_query("whigs")),
                     recurring::tests::record(&snap, day, &canonical_gold),
                 ],
             )
@@ -1108,11 +1117,7 @@ mod tests {
             "exactly 50 is excluded"
         );
         assert_eq!(
-            first
-                .pages
-                .keys()
-                .filter(|p| p.as_str() == "/search/whigs")
-                .count(),
+            first.pages.keys().filter(|p| *p == &curated_whigs).count(),
             1
         );
         let response = crate::app(st.clone())
@@ -1589,6 +1594,8 @@ mod tests {
     #[tokio::test]
     async fn same_image_search_policy_changes_refresh_dates_and_cannot_use_pending_publication_time(
     ) {
+        let curated =
+            super::super::search_path(crate::prewarm::examples()[0].view["q"].as_str().unwrap());
         let dir = Directory::new();
         write_manifest(&dir);
         let st = state(&dir, Some(Vec::new())).await;
@@ -1628,7 +1635,7 @@ mod tests {
             "finished marker must include policy"
         );
         assert_ne!(off.snapshot, first.snapshot);
-        for path in ["/datasets", "/search/whigs"] {
+        for path in ["/datasets", curated.as_str()] {
             assert_ne!(off.pages[path].fingerprint, first.pages[path].fingerprint);
             assert_ne!(
                 off.pages[path].content_provenance,
@@ -1664,7 +1671,7 @@ mod tests {
         );
         refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
         let pending = latest(&store).await.unwrap().unwrap();
-        for path in ["/datasets", "/search/whigs"] {
+        for path in ["/datasets", curated.as_str()] {
             assert_eq!(pending.pages[path].lastmod, pending.observed_at);
             assert!(pending.pages[path].lastmod > published_at);
         }
@@ -1705,7 +1712,7 @@ mod tests {
         refresh(&st, &store, &dir.0, &mut finished).await.unwrap();
         let ignored_setting = latest(&store).await.unwrap().unwrap();
         assert_eq!(ignored_setting.sequence, unchanged_policy.sequence);
-        for path in ["/datasets", "/search/whigs"] {
+        for path in ["/datasets", curated.as_str()] {
             assert_eq!(
                 ignored_setting.pages[path].lastmod,
                 unchanged_policy.pages[path].lastmod

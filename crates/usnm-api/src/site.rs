@@ -1097,7 +1097,6 @@ mod tests {
             "/?from=1896-06-01&q=%22cross+of+gold%22",
             "/status",
             "/status/?x=1",
-            "/search/whigs?tab=table",
             "/search/not-a-curated-search",
         ];
         for uri in yes {
@@ -1118,12 +1117,22 @@ mod tests {
             "/credits",
             "/favicon.svg",
             "/search?q=gold",
-            "/search/whigs",
         ];
         for uri in no {
             assert!(
                 !noindex(&uri.parse().unwrap(), &sitemap::Service::default()),
                 "{uri}"
+            );
+        }
+        for path in CURATED_SEARCHES.iter() {
+            assert!(
+                !noindex(&path.parse().unwrap(), &sitemap::Service::default()),
+                "{path}"
+            );
+            let filtered = format!("{path}?tab=table");
+            assert!(
+                noindex(&filtered.parse().unwrap(), &sitemap::Service::default()),
+                "{filtered}"
             );
         }
     }

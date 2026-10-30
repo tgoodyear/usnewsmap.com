@@ -796,7 +796,7 @@ async fn uncurated_searches_are_noindex_and_site_pages_are_indexable() {
         "/",
         "/?t=1896-07-01",
         "/favicon.svg",
-        "/search/whigs",
+        "/search/cross-of-gold",
         "/datasets",
         "/credits",
     ] {
@@ -896,7 +896,9 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(home.contains(r#"<nav id="common-searches" aria-label="Common newspaper searches">"#));
     assert!(home.contains(r#"<details><summary>Show newspaper searches</summary>"#));
     assert!(home.contains(r#"<ul class="examples">"#));
-    assert!(home.contains(r#"<a class="example" href="/search/whigs"><strong>whigs</strong>"#));
+    assert!(home.contains(
+        r#"<a class="example" href="/search/cross-of-gold"><strong>cross of gold</strong>"#
+    ));
 }
 
 #[tokio::test]
