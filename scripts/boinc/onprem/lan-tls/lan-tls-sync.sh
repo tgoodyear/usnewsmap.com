@@ -58,6 +58,9 @@ activate() {
 }
 
 umask 077
+# One run at a time from fetch to activation, so two versions' key and chain never mix.
+exec 9>/run/usnm-boinc-lan-tls.lock
+flock 9
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 token=$(kv_token) || fail "no Key Vault token"

@@ -18,12 +18,15 @@ install -m 0755 "$here/lan-tls-sync.sh" /usr/local/sbin/usnm-boinc-lan-tls-sync
 install -m 0644 "$here/usnm-boinc-lan-guard.service" "$here/usnm-boinc-lan-tls.service" \
   "$here/usnm-boinc-lan-tls.timer" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now usnm-boinc-lan-guard.service
-systemctl restart usnm-boinc-lan-guard.service
+systemctl enable -q usnm-boinc-lan-guard.service
+# Reload, not restart: ExecReload swaps the table in one nft transaction, where a restart's
+# ExecStop would delete it and briefly open port 80 to the LAN.
+systemctl reload-or-restart usnm-boinc-lan-guard.service
 # Without a certificate Caddy can't start, so keep it off until the sync installs one; the
 # sync then enables and starts it. A listener that already has one is left running.
 if [ ! -s /etc/usnm-boinc/lan-tls/fullchain.pem ]; then
   systemctl disable --now caddy >/dev/null 2>&1 || true
 fi
 systemctl enable --now usnm-boinc-lan-tls.timer
-/usr/local/sbin/usnm-boinc-lan-tls-sync
+# Through the unit, so it never overlaps a timer run (the script also holds a lock).
+systemctl start usnm-boinc-lan-tls.service
