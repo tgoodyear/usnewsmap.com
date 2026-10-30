@@ -138,6 +138,57 @@ class OriginTlsTests(unittest.TestCase):
         finally:
             os.chdir(previous)
 
+    def test_boinc_lan_hook_accepts_only_its_own_host(self):
+        with patch.dict(os.environ, CERTBOT_DOMAIN="usnewsmap.com",
+                        CERTBOT_VALIDATION="challenge"), patch.object(tls, "cloudflare") as cf:
+            with self.assertRaises(ValueError):
+                tls.challenge(target="boinc-lan")
+            cf.assert_not_called()
+
+    def test_boinc_lan_publishes_deploy_pem_and_never_touches_azure_origin(self):
+        previous = Path.cwd()
+        os.chdir(self.root)
+        pem = self.root / "pem"
+        pem.mkdir()
+        (pem / "privkey.pem").write_text("KEY\n")
+        (pem / "fullchain.pem").write_text("CHAIN\n")
+        spec = tls.TARGETS["boinc-lan"]
+        try:
+            with patch.object(tls, "secret", side_effect=[
+                    "dns-token", "saved-state", "old-deploy", {},
+            ]) as secret, \
+                    patch.object(tls, "state_restore", return_value=pem), \
+                    patch.object(tls, "certificate_current", return_value=True) as current, \
+                    patch.object(tls, "upload") as upload, patch.object(tls, "bind") as bind:
+                tls.renew("admin@example.com", target="boinc-lan")
+            self.assertEqual(secret.call_args_list[1].args, (spec["state"],))
+            self.assertEqual(current.call_args.args[1], ("boinc.usnewsmap.com",))
+            self.assertEqual(secret.call_args.args, (spec["deploy"], "KEY\nCHAIN\n"))
+            upload.assert_not_called()
+            bind.assert_not_called()
+        finally:
+            os.chdir(previous)
+
+    def test_boinc_lan_unchanged_certificate_writes_no_new_secret_version(self):
+        pem = self.root
+        (pem / "privkey.pem").write_text("KEY\n")
+        (pem / "fullchain.pem").write_text("CHAIN\n")
+        with patch.object(tls, "secret", return_value="KEY\nCHAIN\n") as secret:
+            self.assertFalse(tls.deploy_pem(pem, "deploy"))
+        secret.assert_called_once_with("deploy", missing_ok=True)
+
+    def test_boinc_lan_bootstrap_gives_host_read_on_deploy_secret_only(self):
+        spec = tls.TARGETS["boinc-lan"]
+        with patch.object(tls, "secret", return_value="exists"), \
+                patch.object(bootstrap, "az") as azure:
+            bootstrap.main(["--boinc-lan"])
+        grants = [(c.args[c.args.index("--assignee-object-id") + 1],
+                   c.args[c.args.index("--role") + 1],
+                   c.args[c.args.index("--scope") + 1]) for c in azure.call_args_list]
+        host = [g for g in grants if g[0] == bootstrap.BOINC_HOST_PRINCIPAL]
+        self.assertEqual(host, [(bootstrap.BOINC_HOST_PRINCIPAL, "Key Vault Secrets User",
+                                 bootstrap.VAULT_SCOPE + "/secrets/" + spec["deploy"])])
+
     def test_bootstrap_revokes_new_token_if_vault_write_fails(self):
         created = {"success": True, "result": {"id": "new-id", "value": "new-secret"}}
         with patch.object(tls, "azure_token", return_value="azure-token"), \

@@ -21,6 +21,15 @@ TOKEN_SECRET = "usnm-prod-acme-cloudflare-token"
 STATE_SECRET = "usnm-prod-acme-state"
 ZONE = "5c88f07cb8d4b5d2857cf5bd9dc7ab19"
 HOSTS = ("usnewsmap.com", "www.usnewsmap.com", "api.usnewsmap.com")
+# The BOINC server's LAN listener (#1357) gets its own certificate, ACME state and
+# deploy-only secret: its host reads the deploy secret and never the state, which
+# holds the ACME account key.
+TARGETS = {
+    "origin": {"hosts": HOSTS, "state": STATE_SECRET, "name": "usnm-origin"},
+    "boinc-lan": {"hosts": ("boinc.usnewsmap.com",),
+                  "state": "usnm-prod-boinc-lan-acme-state",
+                  "name": "usnm-boinc-lan", "deploy": "usnm-prod-boinc-lan-tls"},
+}
 SUBSCRIPTION = "25bf257c-c94e-4d61-bba3-edc635f46602"
 ENVIRONMENT = (
     f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-usnm-prod"
@@ -93,10 +102,10 @@ def cloudflare(method, path, body=None):
     return data["result"]
 
 
-def challenge(cleanup=False):
+def challenge(cleanup=False, target="origin"):
     domain = os.environ["CERTBOT_DOMAIN"]
     value = os.environ["CERTBOT_VALIDATION"]
-    if domain not in HOSTS or not value or len(value) > 256:
+    if domain not in TARGETS[target]["hosts"] or not value or len(value) > 256:
         raise ValueError("Unexpected ACME challenge")
     name = "_acme-challenge." + domain
     records_path = f"zones/{ZONE}/dns_records"
@@ -126,13 +135,13 @@ def challenge(cleanup=False):
     raise RuntimeError("ACME TXT record did not propagate")
 
 
-def state_encode(config):
+def state_encode(config, name="usnm-origin"):
     files = {}
     for path in (config / "accounts").rglob("*"):
         if path.is_file():
             files[str(path.relative_to(config))] = path.read_text()
-    for name in ("cert.pem", "chain.pem", "fullchain.pem", "privkey.pem"):
-        files["pem/" + name] = (config / "live/usnm-origin" / name).read_text()
+    for pem_name in ("cert.pem", "chain.pem", "fullchain.pem", "privkey.pem"):
+        files["pem/" + pem_name] = (config / "live" / name / pem_name).read_text()
     value = base64.b64encode(gzip.compress(json.dumps(files).encode())).decode()
     if len(value.encode()) > 25000:
         raise RuntimeError("ACME state exceeds Key Vault secret size budget")
@@ -158,11 +167,11 @@ def state_restore(value, config):
     return config / "pem"
 
 
-def certificate_current(pem):
+def certificate_current(pem, hosts=HOSTS):
     try:
         command("openssl", "x509", "-in", str(pem / "cert.pem"),
                 "-noout", "-checkend", str(30 * 86400))
-        for host in HOSTS:
+        for host in hosts:
             result = command("openssl", "x509", "-in", str(pem / "cert.pem"),
                              "-noout", "-checkhost", host).decode()
             if "does match certificate" not in result:
@@ -219,7 +228,18 @@ def bind():
         raise RuntimeError("Certificate binding verification failed")
 
 
-def renew(email, no_bind=False, staging=False):
+def deploy_pem(pem, name):
+    """Replace the deploy-only PEM (key, then full chain) when the certificate changed."""
+    value = (pem / "privkey.pem").read_text() + (pem / "fullchain.pem").read_text()
+    if secret(name, missing_ok=True) == value:
+        return False
+    secret(name, value, tags={"content": "privkey+fullchain PEM"})
+    return True
+
+
+def renew(email, no_bind=False, staging=False, target="origin"):
+    spec = TARGETS[target]
+    hosts = spec["hosts"]
     work = Path.cwd() / ".origin-tls-work"
     work.mkdir(mode=0o700)  # Fail closed if another process owns the working directory.
     os.umask(0o077)
@@ -227,35 +247,39 @@ def renew(email, no_bind=False, staging=False):
         secret(TOKEN_SECRET)
         config = work / "config"
         config.mkdir()
-        saved = secret(STATE_SECRET, missing_ok=True)
+        saved = secret(spec["state"], missing_ok=True)
         if saved == "uninitialized":
             saved = None
         pem = state_restore(saved, config) if saved else None
-        if staging or pem is None or not certificate_current(pem):
+        if staging or pem is None or not certificate_current(pem, hosts):
             hook = f"{sys.executable} {Path(__file__).resolve()}"
             args = [
                 "certbot", "certonly", "--non-interactive", "--agree-tos",
                 "--email", email, "--manual", "--preferred-challenges", "dns",
-                "--manual-auth-hook", hook + " auth",
-                "--manual-cleanup-hook", hook + " cleanup",
+                "--manual-auth-hook", f"{hook} auth --target {target}",
+                "--manual-cleanup-hook", f"{hook} cleanup --target {target}",
                 "--config-dir", str(config), "--work-dir", str(work / "work"),
-                "--logs-dir", str(work / "logs"), "--cert-name", "usnm-origin",
+                "--logs-dir", str(work / "logs"), "--cert-name", spec["name"],
                 "--key-type", "rsa", "--rsa-key-size", "2048",
             ]
             if staging:
                 args.append("--staging")
-            for host in HOSTS:
+            for host in hosts:
                 args.extend(["-d", host])
             # Certbot output includes only public challenge/certificate metadata.
             subprocess.run(args, check=True)
-            pem = config / "live/usnm-origin"
+            pem = config / "live" / spec["name"]
             if staging:
                 print("Staging DNS-01 validation succeeded; nothing persisted or deployed.")
                 return
-            if not certificate_current(pem):
+            if not certificate_current(pem, hosts):
                 raise RuntimeError("Issued certificate failed hostname/expiry validation")
             # Persist first: a deployment failure must not discard an issued private key.
-            secret(STATE_SECRET, state_encode(config))
+            secret(spec["state"], state_encode(config, spec["name"]))
+        if "deploy" in spec:
+            changed = deploy_pem(pem, spec["deploy"])
+            print(f"{target} certificate " + ("published." if changed else "unchanged."))
+            return
         upload(pem)
         if not no_bind:
             bind()
@@ -270,11 +294,12 @@ def main():
     parser.add_argument("--email", default="trevor@usnewsmap.com")
     parser.add_argument("--no-bind", action="store_true")
     parser.add_argument("--staging", action="store_true")
+    parser.add_argument("--target", choices=sorted(TARGETS), default="origin")
     args = parser.parse_args()
     if args.action == "renew":
-        renew(args.email, args.no_bind, args.staging)
+        renew(args.email, args.no_bind, args.staging, args.target)
     else:
-        challenge(cleanup=args.action == "cleanup")
+        challenge(cleanup=args.action == "cleanup", target=args.target)
 
 
 if __name__ == "__main__":

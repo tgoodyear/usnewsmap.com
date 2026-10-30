@@ -1,0 +1,21 @@
+# boinc.usnewsmap.com for the home LAN (usnewsmap #1357). The gateway's local DNS sends LAN
+# clients here instead of out through Cloudflare and back in through the tunnel. TLS ends
+# here with the public certificate lan-tls-sync.sh installs; Apache stays on localhost:80,
+# the same hop cloudflared uses.
+{
+	auto_https off
+	servers {
+		protocols h1 h2
+	}
+}
+
+boinc.usnewsmap.com:443 {
+	tls /etc/usnm-boinc/lan-tls/fullchain.pem /etc/usnm-boinc/lan-tls/privkey.pem
+	reverse_proxy localhost:80
+	log {
+		output file /var/log/caddy/boinc-lan.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+	}
+}

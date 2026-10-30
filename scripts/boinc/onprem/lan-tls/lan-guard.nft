@@ -1,0 +1,11 @@
+# Apache listens on *:80 for cloudflared on localhost (#1357). Nothing else may reach it: the
+# LAN uses Caddy's TLS on 443. Its own table, so Debian's /etc/nftables.conf stays stock.
+table inet usnm_boinc_lan
+delete table inet usnm_boinc_lan
+table inet usnm_boinc_lan {
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		iif "lo" accept
+		tcp dport 80 reject with tcp reset
+	}
+}
