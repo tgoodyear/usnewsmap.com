@@ -19,7 +19,15 @@ class ShipperTest(unittest.TestCase):
         self.bin.mkdir()
         self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                     "SHIP_TEST_ROOT": str(self.root)}
-        self.stub("curl", "#!/bin/sh\necho \"<results_ready_to_send>${SHIP_TEST_READY:-0}</results_ready_to_send>\"\n")
+        self.stub("curl", """#!/bin/sh
+cat <<EOF
+<server_status><database_file_states>
+<results_ready_to_send>${SHIP_TEST_READY:-0}</results_ready_to_send>
+<tasks_by_app><app><name>usnm_quality</name><unsent>${SHIP_TEST_QUALITY_READY:-0}</unsent></app>
+<app><name>usnm_qwen</name><unsent>${SHIP_TEST_READY:-0}</unsent></app>
+</tasks_by_app></database_file_states></server_status>
+EOF
+""")
         self.stub("tar", "#!/bin/sh\nexit 0\n")
         self.stub("mktemp", "#!/bin/sh\necho \"$SHIP_TEST_ROOT/step.err\"\n")
         self.stub("ssh", """#!/usr/bin/env python3
@@ -168,13 +176,39 @@ elif "python3" in args and "-" in args:
         calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
         self.assertTrue(any("/project/ops/qwen-feed/qwen_submit.py" in call for call in calls))
 
-    def test_other_campaigns_retain_global_unsent_backpressure(self):
+    def test_quality_shipping_does_not_wait_for_unrelated_gpu_work(self):
         self.env["SHIP_TEST_READY"] = "5000"
         result = self.run_ship([], native=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("over 300", result.stderr)
+        self.assertIn("shipped 1 chunk(s)", result.stderr)
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertTrue(any("quality-submit" in call for call in calls))
+
+    def test_quality_queue_retains_its_own_unsent_backpressure(self):
+        self.env["SHIP_TEST_QUALITY_READY"] = "301"
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("301 results unsent (over 300)", result.stderr)
         self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
         self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_quality_status_failure_never_admits_or_removes_ready_chunk(self):
+        for body in (
+            "<server_status/>",
+            "<server_status><database_file_states><tasks_by_app>"
+            "<app><name>usnm_qwen</name><unsent>0</unsent></app>"
+            "</tasks_by_app></database_file_states></server_status>",
+            "<server_status><database_file_states><tasks_by_app>"
+            "<app><name>usnm_quality</name><unsent>bad</unsent></app>"
+            "</tasks_by_app></database_file_states></server_status>",
+            "not XML",
+        ):
+            with self.subTest(body=body):
+                self.stub("curl", "#!/bin/sh\nprintf '%s' '" + body + "'\n")
+                result = self.run_ship([], native=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+                self.assertFalse((self.root / "calls.jsonl").exists())
 
     @unittest.skipUnless(shutil.which("flock"), "Linux shipper uses util-linux flock")
     def test_inline_and_independent_native_shippers_cannot_clean_same_chunk(self):
