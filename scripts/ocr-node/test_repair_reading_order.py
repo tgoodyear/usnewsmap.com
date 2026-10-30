@@ -92,6 +92,10 @@ class ReadingOrder(unittest.TestCase):
         hyphen_line = next(line for line in fixed.findall(".//a:TextLine", repair.NS)
                            if line.find("a:HYP", repair.NS) is not None)
         self.assertEqual(hyphen_line.find("a:String", repair.NS).get("ID"), "right1")
+        self.assertEqual(repair.rectangle(hyphen_line)[2], 156)
+        hyphen_block = next(block for block in fixed.findall(".//a:TextBlock", repair.NS)
+                            if hyphen_line in list(block))
+        self.assertEqual(repair.rectangle(hyphen_block)[2], 156)
         self.assertEqual(fixed.find(".//a:Illustration", repair.NS).attrib,
                          original.find(".//a:Illustration", repair.NS).attrib)
         self.assertEqual(fixed.findtext(".//a:ocrProcessingStep//a:softwareName",
@@ -102,6 +106,18 @@ class ReadingOrder(unittest.TestCase):
         self.assertIn("publication_acceptance=not-claimed", settings)
         ids = [e.get("ID") for e in fixed.iter() if e.get("ID")]
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_retains_unpositioned_hyphen_without_inventing_its_geometry(self):
+        data, layout = fixture()
+        data = data.replace(b'<HYP CONTENT="-" HPOS="151" VPOS="50" WIDTH="5" HEIGHT="10"/>',
+                            b'<HYP CONTENT="-"/>')
+        layout["alto_sha256"] = repair.sha256(data)
+        output, _, _ = repair.reflow(data, layout, IMAGE_SHA)
+        root = ET.fromstring(output)
+        line = next(e for e in root.findall(".//a:TextLine", repair.NS)
+                    if e.find("a:HYP", repair.NS) is not None)
+        self.assertEqual(line.find("a:HYP", repair.NS).attrib, {"CONTENT": "-"})
+        self.assertEqual(repair.rectangle(line)[2], 150)
 
     def test_refuses_missing_or_unrecovered_expected_order(self):
         data, layout = fixture()

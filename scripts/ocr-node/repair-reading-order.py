@@ -190,13 +190,16 @@ def reflow(data, layout, scan_sha256):
             lines_split += len(grouped) > 1
             for index, kept in grouped.items():
                 # Preserve the engine's word sequence within each line fragment.
-                new_line = ET.Element(tag("TextLine"), geometry(bounds(kept)))
+                new_line = ET.Element(tag("TextLine"))
                 for word in kept:
                     new_line.append(copy.deepcopy(word))
                 # HYP belongs only to the fragment containing the original last word.
                 if kept[-1] is words[-1]:
                     for hyphen in line.findall("a:HYP", NS):
                         new_line.append(copy.deepcopy(hyphen))
+                positioned_hyphens = [h for h in new_line.findall("a:HYP", NS)
+                                      if all(key in h.attrib for key in ("HPOS", "VPOS", "WIDTH", "HEIGHT"))]
+                new_line.attrib.update(geometry(bounds(kept + positioned_hyphens)))
                 fragments[index].append((new_line, block_index, line_index, block))
     if consumed != len(before) or not before:
         raise ValueError("every recognized word must occur exactly once inside a TextLine")
