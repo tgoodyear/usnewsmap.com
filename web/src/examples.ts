@@ -64,10 +64,10 @@ export function setsOf<T>(order: readonly T[], n = EXAMPLES_SHOWN): T[][] {
 /**
  * A random order in which every set of `n` from the start (the first `n`
  * shown, then each row of `n` cards as the list grows) spans `n` eras, or as
- * many as it holds. The eras take turns, the biggest first (ties in random
- * order, each era's examples shuffled), so any `n` in a row come from
- * different eras while there are at least `n`; then the whole order starts at
- * a random point where the sets still do.
+ * many as it holds. Each set takes from the biggest remaining eras (ties in
+ * random order, each era's examples shuffled), so a larger era isn't left
+ * over at the end; then the whole order starts at a random point where the
+ * sets still span different eras.
  */
 export function mixByEra<T extends { era: string }>(
   items: readonly T[],
@@ -81,7 +81,7 @@ export function mixByEra<T extends { era: string }>(
     .map((g) => shuffle(g, random));
   const turns: T[] = [];
   while (turns.length < items.length) {
-    for (const q of queues) {
+    for (const q of queues.sort((a, b) => b.length - a.length).slice(0, n)) {
       const next = q.shift();
       if (next) turns.push(next);
     }

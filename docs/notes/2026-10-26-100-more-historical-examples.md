@@ -1,5 +1,13 @@
 # Research: 100 additional historical search examples
 
+This is the record of the original additions, not a specification of today's
+presets. The subsequent [full-catalog audit][audit] corrects historical wording,
+date windows and filters, and adds Relative rate and States examples. Current
+definitions are in `web/src/examples.json`; the audit records the reasons,
+sources and newer corpus observations without rewriting the original ledger.
+
+[audit]: https://github.com/tgoodyear/usnewsmap.com/issues/1360
+
 ## Scope and method
 
 Added exactly **100** hand-authored presets to the existing 100 in
