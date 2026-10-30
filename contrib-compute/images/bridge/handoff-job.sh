@@ -87,8 +87,9 @@ fail() { log "$*"; exit 1; }
 for v in HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL; do
   [ -n "${!v:-}" ] || fail "$v is not set (the job's own setting)"
 done
-[[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
-  fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+[[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ||
+  ( $HANDOFF_URL = /handoff-state && -d /handoff-state ) ]] ||
+  fail "HANDOFF_URL must name the Azure hand-off container or the mounted /handoff-state"
 # The steps load the ledger once per job or batch, and it is hundreds of small files, so they keep
 # the files for this execution's later loads (usnm_ocr_local::ledger::load). The files are
 # create-only and every load lists them, so a load sees what it would see without this. The

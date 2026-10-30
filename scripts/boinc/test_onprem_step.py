@@ -51,6 +51,29 @@ class OnpremStep(unittest.TestCase):
         self.assertIn("localhost/usnm-boinc-bridge:abc", done.stdout)
         self.assertIn("BRIDGE_STEP=submit", done.stdout)
 
+    def test_local_handoff_mount_is_fixed_and_rejects_symlink_source(self):
+        root = Path(self.conf.name)
+        store = root / "store"
+        store.mkdir()
+        binaries = root / "bin"
+        binaries.mkdir()
+        for name, body in (("flock", "exit 0"), ("podman", "printf '%s\\n' \"$@\"")):
+            path = binaries / name
+            path.write_text("#!/bin/sh\n" + body + "\n")
+            path.chmod(0o755)
+        env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+               "USNM_BOINC_CONF": str(root), "USNM_BOINC_STEP_RUN": str(root),
+               "USNM_BOINC_HANDOFF_ROOT": str(store)}
+        argv = ["bash", str(SCRIPT), "--env", "prod", "--step", "work-volume", "--wait-mins", "1"]
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"{store}:/handoff-state", done.stdout)
+        store.rename(root / "real-store")
+        store.symlink_to(root / "real-store")
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("must not be a symlink", done.stderr)
+
     def test_refusals(self):
         cases = [
             (("--env", "prod", "--target", "export", "--step", "collect", "--what-if"), "does not run on-prem"),
