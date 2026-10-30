@@ -169,7 +169,10 @@ class LanTlsSyncTests(unittest.TestCase):
                     process.terminate()
                 process.communicate(timeout=10)
 
-    @unittest.skipUnless(os.geteuid() == 0, "the fixed service lock requires root; CI runs this with sudo")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and os.geteuid() == 0,
+        "the fixed service lock requires Linux/root; CI runs this with sudo",
+    )
     def test_service_executable_waits_for_lock_before_requesting_identity(self):
         import fcntl
 
