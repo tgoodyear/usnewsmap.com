@@ -9,6 +9,7 @@ import { DATASETS_PATH, OLD_DATASETS_PATH, pageFor } from "./route";
 import "./styles.css";
 import { preloadBasemap } from "./lib/preloadBasemap";
 import { enhanceSearchLanding } from "./searchLanding";
+import type { Meta } from "./api/types";
 
 // The dataset details, privacy and credits pages load only when visited.
 // The API serves index.html for app paths, so all work as direct links;
@@ -48,6 +49,9 @@ const client: QueryClient = new QueryClient({
     },
   },
 });
+
+const initialMeta = document.getElementById("site-meta")?.textContent;
+if (initialMeta) client.setQueryData<Meta>(["meta"], JSON.parse(initialMeta));
 
 function mount() {
   if (page === "search" && !("__USNM_SHARE_CAPTURE__" in window)) void preloadBasemap();

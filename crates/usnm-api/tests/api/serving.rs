@@ -614,6 +614,76 @@ async fn get_if_none_match(
 }
 
 #[tokio::test]
+async fn site_embeds_metadata_and_summary_from_the_served_snapshot() {
+    let mut cfg = config();
+    let dir = site_dir("metadata");
+    std::fs::write(
+        dir.join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    cfg.site_dir = Some(dir);
+    let mut rd = refdata().await;
+    rd.pages = 23_766_177;
+    rd.current.bounds.from = "1736-01-01".parse().unwrap();
+    rd.current.bounds.to = "1963-12-31".parse().unwrap();
+    rd.current.published_at = "</script><script>alert(1)</script>".into();
+    let s = Arc::new(AppState::new(cfg, Arc::new(fixture_backend()), rd));
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    let mut home_tag = String::new();
+    for path in [
+        "/",
+        "/index.html",
+        "/search/gold",
+        "/datasets",
+        "/privacy",
+        "/credits",
+    ] {
+        let (status, headers, html) = get_site(&s, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        let embedded = html
+            .split_once("<script id=\"site-meta\" type=\"application/json\">")
+            .unwrap()
+            .1
+            .split_once("</script>")
+            .unwrap()
+            .0;
+        assert_eq!(serde_json::from_str::<Value>(embedded).unwrap(), meta);
+        assert!(
+            !embedded.contains('<'),
+            "script data cannot close its element"
+        );
+        assert!(
+            html.contains(
+                "<p id=\"index-summary\">23,766,177 pages from 6 newspapers, 1736–1963.</p>"
+            ),
+            "{path}"
+        );
+        if path == "/" {
+            home_tag = header_str(&headers, header::ETAG).to_owned();
+        }
+    }
+
+    // A publish updates both the HTML and its validator without a frontend build.
+    let mut rd = refdata().await;
+    rd.current.index_version = "fixture-v2".into();
+    rd.pages = 1;
+    rd.titles = rd.titles.into_iter().take(1).collect();
+    rd.current.bounds.from = "1963-01-01".parse().unwrap();
+    rd.current.bounds.to = "1963-12-31".parse().unwrap();
+    s.snapshot.store(Arc::new(usnm_api::Snapshot {
+        refdata: rd,
+        backend: s.snapshot.load().backend.clone(),
+        congress_dropped: false,
+    }));
+    let (status, headers, html) = get_if_none_match(&s, "/", &home_tag).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(header_str(&headers, header::ETAG), home_tag);
+    assert!(html.contains("<p id=\"index-summary\">1 page from 1 newspaper, 1963.</p>"));
+    assert!(html.contains("\"index_version\":\"fixture-v2\""));
+}
+
+#[tokio::test]
 async fn the_apps_pages_revalidate_with_an_etag() {
     let mut cfg = config();
     let dir = site_dir("etag");

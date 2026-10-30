@@ -29,6 +29,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use chrono::Datelike;
 use sha2::{Digest, Sha256};
 use tower_http::services::ServeDir;
 
@@ -397,6 +398,58 @@ fn insert_content(body: Vec<u8>, content: &str) -> Vec<u8> {
     }
 }
 
+fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
+    let snap = state.snapshot.load();
+    let rd = &snap.refdata;
+    let count = |n: u64, one: &str, many: &str| {
+        let digits = n.to_string();
+        let mut grouped = String::new();
+        for (i, ch) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                grouped.push(',');
+            }
+            grouped.push(ch);
+        }
+        format!("{grouped} {}", if n == 1 { one } else { many })
+    };
+    let from = rd.current.bounds.from.year();
+    let to = rd.current.bounds.to.year();
+    let years = if from == to {
+        from.to_string()
+    } else {
+        format!("{from}–{to}")
+    };
+    let summary = format!(
+        "{} from {}, {years}.",
+        count(rd.pages, "page", "pages"),
+        count(rd.titles.len() as u64, "newspaper", "newspapers"),
+    );
+    // JSON in a script data block must not be able to close its HTML element.
+    let meta = crate::routes::meta_body(state, &snap)
+        .to_string()
+        .replace('<', "\\u003c");
+    match String::from_utf8(body) {
+        Ok(html) => html
+            .replacen(
+                "</head>",
+                &format!(
+                    "<script id=\"site-meta\" type=\"application/json\">{meta}</script></head>"
+                ),
+                1,
+            )
+            .replacen(
+                r#"<p id="index-summary"></p>"#,
+                &format!(r#"<p id="index-summary">{}</p>"#, escape_html(&summary)),
+                1,
+            )
+            .into_bytes(),
+        Err(error) => {
+            tracing::error!("site index is not UTF-8");
+            error.into_bytes()
+        }
+    }
+}
+
 fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
     let body = insert_content(body, preview);
     let image_query = form_urlencoded::Serializer::new(String::new())
@@ -695,6 +748,7 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
             body = insert_content(body, &search_links(&state.sitemap));
         }
     }
+    body = site_metadata(body, &state);
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
