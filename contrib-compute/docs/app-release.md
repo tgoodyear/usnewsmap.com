@@ -1,6 +1,6 @@
 # Releasing a BOINC app version
 
-Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and 1,000
+Runtime rebuilds retain the deployed feeder's `--allapps` interleaving and 4,096
 shared-memory work slots, with an explicit query budget as described below.
 Re-rendering an existing project also leaves already-correct config and
 key symlinks intact; a runtime upgrade must not transiently remove its signing
@@ -43,14 +43,17 @@ slots while 624–635 Qwen replicas were unsent and fewer than 20 other-app
 results were waiting. Purge rotation then showed a strict GPU window for only
 about 5 of every 22 minutes, so eligible pilot requests mostly received empty
 replies and the client backed off (6→22→48 minutes on host 10). Qwen
-therefore has weight 16 of 24: about 666 Qwen slots and 41–42 for each other
-app, whose backlog was at most nine results. The cache stays at 1,000 slots,
-so shared memory does not grow (about 93 MB).
+therefore received weight 16 of 24: about 666 Qwen slots and 41–42 for each
+other app, whose backlog was at most nine results.
 
-The template sets `feeder_query_size=48000`: 2,000 candidates per weight-1 app
-and 32,000 for Qwen. The sizing invariant is that **each positive-weight app's
+On 30 October, 1,788–1,798 unsent Qwen replicas exceeded that cache share again.
+The cache is now sized at 4,096 slots: about 2,730 for Qwen and 170–171 for
+each other app. This requires approximately 380 MB of shared memory rather
+than 93 MB; verify container memory headroom before applying it. The template
+sets `feeder_query_size=196608`: 8,192 candidates per weight-1 app and 131,072
+for Qwen. The sizing invariant is that **each positive-weight app's
 rounded query budget covers at least twice the entire cache capacity**, Qwen's
-covers at least four times its 635-result ready baseline, and Qwen's cache
+covers at least four times its 1,800-result ready baseline, and Qwen's cache
 share covers that baseline. The query is bounded by the rows that exist: the
 Qwen enumeration returned 624 rows in 3 ms on 28 October. Tests derive the
 budgets and slot shares from `project.xml` weights, so app additions, weight
@@ -66,7 +69,7 @@ releases its window. If the half-completed replicas that only a different host
 can take keep accumulating beyond the Qwen share, visibility degrades again.
 
 This is a bounded fix, not infinite fairness: queries may enumerate roughly
-48,000 joined result/workunit rows across apps per pass (rounding can vary the
+196,608 joined result/workunit rows across apps per pass (rounding can vary the
 total), increasing database, feeder memory and collision-check costs without
 allocating more shared-memory slots. A larger blocked prefix or a full cache
 of infeasible work can still hide eligible results. Recheck actual registered
