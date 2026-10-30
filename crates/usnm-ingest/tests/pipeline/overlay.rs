@@ -3,6 +3,7 @@
 
 use chrono::NaiveDate;
 use serde_json::Value;
+use sha2::Digest;
 use usnm_core::text::Analyzer;
 use usnm_ingest::release::Release;
 use usnm_ingest::sink::JsonlSink;
@@ -407,12 +408,18 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         ),
     ];
     let mut part_bytes = 0;
+    let mut expected_inputs = Vec::new();
     for (run, rows) in [
         ("20261011T000000Z-aaaa", &run1[..]),
         ("20261012T000000Z-bbbb", &run2[..]),
     ] {
         let body = pages::encode(rows).unwrap();
         part_bytes += body.len();
+        expected_inputs.push(serde_json::json!({
+            "path": pages_path(lccn, run),
+            "bytes": body.len(),
+            "sha256": usnm_core::digest::hex(&sha2::Sha256::digest(&body)),
+        }));
         e.curated
             .put(&pages_path(lccn, run), body, "application/octet-stream")
             .await
@@ -485,6 +492,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     assert_eq!(record["metric"]["version"], usnm_core::damage::VERSION);
     assert_eq!(record["parts"]["count"], 2);
     assert_eq!(record["parts"]["bytes"], part_bytes);
+    assert_eq!(record["inputs"], serde_json::json!(expected_inputs));
     let p = &record["pages"];
     assert_eq!(p["considered"], 6, "{record}");
     assert_eq!(p["replaced"], 2, "{record}");
@@ -499,6 +507,22 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     assert_eq!(record["revocations"][0]["reason"], "a bad model");
     assert!(record["estimate_published"].is_null(), "a full base");
     let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    let receipt_bytes = e
+        .reference
+        .get(&format!("{v}/{OCR_LOCAL_FILE}"))
+        .await
+        .unwrap()
+        .unwrap();
+    let receipt_entry = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == OCR_LOCAL_FILE)
+        .unwrap();
+    assert_eq!(
+        receipt_entry["sha256"],
+        usnm_core::digest::hex(&sha2::Sha256::digest(&receipt_bytes))
+    );
     let credits = e.reference_json(&format!("{v}/credits.json")).await;
     assert_eq!(credits["schema"], 1);
     let credit = credits["engines"]

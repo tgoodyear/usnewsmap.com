@@ -279,7 +279,7 @@ fn build_part_with(
         all.docs.extend(part.docs);
         all.lines.extend(part.lines);
         all.replaced.extend(part.replaced);
-        all.tally.merge(part.tally);
+        all.tally.merge(part.tally)?;
         all.local_replaced.extend(part.local_replaced);
         all.with_as += part.with_as;
         all.only_as += part.only_as;

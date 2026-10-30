@@ -110,7 +110,11 @@ impl Listing {
                         .await?
                         .with_context(|| format!("`{path}` vanished"))?,
                 );
-                out.parts.push((path.clone(), bytes.len() as u64));
+                out.parts.push(InputPart {
+                    path: path.clone(),
+                    bytes: bytes.len() as u64,
+                    sha256: hex(&Sha256::digest(&bytes)),
+                });
                 let run = run_of(path);
                 let rows = pages::read_scores(bytes.clone()).with_context(|| path.clone())?;
                 for (r, row) in rows.into_iter().enumerate() {
@@ -250,14 +254,22 @@ impl Candidate {
     }
 }
 
+/// One immutable input part, hashed from the bytes used by the release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InputPart {
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
 /// One batch's titles' pages.
 #[derive(Debug, Default)]
 pub struct Loaded {
     pub pages: HashMap<String, Candidate>,
     /// Pages whose every row a revocation matched.
     pub revoked: HashSet<String>,
-    /// The parts read, with their sizes.
-    pub parts: Vec<(String, u64)>,
+    /// The exact bytes read, hashed before decoding.
+    pub parts: Vec<InputPart>,
 }
 
 /// A create-only `ocr-local/revoked/<stamp>.json`: the rows it names are
@@ -368,7 +380,7 @@ pub struct Tally {
     pub by_engine: BTreeMap<String, Count>,
     /// The parts read, with each title's read once per batch holding it.
     #[serde(skip)]
-    pub parts: BTreeMap<String, u64>,
+    parts: BTreeMap<String, InputPart>,
 }
 
 impl Tally {
@@ -399,7 +411,10 @@ impl Tally {
 
     /// Another tally's counts added to this one's (the release's parts,
     /// built in parallel, merged in order).
-    pub fn merge(&mut self, other: Tally) {
+    pub fn merge(&mut self, other: Tally) -> anyhow::Result<()> {
+        for part in other.parts.values() {
+            self.add_part(part)?;
+        }
         self.considered += other.considered;
         self.replaced += other.replaced;
         for (k, n) in other.kept {
@@ -415,13 +430,32 @@ impl Tally {
                 t.replaced += c.replaced;
             }
         }
-        self.parts.extend(other.parts);
+        Ok(())
     }
 
-    pub fn add_parts(&mut self, parts: &[(String, u64)]) {
-        for (p, b) in parts {
-            self.parts.insert(p.clone(), *b);
+    fn add_part(&mut self, part: &InputPart) -> anyhow::Result<()> {
+        if let Some(previous) = self.parts.get(&part.path) {
+            anyhow::ensure!(
+                previous == part,
+                "OCR input part `{}` changed between batch reads",
+                part.path
+            );
+        } else {
+            self.parts.insert(part.path.clone(), part.clone());
         }
+        Ok(())
+    }
+
+    pub fn add_parts(&mut self, parts: &[InputPart]) -> anyhow::Result<()> {
+        for part in parts {
+            self.add_part(part)?;
+        }
+        Ok(())
+    }
+
+    /// Sorted, distinct inputs consumed by this run, not carried-forward pages.
+    pub fn inputs(&self) -> Vec<&InputPart> {
+        self.parts.values().collect()
     }
 
     /// The parts summary: count, bytes and the sha256 of the sorted path
@@ -434,7 +468,7 @@ impl Tally {
         }
         json!({
             "count": self.parts.len(),
-            "bytes": self.parts.values().sum::<u64>(),
+            "bytes": self.parts.values().map(|p| p.bytes).sum::<u64>(),
             "paths_sha256": hex(&h.finalize()),
         })
     }
@@ -444,6 +478,43 @@ impl Tally {
 mod tests {
     use super::*;
     use usnm_core::text::Hyphenation;
+
+    #[test]
+    fn input_evidence_deduplicates_and_rejects_changed_bytes_across_batches() {
+        let part = InputPart {
+            path: "ocr-local/pages/sn1/run.parquet".into(),
+            bytes: 42,
+            sha256: hex(&Sha256::digest(b"original")),
+        };
+        let mut tally = Tally::default();
+        tally.add_parts(std::slice::from_ref(&part)).unwrap();
+        let mut other = Tally::default();
+        other.add_parts(std::slice::from_ref(&part)).unwrap();
+        tally.merge(other).unwrap();
+        assert_eq!(tally.inputs(), vec![&part]);
+        assert_eq!(tally.parts_summary()["count"], 1);
+        assert_eq!(tally.parts_summary()["bytes"], 42);
+        assert_eq!(
+            tally.parts_summary()["paths_sha256"],
+            hex(&Sha256::digest(format!("{}\n", part.path).as_bytes()))
+        );
+        for changed in [
+            InputPart {
+                sha256: hex(&Sha256::digest(b"modified")),
+                ..part.clone()
+            },
+            InputPart {
+                bytes: 43,
+                ..part.clone()
+            },
+        ] {
+            assert!(tally.add_parts(std::slice::from_ref(&changed)).is_err());
+            let mut other = Tally::default();
+            other.add_parts(&[changed]).unwrap();
+            assert!(tally.merge(other).is_err());
+            assert_eq!(tally.inputs(), vec![&part]);
+        }
+    }
 
     fn row(rate: Option<f64>, at: i64) -> StoredRow {
         StoredRow {
@@ -642,6 +713,11 @@ mod tests {
             imported(4, "tesseract-5.5.1/eng", stored),
         ];
         let part = pages::encode(&rows).unwrap();
+        let expected_input = InputPart {
+            path: format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
+            bytes: part.len() as u64,
+            sha256: hex(&Sha256::digest(&part)),
+        };
         curated
             .put_new(
                 &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
@@ -655,6 +731,7 @@ mod tests {
             .load(curated.as_ref(), ["sn1"].into_iter(), &[])
             .await
             .unwrap();
+        assert_eq!(loaded.parts, vec![expected_input]);
         let text = |seq: u16| {
             loaded.pages[&format!("sn1_1900-01-01_ed-1_seq-{seq}")]
                 .text
