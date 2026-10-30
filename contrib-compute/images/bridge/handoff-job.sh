@@ -66,8 +66,9 @@ fail() { log "$*"; exit 1; }
 for v in HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL; do
   [ -n "${!v:-}" ] || fail "$v is not set (the job's own setting)"
 done
-[[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
-  fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+[[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ||
+  ( $HANDOFF_URL = /handoff-state && -d /handoff-state ) ]] ||
+  fail "HANDOFF_URL must name the Azure hand-off container or the mounted /handoff-state"
 # collect for a tick's jobs in one execution (#932): JOB_IDS. Each job runs this script's
 # single-job collect again, with its own work directory; a failed one doesn't stop the rest,
 # and the run fails at the end so the controller sees it.

@@ -357,6 +357,11 @@ run=(podman run --rm --name "$name" --network host
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
 run+=(${QUEUE_MOUNTS[@]+"${QUEUE_MOUNTS[@]}"})
 run+=(${LAKE_MOUNTS[@]+"${LAKE_MOUNTS[@]}"})
+HANDOFF_ROOT=${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}
+if [ -d "$HANDOFF_ROOT" ]; then
+  [ ! -L "$HANDOFF_ROOT" ] || die "local handoff root must not be a symlink"
+  run+=(-v "$HANDOFF_ROOT:/handoff-state")
+fi
 # The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
 [ "$TARGET" = handoff ] || run+=(--add-host usnm-boinc-mysql:127.0.0.1
   -v /srv/usnm-boinc/project:/project
