@@ -209,7 +209,7 @@ IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/ser
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
 BASE=()
 LINES=()
-QUEUE_LOCATION=""
+QUEUE_LOCATION="" LOCAL_SECRETS=""
 # The last line counts even without a newline after it.
 while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
@@ -217,11 +217,19 @@ while IFS= read -r line || [ -n "$line" ]; do
   BASE+=("${BASH_REMATCH[1]}")
   LINES+=("$line")
   [ "${BASH_REMATCH[1]}" != QUEUE_URL ] || QUEUE_LOCATION=${BASH_REMATCH[2]}
+  [ "${BASH_REMATCH[1]}" != BOINC_SECRETS_DIR ] || LOCAL_SECRETS=${BASH_REMATCH[2]}
   if [ "$TARGET" = handoff ]; then
     [[ $HANDOFF_HOST_VARS == *" ${BASH_REMATCH[1]} "* ]] || die "$SETTINGS sets ${BASH_REMATCH[1]}; it takes only$HANDOFF_HOST_VARS"
     [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
   fi
 done < "$SETTINGS"
+SECRET_MOUNTS=()
+if [ -n "$LOCAL_SECRETS" ]; then
+  [ "$TARGET" != handoff ] || die "local runtime secrets are not hand-off inputs"
+  [ "$LOCAL_SECRETS" = /run/usnm-boinc-secrets ] || die "BOINC_SECRETS_DIR must be /run/usnm-boinc-secrets"
+  [ -d "$CONF/runtime-secrets" ] && [ ! -L "$CONF/runtime-secrets" ] || die "no local secrets directory"
+  SECRET_MOUNTS=(-v "$CONF/runtime-secrets:/run/usnm-boinc-secrets:ro")
+fi
 QUEUE_MOUNTS=()
 if [ "$TARGET" = handoff ] && [[ $QUEUE_LOCATION == postgres://* || $QUEUE_LOCATION == postgresql://* ]]; then
   # Certificate paths in the URL are container paths, never caller-selected host mounts.
@@ -237,7 +245,7 @@ if [ "$TARGET" = handoff ]; then
     [[ " ${BASE[*]} " == *" $v "* ]] || die "$SETTINGS doesn't set $v"
   done
 fi
-seen=" ${BASE[*]} BRIDGE_STEP HANDOFF_STEP HANDOFF_LOCAL_SCANS "
+seen=" ${BASE[*]} BRIDGE_STEP HANDOFF_STEP HANDOFF_LOCAL_SCANS BOINC_SECRETS_DIR "
 REUSE=1
 case $STEP in
   surya-stage-crops) SSH_ALLOWED=$SSH_SURYA_CROPS_VARS ;;
@@ -323,6 +331,7 @@ run=(podman run --rm --name "$name" --network host
   --log-driver journald --log-opt tag=usnm-boinc-step --env-file "$envfile"
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro)
 run+=(${QUEUE_MOUNTS[@]+"${QUEUE_MOUNTS[@]}"})
+run+=(${SECRET_MOUNTS[@]+"${SECRET_MOUNTS[@]}"})
 # The hand-off steps touch Azure storage, Cosmos and the queues only: no project tree or database.
 [ "$TARGET" = handoff ] || run+=(--add-host usnm-boinc-mysql:127.0.0.1
   -v /srv/usnm-boinc/project:/project

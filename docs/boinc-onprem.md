@@ -379,6 +379,23 @@ for a day, a separate Bicep change retires the job's claim and collect use.
 
 ## Azure after the cutover
 
+### Local runtime credentials
+
+`BOINC_SECRETS_DIR=/run/usnm-boinc-secrets` selects local credentials for the server
+library and bridge steps. The on-prem step runner mounts only
+`/etc/usnm-boinc/runtime-secrets` there, read-only; callers cannot select another
+directory over SSH. Keep this directory root-owned mode `0700`, containing
+root-owned regular files mode `0600` named `mysql-runtime-password`,
+`upload-private-key`, `upload-public-key`, and optionally `code-sign-public-key`.
+Never put the database admin password or offline code-signing private key there.
+
+An absent or invalid required local credential is fatal: this mode never falls
+back to Key Vault. Missing optional credentials are logged. Existing deployments
+without this setting retain managed-identity Key Vault reads. Back up these
+credentials privately with the server and verify their restore before retiring
+the cloud copies. This removes the runtime credential dependency only; it does
+not migrate handoff journals, queues, Cosmos, or lake data.
+
 With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet (its `aca` subnet is in the main environment's storage network rules) and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL. Prod moved on 2026-10-21.
 
 `mysql-admin-password` in the vault still gets a new value on every provision. It no longer matters: the on-prem host keeps its own copy in `/etc/usnm-boinc/secrets/db-admin`.

@@ -1,10 +1,13 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034
 # Shared by entrypoint.sh and bridge-job.sh. Sourced, not run.
-# Secrets come from Key Vault with the container's managed identity and are written only
-# under /dev/shm (tmpfs), mode 0600; nothing is printed and nothing goes into an image layer.
+# Secrets come from a read-only local credential mount when BOINC_SECRETS_DIR is set,
+# otherwise Key Vault with managed identity. Runtime copies live only in tmpfs.
 
-: "${KEY_VAULT_NAME:?}" "${DB_HOST:?}" "${DB_NAME:?}" "${MASTER_HOST:?}" "${PROJECT_DIR:?}"
+: "${DB_HOST:?}" "${DB_NAME:?}" "${MASTER_HOST:?}" "${PROJECT_DIR:?}"
+if [ -z "${BOINC_SECRETS_DIR:-}" ]; then
+  : "${KEY_VAULT_NAME:?}"
+fi
 PROJECT="${PROJECT:-usnmocr}"
 DB_RUNTIME_USER="${DB_RUNTIME_USER:-usnmboincrun}"
 DB_ADMIN_USER="${DB_ADMIN_USER:-usnmboincadmin}"
@@ -59,8 +62,43 @@ KV_TRIES="${KV_TRIES:-3}"
 KV_BACKOFF="${KV_BACKOFF:-2}"
 
 # kv_get NAME FILE: writes the secret value to FILE (mode 0600). Never prints it.
+local_secret() {
+  local name=$1 out=$2
+  [[ $name =~ ^[a-z][a-z0-9-]{0,63}$ ]] || fail "invalid local secret name"
+  python3 -c '
+import os, stat, sys
+from pathlib import Path
+root, name, destination = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+if not root.is_absolute() or root.resolve() != root:
+    raise SystemExit("local secrets directory must be absolute and contain no symlinks")
+info = root.stat()
+if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit("local secrets directory must be root-owned mode 0700")
+source = root / name
+try:
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+except FileNotFoundError:
+    raise SystemExit(3)
+with os.fdopen(fd, "rb") as stream:
+    info = os.fstat(stream.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit("local secret must be a root-owned regular file mode 0600")
+    data = stream.read(1024 * 1024 + 1)
+if not data or len(data) > 1024 * 1024:
+    raise SystemExit("local secret is empty or oversized")
+fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, "wb") as stream:
+    os.fchmod(stream.fileno(), 0o600)
+    stream.write(data)
+' "$BOINC_SECRETS_DIR" "$name" "$out"
+}
+
 kv_get() {
   local name=$1 out=$2 token try=1 wait=$KV_BACKOFF
+  if [ -n "${BOINC_SECRETS_DIR:-}" ]; then
+    local_secret "$name" "$out" || fail "cannot read local secret $name"
+    return 0
+  fi
   while :; do
     if token="$(kv_token)" && (umask 077; curl -fsS --max-time 30 -H @<(printf 'Authorization: Bearer %s\n' "$token") \
         "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=7.4" | jq -er .value > "$out"); then
@@ -76,6 +114,15 @@ kv_get() {
 # a log line and returns 1; any other failure stops, as kv_get does.
 kv_get_optional() {
   local name=$1 out=$2 token code try=1 wait=$KV_BACKOFF
+  if [ -n "${BOINC_SECRETS_DIR:-}" ]; then
+    code=0
+    local_secret "$name" "$out" || code=$?
+    case "$code" in
+      0) return 0 ;;
+      3) log "no $name in local secrets"; return 1 ;;
+      *) fail "cannot read local secret $name" ;;
+    esac
+  fi
   while :; do
     code=000
     if token="$(kv_token)"; then

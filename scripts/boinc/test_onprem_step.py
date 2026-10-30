@@ -50,6 +50,24 @@ class OnpremStep(unittest.TestCase):
         self.assertIn("localhost/usnm-boinc-bridge:abc", done.stdout)
         self.assertIn("BRIDGE_STEP=submit", done.stdout)
 
+    def test_local_credentials_are_host_controlled(self):
+        denied = self.run_step("--env", "prod", "--step", "submit",
+                               "--var", "BOINC_SECRETS_DIR=/tmp/untrusted", "--what-if")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("set by the host", denied.stderr)
+        settings = Path(self.conf.name, "bridge.env")
+        settings.write_text(settings.read_text() + "BOINC_SECRETS_DIR=/tmp/untrusted\n")
+        denied = self.run_step("--env", "prod", "--step", "submit", "--what-if")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("must be /run/usnm-boinc-secrets", denied.stderr)
+        settings.write_text("BOINC_SECRETS_DIR=/run/usnm-boinc-secrets\n")
+        denied = self.run_step("--env", "prod", "--step", "submit", "--what-if")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("no local secrets directory", denied.stderr)
+        Path(self.conf.name, "runtime-secrets").mkdir()
+        accepted = self.run_step("--env", "prod", "--step", "submit", "--what-if")
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
     def test_refusals(self):
         cases = [
             (("--env", "prod", "--target", "export", "--step", "collect", "--what-if"), "does not run on-prem"),
