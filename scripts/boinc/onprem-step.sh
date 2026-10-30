@@ -210,6 +210,7 @@ IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/ser
 BASE=()
 LINES=()
 QUEUE_LOCATION=""
+HANDOFF_LOCATION=""
 # The last line counts even without a newline after it.
 while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
@@ -217,6 +218,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   BASE+=("${BASH_REMATCH[1]}")
   LINES+=("$line")
   [ "${BASH_REMATCH[1]}" != QUEUE_URL ] || QUEUE_LOCATION=${BASH_REMATCH[2]}
+  [ "${BASH_REMATCH[1]}" != HANDOFF_URL ] || HANDOFF_LOCATION=${BASH_REMATCH[2]}
   if [ "$TARGET" = handoff ]; then
     [[ $HANDOFF_HOST_VARS == *" ${BASH_REMATCH[1]} "* ]] || die "$SETTINGS sets ${BASH_REMATCH[1]}; it takes only$HANDOFF_HOST_VARS"
     [ -n "${BASH_REMATCH[2]}" ] || die "$SETTINGS has an empty ${BASH_REMATCH[1]}"
@@ -286,7 +288,9 @@ if [ "$TARGET" = handoff ]; then
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
     export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
   esac
+  SSH_ALLOWED+=" EXPECTED_HANDOFF_URL "
 fi
+EXPECTED_HANDOFF_URL=""
 for v in ${VARS[@]+"${VARS[@]}"}; do
   name=${v%%=*}
   [[ $v == *=* ]] && [[ $name =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || die "--var is NAME=VALUE with an upper-case NAME: $v"
@@ -297,12 +301,24 @@ for v in ${VARS[@]+"${VARS[@]}"}; do
     die "--var $name is not a controller bridge-step input; over ssh $STEP takes only$SSH_ALLOWED"
   [ "$TARGET" != handoff ] || [[ $SSH_ALLOWED == *" $name "* ]] ||
     die "--var $name is not a hand-off $STEP input; it takes only$SSH_ALLOWED"
+  if [ "$TARGET" = handoff ] && [ "$name" = EXPECTED_HANDOFF_URL ]; then
+    EXPECTED_HANDOFF_URL=${v#*=}
+    [ -n "$EXPECTED_HANDOFF_URL" ] || die "EXPECTED_HANDOFF_URL must not be empty"
+  fi
   if [ "$TARGET" = publish ]; then
     [[ $v =~ ^APPVER_REUSE_PROJECT=[01]$ ]] || die "--target publish takes only --var APPVER_REUSE_PROJECT=0 or 1"
     REUSE=${v#*=}
   fi
   seen+="$name "
 done
+if [ "$TARGET" = handoff ]; then
+  if [ -n "$EXPECTED_HANDOFF_URL" ]; then
+    [ "$EXPECTED_HANDOFF_URL" = "$HANDOFF_LOCATION" ] ||
+      die "handoff backend mismatch between controller and host settings"
+  elif [ "$HANDOFF_LOCATION" = /handoff-state ]; then
+    die "local handoff requires EXPECTED_HANDOFF_URL from the controller"
+  fi
+fi
 
 name="usnm-boinc-step-$(date -u +%Y%m%dT%H%M%SZ)-$STEP"
 if $WHAT_IF; then

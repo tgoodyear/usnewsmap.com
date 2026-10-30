@@ -162,6 +162,24 @@ class LocalHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, "unreadable journal directory"):
                 self.transport.records()
 
+    def test_inventory_rejects_dangling_journal_symlink(self):
+        job = self.store / "dispatch/jobs" / ("a" * 64)
+        job.mkdir()
+        (job / "record.json").symlink_to("missing.json")
+        with self.assertRaisesRegex(ValueError, "unsafe local journal"):
+            self.transport.records()
+
+    def test_handoff_steps_pin_expected_backend_at_the_runner(self):
+        cloud = dict(self.config)
+        del cloud["handoff_root"]
+        for transport, expected in (
+                (self.transport, "/handoff-state"),
+                (batch.Transport(cloud, self.root, onprem_handoff=("claim", "collect", "export")),
+                 "https://exchange123.blob.core.windows.net/boinc-handoff")):
+            with patch.object(transport, "run") as run:
+                transport.step("handoff", "claim", CLAIM_MAX="1")
+                self.assertIn(f"EXPECTED_HANDOFF_URL={expected}", run.call_args.args[0])
+
     def test_changed_journal_fails_instead_of_using_inconsistent_snapshot(self):
         row = record("sn12345678/1900-01-01/ed-1/seq-1", 1)
         job = self.store / "dispatch/jobs" / row["job"]["id"]

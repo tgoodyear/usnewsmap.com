@@ -399,6 +399,10 @@ cannot choose a container mount. The controller must see the same filesystem,
 whether it runs beside the BOINC server or uses an existing shared mount. Set
 `HANDOFF_URL=/handoff-state` in the host's handoff settings at cutover. Bridge
 calls use this fixed container path, never a caller-selected local directory.
+The controller passes `EXPECTED_HANDOFF_URL` to every on-prem handoff step.
+The runner compares it with its host-owned setting before launching anything;
+a mismatch fails without hiding queue messages or modifying either backend.
+Local handoff calls without this marker are refused.
 
 Stop new controller starts and wait for its current tick and bridge steps to
 finish before the final state copy. Copy and independently verify dispatch
