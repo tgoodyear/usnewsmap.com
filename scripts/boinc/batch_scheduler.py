@@ -756,6 +756,8 @@ class Transport:
         onprem = target == "bridge" or (target == "handoff" and step in self.onprem_steps)
         if onprem and self.config.get("step_command"):
             command = self.config["step_command"]
+        if target == "handoff" and onprem:
+            variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
         argv = command + ["--env", self.config["env"],
                           "--target", target, "--step", step, "--wait-mins", "30"]
         for key, value in variables.items():
@@ -784,7 +786,7 @@ class Transport:
                         "unsafe local job directory")
                 path = entry / "record.json"
                 try:
-                    info = path.stat()
+                    info = path.lstat()
                 except FileNotFoundError:
                     continue
                 require(stat.S_ISREG(info.st_mode), "unsafe local journal")

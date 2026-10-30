@@ -296,6 +296,26 @@ class OnpremStep(unittest.TestCase):
         Path(self.conf.name, "handoff.env").write_text(
             "".join(f"{k}={v}\n" for k, v in settings.items() if v is not None))
 
+    def test_handoff_backend_must_match_controller_before_launch(self):
+        azure = HANDOFF_SETTINGS["HANDOFF_URL"]
+        for actual, expected, passes in (
+                (azure, "/handoff-state", False),
+                ("/handoff-state", azure, False),
+                ("/handoff-state", None, False),
+                ("/handoff-state", "/handoff-state", True),
+                (azure, "https://other.blob.core.windows.net/boinc-handoff", False),
+                (azure, azure, True)):
+            with self.subTest(actual=actual, expected=expected):
+                self.write_handoff_env(HANDOFF_URL=actual)
+                marker = "" if expected is None else f" --var EXPECTED_HANDOFF_URL={expected}"
+                done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step claim"
+                                         + marker + " --what-if")
+                if passes:
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                else:
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertRegex(done.stderr, "backend mismatch|requires EXPECTED_HANDOFF_URL")
+
     def test_handoff_runs_the_job_command_with_the_hosts_settings(self):
         self.write_handoff_env()
         done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step claim "
