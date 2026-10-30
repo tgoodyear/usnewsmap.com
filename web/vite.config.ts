@@ -2,8 +2,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
-import examples from "./src/examples.json" with { type: "json" };
-import { searchPath } from "./src/route";
 import { pageFingerprint } from "./sitemap";
 import { fileURLToPath } from "node:url";
 
@@ -39,13 +37,7 @@ export default defineConfig({
           fileName: "sitemap-pages.json",
           source: JSON.stringify({ generated_at: new Date().toISOString(), pages }),
         });
-        const paths = [
-          "/",
-          "/privacy",
-          "/datasets",
-          "/credits",
-          ...new Set(examples.map(({ view }) => searchPath(view.q))),
-        ];
+        const paths = ["/", "/privacy", "/datasets", "/credits"];
         const source =
           '<?xml version="1.0" encoding="UTF-8"?>\n' +
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +

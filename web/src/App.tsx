@@ -58,7 +58,7 @@ const webgl = typeof document !== "undefined" && hasWebGL2();
 /** The side panel lists that show more on request: Clearest differences (relative rate), Pages and Median date. */
 const LIST_NAMES = ["above", "below", "places", "states", "earliest", "latest"] as const;
 
-export function App({ searchLinks = [] }: { searchLinks?: readonly { href: string; label: string }[] }) {
+export function App({ searchLinks }: { searchLinks?: readonly { href: string; label: string }[] }) {
   const [view, setView] = useView();
   // How many times "Show more" was pressed under the home page's examples;
   // kept across searches so Back returns to the same cards.

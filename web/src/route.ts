@@ -48,7 +48,8 @@ export function searchPath(q: string, mode = "phrase"): string {
   if (!q || q === "." || q === "..") return "/";
   const slug = slugFor(q, mode);
   if (slug) return `/search/${encodeURIComponent(slug)}`;
-  return `/search/${new URLSearchParams({ q }).toString().slice(2).replace(/\+/g, "%20")}`;
+  // Match the API canonical and CDN normalization of unreserved '~'.
+  return `/search/${new URLSearchParams({ q }).toString().slice(2).replace(/\+/g, "%20").replace(/%7E/g, "~")}`;
 }
 
 export function queryForPath(pathname: string, mode = "phrase"): string | null {
