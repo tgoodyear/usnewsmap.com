@@ -1,0 +1,12 @@
+# Repeats usnm-edge-warm.service weekly: entries last 14 days at most, and
+# Cloudflare can drop rarely used ones sooner. install.sh enables it.
+[Unit]
+Description=usnewsmap: re-warm Cloudflare's cache weekly
+
+[Timer]
+OnUnitActiveSec=7d
+OnBootSec=30min
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

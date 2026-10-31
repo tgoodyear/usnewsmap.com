@@ -1,0 +1,16 @@
+# Fills Cloudflare's cache with the example searches (#955, 06 section 6.5).
+# update-api.sh starts it after a deploy switches traffic, and
+# usnm-edge-warm.timer repeats it as entries expire. A failure affects
+# nothing but how warm the edge is.
+[Unit]
+Description=usnewsmap: warm Cloudflare's cache with the example searches
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/usnm-serving/warm-edge
+DynamicUser=true
+Nice=10
+TimeoutStartSec=1h
+SyslogIdentifier=usnm-edge-warm
