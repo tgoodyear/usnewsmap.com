@@ -1127,42 +1127,38 @@ async fn api_responses_are_compressed_and_cors_is_limited_to_allowed_origins() {
 const EDGE: &str = "cloudflare-cdn-cache-control";
 
 #[tokio::test]
-async fn only_a_pinned_example_may_stay_at_the_edge() {
+async fn only_a_pinned_search_may_stay_at_the_edge() {
     let state = state_with(None).await;
     let (_, _, meta) = get(&state, "/v1/meta").await;
     let v = meta["index_version"].as_str().unwrap();
     let g = meta["edge_generation"].as_str().unwrap();
     assert!(g.starts_with('f'), "{g}");
-    let example = "q=Whig+OR+Whigs&from=1834-01-01&to=1856-12-31&bucket=month";
 
-    let (status, headers, _) = get(&state, &format!("/v1/aggregate?{example}&v={v}&g={g}")).await;
+    let (status, headers, _) = get(&state, &format!("/v1/aggregate?q=gold&v={v}&g={g}")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[EDGE], "public, max-age=1209600");
-    assert_eq!(headers["x-usnm-example"], "whigs");
     assert_eq!(
         header_str(&headers, header::CACHE_CONTROL),
         "public, max-age=86400"
     );
 
     for uri in [
-        format!("/v1/aggregate?{example}&v={v}&g=old"),
-        format!("/v1/aggregate?{example}&v={v}"),
-        format!("/v1/aggregate?{example}&g={g}"),
-        format!("/v1/aggregate?q=gold&v={v}&g={g}"),
+        format!("/v1/aggregate?q=gold&v={v}&g=old"),
+        format!("/v1/aggregate?q=gold&v={v}"),
+        format!("/v1/aggregate?q=gold&g={g}"),
     ] {
         let (status, headers, _) = get(&state, &uri).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(headers[EDGE], "no-store", "{uri}");
-        assert!(!headers.contains_key("x-usnm-example"), "{uri}");
     }
 }
 
-async fn report_example(state: &Arc<AppState>, body: &str) -> StatusCode {
+async fn report_search(state: &Arc<AppState>, body: &str) -> StatusCode {
     app(state.clone())
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/example-search")
+                .uri("/v1/search-report")
                 .header(header::CONTENT_TYPE, "text/plain")
                 .body(Body::from(body.to_owned()))
                 .unwrap(),
@@ -1173,19 +1169,15 @@ async fn report_example(state: &Arc<AppState>, body: &str) -> StatusCode {
 }
 
 #[tokio::test]
-async fn the_example_report_takes_only_an_example() {
+async fn the_search_report_takes_only_a_query_string() {
     let state = state_with(None).await;
     assert_eq!(
-        report_example(&state, r#"{"example":"whigs"}"#).await,
+        report_search(&state, r#"{"query":"q=gold&v=x"}"#).await,
         StatusCode::NO_CONTENT
     );
-    for body in [
-        r#"{"example":"not-an-example"}"#,
-        r#"{"example":"whigs","q":"gold"}"#,
-        r#"{"q":"gold"}"#,
-    ] {
+    for body in [r#"{"query":"q=gold","pages":3}"#, r#"{"q":"gold"}"#, "gold"] {
         assert_eq!(
-            report_example(&state, body).await,
+            report_search(&state, body).await,
             StatusCode::BAD_REQUEST,
             "{body}"
         );

@@ -58,7 +58,7 @@ pub(crate) fn meta_body(state: &AppState, snap: &crate::Snapshot) -> serde_json:
     let c = &rd.current;
     json!({
         "index_version": c.index_version,
-        // With `v`, what lets Cloudflare keep an example search (06 §6.5).
+        // With `v`, what lets Cloudflare keep a search (06 §6.5).
         "edge_generation": crate::edge::generation(rd),
         "indexes": c.indexes,
         "bounds": c.bounds,

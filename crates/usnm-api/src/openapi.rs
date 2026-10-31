@@ -25,7 +25,7 @@ use crate::AppState;
 
 /// The `/v1` routes the document leaves out: the site's page views.
 /// `/healthz` and `/readyz`, outside `/v1`, are left out too.
-pub const INTERNAL: &[&str] = &["/beacon", "/example-search"];
+pub const INTERNAL: &[&str] = &["/beacon", "/search-report"];
 
 /// Where the API answers: its own host, and the site's, which serves the
 /// same routes (ADR-0010).
@@ -418,7 +418,7 @@ fn param(path: &str, name: &str, config: &Config) -> Value {
             "g",
             false,
             "The `edge_generation` from `/v1/meta`. The web app sends it so that Cloudflare can \
-             keep the example searches; it changes no result."
+             keep the response; it changes no result."
                 .into(),
             json!({ "type": "string" }),
         ),

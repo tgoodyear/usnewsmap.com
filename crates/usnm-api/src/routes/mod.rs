@@ -2,10 +2,10 @@ mod aggregate;
 mod beacon;
 mod coverage;
 mod days;
-mod example_search;
 mod hits;
 pub(crate) use hits::ocr_for_hit;
 mod meta;
+mod search_report;
 mod titles;
 
 pub use aggregate::aggregate;
@@ -15,9 +15,9 @@ pub(crate) use beacon::is_bot;
 pub use coverage::coverage;
 pub(crate) use coverage::coverage_in;
 pub use days::days;
-pub use example_search::example_search;
 pub use hits::hits;
 pub use meta::{meta, places, readyz};
+pub use search_report::search_report;
 pub(crate) use meta::{meta_body, places_in};
 pub use titles::{title, titles};
 

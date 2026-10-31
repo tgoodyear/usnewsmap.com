@@ -9,8 +9,8 @@
 //!
 //! A search counts once, on `/v1/aggregate`, which the site requests once
 //! per search; the coverage and hits requests that follow aren't counted.
-//! It counts when the response is a 200, from a cache or not; an example
-//! Cloudflare answered is reported by the site (`POST /v1/example-search`).
+//! It counts when the response is a 200, from a cache or not; a search
+//! Cloudflare answered is reported by the site (`POST /v1/search-report`).
 //! Not counted
 //! ([`admit`]): the warm-up's queries (they don't pass through the handler),
 //! requests with `DNT: 1` or `Sec-GPC: 1`, crawler, script and headless user

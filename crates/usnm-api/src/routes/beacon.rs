@@ -92,6 +92,7 @@ pub(super) async fn read_body(
     headers: &HeaderMap,
     body: Body,
     what: &str,
+    limit: usize,
 ) -> Result<axum::body::Bytes, ApiError> {
     let media = headers
         .get(header::CONTENT_TYPE)
@@ -107,16 +108,16 @@ pub(super) async fn read_body(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    if declared.is_some_and(|n| n > MAX_BODY as u64) {
-        return Err(too_large());
+    if declared.is_some_and(|n| n > limit as u64) {
+        return Err(too_large(limit));
     }
-    axum::body::to_bytes(body, MAX_BODY)
+    axum::body::to_bytes(body, limit)
         .await
-        .map_err(|_| too_large())
+        .map_err(|_| too_large(limit))
 }
 
 async fn accept(state: &AppState, headers: &HeaderMap, body: Body) -> Result<Valid, ApiError> {
-    let bytes = read_body(headers, body, "the page view").await?;
+    let bytes = read_body(headers, body, "the page view", MAX_BODY).await?;
     // Only an object: serde would also read a struct from an array.
     let object = bytes.trim_ascii_start().first() == Some(&b'{');
     let parsed = object.then(|| serde_json::from_slice::<Beacon>(&bytes));
@@ -130,8 +131,8 @@ async fn accept(state: &AppState, headers: &HeaderMap, body: Body) -> Result<Val
     validate(beacon, &state.config.site_host).map_err(ApiError::BadBeacon)
 }
 
-fn too_large() -> ApiError {
-    ApiError::TooLarge(format!("the body must be at most {MAX_BODY} bytes"))
+fn too_large(limit: usize) -> ApiError {
+    ApiError::TooLarge(format!("the body must be at most {limit} bytes"))
 }
 
 fn validate(b: Beacon, site_host: &str) -> Result<Valid, String> {

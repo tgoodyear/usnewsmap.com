@@ -11,7 +11,7 @@ export type HitSort = "oldest" | "newest" | "relevant";
 
 export interface Meta {
   index_version: string;
-  /** What `g` takes on `/v1/aggregate`, so Cloudflare can keep the example searches (06 §6.5). */
+  /** What `g` takes on `/v1/aggregate`, so Cloudflare can keep searches (06 §6.5). */
   edge_generation?: string;
   bounds: { from: string; to: string };
   published_at: string;

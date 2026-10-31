@@ -32,8 +32,8 @@
     "enabled": true
   },
   {
-    "ref": "usnm_example_searches",
-    "description": "usnewsmap.com: let the API choose which pinned searches the edge keeps; only examples are not no-store",
+    "ref": "usnm_pinned_searches",
+    "description": "usnewsmap.com: cache searches pinned to a version and generation; the API sends no-store for anything else",
     "expression": "(http.host eq \"usnewsmap.com\" and (any(http.request.uri.args[\"v\"][*] ne \"\") and any(http.request.uri.args[\"g\"][*] ne \"\") and http.request.uri.path in {\"/v1/aggregate\" \"/api/v1/aggregate\"}))",
     "action": "set_cache_settings",
     "action_parameters": {

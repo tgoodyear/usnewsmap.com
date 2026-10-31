@@ -251,7 +251,6 @@ pub(crate) async fn aggregate_in(
     };
     crate::edge::mark(
         resp.headers_mut(),
-        uri.query().unwrap_or(""),
         matches!(pinning, version::Pinning::Current),
         raw.get(crate::edge::GENERATION_KEY),
         &generation,

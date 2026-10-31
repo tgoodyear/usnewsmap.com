@@ -6,7 +6,7 @@ import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER } from "./examples";
 import { Examples } from "./components/Examples";
-import { reportEdgeExample } from "./edgeExamples";
+import { reportEdgeSearch } from "./edgeSearches";
 import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, viewUrl, useView, type ViewState } from "./state/url";
@@ -118,7 +118,7 @@ export function App({ searchLinks }: { searchLinks?: readonly { href: string; la
       setComputing((c) => (c?.key === aggKey ? null : c));
       return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }), {
         generation: meta.data?.edge_generation,
-        onResponse: reportEdgeExample,
+        onResponse: reportEdgeSearch,
       });
     },
     enabled: !!version && !!view.q,

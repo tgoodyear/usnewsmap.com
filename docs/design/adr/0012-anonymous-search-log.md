@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09
 - **Amends:** 09 §9.4.2, which kept no search text beyond daily aggregates with k ≥ 5
-- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the edge never caches `/v1/aggregate` or `/v1/hits`, both origins write the one log during the cutover window, and Cloudflare's sampled analytics may keep a search's words with the client IP for up to 31 days)
+- **Amended by:** [ADR-0027](0027-onprem-serving-behind-cloudflare.md) (the edge never caches `/v1/hits`, the site reports a `/v1/aggregate` response the edge answered, 06 §6.5, both origins write the one log during the cutover window, and Cloudflare's sampled analytics may keep a search's words with the client IP for up to 31 days)
 
 ## Context
 

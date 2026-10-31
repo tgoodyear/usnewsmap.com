@@ -91,9 +91,12 @@ export default function PrivacyPage() {
         <p>
           Requests to this site pass through Cloudflare before reaching our servers in Microsoft Azure. Cloudflare
           terminates HTTPS and can see your IP address, the full address you request (including search words in a path
-          or query string), and request headers. Do Not Track and Global Privacy Control do not prevent this processing.
-          Cloudflare caches static files, versioned lookup data and, for up to 14 days, the summary results of the home
-          page's example searches, but not other search results or this site's HTML pages.
+          or query string), and request headers. Cloudflare caches static files, versioned lookup data and, for about
+          two weeks, the summary results of searches, stored with the search words but nothing about who searched. It
+          does not cache lists of matching pages or this site's HTML pages. A later visitor making the same search gets
+          the cached result from Cloudflare, and the site then reports the search to our servers, so it is still
+          recorded as described above. Do Not Track and Global Privacy Control do not prevent this processing, but no
+          search is reported or recorded when you use them.
         </p>
         <p>
           Cloudflare may retain sampled security request records containing your IP address and the requested address
