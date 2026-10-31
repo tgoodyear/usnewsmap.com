@@ -443,6 +443,19 @@ fn canonical_path(path: &str) -> bool {
 
 type Identity = (String, DateTime<Utc>, String, chrono::NaiveDate, u32);
 
+/// How long a spare serves a checkpoint before it generates again. Checkpoints
+/// also decide which search pages are indexed and rendered on the server, so
+/// the spare's mustn't drift far from on-prem's.
+const SPARE_CHECKPOINT_DAYS: i64 = 7;
+
+/// Whether a spare can keep serving this checkpoint: it's for the published
+/// version and recent enough. With none, or a stale one, a spare generates once.
+fn spare_can_serve(checkpoint: &Checkpoint, state: &AppState, now: DateTime<Utc>) -> bool {
+    checkpoint.version == state.snapshot.load_full().refdata.version()
+        && now.signed_duration_since(checkpoint.observed_at)
+            < chrono::Duration::days(SPARE_CHECKPOINT_DAYS)
+}
+
 /// Whether a checkpoint already covers this hour's identity. A start has no
 /// memory of its own, so without this each one would search for every page
 /// again to reach the same checkpoint.
@@ -450,6 +463,7 @@ fn made_for(checkpoint: &Checkpoint, identity: &Identity) -> bool {
     checkpoint.observed_at.date_naive() == identity.3 && checkpoint.observed_at.hour() == identity.4
 }
 
+#[cfg(test)]
 async fn refresh(
     state: &Arc<AppState>,
     store: &dyn ObjectStore,
@@ -471,7 +485,13 @@ async fn refresh_from(
     if let Some(checkpoint) = latest(store).await? {
         state.sitemap.committed.store(Some(Arc::new(checkpoint)));
     }
-    if !state.config.sitemap_generate {
+    if !state.config.sitemap_generate
+        && state
+            .sitemap
+            .committed
+            .load_full()
+            .is_some_and(|checkpoint| spare_can_serve(&checkpoint, state, Utc::now()))
+    {
         return Ok(());
     }
     let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
@@ -1739,6 +1759,31 @@ mod tests {
             first.sequence
         );
         assert!(finished.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_spare_generates_when_it_has_no_checkpoint_or_a_stale_one() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let mut spare = state(&dir, Some(Vec::new())).await;
+        Arc::get_mut(&mut spare).unwrap().config.sitemap_generate = false;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        refresh(&spare, &store, &dir.0, &mut None).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+
+        let mut old = first.clone();
+        old.sequence += 1;
+        old.observed_at -= chrono::Duration::days(SPARE_CHECKPOINT_DAYS + 1);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", old.sequence),
+                serde_json::to_vec(&old).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        refresh(&spare, &store, &dir.0, &mut None).await.unwrap();
+        assert!(latest(&store).await.unwrap().unwrap().sequence > old.sequence);
     }
 
     #[tokio::test]

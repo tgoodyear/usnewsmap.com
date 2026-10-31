@@ -142,9 +142,10 @@ pub struct Config {
     /// Where the anonymous search log goes (`searches/` container), if
     /// anywhere (06 §6.8).
     pub search_log_url: Option<String>,
-    /// Generate sitemap checkpoints (true by default). A spare that scales to
-    /// zero turns it off: each start would search for every sitemap page, and
-    /// it serves the last committed checkpoint instead.
+    /// Generate sitemap checkpoints on each start and hourly (true by default).
+    /// A spare that scales to zero turns it off: each start would search for
+    /// every sitemap page. It serves the last checkpoint, and generates only
+    /// with none, for a new version, or after a week.
     pub sitemap_generate: bool,
     /// Persistent sitemap checkpoints, independent of visitor logging.
     /// Unset, use `search_log_url`'s existing non-expiring container.

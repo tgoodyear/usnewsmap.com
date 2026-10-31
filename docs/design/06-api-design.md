@@ -615,10 +615,14 @@ cache. `USNM_SITEMAP_STATE_URL` can independently select a persistent store
 without enabling visitor logging; it defaults to `USNM_SEARCH_LOG_URL`. On-prem
 serving sets a shared, non-expiring local directory instead. The API needs only
 the container's existing list/read/create access. An Azure app that scales to
-zero sets `USNM_SITEMAP_GENERATE=false`: it serves the last committed checkpoint
-and generates none, because each generation searches for every sitemap page. A
-start that does generate skips the work when a checkpoint already covers the
-same version, site build and hour.
+zero sets `USNM_SITEMAP_GENERATE=false`, because each generation searches for
+every sitemap page. It serves its last checkpoint, and generates only with none,
+for a new index version, or when the checkpoint is a week old. Azure and on-prem
+keep separate checkpoints, and a checkpoint also decides which search pages are
+indexed and rendered on the server, so during a failover a search promoted on
+on-prem in the last week can be `noindex` until Azure generates. A start that
+does generate skips the work when a checkpoint already covers the same version,
+site build and hour.
 Every checkpoint stores one complete snapshot's canonical URL fingerprints and
 retained modification dates; competing replicas serialize with `put_new`, not
 a mutable pointer. Refreshes run in the background without blocking readiness,

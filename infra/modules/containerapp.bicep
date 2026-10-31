@@ -158,7 +158,8 @@ var readyEnv = [
   { name: 'USNM_PREWARM_STARTUP_BUDGET_SECS', value: string(holdReadyForWarmUp ? startupWarmUpSecs : 0) }
   { name: 'USNM_READY_CAP_SECS', value: string(readyCapSecs) }
   // A spare at zero replicas wakes for little: each start generating the
-  // sitemap reads about 820,000 blobs. It serves the last checkpoint instead.
+  // sitemap reads about 820,000 blobs. It serves its last checkpoint, and
+  // generates only with none, for a new version, or after a week.
   { name: 'USNM_SITEMAP_GENERATE', value: holdReadyForWarmUp ? 'true' : 'false' }
 ]
 // Loading the published version before the warm-up: the API retries while
