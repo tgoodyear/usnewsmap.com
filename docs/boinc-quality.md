@@ -159,11 +159,15 @@ Run one-off queue operators with the committed single-replica bridge configurati
 not replica settings left by a parallel assessment submission.
 
 The **6 GB profile is not generally admitted or hardware-qualified** merely by installing
-this policy. It starts closed and retains BOINC >= 8.2.11 until an actual older-client
-compatibility run justifies a separate gate change. Before admission, publish a signed
-native version with the pinned Vulkan bundle, measure peak GPU and host memory on real
-OCR inputs, and verify successful output. The 5,120 MiB minimum is a free-memory guard,
-not a claim that every 6 GB card or driver configuration works.
+this policy. It starts closed and permits BOINC >= 8.2.9 **only for this profile**.
+A [real 8.2.9 native run](https://github.com/tgoodyear/usnewsmap.com/issues/1234#issuecomment-6537940240)
+produced all 12 crop readings with the locked 8B model, 24 GPU layers and a CPU projector:
+3,725 MiB observed peak GPU memory and about 5.32 GiB aggregate process RSS. That offline
+run used a managed 8 GB RTX 2060 SUPER; it does not prove server reporting, independent
+validation, or the remote 6 GB card's compatibility. Other native class floors remain
+8.2.11. Before admission, publish a signed native version with the pinned Vulkan bundle,
+verify the volunteer's CUDA/Vulkan access and measure its successful output. The
+5,120 MiB minimum is a free-memory guard, not a claim that every card or driver works.
 
 For a one-workunit qualification, preview `native-qwen-cohort.php --project PATH
 --plan-class nvidia_vulkan_6gb_8b --workunit ID --fresh-pair --admit-until UNIX`,
