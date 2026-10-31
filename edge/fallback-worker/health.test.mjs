@@ -67,7 +67,8 @@ test("healthy primary preflight is query/body/header-free, bypasses cache and pr
   assert.deepEqual(probe.headers, { "cache-control": "no-cache, no-store", dnt: "1" });
   assert.equal(probe.body, null);
   assert.equal(probe.redirect, "manual");
-  assert.deepEqual(probe.cf, { cacheTtl: 0, cacheEverything: false });
+  // cacheTtl: 0 makes Cloudflare serve the last 200 as STALE when the origin answers 503.
+  assert.equal(probe.cf, undefined);
   assert.equal(result.calls[1].headers.origin, SITE);
   assert.equal(result.answer.headers.get("x-usnm-origin"), "onprem");
   assert.equal(result.answer.headers.get("x-usnm-failover-reason"), "primary-ready");

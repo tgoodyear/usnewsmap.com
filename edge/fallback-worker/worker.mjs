@@ -143,7 +143,9 @@ async function ready(origin, ms, signal, primary = false) {
         redirect: "manual",
         signal: probeSignal,
       });
-      const answer = await fetch(probe, { cf: { cacheTtl: 0, cacheEverything: false } });
+      // No `cf` cache options: `cacheTtl: 0` stores the answer and revalidates it, so a
+      // 503 comes back as the last 200 with cf-cache-status STALE, and readiness never fails.
+      const answer = await fetch(probe);
       if (answer.status !== 200 || !answer.body ||
           (primary && answer.headers.get("X-USNM-Origin") === "azure")) {
         void answer.body?.cancel().catch(() => {});
