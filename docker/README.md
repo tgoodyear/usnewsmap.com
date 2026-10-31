@@ -13,4 +13,6 @@ docker build -f docker/Dockerfile.api .
 | `Dockerfile.ja-ocr`           | `usnewsmap-ja-ocr`: the Japanese OCR job (`ocr/ja-ocr/`)                                                               | the same CI jobs, `scripts/azure/stand-up.sh` and, on an OCR node, `scripts/ocr-node/ja-ocr-onprem.sh`                                                         |
 | `Dockerfile.quickwit-patched` | `quickwit/quickwit-usnm`: Quickwit built from our fork ([ADR-0013](../docs/design/adr/0013-quickwit-from-our-fork.md)) | `scripts/azure/build-quickwit.sh`, in the environment's registry with ACR Tasks. The context is this one file: the Dockerfile fetches the source from the fork |
 
+CI's `publish` job copies prod's `usnewsmap-api`, `usnewsmap-ingest` and `usnewsmap-ja-ocr` images to `ghcr.io/tgoodyear/` with `scripts/ci/mirror-image.sh`, digest unchanged. These copies can be public, so a build must never put a secret in an image.
+
 `.dockerignore` stays at the repository root, where the build context is.

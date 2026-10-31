@@ -1101,11 +1101,12 @@ jobs:
     # id-token: the Azure sign-in below uses OIDC, so no secret is stored;
     # the API image's attestation step needs it too, for its Sigstore
     # signing certificate. attestations: that attestation is stored on the
-    # repository.
+    # repository. packages: prod's images are mirrored to GHCR.
     permissions:
       contents: read
       id-token: write
       attestations: write
+      packages: write
     concurrency:
       group: deploy-${{ matrix.environment }}
       cancel-in-progress: false
@@ -1113,6 +1114,7 @@ jobs:
       ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
       APP: ${{ vars.USNM_API_APP }}
       RG: ${{ vars.USNM_RESOURCE_GROUP }}
+      GHCR: ghcr.io/tgoodyear
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1162,6 +1164,7 @@ jobs:
             ${{ env.ACR }}/usnewsmap-api:main
             ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
       - if: steps.head.outputs.current == 'true'
+        id: ingest
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -1175,6 +1178,7 @@ jobs:
             ${{ env.ACR }}/usnewsmap-ingest:main
             ${{ env.ACR }}/usnewsmap-ingest:${{ github.sha }}
       - if: steps.head.outputs.current == 'true'
+        id: ja_ocr
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -1184,6 +1188,42 @@ jobs:
           tags: |
             ${{ env.ACR }}/usnewsmap-ja-ocr:main
             ${{ env.ACR }}/usnewsmap-ja-ocr:${{ github.sha }}
+      # Prod's images also go to GHCR (#1403), copied from the registry by
+      # digest, so both name one build. ACR stays what prod pulls: every step
+      # that touches GHCR may fail without stopping the rollout.
+      - name: Mirror the API image to GHCR
+        id: mirror_api
+        if: steps.head.outputs.current == 'true' && matrix.environment == 'prod'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          scripts/ci/mirror-image.sh --source "$ACR/usnewsmap-api"
+          --digest "${{ steps.api.outputs.digest }}"
+          --dest "$GHCR/usnewsmap-api" --commit "$GITHUB_SHA"
+      - name: Mirror the ingest image to GHCR
+        id: mirror_ingest
+        if: steps.head.outputs.current == 'true' && matrix.environment == 'prod'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          scripts/ci/mirror-image.sh --source "$ACR/usnewsmap-ingest"
+          --digest "${{ steps.ingest.outputs.digest }}"
+          --dest "$GHCR/usnewsmap-ingest" --commit "$GITHUB_SHA"
+      - name: Mirror the Japanese OCR image to GHCR
+        id: mirror_ja_ocr
+        if: steps.head.outputs.current == 'true' && matrix.environment == 'prod'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          scripts/ci/mirror-image.sh --source "$ACR/usnewsmap-ja-ocr"
+          --digest "${{ steps.ja_ocr.outputs.digest }}"
+          --dest "$GHCR/usnewsmap-ja-ocr" --commit "$GITHUB_SHA"
       # The API app exists once the environment pulls from its registry
       # (bootstrap's second provision); until then only the images publish.
       - name: Roll the API onto this commit's image
@@ -1201,6 +1241,44 @@ jobs:
         with:
           subject-name: ${{ env.ACR }}/usnewsmap-api
           subject-digest: ${{ steps.api.outputs.digest }}
+      # The same digest under each registry's name, and the other two images,
+      # which nothing checks yet: none of these holds up the rollout, and the
+      # step above is the one on-prem serving waits for.
+      - name: Attest the API image for GHCR
+        if: steps.mirror_api.outcome == 'success' && matrix.environment == 'prod'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR }}/usnewsmap-api
+          subject-digest: ${{ steps.api.outputs.digest }}
+      - name: Attest the ingest image
+        if: steps.head.outputs.current == 'true' && matrix.environment == 'prod'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.ACR }}/usnewsmap-ingest
+          subject-digest: ${{ steps.ingest.outputs.digest }}
+      - name: Attest the ingest image for GHCR
+        if: steps.mirror_ingest.outcome == 'success' && matrix.environment == 'prod'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR }}/usnewsmap-ingest
+          subject-digest: ${{ steps.ingest.outputs.digest }}
+      - name: Attest the Japanese OCR image
+        if: steps.head.outputs.current == 'true' && matrix.environment == 'prod'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.ACR }}/usnewsmap-ja-ocr
+          subject-digest: ${{ steps.ja_ocr.outputs.digest }}
+      - name: Attest the Japanese OCR image for GHCR
+        if: steps.mirror_ja_ocr.outcome == 'success' && matrix.environment == 'prod'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR }}/usnewsmap-ja-ocr
+          subject-digest: ${{ steps.ja_ocr.outputs.digest }}
 
   indexnow:
     name: notify changed URLs (${{ matrix.environment }})
