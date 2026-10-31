@@ -37,8 +37,10 @@
 # No API color starts here: the timer's first run deploys the image prod
 # runs to blue. The response cache, /srv/usnm-serving/cache, should be the
 # host's bind mount from the NVMe pool; it is created if missing and given
-# to the API image's node user (1000), and the tmpfiles rule makes a directory
-# in it for each color.
+# to the API image's node user (1000), and the tmpfiles rule makes the shared
+# directory in it. Entries from the older per-color directories are hard-linked
+# in, so the next color starts warm. A running color keeps the mount it started
+# with until the next deploy.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '9,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -177,6 +179,12 @@ fi
 
 ! $units_changed || run systemctl daemon-reload
 run systemd-tmpfiles --create usnm-serving.conf
+# Entries are immutable, so hard links carry the per-color caches over at no cost.
+for color in blue green; do
+  [ -d "$SRV/cache/$color" ] || continue
+  run cp -aln "$SRV/cache/$color/." "$SRV/cache/shared/" ||
+    echo "note: some $color cache entries weren't linked; they're rebuilt on demand" >&2
+done
 ! $journald_changed || run systemctl restart systemd-journald.service
 run systemctl enable --quiet caddy.service usnm-searcher.service usnm-serving-update.timer cloudflared-usnm-serving.service
 if systemctl is-active --quiet caddy.service; then

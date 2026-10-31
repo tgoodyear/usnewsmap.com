@@ -666,6 +666,42 @@ class Install(Stubbed):
         self.assertNotIn("installed", r.stdout)
         self.assertFalse(any(c.startswith(("systemctl restart", "systemctl daemon-reload")) for c in self.calls()))
 
+    def test_per_color_cache_entries_are_linked_into_the_shared_one(self):
+        cache = os.path.join(self.root, "srv/usnm-serving/cache")
+        entry = "v1/f8/{}.json.zst"
+        for where, name, body in (("blue", "only-blue", "blue"), ("blue", "both", "blue"),
+                                  ("blue", "kept", "blue"), ("green", "both", "green"),
+                                  ("green", "only-green", "green"), ("shared", "kept", "shared")):
+            write(os.path.join(cache, where, entry.format(name)), body)
+        old = 1_700_000_000
+        for name in ("only-blue", "both", "kept"):
+            os.utime(os.path.join(cache, "blue", entry.format(name)), (old, old))
+
+        def shared():
+            found = {}
+            for name in ("only-blue", "only-green", "both", "kept"):
+                path = os.path.join(cache, "shared", entry.format(name))
+                if os.path.exists(path):
+                    with open(path) as f:
+                        found[name] = f.read()
+            return found
+
+        r = self.install("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would run: cp -aln %s/blue/. %s/shared/" % (cache, cache), r.stdout)
+        self.assertEqual(shared(), {"kept": "shared"})
+
+        want = {"only-blue": "blue", "only-green": "green", "both": "blue", "kept": "shared"}
+        for _ in range(2):
+            r = self.install()
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(shared(), want)
+            for name in ("only-blue", "both"):
+                source = os.stat(os.path.join(cache, "blue", entry.format(name)))
+                linked = os.stat(os.path.join(cache, "shared", entry.format(name)))
+                self.assertEqual(source.st_ino, linked.st_ino, name)
+                self.assertEqual(int(linked.st_mtime), old, name)
+
     def test_search_log_is_refused_before_the_cutover(self):
         write(os.path.join(self.config, "api.env"), "USNM_SEARCH_LOG_URL=https://x/searches\n")
         r = self.install("--dry-run")
@@ -792,9 +828,10 @@ class Static(unittest.TestCase):
                       "\t\t\t\trequest delete\n", caddy)
         self.assertIn("MaxRetentionSec=30day", self.read("journald-usnm-serving.conf"))
         tmpfiles = self.read("usnm-serving.tmpfiles")
-        for color in ("blue", "green"):
-            self.assertIn("d /srv/usnm-serving/cache/%s 0750 1000 1000 mM:14d" % color, tmpfiles)
-        self.assertIn("-v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache", self.read("usnm-api@.service"))
+        for name in ("shared", "blue", "green"):
+            self.assertIn("d /srv/usnm-serving/cache/%s 0750 1000 1000 mM:14d" % name, tmpfiles)
+        self.assertIn("-v /srv/usnm-serving/cache/shared:/srv/usnm-serving/cache",
+                      self.read("usnm-api@.service"))
         self.assertIn("-v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state",
                       self.read("usnm-api@.service"))
         self.assertIn("d /srv/usnm-serving/sitemap-state 0750 1000 1000 -", tmpfiles)

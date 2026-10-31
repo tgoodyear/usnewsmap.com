@@ -9,11 +9,11 @@
 # color's own: API_IMAGE (the image by digest), API_COMMIT and USNM_BIND.
 # host.env (install.sh) holds HIMDS_GID.
 #
-# Each color has its own response cache directory. The API's local store
-# names its temporary files from the process id (with a thread id or a
-# per-process counter), and both colors run the API as process 1, so two
-# colors writing one directory at once could take each other's temporary
-# files.
+# Both colors share one response cache directory, so a new color's warm-up
+# reads what the last color computed instead of computing it again. Sharing is
+# safe: entries are keyed by index version and response format, and the API's
+# local store adds a per-process random token to its temporary file names, so
+# two colors can write at once even though both run the API as process 1.
 # Sitemap checkpoints instead share a durable directory across colors. Their
 # create-only store uses process-unique temporary names and atomic appends.
 #
@@ -36,7 +36,7 @@ TimeoutStopSec=60
 ExecStartPre=-/usr/bin/podman rm -f usnm-api-%i
 ExecStart=/usr/bin/podman run --rm --name usnm-api-%i --network host --pull never \
   --env-file /etc/usnm-serving/api.env -e USNM_BIND=${USNM_BIND} \
-  -v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache \
+  -v /srv/usnm-serving/cache/shared:/srv/usnm-serving/cache \
   -v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state \
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro --group-add ${HIMDS_GID} \
   --read-only --tmpfs /tmp:rw,size=64m --cap-drop all --security-opt no-new-privileges \
