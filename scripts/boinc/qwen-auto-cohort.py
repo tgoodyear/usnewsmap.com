@@ -151,23 +151,57 @@ def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
     return result
 
 
-def bind_inputs(project, row, job_id, audit, prompt_version=1):
-    wu = row["unit"]
-    require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
-    require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
-            and all(int(audit[key]) == value for key, value in
-                    {"batch": 8, "min_quorum": 2, "target_nresults": 2}.items()), "Audit/WU identity mismatch")
+def producer_paths(project, doc):
+    base = project.parent
+    unit = base / "qwen/qwen-nonenglish-v1/units" / doc
+    return [unit / "qwen.json", unit / "page.jpg", unit / "submitted", unit / "sample.json",
+            base / "quality/qwen-nonenglish-v1/pages" / doc / "quality.json",
+            base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")]
+
+
+def input_paths(project, row):
     download = (project / "download").resolve()
     files = {}
-    for node in ET.fromstring("<root>" + wu["xml_doc"] + "</root>").findall("file_info"):
+    for node in ET.fromstring("<root>" + row["unit"]["xml_doc"] + "</root>").findall("file_info"):
         name, url = node.findtext("name", ""), node.findtext("url", "")
         kind = "job" if name.endswith("_qwen_json") else "page" if name.endswith("_page_jpg") else None
         if kind:
             require(kind not in files and "/usnmocr_download/" in url, "Ambiguous input binding")
             path = download / url.split("/usnmocr_download/", 1)[1]
             require(path.resolve().is_relative_to(download), "Input escaped download tree")
-            files[kind] = path.read_bytes()
+            files[kind] = path
     require(set(files) == {"job", "page"}, "Missing job/page")
+    return files
+
+
+def exclusion_key(project, row, job_id, audit, prompt_version):
+    # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
+    # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
+    # reads. Any change misses the cache, so the unit is bound again from scratch and
+    # non-language failures still stop the tick.
+    wu = row["unit"]
+    try:
+        paths = input_paths(project, row)
+        job = paths["job"].read_bytes()
+        doc = json.loads(job)["doc_id"]
+        if not isinstance(doc, str) or not re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc):
+            return None
+        stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+                 for path in list(paths.values()) + producer_paths(project, doc) for info in [path.stat()]]
+    except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
+        return None
+    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats,
+                          prompt_version],
+                          sort_keys=True).encode())
+
+
+def bind_inputs(project, row, job_id, audit, prompt_version=1):
+    wu = row["unit"]
+    require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
+    require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
+            and all(int(audit[key]) == value for key, value in
+                    {"batch": 8, "min_quorum": 2, "target_nresults": 2}.items()), "Audit/WU identity mismatch")
+    files = {kind: path.read_bytes() for kind, path in input_paths(project, row).items()}
     job = json.loads(files["job"])
     doc = job["doc_id"]
     require(isinstance(doc, str) and re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc), "Unsafe doc identity")
@@ -186,8 +220,7 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
                     len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in crops), "Bad crop contract")
     base = project.parent
     unit = base / "qwen/qwen-nonenglish-v1/units" / doc
-    quality_path = base / "quality/qwen-nonenglish-v1/pages" / doc / "quality.json"
-    provenance_path = base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")
+    quality_path, provenance_path = producer_paths(project, doc)[-2:]
     require((unit / "qwen.json").read_bytes() == files["job"]
             and (unit / "page.jpg").read_bytes() == files["page"]
             and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
@@ -402,22 +435,43 @@ def run(args):
                 output |= {"starved_hosts": starved, "window_held_seconds": held}
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
-            skipped = []
+            skipped, remembered = [], []
+            # Workunit -> exclusion_key of units already fully bound and found out of cohort.
+            # Later ticks pass them over without re-reading every page while that key holds.
+            known = {key: value for key, value in state.get("out_of_cohort", {}).items()
+                     if int(key) in scanned}
 
             def admissible(row):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
+                unit = int(row["unit"]["id"])
+                key = exclusion_key(project, row, *by_wu[unit], args.prompt_version)
+                if key is not None and known.get(str(unit)) == key:
+                    skipped.append(unit)
+                    remembered.append(unit)
+                    return False
                 try:
-                    bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+                    bind_inputs(project, row, *by_wu[unit], args.prompt_version)
                 except OutOfCohort:
-                    skipped.append(int(row["unit"]["id"]))
+                    skipped.append(unit)
+                    if key is not None:
+                        known[str(unit)] = key
+                        # Durable per unit, so a tick cut short by its timeout still keeps
+                        # the exclusions it has verified.
+                        state["out_of_cohort"] = dict(known)
+                        if args.apply:
+                            persist(state_path, state)
                     return False
                 return True
 
             selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
                               args.minimum_workunit, reserved, min(remaining, capacity), admissible)
+            if known != state.get("out_of_cohort", {}):
+                state["out_of_cohort"] = dict(known)
+                if args.apply:
+                    persist(state_path, state)
             if skipped:
-                output |= {"out_of_cohort_skipped": skipped}
+                output |= {"out_of_cohort_skipped": skipped, "out_of_cohort_remembered": remembered}
             if not selected:
                 if skipped and ids:
                     # Every fresh unit in this page is out of cohort and never becomes admissible:

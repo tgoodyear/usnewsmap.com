@@ -175,6 +175,106 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             receipt = R.run(self.args)
         self.assertEqual((receipt["status"], receipt["target"]), ("refilled-finite-window", [103, 103]))
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_verified_out_of_cohort_units_are_not_rebound_every_tick(self):
+        self.rows[:] = [self.input(100, "spa"), self.input(101, "deu"), self.input(102, "yid")]
+        audit = self.root / "qwen/qwen-nonenglish-v1/audit.json"
+        audit.write_text(json.dumps(self.audit))
+        database = self.project / "database.json"
+        database.write_text(json.dumps(self.rows))
+        state_path = self.project / "ops-issue-559/qwen-auto-cohort/state.json"
+        bound, original = [], R.bind_inputs
+
+        def counting(project, row, *rest):
+            bound.append(int(row["unit"]["id"]))
+            if bound[-1] == interrupt_at:
+                raise TimeoutError
+            return original(project, row, *rest)
+
+        def tick():
+            bound.clear()
+            with patch.object(R, "read_database", return_value=self.database), \
+                    patch.object(R, "bind_inputs", side_effect=counting):
+                return R.run(self.args)
+
+        # A tick cut short by its timeout keeps the exclusions it had already verified.
+        interrupt_at = 101
+        with self.assertRaises(TimeoutError):
+            tick()
+        self.assertEqual(list(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100"])
+        interrupt_at = None
+        receipt = tick()
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_skipped"], receipt["out_of_cohort_remembered"]),
+                         ([102, 102], [100, 101], [100]))
+        self.assertEqual(sorted(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100", "101"])
+
+        def drain(row):
+            row["results"][0].update(hostid=9, server_state=4, sent_time=1)
+            row["results"][1].update(hostid=10, server_state=4, sent_time=1)
+            database.write_text(json.dumps(self.rows))
+
+        drain(self.rows[2])
+        self.rows.append(self.input(103, "yid"))
+        audit.write_text(json.dumps(self.audit))
+        database.write_text(json.dumps(self.rows))
+        receipt = tick()
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_remembered"]), ([103, 103], [100, 101]))
+        self.assertEqual(set(bound), {103})
+        # Any change to the audit record or a bound file misses the cache, so the unit is bound
+        # again from scratch and a non-language failure still stops the tick.
+        drain(self.rows[3])
+        with patch.object(self.args, "prompt_version", 2), \
+                self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            tick()
+        spa, deu = (row["unit"]["name"].removeprefix("usnm_qwen_") for row in self.rows[:2])
+        provenance = next((self.root / "quality/qwen-nonenglish-v1/texts").glob("ordinary-page-101.*"))
+        for change, error in (
+                (lambda: self.audit[spa].update(batch=9), "Audit/WU identity mismatch"),
+                (lambda: self.audit[spa].update(job_sha256="e" * 64), "differs from producer audit"),
+                (lambda: provenance.write_text(json.dumps(json.loads(provenance.read_bytes()) | {"sha256": "d" * 64})),
+                 "archive-provenance binding mismatch")):
+            saved, original_provenance = json.loads(json.dumps(self.audit)), provenance.read_bytes()
+            change()
+            audit.write_text(json.dumps(self.audit))
+            with self.assertRaisesRegex(ValueError, error):
+                tick()
+            self.audit.clear()
+            self.audit.update(saved)
+            audit.write_text(json.dumps(self.audit))
+            provenance.write_bytes(original_provenance)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_cached_download_directory_cannot_escape_through_a_symlink(self):
+        self.rows[0] = self.input(100, "spa")
+        download = self.project / "download"
+        partition = download / "partition"
+        partition.mkdir()
+        for path in list(download.iterdir()):
+            if path.is_file():
+                path.rename(partition / path.name)
+        for row in self.rows:
+            row["unit"]["xml_doc"] = row["unit"]["xml_doc"].replace(
+                "/usnmocr_download/", "/usnmocr_download/partition/")
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        for host, result in zip((9, 10), self.rows[1]["results"]):
+            result.update(server_state=4, hostid=host, sent_time=1)
+        escaped = self.root / "escaped-download"
+        partition.rename(escaped)
+        partition.symlink_to(escaped, target_is_directory=True)
+        original = Path.read_bytes
+
+        def guarded_read(path):
+            self.assertFalse(path.resolve().is_relative_to(escaped), "Read outside download before validation")
+            return original(path)
+
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(Path, "read_bytes", guarded_read), \
+                self.assertRaisesRegex(ValueError, "Input escaped download tree"):
+            R.run(self.args)
+
     def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
         for language in ("yid", "srp"):
             row = self.input(200, language)
