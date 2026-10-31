@@ -129,8 +129,10 @@ class DaemonConfig(unittest.TestCase):
         config = ET.parse(root / "config.xml.template")
         self.assertEqual(config.findtext("./config/next_rpc_delay"), "3600")
         plans = {p.findtext("name"): p for p in ET.parse(root / "plan_class_spec.xml").findall("plan_class")}
-        for name in ("mt", "apple_gpu_8b"):
+        for name in ("mt", "apple_gpu_8b", "nvidia_cuda_2b", "nvidia_cuda_8b",
+                     "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"):
             self.assertEqual(plans[name].findtext("min_core_client_version"), "80211")
+        self.assertEqual(plans["nvidia_vulkan_6gb_8b"].findtext("min_core_client_version"), "80209")
         for name in ("docker_intel_vulkan", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"):
             with self.subTest(plan=name):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
