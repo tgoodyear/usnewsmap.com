@@ -310,6 +310,9 @@ if [ -z "$COMMIT" ]; then
     reject "the registry has no $IMAGE_REPO:$target"
   fi
   [ "$tagged" = "$digest" ] || reject "$IMAGE_REPO:$target isn't the same manifest as $IMAGE_REPO:$TAG"
+  # The attestation is in, so no wait for it runs out while GitHub's compare
+  # API is down.
+  $DRY_RUN || rm -f "$PENDING"
   # Never back: main only moves forward, so an older commit is a tag that
   # lags. "behind" means the target is an ancestor of the commit serving.
   if [[ $current =~ ^[0-9a-f]{40}$ ]]; then

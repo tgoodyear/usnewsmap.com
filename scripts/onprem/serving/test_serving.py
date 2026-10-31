@@ -459,6 +459,7 @@ class UpdateApi(Stubbed):
         r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="down", STUB_SOURCE=SHA["old"])
         self.assertEqual(r.returncode, 1)
         self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
+        self.assertFalse(self.exists("var/lib/usnm-serving/pending"))
         r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="behind", STUB_SOURCE=SHA["old"])
         self.assertEqual(r.returncode, 1)
         self.assertIn("is older than", r.stdout + r.stderr)
