@@ -123,7 +123,10 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   name: 'default'
   properties: {
     // Staging data that a node can write again: a week of soft delete is
-    // enough to recover from a bad copy-in, and no versioning.
+    // enough to recover from a bad copy-in, and no versioning. Set explicitly:
+    // prod's account had drifted to on, and with it every lifecycle delete
+    // below kept the bytes as a version that nothing removed.
+    isVersioningEnabled: false
     deleteRetentionPolicy: { enabled: true, days: 7 }
     containerDeleteRetentionPolicy: { enabled: true, days: 7 }
   }
@@ -152,7 +155,8 @@ resource handoff 'Microsoft.Storage/storageAccounts/blobServices/containers@2023
 // versions, or moves it to ocr-quarantine. It deletes what it has taken;
 // these rules remove what's left after 30 days (output a stopped job never
 // took, an ALTO whose part never came, rejects nobody replayed), so the
-// account never grows into a second copy of the lake.
+// account never grows into a second copy of the lake. Their version actions
+// clear what the drifted versioning left, and any drift back.
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   parent: account
   name: 'default'
@@ -167,6 +171,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['${outputContainer}/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+              version: { delete: { daysAfterCreationGreaterThan: 30 } }
             }
           }
         }
@@ -180,6 +185,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/scans/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+              version: { delete: { daysAfterCreationGreaterThan: 30 } }
             }
           }
         }
@@ -208,6 +214,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['${handoffContainer}/quality-jpeg/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 30 } }
+              version: { delete: { daysAfterCreationGreaterThan: 30 } }
             }
           }
         }
