@@ -69,7 +69,7 @@ While no connector is connected, the tunnel serves nothing, and during Phase 3 t
 
 1. On the host, mount the `tank` copy read-only at the path its release wrote, and a cache directory on `tank` in place of the NVMe one (home-infra's `serving-ct.sh --mounts`). If the mounts show as pending, restart the container. The cache refills on demand.
 2. If `current.json` names a newer version than the copy, roll it back to the copy's version first (Rollback index, above). With `USNM_READY_REQUIRES_PUBLISHED_INDEXES` on, `/readyz` fails while the searcher lacks an index `current.json` names. Both origins read the same `current.json`, so during Phase 3 Azure rolls back too.
-3. Point the searcher at the copy: `gen-env.sh --index-dir`, `serving-ct.sh --config`, then `install.sh`, which restarts the searcher and makes the colors' cache directories. The site serves from the HDDs, more slowly.
+3. Point the searcher at the copy: `gen-env.sh --index-dir`, `serving-ct.sh --config`, then `install.sh`, which restarts the searcher and makes the shared cache directory. The site serves from the HDDs, more slowly.
 4. Unless the container restarted in step 1, wait until `curl -fsS 127.0.0.1:7280/health/readyz` answers, then redeploy the API with `usnm-serving-update --registry <registry> --redeploy`; a run does nothing while the searcher isn't ready. A running color keeps the cache mount it started with, and the redeploy starts the idle color on the new one.
 5. With a new drive in, copy the version to it as a release does (`zfs send` and `zfs recv`), and reverse these steps, the redeploy included.
 

@@ -792,9 +792,10 @@ class Static(unittest.TestCase):
                       "\t\t\t\trequest delete\n", caddy)
         self.assertIn("MaxRetentionSec=30day", self.read("journald-usnm-serving.conf"))
         tmpfiles = self.read("usnm-serving.tmpfiles")
-        for color in ("blue", "green"):
-            self.assertIn("d /srv/usnm-serving/cache/%s 0750 1000 1000 mM:14d" % color, tmpfiles)
-        self.assertIn("-v /srv/usnm-serving/cache/%i:/srv/usnm-serving/cache", self.read("usnm-api@.service"))
+        for name in ("shared", "blue", "green"):
+            self.assertIn("d /srv/usnm-serving/cache/%s 0750 1000 1000 mM:14d" % name, tmpfiles)
+        self.assertIn("-v /srv/usnm-serving/cache/shared:/srv/usnm-serving/cache",
+                      self.read("usnm-api@.service"))
         self.assertIn("-v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state",
                       self.read("usnm-api@.service"))
         self.assertIn("d /srv/usnm-serving/sitemap-state 0750 1000 1000 -", tmpfiles)

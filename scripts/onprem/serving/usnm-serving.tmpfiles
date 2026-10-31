@@ -5,8 +5,10 @@
 # last write only (m for files, M for directories): by default tmpfiles
 # also counts the last read, so an entry read often would never go.
 # Entries are rebuilt on demand, so losing one costs only a slower search.
-# Each color has a directory of its own (usnm-api@.service says why), made
-# here, owned by the API image's user.
+# The colors share one directory (usnm-api@.service says why), made here,
+# owned by the API image's user. The per-color directories from before that
+# keep their expiry until their entries have aged out.
+d /srv/usnm-serving/cache/shared 0750 1000 1000 mM:14d
 d /srv/usnm-serving/cache/blue 0750 1000 1000 mM:14d
 d /srv/usnm-serving/cache/green 0750 1000 1000 mM:14d
 # Durable lastmod checkpoints are shared across colors and must never expire.
