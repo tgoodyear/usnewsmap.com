@@ -17,7 +17,7 @@ AMD = "amd_vulkan_8b"
 APPLE = "apple_gpu_8b"
 COMPETITORS = (
     "nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b",
-    "nvidia_vulkan_8b", "docker_nvidia_cuda_8b",
+    "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "docker_nvidia_cuda_8b",
 )
 ENGINE = {
     "image": "sha256:a25da41a10f266e5c2d02206bf9f0e40b54d476609f85d70a72e4e11792d0efe",

@@ -57,6 +57,9 @@ struct VulkanDevice {
 
 /// Software rasterizers Mesa and others expose as Vulkan devices; never a GPU class's device.
 const SOFTWARE_VULKAN: [&str; 3] = ["llvmpipe", "lavapipe", "swiftshader"];
+pub(crate) const NVIDIA_6GB_PLAN: &str = "nvidia_vulkan_6gb_8b";
+pub(crate) const NVIDIA_6GB_FREE_MIB: u64 = 5120;
+pub(crate) const NVIDIA_6GB_LAYERS: u32 = 24;
 
 /// Parses `  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)` lines
 /// and returns the device BOINC assigned. BOINC numbers a vendor's GPUs among themselves
@@ -217,23 +220,36 @@ fn assigned_amd_device(work: &Path, host: &Host, list: &str) -> Result<VulkanDev
 /// Why a Vulkan unit can't run on this host, if it can't: no hardware device, or less free
 /// device memory than the job's largest model needs (#786).
 pub(crate) fn vulkan_refusal(gpu: &GpuState, job: &Job) -> Option<String> {
-    gpu.vulkan_device
-        .is_none()
-        .then(|| {
+    if gpu.vulkan_device.is_none() {
+        return Some(
             "Vulkan plan class assigned, but llama-server lists no hardware Vulkan device"
-                .to_string()
-        })
-        .or_else(|| {
-            let need = job
-                .engine
-                .models
-                .iter()
-                .map(|m| u64::from(m.min_gpu_mb))
-                .max()?;
-            let free = gpu.free_mb?;
-            (free < need)
-                .then(|| format!("Vulkan device has {free} MiB free; the model needs {need} MiB"))
-        })
+                .to_string(),
+        );
+    }
+    let need = if gpu.partial_offload {
+        if job.engine.models.len() != 1
+            || job.engine.models[0].name != "qwen3-vl-8b-q4km"
+            || job.engine.models[0].min_gpu_mb != 7000
+        {
+            return Some("NVIDIA 6 GB profile requires the single reviewed 8B Q4_K_M model".into());
+        }
+        NVIDIA_6GB_FREE_MIB
+    } else {
+        job.engine
+            .models
+            .iter()
+            .map(|m| u64::from(m.min_gpu_mb))
+            .max()?
+    };
+    match gpu.free_mb {
+        Some(free) if free < need => Some(format!(
+            "Vulkan device has {free} MiB free; the model needs {need} MiB"
+        )),
+        None if gpu.partial_offload => {
+            Some("NVIDIA 6 GB profile requires known free GPU memory".into())
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +261,7 @@ pub(crate) struct GpuState {
     pub(crate) free_mb: Option<u64>,
     pub(crate) used_before_mb: Option<u64>,
     pub(crate) use_gpu: bool,
+    pub(crate) partial_offload: bool,
     pub(crate) device_label: String,
     /// The device probe hit its deadline without answering, so the GPU is unknown, not absent.
     pub(crate) probe_timed_out: bool,
@@ -264,6 +281,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             free_mb: None,
             used_before_mb: None,
             use_gpu: false,
+            partial_offload: false,
             device_label: "cpu".into(),
             probe_timed_out: false,
         };
@@ -275,7 +293,13 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
         let devices = find_llama_server(work)
             .map_err(|e| format!("{e:#}"))
             .and_then(|bin| list_devices(&bin));
-        let wanted = u32::try_from(host.gpu_device_num.unwrap_or(0)).ok();
+        let wanted = if plan == NVIDIA_6GB_PLAN
+            && (!gpu_type.eq_ignore_ascii_case("nvidia") || host.gpu_device_num.is_none())
+        {
+            None
+        } else {
+            u32::try_from(host.gpu_device_num.unwrap_or(0)).ok()
+        };
         let mut probe_timeout = false;
         let (vulkan_device, free_mb) = match &devices {
             Ok(text) => {
@@ -320,6 +344,14 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             }
         };
         let _ = writeln!(body, "Vulkan via plan_class, device {vulkan_device:?}");
+        let partial_offload = plan == NVIDIA_6GB_PLAN;
+        if partial_offload {
+            let _ = writeln!(
+                body,
+                "NVIDIA 6 GB profile: {NVIDIA_6GB_LAYERS} GPU layers, CPU projector, \
+                 minimum {NVIDIA_6GB_FREE_MIB} MiB free GPU memory"
+            );
+        }
         diag.section("gpu", &body, 2048);
         return GpuState {
             cuda_device: None,
@@ -327,6 +359,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             free_mb,
             used_before_mb: None,
             use_gpu: vulkan_device.is_some(),
+            partial_offload,
             device_label: "vulkan".into(),
             probe_timed_out: probe_timeout,
         };
@@ -369,6 +402,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
                     free_mb,
                     used_before_mb,
                     use_gpu: true,
+                    partial_offload: false,
                     device_label: "cuda".into(),
                     probe_timed_out: false,
                 };
@@ -389,6 +423,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
             free_mb: None,
             used_before_mb: None,
             use_gpu: true,
+            partial_offload: false,
             device_label: "metal".into(),
             probe_timed_out: false,
         };
@@ -402,6 +437,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
         free_mb: None,
         used_before_mb: None,
         use_gpu: false,
+        partial_offload: false,
         device_label: "cpu".into(),
         probe_timed_out: false,
     }
@@ -652,5 +688,59 @@ mod tests {
         assert!(vulkan_refusal(&gpu, &job)
             .unwrap()
             .contains("no hardware Vulkan device"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn six_gb_profile_is_explicit_bounded_and_never_falls_back_to_cpu_or_another_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path();
+        let mut job = write_qwen_unit(slot);
+        job.engine.models.truncate(1);
+        fake_llama_server(
+            slot,
+            "  Vulkan0: llvmpipe (8192 MiB, 8000 MiB free)\n\
+             Vulkan1: NVIDIA GeForce GTX 1660 SUPER (6144 MiB, 5600 MiB free)",
+        );
+        let mut host = Host {
+            plan_class: Some("nvidia_vulkan_8b".into()),
+            gpu_type: Some("NVIDIA".into()),
+            gpu_device_num: Some(0),
+            ..Host::default()
+        };
+        let mut diag = Diag::new();
+        let full = detect_gpu(slot, &mut host, &mut diag);
+        assert!(!full.partial_offload);
+        assert!(vulkan_refusal(&full, &job).unwrap().contains("7000 MiB"));
+        host.plan_class = Some(NVIDIA_6GB_PLAN.into());
+        let mut partial = detect_gpu(slot, &mut host, &mut diag);
+        assert!(partial.partial_offload && partial.use_gpu);
+        assert_eq!(partial.vulkan_device, Some(1));
+        assert!(vulkan_refusal(&partial, &job).is_none());
+        partial.free_mb = Some(5120);
+        assert!(vulkan_refusal(&partial, &job).is_none());
+        partial.free_mb = Some(5119);
+        assert!(vulkan_refusal(&partial, &job).unwrap().contains("5120 MiB"));
+        partial.free_mb = None;
+        assert!(vulkan_refusal(&partial, &job).is_some());
+        partial.free_mb = Some(5600);
+        for models in [
+            vec![],
+            write_qwen_unit(slot).engine.models,
+            vec![write_qwen_unit(slot).engine.models[1].clone()],
+        ] {
+            let mut wrong = job.clone();
+            wrong.engine.models = models;
+            assert!(vulkan_refusal(&partial, &wrong).is_some());
+        }
+        for assignment in [None, Some(1), Some(-1)] {
+            host.gpu_device_num = assignment;
+            let missing = detect_gpu(slot, &mut host, &mut diag);
+            assert!(!missing.use_gpu);
+            assert!(vulkan_refusal(&missing, &job).is_some());
+        }
+        host.gpu_device_num = Some(0);
+        host.gpu_type = Some("intel_gpu".into());
+        assert!(!detect_gpu(slot, &mut host, &mut diag).use_gpu);
     }
 }

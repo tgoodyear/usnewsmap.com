@@ -1048,6 +1048,7 @@ mod tests {
             "nvidia_cuda_8b",
             "intel_vulkan_8b",
             "nvidia_vulkan_8b",
+            "nvidia_vulkan_6gb_8b",
             "amd_vulkan_8b",
         ] {
             let (chosen_8b, _, _) =
