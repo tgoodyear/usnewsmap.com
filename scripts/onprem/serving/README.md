@@ -24,10 +24,15 @@ Everything listens on loopback only. The only way in is the tunnel, which cloudf
 The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with the container's own Arc identity. Rehearsals leave search logging and OCR requests off, because the API records same-origin searches on any hostname, the test hostname included. The authorized production deployment enables their shared authoritative stores.
 
 At the authorized public cutover, pass `--production` to both `gen-env.sh`
-and `install.sh`. This enables the shared Azure search log and, with
-`USNM_OCR_LOCAL`, OCR-request writer without introducing a second state
-authority. The default rehearsal configuration still leaves both unset and
-the installer refuses writer settings without that explicit flag.
+and `install.sh`. This enables the shared Azure search log without
+introducing a second state authority. The OCR-request writer follows
+Azure's infrastructure predicate: `USNM_OCR_NODES && USNM_USE_ACR` and
+either `USNM_INGEST_JOBS` or `USNM_OCR_SYNC_ONPREM` with a nonblank
+`USNM_BATCH_HOST`; `USNM_OCR_LOCAL` does not control the writer.
+`--check-app --production` requires both writer settings to match Azure,
+rather than accepting them as rehearsal-only differences. The default
+rehearsal configuration still leaves both unset and the installer refuses
+writer settings without that explicit flag.
 
 Additional isolated listeners, such as the dev origin, may be installed under
 `/etc/usnm-serving/extra/*.caddy`. The updater verifies only the production

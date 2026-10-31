@@ -26,7 +26,7 @@ headers=$(mktemp)
 body=$(mktemp)
 trap 'rm -f "$headers" "$body"' EXIT
 curl --fail --silent --show-error --max-time 215 \
-  --retry 12 --retry-delay 5 --retry-max-time 180 -H 'DNT: 1' \
+  --retry 12 --retry-all-errors --retry-delay 5 --retry-max-time 180 -H 'DNT: 1' \
   -D "$headers" -o "$body" https://healthcheck.usnewsmap.com/readyz
 [ "$(cat "$body")" = ready ] &&
   grep -Eiq '^x-usnm-origin: (onprem|azure)[[:space:]]*$' "$headers" || {

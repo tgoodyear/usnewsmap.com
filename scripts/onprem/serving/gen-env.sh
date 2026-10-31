@@ -109,7 +109,10 @@ trap 'rm -f "$API_ENV"' EXIT
   echo "USNM_SITEMAP_STATE_URL=/srv/usnm-serving/sitemap-state"
   if $PRODUCTION; then
     echo "USNM_SEARCH_LOG_URL=https://$STORAGE.blob.core.windows.net/searches"
-    if [ "$(get USNM_OCR_LOCAL false)" = true ]; then
+    if [ "$(get USNM_OCR_NODES false)" = true ] && [ "$(get USNM_USE_ACR false)" = true ] &&
+      { [ "$(get USNM_INGEST_JOBS false)" = true ] ||
+        { [ "$(get USNM_OCR_SYNC_ONPREM false)" = true ] &&
+          [[ "$(get USNM_BATCH_HOST "")" =~ [^[:space:]] ]]; }; }; then
       echo "USNM_OCR_REQUESTS_URL=https://$STORAGE.blob.core.windows.net/ocr-requests"
     fi
   fi
@@ -180,11 +183,11 @@ if $CHECK_APP; then
   azure=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[?name=='api'] | [0].env" -o json) ||
     die "can't read $APP's settings"
   diffs=$(jq -rn --argjson azure "$azure" --rawfile onprem "$API_ENV" \
-    --arg warm "$azure_warm" --arg cap "$azure_cap" '
+    --arg warm "$azure_warm" --arg cap "$azure_cap" --argjson production "$PRODUCTION" '
     ($azure | map({(.name): (.value // "(a secret)")}) | add) as $a
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
     | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
-    | ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "AZURE_CLIENT_ID"] as $azure_only
+    | (["AZURE_CLIENT_ID"] + (if $production then [] else ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL"] end)) as $azure_only
     | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
     | [($ak - $ok - $azure_only)[] as $k | "\($k): only in the Azure app (\($a[$k]))"]

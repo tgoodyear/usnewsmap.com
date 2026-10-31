@@ -416,6 +416,22 @@ class SearcherRollbackTemplate(unittest.TestCase):
                 {"name": "http", "http": {"metadata": {"concurrentRequests": "50"}}},
             ])
 
+    def test_optional_min_replicas_builds_with_environment_defaults_and_cold_override(self):
+        env = {key: value for key, value in os.environ.items() if not key.startswith("USNM_")}
+        env["USNM_VNET_ADDRESS_PREFIX"] = "192.0.2.0/24"
+        for name, minimum, expected in (("dev", None, 0), ("prod", None, 1), ("prod", "0", 0)):
+            with self.subTest(name=name, minimum=minimum):
+                case = {**env, "AZURE_ENV_NAME": name}
+                if minimum is not None:
+                    case["USNM_API_MIN_REPLICAS"] = minimum
+                run = subprocess.run([os.environ.get("BICEP", "bicep"), "build-params",
+                                      "infra/main.bicepparam", "--stdout"],
+                                     cwd=ROOT, env=case, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                result = json.loads(run.stdout)
+                self.assertEqual(json.loads(result["parametersJson"])["parameters"]["apiMinReplicas"]["value"],
+                                 expected)
+
     def test_api_consumes_allocated_slots_without_nested_user_functions(self):
         self.assertNotIn("functions", self.template)
         self.assertIsInstance(self.template["resources"], list)

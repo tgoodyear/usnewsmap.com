@@ -471,13 +471,50 @@ class GenEnv(unittest.TestCase):
         env_file = os.path.join(self.env["USNM_ENV_DIR"], "prod.json")
         with open(env_file) as stream:
             settings = json.load(stream)
-        settings["USNM_OCR_LOCAL"] = True
+        settings.update(USNM_OCR_LOCAL=False, USNM_OCR_NODES=True)
         write(env_file, json.dumps(dict(sorted(settings.items())), indent=2) + "\n")
         r = self.gen("--dry-run", "--production")
         self.assertEqual(r.returncode, 0, r.stderr)
         api = dict(line.split("=", 1) for line in self.files(r.stdout)["api.env"].splitlines())
         self.assertEqual(api["USNM_SEARCH_LOG_URL"], "https://stexampletest.blob.core.windows.net/searches")
         self.assertEqual(api["USNM_OCR_REQUESTS_URL"], "https://stexampletest.blob.core.windows.net/ocr-requests")
+
+    def test_production_ocr_writer_follows_azure_infrastructure_not_local_ocr(self):
+        env_file = os.path.join(self.env["USNM_ENV_DIR"], "prod.json")
+        with open(env_file) as stream:
+            base = json.load(stream)
+        base.update(USNM_OCR_NODES=True, USNM_OCR_LOCAL=False)
+        for changes, host, enabled in (
+            ({"USNM_INGEST_JOBS": False, "USNM_OCR_SYNC_ONPREM": True}, "batch.example", True),
+            ({"USNM_OCR_NODES": False}, "", False),
+            ({"USNM_USE_ACR": False}, "", False),
+            ({"USNM_INGEST_JOBS": False, "USNM_OCR_LOCAL": True}, "", False),
+            ({"USNM_INGEST_JOBS": False, "USNM_OCR_SYNC_ONPREM": True}, "   ", False),
+        ):
+            with self.subTest(changes=changes, host=host):
+                write(env_file, json.dumps(dict(sorted({**base, **changes}.items())), indent=2) + "\n")
+                local = {**self.LOCAL, "USNM_BATCH_HOST": host}
+                write(os.path.join(self.env["USNM_SETTINGS_HOME"], "prod", ".env"),
+                      "".join('%s="%s"\n' % kv for kv in local.items()))
+                result = self.gen("--dry-run", "--production")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                api = self.files(result.stdout)["api.env"]
+                self.assertEqual("USNM_OCR_REQUESTS_URL=" in api, enabled)
+
+    def test_check_app_requires_shared_writer_parity_in_production(self):
+        self.azure_app(
+            USNM_SEARCH_LOG_URL="https://stexampletest.blob.core.windows.net/searches",
+            USNM_OCR_REQUESTS_URL="https://stexampletest.blob.core.windows.net/ocr-requests")
+        result = self.gen("--dry-run", "--check-app", "--production")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("USNM_OCR_REQUESTS_URL: only in the Azure app", result.stderr)
+        env_file = os.path.join(self.env["USNM_ENV_DIR"], "prod.json")
+        with open(env_file) as stream:
+            settings = json.load(stream)
+        settings["USNM_OCR_NODES"] = True
+        write(env_file, json.dumps(dict(sorted(settings.items())), indent=2) + "\n")
+        result = self.gen("--dry-run", "--check-app", "--production")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def files(self, out):
         parts = re.split(r"^== (\S+)\n", out, flags=re.M)[1:]
