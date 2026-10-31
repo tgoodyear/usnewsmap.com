@@ -91,12 +91,16 @@ export default {
 };
 
 const PRIMARY_HEALTH_MS = 3000;
+// How long one Cloudflare location trusts a ready primary before probing again.
+const HEALTHY_MEMORY_SECS = 10;
 const ORIGIN_MS = 30000;
 const AZURE_PROBE_MS = 5000;
 const AZURE_WAIT_MS = 180000;
 const POLL_MS = 3000;
-// 1 primary probe + 1 primary delivery + 45 Azure probes + 1 Azure delivery <= 48.
-const MAX_AZURE_PROBES = 45;
+// Workers Free allows 50 subrequests, and cache operations count:
+// 1 cache match + 1 primary probe + 1 cache put + 1 primary delivery +
+// 1 cache delete + 44 Azure probes + 1 Azure delivery <= 50.
+const MAX_AZURE_PROBES = 44;
 
 function checkAbort(signal) {
   if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
@@ -255,6 +259,41 @@ async function deliver(request, env, target) {
   }, ORIGIN_MS, request.signal);
 }
 
+function healthyKey(origin) {
+  return new Request(`${origin}/__usnm_fallback/primary-ready-v1`);
+}
+
+/**
+ * Whether the primary is ready, remembered briefly in this location's cache so
+ * a request doesn't wait for a trip to the origin, which would cost an edge
+ * cache hit most of its value. Only a ready answer is remembered: an unready
+ * primary is asked again every time, and a failed delivery forgets it.
+ */
+async function primaryReady(origin, signal) {
+  try {
+    if (await caches.default.match(healthyKey(origin))) return true;
+  } catch {
+    // Without the cache this is a probe per request, as before.
+  }
+  if (!await ready(origin, PRIMARY_HEALTH_MS, signal, true)) return false;
+  try {
+    await caches.default.put(healthyKey(origin), new Response("ready", {
+      headers: { "Cache-Control": `public, max-age=${HEALTHY_MEMORY_SECS}` },
+    }));
+  } catch {
+    // The next request probes.
+  }
+  return true;
+}
+
+async function forgetHealthy(origin) {
+  try {
+    await caches.default.delete(healthyKey(origin));
+  } catch {
+    // It expires by itself.
+  }
+}
+
 async function healthFailover(request, env) {
   const safe = request.method === "GET" || request.method === "HEAD";
   checkAbort(request.signal);
@@ -263,7 +302,7 @@ async function healthFailover(request, env) {
   }
   const healthOrigin = env.HEALTH_HOSTNAME ? `https://${env.HEALTH_HOSTNAME}` : new URL(request.url).origin;
   let reason = "primary-unhealthy";
-  if (await ready(healthOrigin, PRIMARY_HEALTH_MS, request.signal, true)) {
+  if (await primaryReady(healthOrigin, request.signal)) {
     let answer;
     try {
       answer = await deliver(request, env, null);
@@ -271,11 +310,13 @@ async function healthFailover(request, env) {
       checkAbort(request.signal);
       if (error?.name === "AbortError") throw error;
       reason = ["OriginDeadlineError", "TimeoutError"].includes(error?.name) ? "primary-timeout" : "primary-network";
+      await forgetHealthy(healthOrigin);
       if (!safe) return unavailable(request, env, reason);
     }
     if (answer) {
       if (answer.status < 500 || answer.status > 599) return selected(answer, env, "onprem", "primary-ready");
       reason = "primary-5xx";
+      await forgetHealthy(healthOrigin);
       if (!safe) return selected(answer, env, "onprem", reason);
       void answer.body?.cancel().catch(() => {});
     }
