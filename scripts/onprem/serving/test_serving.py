@@ -238,7 +238,9 @@ class UpdateApi(Stubbed):
         self.assertNotIn("--source-digest", verify)
         order = [c for c in calls if c.startswith(("systemctl restart", "systemctl reload", "systemctl enable",
                                                      "podman pull"))]
-        self.assertEqual([c.split()[1] for c in order], ["pull", "restart", "reload", "enable"], order)
+        self.assertEqual([c.split()[1] for c in order], ["pull", "restart", "reload", "enable", "restart"], order)
+        # The edge warms only once traffic has moved to the new color.
+        self.assertEqual(order[-1], "systemctl restart --no-block usnm-edge-warm.service")
         self.assertFalse(any("arm-token" in c or "registry-refresh-token" in c for c in calls))
         self.assertFalse(self.exists("etc/usnm-serving/hold") or self.exists("var/lib/usnm-serving/pending"))
 
@@ -655,7 +657,8 @@ class Install(Stubbed):
         with open(os.path.join(etc, "usnm-serving/upstream.caddy")) as f:
             self.assertEqual(f.read(), "reverse_proxy 127.0.0.1:8081\n")
         for unit in ("usnm-searcher.service", "usnm-api@.service", "cloudflared-usnm-serving.service",
-                     "usnm-serving-update.service", "usnm-serving-update.timer"):
+                     "usnm-serving-update.service", "usnm-serving-update.timer",
+                     "usnm-edge-warm.service", "usnm-edge-warm.timer"):
             self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/system", unit)), unit)
         self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/journald.conf.d/usnm-serving.conf")))
         self.assertIn("chown 1000:1000 %s/srv/usnm-serving/cache" % self.root, self.calls())

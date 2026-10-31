@@ -363,6 +363,11 @@ fi
 [ -z "$COMMIT" ] || touch "$ETC/hold"
 warn "usnm-api deployed: ${current:-nothing} -> $target on $idle${COMMIT:+; held at it until $ETC/hold is deleted}"
 
+# Fill Cloudflare's cache for the new image, in the background. Restart, not
+# start: a run already going holds the old v and g. A failure only leaves the
+# edge colder.
+systemctl restart --no-block usnm-edge-warm.service || warn "warning: can't start usnm-edge-warm"
+
 # Images neither color names. One still in use stays.
 keep=" $(env_get "$ETC/api-blue.env" API_IMAGE) $(env_get "$ETC/api-green.env" API_IMAGE) "
 podman images --digests --format '{{.Repository}}@{{.Digest}}' | while read -r ref; do

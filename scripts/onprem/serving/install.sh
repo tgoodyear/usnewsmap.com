@@ -25,9 +25,11 @@
 #   /etc/systemd/journald.conf.d/usnm-serving.conf (30 days of journal)
 #   /etc/systemd/system/    usnm-searcher.service, usnm-api@.service,
 #                           cloudflared-usnm-serving.service,
-#                           usnm-serving-update.service and .timer
+#                           usnm-serving-update.service and .timer,
+#                           usnm-edge-warm.service and .timer
 #   /usr/local/sbin/usnm-serving-update (update-api.sh)
 #   /usr/local/libexec/usnm-serving/run-cloudflared (run-cloudflared.sh)
+#   /usr/local/libexec/usnm-serving/warm-edge (warm-edge.py)
 #   /srv/usnm-serving/bin/quickwit
 # and the system user usnm-qw, which runs the searcher. It enables Caddy,
 # the searcher, the timer and cloudflared, and starts or reloads them. The
@@ -147,7 +149,8 @@ fi
 # own service.
 units_changed=false
 for unit in usnm-searcher.service usnm-api@.service cloudflared-usnm-serving.service \
-  usnm-serving-update.service usnm-serving-update.timer; do
+  usnm-serving-update.service usnm-serving-update.timer \
+  usnm-edge-warm.service usnm-edge-warm.timer; do
   changed=false
   put "$HERE/$unit" "$UNITS/$unit" 0644
   if $changed; then
@@ -166,6 +169,7 @@ changed=false
 put "$HERE/journald-usnm-serving.conf" "$R/etc/systemd/journald.conf.d/usnm-serving.conf" 0644
 journald_changed=$changed
 put "$HERE/update-api.sh" "$R/usr/local/sbin/usnm-serving-update" 0755
+put "$HERE/warm-edge.py" "$R/usr/local/libexec/usnm-serving/warm-edge" 0755
 changed=false
 put "$HERE/run-cloudflared.sh" "$R/usr/local/libexec/usnm-serving/run-cloudflared" 0755
 ! $changed || cloudflared_changed=true
@@ -186,7 +190,7 @@ for color in blue green; do
     echo "note: some $color cache entries weren't linked; they're rebuilt on demand" >&2
 done
 ! $journald_changed || run systemctl restart systemd-journald.service
-run systemctl enable --quiet caddy.service usnm-searcher.service usnm-serving-update.timer cloudflared-usnm-serving.service
+run systemctl enable --quiet caddy.service usnm-searcher.service usnm-serving-update.timer usnm-edge-warm.timer cloudflared-usnm-serving.service
 if systemctl is-active --quiet caddy.service; then
   ! $caddy_changed || run systemctl reload caddy.service
 else
@@ -200,7 +204,7 @@ if systemctl is-active --quiet usnm-searcher.service; then
 else
   run systemctl start usnm-searcher.service
 fi
-run systemctl start usnm-serving-update.timer
+run systemctl start usnm-serving-update.timer usnm-edge-warm.timer
 if [ -s "$R/etc/cloudflared/usnm-serving.env" ]; then
   if systemctl is-active --quiet cloudflared-usnm-serving.service; then
     ! $cloudflared_changed || run systemctl restart cloudflared-usnm-serving.service

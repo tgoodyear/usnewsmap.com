@@ -65,6 +65,24 @@ describe("examples", () => {
       expect(pairs(ex.aggregate), ex.id).toEqual(pairs(sent));
     }
   });
+
+  // scripts/onprem/serving/warm-edge.py requests these, with `v` and `g` after
+  // them as the app sends, so the query strings must match to the byte. A card
+  // click, a /search/ link with its filters and the plain /search/ link that
+  // the sitemap names can all differ. `vitest -u` updates the file.
+  it("list every search an example can send, for warming Cloudflare", async () => {
+    const queries = new Set<string>();
+    for (const ex of EXAMPLES) {
+      const clicked = parseView(serializeView({ ...DEFAULTS, ...ex.view }));
+      const plain = parseViewUrl(viewUrl({ ...DEFAULTS, q: clicked.q }));
+      for (const view of [clicked, parseViewUrl(viewUrl(clicked)), plain]) {
+        const sent = searchQuery(searchParams(view), "VERSION");
+        sent.delete("v");
+        queries.add(sent.toString());
+      }
+    }
+    await expect(`${JSON.stringify([...queries].sort(), null, 2)}\n`).toMatchFileSnapshot("../public/edge-warm.json");
+  });
 });
 
 // The shape of web/src/examples.json, which examples.ts imports with a cast

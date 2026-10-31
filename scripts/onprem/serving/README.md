@@ -20,6 +20,7 @@ Everything listens on loopback only. The only way in is the tunnel, which cloudf
 | `usnm-api@blue.service`, `usnm-api@green.service` | The API and site, the same `usnewsmap-api` image Azure runs, pulled by digest under podman. One color serves; the other is stopped, or starting a new image. | 127.0.0.1:8081, :8082                 |
 | `usnm-searcher.service`                           | The pinned Quickwit binary (`scripts/onprem/install-quickwit.sh`), searcher and metastore roles, reading the index from a read-only `file://` metastore.     | 127.0.0.1:7280, and :7281 (gRPC)      |
 | `usnm-serving-update.timer`                       | Runs `update-api.sh` 2 minutes after the last run ends, so the API follows the image prod runs.                                                              |                                       |
+| `usnm-edge-warm.service`, `.timer`                | Runs `warm-edge.py` after a deploy switches traffic and weekly, to fill Cloudflare with the example searches.                                                | Outbound only                         |
 
 The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with the container's own Arc identity. Rehearsals leave search logging and OCR requests off, because the API records same-origin searches on any hostname, the test hostname included. The authorized production deployment enables their shared authoritative stores.
 
