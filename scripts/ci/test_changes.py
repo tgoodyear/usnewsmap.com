@@ -269,7 +269,7 @@ class Quickwit(unittest.TestCase):
     @unittest.skipUnless(CARGO, "no cargo")
     def test_api_lockfile_bump_runs_both_for_example_build_resolution(self):
         def change():
-            downgrade_patch(self.repo, "governor", "moka", "zstd")
+            downgrade_patch(self.repo, "governor", "moka", "arc-swap")
             self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
         self.change = change
         flags = self.outputs()
