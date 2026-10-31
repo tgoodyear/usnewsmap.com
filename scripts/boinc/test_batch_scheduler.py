@@ -881,6 +881,16 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertEqual([(s, v["GOLD_MAX_HOSTS"]) for _, s, v in self.fake.steps],
                          [("gold-onboard", 3), ("gold-promote", 10), ("gold-promote", 10)])
 
+    def test_exempt_unsent_results_leave_room_for_gold_units(self):
+        self.fake.other = 997
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW,
+                           server_status=status_xml(qwen_unsent=990, quality_unsent=0,
+                                                    quality_in_progress=0, train_unsent=0),
+                           cap_exempt_apps=("usnm_qwen",))
+        self.assertEqual(self.fake.steps[0][2]["GOLD_MAX_HOSTS"], 10)
+        self.assertEqual(event["cap_exempt_pending"], 997)
+        self.assertEqual(event["global_pending"], 10)
+
     def test_the_cap_is_the_status_aware_one_without_capacity_overrides(self):
         # No watermarks, cohorts or max_global_pending: with per-app status the cap is the
         # cohort-mode default (1000), not the OCR high target (4 here).
@@ -2222,9 +2232,9 @@ class QueueTransportTests(unittest.TestCase):
 
 
 def status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456, quality_unsent=24,
-               quality_in_progress=31, train_unsent=2, zero_work=None):
+               quality_in_progress=31, train_unsent=2, zero_work=None, qwen_in_progress=0):
     ready = ocr_unsent + qwen_unsent + quality_unsent + train_unsent
-    in_prog = ocr_in_progress + quality_in_progress
+    in_prog = ocr_in_progress + quality_in_progress + qwen_in_progress
     extra = f"<zero_work_requests>{zero_work}</zero_work_requests>" if zero_work is not None else ""
     return f"""<server_status>
   <database_file_states>
@@ -2237,7 +2247,7 @@ def status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=456, quality_unsent=
       <app><name>usnm_assess</name><unsent>0</unsent><in_progress>0</in_progress></app>
       <app><name>usnm_surya</name><unsent>0</unsent><in_progress>0</in_progress></app>
       <app><name>usnm_ndlocr</name><unsent>0</unsent><in_progress>0</in_progress></app>
-      <app><name>usnm_qwen</name><unsent>{qwen_unsent}</unsent><in_progress>0</in_progress></app>
+      <app><name>usnm_qwen</name><unsent>{qwen_unsent}</unsent><in_progress>{qwen_in_progress}</in_progress></app>
       <app><name>usnm_quality</name><unsent>{quality_unsent}</unsent><in_progress>{quality_in_progress}</in_progress></app>
       <app><name>usnm_qwen_train</name><unsent>{train_unsent}</unsent><in_progress>0</in_progress></app>
     </tasks_by_app>
@@ -2617,6 +2627,41 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertEqual(event["global_pending_results"], 456)
         self.assertEqual(event["selected"], 2)
         self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_exempt_unsent_results_leave_the_global_cap_to_the_rest(self):
+        # 1000 Qwen workunits, 1200 unsent results: all queued on the server, none on a host.
+        self.fake.other = 1000
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=1200,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        blocked = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000, server_status=xml)
+        self.assertEqual(blocked["backpressure_reason"], "global_safety_cap")
+        self.assertEqual(blocked["cap_exempt_pending"], 0)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          server_status=xml, cap_exempt_apps=("usnm_qwen",))
+        self.assertIsNone(event["backpressure_reason"])
+        self.assertEqual(event["cap_exempt_pending"], 1000)
+        self.assertEqual(event["other_app_pending"], 1000)
+        self.assertEqual(event["global_pending"], 0)
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_exempt_apps_still_count_results_in_progress_and_other_apps_work(self):
+        self.fake.other = 1000
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=800, qwen_in_progress=150,
+                         quality_unsent=50, quality_in_progress=0, train_unsent=0)
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          server_status=xml, cap_exempt_apps=("usnm_qwen",))
+        self.assertEqual(event["global_pending"], 200)
+        self.assertEqual(event["cap_exempt_pending"], 800)
+        at_cap = self.tick(low_watermark=1, high_watermark=4, max_global_pending=202,
+                           server_status=xml, cap_exempt_apps=("usnm_qwen",))
+        self.assertEqual(at_cap["backpressure_reason"], "global_safety_cap")
+
+    def test_an_exempt_app_changes_nothing_without_per_app_status(self):
+        self.fake.other = 1000
+        event = self.tick(low_watermark=1, high_watermark=4, max_global_pending=1000,
+                          cap_exempt_apps=("usnm_qwen",))
+        self.assertEqual(event["cap_exempt_pending"], 0)
+        self.assertEqual(event["backpressure_reason"], "global_safety_cap")
 
     def test_non_ocr_cohort_app_selectors_are_rejected(self):
         # Regression for comment 4308954020 and Round-4 selector validation:

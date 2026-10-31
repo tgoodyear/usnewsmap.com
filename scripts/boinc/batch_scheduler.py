@@ -1534,6 +1534,21 @@ def retained_backlog(config, records, owned, selected, pending_jobs):
     return uncollected, missing
 
 
+def cap_in_flight(in_flight, ocr_app, ocr_workunits, status, exempt_apps):
+    """In-flight workunits the global cap counts, in the same units as `in_flight`. An unsent
+    result of an app in `exempt_apps` is queued on the server and on no host: a backlog an app
+    keeps on purpose (Qwen's ready baseline) must not leave other apps no room. Its results in
+    progress still count, and so does every other app's work. Without per-app status nothing
+    is exempt. Status counts results, and a workunit can have several, so the exempt work comes
+    off the other apps' results and the workunit count only bounds what is left."""
+    if not exempt_apps or status is None or ocr_app not in status["apps"]:
+        return in_flight
+    ocr = min(in_flight, max(ocr_workunits, status["apps"][ocr_app]["runnable"]))
+    other_results = sum(item["runnable"] for name, item in status["apps"].items() if name != ocr_app)
+    unsent = sum(item["unsent"] for name, item in status["apps"].items() if name in exempt_apps)
+    return ocr + min(in_flight - ocr, max(0, other_results - unsent))
+
+
 def held_results(state, held_jobs, now):
     """Track since when each result has been held at collection (returned by BOINC, not
     published); returns the count and the oldest one's age in seconds."""
@@ -1546,7 +1561,8 @@ def held_results(state, held_jobs, now):
 
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
-         low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None):
+         low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
+         cap_exempt_apps=()):
     if config.get("app") == SURYA_APP_NAME:
         return surya_tick(config, state, transport, persist, now, drain=drain,
                           low_watermark=low_watermark, high_watermark=high_watermark,
@@ -1618,7 +1634,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     persist()
     # Before collection: a host admitted now has its held results published by this tick's
     # collect, which otherwise stops at the first result it must hold.
-    gold_runs = []
+    gold_runs, gold_reserved = [], 0
     if not drain and config.get("gold_onboarding"):
         # The same cap and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
@@ -1629,14 +1645,17 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                      high_watermark=high_watermark,
                                      max_global_pending=max_global_pending)["max_global_pending"]
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs)
-            room = cap - (max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
+            ocr_units = ocr_workunit_counts(snapshot, pending_jobs)[0]
+            room = cap - (cap_in_flight(max(snapshot["pending_workunits"], ocr_units),
+                                        normalize_cohort_apps(config.get("app", OCR_APP_NAME)),
+                                        ocr_units, gold_status, cap_exempt_apps)
                           + uncollected + len(missing))
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
-        gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
-                                              held=bool(held_jobs), room=room)
+        gold_runs, gold_reserved = gold_onboarding(config, state, transport, persist, now,
+                                                   held=bool(held_jobs), room=room)
         # The gold units just issued are in flight too, for this tick's refill.
-        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
+        snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + gold_reserved}
     to_collect = []
     for page, record in owned.items():
         job_id = record["job"]["id"]
@@ -1702,7 +1721,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     other_pending = max(0, global_in_flight - ocr_in_flight)
     ocr_in_flight += bundled_pages
     cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
-    global_pending = global_in_flight + uncollected_not_pending + len(missing)
+    # This tick's gold units are in `global_in_flight` but not yet in the status counts.
+    cap_counted = gold_reserved + cap_in_flight(global_in_flight - gold_reserved, ocr_app, ocr_workunits,
+                                                status, cap_exempt_apps)
+    global_pending = cap_counted + uncollected_not_pending + len(missing)
     cohort_pending_results = (max(ocr_workunits, ocr_status_results) + bundled_pages
                               + uncollected_not_pending + len(missing))
     other_app_pending_results = other_status_results
@@ -1757,7 +1779,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - backlog)
-        global_submit_room = max(0, global_cap - global_in_flight - backlog)
+        global_submit_room = max(0, global_cap - cap_counted - backlog)
         submit_limit = min(config["batch_size"], cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
@@ -1882,6 +1904,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "cohort_pending": cohort_pending,
         "other_app_pending": other_pending,
         "global_pending": global_pending,
+        "cap_exempt_pending": global_in_flight - cap_counted,
         "cohort_pending_results": cohort_pending_results,
         "other_app_pending_results": other_app_pending_results,
         "global_pending_results": global_pending_results,
@@ -1919,6 +1942,9 @@ def main(argv=None):
                         help="runnable cohort high watermark target for refill")
     parser.add_argument("--max-global-pending", type=int, default=None,
                         help="global safety cap on total unassimilated work across all BOINC apps")
+    parser.add_argument("--cap-exempt-app", action="append", default=[], metavar="APP",
+                        help="leave this app's unsent results out of the global safety cap; repeat for "
+                             "more apps (needs per-app status; its results in progress still count)")
     parser.add_argument("--server-status-url", default=None,
                         help="optional https server_status.php?xml=1 URL for per-app queue counts")
     parser.add_argument("--server-status-file", type=Path, default=None,
@@ -1953,6 +1979,9 @@ def main(argv=None):
             })
         if args.max_global_pending is not None:
             require(1 <= args.max_global_pending <= MAX_GLOBAL_PENDING, "invalid max_global_pending")
+        for name in args.cap_exempt_app:
+            require(re.fullmatch(r"usnm_[a-z0-9_]+", name) and name != OCR_APP_NAME,
+                    "--cap-exempt-app takes another BOINC app's name")
         if args.server_status_url is not None:
             _validate_status_url(args.server_status_url)
         surya = config.get("app") == SURYA_APP_NAME
@@ -2016,7 +2045,8 @@ def main(argv=None):
                 onprem_handoff=tuple(args.onprem_handoff),
                 timings=timings,
             )
-            tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
+            tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed,
+                           "cap_exempt_apps": tuple(args.cap_exempt_app)}
             if args.low_watermark is not None:
                 tick_kwargs["low_watermark"] = args.low_watermark
             if args.high_watermark is not None:
