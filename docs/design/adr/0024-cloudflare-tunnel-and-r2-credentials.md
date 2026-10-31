@@ -77,6 +77,12 @@ Rules for all applicable credentials:
   were gone (#942, #960), the bucket `usnm-boinc-project` was emptied and deleted, the relay
   token was revoked, and its key pair was deleted from both vaults. Exception 2 no longer
   applies. Exceptions 1 and 3 remain.
+- From 31 October 2026 the public bucket `usnm-boinc-models` serves the Qwen model files
+  ([docs/boinc-onprem.md](../../boinc-onprem.md)). Clients read it without credentials. This
+  amends the decision above with one more exception: an R2 key pair in the home Key Vault
+  (`cloudflare-r2-*`), used only from an operator's run to upload objects. No workload holds it,
+  and it stays in memory or `/dev/shm` for that run. It has no expiry and isn't limited to this
+  bucket. Replacing it with a bucket-scoped key that has an expiry is still to do.
 - Moving serving on-prem (#955) would add tunnels under the same rules, with no new kind of credential.
 - The production origin certificate now uses Let's Encrypt DNS-01 rather than
   Azure's direct-DNS managed-certificate renewal. Its private ACME state is
