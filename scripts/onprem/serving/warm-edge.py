@@ -27,6 +27,7 @@ TIMEOUT_SECS = 120
 COMPUTING_LIMIT_SECS = 600
 FAILURES = 6
 RETRIED = (429, 502, 503, 504)
+CACHED = ("HIT", "MISS", "EXPIRED", "REVALIDATED", "STALE", "UPDATING")
 
 
 def fetch(url, sleep=time.sleep, clock=time.monotonic):
@@ -62,35 +63,57 @@ def fetch(url, sleep=time.sleep, clock=time.monotonic):
 
 
 def warm(base, query, version, generation, sleep=time.sleep):
-    """Warm one search and its coverage. Returns its cache status, or None."""
+    """Warm one search and its coverage.
+
+    Returns its cache status, or None, and the version that answered.
+    """
     pinned = urllib.parse.urlencode({"v": version, "g": generation})
     status, body, cache = fetch(f"{base}/v1/aggregate?{query}&{pinned}", sleep)
     if status != 200:
-        return None
-    ref = json.loads(body).get("cube", {}).get("baseline_ref")
+        return None, None
+    document = json.loads(body)
+    served = document.get("index_version")
+    if served != version:
+        return None, served
+    ref = document.get("cube", {}).get("baseline_ref")
     if ref:
         fetch(base + ref.replace("/api/v1/", "/v1/", 1), sleep)
-    return cache
+    return cache, served
 
 
-def run(base, pause, sleep=time.sleep):
-    status, body, _ = fetch(f"{base}/v1/meta?warm={int(time.time())}", sleep)
+def pins(base, sleep=time.sleep):
+    """The served version and generation."""
+    status, body, _ = fetch(f"{base}/v1/meta?warm={time.time_ns()}", sleep)
     if status != 200:
         raise RuntimeError(f"/v1/meta answered {status}")
     meta = json.loads(body)
-    version, generation = meta["index_version"], meta.get("edge_generation")
-    if not generation:
+    if not meta.get("edge_generation"):
         raise RuntimeError("/v1/meta has no edge_generation")
+    return meta["index_version"], meta["edge_generation"]
+
+
+def run(base, pause, sleep=time.sleep):
+    version, generation = pins(base, sleep)
     status, body, _ = fetch(f"{base}/edge-warm.json", sleep)
     if status != 200:
         raise RuntimeError(f"/edge-warm.json answered {status}")
     queries = json.loads(body)
     counts = {}
     for query in queries:
-        key = warm(base, query, version, generation, sleep) or "FAILED"
+        cache, served = warm(base, query, version, generation, sleep)
+        if served and served != version:
+            # A stale `v` redirects to a URL without `g`, which isn't the app's key.
+            version, generation = pins(base, sleep)
+            cache, served = warm(base, query, version, generation, sleep)
+        key = cache or "FAILED"
         counts[key] = counts.get(key, 0) + 1
         sleep(pause)
     return {"version": version, "generation": generation, "searches": len(queries), "cache": counts}
+
+
+def warmed(report):
+    """How many searches Cloudflare holds. DYNAMIC or BYPASS answers didn't cache."""
+    return sum(n for key, n in report["cache"].items() if key in CACHED)
 
 
 def main():
@@ -106,8 +129,7 @@ def main():
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(json.dumps(report, sort_keys=True))
-    warmed = report["searches"] - report["cache"].get("FAILED", 0)
-    return 0 if warmed else 1
+    return 0 if warmed(report) else 1
 
 
 if __name__ == "__main__":

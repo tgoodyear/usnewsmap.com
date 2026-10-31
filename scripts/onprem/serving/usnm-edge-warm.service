@@ -12,5 +12,6 @@ Type=oneshot
 ExecStart=/usr/local/libexec/usnm-serving/warm-edge
 DynamicUser=true
 Nice=10
-TimeoutStartSec=1h
+# One search at a time: several hundred, some of them cold.
+TimeoutStartSec=8h
 SyslogIdentifier=usnm-edge-warm

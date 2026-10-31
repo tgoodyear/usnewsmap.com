@@ -27,23 +27,31 @@ class Site(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def answer(self):
+        return {"index_version": self.server.version, "cube": {"baseline_ref": "/api/v1/coverage?v=v1"}}
+
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         self.server.seen.append(self.path)
         if url.path == "/v1/meta":
-            self.send_body(200, {"index_version": "v1", "edge_generation": "f8"})
+            self.send_body(200, {"index_version": self.server.version, "edge_generation": "f8"})
         elif url.path == "/edge-warm.json":
             self.send_body(200, self.server.queries)
         elif url.path.endswith("/coverage"):
             self.send_body(200, {})
+        elif "q=rollover" in url.query and self.server.version == "v1":
+            self.server.version = "v2"
+            self.send_body(200, {"index_version": "v2"})
+        elif "q=dynamic" in url.query:
+            self.send_body(200, {"index_version": self.server.version}, "DYNAMIC")
         elif "q=busy" in url.query and self.server.seen.count(self.path) == 1:
             self.send_body(202, {})
         elif "q=bad" in url.query:
             self.send_body(400, {})
         elif "q=cached" in url.query:
-            self.send_body(200, {"cube": {"baseline_ref": "/api/v1/coverage?v=v1"}}, "HIT")
+            self.send_body(200, self.answer(), "HIT")
         else:
-            self.send_body(200, {"cube": {"baseline_ref": "/api/v1/coverage?v=v1"}})
+            self.send_body(200, self.answer())
 
 
 class WarmEdge(unittest.TestCase):
@@ -51,6 +59,7 @@ class WarmEdge(unittest.TestCase):
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Site)
         self.server.seen = []
         self.server.queries = []
+        self.server.version = "v1"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -71,6 +80,22 @@ class WarmEdge(unittest.TestCase):
         report = self.run_warm()
         self.assertEqual(report["cache"], {"MISS": 2, "HIT": 1, "FAILED": 1})
         self.assertEqual(self.server.seen.count("/v1/aggregate?q=busy&v=v1&g=f8"), 2)
+
+    def test_a_version_change_mid_run_warms_the_new_pins(self):
+        self.server.queries = ["q=rollover", "q=zinc"]
+        report = self.run_warm()
+        self.assertEqual(report["version"], "v2")
+        self.assertIn("/v1/aggregate?q=rollover&v=v2&g=f8", self.server.seen)
+        self.assertIn("/v1/aggregate?q=zinc&v=v2&g=f8", self.server.seen)
+        self.assertEqual(report["cache"], {"MISS": 2})
+
+    def test_uncached_answers_do_not_count_as_warmed(self):
+        self.server.queries = ["q=dynamic"]
+        report = self.run_warm()
+        self.assertEqual(report["cache"], {"DYNAMIC": 1})
+        self.assertEqual(MODULE.warmed(report), 0)
+        self.server.queries = ["q=gold"]
+        self.assertEqual(MODULE.warmed(self.run_warm()), 1)
 
     def test_a_computing_search_is_polled_to_the_time_limit_not_a_try_limit(self):
         self.server.seen = []
