@@ -205,7 +205,7 @@ web='^(web/|ocr/engines/engines\.toml$|ocr/engines/tesseract/models\.lock$|fixtu
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
-image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+image="$rust_files|^(web/|ocr/ja-ocr/|docker/|\.dockerignore$|infra/quickwit-image\.json$|scripts/data/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|mirror-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The BOINC integration tests execute this wrapper at run time. Its changes
 # need the Rust tests, but it is not an input to the serving/ingest images above.
 rust="$rust|^contrib-compute/images/server/bridge-job\.sh$|^scripts/ci/rust-test-times\.py$"

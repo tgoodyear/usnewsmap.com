@@ -686,6 +686,11 @@ class BuildInputs(unittest.TestCase):
                 on = self.select(path)
                 self.assertEqual(on & (BOINC_IMAGES | DASHBOARD | {"ocr_worker"}), {image}, on)
 
+    def test_a_publish_helper_runs_the_publish_job(self):
+        for helper in ("mirror-image", "quickwit-image", "roll-api"):
+            with self.subTest(helper=helper):
+                self.assertIn("image", self.select("scripts/ci/%s.sh" % helper))
+
     def test_scripts_grouped_by_purpose_still_select_their_jobs(self):
         # The loose scripts moved under scripts/azure, boinc, data, dev and ops; the paths in
         # changes.sh follow them.

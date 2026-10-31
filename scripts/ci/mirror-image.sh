@@ -41,6 +41,8 @@ fail() { echo "::warning::$DEST is not mirrored: $*"; exit 1; }
 acr=${SOURCE%%/*}
 auth=$(mktemp "$RUNNER_TEMP/mirror-auth.XXXXXX")
 trap 'rm -f "$auth"' EXIT
+# skopeo login parses a file that exists, and an empty one isn't JSON.
+printf '{"auths":{}}\n' > "$auth"
 
 command -v skopeo > /dev/null || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; } ||
   fail "can't install skopeo"

@@ -23,6 +23,10 @@ case "$(basename "$0") $1" in
   "az acr") echo acr-token ;;
   "skopeo login")
     case "$*" in *"${STUB_LOGIN_DOWN:-none}"*) exit 1 ;; esac
+    while [ $# -gt 0 ]; do
+      [ "$1" != --authfile ] || python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$2" || exit 1
+      shift
+    done
     cat > /dev/null ;;
   "skopeo copy")
     for a in "$@"; do dest=$a; done
