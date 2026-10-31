@@ -1051,8 +1051,13 @@ mod tests {
             "nvidia_vulkan_6gb_8b",
             "amd_vulkan_8b",
         ] {
+            let free_mb = if plan == gpu::NVIDIA_6GB_PLAN {
+                5600
+            } else {
+                16000
+            };
             let (chosen_8b, _, _) =
-                resolve_model(&slot, &job.engine.models, Some(16000), true, Some(plan)).unwrap();
+                resolve_model(&slot, &job.engine.models, Some(free_mb), true, Some(plan)).unwrap();
             assert_eq!(chosen_8b.name, "qwen3-vl-8b-q4km");
         }
     }

@@ -227,11 +227,22 @@ pub(crate) fn vulkan_refusal(gpu: &GpuState, job: &Job) -> Option<String> {
         );
     }
     let need = if gpu.partial_offload {
-        if job.engine.models.len() != 1
-            || job.engine.models[0].name != "qwen3-vl-8b-q4km"
-            || job.engine.models[0].min_gpu_mb != 7000
-        {
-            return Some("NVIDIA 6 GB profile requires the single reviewed 8B Q4_K_M model".into());
+        // Native manifests may also list the CPU class's 2B payload.
+        let mut candidates = job
+            .engine
+            .models
+            .iter()
+            .filter(|m| m.min_gpu_mb > 0 || m.name.contains("8b"));
+        let reviewed = candidates.next().is_some_and(|model| {
+            model.name == "qwen3-vl-8b-q4km"
+                && model.min_gpu_mb == 7000
+                && model.file == "Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+                && model.mmproj == "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"
+        }) && candidates.next().is_none();
+        if !reviewed {
+            return Some(
+                "NVIDIA 6 GB profile requires one unambiguous reviewed 8B Q4_K_M model".into(),
+            );
         }
         NVIDIA_6GB_FREE_MIB
     } else {
@@ -695,8 +706,7 @@ mod tests {
     fn six_gb_profile_is_explicit_bounded_and_never_falls_back_to_cpu_or_another_model() {
         let tmp = tempfile::tempdir().unwrap();
         let slot = tmp.path();
-        let mut job = write_qwen_unit(slot);
-        job.engine.models.truncate(1);
+        let job = write_qwen_unit(slot);
         fake_llama_server(
             slot,
             "  Vulkan0: llvmpipe (8192 MiB, 8000 MiB free)\n\
@@ -717,6 +727,9 @@ mod tests {
         assert!(partial.partial_offload && partial.use_gpu);
         assert_eq!(partial.vulkan_device, Some(1));
         assert!(vulkan_refusal(&partial, &job).is_none());
+        let mut single_model = job.clone();
+        single_model.engine.models.truncate(1);
+        assert!(vulkan_refusal(&partial, &single_model).is_none());
         partial.free_mb = Some(5120);
         assert!(vulkan_refusal(&partial, &job).is_none());
         partial.free_mb = Some(5119);
@@ -726,13 +739,16 @@ mod tests {
         partial.free_mb = Some(5600);
         for models in [
             vec![],
-            write_qwen_unit(slot).engine.models,
-            vec![write_qwen_unit(slot).engine.models[1].clone()],
+            vec![job.engine.models[0].clone(), job.engine.models[0].clone()],
+            vec![job.engine.models[1].clone()],
         ] {
             let mut wrong = job.clone();
             wrong.engine.models = models;
             assert!(vulkan_refusal(&partial, &wrong).is_some());
         }
+        let mut disguised = single_model.clone();
+        disguised.engine.models[0].file = job.engine.models[1].file.clone();
+        assert!(vulkan_refusal(&partial, &disguised).is_some());
         for assignment in [None, Some(1), Some(-1)] {
             host.gpu_device_num = assignment;
             let missing = detect_gpu(slot, &mut host, &mut diag);
