@@ -359,6 +359,7 @@ with open({str(lock_path)!r}, 'a') as lock:
         iid.write_text("1" * 64)
         ids = iter(str(i) * 64 for i in (2, 3, 4))
         def build(argv, **kwargs):
+            self.assertEqual(argv[argv.index("--network") + 1], "host")
             Path(argv[argv.index("--iidfile") + 1]).write_text(next(ids))
         with patch.object(artifacts, "inspect", side_effect=lambda image, source: image), patch.object(
                 artifacts.subprocess, "run", side_effect=build) as run:
