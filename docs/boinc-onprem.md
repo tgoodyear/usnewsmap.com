@@ -401,6 +401,8 @@ Work that ran as Azure jobs, and where it runs now:
 
 ## LAN access (#1357)
 
+**Status: rolled back on 30 October 2026, so home hosts go through Cloudflare.** Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section describes the setup as designed.
+
 Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
 DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation, the same
 as `ocr.tjg.fyi`. The address isn't written here. Anywhere else, the name is still Cloudflare's.
@@ -445,7 +447,7 @@ checked with systemd instead.
 
 ## Qwen model files on R2
 
-The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change: the Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a host that reaches the server directly, through the gateway's local DNS (LAN access above), downloads from the server instead.
+The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change: the Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a host that reaches the server directly would download from the server. While LAN access stays rolled back, home hosts follow the redirect like any other client.
 
 The rule lists exact paths on purpose, so a file that isn't in the bucket keeps coming from the server. The server's copies stay in place as the source of truth.
 
