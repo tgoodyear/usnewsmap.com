@@ -5,7 +5,7 @@
 # environment scripts; Azure is only read (with --check-app).
 #
 #   scripts/onprem/serving/gen-env.sh --env prod --index-dir PATH --out DIR
-#     [--check-app] [--dry-run]
+#     [--check-app] [--production] [--dry-run]
 #
 # --index-dir: the index's Quickwit directory as the container sees it, an
 #   absolute path. That's the release's run directory plus /qw, mounted
@@ -48,18 +48,21 @@
 #   current.json names an index the local searcher lacks. The color keeps
 #   serving the version it has; nothing here restarts a color on /readyz,
 #   and update-api.sh switches to a new color only once it's ready.
+# - Startup readiness: local blue/green rollouts keep the 300 s warm-up;
+#   Azure cold standby skips it and keeps the 60 s readiness cap.
 # USNM_BIND isn't here: each color's unit sets it.
 set -euo pipefail
 usage() { sed -n '7,8s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
 
-ENV_NAME="" INDEX_DIR="" OUT="" CHECK_APP=false DRY_RUN=false
+ENV_NAME="" INDEX_DIR="" OUT="" CHECK_APP=false DRY_RUN=false PRODUCTION=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) ENV_NAME=${2:-}; shift 2 || usage ;;
     --index-dir) INDEX_DIR=${2:-}; shift 2 || usage ;;
     --out) OUT=${2:-}; shift 2 || usage ;;
     --check-app) CHECK_APP=true; shift ;;
+    --production) PRODUCTION=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -104,6 +107,12 @@ trap 'rm -f "$API_ENV"' EXIT
   echo "USNM_REFERENCE_URL=https://$STORAGE.blob.core.windows.net/reference"
   echo "USNM_RESPONSE_CACHE_URL=/srv/usnm-serving/cache"
   echo "USNM_SITEMAP_STATE_URL=/srv/usnm-serving/sitemap-state"
+  if $PRODUCTION; then
+    echo "USNM_SEARCH_LOG_URL=https://$STORAGE.blob.core.windows.net/searches"
+    if [ "$(get USNM_OCR_LOCAL false)" = true ]; then
+      echo "USNM_OCR_REQUESTS_URL=https://$STORAGE.blob.core.windows.net/ocr-requests"
+    fi
+  fi
   echo "USNM_ALLOWED_ORIGINS=https://$ZONE,https://www.$ZONE"
   echo "USNM_TRUST_CF_CONNECTING_IP=true"
   echo "USNM_TRUSTED_PROXY_HOPS=0"
@@ -158,14 +167,23 @@ searcher_yaml() {
 YAML=$(searcher_yaml) || die "infra/quickwit/searcher.yaml no longer has the lines this replaces; update searcher_yaml()"
 
 if $CHECK_APP; then
+  azure_warm=$WARMUP_SECS
+  azure_cap=$((WARMUP_SECS + 60))
+  min_default=0
+  [ "$ENV_NAME" != prod ] || min_default=1
+  if [ "$(get USNM_API_MIN_REPLICAS "$min_default")" = 0 ]; then
+    azure_warm=0
+    azure_cap=60
+  fi
   APP=$(need API_APP)
   RG=$(need AZURE_RESOURCE_GROUP)
   azure=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[?name=='api'] | [0].env" -o json) ||
     die "can't read $APP's settings"
-  diffs=$(jq -rn --argjson azure "$azure" --rawfile onprem "$API_ENV" '
+  diffs=$(jq -rn --argjson azure "$azure" --rawfile onprem "$API_ENV" \
+    --arg warm "$azure_warm" --arg cap "$azure_cap" '
     ($azure | map({(.name): (.value // "(a secret)")}) | add) as $a
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
-    | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS"] as $differ
+    | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
     | ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "AZURE_CLIENT_ID"] as $azure_only
     | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
@@ -176,6 +194,9 @@ if $CHECK_APP; then
         # Here, the domain origins of the Azure list are enough.
         | select($k != "USNM_ALLOWED_ORIGINS" or ((($o[$k] | split(",")) - ($a[$k] | split(","))) | length > 0))
         | "\($k): Azure \($a[$k]), here \($o[$k])"]
+    + ([{key: "USNM_PREWARM_STARTUP_BUDGET_SECS", value: $warm},
+        {key: "USNM_READY_CAP_SECS", value: $cap}]
+       | map(select($a[.key] != .value) | "\(.key): expected Azure \(.value), got \($a[.key])"))
     | .[]')
   if [ -n "$diffs" ]; then
     echo "api.env differs from $APP in ways gen-env.sh doesn't expect:" >&2

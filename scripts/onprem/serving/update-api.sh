@@ -254,7 +254,8 @@ source_digest=()
 if ! env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$TMP/gh" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1 \
   gh attestation verify "$TMP/manifest.json" --bundle "$TMP/bundles.jsonl" --repo "$REPO" \
   --signer-workflow "$WORKFLOW" --source-ref refs/heads/main ${source_digest[@]+"${source_digest[@]}"} \
-  --format json > "$TMP/verified.json" 2> /dev/null; then
+  --format json > "$TMP/verified.json" 2> "$TMP/verify.err"; then
+  warn "$(tail -5 "$TMP/verify.err")"
   reject "its attestation doesn't verify as built by $WORKFLOW on main${COMMIT:+ from $COMMIT}"
 fi
 commits=$(jq -r '[.[].verificationResult.signature.certificate.sourceRepositoryDigest] | unique | .[]' "$TMP/verified.json")
@@ -326,7 +327,7 @@ point_caddy() {
 caddy_on() {
   local dials
   dials=$(curl -fsS --max-time 5 http://127.0.0.1:2019/config/apps/http/servers |
-    jq -r '[.. | objects | .dial? // empty] | unique | join(" ")') || return 1
+    jq -r '[.[] | select((.listen // []) | index("127.0.0.1:8080")) | .. | objects | .dial? // empty] | unique | join(" ")') || return 1
   [ "$dials" = "127.0.0.1:$1" ] && curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/readyz
 }
 # Points Caddy at port $1 and waits up to 10 s for caddy_on.

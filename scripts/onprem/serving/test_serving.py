@@ -76,8 +76,12 @@ elif url == "http://127.0.0.1:7280/health/readyz":
     code = 503 if os.environ.get("STUB_SEARCHER_DOWN") else 200
 elif url == "http://127.0.0.1:2019/config/apps/http/servers":
     port = os.environ.get("STUB_CADDY_STUCK") or upstream()
-    body = json.dumps({"srv0": {"routes": [{"handle": [{"handler": "reverse_proxy",
-        "upstreams": [{"dial": "127.0.0.1:%s" % port}]}]}]}})
+    servers = {"srv0": {"listen": ["127.0.0.1:8080"], "routes": [{"handle": [{"handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:%s" % port}]}]}]}}
+    if os.environ.get("STUB_EXTRA_SERVER"):
+        servers["dev"] = {"listen": ["127.0.0.1:8088"], "routes": [{"handle": [
+            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:8091"}]}]}]}
+    body = json.dumps(servers)
 elif re.match(r"http://127\.0\.0\.1:(\d+)/readyz$", url):
     port = re.match(r"http://127\.0\.0\.1:(\d+)/", url).group(1)
     if port == "8080":
@@ -244,6 +248,13 @@ class UpdateApi(Stubbed):
         r = self.update()
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         self.assertEqual(self.github_calls(), [])
+
+    def test_switch_verifies_only_production_listener(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_EXTRA_SERVER="1")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.read("var/lib/usnm-serving/active"), "green\n")
 
     def test_a_new_image_waits_for_its_attestation_then_gives_up(self):
         self.serving("blue", SHA["old"], "old")
@@ -456,6 +467,18 @@ class GenEnv(unittest.TestCase):
         return subprocess.run(["bash", self.SCRIPT, "--env", "prod", "--index-dir", "/srv/usnm/runs/e/qw", *extra],
                               env=self.env, capture_output=True, text=True, cwd=self.tmp)
 
+    def test_production_enables_shared_log_and_configured_ocr_requests(self):
+        env_file = os.path.join(self.env["USNM_ENV_DIR"], "prod.json")
+        with open(env_file) as stream:
+            settings = json.load(stream)
+        settings["USNM_OCR_LOCAL"] = True
+        write(env_file, json.dumps(dict(sorted(settings.items())), indent=2) + "\n")
+        r = self.gen("--dry-run", "--production")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        api = dict(line.split("=", 1) for line in self.files(r.stdout)["api.env"].splitlines())
+        self.assertEqual(api["USNM_SEARCH_LOG_URL"], "https://stexampletest.blob.core.windows.net/searches")
+        self.assertEqual(api["USNM_OCR_REQUESTS_URL"], "https://stexampletest.blob.core.windows.net/ocr-requests")
+
     def files(self, out):
         parts = re.split(r"^== (\S+)\n", out, flags=re.M)[1:]
         return dict(zip(parts[::2], parts[1::2]))
@@ -527,6 +550,23 @@ class GenEnv(unittest.TestCase):
         with open(self.env["STUB_AZ"], "w") as f:
             json.dump([{"name": k, "value": v} for k, v in api.items() if v is not None], f)
 
+    def test_check_app_accepts_declared_cold_standby_but_rejects_readiness_drift(self):
+        env_file = os.path.join(self.env["USNM_ENV_DIR"], "prod.json")
+        with open(env_file) as stream:
+            settings = json.load(stream)
+        settings["USNM_API_MIN_REPLICAS"] = 0
+        write(env_file, json.dumps(dict(sorted(settings.items())), indent=2) + "\n")
+        self.azure_app(USNM_PREWARM_STARTUP_BUDGET_SECS="0", USNM_READY_CAP_SECS="60")
+        result = self.gen("--dry-run", "--check-app")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        api = dict(line.split("=", 1) for line in self.files(result.stdout)["api.env"].splitlines())
+        self.assertEqual(api["USNM_PREWARM_STARTUP_BUDGET_SECS"], "300")
+        self.assertEqual(api["USNM_READY_CAP_SECS"], "360")
+        self.azure_app(USNM_PREWARM_STARTUP_BUDGET_SECS="0", USNM_READY_CAP_SECS="360")
+        result = self.gen("--dry-run", "--check-app")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected Azure 60", result.stderr)
+
     def test_check_app_allows_only_the_listed_differences(self):
         self.azure_app()
         r = self.gen("--dry-run", "--check-app")
@@ -595,8 +635,24 @@ class Install(Stubbed):
         self.assertEqual(r.returncode, 1)
         self.assertIn("Phase 3", r.stderr)
 
+    def test_production_explicitly_preserves_shared_writers(self):
+        write(os.path.join(self.config, "api.env"),
+              "USNM_SEARCH_LOG_URL=https://x/searches\nUSNM_OCR_REQUESTS_URL=https://x/ocr-requests\n")
+        r = self.install("--production")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        with open(os.path.join(self.root, "etc/usnm-serving/api.env")) as stream:
+            self.assertIn("USNM_SEARCH_LOG_URL=https://x/searches", stream.read())
+
 
 class Static(unittest.TestCase):
+    def test_metrics_listener_rejects_non_loopback_and_invalid_ports(self):
+        for value in ("0.0.0.0:20241", "127.0.0.1:0", "127.0.0.1:65536"):
+            result = subprocess.run(
+                ["bash", os.path.join(HERE, "run-cloudflared.sh")],
+                env={**os.environ, "TUNNEL_METRICS": value},
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("TUNNEL_METRICS", result.stderr)
     def read(self, name):
         with open(os.path.join(HERE, name)) as f:
             return f.read()

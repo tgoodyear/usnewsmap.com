@@ -149,13 +149,13 @@ var browsePagesEnv = browsePages ? [{ name: 'USNM_BROWSE_PAGES', value: 'true' }
 // warm-up ends: the cap is that warm-up's budget plus 60 s (the API's own
 // default, READY_CAP_MARGIN_SECS in crates/usnm-api/src/config.rs). An app
 // that scales to zero has no other replica serving when one starts, and a
-// visitor waits on it, so it keeps a 60 s cap. Both settings are set here,
+// visitor waits on it, so it skips the example warm-up and keeps a 60 s cap. Both settings are set here,
 // from the one budget, so the startup probe below always covers the cap.
 var startupWarmUpSecs = 300
 var holdReadyForWarmUp = minReplicas > 0
 var readyCapSecs = holdReadyForWarmUp ? startupWarmUpSecs + 60 : 60
 var readyEnv = [
-  { name: 'USNM_PREWARM_STARTUP_BUDGET_SECS', value: string(startupWarmUpSecs) }
+  { name: 'USNM_PREWARM_STARTUP_BUDGET_SECS', value: string(holdReadyForWarmUp ? startupWarmUpSecs : 0) }
   { name: 'USNM_READY_CAP_SECS', value: string(readyCapSecs) }
 ]
 // Loading the published version before the warm-up: the API retries while
@@ -333,7 +333,11 @@ resource searcher 'Microsoft.App/containerApps@2024-03-01' = if (searcherDeploye
     }
     template: {
       containers: [searcherContainer]
-      scale: { minReplicas: searcherMinReplicas, maxReplicas: 1 }
+      scale: {
+        minReplicas: searcherMinReplicas
+        maxReplicas: 1
+        rules: [{ name: 'http', http: { metadata: { concurrentRequests: '50' } } }]
+      }
     }
   }
 }
@@ -371,7 +375,11 @@ resource indexSearcher 'Microsoft.App/containerApps@2024-03-01' = if (indexSearc
           ? { name: e.name, value: replace(quickwitConfig, storageAccountName, indexStorageAccountName) }
           : e)
       })]
-      scale: { minReplicas: searcherMinReplicas, maxReplicas: 1 }
+      scale: {
+        minReplicas: searcherMinReplicas
+        maxReplicas: 1
+        rules: [{ name: 'http', http: { metadata: { concurrentRequests: '50' } } }]
+      }
     }
   }
 }

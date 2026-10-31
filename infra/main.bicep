@@ -29,7 +29,9 @@ param apiImage string = ''
 @description('Extra origins allowed by API CORS. The app\'s own hostname and, with dnsZoneName, the domain and its www are always allowed.')
 param allowedOrigins array = []
 
-@description('0 lets dev scale to zero; production keeps one warm replica.')
+@description('Minimum Azure API replicas: 0 enables HTTP-triggered cold standby for both API and searcher (ADR-0029); production defaults to one warm replica.')
+@minValue(0)
+@maxValue(1)
 param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 
 @description('Maximum API replicas; also divides the visitor computation budget when one remote searcher is shared (#364).')

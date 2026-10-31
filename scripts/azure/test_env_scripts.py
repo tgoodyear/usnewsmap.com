@@ -394,6 +394,28 @@ class SearcherRollbackTemplate(unittest.TestCase):
                              cwd=ROOT, capture_output=True, text=True, check=True)
         cls.template = json.loads(run.stdout)
 
+    def test_cold_standby_skips_example_warmup_without_weakening_rollouts(self):
+        variables = self.template["variables"]
+        self.assertEqual(variables["holdReadyForWarmUp"], "[greater(parameters('minReplicas'), 0)]")
+        self.assertEqual(variables["readyEnv"], [
+            {"name": "USNM_PREWARM_STARTUP_BUDGET_SECS",
+             "value": "[string(if(variables('holdReadyForWarmUp'), variables('startupWarmUpSecs'), 0))]"},
+            {"name": "USNM_READY_CAP_SECS", "value": "[string(variables('readyCapSecs'))]"},
+        ])
+        self.assertEqual(variables["readyCapSecs"],
+                         "[if(variables('holdReadyForWarmUp'), add(variables('startupWarmUpSecs'), 60), 60)]")
+
+    def test_standalone_searchers_have_an_explicit_http_wakeup_rule(self):
+        for name in ("[parameters('searcherName')]", "[parameters('indexSearcherName')]"):
+            resource = next(resource for resource in self.template["resources"]
+                            if resource["name"] == name)
+            scale = resource["properties"]["template"]["scale"]
+            self.assertEqual(scale["minReplicas"], "[parameters('searcherMinReplicas')]")
+            self.assertEqual(scale["maxReplicas"], 1)
+            self.assertEqual(scale["rules"], [
+                {"name": "http", "http": {"metadata": {"concurrentRequests": "50"}}},
+            ])
+
     def test_api_consumes_allocated_slots_without_nested_user_functions(self):
         self.assertNotIn("functions", self.template)
         self.assertIsInstance(self.template["resources"], list)

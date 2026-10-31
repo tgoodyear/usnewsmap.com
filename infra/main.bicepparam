@@ -12,6 +12,7 @@ param location = readEnvironmentVariable('AZURE_LOCATION', 'eastus2')
 // No default: the VNet's private address space is a setting, never committed.
 param vnetAddressPrefix = readEnvironmentVariable('USNM_VNET_ADDRESS_PREFIX')
 param apiMaxReplicas = int(readEnvironmentVariable('USNM_API_MAX_REPLICAS', '2'))
+param apiMinReplicas = int(readEnvironmentVariable('USNM_API_MIN_REPLICAS', environmentName == 'prod' ? '1' : '0'))
 param computeConcurrency = int(readEnvironmentVariable('USNM_COMPUTE_CONCURRENCY', '2'))
 param apiImage = readEnvironmentVariable('USNM_API_IMAGE', '')
 param searchBackend = readEnvironmentVariable('USNM_SEARCH_BACKEND', 'fixtures')

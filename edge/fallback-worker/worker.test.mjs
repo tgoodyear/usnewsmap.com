@@ -360,13 +360,28 @@ test("the Worker logs nothing", async () => {
   assert.deepEqual(seen, []);
 });
 
-test("the source has no console call, waitUntil or passThroughOnException", () => {
+test("source has only opt-in fixed outcome logging and scheduled heartbeat waitUntil", () => {
   const source = readFileSync(new URL("./worker.mjs", import.meta.url), "utf8")
     .split("\n")
     .filter((line) => !line.trimStart().startsWith("//"))
     .join("\n");
-  assert.doesNotMatch(source, /console/);
-  assert.doesNotMatch(source, /waitUntil|passThroughOnException/);
+  assert.deepEqual(source.match(/.*console.*/g), [
+    "    console.log({",
+    "    console.log({ origin, reason, status: answer.status });",
+  ]);
+  assert.match(source, /if \(env\.LOG_OUTCOMES === "true"\)/);
+  assert.doesNotMatch(source, /passThroughOnException/);
+  assert.deepEqual(source.match(/.*waitUntil.*/g), ["    ctx.waitUntil(heartbeat(env));"]);
+});
+
+test("native aggregate metrics are explicit without attempting Analytics Engine writes", async () => {
+  const env = { ...ENV, METRICS_MODE: "native", FALLBACK_METRICS: {
+    writeDataPoint() { assert.fail("native mode must not write Analytics Engine"); },
+  } };
+  const { response, calls } = await run(get("/?q=private-marker"), env, [text(530), text(200, "azure")]);
+  assert.equal(calls.length, 2);
+  assert.equal(response.headers.get("x-usnm-fallback-metric"), "native-aggregate");
+  assert.equal(await response.text(), "azure");
 });
 
 test("fallback accounting records only Worker-produced answers and no visitor data", async () => {
