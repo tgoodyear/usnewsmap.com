@@ -124,8 +124,9 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   properties: {
     // Staging data that a node can write again: a week of soft delete is
     // enough to recover from a bad copy-in, and no versioning. Set explicitly:
-    // prod's account had drifted to on, and with it every lifecycle delete
-    // below kept the bytes as a version that nothing removed.
+    // prod's account had drifted to on, and with it every delete, ocr-sync's
+    // and the lifecycle rules' below, kept the bytes as a version that nothing
+    // removed.
     isVersioningEnabled: false
     deleteRetentionPolicy: { enabled: true, days: 7 }
     containerDeleteRetentionPolicy: { enabled: true, days: 7 }
