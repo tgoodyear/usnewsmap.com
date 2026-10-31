@@ -183,9 +183,29 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         database = self.project / "database.json"
         database.write_text(json.dumps(self.rows))
         state_path = self.project / "ops-issue-559/qwen-auto-cohort/state.json"
-        with patch.object(R, "read_database", return_value=self.database):
-            receipt = R.run(self.args)
-        self.assertEqual((receipt["target"], receipt["out_of_cohort_skipped"]), ([102, 102], [100, 101]))
+        bound, original = [], R.bind_inputs
+
+        def counting(project, row, *rest):
+            bound.append(int(row["unit"]["id"]))
+            if bound[-1] == interrupt_at:
+                raise TimeoutError
+            return original(project, row, *rest)
+
+        def tick():
+            bound.clear()
+            with patch.object(R, "read_database", return_value=self.database), \
+                    patch.object(R, "bind_inputs", side_effect=counting):
+                return R.run(self.args)
+
+        # A tick cut short by its timeout keeps the exclusions it had already verified.
+        interrupt_at = 101
+        with self.assertRaises(TimeoutError):
+            tick()
+        self.assertEqual(list(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100"])
+        interrupt_at = None
+        receipt = tick()
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_skipped"], receipt["out_of_cohort_remembered"]),
+                         ([102, 102], [100, 101], [100]))
         self.assertEqual(sorted(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100", "101"])
 
         def drain(row):
@@ -197,26 +217,28 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.rows.append(self.input(103, "yid"))
         audit.write_text(json.dumps(self.audit))
         database.write_text(json.dumps(self.rows))
-        bound = []
-        original = R.bind_inputs
-
-        def counting(project, row, *rest):
-            bound.append(int(row["unit"]["id"]))
-            return original(project, row, *rest)
-
-        with patch.object(R, "read_database", return_value=self.database), \
-                patch.object(R, "bind_inputs", side_effect=counting):
-            receipt = R.run(self.args)
+        receipt = tick()
         self.assertEqual((receipt["target"], receipt["out_of_cohort_remembered"]), ([103, 103], [100, 101]))
         self.assertEqual(set(bound), {103})
-        # A changed producer binding is bound again from scratch, so it still stops the tick.
+        # Any change to the audit record or a bound file misses the cache, so the unit is bound
+        # again from scratch and a non-language failure still stops the tick.
         drain(self.rows[3])
-        key = self.rows[0]["unit"]["name"].removeprefix("usnm_qwen_")
-        self.audit[key]["job_sha256"] = "e" * 64
-        audit.write_text(json.dumps(self.audit))
-        with patch.object(R, "read_database", return_value=self.database), \
-                self.assertRaisesRegex(ValueError, "differs from producer audit"):
-            R.run(self.args)
+        spa, deu = (row["unit"]["name"].removeprefix("usnm_qwen_") for row in self.rows[:2])
+        provenance = next((self.root / "quality/qwen-nonenglish-v1/texts").glob("ordinary-page-101.*"))
+        for change, error in (
+                (lambda: self.audit[spa].update(batch=9), "Audit/WU identity mismatch"),
+                (lambda: self.audit[spa].update(job_sha256="e" * 64), "differs from producer audit"),
+                (lambda: provenance.write_text(json.dumps(json.loads(provenance.read_bytes()) | {"sha256": "d" * 64})),
+                 "archive-provenance binding mismatch")):
+            saved, original_provenance = json.loads(json.dumps(self.audit)), provenance.read_bytes()
+            change()
+            audit.write_text(json.dumps(self.audit))
+            with self.assertRaisesRegex(ValueError, error):
+                tick()
+            self.audit.clear()
+            self.audit.update(saved)
+            audit.write_text(json.dumps(self.audit))
+            provenance.write_bytes(original_provenance)
 
     def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
         for language in ("yid", "srp"):

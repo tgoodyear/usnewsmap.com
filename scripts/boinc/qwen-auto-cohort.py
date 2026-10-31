@@ -151,6 +151,38 @@ def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
     return result
 
 
+def producer_paths(project, doc):
+    base = project.parent
+    unit = base / "qwen/qwen-nonenglish-v1/units" / doc
+    return [unit / "qwen.json", unit / "page.jpg", unit / "submitted", unit / "sample.json",
+            base / "quality/qwen-nonenglish-v1/pages" / doc / "quality.json",
+            base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")]
+
+
+def exclusion_key(project, row, job_id, audit):
+    # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
+    # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
+    # reads. Any change misses the cache, so the unit is bound again from scratch and
+    # non-language failures still stop the tick.
+    wu = row["unit"]
+    try:
+        paths = [project / "download" / node.findtext("url", "").split("/usnmocr_download/", 1)[1]
+                 for node in ET.fromstring("<root>" + wu["xml_doc"] + "</root>").findall("file_info")
+                 if "/usnmocr_download/" in node.findtext("url", "")]
+        job = [path.read_bytes() for path in paths if path.name.endswith("_qwen_json")]
+        if len(job) != 1:
+            return None
+        doc = json.loads(job[0])["doc_id"]
+        if not isinstance(doc, str) or not re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc):
+            return None
+        stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+                 for path in paths + producer_paths(project, doc) for info in [path.stat()]]
+    except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
+        return None
+    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job[0]), stats],
+                          sort_keys=True).encode())
+
+
 def bind_inputs(project, row, job_id, audit, prompt_version=1):
     wu = row["unit"]
     require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
@@ -186,8 +218,7 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
                     len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in crops), "Bad crop contract")
     base = project.parent
     unit = base / "qwen/qwen-nonenglish-v1/units" / doc
-    quality_path = base / "quality/qwen-nonenglish-v1/pages" / doc / "quality.json"
-    provenance_path = base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")
+    quality_path, provenance_path = producer_paths(project, doc)[-2:]
     require((unit / "qwen.json").read_bytes() == files["job"]
             and (unit / "page.jpg").read_bytes() == files["page"]
             and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
@@ -402,38 +433,43 @@ def run(args):
                 output |= {"starved_hosts": starved, "window_held_seconds": held}
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
-            skipped = []
-            # Workunit -> audited job SHA of units already fully bound and found out of cohort.
-            # Their language is fixed by that job, so later ticks pass them over without
-            # re-reading every page; a changed audit binding is bound again from scratch.
+            skipped, remembered = [], []
+            # Workunit -> exclusion_key of units already fully bound and found out of cohort.
+            # Later ticks pass them over without re-reading every page while that key holds.
             known = {key: value for key, value in state.get("out_of_cohort", {}).items()
-                     if int(key) in scanned and by_wu[int(key)][1]["job_sha256"] == value}
-            remembered = dict(known)
+                     if int(key) in scanned}
 
             def admissible(row):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
                 unit = int(row["unit"]["id"])
-                if str(unit) in known:
+                key = exclusion_key(project, row, *by_wu[unit])
+                if key is not None and known.get(str(unit)) == key:
                     skipped.append(unit)
+                    remembered.append(unit)
                     return False
                 try:
                     bind_inputs(project, row, *by_wu[unit], args.prompt_version)
                 except OutOfCohort:
                     skipped.append(unit)
-                    known[str(unit)] = by_wu[unit][1]["job_sha256"]
+                    if key is not None:
+                        known[str(unit)] = key
+                        # Durable per unit, so a tick cut short by its timeout still keeps
+                        # the exclusions it has verified.
+                        state["out_of_cohort"] = dict(known)
+                        if args.apply:
+                            persist(state_path, state)
                     return False
                 return True
 
             selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
                               args.minimum_workunit, reserved, min(remaining, capacity), admissible)
             if known != state.get("out_of_cohort", {}):
-                state["out_of_cohort"] = known
+                state["out_of_cohort"] = dict(known)
                 if args.apply:
                     persist(state_path, state)
             if skipped:
-                output |= {"out_of_cohort_skipped": skipped,
-                           "out_of_cohort_remembered": sorted(set(map(int, remembered)) & set(skipped))}
+                output |= {"out_of_cohort_skipped": skipped, "out_of_cohort_remembered": remembered}
             if not selected:
                 if skipped and ids:
                     # Every fresh unit in this page is out of cohort and never becomes admissible:
