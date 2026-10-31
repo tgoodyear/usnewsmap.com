@@ -252,6 +252,30 @@ class CheckAppver(unittest.TestCase):
         with self.assertRaisesRegex(ca.Refused, "must specify <api_version> >= 6.0.0"):
             ca.check(native_dir, sigs, self.key, str(self.crypt), kind="native")
 
+    def test_six_gb_native_publication_refuses_missing_vulkan_backend(self):
+        project = self.root / "six-gb"
+        project.mkdir()
+        (project / "config.xml").write_text("<boinc/>")
+        binary = self.root / "native"
+        binary.write_bytes(b"native fixture")
+        extras = ["llama-server", "llama.lock", "weights.lock",
+                  "libggml.so", "libggml-base.so", "libggml-vulkan.so"]
+        directory = install.install(
+            project, version="1.0", app="usnm_qwen", plan_class="nvidia_vulkan_6gb_8b",
+            kind="native", binary=binary, extra_files=[f"{name}={binary}" for name in extras])
+        spec = ca.ET.parse(directory / "version.xml").getroot()
+        backend = next(f for f in spec.findall("file") if f.findtext("logical_name") == "libggml-vulkan.so")
+        (directory / backend.findtext("physical_name")).unlink()
+        spec.remove(backend)
+        ca.ET.ElementTree(spec).write(directory / "version.xml", encoding="unicode")
+        sigs = self.root / "six-gb-sigs"
+        sigs.mkdir()
+        for path in directory.iterdir():
+            if path.name != "version.xml":
+                (sigs / (path.name + ".sig")).write_text(f"good {hashlib.md5(path.read_bytes()).hexdigest()}\n")
+        with self.assertRaisesRegex(ca.Refused, "missing required bundle files: libggml-vulkan.so"):
+            ca.check(directory, sigs, self.key, str(self.crypt), kind="native")
+
 
 if __name__ == "__main__":
     unittest.main()

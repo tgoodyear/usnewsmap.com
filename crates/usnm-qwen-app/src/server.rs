@@ -1,6 +1,10 @@
 //! The `llama-server` process and the HTTP it speaks: locating the binary, starting it on a
 //! free local port, and asking it for a reading of each crop.
-use crate::{gpu::GpuState, ms, report::redacted_tail};
+use crate::{
+    gpu::{GpuState, NVIDIA_6GB_LAYERS},
+    ms,
+    report::redacted_tail,
+};
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::{
@@ -302,7 +306,15 @@ impl Server {
         let log_path = work.join("llama-server.log");
         let log = std::fs::File::create(&log_path)?;
         let log_err = log.try_clone()?;
-        let ngl = if gpu.use_gpu { "99" } else { "0" };
+        ensure!(
+            !gpu.partial_offload || (gpu.use_gpu && gpu.vulkan_device.is_some()),
+            "NVIDIA 6 GB offload requires an assigned hardware Vulkan GPU"
+        );
+        let ngl = match (gpu.use_gpu, gpu.partial_offload) {
+            (true, true) => NVIDIA_6GB_LAYERS,
+            (true, false) => 99,
+            (false, _) => 0,
+        };
         let mut cmd = Command::new(server_bin);
         cmd.args([
             "-m",
@@ -323,12 +335,15 @@ impl Server {
             "1",
             "--no-webui",
             "-ngl",
-            ngl,
+            &ngl.to_string(),
             "-t",
             &threads.max(1).to_string(),
         ]);
         if let Some(n) = image_min_tokens {
             cmd.args(["--image-min-tokens", &n.to_string()]);
+        }
+        if gpu.partial_offload {
+            cmd.arg("--no-mmproj-offload");
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::from(log))
@@ -340,12 +355,15 @@ impl Server {
         usnm_ocr_quality::slot::apply_gpu_cache_env(&mut cmd, work);
         // --device takes the names --list-devices printed. GGML_VK_VISIBLE_DEVICES would index
         // the unfiltered physical-device list instead, which can include llvmpipe.
-        // The vision projector picks its backend separately (MTMD_BACKEND_DEVICE, else a
-        // default GPU), so it is pinned to the same device.
+        // GPU projectors select their backend separately; the partial profile keeps it on CPU.
         if let Some(dev) = gpu.vulkan_device {
             let name = format!("Vulkan{dev}");
             cmd.args(["--device", &name]);
-            cmd.env("MTMD_BACKEND_DEVICE", &name);
+            if gpu.partial_offload {
+                cmd.env_remove("MTMD_BACKEND_DEVICE");
+            } else {
+                cmd.env("MTMD_BACKEND_DEVICE", &name);
+            }
         }
         if let Some((var, value)) = library_env(server_bin) {
             cmd.env(var, value);
@@ -403,6 +421,61 @@ impl Server {
 #[cfg(test)]
 mod completion_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn server_launch_uses_partial_layers_and_cpu_projector_only_for_the_explicit_profile() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        let bin = work.join("llama-server");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n\
+             printf '%s' \"${MTMD_BACKEND_DEVICE-unset}\" > \"$0.device\"\nexit 23\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let control = BoincControl::start(work);
+        for partial in [false, true] {
+            let gpu = GpuState {
+                cuda_device: None,
+                vulkan_device: Some(3),
+                free_mb: Some(5600),
+                used_before_mb: None,
+                use_gpu: true,
+                partial_offload: partial,
+                device_label: "vulkan".into(),
+                probe_timed_out: false,
+            };
+            let result = Server::start(
+                work,
+                &bin,
+                &work.join("model.gguf"),
+                &work.join("mmproj.gguf"),
+                &gpu,
+                2,
+                Duration::from_secs(2),
+                None,
+                &control,
+            );
+            let error = match result {
+                Ok(_) => panic!("fixture server must exit before becoming ready"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("before ready"));
+            let text = std::fs::read_to_string(bin.with_extension("args")).unwrap();
+            let args: Vec<_> = text.lines().collect();
+            let value = |name| args[args.iter().position(|arg| *arg == name).unwrap() + 1];
+            assert_eq!(value("-ngl"), if partial { "24" } else { "99" });
+            assert_eq!(value("--device"), "Vulkan3");
+            assert_eq!(args.contains(&"--no-mmproj-offload"), partial);
+            assert_eq!(
+                std::fs::read_to_string(bin.with_extension("device")).unwrap(),
+                if partial { "unset" } else { "Vulkan3" }
+            );
+        }
+    }
 
     #[test]
     fn preserves_length_stop_and_labels_repetition_without_rewriting_reading() {

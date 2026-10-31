@@ -265,6 +265,7 @@ class InstallTest(unittest.TestCase):
             ("intel_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("intel_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
             ("nvidia_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
+            ("nvidia_vulkan_6gb_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("amd_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("amd_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
         ):
@@ -282,6 +283,7 @@ class InstallTest(unittest.TestCase):
                     module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
                                    platform=platform, kind="native", binary=bin_for_plat, extra_files=extras)
                 extras.append(f"usnm-amd-device-map{ext}={srv_src}")
+            if plan_class in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b"):
                 if platform != "windows_x86_64":
                     libraries = ("libggml.so", "libggml-base.so", "libggml-vulkan.so")
                     extras.extend(f"{name}={srv_src}" for name in libraries)

@@ -103,27 +103,78 @@ Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
 | `usnm_qwen`    | `native`    | `nvidia_cuda_8b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM, 2 host CPUs, 8B `Q4_K_M`                                                                                                                                                |
 | `usnm_qwen`    | `native`    | `intel_vulkan_8b`       | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>intel</gpu_type><opencl/>`, llama.cpp Vulkan, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 8B `Q4_K_M`; integrated GPUs use about 8.6 GB of host RAM ([Intel GPUs](boinc-intel-gpu.md))                                                             |
 | `usnm_qwen`    | `native`    | `nvidia_vulkan_8b`      | `x86_64-pc-linux-gnu`                                                                                             | NVIDIA detection/assignment through BOINC CUDA; execution through the same pinned Vulkan runtime as Intel, >= 7,000 MB GPU RAM and 7,000 MiB free Vulkan memory, 2 host CPUs, 8B `Q4_K_M`                                                                               |
+| `usnm_qwen`    | `native`    | `nvidia_vulkan_6gb_8b`  | `x86_64-pc-linux-gnu`                                                                                             | Closed qualification profile: >= 5,500 MB GPU RAM and 5,120 MiB free Vulkan memory, 24 GPU layers, CPU vision projector, 2 host CPUs; same locked 8B `Q4_K_M`, no CPU-only or smaller-model fallback                                                                    |
 | `usnm_qwen`    | `native`    | `amd_vulkan_8b`         | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | AMD/ATI OpenCL detection/assignment, pinned native Vulkan execution, >= 7,000 MB GPU RAM and 7,000 MiB free, 2 host CPUs, 8B `Q4_K_M`; [automatic eligible-host admission](boinc-amd-gpu.md) after signed publication/promotion, initial hardware use unverified (#885) |
 | `usnm_qwen`    | `native`    | `nvidia_cuda_2b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`                                                                                                                                                  |
 | `usnm_qwen`    | `native`    | `mt`                    | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                                                                                                                                                                   |
 | `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                                                                                                            |
 | `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: 8B only, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap                                                                                                                                            |
 
+For an existing NVIDIA-equipped Debian/Ubuntu LXC, Docker is **not** a native-app
+prerequisite. Run `python3 scripts/boinc/setup_nvidia_lxc.py` inside the container
+to inspect the userspace-only package plan, then run
+`sudo python3 scripts/boinc/setup_nvidia_lxc.py --apply` to install it.
+The script reads the loaded **host kernel driver** from `/proc/driver/nvidia/version`
+and requires matching userspace packages down to the patch version. It supports
+Ubuntu's branch-suffixed packages, NVIDIA's unversioned Ubuntu 590+ packages,
+and Debian's separate Vulkan/EGL ICD packages. It installs the Vulkan loader,
+diagnostic tools and runtime libraries, pins the NVIDIA packages to the matching
+version, and verifies `nvidia-smi`, `libcuda.so.1` initialization and a hardware
+NVIDIA Vulkan device **as `boinc`**. The CUDA version printed by `nvidia-smi`
+describes driver compatibility, not an installed toolkit; `nvcc` is not required.
+Use `--boinc-user NAME` only if the service uses a different non-root account.
+For diagnostics without APT changes (including existing NVIDIA `.run`
+installations), use `sudo python3 scripts/boinc/setup_nvidia_lxc.py --check-only`.
+The installer refuses to mix runfile and package-managed NVIDIA installations.
+
+Run this in the LXC, **not on Proxmox**. The host operator must already have passed
+the NVIDIA character devices through; the script never installs DKMS/kernel
+drivers, creates devices, changes their permissions, adds a package repository,
+or changes BOINC preferences. If an exact driver package set is unavailable, it
+stops rather than mixing versions or downloading an unverified driver installer.
+Use the container distribution's packages or the
+[official NVIDIA repository](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/ubuntu.html#network-repository-enablement-amd64),
+not a repository for a different distribution. After a host driver update, rerun
+the script to update `/etc/apt/preferences.d/usnm-nvidia-lxc`. After current work
+has checkpointed, restart `boinc-client` to load the repaired libraries and group
+membership. Passing these checks establishes userspace readiness only: signed
+app publication, client-version admission, model memory limits and successful
+GPU results are separate requirements.
+
 The native Intel and NVIDIA Vulkan classes share batch-8 inputs, not the container batch-18
 queue. Publish signed Linux versions with the same locked Vulkan bundle first. To open a
 shared dispatch window, use `scripts/boinc/native-qwen-cohort.php --project PATH
 --plan-class shared_8b --workunit FIRST --workunit-end LAST` (preview, then `--apply`).
 The helper requires at most ten contiguous Qwen native-8B workunits, each unaccepted with
-two unsent replicas and quorum two; it closes the other native classes and pauses the
+two unsent replicas and quorum two; it closes the other classes in its shared scope and pauses the
 separate NVIDIA container batch-18 queue, without changing its input format or aborting
 already assigned work. This keeps NVIDIA fetching from the same bounded native pool as
 Intel, rather than selecting the older container app version. `--stop --apply`
-closes all native classes. This changes eligibility only, not distinct-host validation.
+closes that shared scope, leaving independent AMD and 6 GB windows alone. This changes
+eligibility only, not distinct-host validation.
 When DB credentials are rendered into a separate tmpfs project, pass `--db-project PATH`
 with its `config.xml` and private `html/inc` copy. The policy and journal stay under
 `--project`; credentials must not be copied to the shared project filesystem.
 Run one-off queue operators with the committed single-replica bridge configuration,
 not replica settings left by a parallel assessment submission.
+
+The **6 GB profile is not generally admitted or hardware-qualified** merely by installing
+this policy. It starts closed and retains BOINC >= 8.2.11 until an actual older-client
+compatibility run justifies a separate gate change. Before admission, publish a signed
+native version with the pinned Vulkan bundle, measure peak GPU and host memory on real
+OCR inputs, and verify successful output. The 5,120 MiB minimum is a free-memory guard,
+not a claim that every 6 GB card or driver configuration works.
+
+For a one-workunit qualification, preview `native-qwen-cohort.php --project PATH
+--plan-class nvidia_vulkan_6gb_8b --workunit ID --fresh-pair --admit-until UNIX`,
+then apply against the preview's `--expected-policy-sha256`. This requires a pristine,
+ordinary quorum-two pair, enforces distinct-host validation and rechecks it under the
+policy lock. Arrange its independent peer in a reviewed shared window; opening only
+the low-memory class does not guarantee that peer. The deadline prevents late admission,
+not automatic closure: the operator must schedule `--plan-class nvidia_vulkan_6gb_8b
+--stop --apply` at the deadline. Shared refills and server restarts preserve this
+independent window, and its stop leaves the other classes untouched. Do not enable
+general admission or change quorum/result state to force a successful qualification.
 
 The server patch disables app-ID-only version memoization when plan classes have
 workunit restrictions. Otherwise an earlier incompatible/paused batch can cache
