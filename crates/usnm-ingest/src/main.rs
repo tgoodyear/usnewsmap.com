@@ -8,8 +8,8 @@ mod cli;
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
 use cli::{
-    batches, congress, curate, ja_ocr, ocr, onprem, pictures, prune, release, run, searchlog_copy,
-    titles,
+    batches, congress, curate, ja_ocr, ocr, ocr_local_copy, onprem, pictures, prune, release, run,
+    searchlog_copy, titles,
 };
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
@@ -73,6 +73,7 @@ enum Command {
     CongressManual(congress::CongressManualArgs),
     CongressDamage(congress::CongressDamageArgs),
     SearchlogCopy(searchlog_copy::SearchlogCopyArgs),
+    OcrLocalCopy(ocr_local_copy::OcrLocalCopyArgs),
     Pictures(pictures::PicturesArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
@@ -165,6 +166,7 @@ impl Command {
             Command::CongressManual { .. } => "congress-manual",
             Command::CongressDamage { .. } => "congress-damage",
             Command::SearchlogCopy { .. } => "searchlog-copy",
+            Command::OcrLocalCopy { .. } => "ocr-local-copy",
             Command::Pictures { .. } => "pictures",
             Command::Run { .. } => "run",
         }
@@ -207,6 +209,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::CongressManual { .. }
         | Command::CongressDamage { .. }
         | Command::SearchlogCopy { .. }
+        | Command::OcrLocalCopy { .. }
         | Command::Pictures { .. } => None,
     }
 }
@@ -306,6 +309,7 @@ async fn command(
         }
         Command::CongressDamage(args) => congress::congress_damage_command(cli, start, args).await,
         Command::SearchlogCopy(args) => searchlog_copy::searchlog_copy_command(args).await,
+        Command::OcrLocalCopy(args) => ocr_local_copy::ocr_local_copy_command(args).await,
         Command::Pictures(args) => pictures::pictures_command(cli, args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,

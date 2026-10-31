@@ -142,6 +142,9 @@ param searchLogCopy bool = false
 @description('Object id of the search log copy host\'s Arc machine identity (with searchLogCopy). Settings only, never in the repository.')
 param searchLogCopyHost string = ''
 
+@description('Copy curated/ocr-local/ to a dataset on tank each day: searchLogCopyHost gets read and list on that prefix (modules/ocr-local-copy.bicep).')
+param ocrLocalCopy bool = false
+
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
 
@@ -922,6 +925,16 @@ module onPremServingGrant 'modules/onprem-serving.bicep' = if (onPremServing && 
 module searchLogCopyGrant 'modules/searchlog-copy.bicep' = if (searchLogCopy && !empty(trim(searchLogCopyHost))) {
   scope: rg
   name: 'searchlog-copy'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(searchLogCopyHost)
+  }
+}
+
+// The OCR output copy's grant: the same host and identity as the search log's.
+module ocrLocalCopyGrant 'modules/ocr-local-copy.bicep' = if (ocrLocalCopy && !empty(trim(searchLogCopyHost))) {
+  scope: rg
+  name: 'ocr-local-copy'
   params: {
     storageName: storage.outputs.name
     principalId: trim(searchLogCopyHost)

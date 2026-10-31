@@ -1,0 +1,54 @@
+# The OCR output's copy on tank: `usnm-ingest ocr-local-copy` lists
+# curated/ocr-local/ in the lake as this host's Arc identity (read and list on
+# that prefix, Entra only) and copies what the dataset lacks into
+# /tank/azure/lake-alto, each object checked by size and Content-MD5 and linked
+# into place read-only. It never replaces, overwrites or deletes a copy, and
+# fails the unit when an object is still missing, or different, more than 48
+# hours after it was written.
+#
+# Not enabled by anything in this repository: README.md here.
+#
+# Settings in /etc/usnm/ocr-local-copy.env (never committed):
+#   USNM_OCR_LOCAL_COPY_FROM   https://<account>.blob.core.windows.net/curated
+[Unit]
+Description=usnewsmap OCR output copy to tank
+Wants=network-online.target himdsd.service
+After=network-online.target himdsd.service
+RequiresMountsFor=/tank/azure/lake-alto
+
+[Service]
+Type=oneshot
+User=usnm-searchlog
+Group=usnm-searchlog
+# himds: the Arc agent's token challenge.
+SupplementaryGroups=himds
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
+# usnm-ingest takes these on every command; ocr-local-copy reads none of them.
+Environment=USNM_CURATED_URL=/var/empty
+Environment=USNM_REFERENCE_URL=/var/empty
+Environment=USNM_STATE_FILE=/var/lib/usnm-ocr-local-copy/unused-state.json
+EnvironmentFile=/etc/usnm/ocr-local-copy.env
+StateDirectory=usnm-ocr-local-copy
+StateDirectoryMode=0755
+ExecStart=/usr/local/bin/usnm-ingest ocr-local-copy --to /tank/azure/lake-alto --status /var/lib/usnm-ocr-local-copy/status.json
+TimeoutStartSec=4h
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Nice=10
+IOSchedulingClass=idle
+SyslogIdentifier=usnm-ocr-local-copy
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/tank/azure/lake-alto
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
