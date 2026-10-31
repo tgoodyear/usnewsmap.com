@@ -403,21 +403,37 @@ def run(args):
             if not capacity:
                 return output | {"status": "bounded-gpu-inflight-buffer-full"}
             skipped = []
+            # Workunit -> audited job SHA of units already fully bound and found out of cohort.
+            # Their language is fixed by that job, so later ticks pass them over without
+            # re-reading every page; a changed audit binding is bound again from scratch.
+            known = {key: value for key, value in state.get("out_of_cohort", {}).items()
+                     if int(key) in scanned and by_wu[int(key)][1]["job_sha256"] == value}
+            remembered = dict(known)
 
             def admissible(row):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
+                unit = int(row["unit"]["id"])
+                if str(unit) in known:
+                    skipped.append(unit)
+                    return False
                 try:
-                    bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+                    bind_inputs(project, row, *by_wu[unit], args.prompt_version)
                 except OutOfCohort:
-                    skipped.append(int(row["unit"]["id"]))
+                    skipped.append(unit)
+                    known[str(unit)] = by_wu[unit][1]["job_sha256"]
                     return False
                 return True
 
             selected = choose([row for row in rows if int(row["unit"]["id"]) in scanned],
                               args.minimum_workunit, reserved, min(remaining, capacity), admissible)
+            if known != state.get("out_of_cohort", {}):
+                state["out_of_cohort"] = known
+                if args.apply:
+                    persist(state_path, state)
             if skipped:
-                output |= {"out_of_cohort_skipped": skipped}
+                output |= {"out_of_cohort_skipped": skipped,
+                           "out_of_cohort_remembered": sorted(set(map(int, remembered)) & set(skipped))}
             if not selected:
                 if skipped and ids:
                     # Every fresh unit in this page is out of cohort and never becomes admissible:

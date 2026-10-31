@@ -175,6 +175,49 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             receipt = R.run(self.args)
         self.assertEqual((receipt["status"], receipt["target"]), ("refilled-finite-window", [103, 103]))
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_verified_out_of_cohort_units_are_not_rebound_every_tick(self):
+        self.rows[:] = [self.input(100, "spa"), self.input(101, "deu"), self.input(102, "yid")]
+        audit = self.root / "qwen/qwen-nonenglish-v1/audit.json"
+        audit.write_text(json.dumps(self.audit))
+        database = self.project / "database.json"
+        database.write_text(json.dumps(self.rows))
+        state_path = self.project / "ops-issue-559/qwen-auto-cohort/state.json"
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_skipped"]), ([102, 102], [100, 101]))
+        self.assertEqual(sorted(json.loads(state_path.read_bytes())["out_of_cohort"]), ["100", "101"])
+
+        def drain(row):
+            row["results"][0].update(hostid=9, server_state=4, sent_time=1)
+            row["results"][1].update(hostid=10, server_state=4, sent_time=1)
+            database.write_text(json.dumps(self.rows))
+
+        drain(self.rows[2])
+        self.rows.append(self.input(103, "yid"))
+        audit.write_text(json.dumps(self.audit))
+        database.write_text(json.dumps(self.rows))
+        bound = []
+        original = R.bind_inputs
+
+        def counting(project, row, *rest):
+            bound.append(int(row["unit"]["id"]))
+            return original(project, row, *rest)
+
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(R, "bind_inputs", side_effect=counting):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["target"], receipt["out_of_cohort_remembered"]), ([103, 103], [100, 101]))
+        self.assertEqual(set(bound), {103})
+        # A changed producer binding is bound again from scratch, so it still stops the tick.
+        drain(self.rows[3])
+        key = self.rows[0]["unit"]["name"].removeprefix("usnm_qwen_")
+        self.audit[key]["job_sha256"] = "e" * 64
+        audit.write_text(json.dumps(self.audit))
+        with patch.object(R, "read_database", return_value=self.database), \
+                self.assertRaisesRegex(ValueError, "differs from producer audit"):
+            R.run(self.args)
+
     def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
         for language in ("yid", "srp"):
             row = self.input(200, language)
