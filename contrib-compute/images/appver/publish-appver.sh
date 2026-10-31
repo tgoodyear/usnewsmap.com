@@ -28,11 +28,11 @@ case "$APPVER_KIND" in
   native)
     APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS-}
     case "$APPVER_APP:$APPVER_PLAN_CLASS" in
-      usnm_quality:|usnm_qwen:mt|usnm_qwen:apple_gpu_8b|usnm_qwen:nvidia_cuda_8b|usnm_qwen:nvidia_cuda_2b|usnm_qwen:intel_vulkan_8b|usnm_qwen:nvidia_vulkan_8b|usnm_qwen:amd_vulkan_8b) ;;
+      usnm_quality:|usnm_qwen:mt|usnm_qwen:apple_gpu_8b|usnm_qwen:nvidia_cuda_8b|usnm_qwen:nvidia_cuda_2b|usnm_qwen:intel_vulkan_8b|usnm_qwen:nvidia_vulkan_8b|usnm_qwen:nvidia_vulkan_6gb_8b|usnm_qwen:amd_vulkan_8b) ;;
       *) fail "unsupported native app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
     esac
     case "$APPVER_PLAN_CLASS:$APPVER_PLATFORM" in
-      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
+      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64|intel_vulkan_8b:x86_64-pc-linux-gnu|intel_vulkan_8b:windows_x86_64|nvidia_vulkan_8b:x86_64-pc-linux-gnu|nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:x86_64-pc-linux-gnu|amd_vulkan_8b:windows_x86_64) ;;
       *) fail "native plan class $APPVER_PLAN_CLASS is not supported on $APPVER_PLATFORM" ;;
     esac
     if [ -n "$APPVER_PLAN_CLASS" ]; then
@@ -190,7 +190,7 @@ $plan = $kind === "native" ? (getenv("APPVER_PLAN_CLASS") ?: "") : (getenv("APPV
 if (!preg_match('/^usnm_[a-z_]+$/D', $name)
     || !preg_match('/^[1-9][0-9]*\.[0-9]+$/D', $version)
     || !in_array($platformName, ["x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"], true)
-    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "docker_intel_vulkan", "docker_mt_2b", "docker_nvidia_cuda_8b", "docker_nvidia_train", "docker_intel_opencl_4b", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"], true)) {
+    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "docker_intel_vulkan", "docker_mt_2b", "docker_nvidia_cuda_8b", "docker_nvidia_train", "docker_intel_opencl_4b", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b"], true)) {
     fwrite(STDERR, "Invalid app-version verification inputs\n"); exit(1);
 }
 $allowed = $kind === "container"
@@ -200,7 +200,7 @@ $allowed = $kind === "container"
        "usnm_iris:docker_intel_opencl_4b"]
     : ($kind === "native"
         ? ["usnm_quality:", "usnm_qwen:mt", "usnm_qwen:apple_gpu_8b",
-           "usnm_qwen:nvidia_cuda_8b", "usnm_qwen:nvidia_cuda_2b", "usnm_qwen:intel_vulkan_8b", "usnm_qwen:nvidia_vulkan_8b", "usnm_qwen:amd_vulkan_8b"] : []);
+           "usnm_qwen:nvidia_cuda_8b", "usnm_qwen:nvidia_cuda_2b", "usnm_qwen:intel_vulkan_8b", "usnm_qwen:nvidia_vulkan_8b", "usnm_qwen:nvidia_vulkan_6gb_8b", "usnm_qwen:amd_vulkan_8b"] : []);
 if (!in_array("$name:$plan", $allowed, true)
     || ($kind === "container" && $platformName !== "x86_64-pc-linux-gnu" && $plan !== "docker")) {
     fwrite(STDERR, "Unsupported app/plan class for verification\n"); exit(1);

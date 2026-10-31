@@ -1,7 +1,8 @@
 <?php
 // Operator-only dispatch window; never changes account preferences or scientific rows.
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
-const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "amd_vulkan_8b"];
+const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b"];
+const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
 const TIEBREAKER_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b", "shared_8b"];
 const AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1";
@@ -45,9 +46,9 @@ function native_qwen_general_xml($xml, $plan_class = "amd_vulkan_8b") {
 }
 
 function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null) {
-    // AMD has an independent one-workunit canary. Neither path resets the other's windows.
-    $classes = $plan_class === "amd_vulkan_8b" ? ["amd_vulkan_8b"]
-        : array_values(array_diff(NATIVE_QWEN_CLASSES, ["amd_vulkan_8b"]));
+    // Unqualified profiles have independent one-workunit windows; shared refills leave them alone.
+    $classes = in_array($plan_class, INDEPENDENT_QWEN_CLASSES, true) ? [$plan_class]
+        : array_values(array_diff(NATIVE_QWEN_CLASSES, INDEPENDENT_QWEN_CLASSES));
     if ($plan_class === "shared_8b") $classes[] = "docker_nvidia_cuda_8b";
     $last_id = $last_id ?? $workunit_id;
     if ((!in_array($plan_class, $classes, true) && $plan_class !== "shared_8b")
@@ -99,10 +100,10 @@ function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null
 
 // Whether every class in this operation's scope, other than the ones it opens, is closed
 // (min_wu_id 2, max_wu_id 1) in the resulting policy. A preserved general admission is open.
-// AMD's window is its own scope, so an AMD operation has no other class to close.
+// Independent windows have no other class to close.
 function native_qwen_other_closed($xml, $plan_class) {
-    if ($plan_class === "amd_vulkan_8b") return true;
-    $scope = array_values(array_diff(NATIVE_QWEN_CLASSES, ["amd_vulkan_8b"]));
+    if (in_array($plan_class, INDEPENDENT_QWEN_CLASSES, true)) return true;
+    $scope = array_values(array_diff(NATIVE_QWEN_CLASSES, INDEPENDENT_QWEN_CLASSES));
     $opened = $plan_class === "shared_8b" ? SHARED_QWEN_CLASSES : [$plan_class];
     $doc = new DOMDocument();
     if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
@@ -381,7 +382,8 @@ function native_qwen_cohort_main() {
             || !in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)
             || !isset($options["workunit"]) || isset($options["workunit-end"])))
         || ($fresh_pair && ($stop || $general || $ordinary_canary || $tiebreaker
-            || !in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true)))
+            || !in_array($plan_class, array_merge(TIEBREAKER_QWEN_CLASSES, ["nvidia_vulkan_6gb_8b"]), true)))
+        || (!$stop && $plan_class === "nvidia_vulkan_6gb_8b" && (!$fresh_pair || $admit_until === null))
         || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))
         || ($admit_until !== null && ($stop || $general || !preg_match('/^[1-9][0-9]*$/D', $admit_until)))) {
         throw new RuntimeException("usage: --project PATH [--db-project PATH] [--stop | --plan-class amd_vulkan_8b|nvidia_vulkan_8b --general | --plan-class amd_vulkan_8b --ordinary-canary --workunit ID | --plan-class intel_vulkan_8b|nvidia_vulkan_8b|shared_8b --tiebreaker --workunit ID | --plan-class ".implode("|", NATIVE_QWEN_CLASSES)."|shared_8b --workunit ID [--workunit-end ID]] [--fresh-pair] [--expected-policy-sha256 SHA256] [--admit-until UNIX] [--apply]");

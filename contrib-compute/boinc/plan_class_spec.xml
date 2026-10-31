@@ -183,6 +183,22 @@
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
+        <name>nvidia_vulkan_6gb_8b</name>
+        <!-- Separate, closed partial-offload pilot; never relax the full-offload classes.
+             The app requires 5120 MiB free, offloads 24 layers and keeps the projector on CPU. -->
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_gpu_ram_mb>5500</min_gpu_ram_mb>
+        <gpu_ram_used_mb>5500</gpu_ram_used_mb>
+        <ngpus>1</ngpus>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <plan_class>
         <name>intel_vulkan_8b</name>
         <min_wu_id>2</min_wu_id>
         <max_wu_id>1</max_wu_id>
