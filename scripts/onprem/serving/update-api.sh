@@ -5,8 +5,8 @@
 # it as /usr/local/sbin/usnm-serving-update, and usnm-serving-update.timer
 # runs it 2 minutes after the last run ended.
 #
-#   usnm-serving-update --registry NAME [--tag main] [--commit SHA]
-#     [--redeploy] [--ready-secs 800] [--drain-secs 130] [--dry-run]
+#   usnm-serving-update --registry NAME [--primary acr|ghcr] [--tag main]
+#     [--commit SHA] [--redeploy] [--ready-secs 800] [--drain-secs 130] [--dry-run]
 #
 # Each run reads the registry's usnewsmap-api:main manifest (NAME.azurecr.io,
 # the tag CI's publish job moves on every prod run) with the container's Arc
@@ -15,13 +15,27 @@
 # the manifest is the one serving, the run ends there, without asking GitHub
 # anything.
 #
+# --primary ghcr (or USNM_SERVING_PRIMARY=ghcr, which install.sh keeps in
+# host.env) reads and pulls from ghcr.io/tgoodyear/usnewsmap-api instead,
+# without signing in: CI copies each image there with its digest unchanged
+# (scripts/ci/mirror-image.sh). ACR stays the fallback. If GHCR can't be read
+# or a pull from it fails, the run uses NAME.azurecr.io as above, for the same
+# tag or the same digest. Only an error falls back: a GHCR tag that lags waits
+# for the next publish, and is never compared with ACR's. An image older than
+# the one serving is rejected, so a lagging tag can't undo a deploy that came
+# through the fallback. The default, acr, never touches GHCR. Either way the
+# checks below are the same, and an image serving from one registry isn't
+# deployed again when the other shows its digest.
+#
 # A new manifest is deployed once it has a build provenance attestation
 # signed by this repository's ci.yml on main. CI attests the API image as
 # the publish job's last step, after the Azure app has rolled onto it, so an
 # attested image is one prod runs. The attestation is read from the
 # repository's public API without a token, and `gh attestation verify
 # --bundle` checks it (gh is never signed in); its source commit names the
-# commit, whose own tag must point at the same manifest. Until the
+# commit, whose own tag must point at the same manifest. For main, GitHub's
+# compare API then shows that commit isn't behind the one serving; a failed
+# request is tried again next run. Until the
 # attestation appears, the run asks every time for 30 minutes after it
 # first saw the manifest, then every 10 minutes; after 3 hours the
 # manifest is rejected. GitHub allows 60 requests an hour from an address
@@ -72,10 +86,11 @@ pri() { if [ -n "${JOURNAL_STREAM:-}" ]; then printf '<%s>%s\n' "$1" "$2"; else 
 log() { pri 5 "$*"; }
 warn() { pri 4 "$*"; }
 
-REGISTRY="" TAG=main COMMIT="" REDEPLOY=false READY_SECS=800 DRAIN_SECS=130 DRY_RUN=false
+REGISTRY="" PRIMARY=${USNM_SERVING_PRIMARY:-acr} TAG=main COMMIT="" REDEPLOY=false READY_SECS=800 DRAIN_SECS=130 DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
+    --primary) PRIMARY=${2:-}; shift 2 || usage ;;
     --tag) TAG=${2:-}; shift 2 || usage ;;
     --commit) COMMIT=${2:-}; shift 2 || usage ;;
     --redeploy) REDEPLOY=true; shift ;;
@@ -87,6 +102,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $REGISTRY =~ ^[a-z0-9]{5,50}$ ]] || { echo "error: --registry: the registry's name, as in NAME.azurecr.io" >&2; usage; }
+[[ $PRIMARY =~ ^(acr|ghcr)$ ]] || { echo "error: --primary: acr or ghcr" >&2; usage; }
 [[ $TAG =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || { echo "error: --tag: a registry tag, such as main" >&2; usage; }
 [ -z "$COMMIT" ] || [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "error: --commit: a full commit hash" >&2; usage; }
 [[ $READY_SECS =~ ^[1-9][0-9]{0,4}$ ]] || { echo "error: --ready-secs: 1 to 99999" >&2; usage; }
@@ -96,7 +112,10 @@ REPO=tgoodyear/usnewsmap.com
 WORKFLOW="$REPO/.github/workflows/ci.yml"
 API="https://api.github.com/repos/$REPO"
 IMAGE_REPO=usnewsmap-api
-HOST=$REGISTRY.azurecr.io
+ACR_HOST=$REGISTRY.azurecr.io
+GHCR_HOST=ghcr.io/tgoodyear
+# Where this run reads and pulls: set by use_registry.
+HOST=""
 # How long a new manifest may wait for its attestation, and how often it's
 # asked for after the first half hour.
 WAIT_SECS=$((3 * 3600)) EAGER_SECS=1800 BACKOFF_SECS=600
@@ -164,20 +183,35 @@ arc_token() {
   curl -s --noproxy '*' --max-time 20 -H Metadata:true \
     -H @<(printf 'Authorization: Basic %s\n' "$(cat "$file")") "$u" | jq -er .access_token
 }
-# A registry auth file for $HOST at $1 (mode 0600): the Resource Manager
+# A registry auth file for ACR at $1 (mode 0600): the Resource Manager
 # token exchanged for a registry refresh token. Neither token is ever on a
 # command line.
 registry_login() {
   local arm refresh
   arm=$(arc_token https%3A%2F%2Fmanagement.azure.com%2F) || return 1
-  refresh=$(printf '%s' "$arm" | curl -fsS --max-time 30 -X POST "https://$HOST/oauth2/exchange" \
-    --data-urlencode grant_type=access_token --data-urlencode "service=$HOST" \
+  refresh=$(printf '%s' "$arm" | curl -fsS --max-time 30 -X POST "https://$ACR_HOST/oauth2/exchange" \
+    --data-urlencode grant_type=access_token --data-urlencode "service=$ACR_HOST" \
     --data-urlencode "access_token@-" | jq -er .refresh_token) || return 1
   (
     umask 077
-    printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$HOST" \
+    printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$ACR_HOST" \
       "$(printf '00000000-0000-0000-0000-000000000000:%s' "$refresh" | base64 -w0)" > "$1"
   )
+}
+# Makes $1 (acr or ghcr) the registry this run uses. GHCR's package is public,
+# so its auth file holds no credentials.
+use_registry() {
+  case $1 in
+    ghcr)
+      HOST=$GHCR_HOST
+      printf '{"auths":{}}\n' > "$TMP/auth.json"
+      ;;
+    acr)
+      HOST=$ACR_HOST
+      registry_login "$TMP/auth.json" ||
+        { warn "warning: can't sign in to $HOST with the Arc identity (is AcrPull granted?)"; return 1; }
+      ;;
+  esac
 }
 # The manifest a tag points to, saved as $2; its digest on stdout. The
 # tag's own manifest is what the attestation names: an index when the build
@@ -202,14 +236,21 @@ reject() {
   exit 1
 }
 
-registry_login "$TMP/auth.json" ||
-  { warn "warning: can't sign in to $HOST with the Arc identity (is AcrPull granted?)"; exit 1; }
 ref=${COMMIT:-$TAG}
-if ! digest=$(manifest "$ref" "$TMP/manifest.json" 2> "$TMP/why"); then
+source=""
+sources=acr
+[ "$PRIMARY" != ghcr ] || sources="ghcr acr"
+for s in $sources; do
+  use_registry "$s" || continue
+  if digest=$(manifest "$ref" "$TMP/manifest.json" 2> "$TMP/why"); then
+    source=$s
+    break
+  fi
   warn "warning: can't read $IMAGE_REPO:$ref from $HOST: $(cat "$TMP/why")"
-  exit 1
-fi
-if [ "$HOST/$IMAGE_REPO@$digest" = "$current_image" ] && ! $REDEPLOY; then
+done
+[ -n "$source" ] || exit 1
+[ "$source" = "$PRIMARY" ] || warn "warning: falling back to $HOST for this run"
+if [ "$digest" = "${current_image##*@}" ] && ! $REDEPLOY; then
   if [ -n "$COMMIT" ]; then
     $DRY_RUN || touch "$ETC/hold"
     log "$active serves $COMMIT already; held at it until $ETC/hold is deleted"
@@ -269,6 +310,16 @@ if [ -z "$COMMIT" ]; then
     reject "the registry has no $IMAGE_REPO:$target"
   fi
   [ "$tagged" = "$digest" ] || reject "$IMAGE_REPO:$target isn't the same manifest as $IMAGE_REPO:$TAG"
+  # Never back: main only moves forward, so an older commit is a tag that
+  # lags. "behind" means the target is an ancestor of the commit serving.
+  if [[ $current =~ ^[0-9a-f]{40}$ ]]; then
+    if ! order=$(curl -fsSL --retry 3 --max-time 60 -H 'Accept: application/vnd.github+json' \
+      "$API/compare/$current...$target?per_page=1" 2> /dev/null | jq -er .status); then
+      warn "warning: can't compare $target with $current on GitHub; trying again next run"
+      exit 1
+    fi
+    [ "$order" != behind ] || reject "$target is older than $current, which serves"
+  fi
 fi
 $DRY_RUN || rm -f "$PENDING"
 log "$IMAGE_REPO@$digest: attestation verified for $target"
@@ -281,8 +332,15 @@ if [ "$DRY_RUN" = true ]; then
   exit 0
 fi
 log "deploying $target to $idle (now ${current:-nothing}${active:+ on $active})"
-podman pull --quiet --authfile "$TMP/auth.json" "$HOST/$IMAGE_REPO@$digest" > /dev/null ||
-  { warn "warning: can't pull $HOST/$IMAGE_REPO@$digest"; exit 1; }
+# The digest names the attested image whichever registry serves it.
+if ! podman pull --quiet --authfile "$TMP/auth.json" "$HOST/$IMAGE_REPO@$digest" > /dev/null; then
+  warn "warning: can't pull $HOST/$IMAGE_REPO@$digest"
+  [ "$source" = ghcr ] || exit 1
+  use_registry acr || exit 1
+  warn "warning: falling back to $HOST for this pull"
+  podman pull --quiet --authfile "$TMP/auth.json" "$HOST/$IMAGE_REPO@$digest" > /dev/null ||
+    { warn "warning: can't pull $HOST/$IMAGE_REPO@$digest"; exit 1; }
+fi
 rm -f "$TMP/auth.json"
 
 mkdir -p "$ETC"
@@ -371,7 +429,10 @@ systemctl restart --no-block usnm-edge-warm.service || warn "warning: can't star
 # Images neither color names. One still in use stays.
 keep=" $(env_get "$ETC/api-blue.env" API_IMAGE) $(env_get "$ETC/api-green.env" API_IMAGE) "
 podman images --digests --format '{{.Repository}}@{{.Digest}}' | while read -r ref; do
-  [ "${ref%@*}" = "$HOST/$IMAGE_REPO" ] || continue
+  case ${ref%@*} in
+    "$ACR_HOST/$IMAGE_REPO" | "$GHCR_HOST/$IMAGE_REPO") ;;
+    *) continue ;;
+  esac
   case $keep in *" $ref "*) continue ;; esac
   podman rmi "$ref" > /dev/null 2>&1 || true
 done

@@ -27,6 +27,7 @@ LINUX = sys.platform.startswith("linux")
 SHA = {n: c * 40 for n, c in (("old", "a"), ("mid", "b"), ("new", "c"))}
 REGISTRY = "crexampletest"
 HOST = REGISTRY + ".azurecr.io"
+GHCR = "ghcr.io/tgoodyear"
 
 
 def manifest(name):
@@ -59,7 +60,13 @@ def upstream():
         return re.search(r"127\.0\.0\.1:(\d+)", open(root + "/etc/usnm-serving/upstream.caddy").read()).group(1)
     except (OSError, AttributeError):
         return None
-if url.startswith("https://api.github.com/repos/tgoodyear/usnewsmap.com/attestations/"):
+if "/compare/" in url:
+    status = os.environ.get("STUB_COMPARE", "ahead")
+    if status == "down":
+        code = 500
+    else:
+        body = json.dumps({"status": status})
+elif url.startswith("https://api.github.com/repos/tgoodyear/usnewsmap.com/attestations/"):
     f = os.path.join(stubs, "attestations.json")
     if os.path.exists(f):
         body = open(f).read()
@@ -111,10 +118,13 @@ case "$(basename "$0") $1" in
     exit 3 ;;
   "skopeo inspect")
     for a in "$@"; do ref=$a; done
+    case "$ref" in *"${STUB_REGISTRY_DOWN:-none}"*) echo "toomanyrequests: slow down" >&2; exit 1 ;; esac
     [ "${ref##*:}" != "${STUB_SKOPEO_DOWN:-}" ] || { echo "pinging container registry: connection reset" >&2; exit 1; }
     f="$STUB_DIR/manifest-${ref##*:}"
     [ -f "$f" ] || { echo "reading manifest: manifest unknown" >&2; exit 1; }
     cat "$f" ;;
+  "podman pull")
+    case "$*" in *"${STUB_PULL_DOWN:-none}"*) exit 1 ;; esac ;;
   "gh attestation")
     [ -z "${STUB_BAD_ATTESTATION:-}" ] || exit 1
     printf '[{"verificationResult":{"signature":{"certificate":{"sourceRepositoryDigest":"%s"}}}}]\n' "$STUB_SOURCE" ;;
@@ -168,7 +178,7 @@ class UpdateApiFlags(Stubbed):
         script = os.path.join(HERE, "update-api.sh")
         for args in (["--registry", "UPPER"], ["--registry", REGISTRY, "--commit", "abc"],
                      ["--registry", REGISTRY, "--ready-secs", "0"], ["--registry", REGISTRY, "--tag", "a b"],
-                     ["--registry", REGISTRY, "extra"]):
+                     ["--registry", REGISTRY, "--primary", "docker"], ["--registry", REGISTRY, "extra"]):
             r = subprocess.run(["bash", script, *args, "--dry-run"], env=self.env, capture_output=True, text=True)
             self.assertEqual(r.returncode, 2, (args, r.stderr))
 
@@ -176,6 +186,8 @@ class UpdateApiFlags(Stubbed):
 @unittest.skipUnless(LINUX, "needs GNU flock, realpath, stat and base64")
 class UpdateApi(Stubbed):
     SCRIPT = os.path.join(HERE, "update-api.sh")
+    host = HOST
+    primary = "acr"
 
     def setUp(self):
         super().setUp()
@@ -205,12 +217,12 @@ class UpdateApi(Stubbed):
         write(os.path.join(self.root, "var/lib/usnm-serving/active"), color + "\n")
         write(os.path.join(self.root, "etc/usnm-serving/api-%s.env" % color),
               "API_IMAGE=%s/usnewsmap-api@%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:%d\n"
-              % (HOST, digest(manifest(name)), commit, port))
+              % (self.host, digest(manifest(name)), commit, port))
         write(os.path.join(self.root, "etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:%d\n" % port)
 
     def update(self, *extra, **env):
-        return subprocess.run(["bash", self.SCRIPT, "--registry", REGISTRY, "--drain-secs", "0", "--ready-secs", "1",
-                               *extra], env={**self.env, **env}, capture_output=True, text=True)
+        return subprocess.run(["bash", self.SCRIPT, "--registry", REGISTRY, "--primary", self.primary,
+                               "--drain-secs", "0", "--ready-secs", "1", *extra], env={**self.env, **env}, capture_output=True, text=True)
 
     def read(self, rel):
         with open(os.path.join(self.root, rel)) as f:
@@ -227,7 +239,8 @@ class UpdateApi(Stubbed):
         r = self.update(STUB_READY_PORTS="8081")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertEqual(self.read("etc/usnm-serving/api-blue.env"),
-                         "API_IMAGE=%s/usnewsmap-api@%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:8081\n" % (HOST, d, SHA["new"]))
+                         "API_IMAGE=%s/usnewsmap-api@%s\nAPI_COMMIT=%s\nUSNM_BIND=127.0.0.1:8081\n"
+                         % (self.host, d, SHA["new"]))
         self.assertEqual(self.read("etc/usnm-serving/upstream.caddy"), "reverse_proxy 127.0.0.1:8081\n")
         self.assertEqual(self.read("var/lib/usnm-serving/active"), "blue\n")
         calls = self.calls()
@@ -432,13 +445,101 @@ class UpdateApi(Stubbed):
     def test_unused_images_are_removed(self):
         self.serving("blue", SHA["old"], "old")
         self.release(SHA["new"], "new")
-        keep = "%s/usnewsmap-api@%s" % (HOST, digest(manifest("old")))
-        stale = "%s/usnewsmap-api@sha256:%s" % (HOST, "9" * 64)
+        keep = "%s/usnewsmap-api@%s" % (self.host, digest(manifest("old")))
+        stale = "%s/usnewsmap-api@sha256:%s" % (self.host, "9" * 64)
         other = "docker.io/library/other@sha256:%s" % ("8" * 64)
         r = self.update(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join((keep, stale, other)))
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         removed = [c for c in self.calls() if c.startswith("podman rmi")]
         self.assertEqual(removed, ["podman rmi " + stale])
+
+    def test_an_older_commit_is_rejected_and_a_failed_comparison_tried_again(self):
+        self.serving("blue", SHA["new"], "new")
+        d = self.release(SHA["old"], "old")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="down", STUB_SOURCE=SHA["old"])
+        self.assertEqual(r.returncode, 1)
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="behind", STUB_SOURCE=SHA["old"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("is older than", r.stdout + r.stderr)
+        self.assertEqual(self.read("var/lib/usnm-serving/rejected"), d + "\n")
+        self.assertFalse(any(c.startswith("podman pull") for c in self.calls()))
+
+    def test_a_rollback_by_commit_compares_nothing(self):
+        self.release(SHA["old"], "old")
+        self.serving("green", SHA["new"], "new")
+        r = self.update("--commit", SHA["old"], STUB_READY_PORTS="8081 8082", STUB_SOURCE=SHA["old"],
+                        STUB_COMPARE="behind")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(any("/compare/" in c for c in self.calls()))
+
+    def test_the_serving_digest_stays_whichever_registry_names_it(self):
+        self.release(SHA["old"], "old")
+        self.serving("blue", SHA["old"], "old")
+        env = os.path.join(self.root, "etc/usnm-serving/api-blue.env")
+        with open(env) as f:
+            text = f.read()
+        write(env, text.replace(self.host, GHCR if self.host == HOST else HOST))
+        r = self.update()
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertFalse(any(c.startswith("podman pull") for c in self.calls()))
+
+
+class UpdateApiFromGhcr(UpdateApi):
+    """Every check above again, with GHCR first; then what only GHCR changes."""
+    host = GHCR
+    primary = "ghcr"
+
+    def pulls(self):
+        return [c for c in self.calls() if c.startswith("podman pull")]
+
+    def test_it_never_signs_in_or_touches_acr(self):
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual([c.split()[-1] for c in self.pulls()], ["%s/usnewsmap-api@%s" % (GHCR, d)])
+        joined = "\n".join(self.calls())
+        self.assertNotIn("localhost:40342", joined)
+        self.assertNotIn("azurecr.io", joined)
+
+    def test_a_read_error_falls_back_to_acr(self):
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081", STUB_REGISTRY_DOWN="ghcr.io")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("toomanyrequests", r.stdout + r.stderr)
+        self.assertIn("API_IMAGE=%s/usnewsmap-api@%s\n" % (HOST, d), self.read("etc/usnm-serving/api-blue.env"))
+        self.assertTrue(any(c.startswith("gh attestation verify") for c in self.calls()))
+
+    def test_a_pull_error_falls_back_to_the_same_digest_on_acr(self):
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081", STUB_PULL_DOWN=GHCR)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual([c.split()[-1] for c in self.pulls()],
+                         ["%s/usnewsmap-api@%s" % (GHCR, d), "%s/usnewsmap-api@%s" % (HOST, d)])
+        self.assertIn("API_IMAGE=%s/usnewsmap-api@%s\n" % (HOST, d), self.read("etc/usnm-serving/api-blue.env"))
+
+    def test_both_registries_down_changes_nothing(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        r = self.update(STUB_REGISTRY_DOWN="/usnewsmap-api")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.pulls(), [])
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
+
+    def test_a_bad_attestation_on_the_fallback_still_rejects(self):
+        d = self.release(SHA["new"], "new")
+        r = self.update(STUB_READY_PORTS="8081", STUB_REGISTRY_DOWN="ghcr.io", STUB_BAD_ATTESTATION="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(d, self.read("var/lib/usnm-serving/rejected"))
+        self.assertEqual(self.pulls(), [])
+
+    def test_unused_images_from_either_registry_are_removed(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        stale = ["%s/usnewsmap-api@sha256:%s" % (h, "9" * 64) for h in (HOST, GHCR)]
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join(stale))
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith("podman rmi")], ["podman rmi " + i for i in stale])
 
 
 class GenEnv(unittest.TestCase):
@@ -625,6 +726,8 @@ class GenEnv(unittest.TestCase):
 
 
 @unittest.skipUnless(LINUX, "needs GNU stat and install")
+
+
 class Install(Stubbed):
     SCRIPT = os.path.join(HERE, "install.sh")
 
@@ -650,7 +753,7 @@ class Install(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         etc = os.path.join(self.root, "etc")
         with open(os.path.join(etc, "usnm-serving/host.env")) as f:
-            self.assertEqual(f.read(), "HIMDS_GID=4242\nUSNM_SERVING_REGISTRY=%s\n" % REGISTRY)
+            self.assertEqual(f.read(), "HIMDS_GID=4242\nUSNM_SERVING_REGISTRY=%s\nUSNM_SERVING_PRIMARY=acr\n" % REGISTRY)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(etc, "usnm-serving/api.env")).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.root, "usr/local/sbin/usnm-serving-update")).st_mode),
                          0o755)
@@ -668,6 +771,19 @@ class Install(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("installed", r.stdout)
         self.assertFalse(any(c.startswith(("systemctl restart", "systemctl daemon-reload")) for c in self.calls()))
+
+    def test_the_primary_source_stays_until_a_flag_changes_it(self):
+        host_env = os.path.join(self.root, "etc/usnm-serving/host.env")
+        def primary():
+            with open(host_env) as f:
+                return re.search(r"USNM_SERVING_PRIMARY=(\w+)", f.read()).group(1)
+        self.assertEqual(self.install("--primary", "ghcr").returncode, 0)
+        self.assertEqual(primary(), "ghcr")
+        self.assertEqual(self.install().returncode, 0)
+        self.assertEqual(primary(), "ghcr")
+        self.assertEqual(self.install("--primary", "acr").returncode, 0)
+        self.assertEqual(primary(), "acr")
+        self.assertEqual(self.install("--primary", "docker").returncode, 2)
 
     def test_per_color_cache_entries_are_linked_into_the_shared_one(self):
         cache = os.path.join(self.root, "srv/usnm-serving/cache")

@@ -7,10 +7,13 @@
 # run again.
 #
 #   scripts/onprem/serving/install.sh --registry NAME --config-dir DIR
-#     [--env prod] [--skip-quickwit] [--production] [--dry-run]
+#     [--primary acr|ghcr] [--env prod] [--skip-quickwit] [--production] [--dry-run]
 #
 # --registry: the environment's registry name (NAME.azurecr.io), which the
 #   Arc identity can pull from (AcrPull).
+# --primary: where usnm-serving-update reads and pulls the API image: acr, or
+#   ghcr with ACR as its fallback (update-api.sh). Without this flag, the
+#   value already in host.env stays; a new install starts on acr.
 # --config-dir: gen-env.sh's output: api.env, searcher.env, searcher.yaml.
 # --env: the environment whose pinned Quickwit to install
 #   (infra/quickwit-image.json, through scripts/onprem/install-quickwit.sh).
@@ -19,7 +22,8 @@
 #
 # It installs:
 #   /etc/usnm-serving/      api.env (0600), searcher.env, searcher.yaml,
-#                           host.env (HIMDS_GID and the registry's name),
+#                           host.env (HIMDS_GID, the registry's name and
+#                           the primary source of the API image),
 #                           upstream.caddy (only if missing: blue's port)
 #   /etc/caddy/Caddyfile, /etc/tmpfiles.d/usnm-serving.conf,
 #   /etc/systemd/journald.conf.d/usnm-serving.conf (30 days of journal)
@@ -47,10 +51,11 @@ set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '9,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 
-REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false
+REGISTRY="" PRIMARY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
+    --primary) PRIMARY=${2:-}; shift 2 || usage ;;
     --config-dir) CONFIG=${2:-}; shift 2 || usage ;;
     --env) ENV_NAME=${2:-}; shift 2 || usage ;;
     --skip-quickwit) SKIP_QW=true; shift ;;
@@ -61,6 +66,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $REGISTRY =~ ^[a-z0-9]{5,50}$ ]] || { echo "error: --registry: the registry's name, as in NAME.azurecr.io" >&2; usage; }
+[[ $PRIMARY =~ ^(acr|ghcr|)$ ]] || { echo "error: --primary: acr or ghcr" >&2; usage; }
 { [ -n "$CONFIG" ] && [ -d "$CONFIG" ]; } || { echo "error: --config-dir: gen-env.sh's output directory" >&2; usage; }
 [[ $ENV_NAME =~ ^[a-z0-9]{1,8}$ ]] || { echo "error: --env: an environment name, such as prod" >&2; usage; }
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -130,7 +136,11 @@ index=$(sed -n 's|^default_index_root_uri: file://||p' "$CONFIG/searcher.yaml")
 # Settings.
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-printf 'HIMDS_GID=%s\nUSNM_SERVING_REGISTRY=%s\n' "$HIMDS_GID" "$REGISTRY" > "$T/host.env"
+if [ -z "$PRIMARY" ]; then
+  PRIMARY=$(sed -n 's/^USNM_SERVING_PRIMARY=//p' "$ETC/host.env" 2> /dev/null | tail -1 || true)
+  [[ $PRIMARY =~ ^(acr|ghcr)$ ]] || PRIMARY=acr
+fi
+printf 'HIMDS_GID=%s\nUSNM_SERVING_REGISTRY=%s\nUSNM_SERVING_PRIMARY=%s\n' "$HIMDS_GID" "$REGISTRY" "$PRIMARY" > "$T/host.env"
 put "$T/host.env" "$ETC/host.env" 0644
 changed=false
 put "$CONFIG/api.env" "$ETC/api.env" 0600

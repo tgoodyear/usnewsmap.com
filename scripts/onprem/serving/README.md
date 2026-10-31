@@ -166,7 +166,7 @@ or claiming the Worker failed.
 
 CI's publish job pushes each prod image as `usnewsmap-api:main` and `usnewsmap-api:<commit>`. Its last step, after the Azure app rolls onto the image, attests it (a Phase 0 code PR adds this step), so an attested image is one prod runs.
 
-Two minutes after its last run ends, `update-api.sh` reads the `main` manifest from the registry with the Arc identity's AcrPull. If that manifest is already serving, the run ends there, without asking GitHub anything. For a new manifest, the script:
+Two minutes after its last run ends, `update-api.sh` reads the `main` manifest from the primary registry: ACR with the Arc identity's AcrPull, or GHCR without signing in. If that manifest is already serving, the run ends there, without asking GitHub anything. For a new manifest, the script:
 
 1. reads its build provenance attestation from GitHub's public API, with no token, checks that `ci.yml` on main signed it, and checks that the commit it names has its own tag on the same manifest;
 2. pulls the image by digest and starts it on the idle color;
@@ -178,6 +178,21 @@ Until the attestation appears, the script asks for it on every run for 30 minute
 If the new color doesn't get ready, or Caddy doesn't switch, the old color keeps serving and the manifest's digest is listed in `/var/lib/usnm-serving/rejected`. If the serving color isn't ready either, the host is the likely cause (a missing index, no lake access), so nothing is rejected; nor on the first deploy, with no serving color to compare. If Caddy can't be shown to route back to the old color after a failed switch, both colors stay up and `/etc/usnm-serving/hold` stops the timer until someone checks the route by hand. A manifest whose attestation doesn't verify is rejected before anything is pulled.
 
 Once CI attests a new image, the next run picks it up within about 2 minutes, as long as the attestation came within 30 minutes of `main` moving. Then come the pull and the new color's start, which takes at most 800 s: the API's own budget of 420 s to load the published version and a 360 s readiness cap.
+
+### Choosing the registry
+
+The updater starts on ACR. To move it to GHCR, once CI's mirror shows the `main` digest in both registries and the digest has an attestation:
+
+```bash
+scripts/onprem/serving/install.sh --registry crusnmprodffapzy --config-dir /root/usnm-serving-config --primary ghcr
+usnm-serving-update --registry crusnmprodffapzy --primary ghcr --dry-run
+```
+
+`install.sh` keeps the choice in `/etc/usnm-serving/host.env` as `USNM_SERVING_PRIMARY`. The switch alone deploys nothing, since the digest that serves doesn't change. To go back, run `install.sh` again with `--primary acr`. A command typed in a shell doesn't read `host.env`, so it uses ACR unless it has the flag.
+
+On GHCR, an error reading the tag or pulling the image falls back to ACR for that run, with a warning in the journal. The attestation, tag and digest checks don't change, and the image still runs by digest. If `scripts/ci/mirror-image.sh` fails in CI, GHCR's `main` lags and no error shows here, so the API stays where it is until the next publish. The publish job's summary shows a warning for that failure: run the job again or switch to `--primary acr`. A `main` older than the commit serving is rejected, so a lagging tag can't undo a deploy that came through ACR.
+
+### Rolling back
 
 To roll back by hand, deploy an earlier commit:
 
