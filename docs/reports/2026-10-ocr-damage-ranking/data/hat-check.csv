@@ -1,0 +1,5 @@
+grp,pages,spearman_damage_hat,hat_p50,damage_p50,matched_p50
+1 fine,682,,0.194,0.060,
+2 moderate,403,,0.217,0.125,
+3 bad,3226,,0.355,0.289,
+all,4311,0.509,,,

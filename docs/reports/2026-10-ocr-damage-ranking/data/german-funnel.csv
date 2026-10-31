@@ -1,0 +1,7 @@
+step,label,bad,moderate_high
+1,detected or mixed German,40317,122043
+2,detected only,39612,121205
+3,printed before 1920,39403,118630
+4,no output of our OCR yet,20872,118387
+5,head + near at least 50,20804,118255
+6,at least 500 words,20717,117947

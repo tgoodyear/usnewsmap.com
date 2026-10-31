@@ -1,0 +1,489 @@
+lang,loc_band,eligible,as_band,pages
+chr,1 fine,t,0 no AS text,3
+cze,1 fine,f,0 no AS text,13
+cze,1 fine,f,3 AS fine,1
+cze,1 fine,t,0 no AS text,1950
+cze,1 fine,t,1 AS under half of LoC,8
+cze,1 fine,t,2 AS not scored,73
+cze,1 fine,t,3 AS fine,11
+cze,1 fine,t,4 AS moderate,19
+cze,1 fine,t,5 AS bad,35
+cze,2 moderate,f,0 no AS text,67
+cze,2 moderate,f,1 AS under half of LoC,9
+cze,2 moderate,f,2 AS not scored,4
+cze,2 moderate,f,3 AS fine,7
+cze,2 moderate,f,4 AS moderate,3
+cze,2 moderate,f,5 AS bad,2
+cze,2 moderate,t,0 no AS text,20318
+cze,2 moderate,t,1 AS under half of LoC,460
+cze,2 moderate,t,2 AS not scored,5747
+cze,2 moderate,t,3 AS fine,80
+cze,2 moderate,t,4 AS moderate,136
+cze,2 moderate,t,5 AS bad,3998
+cze,3 bad,f,0 no AS text,64
+cze,3 bad,f,1 AS under half of LoC,4
+cze,3 bad,f,2 AS not scored,4
+cze,3 bad,f,3 AS fine,1
+cze,3 bad,f,4 AS moderate,1
+cze,3 bad,t,0 no AS text,16347
+cze,3 bad,t,1 AS under half of LoC,348
+cze,3 bad,t,2 AS not scored,3177
+cze,3 bad,t,3 AS fine,3
+cze,3 bad,t,4 AS moderate,36
+cze,3 bad,t,5 AS bad,595
+dan,1 fine,f,0 no AS text,1274
+dan,1 fine,f,1 AS under half of LoC,7
+dan,1 fine,f,2 AS not scored,4
+dan,1 fine,f,3 AS fine,609
+dan,1 fine,f,4 AS moderate,32
+dan,1 fine,f,5 AS bad,1
+dan,1 fine,t,0 no AS text,4237
+dan,1 fine,t,1 AS under half of LoC,13
+dan,1 fine,t,2 AS not scored,19
+dan,1 fine,t,3 AS fine,441
+dan,1 fine,t,4 AS moderate,75
+dan,1 fine,t,5 AS bad,3050
+dan,2 moderate,f,0 no AS text,1228
+dan,2 moderate,f,1 AS under half of LoC,12
+dan,2 moderate,f,2 AS not scored,10
+dan,2 moderate,f,3 AS fine,681
+dan,2 moderate,f,4 AS moderate,51
+dan,2 moderate,f,5 AS bad,5
+dan,2 moderate,t,0 no AS text,5134
+dan,2 moderate,t,1 AS under half of LoC,60
+dan,2 moderate,t,2 AS not scored,56
+dan,2 moderate,t,3 AS fine,510
+dan,2 moderate,t,4 AS moderate,102
+dan,2 moderate,t,5 AS bad,4578
+dan,3 bad,f,0 no AS text,150
+dan,3 bad,f,1 AS under half of LoC,2
+dan,3 bad,f,2 AS not scored,1
+dan,3 bad,f,3 AS fine,65
+dan,3 bad,f,4 AS moderate,9
+dan,3 bad,f,5 AS bad,3
+dan,3 bad,t,0 no AS text,3649
+dan,3 bad,t,1 AS under half of LoC,61
+dan,3 bad,t,2 AS not scored,54
+dan,3 bad,t,3 AS fine,141
+dan,3 bad,t,4 AS moderate,177
+dan,3 bad,t,5 AS bad,1327
+eng,1 fine,f,0 no AS text,56392
+eng,1 fine,f,1 AS under half of LoC,9968
+eng,1 fine,f,2 AS not scored,431
+eng,1 fine,f,3 AS fine,11234
+eng,1 fine,f,4 AS moderate,1641
+eng,1 fine,f,5 AS bad,349
+eng,1 fine,t,0 no AS text,4743778
+eng,1 fine,t,1 AS under half of LoC,645187
+eng,1 fine,t,2 AS not scored,943
+eng,1 fine,t,3 AS fine,8573890
+eng,1 fine,t,4 AS moderate,89818
+eng,1 fine,t,5 AS bad,3426
+eng,2 moderate,f,0 no AS text,48269
+eng,2 moderate,f,1 AS under half of LoC,9778
+eng,2 moderate,f,2 AS not scored,395
+eng,2 moderate,f,3 AS fine,5889
+eng,2 moderate,f,4 AS moderate,2531
+eng,2 moderate,f,5 AS bad,546
+eng,2 moderate,t,0 no AS text,1637217
+eng,2 moderate,t,1 AS under half of LoC,946931
+eng,2 moderate,t,2 AS not scored,1490
+eng,2 moderate,t,3 AS fine,2684330
+eng,2 moderate,t,4 AS moderate,517463
+eng,2 moderate,t,5 AS bad,34906
+eng,3 bad,f,0 no AS text,53251
+eng,3 bad,f,1 AS under half of LoC,7859
+eng,3 bad,f,2 AS not scored,398
+eng,3 bad,f,3 AS fine,3272
+eng,3 bad,f,4 AS moderate,1286
+eng,3 bad,f,5 AS bad,606
+eng,3 bad,t,0 no AS text,481736
+eng,3 bad,t,1 AS under half of LoC,483592
+eng,3 bad,t,2 AS not scored,3680
+eng,3 bad,t,3 AS fine,251765
+eng,3 bad,t,4 AS moderate,331769
+eng,3 bad,t,5 AS bad,113115
+fin,1 fine,f,0 no AS text,23
+fin,1 fine,f,1 AS under half of LoC,1
+fin,1 fine,t,0 no AS text,545
+fin,1 fine,t,1 AS under half of LoC,5
+fin,1 fine,t,2 AS not scored,6
+fin,1 fine,t,5 AS bad,1
+fin,2 moderate,f,0 no AS text,44
+fin,2 moderate,t,0 no AS text,19302
+fin,2 moderate,t,1 AS under half of LoC,129
+fin,2 moderate,t,2 AS not scored,1799
+fin,2 moderate,t,4 AS moderate,11
+fin,2 moderate,t,5 AS bad,55
+fin,3 bad,f,0 no AS text,13
+fin,3 bad,t,0 no AS text,3252
+fin,3 bad,t,1 AS under half of LoC,10
+fin,3 bad,t,2 AS not scored,412
+fin,3 bad,t,4 AS moderate,2
+fin,3 bad,t,5 AS bad,5
+fre,1 fine,f,0 no AS text,778
+fre,1 fine,f,3 AS fine,177
+fre,1 fine,f,4 AS moderate,22
+fre,1 fine,f,5 AS bad,2
+fre,1 fine,t,0 no AS text,73812
+fre,1 fine,t,1 AS under half of LoC,131
+fre,1 fine,t,3 AS fine,847
+fre,1 fine,t,4 AS moderate,5776
+fre,1 fine,t,5 AS bad,1860
+fre,2 moderate,f,0 no AS text,560
+fre,2 moderate,f,3 AS fine,147
+fre,2 moderate,f,4 AS moderate,34
+fre,2 moderate,f,5 AS bad,7
+fre,2 moderate,t,0 no AS text,31168
+fre,2 moderate,t,1 AS under half of LoC,85
+fre,2 moderate,t,2 AS not scored,2
+fre,2 moderate,t,3 AS fine,242
+fre,2 moderate,t,4 AS moderate,850
+fre,2 moderate,t,5 AS bad,1872
+fre,3 bad,f,0 no AS text,531
+fre,3 bad,f,1 AS under half of LoC,2
+fre,3 bad,f,2 AS not scored,1
+fre,3 bad,f,3 AS fine,36
+fre,3 bad,f,4 AS moderate,19
+fre,3 bad,f,5 AS bad,15
+fre,3 bad,t,0 no AS text,12054
+fre,3 bad,t,1 AS under half of LoC,43
+fre,3 bad,t,2 AS not scored,7
+fre,3 bad,t,3 AS fine,25
+fre,3 bad,t,4 AS moderate,66
+fre,3 bad,t,5 AS bad,599
+ger,1 fine,f,0 no AS text,2497
+ger,1 fine,f,1 AS under half of LoC,101
+ger,1 fine,f,2 AS not scored,176
+ger,1 fine,f,3 AS fine,9
+ger,1 fine,f,4 AS moderate,14
+ger,1 fine,f,5 AS bad,953
+ger,1 fine,t,0 no AS text,211846
+ger,1 fine,t,1 AS under half of LoC,1490
+ger,1 fine,t,2 AS not scored,8238
+ger,1 fine,t,3 AS fine,255
+ger,1 fine,t,4 AS moderate,772
+ger,1 fine,t,5 AS bad,68158
+ger,2 moderate,f,0 no AS text,867
+ger,2 moderate,f,1 AS under half of LoC,303
+ger,2 moderate,f,2 AS not scored,80
+ger,2 moderate,f,3 AS fine,14
+ger,2 moderate,f,4 AS moderate,3
+ger,2 moderate,f,5 AS bad,140
+ger,2 moderate,t,0 no AS text,187583
+ger,2 moderate,t,1 AS under half of LoC,6822
+ger,2 moderate,t,2 AS not scored,21732
+ger,2 moderate,t,3 AS fine,82
+ger,2 moderate,t,4 AS moderate,722
+ger,2 moderate,t,5 AS bad,59896
+ger,3 bad,f,0 no AS text,13966
+ger,3 bad,f,1 AS under half of LoC,1205
+ger,3 bad,f,2 AS not scored,2229
+ger,3 bad,f,3 AS fine,6
+ger,3 bad,f,4 AS moderate,16
+ger,3 bad,f,5 AS bad,1268
+ger,3 bad,t,0 no AS text,14495
+ger,3 bad,t,1 AS under half of LoC,1570
+ger,3 bad,t,2 AS not scored,3581
+ger,3 bad,t,3 AS fine,7
+ger,3 bad,t,4 AS moderate,83
+ger,3 bad,t,5 AS bad,1891
+haw,1 fine,t,0 no AS text,25
+haw,1 fine,t,3 AS fine,2
+haw,2 moderate,t,0 no AS text,5
+haw,2 moderate,t,1 AS under half of LoC,1
+haw,2 moderate,t,4 AS moderate,1
+haw,3 bad,t,0 no AS text,2
+haw,3 bad,t,1 AS under half of LoC,1
+haw,3 bad,t,4 AS moderate,1
+heb,3 bad,f,0 no AS text,9
+heb,3 bad,t,0 no AS text,87
+hrv,1 fine,f,2 AS not scored,1
+hrv,1 fine,f,3 AS fine,32
+hrv,1 fine,t,0 no AS text,184
+hrv,1 fine,t,2 AS not scored,8
+hrv,1 fine,t,3 AS fine,10
+hrv,1 fine,t,4 AS moderate,422
+hrv,1 fine,t,5 AS bad,1490
+hrv,2 moderate,f,2 AS not scored,4
+hrv,2 moderate,f,3 AS fine,33
+hrv,2 moderate,t,0 no AS text,76
+hrv,2 moderate,t,2 AS not scored,7
+hrv,2 moderate,t,3 AS fine,5
+hrv,2 moderate,t,4 AS moderate,105
+hrv,2 moderate,t,5 AS bad,636
+hrv,3 bad,f,2 AS not scored,2
+hrv,3 bad,f,3 AS fine,10
+hrv,3 bad,f,5 AS bad,1
+hrv,3 bad,t,0 no AS text,2
+hun,1 fine,f,0 no AS text,16
+hun,1 fine,f,5 AS bad,1
+hun,1 fine,t,0 no AS text,2944
+hun,1 fine,t,4 AS moderate,177
+hun,1 fine,t,5 AS bad,57
+hun,2 moderate,f,0 no AS text,14
+hun,2 moderate,t,0 no AS text,2284
+hun,2 moderate,t,1 AS under half of LoC,1
+hun,2 moderate,t,4 AS moderate,87
+hun,2 moderate,t,5 AS bad,40
+hun,3 bad,f,0 no AS text,3
+hun,3 bad,t,0 no AS text,13
+hun,3 bad,t,1 AS under half of LoC,1
+ice,1 fine,t,0 no AS text,25
+ice,1 fine,t,4 AS moderate,2
+ice,1 fine,t,5 AS bad,41
+ice,2 moderate,f,2 AS not scored,1
+ice,2 moderate,t,0 no AS text,205
+ice,2 moderate,t,1 AS under half of LoC,8
+ice,2 moderate,t,4 AS moderate,28
+ice,2 moderate,t,5 AS bad,209
+ice,3 bad,f,2 AS not scored,1
+ice,3 bad,t,0 no AS text,14
+ice,3 bad,t,1 AS under half of LoC,1
+ice,3 bad,t,2 AS not scored,1
+ice,3 bad,t,5 AS bad,3
+ita,1 fine,f,0 no AS text,164
+ita,1 fine,f,1 AS under half of LoC,2
+ita,1 fine,f,3 AS fine,71
+ita,1 fine,f,4 AS moderate,2
+ita,1 fine,t,0 no AS text,33818
+ita,1 fine,t,1 AS under half of LoC,187
+ita,1 fine,t,3 AS fine,1218
+ita,1 fine,t,4 AS moderate,615
+ita,2 moderate,f,0 no AS text,122
+ita,2 moderate,f,3 AS fine,42
+ita,2 moderate,f,4 AS moderate,1
+ita,2 moderate,t,0 no AS text,45641
+ita,2 moderate,t,1 AS under half of LoC,198
+ita,2 moderate,t,2 AS not scored,1
+ita,2 moderate,t,3 AS fine,166
+ita,2 moderate,t,4 AS moderate,346
+ita,2 moderate,t,5 AS bad,4
+ita,3 bad,f,0 no AS text,35
+ita,3 bad,f,3 AS fine,22
+ita,3 bad,t,0 no AS text,3798
+ita,3 bad,t,1 AS under half of LoC,30
+ita,3 bad,t,3 AS fine,3
+ita,3 bad,t,4 AS moderate,8
+ita,3 bad,t,5 AS bad,3
+lit,1 fine,f,0 no AS text,28
+lit,1 fine,f,2 AS not scored,2
+lit,1 fine,f,3 AS fine,4
+lit,1 fine,f,4 AS moderate,5
+lit,1 fine,f,5 AS bad,1
+lit,1 fine,t,0 no AS text,259
+lit,1 fine,t,1 AS under half of LoC,7
+lit,1 fine,t,2 AS not scored,10
+lit,1 fine,t,3 AS fine,66
+lit,1 fine,t,4 AS moderate,494
+lit,1 fine,t,5 AS bad,49
+lit,2 moderate,f,0 no AS text,21
+lit,2 moderate,f,1 AS under half of LoC,3
+lit,2 moderate,f,2 AS not scored,1
+lit,2 moderate,f,3 AS fine,3
+lit,2 moderate,f,4 AS moderate,15
+lit,2 moderate,f,5 AS bad,2
+lit,2 moderate,t,0 no AS text,12677
+lit,2 moderate,t,1 AS under half of LoC,47
+lit,2 moderate,t,2 AS not scored,119
+lit,2 moderate,t,3 AS fine,443
+lit,2 moderate,t,4 AS moderate,4287
+lit,2 moderate,t,5 AS bad,368
+lit,3 bad,f,0 no AS text,11
+lit,3 bad,f,1 AS under half of LoC,2
+lit,3 bad,f,2 AS not scored,2
+lit,3 bad,f,3 AS fine,2
+lit,3 bad,f,4 AS moderate,1
+lit,3 bad,t,0 no AS text,1247
+lit,3 bad,t,1 AS under half of LoC,3
+lit,3 bad,t,2 AS not scored,50
+lit,3 bad,t,3 AS fine,8
+lit,3 bad,t,4 AS moderate,124
+lit,3 bad,t,5 AS bad,110
+nor,1 fine,f,0 no AS text,1
+nor,1 fine,t,0 no AS text,28945
+nor,1 fine,t,1 AS under half of LoC,74
+nor,1 fine,t,2 AS not scored,265
+nor,1 fine,t,3 AS fine,3
+nor,1 fine,t,4 AS moderate,44
+nor,1 fine,t,5 AS bad,4526
+nor,2 moderate,f,0 no AS text,5
+nor,2 moderate,t,0 no AS text,12405
+nor,2 moderate,t,1 AS under half of LoC,19
+nor,2 moderate,t,2 AS not scored,136
+nor,2 moderate,t,3 AS fine,1
+nor,2 moderate,t,4 AS moderate,28
+nor,2 moderate,t,5 AS bad,1216
+nor,3 bad,f,0 no AS text,2
+nor,3 bad,t,0 no AS text,1175
+nor,3 bad,t,1 AS under half of LoC,37
+nor,3 bad,t,2 AS not scored,85
+nor,3 bad,t,4 AS moderate,40
+nor,3 bad,t,5 AS bad,231
+pol,1 fine,f,0 no AS text,2635
+pol,1 fine,f,3 AS fine,1
+pol,1 fine,f,4 AS moderate,2
+pol,1 fine,f,5 AS bad,11
+pol,1 fine,t,0 no AS text,16751
+pol,1 fine,t,1 AS under half of LoC,8
+pol,1 fine,t,2 AS not scored,20
+pol,1 fine,t,3 AS fine,5
+pol,1 fine,t,4 AS moderate,4
+pol,1 fine,t,5 AS bad,490
+pol,2 moderate,f,0 no AS text,5741
+pol,2 moderate,f,1 AS under half of LoC,9
+pol,2 moderate,f,2 AS not scored,14
+pol,2 moderate,f,4 AS moderate,3
+pol,2 moderate,f,5 AS bad,55
+pol,2 moderate,t,0 no AS text,91021
+pol,2 moderate,t,1 AS under half of LoC,799
+pol,2 moderate,t,2 AS not scored,1821
+pol,2 moderate,t,3 AS fine,44
+pol,2 moderate,t,4 AS moderate,184
+pol,2 moderate,t,5 AS bad,16770
+pol,3 bad,f,0 no AS text,989
+pol,3 bad,f,2 AS not scored,4
+pol,3 bad,f,5 AS bad,9
+pol,3 bad,t,0 no AS text,23112
+pol,3 bad,t,1 AS under half of LoC,1125
+pol,3 bad,t,2 AS not scored,1160
+pol,3 bad,t,4 AS moderate,32
+pol,3 bad,t,5 AS bad,1315
+rum,1 fine,f,0 no AS text,439
+rum,1 fine,f,4 AS moderate,16
+rum,1 fine,f,5 AS bad,4
+rum,1 fine,t,0 no AS text,1047
+rum,1 fine,t,1 AS under half of LoC,1
+rum,1 fine,t,4 AS moderate,1
+rum,2 moderate,f,0 no AS text,224
+rum,2 moderate,f,4 AS moderate,30
+rum,2 moderate,f,5 AS bad,12
+rum,2 moderate,t,0 no AS text,335
+rum,3 bad,f,0 no AS text,23
+rum,3 bad,f,2 AS not scored,1
+rum,3 bad,f,4 AS moderate,23
+rum,3 bad,f,5 AS bad,10
+rum,3 bad,t,0 no AS text,4
+rus,1 fine,f,0 no AS text,1
+rus,2 moderate,f,0 no AS text,9
+rus,2 moderate,t,0 no AS text,7048
+rus,2 moderate,t,1 AS under half of LoC,32
+rus,2 moderate,t,2 AS not scored,124
+rus,3 bad,f,0 no AS text,16
+rus,3 bad,t,0 no AS text,4124
+rus,3 bad,t,1 AS under half of LoC,133
+rus,3 bad,t,2 AS not scored,434
+rus,3 bad,t,5 AS bad,2
+slo,1 fine,f,0 no AS text,2
+slo,1 fine,f,2 AS not scored,1
+slo,1 fine,f,3 AS fine,1
+slo,1 fine,t,0 no AS text,2
+slo,1 fine,t,1 AS under half of LoC,1
+slo,1 fine,t,2 AS not scored,1
+slo,1 fine,t,3 AS fine,4
+slo,1 fine,t,4 AS moderate,4
+slo,1 fine,t,5 AS bad,28
+slo,2 moderate,f,0 no AS text,5
+slo,2 moderate,f,1 AS under half of LoC,7
+slo,2 moderate,f,2 AS not scored,4
+slo,2 moderate,f,3 AS fine,1
+slo,2 moderate,t,0 no AS text,70
+slo,2 moderate,t,1 AS under half of LoC,140
+slo,2 moderate,t,2 AS not scored,66
+slo,2 moderate,t,3 AS fine,46
+slo,2 moderate,t,4 AS moderate,249
+slo,2 moderate,t,5 AS bad,3971
+slo,3 bad,f,0 no AS text,2
+slo,3 bad,f,1 AS under half of LoC,4
+slo,3 bad,f,2 AS not scored,1
+slo,3 bad,f,3 AS fine,6
+slo,3 bad,t,0 no AS text,18
+slo,3 bad,t,1 AS under half of LoC,48
+slo,3 bad,t,2 AS not scored,45
+slo,3 bad,t,3 AS fine,12
+slo,3 bad,t,4 AS moderate,34
+slo,3 bad,t,5 AS bad,409
+slv,1 fine,f,0 no AS text,6
+slv,1 fine,f,3 AS fine,3
+slv,1 fine,t,0 no AS text,4442
+slv,1 fine,t,1 AS under half of LoC,131
+slv,1 fine,t,2 AS not scored,5
+slv,1 fine,t,3 AS fine,57
+slv,1 fine,t,4 AS moderate,3302
+slv,1 fine,t,5 AS bad,3241
+slv,2 moderate,f,0 no AS text,7
+slv,2 moderate,f,3 AS fine,2
+slv,2 moderate,t,0 no AS text,1188
+slv,2 moderate,t,1 AS under half of LoC,100
+slv,2 moderate,t,2 AS not scored,8
+slv,2 moderate,t,3 AS fine,10
+slv,2 moderate,t,4 AS moderate,193
+slv,2 moderate,t,5 AS bad,1061
+slv,3 bad,f,0 no AS text,56
+slv,3 bad,f,3 AS fine,2
+slv,3 bad,f,5 AS bad,3
+slv,3 bad,t,0 no AS text,1299
+slv,3 bad,t,1 AS under half of LoC,41
+slv,3 bad,t,2 AS not scored,10
+slv,3 bad,t,5 AS bad,52
+spa,1 fine,f,0 no AS text,1784
+spa,1 fine,f,1 AS under half of LoC,14
+spa,1 fine,f,2 AS not scored,2
+spa,1 fine,f,3 AS fine,4
+spa,1 fine,f,4 AS moderate,101
+spa,1 fine,f,5 AS bad,1
+spa,1 fine,t,0 no AS text,186541
+spa,1 fine,t,1 AS under half of LoC,7455
+spa,1 fine,t,2 AS not scored,5
+spa,1 fine,t,3 AS fine,688
+spa,1 fine,t,4 AS moderate,52479
+spa,1 fine,t,5 AS bad,966
+spa,2 moderate,f,0 no AS text,1481
+spa,2 moderate,f,1 AS under half of LoC,16
+spa,2 moderate,f,3 AS fine,5
+spa,2 moderate,f,4 AS moderate,222
+spa,2 moderate,f,5 AS bad,4
+spa,2 moderate,t,0 no AS text,53728
+spa,2 moderate,t,1 AS under half of LoC,23331
+spa,2 moderate,t,2 AS not scored,12
+spa,2 moderate,t,3 AS fine,79
+spa,2 moderate,t,4 AS moderate,41812
+spa,2 moderate,t,5 AS bad,5696
+spa,3 bad,f,0 no AS text,1580
+spa,3 bad,f,1 AS under half of LoC,17
+spa,3 bad,f,2 AS not scored,2
+spa,3 bad,f,4 AS moderate,139
+spa,3 bad,f,5 AS bad,6
+spa,3 bad,t,0 no AS text,5952
+spa,3 bad,t,1 AS under half of LoC,5018
+spa,3 bad,t,2 AS not scored,60
+spa,3 bad,t,3 AS fine,2
+spa,3 bad,t,4 AS moderate,1636
+spa,3 bad,t,5 AS bad,2397
+srp,1 fine,f,0 no AS text,11
+srp,1 fine,t,0 no AS text,333
+srp,2 moderate,f,0 no AS text,41
+srp,2 moderate,t,0 no AS text,20688
+srp,3 bad,f,0 no AS text,96
+srp,3 bad,t,0 no AS text,22089
+swe,1 fine,f,0 no AS text,1766
+swe,1 fine,f,3 AS fine,5
+swe,1 fine,f,4 AS moderate,50
+swe,1 fine,t,0 no AS text,3290
+swe,1 fine,t,3 AS fine,3
+swe,1 fine,t,4 AS moderate,97
+swe,1 fine,t,5 AS bad,1
+swe,2 moderate,f,0 no AS text,1291
+swe,2 moderate,f,3 AS fine,1
+swe,2 moderate,f,4 AS moderate,38
+swe,2 moderate,t,0 no AS text,2129
+swe,2 moderate,t,4 AS moderate,17
+swe,3 bad,f,0 no AS text,239
+swe,3 bad,f,4 AS moderate,3
+swe,3 bad,t,0 no AS text,154
+yid,1 fine,f,0 no AS text,1638
+yid,1 fine,t,0 no AS text,9586
+yid,2 moderate,f,0 no AS text,3729
+yid,2 moderate,t,0 no AS text,86617
+yid,3 bad,f,0 no AS text,2749
+yid,3 bad,t,0 no AS text,16345
