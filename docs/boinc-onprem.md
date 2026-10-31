@@ -442,3 +442,18 @@ dependencies include nftables, and nftables wants the guard. The certificate syn
 again with an unchanged certificate. The BOINC server's PID and startup timestamp did not
 change. A CT230 reboot was deliberately not performed during active work; boot ordering was
 checked with systemd instead.
+
+## Qwen model files on R2
+
+The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change: the Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it, and clients on the home LAN skip Cloudflare and use the server as before.
+
+The rule lists exact paths on purpose, so a file that isn't in the bucket keeps coming from the server. The server's copies stay in place as the source of truth.
+
+When `weights.lock` adds a model file:
+
+1. Upload it to the bucket under its physical name, with `Cache-Control: public, max-age=31536000, immutable`, and check that its `ETag` equals the `.md5` file's checksum. The object must fit one `PUT` (under 5 GiB), or use a multipart upload and compare a ranged read.
+2. Check `https://models.usnewsmap.com/<name>` returns the same `Content-Length`.
+3. Add the path to the rule. Remove paths of revisions no workunit uses.
+
+To undo it, delete the rule. Downloads go back to the server at once.
+
