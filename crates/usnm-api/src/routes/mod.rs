@@ -17,8 +17,8 @@ pub(crate) use coverage::coverage_in;
 pub use days::days;
 pub use hits::hits;
 pub use meta::{meta, places, readyz};
-pub use search_report::search_report;
 pub(crate) use meta::{meta_body, places_in};
+pub use search_report::search_report;
 pub use titles::{title, titles};
 
 /// The response schemas and accepted parameters `/v1/openapi.json` describes.
