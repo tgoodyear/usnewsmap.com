@@ -76,6 +76,61 @@ test("healthy primary preflight is query/body/header-free, bypasses cache and pr
   assert.deepEqual(result.metrics, [{ blobs: ["onprem", "production"], doubles: [1, 200], indexes: ["production"] }]);
 });
 
+function memoryCache(t, { failing = false } = {}) {
+  const store = new Map();
+  const original = globalThis.caches;
+  const broken = () => { throw new Error("cache unavailable"); };
+  globalThis.caches = { default: failing ? { match: broken, put: broken, delete: broken } : {
+    match: async (key) => store.get(key.url)?.clone(),
+    put: async (key, value) => { store.set(key.url, value); },
+    delete: async (key) => store.delete(key.url),
+  } };
+  t.after(() => {
+    if (original === undefined) delete globalThis.caches;
+    else globalThis.caches = original;
+  });
+  return store;
+}
+
+test("a ready primary is remembered, so later requests skip the probe", async (t) => {
+  const store = memoryCache(t);
+  const first = await run(t, get(), [response(), response(200, "one")]);
+  assert.equal(first.calls.length, 2);
+  assert.equal(await first.answer.text(), "one");
+  const [memory] = store.values();
+  assert.equal(memory.headers.get("cache-control"), "public, max-age=10");
+  const second = await run(t, get(), [response(200, "two")]);
+  assert.deepEqual(second.calls.map((call) => call.url), [`${SITE}/v1/hits?q=private`]);
+  assert.equal(await second.answer.text(), "two");
+  assert.equal(second.answer.headers.get("x-usnm-origin"), "onprem");
+});
+
+test("an unready primary isn't remembered and a failed delivery forgets a ready one", async (t) => {
+  const store = memoryCache(t);
+  const unready = await run(t, get(), [response(503, "not ready"), response(), response(200, "azure")]);
+  assert.equal(unready.answer.headers.get("x-usnm-origin"), "azure");
+  assert.equal(store.size, 0);
+  await run(t, get(), [response(), response(200, "fine")]);
+  assert.equal(store.size, 1);
+  const failed = await run(t, get(), [network(), response(), response(200, "azure")]);
+  assert.equal(failed.answer.headers.get("x-usnm-origin"), "azure");
+  assert.equal(store.size, 0);
+  await run(t, get(), [response(), response(200, "fine")]);
+  assert.equal(store.size, 1);
+  const erred = await run(t, get(), [response(502, "bad"), response(), response(200, "azure")]);
+  assert.equal(erred.answer.headers.get("x-usnm-origin"), "azure");
+  assert.equal(store.size, 0);
+});
+
+test("a broken cache falls back to probing every request", async (t) => {
+  memoryCache(t, { failing: true });
+  for (let n = 0; n < 2; n++) {
+    const result = await run(t, get(), [response(), response(200, "fine")]);
+    assert.equal(result.calls.length, 2);
+    assert.equal(await result.answer.text(), "fine");
+  }
+});
+
 test("Azure-labelled ready cannot masquerade as primary readiness for requests, health domain or cron", async (t) => {
   const labelled = () => new Response("ready", { headers: { "X-USNM-Origin": "azure" } });
   const env = { ...ENV, HEALTH_HOSTNAME: "usnewsmap.com", HEALTHCHECK_HOSTNAME: "healthcheck.usnewsmap.com" };
