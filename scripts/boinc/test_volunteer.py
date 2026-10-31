@@ -49,6 +49,43 @@ class NvidiaLxcTest(unittest.TestCase):
             self.assertEqual(nvidia.run(["apt-get", "--yes", "install", "libvulkan1"]), "ok")
         self.assertEqual(run.call_args.kwargs["env"]["NEEDRESTART_MODE"], "l")
 
+    def test_pin_creation_rollover_and_failed_replace_preserve_managed_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pin = Path(directory) / "pin"
+            with patch.object(nvidia, "PIN", pin):
+                nvidia.write_pin(["libnvidia-compute=1:610.57.04-2", "libnvidia-gl=1:610.57.04-2"])
+                self.assertEqual(pin.stat().st_mode & 0o777, 0o644)
+                self.assertIn("Package: libnvidia-compute\nPin: version 1:610.57.04-2", pin.read_text())
+                nvidia.write_pin(["libnvidia-compute=615.71.10-1", "libnvidia-gl=615.71.10-1"])
+                latest = pin.read_bytes()
+                self.assertNotIn(b"610.57.04", latest)
+                self.assertEqual(latest.count(b"Pin: version 615.71.10-1"), 2)
+                with patch.object(nvidia.os, "replace", side_effect=OSError("replace failed")), \
+                        self.assertRaisesRegex(OSError, "replace failed"):
+                    nvidia.write_pin(["libnvidia-compute=620.1-1"])
+                self.assertEqual(pin.read_bytes(), latest)
+                self.assertEqual(list(Path(directory).glob(".usnm-nvidia-*")), [])
+
+    def test_pin_refusals_preserve_unmanaged_files_and_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pin = Path(directory) / "pin"
+            original = b"Package: *\nPin: release a=stable\nPin-Priority: 900\n"
+            pin.write_bytes(original)
+            with patch.object(nvidia, "PIN", pin):
+                with self.assertRaisesRegex(ValueError, "unmanaged pin"):
+                    nvidia.write_pin(["libnvidia-compute=610.57.04-1"])
+                self.assertEqual(pin.read_bytes(), original)
+                other = Path(directory) / "other"
+                other.write_text(nvidia.PIN_HEADER + "existing managed target\n")
+                before = other.read_bytes()
+                pin.unlink()
+                pin.symlink_to(other)
+                with self.assertRaisesRegex(ValueError, "unmanaged pin"):
+                    nvidia.write_pin(["libnvidia-compute=610.57.04-1"])
+                self.assertTrue(pin.is_symlink())
+                self.assertEqual(other.read_bytes(), before)
+                self.assertEqual(list(Path(directory).glob(".usnm-nvidia-*")), [])
+
     def test_exact_host_version_and_distribution_package_layouts(self):
         driver = nvidia.host_driver("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64 610.57.04\n")
         for system, family_index in (("ubuntu", 0), ("ubuntu", 1), ("ubuntu", 2), ("debian", 0)):
