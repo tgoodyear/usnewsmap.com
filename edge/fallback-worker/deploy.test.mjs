@@ -313,6 +313,7 @@ test("the drill hostname cannot be a production name or outside the zone", () =>
     "www.usnewsmap.com",
     "api.usnewsmap.com",
     "boinc.usnewsmap.com",
+    "healthcheck.usnewsmap.com",
     "test.example.com",
     "test.usnewsmap.com.example.com",
     "*.usnewsmap.com",

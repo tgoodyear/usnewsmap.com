@@ -120,8 +120,8 @@ if ! $PRODUCTION && [ -z "$DRILL_HOST" ]; then
   echo "error: say where to deploy: --production or --drill-hostname NAME" >&2; usage
 fi
 if [ -n "$DRILL_HOST" ]; then
-  [[ $DRILL_HOST =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+usnewsmap\.com$ && ! $DRILL_HOST =~ ^(www|api|boinc)\.usnewsmap\.com$ ]] ||
-    { echo "error: --drill-hostname: a name under usnewsmap.com other than www, api and boinc" >&2; usage; }
+  [[ $DRILL_HOST =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+usnewsmap\.com$ && ! $DRILL_HOST =~ ^(www|api|boinc|healthcheck)\.usnewsmap\.com$ ]] ||
+    { echo "error: --drill-hostname: a name under usnewsmap.com other than www, api, boinc and healthcheck" >&2; usage; }
 fi
 $DRY_RUN || [[ $VAULT =~ ^[A-Za-z0-9-]{3,24}$ && $SECRET =~ ^[A-Za-z0-9-]{1,127}$ ]] ||
   { echo "error: --vault and --token-secret: the Key Vault secret with the Workers-scoped Cloudflare token" >&2; usage; }

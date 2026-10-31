@@ -24,8 +24,11 @@ time difficult to bound.
 
 1. Keep Cloudflare as the public edge. An explicit health-driven Worker mode
    routes the apex, `www` and `api` to the on-prem tunnel while `/readyz` is
-   healthy, and otherwise to the retained Azure API's default hostname. Edge
-   cache hits require no origin; BOINC hostnames are not covered by these routes.
+   healthy, and otherwise to the retained Azure API's default hostname.
+   Cacheable payloads can still come from the edge, but health mode selects a
+   ready origin before requesting them. Even previously cached assets can wait
+   for Azure cold readiness or receive 503 if neither origin becomes ready.
+   BOINC hostnames are not covered by these routes.
 2. Use a bounded, uncached readiness check before sending a visitor request.
    A heartbeat scheduled on Cloudflare, not on the home host, also checks
    readiness every minute. It wakes Azure only on an on-prem failure. A home
