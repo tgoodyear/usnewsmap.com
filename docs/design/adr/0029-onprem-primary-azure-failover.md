@@ -161,6 +161,21 @@ tests cover this case. The corrected Worker was deployed before the final drill.
 Recovery is automatic; Azure scale-down is observed against the current
 latest/ready revisions rather than a pinned obsolete API revision. Platform
 cooldown and background work mean combined scale-down is not a ten-minute SLA.
+After the guarded drill, the current API revision was observed empty at
+03:53:01.951 UTC and both API/searcher inventories were empty by
+04:02:14.273 UTC, **18 minutes 35.433 seconds after connector restoration**.
+Subsequent samples remained empty while the minute heartbeat selected on-prem.
+This required no scale-down command.
+
+Healthy public acceptance also verified HTML and live metadata remained
+Cloudflare DYNAMIC, versioned title lookup and JavaScript warmed MISS to HIT,
+and two PMTiles requests returned exact 127-byte HTTP 206 ranges with no content
+encoding. Only 254 archive bytes were read, not the index/corpus. Actual
+on-prem reference, Cosmos, search-log and OCR-request settings matched Azure;
+allowed-origin hosts and local Quickwit remain intentional differences. The
+owned qualification hold was retired, and the updater verified trusted-main
+CI provenance before deploying the current API image. An observed local
+readiness drift was corrected to the generator's 300/360-second policy.
 
 ### Code-backed edge configuration and CI
 
@@ -210,6 +225,10 @@ production Worker) and zero errors from UTC midnight through 03:36 on the drill
 day. Neither that small sample nor scheduled CPU establishes a fetch-CPU or
 traffic headroom SLA. Invocation-log retention is currently three days on Free
 and seven on Paid, separate from the previously disclosed security logs.
+An aggregate-only query covering 155 unique fetch invocations from the guarded
+fault through 04:01:40 UTC reported maximum fetch CPU of **8 ms**. That is only
+2 ms below the conservative Free limit; retain CPU/error/traffic monitoring
+rather than claiming ample headroom or a universal cold-request guarantee.
 The visitor privacy page explicitly discloses on-prem/Azure routing and
 IP-bearing operational invocation logs; query redaction does not imply anonymity.
 
