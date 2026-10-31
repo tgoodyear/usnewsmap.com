@@ -243,6 +243,38 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             audit.write_text(json.dumps(self.audit))
             provenance.write_bytes(original_provenance)
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_cached_download_directory_cannot_escape_through_a_symlink(self):
+        self.rows[0] = self.input(100, "spa")
+        download = self.project / "download"
+        partition = download / "partition"
+        partition.mkdir()
+        for path in list(download.iterdir()):
+            if path.is_file():
+                path.rename(partition / path.name)
+        for row in self.rows:
+            row["unit"]["xml_doc"] = row["unit"]["xml_doc"].replace(
+                "/usnmocr_download/", "/usnmocr_download/partition/")
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        for host, result in zip((9, 10), self.rows[1]["results"]):
+            result.update(server_state=4, hostid=host, sent_time=1)
+        escaped = self.root / "escaped-download"
+        partition.rename(escaped)
+        partition.symlink_to(escaped, target_is_directory=True)
+        original = Path.read_bytes
+
+        def guarded_read(path):
+            self.assertFalse(path.resolve().is_relative_to(escaped), "Read outside download before validation")
+            return original(path)
+
+        with patch.object(R, "read_database", return_value=self.database), \
+                patch.object(Path, "read_bytes", guarded_read), \
+                self.assertRaisesRegex(ValueError, "Input escaped download tree"):
+            R.run(self.args)
+
     def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
         for language in ("yid", "srp"):
             row = self.input(200, language)

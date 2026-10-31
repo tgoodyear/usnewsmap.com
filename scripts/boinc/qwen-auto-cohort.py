@@ -159,6 +159,21 @@ def producer_paths(project, doc):
             base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")]
 
 
+def input_paths(project, row):
+    download = (project / "download").resolve()
+    files = {}
+    for node in ET.fromstring("<root>" + row["unit"]["xml_doc"] + "</root>").findall("file_info"):
+        name, url = node.findtext("name", ""), node.findtext("url", "")
+        kind = "job" if name.endswith("_qwen_json") else "page" if name.endswith("_page_jpg") else None
+        if kind:
+            require(kind not in files and "/usnmocr_download/" in url, "Ambiguous input binding")
+            path = download / url.split("/usnmocr_download/", 1)[1]
+            require(path.resolve().is_relative_to(download), "Input escaped download tree")
+            files[kind] = path
+    require(set(files) == {"job", "page"}, "Missing job/page")
+    return files
+
+
 def exclusion_key(project, row, job_id, audit, prompt_version):
     # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
     # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
@@ -166,20 +181,16 @@ def exclusion_key(project, row, job_id, audit, prompt_version):
     # non-language failures still stop the tick.
     wu = row["unit"]
     try:
-        paths = [project / "download" / node.findtext("url", "").split("/usnmocr_download/", 1)[1]
-                 for node in ET.fromstring("<root>" + wu["xml_doc"] + "</root>").findall("file_info")
-                 if "/usnmocr_download/" in node.findtext("url", "")]
-        job = [path.read_bytes() for path in paths if path.name.endswith("_qwen_json")]
-        if len(job) != 1:
-            return None
-        doc = json.loads(job[0])["doc_id"]
+        paths = input_paths(project, row)
+        job = paths["job"].read_bytes()
+        doc = json.loads(job)["doc_id"]
         if not isinstance(doc, str) or not re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc):
             return None
         stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
-                 for path in paths + producer_paths(project, doc) for info in [path.stat()]]
+                 for path in list(paths.values()) + producer_paths(project, doc) for info in [path.stat()]]
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
         return None
-    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job[0]), stats,
+    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats,
                           prompt_version],
                           sort_keys=True).encode())
 
@@ -190,17 +201,7 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
     require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
             and all(int(audit[key]) == value for key, value in
                     {"batch": 8, "min_quorum": 2, "target_nresults": 2}.items()), "Audit/WU identity mismatch")
-    download = (project / "download").resolve()
-    files = {}
-    for node in ET.fromstring("<root>" + wu["xml_doc"] + "</root>").findall("file_info"):
-        name, url = node.findtext("name", ""), node.findtext("url", "")
-        kind = "job" if name.endswith("_qwen_json") else "page" if name.endswith("_page_jpg") else None
-        if kind:
-            require(kind not in files and "/usnmocr_download/" in url, "Ambiguous input binding")
-            path = download / url.split("/usnmocr_download/", 1)[1]
-            require(path.resolve().is_relative_to(download), "Input escaped download tree")
-            files[kind] = path.read_bytes()
-    require(set(files) == {"job", "page"}, "Missing job/page")
+    files = {kind: path.read_bytes() for kind, path in input_paths(project, row).items()}
     job = json.loads(files["job"])
     doc = job["doc_id"]
     require(isinstance(doc, str) and re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc), "Unsafe doc identity")
