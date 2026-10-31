@@ -142,6 +142,10 @@ pub struct Config {
     /// Where the anonymous search log goes (`searches/` container), if
     /// anywhere (06 §6.8).
     pub search_log_url: Option<String>,
+    /// Generate sitemap checkpoints (true by default). A spare that scales to
+    /// zero turns it off: each start would search for every sitemap page, and
+    /// it serves the last committed checkpoint instead.
+    pub sitemap_generate: bool,
     /// Persistent sitemap checkpoints, independent of visitor logging.
     /// Unset, use `search_log_url`'s existing non-expiring container.
     pub sitemap_state_url: Option<String>,
@@ -312,6 +316,7 @@ impl Config {
                 .map(|c| crate::status::schedule::Cron::parse(&c))
                 .transpose()?,
             search_log_url: var("USNM_SEARCH_LOG_URL"),
+            sitemap_generate: flag("USNM_SITEMAP_GENERATE", true)?,
             sitemap_state_url: var("USNM_SITEMAP_STATE_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             ocr_requests_url: var("USNM_OCR_REQUESTS_URL"),
@@ -373,6 +378,7 @@ mod tests {
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());
         assert!(c.sitemap_state_url().is_none());
+        assert!(c.sitemap_generate);
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert!(c.ocr_requests_url.is_none());
         assert_eq!(c.compute_cap, Duration::from_secs(120));
