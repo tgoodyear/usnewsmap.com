@@ -190,7 +190,7 @@ usnm-serving-update --registry crusnmprodffapzy --primary ghcr --dry-run
 
 `install.sh` keeps the choice in `/etc/usnm-serving/host.env` as `USNM_SERVING_PRIMARY`. The switch alone deploys nothing, since the digest that serves doesn't change. To go back, run `install.sh` again with `--primary acr`. A command typed in a shell doesn't read `host.env`, so it uses ACR unless it has the flag.
 
-On GHCR, an error reading the tag or pulling the image falls back to ACR for that run, with a warning in the journal. The attestation, tag and digest checks don't change, and the image still runs by digest. If `scripts/ci/mirror-image.sh` fails in CI, GHCR's `main` lags and no error shows here, so the API stays where it is until the next publish. The publish job's summary shows a warning for that failure: run the job again or switch to `--primary acr`. A `main` older than the commit serving is rejected, so a lagging tag can't undo a deploy that came through ACR.
+On GHCR, an error reading the tag or pulling the image falls back to ACR for that run, with a warning in the journal. The attestation, tag and digest checks don't change, and the image still runs by digest. If `scripts/ci/mirror-image.sh` fails in CI, GHCR's `main` lags and no error shows here, so the API stays where it is until the next publish. The publish job's summary shows a warning for that failure: run the job again or switch to `--primary acr`. A `main` older than the commit serving is skipped with a warning, so a lagging tag can't undo a deploy that came through ACR.
 
 ### Rolling back
 

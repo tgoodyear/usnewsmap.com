@@ -22,7 +22,7 @@
 # or a pull from it fails, the run uses NAME.azurecr.io as above, for the same
 # tag or the same digest. Only an error falls back: a GHCR tag that lags waits
 # for the next publish, and is never compared with ACR's. An image older than
-# the one serving is rejected, so a lagging tag can't undo a deploy that came
+# the one serving is skipped, so a lagging tag can't undo a deploy that came
 # through the fallback. The default, acr, never touches GHCR. Either way the
 # checks below are the same, and an image serving from one registry isn't
 # deployed again when the other shows its digest.
@@ -126,6 +126,8 @@ ETC=$R/etc/usnm-serving
 STATE=$R/var/lib/usnm-serving
 REJECTED=$STATE/rejected
 PENDING=$STATE/pending
+# The digest skipped as older, and the commit it was older than.
+BEHIND=$STATE/behind
 LOCK=$R/run/lock/usnm-serving-update.lock
 TOKENS=$R/var/opt/azcmagent/tokens
 
@@ -258,6 +260,7 @@ if [ "$digest" = "${current_image##*@}" ] && ! $REDEPLOY; then
   exit 0
 fi
 if [ -z "$COMMIT" ] && rejected "$digest"; then exit 0; fi
+if [ -z "$COMMIT" ] && [ "$(cat "$BEHIND" 2> /dev/null || true)" = "$digest $current" ]; then exit 0; fi
 
 # The attestation. For main, not asked for more often than the schedule
 # above allows.
@@ -321,7 +324,13 @@ if [ -z "$COMMIT" ]; then
       warn "warning: can't compare $target with $current on GitHub; trying again next run"
       exit 1
     fi
-    [ "$order" != behind ] || reject "$target is older than $current, which serves"
+    # Not a rejection: older than this commit says nothing about the next one
+    # to serve, after a rollback say.
+    if [ "$order" = behind ]; then
+      $DRY_RUN || echo "$digest $current" > "$BEHIND"
+      warn "warning: skipping $IMAGE_REPO@$digest: $target is older than $current, which serves"
+      exit 0
+    fi
   fi
 fi
 $DRY_RUN || rm -f "$PENDING"

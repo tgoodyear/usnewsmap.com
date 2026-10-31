@@ -453,7 +453,7 @@ class UpdateApi(Stubbed):
         removed = [c for c in self.calls() if c.startswith("podman rmi")]
         self.assertEqual(removed, ["podman rmi " + stale])
 
-    def test_an_older_commit_is_rejected_and_a_failed_comparison_tried_again(self):
+    def test_an_older_commit_is_skipped_and_a_failed_comparison_tried_again(self):
         self.serving("blue", SHA["new"], "new")
         d = self.release(SHA["old"], "old")
         r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="down", STUB_SOURCE=SHA["old"])
@@ -461,10 +461,26 @@ class UpdateApi(Stubbed):
         self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
         self.assertFalse(self.exists("var/lib/usnm-serving/pending"))
         r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="behind", STUB_SOURCE=SHA["old"])
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn("is older than", r.stdout + r.stderr)
-        self.assertEqual(self.read("var/lib/usnm-serving/rejected"), d + "\n")
+        self.assertFalse(self.exists("var/lib/usnm-serving/rejected"))
         self.assertFalse(any(c.startswith("podman pull") for c in self.calls()))
+        # Later runs spend nothing of GitHub's hourly allowance on it.
+        open(self.log, "w").close()
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="behind", STUB_SOURCE=SHA["old"])
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertEqual(self.github_calls(), [])
+
+    def test_a_skipped_image_gets_another_look_when_the_serving_commit_changes(self):
+        self.serving("blue", SHA["new"], "new")
+        d = self.release(SHA["mid"], "mid")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_COMPARE="behind", STUB_SOURCE=SHA["mid"])
+        self.assertIn("is older than", r.stdout + r.stderr)
+        # A rollback to a commit older still, then the hold deleted.
+        self.serving("blue", SHA["old"], "old")
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_SOURCE=SHA["mid"])
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("API_IMAGE=%s/usnewsmap-api@%s\n" % (self.host, d), self.read("etc/usnm-serving/api-green.env"))
 
     def test_a_rollback_by_commit_compares_nothing(self):
         self.release(SHA["old"], "old")
