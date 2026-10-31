@@ -159,7 +159,7 @@ def producer_paths(project, doc):
             base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")]
 
 
-def exclusion_key(project, row, job_id, audit):
+def exclusion_key(project, row, job_id, audit, prompt_version):
     # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
     # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
     # reads. Any change misses the cache, so the unit is bound again from scratch and
@@ -179,7 +179,8 @@ def exclusion_key(project, row, job_id, audit):
                  for path in paths + producer_paths(project, doc) for info in [path.stat()]]
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
         return None
-    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job[0]), stats],
+    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job[0]), stats,
+                          prompt_version],
                           sort_keys=True).encode())
 
 
@@ -443,7 +444,7 @@ def run(args):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
                 unit = int(row["unit"]["id"])
-                key = exclusion_key(project, row, *by_wu[unit])
+                key = exclusion_key(project, row, *by_wu[unit], args.prompt_version)
                 if key is not None and known.get(str(unit)) == key:
                     skipped.append(unit)
                     remembered.append(unit)

@@ -223,6 +223,9 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         # Any change to the audit record or a bound file misses the cache, so the unit is bound
         # again from scratch and a non-language failure still stops the tick.
         drain(self.rows[3])
+        with patch.object(self.args, "prompt_version", 2), \
+                self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            tick()
         spa, deu = (row["unit"]["name"].removeprefix("usnm_qwen_") for row in self.rows[:2])
         provenance = next((self.root / "quality/qwen-nonenglish-v1/texts").glob("ordinary-page-101.*"))
         for change, error in (
