@@ -109,6 +109,37 @@ Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
 | `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                                                                                                                                                            |
 | `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: 8B only, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap                                                                                                                                            |
 
+For an existing NVIDIA-equipped Debian/Ubuntu LXC, Docker is **not** a native-app
+prerequisite. Run `python3 scripts/boinc/setup_nvidia_lxc.py` inside the container
+to inspect the userspace-only package plan, then run
+`sudo python3 scripts/boinc/setup_nvidia_lxc.py --apply` to install it.
+The script reads the loaded **host kernel driver** from `/proc/driver/nvidia/version`
+and requires matching userspace packages down to the patch version. It supports
+Ubuntu's branch-suffixed packages, NVIDIA's unversioned Ubuntu 590+ packages,
+and Debian's separate Vulkan/EGL ICD packages. It installs the Vulkan loader,
+diagnostic tools and runtime libraries, pins the NVIDIA packages to the matching
+version, and verifies `nvidia-smi`, `libcuda.so.1` initialization and a hardware
+NVIDIA Vulkan device **as `boinc`**. The CUDA version printed by `nvidia-smi`
+describes driver compatibility, not an installed toolkit; `nvcc` is not required.
+Use `--boinc-user NAME` only if the service uses a different non-root account.
+For diagnostics without APT changes (including existing NVIDIA `.run`
+installations), use `sudo python3 scripts/boinc/setup_nvidia_lxc.py --check-only`.
+The installer refuses to mix runfile and package-managed NVIDIA installations.
+
+Run this in the LXC, **not on Proxmox**. The host operator must already have passed
+the NVIDIA character devices through; the script never installs DKMS/kernel
+drivers, creates devices, changes their permissions, adds a package repository,
+or changes BOINC preferences. If an exact driver package set is unavailable, it
+stops rather than mixing versions or downloading an unverified driver installer.
+Use the container distribution's packages or the
+[official NVIDIA repository](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/ubuntu.html#network-repository-enablement-amd64),
+not a repository for a different distribution. After a host driver update, rerun
+the script to update `/etc/apt/preferences.d/usnm-nvidia-lxc`. After current work
+has checkpointed, restart `boinc-client` to load the repaired libraries and group
+membership. Passing these checks establishes userspace readiness only: signed
+app publication, client-version admission, model memory limits and successful
+GPU results are separate requirements.
+
 The native Intel and NVIDIA Vulkan classes share batch-8 inputs, not the container batch-18
 queue. Publish signed Linux versions with the same locked Vulkan bundle first. To open a
 shared dispatch window, use `scripts/boinc/native-qwen-cohort.php --project PATH

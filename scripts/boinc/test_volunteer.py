@@ -22,9 +22,108 @@ def load(name):
 
 pre = load("volunteer_preflight")
 setup = load("setup_volunteer")
+nvidia = load("setup_nvidia_lxc")
 IMAGE = "registry.example.org/usnm/worker@sha256:" + "a" * 64
 LIMITS = {"cpu": "100000 100000", "memory": str(pre.MEMORY), "swap": "0", "pids": "64", "ready": "yes"}
 INFO = {"host": {"security": {"rootless": True}, "cgroupVersion": "v2", "cgroupManager": "systemd"}}
+
+
+class NvidiaLxcTest(unittest.TestCase):
+    def test_exact_host_version_and_distribution_package_layouts(self):
+        driver = nvidia.host_driver("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64 610.57.04\n")
+        for system, family_index in (("ubuntu", 0), ("ubuntu", 1), ("ubuntu", 2), ("debian", 0)):
+            families = nvidia.package_families(system, driver)
+            family = families[family_index]
+            available = "\n".join(f"{name} | {version} | https://example.org/packages"
+                                  for name in family for version in ("615.71.10-1", "1:610.57.04-2"))
+            self.assertEqual(nvidia.select_packages(families, driver, available),
+                             [name + "=1:610.57.04-2" for name in family])
+            with self.assertRaisesRegex(ValueError, "No complete userspace"):
+                nvidia.select_packages(families, driver, available.replace("610.57.04", "610.57.03"))
+        with self.assertRaisesRegex(ValueError, "loaded host driver"):
+            nvidia.host_driver("CUDA Version: 12.4")
+
+    def test_apt_refuses_kernel_removals_and_transitional_driver_mismatch(self):
+        nvidia.check_transaction(
+            "Inst libnvidia-gl [615.71.10-1] (610.57.04-1 NVIDIA:1 [amd64])\n"
+            "Inst libnvidia-egl-gbm1 (1.1.3-1 Ubuntu:1 [amd64])\n", "610.57.04")
+        for plan in (
+                "Inst nvidia-dkms-open (610.57.04-1 NVIDIA:1 [amd64])",
+                "Inst nvidia-driver (610.57.04-1 NVIDIA:1 [amd64])",
+                "Inst linux-modules-6.8.0 (6.8.0-1 Ubuntu:1 [amd64])",
+                "Inst libnvidia-compute-580 (580.95.05-1 Ubuntu:1 [amd64])",
+                "Inst libnvidia-gl (610.57.03-1 NVIDIA:1 [amd64])",
+                "Remv libnvidia-gl [610.57.04-1]"):
+            with self.subTest(plan=plan), self.assertRaises(ValueError):
+                nvidia.check_transaction(plan, "610.57.04")
+
+    def test_user_verification_rejects_software_vulkan_and_wrong_nvml_version(self):
+        account = namedtuple("Account", "pw_uid pw_gid")(os.getuid(), os.getgid())
+        with patch.object(nvidia.pwd, "getpwnam", return_value=account), \
+                patch.object(nvidia.os, "chown"), patch.object(nvidia, "run") as run:
+            run.side_effect = ["NVIDIA GPU, 610.57.03\n"]
+            with self.assertRaisesRegex(ValueError, "driver verification"):
+                nvidia.verify_gpu("boinc", "610.57.04")
+            run.side_effect = ["NVIDIA GPU, 610.57.04\n", "CUDA driver API initialized\n",
+                               "\nGPU0:\n vendorID = 0x10005\n deviceName = llvmpipe\n"]
+            with self.assertRaisesRegex(ValueError, "No NVIDIA hardware Vulkan"):
+                nvidia.verify_gpu("boinc", "610.57.04")
+            run.side_effect = ["NVIDIA GPU, 610.57.04\n", RuntimeError("libcuda.so.1: not found")]
+            with self.assertRaisesRegex(RuntimeError, "libcuda.so.1"):
+                nvidia.verify_gpu("boinc", "610.57.04")
+            run.side_effect = ["NVIDIA GPU, 610.57.04\n", "CUDA driver API initialized\n",
+                               "\nGPU0:\n vendorID = 0x10de\n"
+                               " deviceType = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU\n"]
+            with patch("builtins.print"):
+                nvidia.verify_gpu("boinc", "610.57.04")
+            self.assertTrue(all(call.args[0][:4] == ["runuser", "--user", "boinc", "--"]
+                                for call in run.call_args_list))
+
+    def test_lxc_dry_run_only_simulates_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dev = root / "dev"
+            dev.mkdir()
+            for name in ("nvidia0", "nvidiactl", "nvidia-uvm"):
+                (dev / name).symlink_to("/dev/null")
+            version = root / "version"
+            version.write_text("NVRM version: NVIDIA UNIX Open Kernel Module 610.57.04\n")
+            paths = {"/proc/driver/nvidia/version": version, "/dev": dev,
+                     "/dev/nvidiactl": dev / "nvidiactl", "/dev/nvidia-uvm": dev / "nvidia-uvm"}
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(command)
+                if command[0] == "systemd-detect-virt":
+                    return "lxc\n"
+                if command[0] == "dpkg":
+                    return "amd64\n"
+                if command[0] == "apt-cache":
+                    return ("libnvidia-compute | 610.57.04-1 | https://example.org/packages\n"
+                            "libnvidia-gl | 610.57.04-1 | https://example.org/packages\n")
+                if command[:2] == ["apt-get", "--simulate"]:
+                    return "Inst libnvidia-gl (610.57.04-1 NVIDIA:1 [amd64])"
+                self.fail(f"Dry run attempted a mutation: {command}")
+
+            args = namedtuple("Args", "apply check_only boinc_user")(False, False, "boinc")
+            account = namedtuple("Account", "pw_uid")(1000)
+            with patch.object(nvidia, "PIN", root / "pin"), \
+                    patch.object(nvidia, "Path", side_effect=lambda path: paths[path]), \
+                    patch.object(nvidia.platform, "system", return_value="Linux"), \
+                    patch.object(nvidia.platform, "freedesktop_os_release", return_value={"ID": "ubuntu"}), \
+                    patch.object(nvidia.pwd, "getpwnam", return_value=account), \
+                    patch.object(nvidia.shutil, "which", return_value=None), \
+                    patch.object(nvidia, "run", side_effect=run), patch("builtins.print"):
+                nvidia.repair(args)
+                with patch.object(nvidia.shutil, "which", return_value="/usr/bin/nvidia-uninstall"), \
+                        self.assertRaisesRegex(ValueError, "Refusing to mix runfile and APT"):
+                    nvidia.repair(args)
+                with patch.object(nvidia.os, "geteuid", return_value=0), \
+                        patch.object(nvidia, "verify_gpu") as verify:
+                    nvidia.repair(args._replace(check_only=True))
+                    verify.assert_called_once_with("boinc", "610.57.04")
+            self.assertFalse((root / "pin").exists())
+            self.assertTrue(any("libnvidia-gl=610.57.04-1" in command for command in calls))
 
 
 class Runtime:
