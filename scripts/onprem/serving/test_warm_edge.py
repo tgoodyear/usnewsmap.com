@@ -57,7 +57,7 @@ class WarmEdge(unittest.TestCase):
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def run_warm(self):
-        return MODULE.run(self.base, 2, sleep=lambda _: None)
+        return MODULE.run(self.base, 0, sleep=lambda _: None)
 
     def test_requests_the_apps_url_then_the_coverage_it_links_to(self):
         self.server.queries = ["q=gold&from=1896-01-01"]
@@ -71,6 +71,33 @@ class WarmEdge(unittest.TestCase):
         report = self.run_warm()
         self.assertEqual(report["cache"], {"MISS": 2, "HIT": 1, "FAILED": 1})
         self.assertEqual(self.server.seen.count("/v1/aggregate?q=busy&v=v1&g=f8"), 2)
+
+    def test_a_computing_search_is_polled_to_the_time_limit_not_a_try_limit(self):
+        self.server.seen = []
+        url = self.base + "/v1/aggregate?q=slow"
+        calls = {"n": 0}
+
+        class Response:
+            status = 202
+            headers = {}
+
+            def __enter__(self):
+                calls["n"] += 1
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b""
+
+        original = MODULE.urllib.request.urlopen
+        MODULE.urllib.request.urlopen = lambda *a, **k: Response()
+        self.addCleanup(setattr, MODULE.urllib.request, "urlopen", original)
+        now = iter(range(0, 10_000, 30))
+        status, _, _ = MODULE.fetch(url, sleep=lambda _: None, clock=lambda: next(now))
+        self.assertEqual(status, 202)
+        self.assertEqual(calls["n"], MODULE.COMPUTING_LIMIT_SECS // 30)
 
     def test_a_site_without_a_generation_is_an_error(self):
         original = MODULE.fetch

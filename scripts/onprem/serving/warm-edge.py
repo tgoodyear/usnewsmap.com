@@ -7,11 +7,12 @@ Cloudflare, so with Tiered Cache the upper tier fills too and other locations
 can answer without the origin. The API doesn't log these as searches: they
 carry no browser headers.
 
-Prints counts only, never a search's text. Exits 1 if nothing was warmed.
+It takes one search at a time with a pause between them, so a cold search uses
+at most one of the API's computation slots and visitors keep the other. Prints
+counts only, never a search's text. Exits 1 if nothing was warmed.
 """
 
 import argparse
-import concurrent.futures
 import gzip
 import json
 import sys
@@ -22,16 +23,23 @@ import urllib.request
 
 USER_AGENT = "usnm-edge-warm"
 TIMEOUT_SECS = 120
-ATTEMPTS = 6
-RETRIED = (202, 429, 502, 503, 504)
+# A cold search can compute for 120 s after waiting for a slot.
+COMPUTING_LIMIT_SECS = 600
+FAILURES = 6
+RETRIED = (429, 502, 503, 504)
 
 
-def fetch(url, sleep=time.sleep):
-    """The status, body and cf-cache-status of `url`, waiting out a busy API."""
+def fetch(url, sleep=time.sleep, clock=time.monotonic):
+    """The status, body and cf-cache-status of `url`, waiting out a busy API.
+
+    A 202 is asked again until COMPUTING_LIMIT_SECS passes; anything else
+    temporary gets FAILURES tries.
+    """
     request = urllib.request.Request(url, headers={
         "Accept": "application/json", "Accept-Encoding": "gzip", "User-Agent": USER_AGENT})
-    status = 0
-    for attempt in range(ATTEMPTS):
+    deadline = clock() + COMPUTING_LIMIT_SECS
+    failures = 0
+    while True:
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_SECS) as response:
                 status, headers, body = response.status, response.headers, response.read()
@@ -39,13 +47,18 @@ def fetch(url, sleep=time.sleep):
             status, headers, body = error.code, error.headers, b""
         except OSError:
             status, headers, body = 0, {}, b""
-        if status not in RETRIED and status != 0:
+        if status == 202:
+            if clock() >= deadline:
+                return status, b"", "NONE"
+        elif status == 0 or status in RETRIED:
+            failures += 1
+            if failures >= FAILURES:
+                return status, b"", "NONE"
+        else:
             if headers.get("Content-Encoding") == "gzip":
                 body = gzip.decompress(body)
             return status, body, (headers.get("cf-cache-status") or "NONE").upper()
-        if attempt < ATTEMPTS - 1:
-            sleep(int(headers.get("Retry-After") or 2))
-    return status, b"", "NONE"
+        sleep(int(headers.get("Retry-After") or 2))
 
 
 def warm(base, query, version, generation, sleep=time.sleep):
@@ -60,7 +73,7 @@ def warm(base, query, version, generation, sleep=time.sleep):
     return cache
 
 
-def run(base, workers, sleep=time.sleep):
+def run(base, pause, sleep=time.sleep):
     status, body, _ = fetch(f"{base}/v1/meta?warm={int(time.time())}", sleep)
     if status != 200:
         raise RuntimeError(f"/v1/meta answered {status}")
@@ -72,24 +85,23 @@ def run(base, workers, sleep=time.sleep):
     if status != 200:
         raise RuntimeError(f"/edge-warm.json answered {status}")
     queries = json.loads(body)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(lambda q: warm(base, q, version, generation, sleep), queries))
     counts = {}
-    for result in results:
-        key = result or "FAILED"
+    for query in queries:
+        key = warm(base, query, version, generation, sleep) or "FAILED"
         counts[key] = counts.get(key, 0) + 1
+        sleep(pause)
     return {"version": version, "generation": generation, "searches": len(queries), "cache": counts}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--base-url", default="https://usnewsmap.com")
-    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--pause-secs", type=float, default=1, help="between searches")
     args = parser.parse_args()
-    if args.workers < 1:
-        parser.error("--workers must be at least 1")
+    if args.pause_secs < 0:
+        parser.error("--pause-secs can't be negative")
     try:
-        report = run(args.base_url.rstrip("/"), args.workers)
+        report = run(args.base_url.rstrip("/"), args.pause_secs)
     except (RuntimeError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
