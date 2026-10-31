@@ -6,6 +6,7 @@ import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER } from "./examples";
 import { Examples } from "./components/Examples";
+import { reportEdgeSearch } from "./edgeSearches";
 import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, viewUrl, useView, type ViewState } from "./state/url";
@@ -108,14 +109,18 @@ export function App({ searchLinks }: { searchLinks?: readonly { href: string; la
 
   // The search the API said it is still computing (a `202`), by query key,
   // and how many searches are ahead of it while it waits for a slot.
-  const aggKey = JSON.stringify([version, params]);
+  const generation = meta.data?.edge_generation;
+  const aggKey = JSON.stringify([version, params, generation]);
   const [computing, setComputing] = useState<{ key: string; ahead: number | null } | null>(null);
   const agg = useQuery({
-    queryKey: ["aggregate", version, params],
+    queryKey: ["aggregate", version, params, generation],
     queryFn: ({ signal }) => {
       // A new attempt starts as a plain search until the API says otherwise.
       setComputing((c) => (c?.key === aggKey ? null : c));
-      return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }));
+      return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }), {
+        generation,
+        onResponse: reportEdgeSearch,
+      });
     },
     enabled: !!version && !!view.q,
     // Keep showing the previous answer while the next loads only for the same

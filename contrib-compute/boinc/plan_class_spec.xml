@@ -190,7 +190,8 @@
         <max_wu_id>1</max_wu_id>
         <gpu_type>nvidia</gpu_type>
         <cuda/>
-        <min_core_client_version>80211</min_core_client_version>
+        <!-- Native execution on 8.2.9 was qualified for this profile in #1234. -->
+        <min_core_client_version>80209</min_core_client_version>
         <min_gpu_ram_mb>5500</min_gpu_ram_mb>
         <gpu_ram_used_mb>5500</gpu_ram_used_mb>
         <ngpus>1</ngpus>

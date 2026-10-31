@@ -536,3 +536,57 @@ async fn a_day_file_holds_the_staged_lines_once() {
     let again = store.get(&searchlog::day_path(day)).await.unwrap().unwrap();
     assert_eq!(again, written.as_bytes());
 }
+
+/// A report as the site sends it from a page, on top of `extra` headers.
+fn report(query: &str, extra: &[(&str, &str)]) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/v1/search-report")
+        .header(header::USER_AGENT, CHROME)
+        .header(header::CONTENT_TYPE, "text/plain")
+        .header("sec-fetch-site", "same-origin");
+    for (name, value) in extra {
+        req = req.header(*name, *value);
+    }
+    req.body(Body::from(
+        serde_json::json!({ "query": query }).to_string(),
+    ))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_search_the_edge_answered_is_recorded_from_its_report() {
+    let dir = temp_dir("report");
+    let (state, log) = app_with(Arc::new(LocalStore::new(&dir)), hour()).await;
+    let v = version(&state).await;
+
+    let (status, _) = send(&state, report(&format!("q=gold&v={v}&g=f8"), &[])).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    log.shutdown(Duration::from_secs(5)).await;
+
+    let records = staged(&dir);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].q, "gold");
+    assert_eq!(records[0].index_version.as_deref(), Some(v.as_str()));
+    assert!(records[0].pages.is_some());
+}
+
+#[tokio::test]
+async fn reports_are_not_recorded_for_opt_outs_other_origins_or_old_versions() {
+    let dir = temp_dir("report-excluded");
+    let (state, log) = app_with(Arc::new(LocalStore::new(&dir)), hour()).await;
+    let v = version(&state).await;
+    let query = format!("q=gold&v={v}");
+
+    for req in [
+        report(&query, &[("dnt", "1")]),
+        report(&query, &[("sec-gpc", "1")]),
+        report(&query, &[("origin", "https://example.com")]),
+        report("q=gold&v=not-the-version", &[]),
+    ] {
+        let (status, _) = send(&state, req).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    log.shutdown(Duration::from_secs(5)).await;
+    assert!(staged(&dir).is_empty());
+}

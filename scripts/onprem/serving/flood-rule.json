@@ -5,7 +5,7 @@
       "action": "block",
       "description": "Search flood: block an IP above 50 requests in 10 seconds, for 10 seconds (ADR-0027 settled decision 9). Cloudflare keeps these counters per data center.",
       "enabled": false,
-      "expression": "http.request.uri.path in {\"/v1/aggregate\" \"/v1/hits\" \"/api/v1/aggregate\" \"/api/v1/hits\"}",
+      "expression": "http.request.uri.path in {\"/v1/aggregate\" \"/v1/hits\" \"/v1/search-report\" \"/api/v1/aggregate\" \"/api/v1/hits\" \"/api/v1/search-report\"}",
       "ratelimit": {
         "characteristics": ["cf.colo.id", "ip.src"],
         "mitigation_timeout": 10,

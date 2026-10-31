@@ -101,10 +101,9 @@ export function report(
   };
 }
 
-/** Send a report without delaying the page or its unload. */
-export function send(body: PageViewReport, nav: Pick<Navigator, "sendBeacon"> = navigator): void {
-  const url = `${API_BASE}/v1/beacon`;
-  const json = JSON.stringify(body);
+/** POST `json` to an API path without delaying the page or its unload. */
+export function postBeacon(path: string, json: string, nav: Pick<Navigator, "sendBeacon"> = navigator): void {
+  const url = `${API_BASE}${path}`;
   try {
     // A string goes as text/plain, which needs no CORS preflight.
     if (typeof nav.sendBeacon === "function" && nav.sendBeacon(url, json)) return;
@@ -118,6 +117,11 @@ export function send(body: PageViewReport, nav: Pick<Navigator, "sendBeacon"> = 
     credentials: "omit",
     headers: { "content-type": "application/json" },
   }).catch(() => undefined);
+}
+
+/** Send a report without delaying the page or its unload. */
+export function send(body: PageViewReport, nav: Pick<Navigator, "sendBeacon"> = navigator): void {
+  postBeacon("/v1/beacon", JSON.stringify(body), nav);
 }
 
 let reported = 0;

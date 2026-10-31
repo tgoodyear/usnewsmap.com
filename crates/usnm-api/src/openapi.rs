@@ -25,7 +25,7 @@ use crate::AppState;
 
 /// The `/v1` routes the document leaves out: the site's page views.
 /// `/healthz` and `/readyz`, outside `/v1`, are left out too.
-pub const INTERNAL: &[&str] = &["/beacon"];
+pub const INTERNAL: &[&str] = &["/beacon", "/search-report"];
 
 /// Where the API answers: its own host, and the site's, which serves the
 /// same routes (ADR-0010).
@@ -411,6 +411,14 @@ fn param(path: &str, name: &str, config: &Config) -> Value {
             "The `index_version` the client expects. Another version than the one served is a \
              307 to the same request at the served one; without `v`, the response is cacheable \
              for 5 minutes only and `Content-Location` names the URL with it."
+                .into(),
+            json!({ "type": "string" }),
+        ),
+        "g" => query_param(
+            "g",
+            false,
+            "The `edge_generation` from `/v1/meta`. The web app sends it so that Cloudflare can \
+             keep the response; it changes no result."
                 .into(),
             json!({ "type": "string" }),
         ),

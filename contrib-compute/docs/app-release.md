@@ -366,7 +366,7 @@ fake migration.
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
      `aarch64-unknown-linux-gnu`, `windows_x86_64`), `intel_vulkan_8b` and
      `amd_vulkan_8b` (`x86_64-pc-linux-gnu`, `windows_x86_64`), `nvidia_vulkan_8b`
-     (`x86_64-pc-linux-gnu`), and `mt` (all five platforms). Model files
+     and `nvidia_vulkan_6gb_8b` (`x86_64-pc-linux-gnu`), and `mt` (all five platforms). Model files
      are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
      plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
      `usnm_qwen_2b_in` for 2B/`mt` classes).

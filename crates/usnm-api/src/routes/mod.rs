@@ -5,6 +5,7 @@ mod days;
 mod hits;
 pub(crate) use hits::ocr_for_hit;
 mod meta;
+mod search_report;
 mod titles;
 
 pub use aggregate::aggregate;
@@ -17,6 +18,7 @@ pub use days::days;
 pub use hits::hits;
 pub use meta::{meta, places, readyz};
 pub(crate) use meta::{meta_body, places_in};
+pub use search_report::search_report;
 pub use titles::{title, titles};
 
 /// The response schemas and accepted parameters `/v1/openapi.json` describes.
