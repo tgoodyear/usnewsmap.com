@@ -1,0 +1,155 @@
+{
+  "ct": "230",
+  "env": "prod",
+  "host": "pve.tjg.fyi",
+  "images": {
+    "base": "sha256:0fae424ffa73e2ddaee99f46d3fbd59a10cb2f97fef5fa19f5ed1fbbd6aae7a4",
+    "bin": "sha256:3912f9a6c3393acc1fcf5ca5413de56bae80e896c912d5400643012adfc30226",
+    "bridge": "sha256:3fd28344b9a9cbf10ccdef44b0daeb5c9fe2d9c09a8662873a895f79fabfda60",
+    "server": "sha256:9a2322a487ccb583fec5c74e34c4d7e6264eeaba2745fa0539251cc4cd814c57",
+    "worker": null
+  },
+  "release": {
+    "app": "usnm_qwen",
+    "kind": "native",
+    "plan_class": "nvidia_vulkan_6gb_8b",
+    "platform": "x86_64-pc-linux-gnu",
+    "version": "1.16"
+  },
+  "schema": 1,
+  "source_commit": "47a4574ba137f9f27706772e3a177c3d9d99f809",
+  "worker": {
+    "extra_files": {
+      "libggml-base.so": {
+        "sha256": "43f986dbaa736605f0d4b6a00f42d3620af9a807dc682ba10690491bea93facf",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-base.so.0": {
+        "sha256": "43f986dbaa736605f0d4b6a00f42d3620af9a807dc682ba10690491bea93facf",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-base.so.0.9.11": {
+        "sha256": "43f986dbaa736605f0d4b6a00f42d3620af9a807dc682ba10690491bea93facf",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-alderlake.so": {
+        "sha256": "b1af53628e5fba49185de944f0f3607b19869e65ed2cd2aeca099f56aa7db794",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-cannonlake.so": {
+        "sha256": "d6c781dbb9a6bc2a812f2f572410f371af3db473e4c985ff4f461ffbb5150dac",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-cascadelake.so": {
+        "sha256": "1653d70b74fbda8c206a92e4f28573d66789aca93dc9f5a4d66338f357726dc1",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-cooperlake.so": {
+        "sha256": "0314469e2044f6a68958e7f34d07243602d314ad5f148420b62314697b6fd9de",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-haswell.so": {
+        "sha256": "261ee3866216b59efa4f2e12a0744b970d4e0ef9d561d43f2cc465c9bf1ae332",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-icelake.so": {
+        "sha256": "a2acb4daf29b40e43269a969fdda0d09d68d0530e5cfc3497e99362ea173a561",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-ivybridge.so": {
+        "sha256": "8291d097ca536e4b3d05a5914426f3bc6172c4faf4d2083b0ca563b114f03df1",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-piledriver.so": {
+        "sha256": "b1109f45ef37f1b5f68b9980c2ea571e7e9a3956a9b1af97364536b72b57e429",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-sandybridge.so": {
+        "sha256": "7fc3e0372099fd58c24328c1e47a0c3f485fe82502406c789290f0993d2ff893",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-sapphirerapids.so": {
+        "sha256": "b7c46b8983e9541f321f6415c6a5eb0fd11a9b328f5a4978bc65ca4bb3f858c5",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-skylakex.so": {
+        "sha256": "82b39bbc95152060503bbec2a0d28de512f7790912b324ad19e2897842de7034",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-sse42.so": {
+        "sha256": "61f26e2719d2ca8185ec76246a1db57745982ae57549b4c336fdf6c60d135ae2",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-x64.so": {
+        "sha256": "b1fc71ced99c02e2365e276e3b38e689b4d8404aef420f0aac3d4d9d8d6ac17a",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-cpu-zen4.so": {
+        "sha256": "ebe05d25aec48bd03121cec6dd7f022d954751caee27fa9f2519dd720716d1f9",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-rpc.so": {
+        "sha256": "213bfd32f4753585d156a8aa3a170737fb128717f8894d248626879b69b182de",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml-vulkan.so": {
+        "sha256": "cbe4c9b8c7a742bd1753d72365d17460be07d729313d11575678882602d78299",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml.so": {
+        "sha256": "04f3e42ca482aecc85a75ee82fbee39ffb9c279991eb25cc650b63f59c4bf7c1",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml.so.0": {
+        "sha256": "04f3e42ca482aecc85a75ee82fbee39ffb9c279991eb25cc650b63f59c4bf7c1",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libggml.so.0.9.11": {
+        "sha256": "04f3e42ca482aecc85a75ee82fbee39ffb9c279991eb25cc650b63f59c4bf7c1",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libllama.so": {
+        "sha256": "37fa0eb152207291d608aff41c71c5889b9f1f62b4a75901459b3de36e94b902",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libllama.so.0": {
+        "sha256": "37fa0eb152207291d608aff41c71c5889b9f1f62b4a75901459b3de36e94b902",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libllama.so.0.0.8799": {
+        "sha256": "37fa0eb152207291d608aff41c71c5889b9f1f62b4a75901459b3de36e94b902",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libmtmd.so": {
+        "sha256": "4428c4b6f1d1137d6010f1a84892274531020df686c262a2797a637363109563",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libmtmd.so.0": {
+        "sha256": "4428c4b6f1d1137d6010f1a84892274531020df686c262a2797a637363109563",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "libmtmd.so.0.0.8799": {
+        "sha256": "4428c4b6f1d1137d6010f1a84892274531020df686c262a2797a637363109563",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "llama-server": {
+        "sha256": "49bc20c43fc405ecf1d0f55f672c31440a14c4d496e84e5211b6728774a13721",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "llama.LICENSE": {
+        "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+        "source_commit": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
+      },
+      "llama.lock": {
+        "sha256": "c53dfc3d84bd755fabf041ae48416d24a8396b25a8cf7ff7da34da5f2bb2b4c3",
+        "source_commit": "94b1d03a29e50bbc5dfd8394c02a5c47a5da3d8c"
+      },
+      "weights.lock": {
+        "sha256": "05b003d69bbf3d5213a1770cbbc1afddf85bf01305f7cf3dbccac1e1f01266ce",
+        "source_commit": "94b1d03a29e50bbc5dfd8394c02a5c47a5da3d8c"
+      }
+    },
+    "sha256": "26cb207534a23595b3c4915eedacb5481f1980c5ffa71ff4f4bf71900d703083",
+    "source_commit": "94b1d03a29e50bbc5dfd8394c02a5c47a5da3d8c"
+  }
+}
