@@ -109,7 +109,7 @@ retain `Content-Length`/`Content-Range` without `Content-Encoding`.
 3. On the operator's machine:
 
    ```bash
-   scripts/onprem/serving/gen-env.sh --env prod --index-dir <run directory>/qw --out <new directory> --check-app
+   bash scripts/onprem/serving/gen-env.sh --env prod --index-dir <run directory>/qw --out <new directory> --check-app
    ```
 
    Then copy that directory into the container (`serving-ct.sh --config`).
@@ -188,7 +188,7 @@ The image must be attested for that commit. This creates `/etc/usnm-serving/hold
 
 ## Logs
 
-Nothing here logs a client address or a query string (09 §9.4.2):
+The on-prem service logs do not record a client address or a query string (09 §9.4.2):
 
 - cloudflared runs at `--loglevel info`, since debug logs every URI, and `run-cloudflared.sh` cuts the query string from the URL in its error lines;
 - Caddy has no access log, and its error log drops each line's request field (the URI and the headers, `CF-Connecting-IP` among them);
@@ -197,9 +197,16 @@ Nothing here logs a client address or a query string (09 §9.4.2):
 
 The journal keeps 30 days.
 
+The separately requested Cloudflare Worker invocation logs are different:
+platform request metadata includes IP-bearing headers and geolocation even
+with query-string redaction. Fixed application outcome records omit those
+fields. See [ADR-0029](../../../docs/design/adr/0029-onprem-primary-azure-failover.md)
+and the visitor privacy page for this explicit policy amendment, retention and
+measured heartbeat/cold-start acceptance.
+
 ## Searcher restarts
 
-An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). While the searcher restarts, the API serves cached searches and answers the rest with its own 503, which the [fallback Worker](../../../edge/fallback-worker/README.md) passes through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
+An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). Under the production [ADR-0029](../../../docs/design/adr/0029-onprem-primary-azure-failover.md) mode, failed readiness selects Azure and the minute heartbeat can wake its cold standby; the legacy connector-only Worker mode passes application 503s through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
 
 ## Open items for Phase 2
 

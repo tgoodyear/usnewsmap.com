@@ -143,6 +143,25 @@ Azure skips the API's example warm-up and keeps a 60-second readiness cap;
 on-prem retains the 300/360-second blue/green policy. The generator checks
 these intentional differences and rejects readiness drift.
 
+The final heartbeat-only connector drill generated **zero synthetic visitor
+requests** and verified both current Azure revisions had empty replica
+inventories at 03:40:30 UTC. The connector was stopped from 03:40:32.126 to
+03:43:38.840 UTC. All three outage heartbeats reported Azure / primary-unhealthy
+/ HTTP 200; the first completed at 03:41:53.708 UTC, **81.583 seconds after
+injection**, including 52.388 seconds waiting for the next scheduled heartbeat.
+Its native execution wall time was 28.774 seconds; maximum scheduled CPU across
+the three checks was **4 ms**, with no Worker errors. This is a heartbeat
+availability measurement, not another visitor request-loss sample.
+
+An earlier drill exposed a false-primary-health result: a scheduled/custom-
+domain probe can receive the gateway's Azure fallback response through the apex
+route. HTTP 200 with body `ready` alone is insufficient. Primary readiness now
+rejects `X-USNM-Origin: azure`; public, custom-domain and scheduled regression
+tests cover this case. The corrected Worker was deployed before the final drill.
+Recovery is automatic; Azure scale-down is observed against the current
+latest/ready revisions rather than a pinned obsolete API revision. Platform
+cooldown and background work mean combined scale-down is not a ten-minute SLA.
+
 ### Code-backed edge configuration and CI
 
 `healthcheck.usnewsmap.com` is a Workers **custom domain**, not another tunnel
@@ -175,6 +194,24 @@ fallback totals. Opt-in fixed outcome logs provide origin/reason/status
 counts; heartbeat records are marked separately and health endpoint traffic
 must not be confused with visitor traffic. Route-quota fail-open is
 dashboard-only in the documented API and is not claimed configured.
+
+The live deployment wrapper passed using the same scoped CI credentials and
+ordinary DNS/TLS, including the custom-domain health assertion. The first
+GitHub-hosted automatic deployment is a post-merge acceptance gate: this new
+trusted-main workflow cannot register on the default branch before merging.
+Do not weaken its branch/provenance guard to obtain a pre-merge demonstration.
+The final edge suite passed 90 tests plus native workerd integration and the
+pinned Wrangler dry-run; the integrated GNU/Linux serving suite passed 43 tests.
+
+Conservatively budget the Free plan's 100,000 requests/day and 10 ms fetch CPU;
+the account subscription response alone does not establish a paid entitlement.
+Native aggregate analytics reported 2,832 account-wide requests (1,900 for the
+production Worker) and zero errors from UTC midnight through 03:36 on the drill
+day. Neither that small sample nor scheduled CPU establishes a fetch-CPU or
+traffic headroom SLA. Invocation-log retention is currently three days on Free
+and seven on Paid, separate from the previously disclosed security logs.
+The visitor privacy page explicitly discloses on-prem/Azure routing and
+IP-bearing operational invocation logs; query redaction does not imply anonymity.
 
 ## Alternatives and consequences
 
