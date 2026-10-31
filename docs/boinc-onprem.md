@@ -456,4 +456,3 @@ When `weights.lock` adds a model file:
 3. Add the path to the rule. Remove paths of revisions no workunit uses.
 
 To undo it, delete the rule. Downloads go back to the server at once.
-
