@@ -116,6 +116,8 @@ class NvidiaLxcTest(unittest.TestCase):
                 "Conf nvidia-legacy-470xx-driver (470.256.02-1 Debian:1 [amd64])",
                 "Inst nvidia-driver (610.57.04-1 NVIDIA:1 [amd64])",
                 "Inst linux-modules-6.8.0 (6.8.0-1 Ubuntu:1 [amd64])",
+                "Conf linux-objects-nvidia-535-6.8.0-31-generic (6.8.0-31.31 Ubuntu:1 [amd64])",
+                "Conf linux-signatures-nvidia-6.8.0-31-generic (6.8.0-31.31 Ubuntu:1 [amd64])",
                 "Inst libnvidia-compute-580 (580.95.05-1 Ubuntu:1 [amd64])",
                 "Inst libnvidia-gl (610.57.03-1 NVIDIA:1 [amd64])",
                 "Remv libnvidia-gl [610.57.04-1]"):
@@ -144,7 +146,7 @@ class NvidiaLxcTest(unittest.TestCase):
             self.assertTrue(all(call.args[0][:4] == ["runuser", "--user", "boinc", "--"]
                                 for call in run.call_args_list))
 
-    def test_lxc_dry_run_only_simulates_packages(self):
+    def test_lxc_dry_run_and_rejected_apply_plans_cannot_install_or_pin(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dev = root / "dev"
@@ -156,6 +158,8 @@ class NvidiaLxcTest(unittest.TestCase):
             paths = {"/proc/driver/nvidia/version": version, "/dev": dev,
                      "/dev/nvidiactl": dev / "nvidiactl", "/dev/nvidia-uvm": dev / "nvidia-uvm"}
             calls = []
+            allow_apply = False
+            simulated_plan = "Inst libnvidia-gl (610.57.04-1 NVIDIA:1 [amd64])"
 
             def run(command, **kwargs):
                 calls.append(command)
@@ -167,7 +171,9 @@ class NvidiaLxcTest(unittest.TestCase):
                     return ("libnvidia-compute | 610.57.04-1 | https://example.org/packages\n"
                             "libnvidia-gl | 610.57.04-1 | https://example.org/packages\n")
                 if command[:2] == ["apt-get", "--simulate"]:
-                    return "Inst libnvidia-gl (610.57.04-1 NVIDIA:1 [amd64])"
+                    return simulated_plan
+                if allow_apply and command[0] in ("apt-get", "usermod", "ldconfig"):
+                    return ""
                 self.fail(f"Dry run attempted a mutation: {command}")
 
             args = namedtuple("Args", "apply check_only boinc_user")(False, False, "boinc")
@@ -187,6 +193,31 @@ class NvidiaLxcTest(unittest.TestCase):
                         patch.object(nvidia, "verify_gpu") as verify:
                     nvidia.repair(args._replace(check_only=True))
                     verify.assert_called_once_with("boinc", "610.57.04")
+                allow_apply = True
+                group = namedtuple("Group", "gr_name")
+                with patch.object(nvidia.os, "geteuid", return_value=0), \
+                        patch.object(nvidia.grp, "getgrall", return_value=[group("video")]), \
+                        patch.object(nvidia, "write_pin") as pin, \
+                        patch.object(nvidia, "verify_gpu") as verify:
+                    calls.clear()
+                    nvidia.repair(args._replace(apply=True))
+                    self.assertTrue(any(c[:2] == ["apt-get", "--yes"] for c in calls))
+                    self.assertIn(["usermod", "--append", "--groups", "video", "boinc"], calls)
+                    pin.assert_called_once_with(["libnvidia-compute=610.57.04-1", "libnvidia-gl=610.57.04-1"])
+                    verify.assert_called_once_with("boinc", "610.57.04")
+                    for simulated_plan in (
+                            "Conf nvidia-dkms-610 (610.57.04-1 NVIDIA:1 [amd64])",
+                            "Conf linux-objects-nvidia-535-6.8.0-31-generic (6.8.0-31.31 Ubuntu:1 [amd64])",
+                            "Remv libnvidia-gl [610.57.04-1]",
+                            "Conf libnvidia-gl (610.57.03-1 NVIDIA:1 [amd64])"):
+                        calls.clear()
+                        pin.reset_mock()
+                        verify.reset_mock()
+                        with self.subTest(plan=simulated_plan), self.assertRaises(ValueError):
+                            nvidia.repair(args._replace(apply=True))
+                        self.assertFalse(any(c[:2] == ["apt-get", "--yes"] or c[0] == "usermod" for c in calls))
+                        pin.assert_not_called()
+                        verify.assert_not_called()
             self.assertFalse((root / "pin").exists())
             self.assertTrue(any("libnvidia-gl=610.57.04-1" in command for command in calls))
 

@@ -115,6 +115,7 @@ def check_transaction(text, driver):
         name = line.split()[1].split(":", 1)[0]
         if (re.search(r"(?:^|-)dkms(?:-|$)", name) or name.startswith((
                 "linux-image", "linux-headers", "linux-modules", "linux-generic",
+                "linux-objects-nvidia", "linux-signatures-nvidia",
                 "nvidia-dkms", "nvidia-kernel", "nvidia-driver", "nvidia-headless",
                 "nvidia-open", "cuda-drivers"))
                 or (name.startswith("nvidia-")
