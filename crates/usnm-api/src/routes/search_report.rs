@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use super::beacon::read_body;
 use super::{aggregate_in, Ctx, COMPUTING_RETRY_SECS};
-use crate::error::ApiError;
+use crate::error::{ApiError, BUSY_RETRY_SECS};
 use crate::searchlog::{self, Admission};
 use crate::AppState;
 
@@ -45,33 +45,35 @@ pub async fn search_report(State(state): State<Arc<AppState>>, req: Request) -> 
         return ApiError::BadBeacon("the body must be a JSON object with query".to_owned())
             .into_response();
     };
-    // Its own task: a page closing mustn't cancel a report still waiting.
-    tokio::spawn(record(state, parts.headers, uri));
+    // Waited for, so a shutdown's request drain covers it before the search
+    // log stops. The browser's beacon doesn't wait for this answer.
+    record(&state, &parts.headers, &uri).await;
     let mut resp = StatusCode::NO_CONTENT.into_response();
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     resp
 }
 
-/// A search still computing (`202`) counts only once it has its results, so
-/// it's asked for again, as a visitor's browser would.
-async fn record(state: Arc<AppState>, headers: HeaderMap, uri: Uri) {
+/// A search still computing (`202`), or a queue that's full, counts only once
+/// the search has its results, so it's asked for again, as a visitor's
+/// browser would.
+async fn record(state: &Arc<AppState>, headers: &HeaderMap, uri: &Uri) {
     let Some(log) = state.search_log.as_deref() else {
         return;
     };
-    let admission = searchlog::admit(&headers, &state.config.site_host);
+    let admission = searchlog::admit(headers, &state.config.site_host);
     if let Admission::Excluded(reason) = admission {
         log.excluded(reason);
         return;
     }
     for _ in 0..ATTEMPTS {
-        let ctx = Ctx::serving(&state);
-        match aggregate_in(&state, ctx, &uri, Some((log, admission))).await {
-            Ok(resp) if resp.status() == StatusCode::ACCEPTED => {
-                tokio::time::sleep(Duration::from_secs(COMPUTING_RETRY_SECS)).await;
-            }
+        let ctx = Ctx::serving(state);
+        let wait = match aggregate_in(state, ctx, uri, Some((log, admission))).await {
+            Ok(resp) if resp.status() == StatusCode::ACCEPTED => COMPUTING_RETRY_SECS,
+            Err(ApiError::Busy) => BUSY_RETRY_SECS,
             // A search that fails isn't counted, as for a visitor's own request.
             _ => return,
-        }
+        };
+        tokio::time::sleep(Duration::from_secs(wait)).await;
     }
 }
