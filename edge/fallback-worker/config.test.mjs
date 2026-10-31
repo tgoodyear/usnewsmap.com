@@ -8,36 +8,27 @@ import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import worker from "./worker.mjs";
+import { parseJsonc } from "./parse-jsonc.mjs";
 
 // JSON with // and /* */ comments, as wrangler reads it. Comment markers inside strings
 // (the https:// of a URL) stay. One forward pass: every branch moves the cursor ahead and
 // the input is consumed once. A string or block comment that never closes throws a
 // SyntaxError, so a malformed file fails the run and does not hang it.
-function parseJsonc(source) {
-  let out = "";
-  for (let i = 0; i < source.length; i++) {
-    const c = source[i];
-    if (c === '"') {
-      let j = i + 1;
-      while (j < source.length && source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
-      if (j >= source.length) throw new SyntaxError(`unterminated string starting at offset ${i}`);
-      out += source.slice(i, j + 1);
-      i = j;
-    } else if (c === "/" && source[i + 1] === "/") {
-      while (i < source.length && source[i] !== "\n") i++;
-      out += "\n";
-    } else if (c === "/" && source[i + 1] === "*") {
-      const end = source.indexOf("*/", i + 2);
-      if (end === -1) throw new SyntaxError(`unterminated block comment starting at offset ${i}`);
-      i = end + 1;
-    } else {
-      out += c;
-    }
-  }
-  return JSON.parse(out);
-}
 
 const config = parseJsonc(readFileSync(new URL("./wrangler.jsonc", import.meta.url), "utf8"));
+const healthConfig = parseJsonc(readFileSync(new URL("./wrangler.health.jsonc", import.meta.url), "utf8"));
+
+test("heartbeat configuration is opt-in with identical runtime, routes and privacy settings", () => {
+  const { triggers, vars, cache, ...base } = healthConfig;
+  const { vars: legacyVars, ...legacy } = config;
+  assert.deepEqual(base, legacy);
+  assert.deepEqual(triggers, { crons: ["* * * * *"] });
+  assert.deepEqual(cache, { enabled: false });
+  assert.equal(healthConfig.placement, undefined);
+  assert.equal(healthConfig.compatibility_flags, undefined);
+  assert.deepEqual(vars, { ...legacyVars, HEALTH_FAILOVER: "true", HEALTH_HEARTBEAT: "true", HEALTH_HOSTNAME: "usnewsmap.com" });
+  assert.equal(config.triggers, undefined);
+});
 
 test("the comment stripper keeps URLs and drops comments", () => {
   assert.deepEqual(parseJsonc('{ "a": "https://x.example/*", // gone\n "b": 1 /* gone */ }'), {

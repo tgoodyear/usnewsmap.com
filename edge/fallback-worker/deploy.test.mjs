@@ -6,7 +6,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -36,7 +35,15 @@ printf '%s\\n' "\${STUB_TOKEN-${TOKEN}}"
 `,
   npx: `#!/bin/sh
 echo "npx $*" >> "$STUB_DIR/calls.log"
-{
+  previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--config" ]; then
+      cp "$argument" "$STUB_DIR/config.json"
+      node -e 'process.stdout.write(String(require("node:fs").statSync(process.argv[1]).mode & 511))' "$argument" > "$STUB_DIR/config-mode.log"
+    fi
+    previous="$argument"
+  done
+  {
   echo "token=\${CLOUDFLARE_API_TOKEN:-}"
   echo "account=\${CLOUDFLARE_ACCOUNT_ID:-}"
   echo "metrics=\${WRANGLER_SEND_METRICS:-}"
@@ -46,7 +53,7 @@ echo "npx $*" >> "$STUB_DIR/calls.log"
 };
 
 function deploy(args, extraEnv = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "deploy-test-"));
+  const dir = mkdtempSync(fileURLToPath(new URL("./.deploy-test-", import.meta.url)));
   try {
     mkdirSync(join(dir, "bin"));
     for (const [name, body] of Object.entries(STUBS)) {
@@ -59,7 +66,12 @@ function deploy(args, extraEnv = {}) {
       env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, STUB_DIR: dir, ...extraEnv },
     });
     const read = (name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : "");
-    return { ...result, calls: read("calls.log"), env: read("env.log") };
+    const generated = `${result.stdout}\n${read("calls.log")}`.match(/--config (\S*\.native-metrics-\S+\.json)/)?.[1];
+    return {
+      ...result, calls: read("calls.log"), env: read("env.log"),
+      config: read("config.json"), configMode: read("config-mode.log"),
+      generated, generatedRemains: generated ? existsSync(generated) : false,
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -73,6 +85,143 @@ test("a production dry run prints the deployment and calls nothing", () => {
   assert.doesNotMatch(result.stdout, /--route|--name|ADD_DNT/);
   assert.match(result.stdout, /dry run: nothing read or sent/);
   assert.equal(result.calls, "");
+});
+
+test("health selection and minute heartbeat are independently opt-in", () => {
+  const base = [...COMMON, "--production", "--health-failover", "--allowed-origins", "https://usnewsmap.com", "--dry-run"];
+  const selection = deploy(base);
+  assert.equal(selection.status, 0, selection.stderr);
+  assert.match(selection.stdout, /wrangler\.jsonc/);
+  assert.match(selection.stdout, /HEALTH_FAILOVER:true/);
+  assert.match(selection.stdout, /HEALTH_HOSTNAME:usnewsmap\.com/);
+  assert.doesNotMatch(selection.stdout, /HEALTH_HEARTBEAT/);
+  const heartbeat = deploy([...base, "--health-heartbeat"]);
+  assert.equal(heartbeat.status, 0, heartbeat.stderr);
+  assert.match(heartbeat.stdout, /wrangler\.health\.jsonc/);
+  assert.match(heartbeat.stdout, /HEALTH_HEARTBEAT:true/);
+  assert.match(heartbeat.stdout, /HEALTH_HOSTNAME:usnewsmap\.com/);
+  assert.equal(heartbeat.calls, "");
+  for (const host of ["dev.usnewsmap.com", "drill.usnewsmap.com", "failover-drill.usnewsmap.com"]) {
+    const drill = deploy([...COMMON, "--drill-hostname", host, "--health-failover", "--health-heartbeat",
+      "--allowed-origins", "https://usnewsmap.com", "--dry-run"]);
+    assert.equal(drill.status, 0, drill.stderr);
+    assert.ok(drill.stdout.includes(`HEALTH_HOSTNAME:${host}`));
+    const withoutCron = deploy([...COMMON, "--drill-hostname", host, "--health-failover",
+      "--allowed-origins", "https://usnewsmap.com", "--dry-run"]);
+    assert.equal(withoutCron.status, 0, withoutCron.stderr);
+    assert.ok(withoutCron.stdout.includes(`HEALTH_HOSTNAME:${host}`));
+    assert.doesNotMatch(withoutCron.stdout, /HEALTH_HEARTBEAT/);
+  }
+});
+
+test("unsafe or inconsistent health deployment flags are refused", () => {
+  for (const extra of [
+    ["--health-heartbeat"],
+    ["--health-failover"],
+    ["--health-failover", "--error-layer", "--allowed-origins", "https://usnewsmap.com"],
+    ["--health-hostname", "usnewsmap.com"],
+    ...["evil.test", "api.usnewsmap.com", "usnewsmap.com/path", "usnewsmap.com.evil.test"].map((host) =>
+      ["--health-failover", "--health-heartbeat", "--allowed-origins", "https://usnewsmap.com", "--health-hostname", host]),
+  ]) {
+    const result = deploy([...COMMON, "--production", "--dry-run", ...extra]);
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(result.calls, "");
+  }
+});
+
+test("native metrics explicitly removes binding in private full config, preserves cron and cleans up", () => {
+  const args = [...COMMON, "--drill-hostname", "failover-drill.usnewsmap.com",
+    "--health-failover", "--health-heartbeat", "--health-hostname", "failover-drill.usnewsmap.com",
+    "--allowed-origins", "https://usnewsmap.com", "--native-metrics"];
+  for (const extraEnv of [{}, { STUB_NPX_FAIL: "1" }]) {
+    const result = deploy(args, extraEnv);
+    assert.equal(result.status, extraEnv.STUB_NPX_FAIL ? 1 : 0, result.stderr);
+    const config = JSON.parse(result.config);
+    assert.deepEqual(config.analytics_engine_datasets, []);
+    assert.deepEqual(config.triggers, { crons: ["* * * * *"] });
+    assert.deepEqual(config.cache, { enabled: false });
+    assert.equal(config.placement, undefined);
+    assert.equal(config.compatibility_date, "2025-10-01");
+    assert.equal(config.compatibility_flags, undefined);
+    assert.equal(config.main, fileURLToPath(new URL("./worker.mjs", import.meta.url)));
+    assert.equal(config.vars.METRICS_MODE, "native");
+    assert.equal(config.observability.enabled, false);
+    assert.equal(config.routes.length, 3);
+    assert.equal(result.configMode, String(0o600));
+    assert.match(result.calls, /--var METRICS_MODE:native/);
+    assert.match(result.calls, /HEALTH_HOSTNAME:failover-drill\.usnewsmap\.com/);
+    assert.equal(result.config.includes(TOKEN), false);
+    assert.equal(result.generatedRemains, false);
+  }
+  for (const suffix of [["--dry-run"], []]) {
+    const result = deploy([...args, ...suffix], suffix.length ? {} : { STUB_AZ_FAIL: "1" });
+    assert.equal(result.status, suffix.length ? 0 : 1, result.stderr);
+    assert.ok(result.generated);
+    assert.equal(result.generatedRemains, false);
+    assert.doesNotMatch(result.calls, /npx /);
+  }
+});
+
+test("native metrics also supports legacy config without introducing a cron", () => {
+  const result = deploy([...COMMON, "--production", "--native-metrics"]);
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(result.config);
+  assert.deepEqual(config.analytics_engine_datasets, []);
+  assert.equal(config.triggers, undefined);
+  assert.equal(config.vars.ERROR_LAYER, "false");
+  assert.equal(result.generatedRemains, false);
+});
+
+test("custom health domain retains production routes, cron and explicit metrics selection", () => {
+  for (const native of [false, true]) {
+    const args = [...COMMON, "--production", "--health-failover", "--health-heartbeat",
+      "--health-hostname", "usnewsmap.com", "--healthcheck-hostname", "healthcheck.usnewsmap.com",
+      "--allowed-origins", "https://usnewsmap.com", ...(native ? ["--native-metrics"] : [])];
+    const result = deploy(args);
+    assert.equal(result.status, 0, result.stderr);
+    const config = JSON.parse(result.config);
+    assert.equal(config.routes.length, 4);
+    assert.deepEqual(config.routes.at(-1), { pattern: "healthcheck.usnewsmap.com", custom_domain: true });
+    assert.deepEqual(config.routes.slice(0, 3).map((route) => route.pattern), [
+      "usnewsmap.com/*", "www.usnewsmap.com/*", "api.usnewsmap.com/*",
+    ]);
+    assert.equal(config.main, fileURLToPath(new URL("./worker.mjs", import.meta.url)));
+    assert.deepEqual(config.triggers, { crons: ["* * * * *"] });
+    assert.equal(config.vars.HEALTHCHECK_HOSTNAME, "healthcheck.usnewsmap.com");
+    assert.equal(config.analytics_engine_datasets.length, native ? 0 : 1);
+    assert.match(result.calls, /HEALTHCHECK_HOSTNAME:healthcheck\.usnewsmap\.com/);
+    assert.equal(result.generatedRemains, false);
+  }
+});
+
+test("custom health domain is exact and requires production health mode", () => {
+  for (const args of [
+    ["--production"],
+    ["--drill-hostname", "failover-drill.usnewsmap.com", "--health-failover"],
+    ["--production", "--health-failover", "--healthcheck-hostname", "evil.test"],
+  ]) {
+    const result = deploy([...COMMON, "--allowed-origins", "https://usnewsmap.com",
+      "--healthcheck-hostname", "healthcheck.usnewsmap.com", ...args, "--dry-run"]);
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(result.calls, "");
+  }
+});
+
+test("invocation logs are explicit, redacted and independent of native metrics/custom domain", () => {
+  for (const extra of [[], ["--native-metrics", "--health-failover", "--health-heartbeat",
+    "--healthcheck-hostname", "healthcheck.usnewsmap.com", "--allowed-origins", "https://usnewsmap.com"]]) {
+    const result = deploy([...COMMON, "--production", "--worker-logs", ...extra]);
+    assert.equal(result.status, 0, result.stderr);
+    const config = JSON.parse(result.config);
+    assert.deepEqual(config.observability, {
+      enabled: true, logs: { enabled: true, invocation_logs: true },
+      traces: { enabled: false }, redact_query_string: true,
+    });
+    assert.equal(config.vars.LOG_OUTCOMES, "true");
+    assert.equal(config.logpush, undefined);
+    assert.equal(config.tail_consumers, undefined);
+    assert.equal(result.generatedRemains, false);
+  }
 });
 
 test("a dry run needs no vault or secret", () => {
@@ -164,6 +313,7 @@ test("the drill hostname cannot be a production name or outside the zone", () =>
     "www.usnewsmap.com",
     "api.usnewsmap.com",
     "boinc.usnewsmap.com",
+    "healthcheck.usnewsmap.com",
     "test.example.com",
     "test.usnewsmap.com.example.com",
     "*.usnewsmap.com",

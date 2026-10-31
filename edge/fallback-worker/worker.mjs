@@ -27,6 +27,11 @@
 //   ALLOWED_ORIGINS        Exact comma-separated USNM_ALLOWED_ORIGINS from the API.
 //   FALLBACK_METRICS        Analytics Engine binding: fixed outcome/scope/count/status,
 //                          never URLs, search words, visitor headers or addresses.
+//   HEALTH_FAILOVER         "true" opts into readiness-first selection instead of the
+//                          legacy behavior above (ERROR_LAYER takes precedence).
+//   HEALTH_HEARTBEAT        "true" also enables the opt-in scheduled readiness/wake path.
+//   HEALTH_HOSTNAME         Optional fixed onprem target for incoming and scheduled
+//                          probes; omitted means incoming hostname (no heartbeat).
 
 // 502: the tunnel's connector could not reach Caddy or the API. 530: the tunnel has no
 // connector. Phase 2's outage drills (#1101) confirm what a Worker receives in each case;
@@ -42,9 +47,16 @@ const FORWARDED_AS_RECEIVED = ["origin", "sec-fetch-site"];
 
 // The only hosts the fallback may send a request to: a Container Apps default name.
 const AZURE_ORIGIN_HOST = /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+azurecontainerapps\.io$/;
+const HEALTH_HOSTNAMES = new Set([
+  "usnewsmap.com", "dev.usnewsmap.com", "drill.usnewsmap.com", "failover-drill.usnewsmap.com",
+]);
 
 export default {
   async fetch(request, env = {}) {
+    if (env.HEALTHCHECK_HOSTNAME && new URL(request.url).hostname === env.HEALTHCHECK_HOSTNAME) {
+      return healthcheck(request, env);
+    }
+    if (env.HEALTH_FAILOVER === "true" && !errorLayer(env)) return healthFailover(request, env);
     // Cloned before the first fetch, which uses the body up: a POST (the page-view beacon)
     // has to reach Azure whole when the tunnel fails.
     const replay = request.clone();
@@ -71,7 +83,217 @@ export default {
     }
     return fallBack(replay, env, tunnel, null);
   },
+  scheduled(event, env, ctx) {
+    if (env.HEALTH_FAILOVER !== "true" || env.HEALTH_HEARTBEAT !== "true" || errorLayer(env)) return;
+    if (!HEALTH_HOSTNAMES.has(env.HEALTH_HOSTNAME)) return;
+    ctx.waitUntil(heartbeat(env));
+  },
 };
+
+const PRIMARY_HEALTH_MS = 3000;
+const ORIGIN_MS = 30000;
+const AZURE_PROBE_MS = 5000;
+const AZURE_WAIT_MS = 180000;
+const POLL_MS = 3000;
+// 1 primary probe + 1 primary delivery + 45 Azure probes + 1 Azure delivery <= 48.
+const MAX_AZURE_PROBES = 45;
+
+function checkAbort(signal) {
+  if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+}
+
+// Race as well as signal: deadlines still finish if an outbound adapter ignores abort.
+// The signal aborts the actual workerd fetch, including readiness body consumption.
+async function bounded(operation, ms, signal) {
+  checkAbort(signal);
+  const controller = new AbortController();
+  let timer;
+  let onAbort;
+  const deadline = new Promise((resolve, reject) => {
+    onAbort = () => {
+      controller.abort(signal.reason);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const error = new Error("Origin deadline exceeded");
+      error.name = "OriginDeadlineError";
+      controller.abort(error);
+      reject(error);
+    }, ms);
+  });
+  try {
+    return await Promise.race([deadline, operation(controller.signal)]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+async function ready(origin, ms, signal, primary = false) {
+  try {
+    return await bounded(async (probeSignal) => {
+      const probe = new Request(new URL("/readyz", origin), {
+        method: "GET",
+        headers: { DNT: "1", "Cache-Control": "no-cache, no-store" },
+        redirect: "manual",
+        signal: probeSignal,
+      });
+      const answer = await fetch(probe, { cf: { cacheTtl: 0, cacheEverything: false } });
+      if (answer.status !== 200 || !answer.body ||
+          (primary && answer.headers.get("X-USNM-Origin") === "azure")) {
+        void answer.body?.cancel().catch(() => {});
+        return false;
+      }
+      const reader = answer.body.getReader();
+      let value = "";
+      try {
+        for (;;) {
+          checkAbort(probeSignal);
+          const chunk = await reader.read();
+          if (chunk.done) return value === "ready";
+          // Exact five ASCII bytes; do not buffer arbitrary health response bodies.
+          if (chunk.value.length + value.length > 5) return false;
+          value += String.fromCharCode(...chunk.value);
+        }
+      } finally {
+        void reader.cancel().catch(() => {});
+      }
+    }, ms, signal);
+  } catch (error) {
+    checkAbort(signal);
+    if (error?.name === "AbortError") throw error;
+    return false;
+  }
+}
+
+function pause(ms, signal) {
+  checkAbort(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  }).finally(() => checkAbort(signal));
+}
+
+async function azureReady(env, signal) {
+  const target = azureUrl("https://usnewsmap.com/readyz", env.AZURE_FALLBACK_ORIGIN);
+  if (!target) return false;
+  const end = Date.now() + AZURE_WAIT_MS;
+  for (let n = 0; n < MAX_AZURE_PROBES && Date.now() < end; n++) {
+    checkAbort(signal);
+    if (await ready(target, Math.min(AZURE_PROBE_MS, end - Date.now()), signal)) return true;
+    if (n + 1 < MAX_AZURE_PROBES && Date.now() < end) {
+      await pause(Math.min(POLL_MS, end - Date.now()), signal);
+    }
+  }
+  return false;
+}
+
+async function heartbeat(env) {
+  const primary = await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, undefined, true);
+  const azure = !primary && await azureReady(env);
+  if (env.LOG_OUTCOMES === "true") {
+    console.log({
+      origin: primary ? "onprem" : azure ? "azure" : "unavailable",
+      reason: primary ? "primary-ready" : azure ? "primary-unhealthy" : "azure-unready",
+      status: primary || azure ? 200 : 503,
+      trigger: "heartbeat",
+    });
+  }
+}
+
+async function healthcheck(request, env) {
+  const headers = { "Cache-Control": "no-store", "Content-Type": "application/json" };
+  const path = new URL(request.url).pathname;
+  if (env.HEALTHCHECK_HOSTNAME !== "healthcheck.usnewsmap.com" ||
+      !["/", "/readyz"].includes(path)) return new Response(null, { status: 404, headers });
+  if (!["GET", "HEAD"].includes(request.method)) {
+    return new Response(null, { status: 405, headers: { ...headers, Allow: "GET, HEAD" } });
+  }
+  checkAbort(request.signal);
+  const valid = HEALTH_HOSTNAMES.has(env.HEALTH_HOSTNAME);
+  const primary = valid && await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, request.signal, true);
+  const azure = !primary && valid && await azureReady(env, request.signal);
+  const origin = primary ? "onprem" : azure ? "azure" : "unavailable";
+  const available = primary || azure;
+  const reason = !valid ? "health-config-invalid" : primary ? "primary-ready" : azure ? "primary-unhealthy" : "azure-unready";
+  const body = path === "/readyz" ? (available ? "ready" : "unavailable") :
+    JSON.stringify({ available, origin, primary_ready: primary });
+  if (path === "/readyz") headers["Content-Type"] = "text/plain; charset=utf-8";
+  if (!available) headers["Retry-After"] = "10";
+  return selected(new Response(request.method === "HEAD" ? null : body, {
+    status: available ? 200 : 503, headers,
+  }), env, origin, reason);
+}
+
+function selected(answer, env, origin, reason) {
+  if (env.LOG_OUTCOMES === "true") {
+    console.log({ origin, reason, status: answer.status });
+  }
+  const copy = notified(notified(answer, "X-USNM-Origin", origin), "X-USNM-Failover-Reason", reason);
+  return counted(copy, env, origin);
+}
+
+function unavailable(request, env, reason) {
+  const answer = problem(request, "unavailable", env);
+  answer.headers.delete("X-USNM-Error-Layer");
+  answer.headers.set("Retry-After", "10");
+  return selected(answer, env, "unavailable", reason);
+}
+
+async function deliver(request, env, target) {
+  return bounded((signal) => {
+    const outgoing = target ? toAzure(request, target, env) : toTunnel(request, env);
+    return fetch(new Request(outgoing, { signal, redirect: "manual" }));
+  }, ORIGIN_MS, request.signal);
+}
+
+async function healthFailover(request, env) {
+  const safe = request.method === "GET" || request.method === "HEAD";
+  checkAbort(request.signal);
+  if (env.HEALTH_HOSTNAME !== undefined && !HEALTH_HOSTNAMES.has(env.HEALTH_HOSTNAME)) {
+    return unavailable(request, env, "health-config-invalid");
+  }
+  const healthOrigin = env.HEALTH_HOSTNAME ? `https://${env.HEALTH_HOSTNAME}` : new URL(request.url).origin;
+  let reason = "primary-unhealthy";
+  if (await ready(healthOrigin, PRIMARY_HEALTH_MS, request.signal, true)) {
+    let answer;
+    try {
+      answer = await deliver(request, env, null);
+    } catch (error) {
+      checkAbort(request.signal);
+      if (error?.name === "AbortError") throw error;
+      reason = ["OriginDeadlineError", "TimeoutError"].includes(error?.name) ? "primary-timeout" : "primary-network";
+      if (!safe) return unavailable(request, env, reason);
+    }
+    if (answer) {
+      if (answer.status < 500 || answer.status > 599) return selected(answer, env, "onprem", "primary-ready");
+      reason = "primary-5xx";
+      if (!safe) return selected(answer, env, "onprem", reason);
+      void answer.body?.cancel().catch(() => {});
+    }
+  }
+  checkAbort(request.signal);
+  const target = azureUrl(request.url, env.AZURE_FALLBACK_ORIGIN);
+  if (!target) return unavailable(request, env, "azure-config-invalid");
+  if (!await azureReady(env, request.signal)) return unavailable(request, env, "azure-unready");
+  checkAbort(request.signal);
+  try {
+    return selected(await deliver(request, env, target), env, "azure", reason);
+  } catch (error) {
+    checkAbort(request.signal);
+    if (error?.name === "AbortError") throw error;
+    return unavailable(request, env,
+      ["OriginDeadlineError", "TimeoutError"].includes(error?.name) ? "azure-timeout" : "azure-network");
+  }
+}
 
 // Azure's answer, whatever it is. If Azure cannot answer at all, the tunnel's own answer
 // when it gave one (the visitor sees what they would without a Worker), else Azure's error.
@@ -99,6 +321,9 @@ function notified(answer, header, value) {
 }
 
 function counted(answer, env, outcome) {
+  if (env.METRICS_MODE === "native") {
+    return notified(answer, "X-USNM-Fallback-Metric", "native-aggregate");
+  }
   if (!env.FALLBACK_METRICS) {
     return notified(answer, "X-USNM-Fallback-Metric", "unavailable");
   }

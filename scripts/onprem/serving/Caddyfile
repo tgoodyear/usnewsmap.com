@@ -35,3 +35,5 @@ http://:8080 {
 	bind 127.0.0.1
 	import /etc/usnm-serving/upstream.caddy
 }
+
+import /etc/usnm-serving/extra/*.caddy

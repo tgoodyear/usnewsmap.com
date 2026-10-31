@@ -1,0 +1,64 @@
+name: edge-worker-deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-worker-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+      - id: head
+        name: Do not replace a newer release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: GITHUB_SHA="$DEPLOY_SHA" scripts/ci/head-of-main.sh
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - if: steps.head.outputs.current == 'true'
+        run: node --test edge/fallback-worker/*.test.mjs
+      - if: steps.head.outputs.current == 'true'
+        run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
+      - if: steps.head.outputs.current == 'true'
+        run: shellcheck -x -S warning edge/fallback-worker/deploy.sh scripts/ci/deploy-edge-worker.sh
+      - if: steps.head.outputs.current == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - if: steps.head.outputs.current == 'true'
+        name: Deploy production routing, health domain and heartbeat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/deploy-edge-worker.sh

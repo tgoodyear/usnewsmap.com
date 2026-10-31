@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 30 October 2026.</p>
+        <p className="privacy-updated">Last updated 31 October 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
           runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
@@ -54,12 +54,12 @@ export default function PrivacyPage() {
 
         <h2>Searches</h2>
         <p>
-          The site's own records never store the words you search for with your IP address or anything else about you.
-          Cloudflare may retain the full request address, including search words, with your IP address as described
-          below. The server keeps a record of each request it answers: the kind of request (such as search results or
-          map places), its status and how long it took. These records leave out the page address, your search and your
-          IP address. So that a repeated search is fast, the server caches search results for up to 14 days. A cached
-          result includes the search words but nothing about who searched.
+          The anonymous search log described below never stores the words you search for with your IP address or
+          anything else about you. Cloudflare may retain the full request address, including search words, with your IP
+          address as described below. The server keeps a record of each request it answers: the kind of request (such as
+          search results or map places), its status and how long it took. These records leave out the page address, your
+          search and your IP address. So that a repeated search is fast, the server caches search results for up to 14
+          days. A cached result includes the search words but nothing about who searched.
         </p>
         <p>
           The site keeps the words of every search indefinitely, to understand what people look for. Each search is
@@ -89,14 +89,21 @@ export default function PrivacyPage() {
 
         <h2>Cloudflare</h2>
         <p>
-          Requests to this site pass through Cloudflare before reaching our servers in Microsoft Azure. Cloudflare
-          terminates HTTPS and can see your IP address, the full address you request (including search words in a path
-          or query string), and request headers. Cloudflare caches static files, versioned lookup data and, for about
-          two weeks, the summary results of searches, stored with the search words but nothing about who searched. It
-          does not cache lists of matching pages or this site's HTML pages. A later visitor making the same search gets
-          the cached result from Cloudflare, and the site then reports the search to our servers, so it is still
-          recorded as described above. Do Not Track and Global Privacy Control do not prevent this processing, but no
-          search is reported or recorded when you use them.
+          Requests to this site pass through Cloudflare before reaching our on-prem servers, with Microsoft Azure as the
+          fallback when those servers are unavailable. Cloudflare terminates HTTPS and can see your IP address, the full
+          address you request (including search words in a path or query string), and request headers. Cloudflare caches
+          static files, versioned lookup data and, for about two weeks, the summary results of searches, stored with the
+          search words but nothing about who searched. It does not cache lists of matching pages or this site's HTML
+          pages. A later visitor making the same search gets the cached result from Cloudflare, and the site then
+          reports the search to our servers, so it is still recorded as described above. Do Not Track and Global Privacy
+          Control do not prevent this processing, but no search is reported or recorded when you use them.
+        </p>
+        <p>
+          We enable Cloudflare Worker invocation logs to diagnose availability and failures. These operational logs
+          retain request headers, including IP addresses, and geolocation. URL query strings are redacted, but paths and
+          other request metadata are not anonymized. Cloudflare currently retains these invocation logs for up to seven
+          days. They are separate from the anonymous search log described above, and Do Not Track or Global Privacy
+          Control does not suppress these operational logs.
         </p>
         <p>
           Cloudflare may retain sampled security request records containing your IP address and the requested address
@@ -111,17 +118,19 @@ export default function PrivacyPage() {
 
         <h2>Storage and retention</h2>
         <p>
-          Microsoft Azure processes and stores this data in its East US 2 region (Virginia, United States). Page views,
-          request records and the server's error reports are deleted after 90 days, and its other logs after 30 days.
-          The search words described above are kept indefinitely.
+          Microsoft Azure processes and stores the site's reports in its East US 2 region (Virginia, United States).
+          Page views, request records and the server's error reports are deleted after 90 days, and its other logs after
+          30 days. The search words described above are kept indefinitely. The on-prem servers also keep published
+          search data, response caches and operational service journals; Cloudflare's records are separate as described
+          above.
         </p>
 
         <h2>Legal basis</h2>
         <p>
           The site uses this data for aggregate statistics, such as visits per day and which sites send visitors, and to
-          keep the service working. That is a legitimate interest, and the site's own records keep no IP address, cookie
-          or identifier. The same legitimate interest covers using Cloudflare to deliver and protect the site. The site
-          doesn't ask for consent because it stores nothing on your device.
+          keep the service working. That is a legitimate interest, and the site's anonymous reports keep no IP address,
+          cookie or identifier. The same legitimate interest covers using Cloudflare to deliver and protect the site.
+          The site doesn't ask for consent because it stores nothing on your device.
         </p>
 
         <h2>Other sites</h2>

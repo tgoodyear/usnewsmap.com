@@ -14,5 +14,9 @@
 # a "?" to the next space or quote before the journal sees the line.
 # cloudflared itself is exec'd, so it stays the unit's main process.
 set -euo pipefail
+metrics=${TUNNEL_METRICS:-127.0.0.1:20241}
+[[ $metrics =~ ^127\.0\.0\.1:([0-9]{1,5})$ ]] &&
+  [ "${BASH_REMATCH[1]}" -gt 0 ] && [ "${BASH_REMATCH[1]}" -le 65535 ] ||
+  { echo "error: TUNNEL_METRICS must be a loopback address and valid port" >&2; exit 1; }
 exec /usr/bin/cloudflared --no-autoupdate tunnel --loglevel info --edge-ip-version 4 \
-  --metrics 127.0.0.1:20241 run > >(exec sed -u -E 's/\?[^"\\[:space:]]*/?[query removed]/g') 2>&1
+  --metrics "$metrics" run > >(exec sed -u -E 's/\?[^"\\[:space:]]*/?[query removed]/g') 2>&1

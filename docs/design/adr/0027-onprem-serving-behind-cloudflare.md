@@ -6,6 +6,7 @@
 - **Extends:** ADR-0024 (a second tunnel token and a Workers-scoped API token under its rules)
 - **Supersedes:** the end state of #917, in which Azure kept the searcher, the API and the web app
 - **Relates to:** #955, #283, #917, #942, #944, #967, #969
+- **Amended by:** [ADR-0029](0029-onprem-primary-azure-failover.md): health-driven on-prem primary, retained single-release Azure cold standby rather than Phase 4 deletion, and separate stateful authority gates.
 
 ## Context
 

@@ -2,7 +2,10 @@
 
 These files run usnewsmap.com from one unprivileged container on an on-prem Proxmox host, behind a Cloudflare Tunnel ([#955](https://github.com/tgoodyear/usnewsmap.com/issues/955); the plan is in [its architecture comment](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6331553520)). They follow the BOINC server's pattern ([`scripts/boinc/onprem/`](../../boinc/onprem/), [docs/boinc-onprem.md](../../../docs/boinc-onprem.md)).
 
-This is Phase 0. The files are written and tested, but nothing runs them yet. Phase 2 builds the container and runs them on a private test hostname. Azure serves the public until Phase 3.
+Production cutover and automatic Azure fallback follow
+[ADR-0029](../../../docs/design/adr/0029-onprem-primary-azure-failover.md).
+Do not infer active routing from the existence of these files: retain the live
+DNS/Worker/service and public-request receipts.
 
 The container itself, its VLAN and its firewall are in home-infra's `scripts/lab/serving-ct.sh`. Host names and addresses stay there, out of this repository.
 
@@ -18,7 +21,24 @@ Everything listens on loopback only. The only way in is the tunnel, which cloudf
 | `usnm-searcher.service`                           | The pinned Quickwit binary (`scripts/onprem/install-quickwit.sh`), searcher and metastore roles, reading the index from a read-only `file://` metastore.     | 127.0.0.1:7280, and :7281 (gRPC)      |
 | `usnm-serving-update.timer`                       | Runs `update-api.sh` 2 minutes after the last run ends, so the API follows the image prod runs.                                                              |                                       |
 
-The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with the container's own Arc identity. The search log and OCR requests stay off until Phase 3, because the API records same-origin searches on any hostname, the test hostname included.
+The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with the container's own Arc identity. Rehearsals leave search logging and OCR requests off, because the API records same-origin searches on any hostname, the test hostname included. The authorized production deployment enables their shared authoritative stores.
+
+At the authorized public cutover, pass `--production` to both `gen-env.sh`
+and `install.sh`. This enables the shared Azure search log without
+introducing a second state authority. The OCR-request writer follows
+Azure's infrastructure predicate: `USNM_OCR_NODES && USNM_USE_ACR` and
+either `USNM_INGEST_JOBS` or `USNM_OCR_SYNC_ONPREM` with a nonblank
+`USNM_BATCH_HOST`; `USNM_OCR_LOCAL` does not control the writer.
+`--check-app --production` requires both writer settings to match Azure,
+rather than accepting them as rehearsal-only differences. The default
+rehearsal configuration still leaves both unset and the installer refuses
+writer settings without that explicit flag.
+
+Additional isolated listeners, such as the dev origin, may be installed under
+`/etc/usnm-serving/extra/*.caddy`. The updater verifies only the production
+listener on `127.0.0.1:8080`, not an unrelated dev upstream. Preserve the
+qualified read-only index mount's UID/GID in a systemd drop-in when it differs
+from the default searcher account; do not rewrite the source index permissions.
 
 ## Files
 
@@ -89,7 +109,7 @@ retain `Content-Length`/`Content-Range` without `Content-Encoding`.
 3. On the operator's machine:
 
    ```bash
-   scripts/onprem/serving/gen-env.sh --env prod --index-dir <run directory>/qw --out <new directory> --check-app
+   bash scripts/onprem/serving/gen-env.sh --env prod --index-dir <run directory>/qw --out <new directory> --check-app
    ```
 
    Then copy that directory into the container (`serving-ct.sh --config`).
@@ -109,6 +129,39 @@ retain `Content-Length`/`Content-Range` without `Content-Encoding`.
 6. The timer's first run deploys the image prod runs to blue.
 
 ## Deploys
+
+The edge has a separate automated release:
+[`edge-worker-deploy.yml`](../../../.github/workflows/edge-worker-deploy.yml)
+waits for successful trusted-main CI, checks the immutable SHA is still
+current, validates the Worker and deploys
+[`deploy-edge-worker.sh`](../../ci/deploy-edge-worker.sh).
+It maintains the public routes, `healthcheck.usnewsmap.com` custom domain,
+minute heartbeat and code-backed runtime/logging/cache settings in
+[`edge/fallback-worker/`](../../../edge/fallback-worker/README.md).
+It never reads the home-IP-only vault from GitHub-hosted runners.
+
+One-time operator setup stores an account/zone-scoped Cloudflare Worker token
+and account identifier as `usnm-prod-workers-ci-token` and
+`usnm-prod-cloudflare-account-id` in the existing production CI vault.
+Do not put token values in shell arguments, repository files or Actions logs.
+Apply only the corresponding secret reader grants:
+
+```bash
+CI_PRINCIPAL=$(az identity show -g rg-usnm-prod -n usnm-ci-id-prod --query principalId -o tsv)
+az deployment group what-if -g rg-usnm-prod \
+  --template-file infra/modules/edge-worker-ci.bicep \
+  --parameters vaultName=usnmtlskvprodffapzy ciPrincipalId="$CI_PRINCIPAL"
+az deployment group create -g rg-usnm-prod --mode Incremental \
+  --template-file infra/modules/edge-worker-ci.bicep \
+  --parameters vaultName=usnmtlskvprodffapzy ciPrincipalId="$CI_PRINCIPAL"
+```
+
+These grants do not permit listing other secrets or modifying vault
+networking. The token expires 31 October 2027; rotate it in the secret store
+beforehand. Health-domain readiness validation permits DNS/certificate
+propagation time. When diagnosing a local resolver failure, verify public
+DNS and HTTPS from another resolver/client rather than changing origin DNS
+or claiming the Worker failed.
 
 CI's publish job pushes each prod image as `usnewsmap-api:main` and `usnewsmap-api:<commit>`. Its last step, after the Azure app rolls onto the image, attests it (a Phase 0 code PR adds this step), so an attested image is one prod runs.
 
@@ -135,7 +188,7 @@ The image must be attested for that commit. This creates `/etc/usnm-serving/hold
 
 ## Logs
 
-Nothing here logs a client address or a query string (09 §9.4.2):
+The on-prem service logs do not record a client address or a query string (09 §9.4.2):
 
 - cloudflared runs at `--loglevel info`, since debug logs every URI, and `run-cloudflared.sh` cuts the query string from the URL in its error lines;
 - Caddy has no access log, and its error log drops each line's request field (the URI and the headers, `CF-Connecting-IP` among them);
@@ -144,9 +197,16 @@ Nothing here logs a client address or a query string (09 §9.4.2):
 
 The journal keeps 30 days.
 
+The separately requested Cloudflare Worker invocation logs are different:
+platform request metadata includes IP-bearing headers and geolocation even
+with query-string redaction. Fixed application outcome records omit those
+fields. See [ADR-0029](../../../docs/design/adr/0029-onprem-primary-azure-failover.md)
+and the visitor privacy page for this explicit policy amendment, retention and
+measured heartbeat/cold-start acceptance.
+
 ## Searcher restarts
 
-An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). While the searcher restarts, the API serves cached searches and answers the rest with its own 503, which the [fallback Worker](../../../edge/fallback-worker/README.md) passes through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
+An upgrade or a new index version restarts the only searcher, so it is a short outage with cold caches. Do it at a scheduled off-peak time (ADR-0027 settled decision 8). Under the production [ADR-0029](../../../docs/design/adr/0029-onprem-primary-azure-failover.md) mode, failed readiness selects Azure and the minute heartbeat can wake its cold standby; the legacy connector-only Worker mode passes application 503s through. `install.sh` restarts the searcher only when its config, environment, binary or unit changed. The steps are in [09 §9.3.1](../../../docs/design/09-operations-security-cost.md#931-on-prem-serving).
 
 ## Open items for Phase 2
 

@@ -394,6 +394,44 @@ class SearcherRollbackTemplate(unittest.TestCase):
                              cwd=ROOT, capture_output=True, text=True, check=True)
         cls.template = json.loads(run.stdout)
 
+    def test_cold_standby_skips_example_warmup_without_weakening_rollouts(self):
+        variables = self.template["variables"]
+        self.assertEqual(variables["holdReadyForWarmUp"], "[greater(parameters('minReplicas'), 0)]")
+        self.assertEqual(variables["readyEnv"], [
+            {"name": "USNM_PREWARM_STARTUP_BUDGET_SECS",
+             "value": "[string(if(variables('holdReadyForWarmUp'), variables('startupWarmUpSecs'), 0))]"},
+            {"name": "USNM_READY_CAP_SECS", "value": "[string(variables('readyCapSecs'))]"},
+        ])
+        self.assertEqual(variables["readyCapSecs"],
+                         "[if(variables('holdReadyForWarmUp'), add(variables('startupWarmUpSecs'), 60), 60)]")
+
+    def test_standalone_searchers_have_an_explicit_http_wakeup_rule(self):
+        for name in ("[parameters('searcherName')]", "[parameters('indexSearcherName')]"):
+            resource = next(resource for resource in self.template["resources"]
+                            if resource["name"] == name)
+            scale = resource["properties"]["template"]["scale"]
+            self.assertEqual(scale["minReplicas"], "[parameters('searcherMinReplicas')]")
+            self.assertEqual(scale["maxReplicas"], 1)
+            self.assertEqual(scale["rules"], [
+                {"name": "http", "http": {"metadata": {"concurrentRequests": "50"}}},
+            ])
+
+    def test_optional_min_replicas_builds_with_environment_defaults_and_cold_override(self):
+        env = {key: value for key, value in os.environ.items() if not key.startswith("USNM_")}
+        env["USNM_VNET_ADDRESS_PREFIX"] = "192.0.2.0/24"
+        for name, minimum, expected in (("dev", None, 0), ("prod", None, 1), ("prod", "0", 0)):
+            with self.subTest(name=name, minimum=minimum):
+                case = {**env, "AZURE_ENV_NAME": name}
+                if minimum is not None:
+                    case["USNM_API_MIN_REPLICAS"] = minimum
+                run = subprocess.run([os.environ.get("BICEP", "bicep"), "build-params",
+                                      "infra/main.bicepparam", "--stdout"],
+                                     cwd=ROOT, env=case, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                result = json.loads(run.stdout)
+                self.assertEqual(json.loads(result["parametersJson"])["parameters"]["apiMinReplicas"]["value"],
+                                 expected)
+
     def test_api_consumes_allocated_slots_without_nested_user_functions(self):
         self.assertNotIn("functions", self.template)
         self.assertIsInstance(self.template["resources"], list)

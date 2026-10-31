@@ -32,11 +32,15 @@ describe("PrivacyPage", () => {
     expect(text).not.toContain("copied from the search engine's own log");
   });
 
-  it("discloses Cloudflare processing while retaining Azure serving and saying what it caches", () => {
+  it("discloses primary/fallback serving, operational logs and Cloudflare caching", () => {
     const { container } = render(<PrivacyPage />);
     const text = container.textContent ?? "";
     expect(screen.getByRole("heading", { name: "Cloudflare" })).toBeTruthy();
-    expect(text).toContain("before reaching our servers in Microsoft Azure");
+    expect(text).toContain("before reaching our on-prem servers");
+    expect(text).toContain("Microsoft Azure as the fallback");
+    expect(text).toContain("Cloudflare Worker invocation logs");
+    expect(text).toContain("including IP addresses, and geolocation");
+    expect(text).toContain("URL query strings are redacted");
     expect(text).toContain("for up to 31 days");
     expect(text).toContain("the summary results of searches");
     expect(text).toContain("does not cache lists of matching pages");

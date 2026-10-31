@@ -53,6 +53,13 @@
       "minimum": 1,
       "description": "Maximum API replicas (default 2); divides the shared-searcher computation budget."
     },
+    "USNM_API_MIN_REPLICAS": {
+      "x-usnm-visibility": "public",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Minimum Azure API replicas: production defaults to 1; 0 enables HTTP-triggered cold standby for both API and searcher (ADR-0029)."
+    },
     "USNM_ARCHIVE_ACCOUNT": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The archival account's resource id, which names its subscription.",

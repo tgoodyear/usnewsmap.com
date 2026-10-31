@@ -7,7 +7,7 @@
 # run again.
 #
 #   scripts/onprem/serving/install.sh --registry NAME --config-dir DIR
-#     [--env prod] [--skip-quickwit] [--dry-run]
+#     [--env prod] [--skip-quickwit] [--production] [--dry-run]
 #
 # --registry: the environment's registry name (NAME.azurecr.io), which the
 #   Arc identity can pull from (AcrPull).
@@ -43,13 +43,14 @@ set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '9,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 
-REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false
+REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
     --config-dir) CONFIG=${2:-}; shift 2 || usage ;;
     --env) ENV_NAME=${2:-}; shift 2 || usage ;;
     --skip-quickwit) SKIP_QW=true; shift ;;
+    --production) PRODUCTION=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -70,8 +71,10 @@ CACHE_UID=1000
 for f in api.env searcher.env searcher.yaml; do
   [ -s "$CONFIG/$f" ] || die "no $CONFIG/$f; run gen-env.sh --out $CONFIG first"
 done
-grep -qE '^(USNM_SEARCH_LOG_URL|USNM_OCR_REQUESTS_URL)=' "$CONFIG/api.env" &&
-  die "$CONFIG/api.env sets the search log or OCR requests, which stay unset until the public cutover (#955 Phase 3)"
+if ! $PRODUCTION; then
+  grep -qE '^(USNM_SEARCH_LOG_URL|USNM_OCR_REQUESTS_URL)=' "$CONFIG/api.env" &&
+    die "$CONFIG/api.env sets the search log or OCR requests, which require explicit --production at cutover (#955 Phase 3)"
+fi
 for tool in podman skopeo caddy cloudflared gh jq curl flock sha256sum; do
   command -v "$tool" > /dev/null || die "no $tool here: make the container with home-infra's scripts/lab/serving-ct.sh"
 done

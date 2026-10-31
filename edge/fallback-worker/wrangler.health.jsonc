@@ -1,0 +1,28 @@
+// Opt-in heartbeat configuration; deploy.sh selects this ONLY with --health-heartbeat.
+// Keep routes/runtime/privacy identical to wrangler.jsonc. Tests enforce parity.
+{
+  "name": "usnm-fallback",
+  "main": "worker.mjs",
+  "compatibility_date": "2025-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "cache": { "enabled": false },
+  "observability": { "enabled": false },
+  "analytics_engine_datasets": [
+    { "binding": "FALLBACK_METRICS", "dataset": "usnm_fallback" }
+  ],
+  "routes": [
+    { "pattern": "usnewsmap.com/*", "zone_name": "usnewsmap.com" },
+    { "pattern": "www.usnewsmap.com/*", "zone_name": "usnewsmap.com" },
+    { "pattern": "api.usnewsmap.com/*", "zone_name": "usnewsmap.com" }
+  ],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "AZURE_FALLBACK_ORIGIN": "",
+    "ERROR_LAYER": "false",
+    "ALLOWED_ORIGINS": "https://usnewsmap.com",
+    "HEALTH_FAILOVER": "true",
+    "HEALTH_HEARTBEAT": "true",
+    "HEALTH_HOSTNAME": "usnewsmap.com"
+  }
+}
