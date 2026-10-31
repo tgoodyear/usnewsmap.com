@@ -16,15 +16,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CARGO = shutil.which("cargo")
+WINDOWS_ONLY = ("windows-core", "windows-result", "windows-strings")
 
 
-def downgrade_patch(repo: Path, name: str) -> None:
-    """Move a crate down one patch release, so these tests follow the lockfile's versions."""
+def downgrade_patch(repo: Path, *names: str) -> None:
+    """Move the first crate that can go down one patch release, so these tests follow the
+    lockfile's versions. A crate at patch 0, or held up by what depends on it, is passed over."""
     lock = (repo / "Cargo.lock").read_text()
-    version = re.search(rf'name = "{name}"\nversion = "((\d+\.\d+)\.(\d+))"', lock)
-    older = f"{version.group(2)}.{int(version.group(3)) - 1}"
-    subprocess.run([CARGO, "update", "-q", "-p", f"{name}@{version.group(1)}", "--precise", older],
-                   cwd=repo, check=True, capture_output=True)
+    for name in names:
+        version = re.search(rf'name = "{name}"\nversion = "((\d+\.\d+)\.(\d+))"', lock)
+        if version is None or version.group(3) == "0":
+            continue
+        older = f"{version.group(2)}.{int(version.group(3)) - 1}"
+        if subprocess.run([CARGO, "update", "-q", "-p", f"{name}@{version.group(1)}",
+                           "--precise", older], cwd=repo, capture_output=True).returncode == 0:
+            return
+    raise AssertionError(f"none of {names} can go down a patch release")
 
 
 class Dispatch(unittest.TestCase):
@@ -262,7 +269,7 @@ class Quickwit(unittest.TestCase):
     @unittest.skipUnless(CARGO, "no cargo")
     def test_api_lockfile_bump_runs_both_for_example_build_resolution(self):
         def change():
-            downgrade_patch(self.repo, "governor")
+            downgrade_patch(self.repo, "governor", "moka", "zstd")
             self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
         self.change = change
         flags = self.outputs()
@@ -954,8 +961,9 @@ class BuildInputs(unittest.TestCase):
             ).stdout
 
         before = host_tree()
-        self.assertNotRegex(before, r"(?m)^windows-core v")
-        downgrade_patch(self.repo, "windows-core")
+        for name in WINDOWS_ONLY:
+            self.assertNotRegex(before, rf"(?m)^{name} v")
+        downgrade_patch(self.repo, *WINDOWS_ONLY)
         self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
         self.assertEqual(host_tree(), before)
         self.assertIn("boinc_native", self.select())
