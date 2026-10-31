@@ -17,17 +17,28 @@ class EdgeWorkerDeploy(unittest.TestCase):
         scripts = self.root / "scripts/ci"
         scripts.mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/ci/deploy-edge-worker.sh", scripts)
+        shutil.copy2(ROOT / "scripts/ci/head-of-main.sh", scripts)
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.log = self.root / "calls"
+        self.main = self.root / "main"
+        self.main.write_text("tested\n")
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
-                        CALLS=str(self.log))
+                        CALLS=str(self.log), GITHUB_ACTIONS="false",
+                        GITHUB_REPOSITORY="tgoodyear/usnewsmap.com",
+                        DEPLOY_SHA="tested", MAIN_FILE=str(self.main))
         self.stub(self.bin / "az", """#!/bin/sh
 case "$*" in
   "keyvault secret show"*) [ "${AZ_FAIL:-0}" = 0 ] || exit 1; echo account ;;
-  "containerapp show"*) echo standby.example.com ;;
+  "containerapp show"*)
+    [ "${ADVANCE_MAIN:-0}" = 0 ] || printf 'newer\\n' > "$MAIN_FILE"
+    echo standby.example.com ;;
   *) exit 1 ;;
 esac
+""")
+        self.stub(self.bin / "gh", """#!/bin/sh
+[ "${GH_FAIL:-0}" = 0 ] || exit 1
+cat "$MAIN_FILE"
 """)
         self.stub(self.bin / "curl", """#!/bin/sh
 [ "${CURL_FAIL:-0}" = 0 ] || exit 22
@@ -68,6 +79,24 @@ printf '%s\\n' "$@" > "$CALLS"
 
     def test_credential_failure_stops_before_deploy(self):
         result = self.run_deploy(AZ_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.log.exists())
+
+    def test_ci_rechecks_main_after_setup_before_deploy(self):
+        result = self.run_deploy(GITHUB_ACTIONS="true", ADVANCE_MAIN="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertIn("not deploying tested", result.stdout)
+        self.assertNotIn("verified production", result.stdout)
+
+    def test_ci_deploys_when_tested_sha_is_still_current(self):
+        result = self.run_deploy(GITHUB_ACTIONS="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.log.exists())
+        self.assertIn("verified production", result.stdout)
+
+    def test_ci_head_lookup_failure_stops_before_deploy(self):
+        result = self.run_deploy(GITHUB_ACTIONS="true", GH_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.log.exists())
 

@@ -11,6 +11,18 @@ ORIGIN=$(az containerapp show -g rg-usnm-prod -n ca-usnm-prod --query properties
   exit 1
 }
 
+if [ "${GITHUB_ACTIONS:-false}" = true ]; then
+  current=$(mktemp)
+  trap 'rm -f "$current"' EXIT
+  GITHUB_SHA="${DEPLOY_SHA:?error: DEPLOY_SHA is required for CI deployment}" \
+    GITHUB_OUTPUT="$current" scripts/ci/head-of-main.sh
+  if ! grep -qx current=true "$current"; then
+    exit 0
+  fi
+  rm -f "$current"
+  trap - EXIT
+fi
+
 edge/fallback-worker/deploy.sh \
   --account-id "$ACCOUNT" \
   --azure-origin "https://$ORIGIN" \

@@ -197,6 +197,10 @@ behavior remain separate; gateway caching must not bypass readiness.
 `ci`, checks out that immutable SHA and refuses to replace a newer main
 release. It validates Node tests, pinned Wrangler/workerd and shell scripts,
 then uses production Azure OIDC and `scripts/ci/deploy-edge-worker.sh`.
+The wrapper rechecks main after tests, OIDC and origin/credential lookup,
+immediately before dispatching the deployment; a stale run explicitly skips
+and a failed head lookup stops before changing Cloudflare. This reduces the
+setup-to-deployment race, but is not an atomic GitHub/Cloudflare transaction.
 Manual dispatch is restricted to main and repeats the edge checks.
 
 `infra/modules/edge-worker-ci.bicep` grants the existing CI identity read-only
