@@ -1,0 +1,238 @@
+lang,damage_band,agreement_class,pages,sum_dice
+chr,1 fine,0 no pair,3,
+cze,1 fine,0 no pair,1963,
+cze,1 fine,1 under half placed,54,10.434
+cze,1 fine,"3 placed, local_cer 0.1-0.2",59,21.138
+cze,1 fine,"4 placed, local_cer > 0.2",34,9.186
+cze,2 moderate,0 no pair,20385,
+cze,2 moderate,1 under half placed,4886,1259.965
+cze,2 moderate,"3 placed, local_cer 0.1-0.2",3079,1092.612
+cze,2 moderate,"4 placed, local_cer > 0.2",2481,786.575
+cze,3 bad,0 no pair,16411,
+cze,3 bad,1 under half placed,3349,811.241
+cze,3 bad,"3 placed, local_cer 0.1-0.2",436,152.309
+cze,3 bad,"4 placed, local_cer > 0.2",384,126.489
+dan,1 fine,0 no pair,5511,
+dan,1 fine,1 under half placed,3963,744.668
+dan,1 fine,"2 placed, local_cer <= 0.1",23,7.030
+dan,1 fine,"3 placed, local_cer 0.1-0.2",251,91.059
+dan,1 fine,"4 placed, local_cer > 0.2",14,2.813
+dan,2 moderate,0 no pair,6362,
+dan,2 moderate,1 under half placed,5772,1085.122
+dan,2 moderate,"2 placed, local_cer <= 0.1",5,1.341
+dan,2 moderate,"3 placed, local_cer 0.1-0.2",225,70.920
+dan,2 moderate,"4 placed, local_cer > 0.2",63,20.336
+dan,3 bad,0 no pair,3799,
+dan,3 bad,1 under half placed,1831,367.772
+dan,3 bad,"3 placed, local_cer 0.1-0.2",5,1.068
+dan,3 bad,"4 placed, local_cer > 0.2",4,1.581
+eng,1 fine,0 no pair,4800170,
+eng,1 fine,1 under half placed,1279190,534677.795
+eng,1 fine,"2 placed, local_cer <= 0.1",5790360,4693053.155
+eng,1 fine,"3 placed, local_cer 0.1-0.2",2229995,1645979.861
+eng,1 fine,"4 placed, local_cer > 0.2",37342,25372.100
+eng,2 moderate,0 no pair,1685486,
+eng,2 moderate,1 under half placed,2070348,824029.197
+eng,2 moderate,"2 placed, local_cer <= 0.1",236364,169280.013
+eng,2 moderate,"3 placed, local_cer 0.1-0.2",1755527,1159167.339
+eng,2 moderate,"4 placed, local_cer > 0.2",142020,83848.377
+eng,3 bad,0 no pair,534987,
+eng,3 bad,1 under half placed,1120196,332138.845
+eng,3 bad,"2 placed, local_cer <= 0.1",681,445.710
+eng,3 bad,"3 placed, local_cer 0.1-0.2",50499,27982.050
+eng,3 bad,"4 placed, local_cer > 0.2",25966,13379.638
+fin,1 fine,0 no pair,568,
+fin,1 fine,1 under half placed,12,1.497
+fin,1 fine,"3 placed, local_cer 0.1-0.2",1,0.510
+fin,2 moderate,0 no pair,19346,
+fin,2 moderate,1 under half placed,1890,250.156
+fin,2 moderate,"3 placed, local_cer 0.1-0.2",100,47.024
+fin,2 moderate,"4 placed, local_cer > 0.2",4,1.193
+fin,3 bad,0 no pair,3265,
+fin,3 bad,1 under half placed,424,53.387
+fin,3 bad,"3 placed, local_cer 0.1-0.2",5,2.425
+fre,1 fine,0 no pair,74590,
+fre,1 fine,1 under half placed,1643,421.396
+fre,1 fine,"2 placed, local_cer <= 0.1",114,69.004
+fre,1 fine,"3 placed, local_cer 0.1-0.2",6700,3463.552
+fre,1 fine,"4 placed, local_cer > 0.2",358,126.691
+fre,2 moderate,0 no pair,31728,
+fre,2 moderate,1 under half placed,1594,465.658
+fre,2 moderate,"2 placed, local_cer <= 0.1",2,0.116
+fre,2 moderate,"3 placed, local_cer 0.1-0.2",1144,496.971
+fre,2 moderate,"4 placed, local_cer > 0.2",499,186.760
+fre,3 bad,0 no pair,12585,
+fre,3 bad,1 under half placed,767,195.230
+fre,3 bad,"3 placed, local_cer 0.1-0.2",18,5.581
+fre,3 bad,"4 placed, local_cer > 0.2",28,5.162
+ger,1 fine,0 no pair,214343,
+ger,1 fine,1 under half placed,79961,12613.357
+ger,1 fine,"2 placed, local_cer <= 0.1",68,46.382
+ger,1 fine,"3 placed, local_cer 0.1-0.2",132,78.487
+ger,1 fine,"4 placed, local_cer > 0.2",5,1.182
+ger,2 moderate,0 no pair,188450,
+ger,2 moderate,1 under half placed,89782,14206.645
+ger,2 moderate,"2 placed, local_cer <= 0.1",2,0.954
+ger,2 moderate,"3 placed, local_cer 0.1-0.2",9,3.776
+ger,2 moderate,"4 placed, local_cer > 0.2",1,0.349
+ger,3 bad,0 no pair,28461,
+ger,3 bad,1 under half placed,11856,1794.000
+haw,1 fine,0 no pair,25,
+haw,1 fine,"3 placed, local_cer 0.1-0.2",2,1.496
+haw,2 moderate,0 no pair,5,
+haw,2 moderate,1 under half placed,2,0.846
+haw,3 bad,0 no pair,2,
+haw,3 bad,1 under half placed,2,0.378
+heb,3 bad,0 no pair,96,
+hrv,1 fine,0 no pair,184,
+hrv,1 fine,1 under half placed,91,17.391
+hrv,1 fine,"2 placed, local_cer <= 0.1",9,5.737
+hrv,1 fine,"3 placed, local_cer 0.1-0.2",1654,932.628
+hrv,1 fine,"4 placed, local_cer > 0.2",209,98.412
+hrv,2 moderate,0 no pair,76,
+hrv,2 moderate,1 under half placed,55,6.821
+hrv,2 moderate,"2 placed, local_cer <= 0.1",4,2.499
+hrv,2 moderate,"3 placed, local_cer 0.1-0.2",641,369.090
+hrv,2 moderate,"4 placed, local_cer > 0.2",90,47.881
+hrv,3 bad,0 no pair,2,
+hrv,3 bad,1 under half placed,11,0.631
+hrv,3 bad,"4 placed, local_cer > 0.2",2,0.191
+hun,1 fine,0 no pair,2960,
+hun,1 fine,1 under half placed,2,0.329
+hun,1 fine,"3 placed, local_cer 0.1-0.2",230,104.529
+hun,1 fine,"4 placed, local_cer > 0.2",3,1.179
+hun,2 moderate,0 no pair,2298,
+hun,2 moderate,1 under half placed,2,0.392
+hun,2 moderate,"3 placed, local_cer 0.1-0.2",119,49.593
+hun,2 moderate,"4 placed, local_cer > 0.2",7,2.548
+hun,3 bad,0 no pair,16,
+hun,3 bad,1 under half placed,1,0.217
+ice,1 fine,0 no pair,25,
+ice,1 fine,1 under half placed,3,0.553
+ice,1 fine,"3 placed, local_cer 0.1-0.2",40,15.903
+ice,2 moderate,0 no pair,205,
+ice,2 moderate,1 under half placed,35,6.321
+ice,2 moderate,"3 placed, local_cer 0.1-0.2",172,70.225
+ice,2 moderate,"4 placed, local_cer > 0.2",39,13.850
+ice,3 bad,0 no pair,14,
+ice,3 bad,1 under half placed,1,0.253
+ice,3 bad,"3 placed, local_cer 0.1-0.2",2,1.064
+ice,3 bad,"4 placed, local_cer > 0.2",3,1.022
+ita,1 fine,0 no pair,33982,
+ita,1 fine,1 under half placed,350,105.165
+ita,1 fine,"2 placed, local_cer <= 0.1",586,390.534
+ita,1 fine,"3 placed, local_cer 0.1-0.2",1126,704.412
+ita,1 fine,"4 placed, local_cer > 0.2",33,13.936
+ita,2 moderate,0 no pair,45763,
+ita,2 moderate,1 under half placed,315,88.424
+ita,2 moderate,"2 placed, local_cer <= 0.1",12,6.711
+ita,2 moderate,"3 placed, local_cer 0.1-0.2",403,222.161
+ita,2 moderate,"4 placed, local_cer > 0.2",28,12.413
+ita,3 bad,0 no pair,3833,
+ita,3 bad,1 under half placed,64,9.289
+ita,3 bad,"4 placed, local_cer > 0.2",2,0.479
+lit,1 fine,0 no pair,287,
+lit,1 fine,1 under half placed,22,6.014
+lit,1 fine,"2 placed, local_cer <= 0.1",6,2.837
+lit,1 fine,"3 placed, local_cer 0.1-0.2",592,280.047
+lit,1 fine,"4 placed, local_cer > 0.2",18,6.490
+lit,2 moderate,0 no pair,12698,
+lit,2 moderate,1 under half placed,112,36.476
+lit,2 moderate,"2 placed, local_cer <= 0.1",16,8.926
+lit,2 moderate,"3 placed, local_cer 0.1-0.2",5078,2393.858
+lit,2 moderate,"4 placed, local_cer > 0.2",82,32.366
+lit,3 bad,0 no pair,1258,
+lit,3 bad,1 under half placed,17,5.060
+lit,3 bad,"2 placed, local_cer <= 0.1",3,1.652
+lit,3 bad,"3 placed, local_cer 0.1-0.2",270,121.528
+lit,3 bad,"4 placed, local_cer > 0.2",12,4.232
+nor,1 fine,0 no pair,28946,
+nor,1 fine,1 under half placed,4912,878.190
+nor,2 moderate,0 no pair,12410,
+nor,2 moderate,1 under half placed,1400,282.257
+nor,3 bad,0 no pair,1177,
+nor,3 bad,1 under half placed,393,69.751
+pol,1 fine,0 no pair,19386,
+pol,1 fine,1 under half placed,55,11.140
+pol,1 fine,"3 placed, local_cer 0.1-0.2",475,214.855
+pol,1 fine,"4 placed, local_cer > 0.2",11,4.172
+pol,2 moderate,0 no pair,96762,
+pol,2 moderate,1 under half placed,3045,743.866
+pol,2 moderate,"3 placed, local_cer 0.1-0.2",15915,7185.477
+pol,2 moderate,"4 placed, local_cer > 0.2",739,279.208
+pol,3 bad,0 no pair,24101,
+pol,3 bad,1 under half placed,2207,555.528
+pol,3 bad,"3 placed, local_cer 0.1-0.2",1194,488.195
+pol,3 bad,"4 placed, local_cer > 0.2",244,84.219
+rum,1 fine,0 no pair,1486,
+rum,1 fine,1 under half placed,21,1.441
+rum,1 fine,"3 placed, local_cer 0.1-0.2",1,0.478
+rum,2 moderate,0 no pair,559,
+rum,2 moderate,1 under half placed,39,3.038
+rum,2 moderate,"3 placed, local_cer 0.1-0.2",2,0.125
+rum,2 moderate,"4 placed, local_cer > 0.2",1,0.094
+rum,3 bad,0 no pair,27,
+rum,3 bad,1 under half placed,34,2.102
+rus,1 fine,0 no pair,1,
+rus,2 moderate,0 no pair,7057,
+rus,2 moderate,1 under half placed,156,2.119
+rus,3 bad,0 no pair,4140,
+rus,3 bad,1 under half placed,569,7.697
+slo,1 fine,0 no pair,4,
+slo,1 fine,1 under half placed,16,3.335
+slo,1 fine,"3 placed, local_cer 0.1-0.2",12,4.549
+slo,1 fine,"4 placed, local_cer > 0.2",12,3.616
+slo,2 moderate,0 no pair,75,
+slo,2 moderate,1 under half placed,895,248.973
+slo,2 moderate,"3 placed, local_cer 0.1-0.2",3012,1198.920
+slo,2 moderate,"4 placed, local_cer > 0.2",577,198.614
+slo,3 bad,0 no pair,20,
+slo,3 bad,1 under half placed,249,64.737
+slo,3 bad,"3 placed, local_cer 0.1-0.2",222,90.733
+slo,3 bad,"4 placed, local_cer > 0.2",88,30.861
+slv,1 fine,0 no pair,4448,
+slv,1 fine,1 under half placed,570,163.448
+slv,1 fine,"2 placed, local_cer <= 0.1",128,71.545
+slv,1 fine,"3 placed, local_cer 0.1-0.2",5600,3164.091
+slv,1 fine,"4 placed, local_cer > 0.2",441,233.777
+slv,2 moderate,0 no pair,1195,
+slv,2 moderate,1 under half placed,405,128.727
+slv,2 moderate,"2 placed, local_cer <= 0.1",12,6.539
+slv,2 moderate,"3 placed, local_cer 0.1-0.2",723,374.152
+slv,2 moderate,"4 placed, local_cer > 0.2",234,108.226
+slv,3 bad,0 no pair,1355,
+slv,3 bad,1 under half placed,106,27.310
+slv,3 bad,"3 placed, local_cer 0.1-0.2",1,0.516
+slv,3 bad,"4 placed, local_cer > 0.2",1,0.396
+spa,1 fine,0 no pair,188325,
+spa,1 fine,1 under half placed,12311,3957.368
+spa,1 fine,"2 placed, local_cer <= 0.1",3321,2225.835
+spa,1 fine,"3 placed, local_cer 0.1-0.2",45621,27420.268
+spa,1 fine,"4 placed, local_cer > 0.2",462,230.164
+spa,2 moderate,0 no pair,55209,
+spa,2 moderate,1 under half placed,40227,13149.131
+spa,2 moderate,"2 placed, local_cer <= 0.1",129,72.830
+spa,2 moderate,"3 placed, local_cer 0.1-0.2",28254,15082.811
+spa,2 moderate,"4 placed, local_cer > 0.2",2567,1182.491
+spa,3 bad,0 no pair,7532,
+spa,3 bad,1 under half placed,9017,2088.309
+spa,3 bad,"2 placed, local_cer <= 0.1",1,0.482
+spa,3 bad,"3 placed, local_cer 0.1-0.2",194,92.787
+spa,3 bad,"4 placed, local_cer > 0.2",65,26.781
+srp,1 fine,0 no pair,344,
+srp,2 moderate,0 no pair,20729,
+srp,3 bad,0 no pair,22185,
+swe,1 fine,0 no pair,5056,
+swe,1 fine,1 under half placed,106,10.645
+swe,1 fine,"2 placed, local_cer <= 0.1",2,0.475
+swe,1 fine,"3 placed, local_cer 0.1-0.2",47,11.119
+swe,1 fine,"4 placed, local_cer > 0.2",1,0.023
+swe,2 moderate,0 no pair,3420,
+swe,2 moderate,1 under half placed,28,3.111
+swe,2 moderate,"3 placed, local_cer 0.1-0.2",22,4.593
+swe,2 moderate,"4 placed, local_cer > 0.2",6,0.230
+swe,3 bad,0 no pair,393,
+swe,3 bad,1 under half placed,3,0.079
+yid,1 fine,0 no pair,11224,
+yid,2 moderate,0 no pair,90346,
+yid,3 bad,0 no pair,19094,
