@@ -17,6 +17,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CARGO = shutil.which("cargo")
 
+
+def downgrade_patch(repo: Path, name: str) -> None:
+    """Move a crate down one patch release, so these tests follow the lockfile's versions."""
+    lock = (repo / "Cargo.lock").read_text()
+    version = re.search(rf'name = "{name}"\nversion = "((\d+\.\d+)\.(\d+))"', lock)
+    older = f"{version.group(2)}.{int(version.group(3)) - 1}"
+    subprocess.run([CARGO, "update", "-q", "-p", f"{name}@{version.group(1)}", "--precise", older],
+                   cwd=repo, check=True, capture_output=True)
+
+
 class Dispatch(unittest.TestCase):
     def test_boinc_build_paths_exclude_markdown_after_positive_patterns(self):
         for workflow in (ROOT / ".github/workflows").glob("boinc-*.yml"):
@@ -252,10 +262,7 @@ class Quickwit(unittest.TestCase):
     @unittest.skipUnless(CARGO, "no cargo")
     def test_api_lockfile_bump_runs_both_for_example_build_resolution(self):
         def change():
-            subprocess.run(
-                [CARGO, "update", "-q", "-p", "resvg", "--precise", "0.45.0"],
-                cwd=self.repo, check=True, capture_output=True,
-            )
+            downgrade_patch(self.repo, "governor")
             self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
         self.change = change
         flags = self.outputs()
@@ -947,9 +954,8 @@ class BuildInputs(unittest.TestCase):
             ).stdout
 
         before = host_tree()
-        self.assertNotIn("windows-sys", before)
-        subprocess.run([CARGO, "update", "-q", "-p", "windows-sys@0.61.2", "--precise", "0.61.1"],
-                       cwd=self.repo, check=True, capture_output=True)
+        self.assertNotRegex(before, r"(?m)^windows-core v")
+        downgrade_patch(self.repo, "windows-core")
         self.assertEqual(git(self.repo, "diff", "--name-only"), "Cargo.lock")
         self.assertEqual(host_tree(), before)
         self.assertIn("boinc_native", self.select())
