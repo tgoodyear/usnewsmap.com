@@ -86,17 +86,22 @@ pub async fn beacon(State(state): State<Arc<AppState>>, req: Request) -> Respons
     }
 }
 
-async fn accept(state: &AppState, headers: &HeaderMap, body: Body) -> Result<Valid, ApiError> {
+/// The bytes of a small JSON body. sendBeacon sends a string as text/plain;
+/// fetch sends application/json.
+pub(super) async fn read_body(
+    headers: &HeaderMap,
+    body: Body,
+    what: &str,
+) -> Result<axum::body::Bytes, ApiError> {
     let media = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())
         .map(|v| v.trim().to_ascii_lowercase());
-    // sendBeacon sends a string as text/plain; fetch sends application/json.
     if !matches!(media.as_deref(), Some("application/json" | "text/plain")) {
-        return Err(ApiError::MediaType(
-            "send the page view as application/json or text/plain".to_owned(),
-        ));
+        return Err(ApiError::MediaType(format!(
+            "send {what} as application/json or text/plain"
+        )));
     }
     let declared = headers
         .get(header::CONTENT_LENGTH)
@@ -105,9 +110,13 @@ async fn accept(state: &AppState, headers: &HeaderMap, body: Body) -> Result<Val
     if declared.is_some_and(|n| n > MAX_BODY as u64) {
         return Err(too_large());
     }
-    let bytes = axum::body::to_bytes(body, MAX_BODY)
+    axum::body::to_bytes(body, MAX_BODY)
         .await
-        .map_err(|_| too_large())?;
+        .map_err(|_| too_large())
+}
+
+async fn accept(state: &AppState, headers: &HeaderMap, body: Body) -> Result<Valid, ApiError> {
+    let bytes = read_body(headers, body, "the page view").await?;
     // Only an object: serde would also read a struct from an array.
     let object = bytes.trim_ascii_start().first() == Some(&b'{');
     let parsed = object.then(|| serde_json::from_slice::<Beacon>(&bytes));

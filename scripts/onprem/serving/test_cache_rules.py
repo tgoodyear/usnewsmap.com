@@ -47,11 +47,11 @@ class CacheRules(unittest.TestCase):
         self.assertEqual(self.state["rules"][:2], original)
         self.assertEqual([r["ref"] for r in self.state["rules"][2:]],
                          [r["ref"] for r in DESIRED])
-        self.assertEqual(sum(m == "POST" for m, _, _ in self.calls), 3)
+        self.assertEqual(sum(m == "POST" for m, _, _ in self.calls), 4)
         self.calls.clear()
         MODULE.apply(self.request, "zone", DESIRED)
-        self.assertEqual(len(self.state["rules"]), 5)
-        self.assertEqual(sum(m == "PATCH" for m, _, _ in self.calls), 3)
+        self.assertEqual(len(self.state["rules"]), 6)
+        self.assertEqual(sum(m == "PATCH" for m, _, _ in self.calls), 4)
         self.assertFalse(any(m in ("PUT", "DELETE") for m, _, _ in self.calls))
 
     def test_readback_detects_unrelated_rule_drift(self):

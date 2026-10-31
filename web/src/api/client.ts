@@ -184,6 +184,8 @@ export interface GetOptions {
    * For background requests, which shouldn't add to a busy API's queue.
    */
   giveUp?: () => boolean;
+  /** Called with the response that holds the result. */
+  onResponse?: (resp: Response) => void;
 }
 
 /** How many searches are ahead of a `202`'s search in the API's queue (06 §6.3.5). */
@@ -204,7 +206,7 @@ async function aheadOf(resp: Response): Promise<number | null> {
  * `signal` stops the waiting.
  */
 async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
-  const { signal, cache, onComputing, giveUp } = opts;
+  const { signal, cache, onComputing, giveUp, onResponse } = opts;
   const started = Date.now();
   let waiting = false;
   for (;;) {
@@ -239,6 +241,7 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
       continue;
     }
     if (problem) throw new ApiError(problem, redirectedTo(resp));
+    onResponse?.(resp);
     return (await resp.json()) as T;
   }
 }
@@ -352,8 +355,20 @@ export const api = {
   titles: (version: string, signal?: AbortSignal) =>
     getPinned<TitlesResponse>(`/v1/titles?v=${encodeURIComponent(version)}`, version, { signal }),
   /** `onComputing` is called while the API is still computing a large search. */
-  aggregate: (p: SearchParams, version: string, signal?: AbortSignal, onComputing?: (ahead: number | null) => void) =>
-    getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, { signal, onComputing }),
+  aggregate: (
+    p: SearchParams,
+    version: string,
+    signal?: AbortSignal,
+    onComputing?: (ahead: number | null) => void,
+    edge: { generation?: string; onResponse?: (resp: Response) => void } = {},
+  ) => {
+    const generation = edge.generation ? `&g=${encodeURIComponent(edge.generation)}` : "";
+    return getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}${generation}`, version, {
+      signal,
+      onComputing,
+      onResponse: edge.onResponse,
+    });
+  },
   /** `ref` is the response's `baseline_ref`, already canonical and versioned. */
   coverage: (ref: string, version: string, signal?: AbortSignal) =>
     getPinned<CoverageResponse>(ref.replace(/^\/(api\/)?v1\//, "/v1/"), version, { signal }),

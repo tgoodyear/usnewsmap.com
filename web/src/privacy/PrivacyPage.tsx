@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 27 October 2026.</p>
+        <p className="privacy-updated">Last updated 30 October 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
           runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
@@ -92,7 +92,8 @@ export default function PrivacyPage() {
           Requests to this site pass through Cloudflare before reaching our servers in Microsoft Azure. Cloudflare
           terminates HTTPS and can see your IP address, the full address you request (including search words in a path
           or query string), and request headers. Do Not Track and Global Privacy Control do not prevent this processing.
-          Cloudflare caches static files and versioned lookup data, but not search results or this site's HTML pages.
+          Cloudflare caches static files, versioned lookup data and, for up to 14 days, the summary results of the home
+          page's example searches, but not other search results or this site's HTML pages.
         </p>
         <p>
           Cloudflare may retain sampled security request records containing your IP address and the requested address

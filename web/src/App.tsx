@@ -6,6 +6,7 @@ import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER } from "./examples";
 import { Examples } from "./components/Examples";
+import { reportEdgeExample } from "./edgeExamples";
 import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, viewUrl, useView, type ViewState } from "./state/url";
@@ -115,7 +116,10 @@ export function App({ searchLinks }: { searchLinks?: readonly { href: string; la
     queryFn: ({ signal }) => {
       // A new attempt starts as a plain search until the API says otherwise.
       setComputing((c) => (c?.key === aggKey ? null : c));
-      return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }));
+      return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }), {
+        generation: meta.data?.edge_generation,
+        onResponse: reportEdgeExample,
+      });
     },
     enabled: !!version && !!view.q,
     // Keep showing the previous answer while the next loads only for the same

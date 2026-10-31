@@ -66,13 +66,14 @@ and the OCR dashboard). It places the dynamic bypass last. A failed operation
 is explicit and may leave a partially applied policy; inspect the receipt/zone
 and rerun before proceeding with any cutover.
 
-| Request                                                                                                                                   | Policy                                                                             |
-| ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Apex `/assets/*`, `robots.txt`, `favicon.svg`, `og-image.png`                                                                             | Eligible only under origin Cache-Control; bypass when absent                       |
-| Apex versioned basemap                                                                                                                    | Existing `basemap-cache-rule.json` remains unchanged                               |
-| Apex `/v1/places`, `/v1/titles`, `/v1/titles/*`, `/v1/coverage`, `/v1/days` and `/api/v1` equivalents, with a nonempty `v` query argument | Eligible only under origin Cache-Control; default cache key retains the full query |
-| Everything else on apex, including HTML/search previews, sitemap, aggregate/hits, live metadata/status, health and unversioned lookups    | Bypass                                                                             |
-| All requests on `api` and `www`                                                                                                           | Bypass; avoids cross-origin cache mixing, while `www` redirects to apex            |
+| Request                                                                                                                                       | Policy                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Apex `/assets/*`, `robots.txt`, `favicon.svg`, `og-image.png`                                                                                 | Eligible only under origin Cache-Control; bypass when absent                                                                |
+| Apex versioned basemap                                                                                                                        | Existing `basemap-cache-rule.json` remains unchanged                                                                        |
+| Apex `/v1/places`, `/v1/titles`, `/v1/titles/*`, `/v1/coverage`, `/v1/days` and `/api/v1` equivalents, with a nonempty `v` query argument     | Eligible only under origin Cache-Control; default cache key retains the full query                                          |
+| Apex `/v1/aggregate` and `/api/v1/aggregate` with `v` and `g`                                                                                 | Eligible; the API sends 14 days for example searches and `no-store` for the rest. Deploy that API before applying this rule |
+| Everything else on apex, including HTML/search previews, sitemap, other aggregate, hits, live metadata/status, health and unversioned lookups | Bypass                                                                                                                      |
+| All requests on `api` and `www`                                                                                                               | Bypass; avoids cross-origin cache mixing, while `www` redirects to apex                                                     |
 
 Origin `no-store` responses, including lookup 202/307/errors and missing assets,
 must remain uncacheable. No forced TTL, query-string stripping, deployment purge

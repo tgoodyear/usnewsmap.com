@@ -63,7 +63,7 @@ struct BucketEcho {
 }
 
 /// The parameters it takes besides the search's ([`usnm_core::params::COMMON_KEYS`]).
-pub(crate) const EXTRA_KEYS: &[&str] = &["format"];
+pub(crate) const EXTRA_KEYS: &[&str] = &["format", crate::edge::GENERATION_KEY];
 
 /// Most newspapers listed in `papers`; `total.papers` counts them all.
 pub const MAX_PAPERS_LISTED: usize = 500;
@@ -231,8 +231,9 @@ pub(crate) async fn aggregate_in(
         Some((_, Admission::Record)) => Some(searchlog::Search::new(&raw, &req, &serving)),
         _ => None,
     };
+    let generation = crate::edge::generation(&snap.refdata);
     let fut = compute(state.clone(), ctx, req, canonical.clone(), prefix);
-    let (resp, body) = cached_body(
+    let (mut resp, body) = cached_body(
         state,
         job,
         key,
@@ -248,6 +249,13 @@ pub(crate) async fn aggregate_in(
     let Some(body) = body else {
         return Ok(resp);
     };
+    crate::edge::mark(
+        resp.headers_mut(),
+        uri.query().unwrap_or(""),
+        matches!(pinning, version::Pinning::Current),
+        raw.get(crate::edge::GENERATION_KEY),
+        &generation,
+    );
     // Only a search that got its results counts, whichever cache served it.
     match (log, search) {
         (Some((log, _)), Some(search)) => {

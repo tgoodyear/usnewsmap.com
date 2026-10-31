@@ -32,13 +32,14 @@ describe("PrivacyPage", () => {
     expect(text).not.toContain("copied from the search engine's own log");
   });
 
-  it("discloses Cloudflare processing while retaining Azure serving and search bypass", () => {
+  it("discloses Cloudflare processing while retaining Azure serving and the bypass for other searches", () => {
     const { container } = render(<PrivacyPage />);
     const text = container.textContent ?? "";
     expect(screen.getByRole("heading", { name: "Cloudflare" })).toBeTruthy();
     expect(text).toContain("before reaching our servers in Microsoft Azure");
     expect(text).toContain("for up to 31 days");
-    expect(text).toContain("but not search results");
+    expect(text).toContain("the summary results of the home page's example searches");
+    expect(text).toContain("but not other search results");
     expect(text).toContain("Do Not Track and Global Privacy Control do not prevent this processing");
     expect(screen.getByRole("link", { name: "Cloudflare privacy policy" }).getAttribute("href")).toBe(
       "https://www.cloudflare.com/privacypolicy/",

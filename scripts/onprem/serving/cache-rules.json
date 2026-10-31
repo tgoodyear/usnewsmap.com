@@ -32,9 +32,25 @@
     "enabled": true
   },
   {
+    "ref": "usnm_example_searches",
+    "description": "usnewsmap.com: let the API choose which pinned searches the edge keeps; only examples are not no-store",
+    "expression": "(http.host eq \"usnewsmap.com\" and (any(http.request.uri.args[\"v\"][*] ne \"\") and any(http.request.uri.args[\"g\"][*] ne \"\") and http.request.uri.path in {\"/v1/aggregate\" \"/api/v1/aggregate\"}))",
+    "action": "set_cache_settings",
+    "action_parameters": {
+      "cache": true,
+      "edge_ttl": {
+        "mode": "bypass_by_default"
+      },
+      "browser_ttl": {
+        "mode": "respect_origin"
+      }
+    },
+    "enabled": true
+  },
+  {
     "ref": "usnm_dynamic_bypass",
-    "description": "usnewsmap.com: never edge-cache HTML, searches, live data or cross-origin API calls",
-    "expression": "(http.host in {\"www.usnewsmap.com\" \"api.usnewsmap.com\"} or (http.host eq \"usnewsmap.com\" and not (starts_with(http.request.uri.path, \"/assets/\") or starts_with(http.request.uri.path, \"/basemap/\") or http.request.uri.path in {\"/robots.txt\" \"/favicon.svg\" \"/og-image.png\"} or (any(http.request.uri.args[\"v\"][*] ne \"\") and (http.request.uri.path in {\"/v1/places\" \"/v1/titles\" \"/v1/coverage\" \"/v1/days\" \"/api/v1/places\" \"/api/v1/titles\" \"/api/v1/coverage\" \"/api/v1/days\"} or starts_with(http.request.uri.path, \"/v1/titles/\") or starts_with(http.request.uri.path, \"/api/v1/titles/\"))))))",
+    "description": "usnewsmap.com: never edge-cache HTML, other searches, live data or cross-origin API calls",
+    "expression": "(http.host in {\"www.usnewsmap.com\" \"api.usnewsmap.com\"} or (http.host eq \"usnewsmap.com\" and not (starts_with(http.request.uri.path, \"/assets/\") or starts_with(http.request.uri.path, \"/basemap/\") or http.request.uri.path in {\"/robots.txt\" \"/favicon.svg\" \"/og-image.png\"} or (any(http.request.uri.args[\"v\"][*] ne \"\") and any(http.request.uri.args[\"g\"][*] ne \"\") and http.request.uri.path in {\"/v1/aggregate\" \"/api/v1/aggregate\"}) or (any(http.request.uri.args[\"v\"][*] ne \"\") and (http.request.uri.path in {\"/v1/places\" \"/v1/titles\" \"/v1/coverage\" \"/v1/days\" \"/api/v1/places\" \"/api/v1/titles\" \"/api/v1/coverage\" \"/api/v1/days\"} or starts_with(http.request.uri.path, \"/v1/titles/\") or starts_with(http.request.uri.path, \"/api/v1/titles/\"))))))",
     "action": "set_cache_settings",
     "action_parameters": {
       "cache": false

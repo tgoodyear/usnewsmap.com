@@ -68,9 +68,11 @@ The container:
   | `/v1/places`, `/v1/titles*`, `/v1/coverage`, `/v1/days` and their `/api/v1` twins, when the query has `v=` | Cached under the origin's `Cache-Control` (24 hours), bypassed without one. The 307, the 202 and problems are `no-store` |
   | `robots.txt`, `favicon.svg`, `og-image.png`                                                                | Cloudflare's defaults (1 hour from the origin)                                                                           |
   | `/`, `/datasets`, `/privacy`, `/credits` and the 404 shell                                                 | Not cached. `/` revalidates with its ETag; the `app_route` pages get an ETag in Phase 0                                  |
-  | `/v1/aggregate`, `/v1/hits`, `/v1/meta`, `/v1/status`, `/v1/versions`, `/v1/beacon`, `/healthz`, `/readyz` | Bypass. The aggregate and hits bypass is the last rule in the list                                                       |
+  | `/v1/aggregate` with `v` and `g`                                                                           | Amended 2026-10-30: the API sends 14 days for example searches and `no-store` for the rest (06 §6.5)                     |
 
-  By default Cloudflare ignores `Vary: Origin`. A Cache Rule could key on `Origin`, but that is untested, so the rules apply on the apex only, and researchers' cross-origin calls to `api.usnewsmap.com` aren't edge-cached. Smart Tiered Cache is on. Nothing is purged on deploy, so the release path holds no Cloudflare token. Asset 404s get `no-store` (Phase 0), so the edge can't cache a 404 served in the gap during a deploy.
+| Other `/v1/aggregate`, `/v1/hits`, `/v1/meta`, `/v1/status`, `/v1/versions`, `/v1/beacon`, `/healthz`, `/readyz` | Bypass. The aggregate and hits bypass is the last rule in the list |
+
+By default Cloudflare ignores `Vary: Origin`. A Cache Rule could key on `Origin`, but that is untested, so the rules apply on the apex only, and researchers' cross-origin calls to `api.usnewsmap.com` aren't edge-cached. Smart Tiered Cache is on. Nothing is purged on deploy, so the release path holds no Cloudflare token. Asset 404s get `no-store` (Phase 0), so the edge can't cache a 404 served in the gap during a deploy.
 
 - **Zone settings.** They are zone-wide, so they also change the proxied `boinc.usnewsmap.com`. Each old value is read and recorded before it changes. The values to set:
   - Bot Fight Mode off. It sets a cookie (`__cf_bm`) where `/privacy` says the site sets none, challenges API scripts, and can't be skipped per path. It was turned off at the BOINC cutover (#942).
@@ -86,7 +88,7 @@ The site stays in the API's image, on one origin.
 
 - **No Static Web App.** The search log and the OCR-request queue admit only requests from the site's own origin (`Origin: https://usnewsmap.com` or `Sec-Fetch-Site: same-origin`, `crates/usnm-api/src/searchlog.rs`). A site on a Static Web App calling `api.usnewsmap.com` sends `same-site`, so every search would be dropped. Every Static Web App deploy path uses the shared deployment token, which ADR-0009 forbids. Linking an API backend needs Standard ($9 a month, new Azure cost), and network-isolated backends aren't supported.
 - **No Workers Static Assets or Pages.** They split one release into two deploys that must ship the same build. With the site on its own hostname, the same origin check drops every search. With `/v1` routed back to the origin on the same hostname, it is today's single origin plus a second deploy path, through Cloudflare's GitHub App.
-- Cloudflare in front of the one origin takes the role the growth profile gave Front Door ([ADR-0003](0003-stateless-aggregate-first-api.md), [ADR-0006](0006-lean-hosting-profile.md)), at $0. Hashed assets and versioned lookups come from the edge. HTML, searches and status still reach the origin, now over the home uplink instead of from East US 2, so their first byte may get slower. Phases 0 and 2 measure it.
+- Cloudflare in front of the one origin takes the role the growth profile gave Front Door ([ADR-0003](0003-stateless-aggregate-first-api.md), [ADR-0006](0006-lean-hosting-profile.md)), at $0. Hashed assets and versioned lookups come from the edge. HTML, searches other than the examples, and status still reach the origin, now over the home uplink instead of from East US 2, so their first byte may get slower. Phases 0 and 2 measure it.
 - The last Static Web App, `usnm-boinc-swa-prod`, has no custom domain and no deploy workflow. It is retired separately (Phase 5).
 
 ### 5. Index on NVMe, previous version on `tank`
@@ -128,7 +130,7 @@ The ADR-0009 rules stay. Everything on the Azure side is Entra-only, through the
 
 This amends ADR-0012 and 09 §9.4.2.
 
-- **The edge never caches `/v1/aggregate` or `/v1/hits`.** Every search still reaches the API, so the search log and the OCR-priority stager see it. A Phase 2 check asserts `cf-cache-status` for each path class.
+- **The edge never caches `/v1/hits`, or `/v1/aggregate` other than example searches.** Every search still reaches the API, so the search log and the OCR-priority stager see it. A Phase 2 check asserts `cf-cache-status` for each path class.
 - **The search log doesn't change.** It stays permanent, anonymous and in Azure, with the same record. During Phase 3 both origins write the one log. The fallback Worker forwards `Sec-Fetch-Site`, so searches it sends to Azure are still admitted.
 - **The on-prem search-log and OCR-request URLs stay unset until the cutover,** because `admit()` records same-origin requests on any hostname, including the Phase 2 test hostname.
 - **The client IP.** A new setting makes the API take it from `CF-Connecting-IP` only when the peer is loopback, instead of counting proxy hops. It's used as today: the rate limiter's in-memory salted hash and a page view's location lookup.
