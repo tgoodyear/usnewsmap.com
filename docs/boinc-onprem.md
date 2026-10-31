@@ -68,6 +68,9 @@ The explicit install flag authorizes installation of the **reviewed** `SERVER_IM
 pin and a server-unit restart. The runner shares the installed bridge runner's exclusive
 lock. Existing runtime prerequisites are read first; base/server/bridge-bin/bridge are
 built locally from an archived reviewed source, using the existing Containerfiles.
+Like the installed step runner, these online builds use the CT's host network; they
+do not require `/dev/net/tun` or an additional nested network stack inside an LXC.
+This does not change the separate, network-disabled signing operation.
 Each local image's immutable ID and source label is read back. Partial builds retain
 private per-stage image-ID receipts on the CT and reuse only source-verified IDs.
 An independent per-operation supervisor inherits that lock and passes it to child

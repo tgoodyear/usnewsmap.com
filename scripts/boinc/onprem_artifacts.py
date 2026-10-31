@@ -187,7 +187,7 @@ def build(source, commit):
         if iid.exists():
             images[key] = inspect(image_id(iid.read_text().strip()), commit)
             continue
-        argv = ["podman", "build", "--platform", "linux/amd64", "--label",
+        argv = ["podman", "build", "--network", "host", "--platform", "linux/amd64", "--label",
                 "org.usnewsmap.source=" + commit, "--iidfile", str(iid),
                 "--file", str(source / "contrib-compute/images" / directory / "Containerfile")]
         for name in args:
