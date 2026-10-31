@@ -8,6 +8,7 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 | [2026-10-iris-model-reuse](2026-10-iris-model-reuse/)       | Iris Xe: model reuse and compile cache (#736)                                |
 | [2026-10-jp2-vs-jpeg-ocr](2026-10-jp2-vs-jpeg-ocr/)         | JP2 against JPEG page inputs for OCR                                         |
 | [2026-10-language-analysis](2026-10-language-analysis/)     | Languages in the index, October 2026 (`build.sh` renders the PDF)            |
+| [2026-10-ocr-damage-ranking](2026-10-ocr-damage-ranking/)   | Corpus-wide OCR damage ranking and the German Fraktur pilot list             |
 | [2026-10-ocr-engine-survey](2026-10-ocr-engine-survey/)     | The OCR engine survey behind [ocr-gold-set.md](../ocr-gold-set.md)           |
 | [2026-10-surya-volunteer](2026-10-surya-volunteer/)         | Surya 2 on BOINC volunteers                                                  |
 
