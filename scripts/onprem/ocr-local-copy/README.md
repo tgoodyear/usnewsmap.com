@@ -6,11 +6,11 @@ It runs on the search log copy's host, as that host's identity and user. It read
 
 ## Files
 
-| File                          | What it does                                                                                 |
-| ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `usnm-ocr-local-copy.service` | Runs `usnm-ingest ocr-local-copy`, with write access to the dataset only                     |
+| File                          | What it does                                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------- |
+| `usnm-ocr-local-copy.service` | Runs `usnm-ingest ocr-local-copy`, with write access to the dataset only                        |
 | `usnm-ocr-local-copy.timer`   | Starts the service at 03:30 UTC every day, with up to 20 minutes' delay, and after a missed run |
-| `test_units.py`               | Checks the units against the command's flags. Runs in CI and locally                         |
+| `test_units.py`               | Checks the units against the command's flags. Runs in CI and locally                            |
 
 The command is `crates/usnm-ingest/src/cli/ocr_local_copy.rs` and the logic `crates/usnm-ingest/src/ocr_local_copy.rs`.
 

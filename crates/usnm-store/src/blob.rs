@@ -207,16 +207,22 @@ fn error_code(resp: &reqwest::Response) -> &str {
         .unwrap_or("")
 }
 
-/// One `<Blob>` of a List Blobs response: its name, size, ETag, creation time
-/// and Content-MD5. `None` for an entry without a name or size.
-fn blob_info(blob_xml: &str) -> Option<(String, u64, String, Option<SystemTime>, Option<String>)> {
+/// One `<Blob>` of a List Blobs response. `None` for an entry without a name
+/// or size.
+fn blob_info(blob_xml: &str) -> Option<ObjectInfo> {
     let one = |tag: &str| xml_values(blob_xml, tag).next();
-    let name = one("Name")?;
+    let path = one("Name")?;
     let size = one("Content-Length")?.trim().parse().ok()?;
     let etag = one("Etag").unwrap_or_default();
     let created = one("Creation-Time").and_then(|t| httpdate::parse_http_date(t.trim()).ok());
     let content_md5 = one("Content-MD5").filter(|md5| !md5.trim().is_empty());
-    Some((name, size, etag, created, content_md5))
+    Some(ObjectInfo {
+        path,
+        size,
+        etag,
+        created,
+        content_md5,
+    })
 }
 
 /// An ETag as an `If-Match` value: quoted, as the service sends it in headers
@@ -458,15 +464,9 @@ impl ObjectStore for BlobStore {
     async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
         for (path, xml) in self.list_blobs(prefix).await? {
-            let (_, size, etag, created, content_md5) = blob_info(&xml)
+            let info = blob_info(&xml)
                 .ok_or_else(|| StoreError::Io(format!("list `{prefix}`: no size for `{path}`")))?;
-            out.push(ObjectInfo {
-                path,
-                size,
-                etag,
-                created,
-                content_md5,
-            });
+            out.push(ObjectInfo { path, ..info });
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
@@ -664,7 +664,13 @@ mod tests {
                    <Blob><Name>pages/b</Name><Properties /></Blob></Blobs></EnumerationResults>";
         let blobs: Vec<&str> = xml_elements(xml, "Blob");
         assert_eq!(blobs.len(), 2);
-        let (name, size, etag, created, content_md5) = blob_info(blobs[0]).unwrap();
+        let ObjectInfo {
+            path: name,
+            size,
+            etag,
+            created,
+            content_md5,
+        } = blob_info(blobs[0]).unwrap();
         assert_eq!(content_md5, None);
         assert_eq!(
             (name.as_str(), size, etag.as_str()),
@@ -679,7 +685,9 @@ mod tests {
         let sneaky = "<Blobs><Blob><Name>pages/a&lt;/Name&gt;&lt;Content-Length&gt;1</Name>\
                       <Properties><Content-Length>99</Content-Length></Properties></Blob></Blobs>";
         let b = xml_elements(sneaky, "Blob");
-        let (name, size, _, _, _) = blob_info(b[0]).unwrap();
+        let ObjectInfo {
+            path: name, size, ..
+        } = blob_info(b[0]).unwrap();
         assert_eq!(
             (name.as_str(), size),
             ("pages/a</Name><Content-Length>1", 99)
