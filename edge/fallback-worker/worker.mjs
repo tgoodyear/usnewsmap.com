@@ -97,8 +97,10 @@ const ORIGIN_MS = 30000;
 const AZURE_PROBE_MS = 5000;
 const AZURE_WAIT_MS = 180000;
 const POLL_MS = 3000;
-// 1 primary probe + 1 primary delivery + 45 Azure probes + 1 Azure delivery <= 48.
-const MAX_AZURE_PROBES = 45;
+// Workers Free allows 50 subrequests, and cache operations count:
+// 1 cache match + 1 primary probe + 1 cache put + 1 primary delivery +
+// 1 cache delete + 44 Azure probes + 1 Azure delivery <= 50.
+const MAX_AZURE_PROBES = 44;
 
 function checkAbort(signal) {
   if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");

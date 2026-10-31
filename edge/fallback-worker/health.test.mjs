@@ -13,8 +13,8 @@ const stall = ({ signal }) => new Promise((resolve, reject) => {
   signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 });
 
-async function run(t, request, script, env = ENV, scheduled = false) {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+async function run(t, request, script, env = ENV, scheduled = false, now = 0) {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const original = globalThis.fetch;
   const calls = [];
   const metrics = [];
@@ -81,8 +81,14 @@ function memoryCache(t, { failing = false } = {}) {
   const original = globalThis.caches;
   const broken = () => { throw new Error("cache unavailable"); };
   globalThis.caches = { default: failing ? { match: broken, put: broken, delete: broken } : {
-    match: async (key) => store.get(key.url)?.clone(),
-    put: async (key, value) => { store.set(key.url, value); },
+    match: async (key) => {
+      const entry = store.get(key.url);
+      return entry && Date.now() < entry.expires ? entry.value.clone() : undefined;
+    },
+    put: async (key, value) => {
+      const seconds = Number(/max-age=(\d+)/.exec(value.headers.get("cache-control"))[1]);
+      store.set(key.url, { value, expires: Date.now() + seconds * 1000 });
+    },
     delete: async (key) => store.delete(key.url),
   } };
   t.after(() => {
@@ -98,11 +104,23 @@ test("a ready primary is remembered, so later requests skip the probe", async (t
   assert.equal(first.calls.length, 2);
   assert.equal(await first.answer.text(), "one");
   const [memory] = store.values();
-  assert.equal(memory.headers.get("cache-control"), "public, max-age=10");
+  assert.equal(memory.value.headers.get("cache-control"), "public, max-age=10");
   const second = await run(t, get(), [response(200, "two")]);
   assert.deepEqual(second.calls.map((call) => call.url), [`${SITE}/v1/hits?q=private`]);
   assert.equal(await second.answer.text(), "two");
   assert.equal(second.answer.headers.get("x-usnm-origin"), "onprem");
+});
+
+test("a remembered ready answer lasts 10 seconds, then the primary is probed again", async (t) => {
+  const store = memoryCache(t);
+  await run(t, get(), [response(), response(200, "one")]);
+  const [{ expires }] = store.values();
+  const before = await run(t, get(), [response(200, "two")], ENV, false, expires - 1);
+  assert.equal(before.calls.length, 1);
+  const after = await run(t, get(), [response(503, "not ready"), response(), response(200, "azure")],
+    ENV, false, expires);
+  assert.equal(after.calls[0].url, `${SITE}/readyz`);
+  assert.equal(after.answer.headers.get("x-usnm-origin"), "azure");
 });
 
 test("an unready primary isn't remembered and a failed delivery forgets a ready one", async (t) => {
@@ -243,11 +261,31 @@ test("Azure cold polling holds original POST until exact readiness and preserves
   assert.equal(answer.headers.get("x-usnm-origin"), "azure");
 });
 
-test("both unready have <=48 subrequests, bounded wait, explicit no-store 503/CORS/Retry-After", async (t) => {
+test("the worst path stays inside the 50 subrequest quota, counting cache operations", async (t) => {
+  let operations = 0;
+  const store = new Map();
+  const original = globalThis.caches;
+  globalThis.caches = { default: {
+    match: async (key) => { operations++; return store.get(key.url); },
+    put: async (key, value) => { operations++; store.set(key.url, value); },
+    delete: async (key) => { operations++; return store.delete(key.url); },
+  } };
+  t.after(() => {
+    if (original === undefined) delete globalThis.caches;
+    else globalThis.caches = original;
+  });
+  const cold = Array.from({ length: 43 }, () => () => response(503));
+  const { answer, calls } = await run(t, get(), [response(), network(), ...cold, response(), response(200, "azure")]);
+  assert.equal(answer.headers.get("x-usnm-origin"), "azure");
+  assert.equal(operations, 3);
+  assert.ok(calls.length + operations <= 50, `${calls.length + operations} subrequests`);
+});
+
+test("both unready stay inside the subrequest quota, bounded wait, explicit no-store 503/CORS/Retry-After", async (t) => {
   for (const cold of [() => response(503), stall]) {
     const { answer, calls, elapsed } = await run(t, get("/", { headers: { origin: SITE } }),
-      [response(503), ...Array.from({ length: 45 }, () => cold)]);
-    assert.ok(calls.length <= 46);
+      [response(503), ...Array.from({ length: 44 }, () => cold)]);
+    assert.ok(calls.length <= 45);
     assert.ok(elapsed <= 180000);
     assert.equal(answer.status, 503);
     assert.equal(answer.headers.get("retry-after"), "10");
