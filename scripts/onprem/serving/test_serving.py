@@ -663,10 +663,12 @@ class Static(unittest.TestCase):
         match = re.fullmatch(r'http\.request\.uri\.path in \{((?:"[^"]+" ?)+)\}', rule["expression"])
         self.assertIsNotNone(match, rule["expression"])
         self.assertEqual(sorted(re.findall(r'"([^"]+)"', match.group(1))),
-                         ["/api/v1/aggregate", "/api/v1/hits", "/v1/aggregate", "/v1/hits"])
+                         ["/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
+                          "/v1/aggregate", "/v1/hits", "/v1/search-report"])
         with open(os.path.join(ROOT, "crates", "usnm-api", "src", "lib.rs")) as f:
             api = f.read()
         for route in ('("/aggregate", get(routes::aggregate))', '("/hits", get(routes::hits))',
+                      '("/search-report", post(routes::search_report))',
                       '.nest("/v1", v1.clone())', '.nest("/api/v1", v1)'):
             self.assertIn(route, api)
         # Free counts an IP over 10 seconds and blocks for 10 seconds. "IP with NAT

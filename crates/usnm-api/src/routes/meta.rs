@@ -58,6 +58,8 @@ pub(crate) fn meta_body(state: &AppState, snap: &crate::Snapshot) -> serde_json:
     let c = &rd.current;
     json!({
         "index_version": c.index_version,
+        // With `v`, what lets Cloudflare keep a search (06 §6.5).
+        "edge_generation": crate::edge::generation(rd),
         "indexes": c.indexes,
         "bounds": c.bounds,
         "published_at": c.published_at,
@@ -130,6 +132,7 @@ pub(crate) fn meta_schema(gen: &mut schemars::SchemaGenerator) -> serde_json::Va
     let object = crate::openapi::closed;
     let mut body = object(json!({
         "index_version": { "type": "string", "description": "The version being served: what `v` takes." },
+        "edge_generation": { "type": "string", "description": "What `/v1/aggregate`'s `g` takes." },
         "indexes": { "type": "array", "items": { "type": "string" } },
         "bounds": gen.subschema_for::<crate::refdata::Bounds>(),
         "published_at": { "type": "string" },

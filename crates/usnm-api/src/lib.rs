@@ -23,6 +23,7 @@ use usnm_search::SearchBackend;
 use usnm_store::ObjectStore;
 
 pub mod config;
+pub(crate) mod edge;
 pub mod error;
 pub mod flights;
 pub mod ocr_requests;
@@ -342,6 +343,7 @@ pub fn v1_routes() -> Vec<(&'static str, MethodRouter<Arc<AppState>>)> {
         ("/versions", get(routes::versions)),
         ("/openapi.json", get(openapi::openapi)),
         ("/beacon", post(routes::beacon)),
+        ("/search-report", post(routes::search_report)),
     ]
 }
 
