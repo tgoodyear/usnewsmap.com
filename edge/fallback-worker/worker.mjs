@@ -130,7 +130,7 @@ async function bounded(operation, ms, signal) {
   }
 }
 
-async function ready(origin, ms, signal) {
+async function ready(origin, ms, signal, primary = false) {
   try {
     return await bounded(async (probeSignal) => {
       const probe = new Request(new URL("/readyz", origin), {
@@ -140,7 +140,8 @@ async function ready(origin, ms, signal) {
         signal: probeSignal,
       });
       const answer = await fetch(probe, { cf: { cacheTtl: 0, cacheEverything: false } });
-      if (answer.status !== 200 || !answer.body) {
+      if (answer.status !== 200 || !answer.body ||
+          (primary && answer.headers.get("X-USNM-Origin") === "azure")) {
         void answer.body?.cancel().catch(() => {});
         return false;
       }
@@ -196,7 +197,7 @@ async function azureReady(env, signal) {
 }
 
 async function heartbeat(env) {
-  const primary = await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS);
+  const primary = await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, undefined, true);
   const azure = !primary && await azureReady(env);
   if (env.LOG_OUTCOMES === "true") {
     console.log({
@@ -218,7 +219,7 @@ async function healthcheck(request, env) {
   }
   checkAbort(request.signal);
   const valid = HEALTH_HOSTNAMES.has(env.HEALTH_HOSTNAME);
-  const primary = valid && await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, request.signal);
+  const primary = valid && await ready(`https://${env.HEALTH_HOSTNAME}`, PRIMARY_HEALTH_MS, request.signal, true);
   const azure = !primary && valid && await azureReady(env, request.signal);
   const origin = primary ? "onprem" : azure ? "azure" : "unavailable";
   const available = primary || azure;
@@ -262,7 +263,7 @@ async function healthFailover(request, env) {
   }
   const healthOrigin = env.HEALTH_HOSTNAME ? `https://${env.HEALTH_HOSTNAME}` : new URL(request.url).origin;
   let reason = "primary-unhealthy";
-  if (await ready(healthOrigin, PRIMARY_HEALTH_MS, request.signal)) {
+  if (await ready(healthOrigin, PRIMARY_HEALTH_MS, request.signal, true)) {
     let answer;
     try {
       answer = await deliver(request, env, null);

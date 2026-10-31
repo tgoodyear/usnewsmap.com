@@ -76,6 +76,38 @@ test("healthy primary preflight is query/body/header-free, bypasses cache and pr
   assert.deepEqual(result.metrics, [{ blobs: ["onprem", "production"], doubles: [1, 200], indexes: ["production"] }]);
 });
 
+test("Azure-labelled ready cannot masquerade as primary readiness for requests, health domain or cron", async (t) => {
+  const labelled = () => new Response("ready", { headers: { "X-USNM-Origin": "azure" } });
+  const env = { ...ENV, HEALTH_HOSTNAME: "usnewsmap.com", HEALTHCHECK_HOSTNAME: "healthcheck.usnewsmap.com" };
+  const routed = await run(t, get(), [labelled(), labelled(), response(200, "azure")], env);
+  assert.equal(routed.calls.length, 3);
+  assert.equal(routed.calls[1].url, `${AZURE}/readyz`);
+  assert.equal(routed.calls[2].url, `${AZURE}/v1/hits?q=private`);
+  assert.equal(routed.answer.headers.get("x-usnm-origin"), "azure");
+  assert.equal(routed.answer.headers.get("x-usnm-failover-reason"), "primary-unhealthy");
+  const health = await run(t, new Request("https://healthcheck.usnewsmap.com/"),
+    [labelled(), response()], env);
+  assert.deepEqual(await health.answer.json(), { available: true, origin: "azure", primary_ready: false });
+  const records = [];
+  const log = console.log;
+  console.log = (record) => records.push(record);
+  try {
+    const cron = await run(t, null, [labelled(), response()], {
+      ...env, HEALTH_HEARTBEAT: "true", LOG_OUTCOMES: "true",
+    }, true);
+    assert.equal(cron.calls.length, 2);
+    assert.equal(cron.calls[1].url, `${AZURE}/readyz`);
+    assert.deepEqual(records, [{ origin: "azure", reason: "primary-unhealthy", status: 200, trigger: "heartbeat" }]);
+  } finally {
+    console.log = log;
+  }
+  for (const primary of [response(), new Response("ready", { headers: { "X-USNM-Origin": "onprem" } })]) {
+    const direct = await run(t, get(), [primary, response(200, "primary")], env);
+    assert.equal(direct.calls.length, 2);
+    assert.equal(direct.answer.headers.get("x-usnm-origin"), "onprem");
+  }
+});
+
 test("API/searcher/tunnel unready, redirects, wrong body and network select Azure before user delivery", async (t) => {
   for (const first of [response(503), response(530), response(302), response(200, "ready\n"), response(200, "not ready"), network()]) {
     const { answer, calls } = await run(t, get(), [first, response(), response(200, "azure")]);
