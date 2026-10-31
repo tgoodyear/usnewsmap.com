@@ -29,6 +29,26 @@ INFO = {"host": {"security": {"rootless": True}, "cgroupVersion": "v2", "cgroupM
 
 
 class NvidiaLxcTest(unittest.TestCase):
+    def test_distribution_uses_os_release_without_python_310_platform_api(self):
+        for contents, expected in (('NAME="Ubuntu"\nID=ubuntu\n', "ubuntu"),
+                                   ('ID="debian" # comment\n', "debian")):
+            with patch.object(nvidia.Path, "read_text", return_value=contents):
+                self.assertEqual(nvidia.distribution(), expected)
+        with patch.object(nvidia.Path, "read_text",
+                          side_effect=[FileNotFoundError(), "ID=ubuntu\n"]):
+            self.assertEqual(nvidia.distribution(), "ubuntu")
+        for contents in ("NAME=Ubuntu\n", "ID=\n", "ID=ubuntu\nID=debian\n", "ID=ubuntu debian\n"):
+            with patch.object(nvidia.Path, "read_text", return_value=contents), \
+                    self.assertRaisesRegex(ValueError, "distribution ID"):
+                nvidia.distribution()
+
+    def test_commands_keep_needrestart_in_list_only_mode_even_with_automatic_host_setting(self):
+        result = nvidia.subprocess.CompletedProcess(["apt-get"], 0, "ok", "")
+        with patch.dict(os.environ, {"NEEDRESTART_MODE": "a"}), \
+                patch.object(nvidia.subprocess, "run", return_value=result) as run:
+            self.assertEqual(nvidia.run(["apt-get", "--yes", "install", "libvulkan1"]), "ok")
+        self.assertEqual(run.call_args.kwargs["env"]["NEEDRESTART_MODE"], "l")
+
     def test_exact_host_version_and_distribution_package_layouts(self):
         driver = nvidia.host_driver("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64 610.57.04\n")
         for system, family_index in (("ubuntu", 0), ("ubuntu", 1), ("ubuntu", 2), ("debian", 0)):
@@ -46,9 +66,17 @@ class NvidiaLxcTest(unittest.TestCase):
     def test_apt_refuses_kernel_removals_and_transitional_driver_mismatch(self):
         nvidia.check_transaction(
             "Inst libnvidia-gl [615.71.10-1] (610.57.04-1 NVIDIA:1 [amd64])\n"
-            "Inst libnvidia-egl-gbm1 (1.1.3-1 Ubuntu:1 [amd64])\n", "610.57.04")
+            "Inst libnvidia-egl-gbm1 (1.1.3-1 Ubuntu:1 [amd64])\n"
+            "Conf libnvidia-gl (610.57.04-1 NVIDIA:1 [amd64])\n", "610.57.04")
         for plan in (
                 "Inst nvidia-dkms-open (610.57.04-1 NVIDIA:1 [amd64])",
+                "Conf nvidia-dkms-610 (610.57.04-1 NVIDIA:1 [amd64])",
+                "Conf libnvidia-gl (610.57.03-1 NVIDIA:1 [amd64])",
+                "Inst nvidia-tesla-535-kernel-dkms (535.261.03-1 Debian:1 [amd64])",
+                "Conf nvidia-legacy-470xx-kernel-dkms (470.256.02-1 Debian:1 [amd64])",
+                "Inst zfs-dkms (2.3.4-1 Debian:1 [all])",
+                "Inst nvidia-tesla-535-driver (535.261.03-1 Debian:1 [amd64])",
+                "Conf nvidia-legacy-470xx-driver (470.256.02-1 Debian:1 [amd64])",
                 "Inst nvidia-driver (610.57.04-1 NVIDIA:1 [amd64])",
                 "Inst linux-modules-6.8.0 (6.8.0-1 Ubuntu:1 [amd64])",
                 "Inst libnvidia-compute-580 (580.95.05-1 Ubuntu:1 [amd64])",
@@ -110,7 +138,7 @@ class NvidiaLxcTest(unittest.TestCase):
             with patch.object(nvidia, "PIN", root / "pin"), \
                     patch.object(nvidia, "Path", side_effect=lambda path: paths[path]), \
                     patch.object(nvidia.platform, "system", return_value="Linux"), \
-                    patch.object(nvidia.platform, "freedesktop_os_release", return_value={"ID": "ubuntu"}), \
+                    patch.object(nvidia, "distribution", return_value="ubuntu"), \
                     patch.object(nvidia.pwd, "getpwnam", return_value=account), \
                     patch.object(nvidia.shutil, "which", return_value=None), \
                     patch.object(nvidia, "run", side_effect=run), patch("builtins.print"):

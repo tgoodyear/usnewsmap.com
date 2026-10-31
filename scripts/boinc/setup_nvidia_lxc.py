@@ -44,11 +44,25 @@ print(f"CUDA driver API initialized: {count.value} device(s); no CUDA toolkit re
 
 def run(command, timeout=120):
     result = subprocess.run(command, text=True, capture_output=True, timeout=timeout,
-                            env=os.environ | {"LC_ALL": "C", "DEBIAN_FRONTEND": "noninteractive"})
+                            env=os.environ | {"LC_ALL": "C", "DEBIAN_FRONTEND": "noninteractive",
+                                              "NEEDRESTART_MODE": "l"})
     if result.returncode:
         raise RuntimeError(f"{shlex.join(command)} failed ({result.returncode}):\n"
                            f"{result.stdout}{result.stderr}")
     return result.stdout
+
+
+def distribution():
+    for name in ("/etc/os-release", "/usr/lib/os-release"):
+        try:
+            lines = Path(name).read_text().splitlines()
+        except FileNotFoundError:
+            continue
+        values = [shlex.split(line[3:], comments=True) for line in lines if line.startswith("ID=")]
+        if len(values) != 1 or len(values[0]) != 1:
+            raise ValueError(f"Expected one distribution ID in {name}")
+        return values[0][0]
+    raise ValueError("Cannot identify the distribution: no os-release file")
 
 
 def host_driver(text):
@@ -96,17 +110,19 @@ def check_transaction(text, driver):
     for line in text.splitlines():
         if line.startswith("Remv "):
             raise ValueError(f"Refusing package removal: {line}")
-        if not line.startswith("Inst "):
+        if not line.startswith(("Inst ", "Conf ")):
             continue
         name = line.split()[1].split(":", 1)[0]
-        if (name == "dkms" or name.startswith((
+        if (re.search(r"(?:^|-)dkms(?:-|$)", name) or name.startswith((
                 "linux-image", "linux-headers", "linux-modules", "linux-generic",
                 "nvidia-dkms", "nvidia-kernel", "nvidia-driver", "nvidia-headless",
-                "nvidia-open", "cuda-drivers"))):
+                "nvidia-open", "cuda-drivers"))
+                or (name.startswith("nvidia-")
+                    and re.search(r"-(?:kernel|driver|headless|open)(?:-|$)", name))):
             raise ValueError(f"Refusing host/kernel driver package inside LXC: {name}")
         match = re.search(r"\((\S+)", line)
         if not match:
-            raise ValueError(f"Cannot inspect APT installation entry: {line}")
+            raise ValueError(f"Cannot inspect APT installation/configuration entry: {line}")
         version = upstream(match[1])
         # Reject transitional packages pulling another driver, but not independently
         # versioned EGL/GBM/Wayland adapter libraries (1.x).
@@ -159,7 +175,7 @@ def repair(args):
         raise ValueError("Run this script inside the Linux LXC, not on your workstation.")
     if run(["systemd-detect-virt", "--container"]).strip() != "lxc":
         raise ValueError("Run inside the LXC, not on the Proxmox host.")
-    system = platform.freedesktop_os_release().get("ID")
+    system = distribution()
     if system not in ("debian", "ubuntu"):
         raise ValueError("Only Debian/Ubuntu LXC userspace is supported.")
     if run(["dpkg", "--print-architecture"]).strip() != "amd64":
