@@ -87,14 +87,19 @@ in_ct() {
 }
 # With --step-window-minutes N, the steps that hold the host's lock for long start only in the
 # first N minutes of an hour, which leaves the rest of the hour to the priority controller.
+# Sets LOCK_WAIT to the seconds left to take the lock, so a queued step can't start after the
+# window closes.
 wait_for_step_window() {
+  LOCK_WAIT=900
   [ "$STEP_WINDOW" -gt 0 ] || return 0
-  local minute waited=false
-  while minute=$(date +%M) && [ $((10#$minute)) -ge "$STEP_WINDOW" ]; do
+  local now minute second waited=false
+  while now=$(date +%M:%S) && minute=$((10#${now%:*})) && second=$((10#${now#*:})) &&
+    [ "$minute" -ge "$STEP_WINDOW" ]; do
     [ "$waited" = true ] || log "waiting for the next step window"
     waited=true
     sleep 30
   done
+  LOCK_WAIT=$((STEP_WINDOW * 60 - minute * 60 - second))
 }
 # One bridge step, waiting its turn: the host runs one step at a time, and the priority
 # controller's steps come every few minutes. Tries for up to 30 minutes.
@@ -198,7 +203,7 @@ print(count)
     # before cleanup; failures leave the original READY chunk and receipts intact.
     wait_for_step_window
     log "$chunk: native submission waiting for normal project mutex"
-    if in_ct flock -w 900 -E 75 /run/usnm-boinc-step.lock sh -c \
+    if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock sh -c \
       'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \

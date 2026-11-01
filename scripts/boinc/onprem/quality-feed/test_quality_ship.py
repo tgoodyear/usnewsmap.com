@@ -101,7 +101,7 @@ elif "python3" in args and "-" in args:
     def test_long_lock_steps_wait_for_the_step_window(self):
         # Minute 40, then 41, then 03: two closed readings and one open.
         minutes = self.root / "minutes"
-        minutes.write_text("40\n41\n03\n")
+        minutes.write_text("40:00\n41:00\n03:00\n")
         self.stub("date", f"""#!/bin/bash
 head -1 {minutes}
 sed -i.bak 1d {minutes}
@@ -115,7 +115,7 @@ sed -i.bak 1d {minutes}
 
     def test_native_submit_waits_for_the_step_window_too(self):
         minutes = self.root / "minutes"
-        minutes.write_text("03\n40\n03\n")
+        minutes.write_text("03:00\n40:00\n14:30\n")
         self.stub("date", f"""#!/bin/bash
 head -1 {minutes}
 sed -i.bak 1d {minutes}
@@ -124,6 +124,10 @@ sed -i.bak 1d {minutes}
         result = self.run_ship(["--step-window-minutes", "15"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr.count("waiting for the next step window"), 1)
+        # At 14:30 of a 15-minute window, the lock wait ends with the window.
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        submit = next(c for c in reversed(calls) if "/project/ops/qwen-feed/qwen_submit.py" in c)
+        self.assertEqual(submit[submit.index("-w") + 1], "30")
 
     def test_step_window_is_off_by_default_and_checked(self):
         self.stub("date", "#!/bin/bash\nexit 9\n")
