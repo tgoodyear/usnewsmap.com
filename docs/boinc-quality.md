@@ -930,6 +930,14 @@ the scan server as `queue-quality-<stamp>`, which the fetcher runs behind OCR's 
 one-hour slices, inside the host's global LoC budget. Rows are marked `eng`, so the scans go
 to the fetcher's buffer set.
 
+`quality_campaign.py` builds a worst-first re-OCR list from the stored summary ([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)): every page the [damage ranking report](https://github.com/tgoodyear/usnewsmap.com/pull/1401) calls worth re-OCRing, and an OCR-then-compare sample of the moderate band as its own campaign, `<campaign>-moderate`. It reads the database in a read-only transaction and writes only to its `--out-dir`, so it stages, queues and ships nothing. Each campaign gets `plan.jsonl` (every page in order), `pages.jsonl` (the ones `--index` has a scan for, which `quality_feed.py run` reads) and prefetch manifests for the rest (`manifests/m00001.parquet`, marked `eng` like the image pass's). The file's header has the ordering and sampling rules.
+
+Only pages our OCR has done or is about to do are left out: rows in `quality.ocr_outputs`, and pages `--ocr-state` shows outstanding or imported. Pages in a quality campaign stay in, because a `usnm_quality` unit compares the texts a page already has and doesn't read the page. `--campaign-exclusions` (off by default) leaves those out too, and enables `--exclude-list`.
+
+**The moderate sample shows nothing until its pages are OCRed.** A quality unit on a page our OCR hasn't read gives image features and LoC's agreement with American Stories. A gain needs a `quality.ocr_outputs` row for the page, compared with LoC's damage score.
+
+Two things limit how a list reaches the fetcher and the feed. `follow` takes every fetched page under its own campaign, so a page fetched from one of these manifests lands there unless `follow`'s `--staged` list names it; `plan.jsonl` still tells the bands apart. And a manifest named `queue-quality-*` takes JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait in that queue.
+
 `quality_feed.py follow` (`usnm-quality-follow.service`) gives every page the fetcher writes
 that no campaign has staged (OCR's and the pass's) a unit, in fetch order, and deletes the
 pass's buffer scans once their chunk has shipped; OCR's scans and the keep set are never

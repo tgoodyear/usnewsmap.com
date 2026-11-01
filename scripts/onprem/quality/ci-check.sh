@@ -79,4 +79,13 @@ PY
 got=$(psql_admin -d usnm_quality -tA -c "SELECT doc_id, damage_rate, loc_est_cer, has_image_features, loc_as_local_cer_sym FROM quality.page_summary")
 [ "$got" = "sn1_1900-01-01_ed-1_seq-1|0.4|0.3|t|0.08" ] || die "page_summary after the load: $got"
 { echo "SET ROLE quality_reader;"; cat "$here/rank.sql"; } | psql_admin -d usnm_quality -v limit=5 > /dev/null
-echo "usnm_quality checked: schema, roles, loader upserts, page_summary, rank queries"
+# The campaign builder's export runs as the reader, so its columns and grants are checked.
+{
+  echo "SET ROLE quality_reader;"
+  python3 - "$here/../../boinc/onprem/quality-feed/quality_campaign.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("quality_campaign", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.EXPORT_SQL)
+PY
+} | psql_admin -d usnm_quality > /dev/null
+echo "usnm_quality checked: schema, roles, loader upserts, page_summary, rank queries, campaign export"
