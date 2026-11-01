@@ -29,6 +29,14 @@ const MAX_FILE: u64 = 4 * 1024 * 1024;
 /// A source that hasn't reported for this long is shown as stale.
 pub const SOURCE_FRESH: Duration = Duration::minutes(45);
 pub const SOURCES: [&str; 4] = ["controller", "ship", "boinc", "batch"];
+/// The source the dashboard reads for itself.
+pub const INDEX: &str = "index";
+/// The hours the zoom shows, one bar each, and that the rates cover.
+pub const DAY_HOURS: i64 = 24;
+/// Reasons listed for a step.
+const MAX_REASONS: usize = 8;
+/// Reasons listed for the scan fetch.
+pub const FETCH_REASONS: usize = MAX_REASONS;
 
 /// What a collector sends.
 #[derive(Debug, Clone, Deserialize)]
@@ -266,56 +274,93 @@ struct Row {
     scope: &'static str,
     /// The limit when no collector reports one.
     limit: &'static str,
+    /// What says the step ran; `counts` if empty.
+    ok: &'static [&'static str],
+    /// Failures. Empty for a step whose source doesn't count them.
+    failed: &'static [&'static str],
+    /// What `failed` is a share of. Empty when nothing counts the attempts.
+    attempts: &'static [&'static str],
+    /// What a failure here is one of.
+    failed_unit: &'static str,
+    /// Controller phases whose failures belong to this step; `*` for all.
+    phases: &'static [&'static str],
+    /// Series of failure reasons, by this prefix.
+    reasons: &'static str,
+    /// Times this step held back because it was at its limit.
+    deferred: &'static [&'static str],
+    /// Seconds in the hour spent on it, one at a time.
+    busy: &'static str,
+    /// Where its numbers come from: [`SOURCES`], or [`INDEX`].
+    sources: &'static [&'static str],
 }
+
+const ROW: Row = Row {
+    id: "",
+    label: "",
+    unit: "pages",
+    counts: &[],
+    seconds: &[],
+    per: &[],
+    scope: "",
+    limit: "",
+    ok: &[],
+    failed: &[],
+    attempts: &[],
+    failed_unit: "",
+    phases: &[],
+    reasons: "",
+    deferred: &[],
+    busy: "",
+    sources: &[],
+};
 
 const ROWS: &[Row] = &[
     Row {
         id: "scan_fetch",
         label: "Scan fetch",
-        unit: "pages",
         counts: &["fetch_pages"],
         seconds: &["fetch_seconds"],
-        per: &[],
         scope: "Lines of the fetch index, every run. Seconds are download time per page.",
         limit: "the global LoC pacer; its rate is set on the fetch host",
+        sources: &[INDEX],
+        ..ROW
     },
     Row {
         id: "quality_ship",
         label: "Quality ship",
-        unit: "pages",
         counts: &["quality_ship_pages", "qwen_ship_pages"],
         seconds: &["quality_ship_seconds", "qwen_ship_seconds"],
-        per: &[],
         scope: "Pages received on the BOINC server, quality and Qwen chunks, from the shipper's \
                 logs. A chunk retried counts once. Seconds are its copy and checks.",
-        limit: "",
+        deferred: &["quality_deferred", "qwen_deferred"],
+        sources: &["ship"],
+        ..ROW
     },
     Row {
         id: "stage",
         label: "Stage",
-        unit: "pages",
         counts: &["quality_stage_pages", "qwen_stage_pages"],
         seconds: &["step_seconds.quality-stage"],
-        per: &[],
         scope: "Chunks staged, from the shipper's logs. Seconds are the quality-stage steps, \
                 retries included.",
         limit: "one bridge step at a time; shipped chunks start in the hour's first 15 minutes",
+        sources: &["ship", "boinc"],
+        ..ROW
     },
     Row {
         id: "submit",
         label: "Submit",
-        unit: "pages",
         counts: &["quality_submit_pages", "qwen_submit_pages"],
         seconds: &["step_seconds.quality-submit"],
-        per: &[],
         scope: "Chunks that left the outbox, from the shipper's logs. Seconds are the \
                 quality-submit steps.",
         limit: "one bridge step at a time",
+        sources: &["ship", "boinc"],
+        ..ROW
     },
     Row {
         id: "ocr_claim",
         label: "OCR claim to submit",
-        unit: "pages",
         counts: &["ocr_claim_pages"],
         seconds: &[
             "phase_seconds.claim",
@@ -323,22 +368,44 @@ const ROWS: &[Row] = &[
             "phase_seconds.push",
             "phase_seconds.submit",
         ],
-        per: &[],
         scope: "Growth of the controller's selected pages at each passing tick. Seconds are its \
                 claim, export, push and submit phases.",
-        limit: "",
+        failed: &[
+            "phase_failed.claim",
+            "phase_failed.export",
+            "phase_failed.push",
+            "phase_failed.submit",
+        ],
+        attempts: &[
+            "phase_runs.claim",
+            "phase_runs.export",
+            "phase_runs.push",
+            "phase_runs.submit",
+        ],
+        failed_unit: "phase runs",
+        phases: &["claim", "export", "push", "submit"],
+        sources: &["controller"],
+        ..ROW
     },
     Row {
         id: "usnm_ocr",
         label: "usnm_ocr",
-        unit: "pages",
         counts: &["ocr_units"],
         seconds: &["ocr_elapsed_seconds"],
-        per: &[],
         scope: "Workunits with a canonical result, by when that result came back. One workunit, \
                 one page, and an hour with bundles has no count. Seconds are device time on those \
                 workunits, every replica back, failed ones too.",
-        limit: "",
+        failed: &["ocr_error"],
+        attempts: &[
+            "ocr_valid",
+            "ocr_inconclusive",
+            "ocr_invalid",
+            "ocr_waiting",
+            "ocr_error",
+        ],
+        failed_unit: "replicas",
+        sources: &["boinc", "controller"],
+        ..ROW
     },
     Row {
         id: "usnm_quality",
@@ -346,11 +413,21 @@ const ROWS: &[Row] = &[
         unit: "units",
         counts: &["quality_units"],
         seconds: &["quality_elapsed_seconds"],
-        per: &[],
         scope: "Workunits with a canonical result. A unit is one page or a bundle of pages, and \
                 the database doesn't say which, so pages per hour stay unknown here: quality \
                 load counts them. Seconds are device time per unit.",
-        limit: "",
+        failed: &["quality_error"],
+        attempts: &[
+            "quality_valid",
+            "quality_inconclusive",
+            "quality_invalid",
+            "quality_waiting",
+            "quality_error",
+        ],
+        failed_unit: "replicas",
+        deferred: &["quality_deferred"],
+        sources: &["boinc", "ship"],
+        ..ROW
     },
     Row {
         id: "usnm_qwen",
@@ -358,54 +435,72 @@ const ROWS: &[Row] = &[
         unit: "units",
         counts: &["qwen_units"],
         seconds: &["qwen_elapsed_seconds"],
-        per: &[],
         scope: "Workunits two replicas agreed on, not replicas. A unit can hold several pages and \
                 the database doesn't say how many: Qwen load counts them. Seconds are device time \
                 per unit, every replica back, inconclusive and failed ones too.",
-        limit: "",
+        failed: &["qwen_error"],
+        attempts: &[
+            "qwen_valid",
+            "qwen_inconclusive",
+            "qwen_invalid",
+            "qwen_waiting",
+            "qwen_error",
+        ],
+        failed_unit: "replicas",
+        deferred: &["qwen_deferred"],
+        sources: &["boinc", "ship"],
+        ..ROW
     },
     Row {
         id: "ocr_collect",
         label: "OCR results collected",
-        unit: "pages",
         counts: &["ocr_collect_pages"],
         seconds: &["phase_seconds.collect"],
-        per: &[],
         scope: "The controller's newly published pages at each passing tick.",
-        limit: "",
+        failed: &["phase_failed.collect"],
+        attempts: &["phase_runs.collect"],
+        failed_unit: "phase runs",
+        phases: &["collect"],
+        sources: &["controller"],
+        ..ROW
     },
     Row {
         id: "ocr_import",
         label: "OCR pages imported",
-        unit: "pages",
         counts: &["ocr_import_pages"],
-        seconds: &[],
-        per: &[],
         scope: "Pages in ocr-sync's committed import records. Structural import, not release \
                 selection.",
-        limit: "",
+        failed: &["ocr_import_rejected"],
+        failed_unit: "rejected parts",
+        sources: &["batch"],
+        ..ROW
     },
     Row {
         id: "quality_load",
         label: "Quality results loaded",
-        unit: "pages",
         counts: &["quality_load_pages"],
         seconds: &["quality_load_seconds"],
-        per: &[],
         scope: "Pages of each unit loaded into the quality database, from the loader's logs. \
                 Seconds are whole loader runs, including runs that loaded nothing.",
         limit: "one unit a run",
+        failed: &["quality_load_failed"],
+        attempts: &["quality_load_runs"],
+        failed_unit: "loader runs",
+        sources: &["ship"],
+        ..ROW
     },
     Row {
         id: "qwen_load",
         label: "Qwen results loaded",
-        unit: "pages",
         counts: &["qwen_load_pages"],
         seconds: &["qwen_load_seconds"],
-        per: &[],
         scope: "Growth of the loader's pages with readings at each successful load. Seconds are \
                 whole loader runs, including waits for the lock.",
-        limit: "",
+        failed: &["qwen_load_failed"],
+        attempts: &["qwen_load_runs"],
+        failed_unit: "loader runs",
+        sources: &["ship"],
+        ..ROW
     },
     Row {
         id: "controller",
@@ -415,7 +510,15 @@ const ROWS: &[Row] = &[
         seconds: &["tick_seconds"],
         per: &["ticks_ok", "ticks_failed"],
         scope: "Passing and failing ticks by when they ended. Seconds are per tick.",
-        limit: "",
+        ok: &["ticks_ok"],
+        failed: &["ticks_failed"],
+        attempts: &["ticks_ok", "ticks_failed"],
+        failed_unit: "ticks",
+        phases: &["*"],
+        reasons: "reason.controller.",
+        busy: "tick_busy_seconds",
+        sources: &["controller"],
+        ..ROW
     },
     Row {
         id: "bridge_lock",
@@ -423,10 +526,12 @@ const ROWS: &[Row] = &[
         unit: "seconds",
         counts: &["lock_seconds"],
         seconds: &[],
-        per: &[],
         scope: "Seconds step containers ran, each under the host's one lock; a minimum, since \
                 loaders and native submission hold it without a container.",
         limit: "3,600 seconds an hour",
+        busy: "lock_seconds",
+        sources: &["boinc"],
+        ..ROW
     },
 ];
 
@@ -451,6 +556,99 @@ pub struct StepRate {
     /// Hours observed in each bin.
     #[serde(skip)]
     pub bin_known: Vec<u32>,
+    pub detail: StepDetail,
+}
+
+/// A sum over some hours, and how many of them were observed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Counted {
+    pub value: Option<f64>,
+    pub hours_known: u32,
+}
+
+impl Counted {
+    fn of(hours: impl Iterator<Item = i64>, get: impl Fn(i64) -> Option<f64>) -> Self {
+        let (value, hours_known) = total(hours, get);
+        Counted { value, hours_known }
+    }
+
+    fn per_hour(self) -> Option<f64> {
+        self.value.map(|v| v / f64::from(self.hours_known))
+    }
+}
+
+/// Change from one day to the next, in percent, per hour observed so that a
+/// day with a gap doesn't read as a drop. `None` if either is unknown or the
+/// earlier one was zero.
+pub fn trend(now: Counted, before: Counted) -> Option<f64> {
+    let (n, b) = (now.per_hour()?, before.per_hour()?);
+    (b > 0.0).then(|| (n - b) / b * 100.0)
+}
+
+/// Why a step failed, and how often.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reason {
+    pub text: String,
+    /// `None` where the source keeps only a count of its latest failures.
+    pub day: Option<f64>,
+    pub week: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Failures {
+    pub unit: &'static str,
+    pub day: Counted,
+    pub week: Counted,
+    /// Attempts in the hours where both are known; `None` if nothing counts them.
+    pub day_attempts: Option<f64>,
+    pub day_failed_of_attempts: Option<f64>,
+    pub week_attempts: Option<f64>,
+    pub week_failed_of_attempts: Option<f64>,
+    pub reasons: Vec<Reason>,
+    /// How many failures the reasons cover, where they are a sample.
+    pub reasons_from_latest: Option<usize>,
+}
+
+/// One of a step's sources, and when it last reported.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepSource {
+    pub name: &'static str,
+    pub received: Option<DateTime<Utc>>,
+    pub stale: bool,
+}
+
+/// What opens under a step's row.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct StepDetail {
+    pub last_6h: Counted,
+    pub last_week: Counted,
+    /// The 24 full hours before the last 24.
+    pub previous_day: Counted,
+    /// Roughly: from a histogram, for the one step with a time per page.
+    pub seconds_p50: Option<f64>,
+    pub seconds_p95: Option<f64>,
+    /// `None` for a step whose source doesn't count failures.
+    pub failures: Option<Failures>,
+    pub limit_now: Option<String>,
+    pub deferred_day: Option<f64>,
+    pub deferred_week: Option<f64>,
+    /// Share of the last hour, and of the observed last 24, spent on the step.
+    pub busy_hour: Option<f64>,
+    pub busy_day: Option<f64>,
+    /// The start of the newest hour it did something in.
+    pub last_ok: Option<DateTime<Utc>>,
+    /// The hour of the newest failure, or its time if `last_failed_exact`.
+    pub last_failed: Option<DateTime<Utc>>,
+    pub last_failed_exact: bool,
+    /// Hours with a success count, and with a failure count, that those two
+    /// looked through.
+    pub hours_searched: u32,
+    pub failed_hours_searched: u32,
+    /// The newest hour with a value.
+    pub newest_hour: Option<DateTime<Utc>>,
+    /// Oldest first: [`DAY_HOURS`] of them, the last full ones.
+    pub hours: Vec<Option<f64>>,
+    pub sources: Vec<StepSource>,
 }
 
 /// An app's results by validation outcome, as replicas, not pages (#1420).
@@ -499,7 +697,23 @@ pub struct ThroughputView {
     pub valid_last_hour: Option<f64>,
     /// When the first bin starts.
     pub chart_start: Option<DateTime<Utc>>,
+    /// When the first bar of the hourly zoom starts.
+    pub hours_start: Option<DateTime<Utc>>,
     pub error: Option<String>,
+}
+
+/// What the scan fetch's own files say, for its row.
+#[derive(Debug, Clone, Default)]
+pub struct FetchFacts {
+    pub read_at: Option<DateTime<Utc>>,
+    /// Failures in the hours the index covers of the last 24, if the failure
+    /// log was read and those hours are known.
+    pub failed_day: Option<usize>,
+    pub last_failed: Option<DateTime<Utc>>,
+    /// Reasons among the latest failures, by count, and how many that was.
+    pub reasons: Vec<(String, usize)>,
+    pub reasons_from: usize,
+    pub seconds: Option<(f64, f64)>,
 }
 
 impl ThroughputView {
@@ -510,6 +724,45 @@ impl ThroughputView {
     /// The source reported lately, so its last hour can stand for now.
     pub fn fresh(&self, source: &str) -> bool {
         self.sources.iter().any(|s| s.name == source && !s.stale)
+    }
+
+    /// Fills in the scan fetch's row from what only the fetch knows.
+    pub fn add_fetch(&mut self, facts: FetchFacts, now: DateTime<Utc>) {
+        let Some(s) = self.steps.iter_mut().find(|s| s.id == "scan_fetch") else {
+            return;
+        };
+        let d = &mut s.detail;
+        for source in &mut d.sources {
+            source.received = facts.read_at;
+            source.stale = facts.read_at.is_none_or(|at| now - at > SOURCE_FRESH);
+        }
+        (d.seconds_p50, d.seconds_p95) = facts.seconds.unzip();
+        d.last_failed = facts.last_failed;
+        d.last_failed_exact = facts.last_failed.is_some() || facts.failed_day.is_some();
+        let Some(failed) = facts.failed_day else {
+            return;
+        };
+        let failed = failed as f64;
+        d.failures = Some(Failures {
+            unit: "pages",
+            day: Counted {
+                value: Some(failed),
+                hours_known: s.day_hours_known,
+            },
+            day_attempts: s.last_day.map(|pages| pages + failed),
+            day_failed_of_attempts: s.last_day.map(|_| failed),
+            reasons: facts
+                .reasons
+                .into_iter()
+                .map(|(text, n)| Reason {
+                    text,
+                    day: Some(n as f64),
+                    week: None,
+                })
+                .collect(),
+            reasons_from_latest: Some(facts.reasons_from),
+            ..Failures::default()
+        });
     }
 }
 
@@ -544,7 +797,7 @@ fn sum_at(get: &impl Fn(&str, i64) -> Option<f64>, series: &[&str], hour: i64) -
         .fold(None, |a, v| Some(a.unwrap_or(0.0) + v))
 }
 
-fn range(end: i64, hours: i64) -> impl Iterator<Item = i64> {
+fn range(end: i64, hours: i64) -> impl DoubleEndedIterator<Item = i64> {
     (0..hours).rev().map(move |i| end - i * HOUR)
 }
 
@@ -560,6 +813,81 @@ fn bins(get: impl Fn(i64) -> Option<f64>, current: i64) -> (Vec<Option<f64>>, Ve
         known.push(k);
     }
     (out, known)
+}
+
+/// `failed` over `attempts`, in the hours both are known: the attempts, then
+/// the failures among them.
+fn share_of(
+    hours: impl Iterator<Item = i64>,
+    failed: impl Fn(i64) -> Option<f64>,
+    attempts: impl Fn(i64) -> Option<f64>,
+) -> (Option<f64>, Option<f64>) {
+    let (mut tried, mut lost, mut known) = (0.0, 0.0, false);
+    for h in hours {
+        if let (Some(f), Some(a)) = (failed(h), attempts(h)) {
+            tried += a;
+            lost += f;
+            known = true;
+        }
+    }
+    if known {
+        (Some(tried), Some(lost))
+    } else {
+        (None, None)
+    }
+}
+
+/// The start of the newest of `hours`, newest first, with something in it.
+fn newest(
+    mut hours: impl Iterator<Item = i64>,
+    get: impl Fn(i64) -> Option<f64>,
+) -> Option<DateTime<Utc>> {
+    hours
+        .find(|h| get(*h).is_some_and(|v| v > 0.0))
+        .and_then(|h| DateTime::from_timestamp(h, 0))
+}
+
+/// A share of the seconds in `hours` observed, in percent.
+fn busy_share(c: Counted) -> Option<f64> {
+    c.value
+        .map(|v| v / (f64::from(c.hours_known) * HOUR as f64) * 100.0)
+}
+
+/// Failure reasons recorded for a step: its controller phases, then what
+/// `prefix` series say. Most in the last day first.
+fn reasons_of(
+    t: &Throughput,
+    r: &Row,
+    get: &impl Fn(&str, i64) -> Option<f64>,
+    end: i64,
+) -> Vec<Reason> {
+    let mut out = Vec::new();
+    let mut add = |series: &str, text: String| {
+        let day = total(range(end, DAY_HOURS), |h| get(series, h)).0;
+        let week = total(range(end, CHART_HOURS), |h| get(series, h)).0;
+        if week.is_some_and(|n| n > 0.0) {
+            out.push(Reason { text, day, week });
+        }
+    };
+    for name in t.stored.series.keys() {
+        if let Some(phase) = name.strip_prefix("phase_failed.") {
+            if r.phases.contains(&phase) || r.phases == ["*"] {
+                add(name, format!("{phase} phase failed"));
+            }
+        }
+        if !r.reasons.is_empty() {
+            if let Some(slug) = name.strip_prefix(r.reasons) {
+                add(name, slug.replace('-', " "));
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        let key = |r: &Reason| (r.day.unwrap_or(0.0), r.week.unwrap_or(0.0));
+        let (x, y) = (key(a), key(b));
+        y.0.total_cmp(&x.0).then(y.1.total_cmp(&x.1))
+    });
+    out.truncate(MAX_REASONS);
+    out
 }
 
 /// The panel's numbers. `fetch` is the scan fetch's hours, from the index.
@@ -624,6 +952,64 @@ pub fn view(
             "qwen_load" => total(range(end, 24), |h| get("qwen_load_failed", h)).0,
             _ => None,
         };
+        let detail = {
+            let searched = || range(end, KEEP_HOURS).rev();
+            let oks = if r.ok.is_empty() { r.counts } else { r.ok };
+            let failed_at = |h: i64| sum_at(&get, r.failed, h);
+            let attempts_at = |h: i64| sum_at(&get, r.attempts, h);
+            let deferred_at = |h: i64| sum_at(&get, r.deferred, h);
+            let day = Counted::of(range(end, DAY_HOURS), failed_at);
+            let week = Counted::of(range(end, CHART_HOURS), failed_at);
+            let (day_attempts, day_failed_of_attempts) =
+                share_of(range(end, DAY_HOURS), failed_at, attempts_at);
+            let (week_attempts, week_failed_of_attempts) =
+                share_of(range(end, CHART_HOURS), failed_at, attempts_at);
+            let busy_at = |h: i64| get(r.busy, h);
+            StepDetail {
+                last_6h: Counted::of(range(end, 6), count_at),
+                last_week: Counted::of(range(end, CHART_HOURS), count_at),
+                previous_day: Counted::of(range(end - DAY_HOURS * HOUR, DAY_HOURS), count_at),
+                failures: (!r.failed.is_empty()).then(|| Failures {
+                    unit: r.failed_unit,
+                    day,
+                    week,
+                    day_attempts,
+                    day_failed_of_attempts,
+                    week_attempts,
+                    week_failed_of_attempts,
+                    reasons: reasons_of(t, r, &get, end),
+                    reasons_from_latest: None,
+                }),
+                limit_now: limits
+                    .get(format!("{}.now", r.id).as_str())
+                    .map(|s| (*s).clone()),
+                deferred_day: total(range(end, DAY_HOURS), deferred_at).0,
+                deferred_week: total(range(end, CHART_HOURS), deferred_at).0,
+                busy_hour: busy_share(Counted::of(range(end, 1), busy_at)),
+                busy_day: busy_share(Counted::of(range(end, DAY_HOURS), busy_at)),
+                last_ok: newest(searched(), |h| sum_at(&get, oks, h)),
+                last_failed: newest(searched(), failed_at),
+                hours_searched: total(searched(), |h| sum_at(&get, oks, h)).1,
+                failed_hours_searched: total(searched(), failed_at).1,
+                newest_hour: searched()
+                    .find(|h| count_at(*h).is_some())
+                    .and_then(|h| DateTime::from_timestamp(h, 0)),
+                hours: range(end, DAY_HOURS).map(count_at).collect(),
+                sources: r
+                    .sources
+                    .iter()
+                    .map(|&name| {
+                        let received = t.stored.sources.get(name).and_then(|s| s.received);
+                        StepSource {
+                            name,
+                            received,
+                            stale: received.is_none_or(|at| now - at > SOURCE_FRESH),
+                        }
+                    })
+                    .collect(),
+                ..StepDetail::default()
+            }
+        };
         steps.push(StepRate {
             id: r.id,
             label: r.label,
@@ -640,6 +1026,7 @@ pub fn view(
             scope: r.scope,
             bins: bin_values,
             bin_known,
+            detail,
         });
     }
     let quorum = [
@@ -725,6 +1112,7 @@ pub fn view(
         phases,
         sources,
         chart_start: DateTime::from_timestamp(first, 0),
+        hours_start: DateTime::from_timestamp(end - (DAY_HOURS - 1) * HOUR, 0),
         error: t.error.clone(),
     }
 }
@@ -1080,6 +1468,202 @@ mod tests {
             None,
             now() + SOURCE_FRESH + Duration::minutes(1)
         )));
+    }
+
+    #[test]
+    fn a_step_counts_its_windows_over_the_hours_observed() {
+        let mut t = Throughput::default();
+        let end = hour_of(now()) - HOUR;
+        let hours: Vec<Option<f64>> = (0..48)
+            .map(|i| (i != 40).then_some(if i < 24 { 1.0 } else { 3.0 }))
+            .collect();
+        apply(
+            &mut t,
+            "ship",
+            end - 47 * HOUR,
+            json!({"quality_load_pages": hours}),
+        );
+        let v = view(&t, &BTreeMap::new(), None, now());
+        let s = step(&v, "quality_load");
+        let d = &s.detail;
+        assert_eq!(
+            d.last_6h,
+            Counted {
+                value: Some(18.0),
+                hours_known: 6
+            }
+        );
+        assert_eq!(s.last_day, Some(69.0));
+        assert_eq!(s.day_hours_known, 23);
+        assert_eq!(d.previous_day.value, Some(24.0));
+        assert_eq!(d.last_week.value, Some(93.0));
+        assert_eq!(d.last_week.hours_known, 47);
+        // 3 an hour against 1, though the last day has a gap.
+        let now_day = Counted {
+            value: s.last_day,
+            hours_known: s.day_hours_known,
+        };
+        assert_eq!(trend(now_day, d.previous_day), Some(200.0));
+        assert_eq!(d.hours.len(), DAY_HOURS as usize);
+        assert_eq!(d.hours[23], Some(3.0));
+        assert_eq!(d.hours.iter().filter(|h| h.is_none()).count(), 1);
+        assert_eq!(d.hours.iter().flatten().sum::<f64>(), 69.0);
+        assert_eq!(
+            d.newest_hour,
+            DateTime::from_timestamp(end, 0),
+            "the last hour had a value"
+        );
+    }
+
+    #[test]
+    fn with_no_earlier_day_or_a_zero_one_there_is_no_percentage() {
+        let known = |value| Counted {
+            value,
+            hours_known: 24,
+        };
+        assert_eq!(trend(known(Some(5.0)), known(None)), None);
+        assert_eq!(trend(known(None), known(Some(5.0))), None);
+        assert_eq!(trend(known(Some(5.0)), known(Some(0.0))), None);
+        assert_eq!(trend(known(Some(5.0)), known(Some(10.0))), Some(-50.0));
+    }
+
+    #[test]
+    fn failures_have_a_rate_only_where_the_attempts_are_counted() {
+        let mut t = Throughput::default();
+        let end = hour_of(now()) - HOUR;
+        apply(
+            &mut t,
+            "controller",
+            end - HOUR,
+            json!({
+                "ticks_ok": [3, 9], "ticks_failed": [1, 0],
+                "phase_failed.inventory": [1, 0], "phase_runs.inventory": [4, 9],
+                "phase_failed.lock": [0, 0], "phase_runs.lock": [4, 9],
+                "reason.controller.bridge-batch-inventory-failed": [1, 0],
+            }),
+        );
+        apply(
+            &mut t,
+            "ship",
+            end - HOUR,
+            json!({"qwen_load_pages": [0, 2], "qwen_load_failed": [4, 1]}),
+        );
+        let v = view(&t, &BTreeMap::new(), None, now());
+        let c = step(&v, "controller").detail.failures.as_ref().unwrap();
+        assert_eq!(c.day.value, Some(1.0));
+        assert_eq!(c.day_attempts, Some(13.0));
+        assert_eq!(c.reasons.len(), 2);
+        assert!(c
+            .reasons
+            .iter()
+            .any(|r| r.text == "bridge batch inventory failed" && r.day == Some(1.0)));
+        assert!(c.reasons.iter().any(|r| r.text == "inventory phase failed"));
+        // A phase that never failed is no reason.
+        assert!(!c.reasons.iter().any(|r| r.text.starts_with("lock")));
+        // The collector counts failed runs here; until it counts all runs,
+        // there is no rate.
+        let q = step(&v, "qwen_load").detail.failures.as_ref().unwrap();
+        assert_eq!(q.day.value, Some(5.0));
+        assert_eq!(q.day_attempts, None);
+        assert!(q.reasons.is_empty());
+        // Nothing counts a shipper's failures: unknown, not none.
+        assert!(step(&v, "quality_ship").detail.failures.is_none());
+        let d = &step(&v, "qwen_load").detail;
+        assert_eq!(d.last_ok, DateTime::from_timestamp(end, 0));
+        assert_eq!(d.last_failed, DateTime::from_timestamp(end, 0));
+        let c = &step(&v, "controller").detail;
+        assert_eq!(c.last_failed, DateTime::from_timestamp(end - HOUR, 0));
+        assert_eq!(c.last_ok, DateTime::from_timestamp(end, 0));
+        assert_eq!(c.hours_searched, 2);
+        assert_eq!(c.failed_hours_searched, 2);
+        // The controller's lock phase is a lease on a blob, not this lock:
+        // nothing counts this one's failures.
+        assert!(step(&v, "bridge_lock").detail.failures.is_none());
+    }
+
+    #[test]
+    fn how_close_a_step_is_comes_from_what_was_reported() {
+        let mut t = Throughput::default();
+        let end = hour_of(now()) - HOUR;
+        let mut body: serde_json::Value = serde_json::from_slice(&packet(
+            "boinc",
+            end,
+            json!({"lock_seconds": [1800], "qwen_deferred": [3]}),
+        ))
+        .unwrap();
+        body["limits"]["usnm_ocr.now"] = json!("225 runnable");
+        let p = parse(&serde_json::to_vec(&body).unwrap(), "boinc", now()).unwrap();
+        t.apply(p, now()).unwrap();
+        let v = view(&t, &BTreeMap::new(), None, now());
+        let lock = &step(&v, "bridge_lock").detail;
+        assert_eq!(lock.busy_hour, Some(50.0));
+        assert_eq!(lock.busy_day, Some(50.0));
+        assert_eq!(
+            step(&v, "usnm_ocr").detail.limit_now.as_deref(),
+            Some("225 runnable")
+        );
+        assert_eq!(step(&v, "usnm_qwen").detail.deferred_day, Some(3.0));
+        // A row of two lanes is held back if either is.
+        assert_eq!(step(&v, "quality_ship").detail.deferred_day, Some(3.0));
+        let quiet = &step(&v, "stage").detail;
+        assert!(quiet.limit_now.is_none() && quiet.busy_hour.is_none());
+        assert!(quiet.deferred_day.is_none());
+    }
+
+    #[test]
+    fn each_step_names_its_sources_and_how_fresh_they_are() {
+        let mut t = Throughput::default();
+        let end = hour_of(now()) - HOUR;
+        apply(&mut t, "ship", end, json!({"quality_load_pages": [1]}));
+        let later = now() + SOURCE_FRESH + Duration::minutes(1);
+        let names = |v: &ThroughputView, id: &str| -> Vec<(&'static str, bool)> {
+            step(v, id)
+                .detail
+                .sources
+                .iter()
+                .map(|s| (s.name, s.stale))
+                .collect()
+        };
+        let v = view(&t, &BTreeMap::new(), None, now());
+        assert_eq!(names(&v, "quality_load"), [("ship", false)]);
+        assert_eq!(names(&v, "stage"), [("ship", false), ("boinc", true)]);
+        assert_eq!(names(&v, "scan_fetch"), [(INDEX, true)]);
+        let v = view(&t, &BTreeMap::new(), None, later);
+        assert_eq!(names(&v, "quality_load"), [("ship", true)]);
+    }
+
+    #[test]
+    fn the_scan_fetch_row_takes_what_only_the_fetch_knows() {
+        let end = hour_of(now()) - HOUR;
+        let fetch = [(end, (95, 95_000))].into();
+        let mut v = view(
+            &Throughput::default(),
+            &fetch,
+            Some((end - 23 * HOUR, end)),
+            now(),
+        );
+        v.add_fetch(
+            FetchFacts {
+                read_at: Some(now()),
+                failed_day: Some(5),
+                last_failed: Some(now() - Duration::minutes(3)),
+                reasons: vec![("transient: HTTP 520".into(), 4)],
+                reasons_from: 50,
+                seconds: Some((0.5, 4.0)),
+            },
+            now(),
+        );
+        let d = &step(&v, "scan_fetch").detail;
+        assert_eq!(d.seconds_p50, Some(0.5));
+        assert_eq!(d.seconds_p95, Some(4.0));
+        assert!(!d.sources[0].stale);
+        assert!(d.last_failed_exact);
+        let f = d.failures.as_ref().unwrap();
+        assert_eq!(f.day_attempts, Some(100.0));
+        assert_eq!(f.day_failed_of_attempts, Some(5.0));
+        assert_eq!(f.week.value, None);
+        assert_eq!(f.reasons[0].day, Some(4.0));
+        assert_eq!(f.reasons_from_latest, Some(50));
     }
 
     #[test]

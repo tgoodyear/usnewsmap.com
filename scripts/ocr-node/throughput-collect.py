@@ -6,8 +6,8 @@
 
 Reads what each host already records and writes one small JSON document of hourly counts:
 
-  controller  the priority controller's journal: ticks, phases, pages claimed and collected, and
-              its cohort_pending at each hour's last tick
+  controller  the priority controller's journal: ticks, phases, pages claimed and collected, what
+              kind of error ended a failed tick, and its cohort_pending at each hour's last tick
   ship        the shipper's and result loaders' journals: pages shipped, staged, submitted, loaded
   boinc       the BOINC database (two bounded, read-only aggregate queries, on the server's
               own connection settings) and podman's step containers (bridge lock hold time)
@@ -18,7 +18,7 @@ Device seconds are every returned replica of the workunits that got a canonical 
 hour, failures and inconclusive replicas included: what a finished page cost.
 
 It takes no lock, changes nothing, and reads no page text, file names or result output: only
-counts, durations and ids of steps. Every hour in the window is recomputed on each run, so a late
+counts, durations, ids of steps and the kinds of a tick's errors. Every hour in the window is recomputed on each run, so a late
 or repeated run corrects a bucket and never adds to it. The window ends at the last complete hour,
 so a source that stops leaves unknown hours, not a short one. A value is `null` for an hour its
 source doesn't reach back to; 0 means the hour was read and nothing happened. A gauge
@@ -63,6 +63,14 @@ RESULT_SERIES = ("valid", "inconclusive", "invalid", "waiting", "error", "units"
                  "bundles")
 STEP_NAME = re.compile(r"usnm-boinc-step-[0-9]{8}T[0-9]{6}Z-([a-z0-9-]{1,40})")
 PHASE_NAME = re.compile(r"[a-z0-9-]{1,40}")
+# The kinds of a failed tick's error, by its text up to the first colon or semicolon. A fixed list,
+# so a failure keeps its kind from one run to the next and no other text can reach a series name:
+# anything else is "other".
+BRIDGE_FAILURE = re.compile(r"(?:bridge|handoff)/[a-z-]{1,30} failed")
+KNOWN_FAILURES = ("batch journal inventory failed", "claimed a page already in this plan with a different message",
+                  "hand-off storage failed", "immutable allocation changed", "terminal BOINC failure",
+                  "terminal failed page")
+MAX_REASON = 46
 SHIP_LINE = re.compile(r"quality-ship: (c[0-9]{5}): (.*)")
 ENV_LINE = re.compile(r"([A-Z_]+)=([0-9]+)")
 # Aggregates only. The session is read-only, each statement is cut off after five seconds, and
@@ -213,8 +221,32 @@ def number(value):
     return value if type(value) in (int, float) and value >= 0 else 0
 
 
+def reason_series(error):
+    head = re.split("[:;]", error, maxsplit=1)[0].strip() if isinstance(error, str) else ""
+    name = "other"
+    if BRIDGE_FAILURE.fullmatch(head) or head in KNOWN_FAILURES:
+        name = re.sub("[^a-z]+", "-", head.lower())[:MAX_REASON].strip("-")
+    return f"reason.controller.{name}"
+
+
+def limits_now(event):
+    """How near the last passing tick was to its limits, where it says."""
+    now = {}
+    cohort = event.get("cohort")
+    if isinstance(cohort, dict) and cohort.get("app") == "usnm_ocr":
+        runnable, low = cohort.get("runnable_pending"), cohort.get("low_watermark")
+        if type(runnable) is int and type(low) is int:
+            now["usnm_ocr.now"] = f"{runnable} runnable at the last passing tick, low watermark {low}"
+    pending = event.get("global_pending")
+    if type(pending) is int:
+        held = ", held back" if event.get("backpressure") is True else ""
+        now["ocr_claim.now"] = f"{pending} pending across all apps at the last passing tick{held}"
+    return now
+
+
 def collect_controller(window, entries):
-    for name in ("ticks_ok", "ticks_failed", "tick_seconds", "ocr_claim_pages", "ocr_collect_pages"):
+    for name in ("ticks_ok", "ticks_failed", "tick_seconds", "tick_busy_seconds", "ocr_claim_pages",
+                 "ocr_collect_pages"):
         window.declare(name)
     plan, selected, limits = None, None, {}
     for logged, _, message in entries:
@@ -233,9 +265,15 @@ def collect_controller(window, entries):
             at = logged
             good = kind == "boinc_batch_tick"
             window.add("ticks_ok" if good else "ticks_failed", at)
+            if not good:
+                window.add(reason_series(event.get("error")), at)
             timings = event.get("timings")
             if isinstance(timings, dict):
-                window.add("tick_seconds", at, number(timings.get("tick_seconds")))
+                seconds = number(timings.get("tick_seconds"))
+                window.add("tick_seconds", at, seconds)
+                # The tick's time per tick is by when it ended; how busy an hour was, by when
+                # it was running.
+                window.spread("tick_busy_seconds", at - seconds, at)
             if good:
                 window.add("ocr_collect_pages", at, number(event.get("newly_published")))
                 # A new plan starts its count again.
@@ -248,7 +286,8 @@ def collect_controller(window, entries):
                 limits = {"usnm_ocr": f"{int(number(event.get('high_watermark')))} runnable workunits "
                                       "(controller high watermark)",
                           "ocr_claim": f"{int(number(event.get('high_watermark')))} pending pages; "
-                                       f"{int(number(event.get('max_global_pending')))} across all apps"}
+                                       f"{int(number(event.get('max_global_pending')))} across all apps",
+                          **limits_now(event)}
     limits["controller"] = "one tick at a time, on a 5 minute timer"
     return limits
 
@@ -257,8 +296,8 @@ def collect_ship(window, entries):
     for lane in SHIP_UNITS.values():
         for name in ("ship_pages", "ship_seconds", "stage_pages", "submit_pages", "deferred"):
             window.declare(f"{lane}_{name}")
-    for name in ("quality_load_pages", "quality_load_seconds", "quality_load_failed",
-                 "qwen_load_pages", "qwen_load_seconds", "qwen_load_failed"):
+    for name in ("quality_load_pages", "quality_load_seconds", "quality_load_failed", "quality_load_runs",
+                 "qwen_load_pages", "qwen_load_seconds", "qwen_load_failed", "qwen_load_runs"):
         window.declare(name)
     chunks, seen_units = {}, set()
     began = {}
@@ -272,6 +311,8 @@ def collect_ship(window, entries):
                 pending_readings = None if unit == QWEN_LOAD_UNIT else pending_readings
             elif ended and unit in began:
                 window.spread(f"{lane}_load_seconds", began.pop(unit), at)
+            if ended:
+                window.add(f"{lane}_load_runs", at)
             if "Failed with result" in message and message.startswith(f"{unit}:"):
                 window.add(f"{lane}_load_failed", at)
         if unit in SHIP_UNITS:

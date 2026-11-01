@@ -143,6 +143,15 @@ pub fn scrub(s: &str) -> String {
     out
 }
 
+/// A failure reason. One from a series name has spaces for its hyphens, which
+/// would hide a name from [`scrub`], so it is looked at joined up too.
+fn scrub_reason(s: &str) -> String {
+    match label_for(&s.replace(' ', "-")) {
+        Some(label) => label.to_owned(),
+        None => scrub(s),
+    }
+}
+
 fn scrub_opt(s: &mut Option<String>) {
     if let Some(x) = s {
         *x = scrub(x);
@@ -196,9 +205,15 @@ pub fn redact(v: &mut View) {
         }
     }
 
-    // Throughput: counts only, but a collector's limits are free text.
+    // Throughput: counts only, but limits and failure reasons are free text.
     for s in &mut v.throughput.steps {
         scrub_opt(&mut s.limit);
+        scrub_opt(&mut s.detail.limit_now);
+        if let Some(f) = &mut s.detail.failures {
+            for r in &mut f.reasons {
+                r.text = scrub_reason(&r.text);
+            }
+        }
     }
     scrub_opt(&mut v.throughput.error);
 

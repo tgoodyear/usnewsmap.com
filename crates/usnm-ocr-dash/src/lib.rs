@@ -146,6 +146,25 @@ impl App {
             fetch.hours_covered(),
             now,
         );
+        let (reasons, reasons_from) = fetch.failure_reasons(throughput::FETCH_REASONS);
+        let last_full_day = now.timestamp().div_euclid(throughput::HOUR) * throughput::HOUR
+            - throughput::DAY_HOURS * throughput::HOUR;
+        v.throughput.add_fetch(
+            throughput::FetchFacts {
+                read_at: fetch.index_read_at,
+                // The same hours as the pages, from a file of their own, which
+                // may not be there.
+                failed_day: fetch.failures_in_covered_hours(last_full_day),
+                last_failed: fetch
+                    .failures_read_at
+                    .and(fetch.failures.back())
+                    .map(|f| f.at),
+                reasons,
+                reasons_from,
+                seconds: fetch.download_seconds(last_full_day, throughput::DAY_HOURS),
+            },
+            now,
+        );
         self.queues
             .lock()
             .expect("queues lock")
@@ -802,6 +821,64 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn failure_reasons_and_limits_are_scrubbed_on_the_public_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let now = Utc::now();
+        let hour = (now.timestamp() / 3600 - 1) * 3600;
+        {
+            let mut t = a.throughput.lock().unwrap();
+            let body = format!(
+                r#"{{"schema":1,"source":"ship","observed_at":"{}","first_hour":{hour},"hours":1,
+                    "series":{{"reason.controller.pve-lab-unreachable":[2],
+                               "reason.controller.usnm-ocr-node9-unreachable":[2],
+                               "reason.controller.bridge-submit-failed":[1],"ticks_failed":[3]}},
+                    "limits":{{"usnm_ocr.now":"225 runnable on usnm-ocr-node9 at 192.0.2.7:8381"}}}}"#,
+                now.to_rfc3339()
+            );
+            t.apply(
+                throughput::parse(body.as_bytes(), "ship", now).unwrap(),
+                now,
+            )
+            .unwrap();
+            let at = (now - chrono::Duration::hours(2)).to_rfc3339();
+            std::fs::write(
+                dir.path().join("index-full.jsonl"),
+                format!(
+                    "{{\"doc_id\":\"sn1\",\"fetched_at\":\"{at}\",\"bytes\":1,\"download_ms\":5}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("failures-full.jsonl"),
+                format!(
+                    "{{\"doc_id\":\"sn1\",\"kind\":\"transient\",\"error\":\"pve-lab at 192.0.2.7 refused from CT 999\",\"at\":\"{at}\"}}\n"
+                ),
+            )
+            .unwrap();
+            a.fetch.lock().unwrap().poll(now);
+        }
+        let (_, lan) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(lan.contains("bridge submit failed"));
+        assert!(lan.contains("pve lab unreachable"));
+        for path in ["/", "/api/view.json"] {
+            let ((s, body), _) =
+                call_on(public_router(a.clone()), "203.0.113.3", "GET", path, "").await;
+            assert_eq!(s, StatusCode::OK);
+            assert!(leaks(&body).is_empty(), "{path}: {:?}", leaks(&body));
+            for bad in ["pve lab", "pve-lab", "192.0.2", "CT 999"] {
+                assert!(!body.contains(bad), "{bad} in {path}");
+            }
+            assert!(body.contains("bridge submit failed"));
+            assert!(!body.contains("node9"), "{path}");
+            assert!(body.contains("a lab host"));
+            assert!(body.contains("an OCR node"));
+            assert!(body.contains("transient: a lab host at an address refused from a container"));
+            assert!(body.contains("225 runnable on an OCR node at an address"));
+        }
     }
 
     /// The lab's names, numbers, paths and addresses, as the LAN sees them.
