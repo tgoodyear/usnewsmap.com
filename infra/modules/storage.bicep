@@ -8,6 +8,11 @@
 // and the Container Apps keep using it. No trusted-service bypass. The
 // public-network policy exempts the account by resource id only while it is
 // open (main.bicep, public-accounts.bicep).
+//
+// With subnetIds and no private endpoint (a cold spare, ADR-0008 amendment of
+// November 2026), the Container Apps reach the account from those subnets
+// through a service endpoint, behind the same deny-by-default firewall, and
+// Entra ID stays the only way in.
 
 param location string
 param tags object
@@ -17,6 +22,8 @@ param name string
 param blobSoftDeleteDays int = 3
 @description('Public IPv4 addresses or CIDR ranges allowed through the firewall. Empty (the default) keeps public network access off. Storage rejects /31 and /32 ranges, so a /32 is written as the bare address.')
 param allowedIps array = []
+@description('Subnets allowed through the firewall, as resource ids; each needs a Microsoft.Storage service endpoint. With allowedIps empty too, public network access stays off.')
+param subnetIds array = []
 
 @description('Blob containers. Access is granted per container in rbac.bicep.')
 var containers = ['curated', 'reference', 'cache', 'qw-index', 'searches', 'ocr-requests']
@@ -36,7 +43,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowCrossTenantReplication: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: empty(allowedIps) ? 'Disabled' : 'Enabled'
+    publicNetworkAccess: empty(allowedIps) && empty(subnetIds) ? 'Disabled' : 'Enabled'
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'None'
@@ -46,6 +53,7 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
           action: 'Allow'
         }
       ]
+      virtualNetworkRules: [for id in subnetIds: { id: id, action: 'Allow' }]
     }
   }
 }

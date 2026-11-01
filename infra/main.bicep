@@ -56,6 +56,11 @@ param searcherAppRetain bool = false
 param indexStorage bool = false
 @description('Serve the separate index account instead of the lake. Requires indexStorage. Enable only after the staged rebuild is verified and its pending pointer is promoted.')
 param indexStorageServe bool = false
+@description('The index account\'s default access tier. Cool suits a cold spare: storage costs less, and reads, writes and blobs retired within 30 days cost more (docs/operations/search-serving.md, "The Azure cold spare").')
+@allowed(['Hot', 'Cool'])
+param indexAccessTier string = 'Hot'
+@description('Private endpoints and private DNS for the data lake, the index account and Cosmos (ADR-0008). Off (a cold spare, ADR-0008 amendment of November 2026): none of them, and each allows snet-cae through a service endpoint and a firewall rule, with Entra ID the only way in as always.')
+param dataPrivateEndpoints bool = true
 @description('Data lake blob soft-delete days. Keep 3 until old qw-index is pruned; then restore 14 (#416).')
 @minValue(1)
 @maxValue(365)
@@ -485,7 +490,10 @@ module network 'modules/network.bicep' = {
     tags: tags
     name: n.vnet
     addressPrefix: vnetAddressPrefix
-    storageServiceEndpoint: ocrNodes
+    storageServiceEndpoint: ocrNodes || !dataPrivateEndpoints
+    cosmosServiceEndpoint: !dataPrivateEndpoints
+    blobPrivateDns: dataPrivateEndpoints || !empty(archiveAccountId)
+    cosmosPrivateDns: dataPrivateEndpoints
   }
 }
 
@@ -516,39 +524,58 @@ var ingestIdentityOn = (ingestJobs && useAcr) || ocr
 // OCR output copy; the Cosmos account only for the serving container (#955). The
 // public-network policy then exempts each by resource id, like the accounts below. Provision
 // writes the policy's exemptions before the stack (policy-exemptions.bicep, #336).
-var dataLakeOpen = lakeOpen(
+var lakeNodeAccess = lakeOpen(
   serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy || ocrLocalCopy,
   ocrNodeIps
 )
-var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
+var indexNodeAccess = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
 // Cosmos opens to the node IPs for the serving container (#955) or the
 // on-prem BOINC host's claim and collect (#967), and for the on-prem OCR pickup (#917),
 // which also uses the lake. The on-prem release host's index_runs write (#1096) needs one of
 // these three; onPremRelease doesn't open it.
-var stateOpen = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+var stateNodeAccess = cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+// Without data private endpoints the Azure apps reach all three from snet-cae through
+// service endpoints, so each has public network access whatever the settings above say.
+// The subnet's id is written out, not read from the network module: a runtime value here
+// would short-circuit these modules in a what-if, and the stack preview then refuses to run.
+// The modules depend on the network, whose service endpoints their rules need.
+var dataSubnetIds = dataPrivateEndpoints
+  ? []
+  : [resourceId(subscription().subscriptionId, n.rg, 'Microsoft.Network/virtualNetworks/subnets', n.vnet, 'snet-cae')]
+var dataLakeOpen = lakeNodeAccess || !dataPrivateEndpoints
+var indexAccountOpen = indexNodeAccess || (indexStorage && !dataPrivateEndpoints)
+var stateOpen = stateNodeAccess || !dataPrivateEndpoints
 
 module storage 'modules/storage.bicep' = {
   scope: rg
   name: 'storage'
-  dependsOn: [policies]
+  dependsOn: [policies, network]
   params: {
     location: location
     tags: tags
     name: n.dataLake
     blobSoftDeleteDays: lakeBlobSoftDeleteDays
-    allowedIps: dataLakeOpen ? nodeIpList(ocrNodeIps) : []
+    allowedIps: lakeNodeAccess ? nodeIpList(ocrNodeIps) : []
+    // The BOINC hand-off job reaches the lake from its own subnet, as it does the exchange account.
+    subnetIds: empty(dataSubnetIds) || !boincHandoff
+      ? dataSubnetIds
+      : concat(dataSubnetIds, [
+          resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
+        ])
   }
 }
 
 module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
   scope: rg
   name: 'index-storage'
-  dependsOn: [policies]
+  dependsOn: [policies, network]
   params: {
     location: location
     tags: tags
     name: n.indexAccount
-    allowedIps: indexAccountOpen ? nodeIpList(ocrNodeIps) : []
+    accessTier: indexAccessTier
+    allowedIps: indexNodeAccess ? nodeIpList(ocrNodeIps) : []
+    subnetIds: dataSubnetIds
   }
 }
 
@@ -860,17 +887,18 @@ module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
 module cosmos 'modules/cosmos.bicep' = {
   scope: rg
   name: 'cosmos'
-  dependsOn: [policies]
+  dependsOn: [policies, network]
   params: {
     location: location
     tags: tags
     name: n.cosmos
     freeTier: cosmosFreeTier
-    allowedIps: stateOpen ? nodeIpList(ocrNodeIps) : []
+    allowedIps: stateNodeAccess ? nodeIpList(ocrNodeIps) : []
+    subnetIds: dataSubnetIds
   }
 }
 
-module privateEndpoints 'modules/private-endpoints.bicep' = {
+module privateEndpoints 'modules/private-endpoints.bicep' = if (dataPrivateEndpoints) {
   scope: rg
   name: 'private-endpoints'
   params: {

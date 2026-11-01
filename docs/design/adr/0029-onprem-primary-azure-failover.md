@@ -77,6 +77,11 @@ time difficult to bound.
    Do not switch BOINC backend authority merely because a public web cutover
    succeeded.
 
+9. The spare is stripped down without losing any of this: no private endpoints
+   on its data services, and a Cool index
+   ([ADR-0008, amendment of November 2026](0008-private-networking.md);
+   [runbook](../../operations/search-serving.md#the-azure-cold-spare)).
+
 ## Acceptance and operations
 
 Before public routing, verify both origins against the same release, readiness,

@@ -65,3 +65,14 @@ With both on:
 - **The policy exempts Cosmos by resource id** while it's open (`publicAccountIds`), as it does the lake for the Serial Set runner.
 
 Turning `USNM_COSMOS_ONPREM_ACCESS` off closes Cosmos again at the next provision. When Cosmos's data moves on-prem with serving (#955), this goes away.
+
+## Amendment, November 2026: no private endpoints on the cold spare (#308, #955)
+
+Production serves on-prem ([ADR-0029](0029-onprem-primary-azure-failover.md)), and the Azure API and searcher sit at zero replicas as its spare. The three endpoints cost $0.72 a day, about as much as storing the Azure index Hot, to protect a path that carries no traffic until a failover. With `USNM_DATA_PRIVATE_ENDPOINTS=false`:
+
+- **No endpoints or private DNS** for the data lake, the index account or Cosmos.
+- **Service endpoints on snet-cae**, `Microsoft.Storage` and `Microsoft.AzureCosmosDB`, and a firewall rule for that subnet on each account. The lake also keeps its rule for the BOINC subnet while the hand-off job exists. `defaultAction: Deny`, `bypass: None` and Cosmos's `networkAclBypass: None` stay.
+- **Public network access is on for all three**, behind those firewalls, so the public-network policy lists them by resource id. Provision already writes the list before the stack. The IP rules still follow the on-prem settings alone.
+- **Identity doesn't change.** Shared keys, local auth and anonymous access stay off, there's no SAS, and the roles are the same. A request from an allowed subnet still needs an Entra token with a data-plane role.
+
+The traffic stays on the Azure backbone. The change gives up one layer of defence. The accounts' public addresses now answer and refuse requests, where before they were closed. dev keeps its endpoints by default. The Azure portal still can't reach the data from outside the allowed addresses.
