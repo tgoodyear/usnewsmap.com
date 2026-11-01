@@ -21,6 +21,11 @@ def row(native=0, container=0, identical=True, cer=0.0):
             "text_identical": identical, "alto_identical": identical, "cer_between_builds": cer}
 
 
+class Names(unittest.TestCase):
+    def test_scans_differing_by_format_get_their_own_slots(self):
+        self.assertNotEqual(module.slot_name("page.jpg"), module.slot_name("page.jp2"))
+
+
 class Summary(unittest.TestCase):
     def test_a_failed_read_is_counted_but_not_compared(self):
         summary = module.group_summary([row(), row(identical=False, cer=0.5), row(native=1)])

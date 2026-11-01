@@ -450,9 +450,13 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
     check_unit(&unit, &build)?;
     let (engine_dir, real) = prepare_engine(&work, &paths)?;
     let tmp = work.join(TMP_DIR);
-    std::fs::create_dir_all(&tmp)?;
     let worker = paths[WORKER_FILE].clone();
     let start = || -> anyhow::Result<Child> {
+        // A unit killed at a suspension or a restart leaves its scratch behind.
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp)?;
+        }
+        std::fs::create_dir_all(&tmp)?;
         Ok(Command::new(&worker)
             .arg("unit")
             .current_dir(&work)

@@ -50,8 +50,13 @@ def link_build(slot, build):
             (slot / item.name).write_text(f"<soft_link>{item.resolve()}</soft_link>\n")
 
 
+def slot_name(file):
+    """A directory name unique to one scan: `page.jpg` and `page.jp2` are different scans."""
+    return file.replace(".", "_")
+
+
 def read_page(page, a, images):
-    name = Path(page["file"]).stem
+    name = slot_name(page["file"])
     scan = a.pages / page["file"]
     out = a.work / name
     native, container = out / "native", a.rootfs / "parity" / name
@@ -151,11 +156,12 @@ def group_summary(rows):
 def report(a):
     rows = json.loads((a.work / "rows.json").read_text())
     for row in rows:
-        out = a.work / Path(row["file"]).stem
+        out = a.work / slot_name(row["file"])
         if row["native"]["status"] or row["container"]["status"]:
             continue
-        text = [(out / arm / "text.txt").read_text() for arm in ("native", "container")]
-        row["text_identical"] = text[0] == text[1]
+        raw = [(out / arm / "text.txt").read_bytes() for arm in ("native", "container")]
+        text = [item.decode() for item in raw]
+        row["text_identical"] = raw[0] == raw[1]
         row["alto_identical"] = sha256(out / "native/layout.xml") == sha256(out / "container/layout.xml")
         between = 0 if row["text_identical"] else distance(text[0], text[1])
         row["cer_between_builds"] = between / max(len(text[1]), 1)
