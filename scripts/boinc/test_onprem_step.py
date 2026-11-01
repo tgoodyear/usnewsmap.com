@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import threading
 import unittest
 from pathlib import Path
@@ -279,6 +280,22 @@ class OnpremStep(unittest.TestCase):
             done = self.receive([("keep/nbu_gage/sn1/1890-05-03/1/2.jpg", b"s")], stage)
             self.assertIn(b"pruned 1", done.stdout)
             self.assertFalse(old.exists())
+
+    def test_scans_receive_prunes_at_four_days(self):
+        with tempfile.TemporaryDirectory() as d:
+            stage = os.path.join(d, "stage")
+            five_days = Path(stage, "keep/nbu_gage/sn1/1890-01-01/1/1.jpg")
+            three_days = Path(stage, "keep/nbu_gage/sn1/1890-01-02/1/1.jpg")
+            for scan, days in ((five_days, 5), (three_days, 3)):
+                scan.parent.mkdir(parents=True)
+                scan.write_bytes(b"old")
+                at = time.time() - days * 86400
+                os.utime(scan, (at, at))
+            done = self.receive([("keep/nbu_gage/sn1/1890-05-03/1/2.jpg", b"s")], stage)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(b"pruned 1", done.stdout)
+            self.assertFalse(five_days.exists())
+            self.assertTrue(three_days.exists())
 
     def test_scans_receive_refuses_big_extension_records_and_leaves_no_partial_file(self):
         import io
