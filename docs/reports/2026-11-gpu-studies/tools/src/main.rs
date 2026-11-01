@@ -102,6 +102,13 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// The `stop` guard applied to finished readings: keep the text before the repeated run plus one period
+    GuardCut {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Column structure of ALTO pages: the geometric reading order and word count per page
     Columns {
         /// ALTO files, as <id>.xml
@@ -475,6 +482,24 @@ fn cut(units: &Path, out: &Path) -> Result<()> {
     write_rows(&out.join("crops.jsonl"), &rows)
 }
 
+fn guard_cut(input: &Path, out: &Path) -> Result<()> {
+    let mut rows = vec![];
+    let mut cut = 0;
+    for mut r in read_jsonl(input)? {
+        let Some(t) = r["text"].as_str().map(str::to_string) else { continue };
+        let trimmed = t.trim_end();
+        if let Some((p, span)) = usnm_ocr_contract::qwen::tail_repetition(trimmed) {
+            let c: Vec<char> = trimmed.chars().collect();
+            r["text"] = json!(c[..c.len() - span + p].iter().collect::<String>());
+            r["looped"] = json!(true);
+            cut += 1;
+        }
+        rows.push(r);
+    }
+    eprintln!("{cut} of {} readings cut", rows.len());
+    write_rows(out, &rows)
+}
+
 fn sha(s: &str) -> String {
     Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -702,6 +727,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Jpeg { input, out } => jpeg(&input, &out),
         Cmd::Columns { alto_dir, out } => columns(&alto_dir, &out),
+        Cmd::GuardCut { input, out } => guard_cut(&input, &out),
         Cmd::SelectDta { dta, out } => select_dta(&dta, &out),
         Cmd::JaCut { pages, out } => ja_cut(&pages, &out),
         Cmd::JaScore { items, hyps, out } => ja_score(&items, &hyps, &out),
