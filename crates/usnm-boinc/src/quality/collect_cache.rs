@@ -11,7 +11,7 @@ use std::{
 };
 use usnm_ocr_contract::{quality::Job, qwen};
 
-const FORMAT: &[u8] = b"quality-row-part-v1";
+const FORMAT: &[u8] = b"quality-row-part-v3";
 
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

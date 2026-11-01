@@ -289,6 +289,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
                 let rows = collect::crop_rows(&CropInputs {
                     doc_id: &name,
+                    job_id: &job.id,
                     loc: &loc,
                     ours: ours.as_ref(),
                     texts: &l.texts,
