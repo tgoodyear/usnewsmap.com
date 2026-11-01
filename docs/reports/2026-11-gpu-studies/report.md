@@ -14,7 +14,7 @@ Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, 
 
 A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%, and readings at the token cap there fell from 15 to 2. How much of the gain comes from looping less is Study 5's question. It showed no gain on English, and it omits more. It stays untrusted.
 
-Full-page Surya costs about ten times Qwen's crop read per page. A 4090 was faster than a 3090 and dearer per page.
+Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 was faster than a 3090 and dearer per page. Study 3's Surya scores measured our configuration: in Study 6, line recognition took Surya from 109.2% to 23.0% pooled CER, still behind Tesseract's 9.0% on those crops, and `whole` mode kept column order better but read less than half the text.
 
 On Japanese, NDLOCR-Lite, CHURRO and Surya agree most with each other and with the machine references. That is agreement, not accuracy. No human transcription of these crops exists that we could verify.
 
@@ -198,11 +198,46 @@ The same pages from the frozen sample. Cost is everything paid for the instance,
 | Qwen 8B, 12 crops a page | RTX 4090 | 40 | 141 | 0.37 | 30 | 4.70 |
 | Surya, tiled | RTX 3090 | 18 | 5.9 | 0.20 | 190 | 36 |
 | Surya, tiled | RTX 4090 | 20 | 7.5 | 0.36 | 168 | 51 |
-| Surya, tiled | RTX 2060 SUPER, local | 1 | 3.9 | 0 | n/a | no rental cost |
+| Surya, tiled | RTX 2060 SUPER, local | 2 | 3.5 | 0 | n/a | no rental cost |
 
-Pages per hour for Surya compares the first 18 pages on each rented card. The 2060 SUPER figure is one page, 914 s against 400 s on the 3090 and 314 s on the 4090 for that same page. Each rented run sat on a different host, with its own CPU, and CPU load matters to Surya's layout step, so these aren't clean card effects.
+Pages per hour for Surya compares the first 18 pages on each rented card. The 2060 SUPER figure is two pages, 2,084 s in all, against 836 s on the 3090 and 614 s on the 4090 for the same two. Each rented run sat on a different host, with its own CPU, and CPU load matters to Surya's layout step, so these aren't clean card effects.
 
 Qwen at 467 crops and Surya on whole pages are different work: a Surya page costs about ten times a page of Qwen crops. The 4090 is about 1.5 times as fast on Qwen and 1.3 times on Surya, at about 1.9 times the price, so the 3090 is cheaper per page on both. No Study 4 rental failed, so the table holds all its paid time. The 2060 SUPER has no rental cost, and its electricity wasn't measured. Qwen wasn't measured on it, because pulling the image would block the BOINC client.
+
+# Study 6: a fair Surya retest
+
+Study 3's Surya rows measure our configuration. This retest ran the same inputs the way Surya is meant to run, on a 12 GB RTX 3060. The crops and pages were already seen, so this is a second use, with no training.
+
+## Line recognition on the 612 crops
+
+`full_page` off, each crop one block. Pooled CER, with limits, median crop CER and Study 3's pooled figure for the same crops:
+
+| Source (crops, pages) | Pooled CER | 95% limits | Median crop | Study 3 pooled |
+| --- | ---: | ---: | ---: | ---: |
+| All (612) | 23.0% | 16.3 to 30.8 | 7.1% | 109.2% |
+| Overproof English (100, 18) | 16.6% | 11.0 to 22.8 | 1.5% | 48.5% |
+| Reichsanzeiger German (100, 20) | 23.6% | 14.9 to 32.4 | 7.9% | 392.1% |
+| NZZ German (360, 167) | 15.9% | 11.5 to 22.8 | 7.4% | 205.9% |
+| French (24, 8) | 18.4% | 7.5 to 27.2 | 3.0% | 3.0% |
+| Finnish (18, 6) | 45.6% | 14.4 to 64.2 | 10.3% | 7.3% |
+| Swedish (10, 4), unranked | 31.9% | 1.7 to 47.5 | 10.0% | 3.0% |
+
+Against Tesseract's 9.0% over the same crops, Surya is 14.0 points higher (limits 7.8 to 21.0). Line mode fixes the line crops and does worse on the region crops of the NewsEye sets, where full-page mode had worked. Major hallucinations number 49 of 612, and 48 crops fail the under-length guard. Nobody has read them. It took 849 s, 1.4 s a crop.
+
+## Page modes on the reading-order pages
+
+| Mode | Pages read | Pages scored | Median tau | Pages under 0.5 | Matched words a page | Pages per hour |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `whole` | 20 | 15 | 0.75 | 3 | 70 | 11.7 |
+| `capped` | 8 | 5 | 0.20 | 4 | 63 | 6.7 |
+| `tiled`, Study 3 | 8 | 8 | 0.34 | 7 | 213 | 5.9 on a 3090 |
+| LoC | 20 | 20 | 0.97 | 0 | 1,709 | |
+
+Layout ran on the GPU here, with a CUDA torch in the image. Surya's own order in `whole` mode scores far better than our tile stitching, so Study 3's 0.34 was mostly our stitching. It also reads much less of the page: median 11,189 characters against LoC's 26,120, and 5 of 20 pages had too few matched words to score. So `whole` keeps order and loses text. These are heuristic scores on a small sample. `capped` was stopped at 8 pages at about 9 minutes a page.
+
+## Native weights against the GGUF
+
+50 crops by the frozen hash order, line mode, native weights (revision `3b3d4cdf`, OpenRAIL) on vLLM 0.20.1 with Surya's server settings scaled to a 12 GB card (`max-num-seqs` 16, `max-num-batched-tokens` 4096), 9.9 GB peak VRAM. Pooled CER is 61.4% (37.6 to 95.4) for native and 18.9% (10.0 to 30.7) for the GGUF, 42.5 points worse (19.6 to 76.9). A few readings run far past their reference, such as 552 characters on a 57-character crop. This wasn't investigated further, and it may come from our server settings, so it isn't a verdict on the native model.
 
 # Spend
 
