@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read a list with Surya in the usnm_surya image, one model load for the whole list. Output is JSONL."""
 import argparse, json, sys, time
-sys.path.insert(0, "/opt/surya")
+sys.path[:0] = ["/opt/surya", "/work"]
 import run as surya_run  # the image's run.py: tile rule and block text
 from PIL import Image
 from surya.inference import SuryaInferenceManager

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Study 5 rentals. --step guard-val|new2b|train8|surya6|export2b|deploy2b; run on the node with GPU_STUDY_ROOT set.
+# Study 5 rentals. --step guard-val|new2b|train8|surya6|export2b|deploy2b|surya6c|test8; run on the node with GPU_STUDY_ROOT set.
 set -uo pipefail
 W=${GPU_STUDY_ROOT:?}; cd "$W"
 TRAIN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:960ba48cb33e6c164764246bba2c9aded7d791b48a6aed49f39c3a95acff3ee1
-STEP=""
-while [ $# -gt 0 ]; do case "$1" in --step) STEP=$2; shift 2;; *) exit 2;; esac; done
+STEP=""; ADAPTER=""
+while [ $# -gt 0 ]; do case "$1" in --step) STEP=$2; shift 2;; --adapter) ADAPTER=$2; shift 2;; *) exit 2;; esac; done
 case "$STEP" in
   guard-val) P=push/s5-val; rm -rf "$P"; mkdir -p "$P"; ln -s "$PWD/lora/images" "$P/images"
     jq -c 'select(.id|startswith("pub-nzz") or startswith("pub-newseye-nlf-fi"))|.' lora/validation.jsonl >"$P/validation.jsonl"
@@ -30,7 +30,20 @@ case "$STEP" in
     { jq -r '[.id,.image]|@tsv' lora/test.jsonl; cat s5sets/bln.jsonl s5sets/dta.jsonl | jq -r '[.id,(if .source=="bln600" then "images/bln/"+(.file|sub("images/";"")) else .file end)]|@tsv'; } >"$P/list.tsv"
     cp scripts/jobs/qwen.sh results/s5-x2/qwen2b-lora-Q8_0.gguf "$P/"
     printf 'stock2b\tQwen3-VL-2B-Instruct-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\nlora2b\t/work/in/qwen2b-lora-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
-    scripts/rent.sh --study s5d2 --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 7 --cap-dollars 2 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d2;;
+    scripts/rent.sh --study s5d2 --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:9a5a78347ee3efa4df3eb03531dc8e356c5c45af67affe862fae4b1993a15d5e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 7 --cap-dollars 2 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d2;;
+  surya6c) P=push/s6c; rm -rf "$P"; mkdir -p "$P"; cp scripts/jobs/surya_read.py repo/ocr/boinc/surya/run.py "$P/"
+    while IFS=$'\t' read -r i r; do printf '%s %s\t%s\n' "$(printf 'gpu-studies-202611:surya-native:%s' "$i" | sha256sum | cut -d' ' -f1)" "$i" "$r"; done <push/s6/list.tsv | LC_ALL=C sort | head -50 | cut -d' ' -f2- >"$P/list.tsv"
+    mkdir -p "$P/c"; cut -f2 "$P/list.tsv" | while read -r r; do ln -s "$(readlink -f "push/s6/$r")" "$P/c/"; done
+    IDLE_MIN=25 scripts/rent.sh --study s6c --image vllm/vllm-openai:v0.20.1 --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 2 --cap-dollars 1 --disk 50 --push-dir "$P" --job scripts/jobs/surya-native.sh --out results/s6c;;
+  test8) P=push/s5-t82; rm -rf "$P"; mkdir -p "$P/images"; ln -s "$PWD/lora/images/bench" "$P/images/bench"; ln -s "$PWD/s5sets/images/bln" "$P/images/bln"; ln -s "$PWD/s5sets/images/dta" "$P/images/dta"
+    { cat lora/test.jsonl; cat s5sets/bln.jsonl s5sets/dta.jsonl | jq -c '{id,image:(if .source=="bln600" then "images/bln/"+(.file|sub("images/";"")) else .file end)}'; } >"$P/all.jsonl"
+    cp scripts/jobs/lora_infer.py analysis/s5/guard.txt results/s5-t8/base-revision.txt results/s5-t8/$ADAPTER "$P/"; echo "$ADAPTER" >"$P/selected.txt"
+    scripts/rent.sh --study s5t82 --image "$TRAIN" --gpu "RTX 3090" --max-hours 10 --cap-dollars 4 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-2.sh --out results/s5-t82;;
+  deploy2bln) P=push/s5-d2b; rm -rf "$P"; mkdir -p "$P/images/bln"; ln -s ${GPU_STUDY_DEV:-/tank/usnm-dev/gpu-studies}/data/blnpng/png/* "$P/images/bln/"
+    jq -r '[.id,("images/bln/"+(.file|sub("images/";"")|sub("\\.[a-z]+$";".png")))]|@tsv' s5sets/bln.jsonl >"$P/list.tsv"
+    cp scripts/jobs/qwen.sh results/s5-x2/qwen2b-lora-Q8_0.gguf "$P/"
+    printf 'stock2b\tQwen3-VL-2B-Instruct-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\nlora2b\t/work/in/qwen2b-lora-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
+    scripts/rent.sh --study s5d2b --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:9a5a78347ee3efa4df3eb03531dc8e356c5c45af67affe862fae4b1993a15d5e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 4 --cap-dollars 1 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d2b;;
   train8) P=push/s5-t8; rm -rf "$P"; mkdir -p "$P"; ln -s "$PWD/lora/images" "$P/images"
     cp lora/train.jsonl lora/validation.jsonl scripts/jobs/lora_train.py scripts/jobs/lora_infer.py "$P/"
     scripts/rent.sh --study s5t8 --image "$TRAIN" --gpu "RTX 3090" --max-hours 14 --cap-dollars 6 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-1.sh --out results/s5-t8;;
