@@ -72,13 +72,20 @@ class ControllerTests(unittest.TestCase):
                                    "reason.controller.terminal-boinc-failure": 1,
                                    "reason.controller.other": 4})
 
-    def test_kinds_of_error_are_bounded(self):
-        seen = set()
-        names = {collector.reason_series(f"kind {'abcdefghijklmnopqrstuvwxyz'[i % 26]}{'x' * (i // 26)}", seen)
-                 for i in range(60)}
-        self.assertEqual(len(names), collector.MAX_REASONS + 1)
-        self.assertIn("reason.controller.other", names)
-        self.assertTrue(all(len(n) <= 64 for n in [collector.reason_series("a " * 40, set())]))
+    def test_a_kind_of_error_depends_only_on_its_text(self):
+        for error in ("a brand new error", "bridge/a b failed", "failed at 192.0.2.7", "x" * 500, None):
+            self.assertEqual(collector.reason_series(error), "reason.controller.other")
+        self.assertEqual(collector.reason_series("claimed a page already in this plan with a different message"),
+                         "reason.controller.claimed-a-page-already-in-this-plan-with-a-dif")
+        self.assertTrue(all(len(collector.reason_series(k)) <= 64 for k in collector.KNOWN_FAILURES))
+
+    def test_a_tick_across_two_hours_is_busy_in_both(self):
+        w = window()
+        ended = THIS_HOUR + 100
+        collector.collect_controller(w, [(ended, "", tick(ended - 500, seconds=400.0))])
+        self.assertEqual(w.series["tick_busy_seconds"][1], 300)
+        self.assertEqual(w.series["tick_busy_seconds"][2], 100)
+        self.assertEqual(w.series["tick_seconds"][2], 400)
 
     def test_the_last_passing_tick_says_how_near_its_limits_it_was(self):
         at = THIS_HOUR + 10

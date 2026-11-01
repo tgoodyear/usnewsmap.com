@@ -191,7 +191,9 @@ const eastern = (d, o) => d.toLocaleString('en-US', {timeZone:'America/New_York'
 const barWindow = (from, to) => {
   const day = {month:'short', day:'numeric'};
   const same = eastern(from, day) === eastern(to, day);
-  return eastern(from, {...day, hour:'numeric'}) + ' to ' + eastern(to, {...(same ? {} : day), hour:'numeric', timeZoneName:'short'});
+  // Both ends carry their zone: the hour the clocks go back reads 1 AM at each.
+  const hour = {hour:'numeric', timeZoneName:'short'};
+  return eastern(from, {...day, ...hour}) + ' to ' + eastern(to, {...(same ? {} : day), ...hour});
 };
 const tip = document.createElement('div');
 tip.className = 'bar-tip';

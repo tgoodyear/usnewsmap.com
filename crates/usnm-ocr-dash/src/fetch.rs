@@ -466,6 +466,9 @@ pub struct Fetch {
     index_first_hour: Option<i64>,
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
+    /// When the failure log was last read to its end; `None` if it's missing
+    /// or unreadable, so its count isn't known.
+    pub failures_read_at: Option<DateTime<Utc>>,
     pub dead: HashSet<String>,
     /// Pages skipped because loc.gov couldn't serve their issue's item
     /// (`loc_item_error`), and when they last were; until permanent.
@@ -541,6 +544,7 @@ impl Fetch {
             index_read_at: None,
             index_first_hour: None,
             failures: VecDeque::new(),
+            failures_read_at: None,
             dead: HashSet::new(),
             cooling: HashMap::new(),
             failure_times: VecDeque::new(),
@@ -605,9 +609,17 @@ impl Fetch {
         self.bulk.poll();
         self.pacer.poll();
         self.publish.poll();
-        if let Err(e) = self.read_failures() {
-            tracing::warn!(error = %e, "can't read the fetch failures");
-        }
+        self.failures_read_at = match self.read_failures() {
+            Ok(()) => self
+                .scans
+                .join("failures-full.jsonl")
+                .is_file()
+                .then_some(now),
+            Err(e) => {
+                tracing::warn!(error = %e, "can't read the fetch failures");
+                None
+            }
+        };
         let kept = now.timestamp() - crate::throughput::KEEP_HOURS * crate::throughput::HOUR;
         self.hourly = self.hourly.split_off(&kept);
         let kept = now.timestamp() - TIME_HOURS * crate::throughput::HOUR;
@@ -616,7 +628,9 @@ impl Fetch {
         while self.events.front().is_some_and(|(t, _)| *t < day) {
             self.events.pop_front();
         }
-        while self.failure_times.front().is_some_and(|t| *t < day) {
+        // The last 24 full hours began up to 25 hours ago.
+        let oldest = now - Duration::hours(TIME_HOURS);
+        while self.failure_times.front().is_some_and(|t| *t < oldest) {
             self.failure_times.pop_front();
         }
         while self.holds.front().is_some_and(|t| *t < day) {
@@ -1129,6 +1143,14 @@ impl Fetch {
         (reasons, self.failures.len())
     }
 
+    /// Failures from the hour starting at `first` up to the one at `end`.
+    pub fn failures_in_hours(&self, first: i64, end: i64) -> usize {
+        self.failure_times
+            .iter()
+            .filter(|t| (first..end).contains(&t.timestamp()))
+            .count()
+    }
+
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
         self.failure_times.iter().filter(|t| **t >= since).count()
     }
@@ -1598,5 +1620,36 @@ mod tests {
             [("transient: giving up on HTTP 520".to_owned(), 2)]
         );
         assert_eq!(from, 3);
+    }
+
+    #[test]
+    fn failures_are_known_only_once_their_log_is_read_and_count_by_the_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        let now = Utc::now();
+        f.poll(now);
+        assert_eq!(f.failures_read_at, None);
+        let hour = now.timestamp().div_euclid(3600) * 3600;
+        let at = |t: i64| {
+            DateTime::from_timestamp(t, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
+        let lines: String = [hour - 90_000, hour - 86_400, hour - 1, hour + 1]
+            .iter()
+            .map(|t| {
+                format!(
+                    "{{\"doc_id\":\"d\",\"kind\":\"transient\",\"error\":\"e\",\"at\":\"{}\"}}\n",
+                    at(*t)
+                )
+            })
+            .collect();
+        std::fs::write(dir.path().join("failures-full.jsonl"), lines).unwrap();
+        f.poll(now);
+        assert_eq!(f.failures_read_at, Some(now));
+        // The current hour isn't in the full hours; the hour 25 ago is kept
+        // only as far as they reach.
+        assert_eq!(f.failures_in_hours(hour - 86_400, hour), 2);
     }
 }

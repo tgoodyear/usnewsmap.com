@@ -152,11 +152,18 @@ impl App {
         v.throughput.add_fetch(
             throughput::FetchFacts {
                 read_at: fetch.index_read_at,
-                // Failures come from their own file, which may not be there yet.
+                // The same hours as the pages, from a file of their own, which
+                // may not be there.
                 failed_day: fetch
-                    .index_read_at
-                    .map(|_| fetch.failures_since(now - chrono::Duration::days(1))),
-                last_failed: fetch.failures.back().map(|f| f.at),
+                    .failures_read_at
+                    .and(fetch.hours_covered())
+                    .map(|(from, to)| {
+                        fetch.failures_in_hours(from.max(last_full_day), to + throughput::HOUR)
+                    }),
+                last_failed: fetch
+                    .failures_read_at
+                    .and(fetch.failures.back())
+                    .map(|f| f.at),
                 reasons,
                 reasons_from,
                 seconds: fetch.download_seconds(last_full_day, throughput::DAY_HOURS),
@@ -841,14 +848,22 @@ mod tests {
                 now,
             )
             .unwrap();
-            let mut f = a.fetch.lock().unwrap();
-            f.index_read_at = Some(now);
-            f.failures.push_back(fetch::FailureLine {
-                doc_id: "sn1".into(),
-                kind: "transient".into(),
-                error: "pve-lab at 192.0.2.7 refused from CT 999".into(),
-                at: now,
-            });
+            let at = (now - chrono::Duration::hours(2)).to_rfc3339();
+            std::fs::write(
+                dir.path().join("index-full.jsonl"),
+                format!(
+                    "{{\"doc_id\":\"sn1\",\"fetched_at\":\"{at}\",\"bytes\":1,\"download_ms\":5}}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("failures-full.jsonl"),
+                format!(
+                    "{{\"doc_id\":\"sn1\",\"kind\":\"transient\",\"error\":\"pve-lab at 192.0.2.7 refused from CT 999\",\"at\":\"{at}\"}}\n"
+                ),
+            )
+            .unwrap();
+            a.fetch.lock().unwrap().poll(now);
         }
         let (_, lan) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
         assert!(lan.contains("bridge submit failed"));

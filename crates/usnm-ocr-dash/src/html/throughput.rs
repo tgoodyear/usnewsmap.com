@@ -466,13 +466,13 @@ fn runs_block(s: &StepRate) -> String {
         },
         |t| format!("in the hour from {}", time(t)),
     );
-    let failed = match (d.last_failed, d.failures.is_some() || d.last_failed_exact) {
-        (Some(t), _) if d.last_failed_exact => time(t),
-        (Some(t), _) => format!("in the hour from {}", time(t)),
-        (None, false) => unknown(),
-        (None, true) if searched == 0 => unknown(),
-        (None, true) if s.id == "scan_fetch" => "none recorded".to_owned(),
-        (None, true) => format!("none in the {searched} hours kept"),
+    let failed = match d.last_failed {
+        Some(t) if d.last_failed_exact => time(t),
+        Some(t) => format!("in the hour from {}", time(t)),
+        None if d.failures.is_none() => unknown(),
+        None if d.last_failed_exact => "none recorded".to_owned(),
+        None if d.failed_hours_searched == 0 => unknown(),
+        None => format!("none in the {} hours kept", d.failed_hours_searched),
     };
     format!("<p>Last success: {ok}.</p><p>Last failure: {failed}.</p>")
 }
@@ -824,6 +824,17 @@ mod tests {
         assert!(text.contains("p50 about 1.0&nbsp;s/page"));
         assert!(text.contains("p95 about 150&nbsp;s/page"));
         assert!(!text.contains("Average only"));
+    }
+
+    #[test]
+    fn no_failure_is_claimed_for_hours_nobody_counted_failures_in() {
+        let mut v = empty();
+        let s = v.steps.iter_mut().find(|s| s.id == "bridge_lock").unwrap();
+        s.detail.hours_searched = 40;
+        s.detail.failures = Some(Failures::default());
+        assert!(runs_block(s).contains("Last failure: <span class=\"muted\">unknown"));
+        s.detail.failed_hours_searched = 12;
+        assert!(runs_block(s).contains("Last failure: none in the 12 hours kept."));
     }
 
     #[test]

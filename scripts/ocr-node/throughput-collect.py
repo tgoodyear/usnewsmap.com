@@ -59,11 +59,14 @@ RESULT_SERIES = ("valid", "inconclusive", "invalid", "waiting", "error", "units"
                  "bundles")
 STEP_NAME = re.compile(r"usnm-boinc-step-[0-9]{8}T[0-9]{6}Z-([a-z0-9-]{1,40})")
 PHASE_NAME = re.compile(r"[a-z0-9-]{1,40}")
-# A failed tick's error, up to the first colon or semicolon, as a series name. Anything with digits,
-# dots or a second slash in it, which could be a path, an address or a page, is only "other".
-REASON = re.compile(r"[A-Za-z][A-Za-z -]{0,38}(/[a-z-]{1,30})?[A-Za-z -]{0,30}")
+# The kinds of a failed tick's error, by its text up to the first colon or semicolon. A fixed list,
+# so a failure keeps its kind from one run to the next and no other text can reach a series name:
+# anything else is "other".
+BRIDGE_FAILURE = re.compile(r"(?:bridge|handoff)/[a-z-]{1,30} failed")
+KNOWN_FAILURES = ("batch journal inventory failed", "claimed a page already in this plan with a different message",
+                  "hand-off storage failed", "immutable allocation changed", "terminal BOINC failure",
+                  "terminal failed page")
 MAX_REASON = 46
-MAX_REASONS = 16
 SHIP_LINE = re.compile(r"quality-ship: (c[0-9]{5}): (.*)")
 ENV_LINE = re.compile(r"([A-Z_]+)=([0-9]+)")
 # Aggregates only. The session is read-only, each statement is cut off after five seconds, and
@@ -206,14 +209,11 @@ def number(value):
     return value if type(value) in (int, float) and value >= 0 else 0
 
 
-def reason_series(error, seen):
+def reason_series(error):
     head = re.split("[:;]", error, maxsplit=1)[0].strip() if isinstance(error, str) else ""
     name = "other"
-    if REASON.fullmatch(head):
+    if BRIDGE_FAILURE.fullmatch(head) or head in KNOWN_FAILURES:
         name = re.sub("[^a-z]+", "-", head.lower())[:MAX_REASON].strip("-")
-    if name not in seen and len(seen) >= MAX_REASONS:
-        name = "other"
-    seen.add(name)
     return f"reason.controller.{name}"
 
 
@@ -233,9 +233,10 @@ def limits_now(event):
 
 
 def collect_controller(window, entries):
-    for name in ("ticks_ok", "ticks_failed", "tick_seconds", "ocr_claim_pages", "ocr_collect_pages"):
+    for name in ("ticks_ok", "ticks_failed", "tick_seconds", "tick_busy_seconds", "ocr_claim_pages",
+                 "ocr_collect_pages"):
         window.declare(name)
-    plan, selected, limits, reasons = None, None, {}, set()
+    plan, selected, limits = None, None, {}
     for logged, _, message in entries:
         event = json_event(message)
         if event is None or type(event.get("at")) is not int:
@@ -253,10 +254,14 @@ def collect_controller(window, entries):
             good = kind == "boinc_batch_tick"
             window.add("ticks_ok" if good else "ticks_failed", at)
             if not good:
-                window.add(reason_series(event.get("error"), reasons), at)
+                window.add(reason_series(event.get("error")), at)
             timings = event.get("timings")
             if isinstance(timings, dict):
-                window.add("tick_seconds", at, number(timings.get("tick_seconds")))
+                seconds = number(timings.get("tick_seconds"))
+                window.add("tick_seconds", at, seconds)
+                # The tick's time per tick is by when it ended; how busy an hour was, by when
+                # it was running.
+                window.spread("tick_busy_seconds", at - seconds, at)
             if good:
                 window.add("ocr_collect_pages", at, number(event.get("newly_published")))
                 # A new plan starts its count again.

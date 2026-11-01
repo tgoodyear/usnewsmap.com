@@ -505,7 +505,7 @@ const ROWS: &[Row] = &[
         failed_unit: "ticks",
         phases: &["*"],
         reasons: "reason.controller.",
-        busy: "tick_seconds",
+        busy: "tick_busy_seconds",
         sources: &["controller"],
         ..ROW
     },
@@ -633,8 +633,10 @@ pub struct StepDetail {
     /// The hour of the newest failure, or its time if `last_failed_exact`.
     pub last_failed: Option<DateTime<Utc>>,
     pub last_failed_exact: bool,
-    /// Hours the two above looked through.
+    /// Hours with a success count, and with a failure count, that those two
+    /// looked through.
     pub hours_searched: u32,
+    pub failed_hours_searched: u32,
     /// The newest hour with a value.
     pub newest_hour: Option<DateTime<Utc>>,
     /// Oldest first: [`DAY_HOURS`] of them, the last full ones.
@@ -697,6 +699,8 @@ pub struct ThroughputView {
 #[derive(Debug, Clone, Default)]
 pub struct FetchFacts {
     pub read_at: Option<DateTime<Utc>>,
+    /// Failures in the hours the index covers of the last 24, if the failure
+    /// log was read and those hours are known.
     pub failed_day: Option<usize>,
     pub last_failed: Option<DateTime<Utc>>,
     /// Reasons among the latest failures, by count, and how many that was.
@@ -727,7 +731,7 @@ impl ThroughputView {
         }
         (d.seconds_p50, d.seconds_p95) = facts.seconds.unzip();
         d.last_failed = facts.last_failed;
-        d.last_failed_exact = true;
+        d.last_failed_exact = facts.failed_day.is_some();
         let Some(failed) = facts.failed_day else {
             return;
         };
@@ -979,6 +983,7 @@ pub fn view(
                 last_ok: newest(searched(), |h| sum_at(&get, oks, h)),
                 last_failed: newest(searched(), failed_at),
                 hours_searched: total(searched(), |h| sum_at(&get, oks, h)).1,
+                failed_hours_searched: total(searched(), failed_at).1,
                 newest_hour: searched()
                     .find(|h| count_at(*h).is_some())
                     .and_then(|h| DateTime::from_timestamp(h, 0)),
@@ -1563,6 +1568,10 @@ mod tests {
         assert_eq!(c.last_failed, DateTime::from_timestamp(end - HOUR, 0));
         assert_eq!(c.last_ok, DateTime::from_timestamp(end, 0));
         assert_eq!(c.hours_searched, 2);
+        assert_eq!(c.failed_hours_searched, 2);
+        // The lock's seconds can arrive before anyone counted its failures.
+        let lock = &step(&v, "stage").detail;
+        assert_eq!(lock.failed_hours_searched, 0);
     }
 
     #[test]
