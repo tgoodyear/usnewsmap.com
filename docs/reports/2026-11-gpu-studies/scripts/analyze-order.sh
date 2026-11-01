@@ -8,4 +8,4 @@ jq -c --slurpfile i "$A/order-ids.json" 'select(.id as $x|$i[0]|index($x))|{id,t
 H=(--hyp loc=$A/order-loc.jsonl --hyp frak2021=analysis/s1/frak2021-page.jsonl)
 [ -s results/s3-surya-merged/surya-pages.jsonl ] && { jq -c 'select(.text|type=="string")' results/s3-surya-merged/surya-pages.jsonl >"$A/surya-pages.jsonl"; H+=(--hyp surya=$A/surya-pages.jsonl); }
 $T order --reference "$A/order-ref.jsonl" "${H[@]}" --out "$A/order.jsonl"
-jq -s 'map(select(.tau!=null))|group_by(.reader)|map({reader:.[0].reader,pages:length,median_tau:(map(.tau)|sort|.[length/2|floor]),low:(map(.tau)|min),under_half:(map(select(.tau<0.5))|length),mean_matched:(map(.matched)|add/length)})' "$A/order.jsonl"
+jq -s 'map(select(.tau!=null))|group_by(.reader)|map({reader:.[0].reader,pages:length,median_tau:(map(.tau)|sort|if length%2==1 then .[length/2|floor] else (.[length/2-1]+.[length/2])/2 end),low:(map(.tau)|min),under_half:(map(select(.tau<0.5))|length),mean_matched:(map(.matched)|add/length)})' "$A/order.jsonl"

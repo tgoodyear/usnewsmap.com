@@ -14,7 +14,7 @@ ap.add_argument("--out", type=Path, required=True)
 ap.add_argument("--min-pixels", type=int, required=True)
 ap.add_argument("--max-pixels", type=int, required=True)
 ap.add_argument("--max-new-tokens", type=int, default=1024)
-ap.add_argument("--base", default=a.base)
+ap.add_argument("--base", default="/opt/base")
 ap.add_argument("--guard", choices=["none", "rp105", "rp110", "stop", "stop-retry"], default="none")
 a = ap.parse_args()
 

@@ -23,6 +23,8 @@ ap.add_argument("--seed", type=int, required=True)
 ap.add_argument("--min-pixels", type=int, required=True)
 ap.add_argument("--max-pixels", type=int, required=True)
 ap.add_argument("--max-tokens", type=int, default=6000)
+ap.add_argument("--base", default="/opt/base")
+ap.add_argument("--base-revision", default=None)
 a = ap.parse_args()
 
 import torch
@@ -33,10 +35,10 @@ from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
 random.seed(a.seed); torch.manual_seed(a.seed); torch.cuda.manual_seed_all(a.seed)
 rows = [json.loads(l) for l in a.train.read_text(encoding="utf-8").splitlines() if l.strip()]
-proc = AutoProcessor.from_pretrained("/opt/base", local_files_only=True, trust_remote_code=False,
+proc = AutoProcessor.from_pretrained(a.base, local_files_only=True, trust_remote_code=False,
                                      size={"shortest_edge": a.min_pixels, "longest_edge": a.max_pixels})
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "/opt/base", local_files_only=True, trust_remote_code=False,
+    a.base, local_files_only=True, trust_remote_code=False,
     torch_dtype=torch.bfloat16, attn_implementation="sdpa").to("cuda")
 model.config.use_cache = False
 model = worker.attach_lora(model, a.rank)
@@ -95,4 +97,4 @@ while step < a.steps:
     "status": "untrusted-requires-held-out-evaluation", "rank": a.rank, "lr": a.lr, "steps": a.steps, "accum": a.accum,
     "seed": a.seed, "examples": len(rows), "skipped": skipped, "seconds": round(time.time() - t0, 1),
     "peak_gpu_bytes": torch.cuda.max_memory_allocated(), "gpu": torch.cuda.get_device_name(0), "torch": torch.__version__,
-    "base_revision": worker.BASE_REVISION, "min_pixels": a.min_pixels, "max_pixels": a.max_pixels}, sort_keys=True))
+    "base_revision": a.base_revision or worker.BASE_REVISION, "min_pixels": a.min_pixels, "max_pixels": a.max_pixels}, sort_keys=True))
