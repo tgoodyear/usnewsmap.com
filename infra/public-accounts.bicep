@@ -18,6 +18,11 @@
 //   (onPremServing, #955) or the on-prem BOINC host runs claim and collect
 //   (cosmosOnPremAccess, #967). The private endpoint stays for the Azure
 //   apps. Otherwise it stays private-only.
+//
+// Without data private endpoints (dataPrivateEndpoints off, ADR-0008, amendment
+// of November 2026) the lake, the index account and Cosmos also need public
+// network access for the Azure apps, behind a firewall that allows snet-cae,
+// so main.bicep and policy-exemptions.bicep pass each as open then.
 
 import { Names } from 'naming.bicep'
 

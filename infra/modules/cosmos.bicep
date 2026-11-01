@@ -13,6 +13,12 @@
 // (https://learn.microsoft.com/en-us/azure/cosmos-db/how-to-configure-firewall).
 // The public-network policy exempts the account by resource id while it is
 // open (main.bicep, public-accounts.bicep).
+//
+// With subnetIds and no private endpoint (a cold spare, ADR-0008 amendment of
+// November 2026), the Container Apps reach the account from those subnets
+// through a service endpoint. The virtual network filter then applies with
+// the IP firewall, so public access with no ipRules does not accept every
+// network. Local auth stays off.
 
 param location string
 param tags object
@@ -21,8 +27,10 @@ param name string
 param freeTier bool = true
 @description('Public IPv4 addresses or CIDR ranges allowed through the IP firewall (the on-prem hosts\' public IP). Empty: public network access disabled, the private endpoint only. Never empty with access on: an account with public access and no ipRules accepts every network.')
 param allowedIps array = []
+@description('Subnets allowed through the firewall, as resource ids; each needs a Microsoft.AzureCosmosDB service endpoint.')
+param subnetIds array = []
 
-var open = !empty(allowedIps)
+var open = !empty(allowedIps) || !empty(subnetIds)
 
 var containers = [
   { name: 'titles', key: '/lccn' }
@@ -53,6 +61,8 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
         ipAddressOrRange: endsWith(ip, '/32') ? replace(ip, '/32', '') : ip
       }
     ]
+    isVirtualNetworkFilterEnabled: !empty(subnetIds)
+    virtualNetworkRules: [for id in subnetIds: { id: id, ignoreMissingVNetServiceEndpoint: false }]
     networkAclBypass: 'None'
     minimalTlsVersion: 'Tls12'
     // Continuous backup (7-day, free) needs provisioned throughput; serverless

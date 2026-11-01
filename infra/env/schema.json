@@ -156,6 +156,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_DATA_PRIVATE_ENDPOINTS": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Private endpoints for the data lake, the index account and Cosmos. Default true. False: service endpoints and firewall rules for snet-cae instead (ADR-0008, amendment of November 2026)."
+    },
     "USNM_DNS_ZONE": {
       "x-usnm-visibility": "public",
       "type": "string"
@@ -187,6 +192,12 @@
       "x-usnm-visibility": "local",
       "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/azure/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
       "not": {}
+    },
+    "USNM_INDEX_ACCESS_TIER": {
+      "x-usnm-visibility": "public",
+      "type": "string",
+      "enum": ["Hot", "Cool"],
+      "description": "The index account's default access tier. Default Hot. See docs/operations/search-serving.md, The Azure cold spare."
     },
     "USNM_INDEX_STORAGE": {
       "x-usnm-visibility": "public",

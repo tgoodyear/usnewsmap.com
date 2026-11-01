@@ -16,3 +16,4 @@ param searchLogCopy = bool(readEnvironmentVariable('USNM_SEARCH_LOG_COPY', 'fals
 param ocrLocalCopy = bool(readEnvironmentVariable('USNM_OCR_LOCAL_COPY', 'false'))
 param cosmosOnPremAccess = bool(readEnvironmentVariable('USNM_COSMOS_ONPREM_ACCESS', 'false'))
 param ocrSyncOnPrem = bool(readEnvironmentVariable('USNM_OCR_SYNC_ONPREM', 'false'))
+param dataPrivateEndpoints = bool(readEnvironmentVariable('USNM_DATA_PRIVATE_ENDPOINTS', 'true'))

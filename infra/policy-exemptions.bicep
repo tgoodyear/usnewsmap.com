@@ -42,6 +42,8 @@ param ocrLocalCopy bool = false
 param cosmosOnPremAccess bool = false
 @description('The OCR pickup runs on-prem (main.bicep ocrSyncOnPrem, #917): the lake and Cosmos open to the node IPs.')
 param ocrSyncOnPrem bool = false
+@description('As in main.bicep. Off: the lake, the index account and Cosmos allow public network access, for snet-cae.')
+param dataPrivateEndpoints bool = true
 
 // The same names main.bicep computes.
 var env = checkedEnvName(environmentName)
@@ -63,12 +65,12 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
           subscription().subscriptionId,
           n,
           ocrNodes,
-          lakeOpen(
+          !dataPrivateEndpoints || lakeOpen(
             serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy || ocrLocalCopy,
             ocrNodeIps
           ),
-          indexOpen(onPremRelease, indexStorage, ocrNodeIps),
-          cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
+          (!dataPrivateEndpoints && indexStorage) || indexOpen(onPremRelease, indexStorage, ocrNodeIps),
+          !dataPrivateEndpoints || cosmosOpen(onPremServing || cosmosOnPremAccess || ocrSyncOnPrem, ocrNodeIps)
         )
       }
     }

@@ -136,6 +136,87 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 
    The stack now deletes the unused searcher app and its role without changing the API's sidecar template or its identity. Keeping retention on longer is safe but continues billing for the extra searcher. Unsetting both settings in the first provision skips this protection and can drop search until the sidecar is ready.
 
+## The Azure cold spare
+
+[ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) keeps the Azure API and searcher at zero replicas for failover. `USNM_DATA_PRIVATE_ENDPOINTS=false` removes the spare's private endpoints ([ADR-0008, amendment of November 2026](../design/adr/0008-private-networking.md)). The spare's index stays Hot.
+
+### What a failover needs
+
+| Azure service                         | Used for                                                                                                      | Without it                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Index account, `qw-index`             | The searcher's metastore and splits. `/readyz` asks the searcher's health, so the Worker's readiness needs it | `/readyz` fails; `/v1/aggregate`, `/v1/hits` and `/v1/days` fail; no failover |
+| Lake, `reference`                     | Loaded at start and refreshed every 10 minutes: `current.json`, catalog, places, baselines                    | The API can't start; every route fails                                        |
+| Lake, `cache`                         | Stored responses and search screenshots, read with a 2 s limit                                                | Searches are computed each time; nothing else breaks                          |
+| Lake, `searches`                      | The anonymous search log, and `/v1/search-report`                                                             | Searches still answer; the log loses them                                     |
+| Lake, `ocr-requests`                  | Page ids from hit results                                                                                     | Hits still answer; the requests are lost                                      |
+| Cosmos DB                             | `/v1/status` only                                                                                             | The status page has no pipeline state; search is unaffected                   |
+| Application Insights                  | `POST /v1/beacon` (page views), telemetry, the API alerts                                                     | Beacons are accepted and dropped                                              |
+| Registry                              | The API and searcher images, pulled on each start                                                             | A start can't pull an image a node doesn't hold                               |
+| OCR exchange account and scan archive | Nothing. The API has no setting for either                                                                    | Nothing                                                                       |
+
+Page images come from the Library of Congress. The site itself is in the API image.
+
+### Network and tier
+
+Without private endpoints, snet-cae reaches the lake, the index account and Cosmos through service endpoints and each account's firewall rule for that subnet. Every default stays deny, with no trusted-service bypass. Entra roles remain the only way in, with no keys, no SAS and no anonymous access. The on-prem addresses keep their IP rules, so the search log copy, the OCR output copy, serving and releases are unchanged. The public-network policy lists all three accounts while the setting is off (`infra/public-accounts.bicep`), and `lakeOpen`, `indexOpen` and `cosmosOpen` still decide the IP rules alone.
+
+The maintainer kept the index Hot in November 2026, because October's releases came 2 to 12 days apart and Cool loses money at that pace. `USNM_INDEX_ACCESS_TIER` stays in the settings so this can be revisited. On the 1,086.7 GiB index, Cool saves about $0.30 a day in storage ($0.66 against $0.36). Against that:
+
+- Writes cost $0.10 per 10,000 against $0.05, so copying a version in costs $1.40 against $0.70.
+- A blob deleted within 30 days of arriving in Cool is billed for the rest of the 30, about $0.36 a day for the whole index.
+- Reads cost $0.01 per 10,000 against $0.004, and retrieval $0.01/GB against nothing, so a failover day costs $2.70-8.20 more.
+- Moving back to Hot costs about $11.
+
+With releases `d` days apart and each old version deleted at once, Cool saves $0.30 × `d` and costs $0.70 + $0.36 × (30 - `d`) per release. It breaks even at about 18 days. At 12 days it loses about $0.30 a day, and at 2 days about $5. Cold isn't worth it, at $0.10 per 10,000 reads.
+
+### What wakes it
+
+Each wake starts the API, which starts the searcher. The API stays about 5 minutes after its last request and the searcher about 9 minutes more. These reach the Azure ingress:
+
+- The Worker, when the primary doesn't answer `/readyz` with `ready` within 3 s: the minute heartbeat, `healthcheck.usnewsmap.com`, or a visitor's request after a 5xx or a failed probe. Each polls Azure's `/readyz` until it's ready, and those polls keep the app up.
+- `usnm-fallback-drill`, which has the same Azure origin. Its `dev.usnewsmap.com/*` route is removed between drills, because with the dev connector stopped any request there wakes production's spare. The Worker itself stays deployed.
+- Anything that reaches the app's default hostname directly.
+
+`/readyz` isn't recorded in Application Insights, and a request abandoned before a replica is up isn't either, so a wake can show no request. `ContainerAppSystemLogs` shows wakes as `KEDAScaleTargetActivated`, `triggered by s0-upstream_rq_total`.
+
+### Rollout
+
+1. Check that on-prem serves and no index is being published or promoted. Bring a local checkout to `origin/main`.
+2. `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`, and compare it with the summary in the pull request. Stop on anything new. Without the two flags the rename guard fails it, as it should.
+3. Provision: `scripts/azure/provision.sh --env prod --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. The policy step writes the exempt list first. The stack then adds the service endpoints and firewall rules, and deletes the endpoints and zones last, as unmanaged resources.
+4. Run the cold drill below. Do nothing else until it passes.
+
+### Rollback
+
+Set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. The stack recreates the endpoints and zones and removes the subnet rules, which takes minutes and leaves on-prem untouched. If the drill fails while on-prem is down, the spare can't serve until this finishes, so don't start the rollout during an on-prem incident.
+
+### Cold drill
+
+Use the drill Worker, which sends `DNT: 1`, so the drill stays out of the search log and off the public hostnames. Its route doesn't exist between drills, so add it first. `deploy.sh` deploys the current Worker and adds the route; look at the command with `--dry-run` first:
+
+```bash
+edge/fallback-worker/deploy.sh --account-id <id> --azure-origin https://<default name> \
+  --wrangler-version <X.Y.Z> --vault <vault> --token-secret <secret> \
+  --drill-hostname dev.usnewsmap.com --health-failover --health-hostname dev.usnewsmap.com \
+  --allowed-origins <the API's USNM_ALLOWED_ORIGINS> --native-metrics --worker-logs
+```
+
+Leave out `--health-heartbeat`: the drill Worker needs no cron. Then stop the dev connector, so the Worker's primary fails.
+
+1. Confirm both apps have no replicas: `az containerapp replica list` for the API's and the searcher's latest revisions. Wait until they do.
+2. Poll `https://dev.usnewsmap.com/readyz`. It must answer 200 with `X-USNM-Origin: azure` inside the Worker's 180 s budget. Record the time; the last drills took about 70 s.
+3. Through the same hostname, each with `X-USNM-Origin: azure`:
+   - a real search on `/v1/aggregate` and `/v1/hits`, which proves the index account;
+   - `/v1/meta`, which must name the version on-prem serves, and proves `reference`;
+   - `/v1/status`, compared with the public one, which proves Cosmos;
+   - `POST /v1/beacon`, which must answer 204.
+4. Check a write: `StorageBlobLogs` shows a `PutBlob` under `cache/` from the app's identity after an uncached search of more than 500 ms.
+5. Confirm that `ContainerAppConsoleLogs` shows no storage or Cosmos 403 from the API or the searcher.
+6. Remove the route: find its id with `GET /zones/{zone_id}/workers/routes`, and send `DELETE /zones/{zone_id}/workers/routes/{route_id}` for `dev.usnewsmap.com/*`. Don't leave it for later. Then restart the dev connector.
+7. Confirm both apps return to zero with no command, usually within 20 minutes, and stay there.
+
+The drill is not a proof until every step passes against the real production Azure apps. A warm replica proves nothing, so step 1 comes first.
+
 ## The Quickwit image
 
 The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container run our build of Quickwit v0.9.1 ([ADR-0013](../design/adr/0013-quickwit-from-our-fork.md)). `docker/Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1.
