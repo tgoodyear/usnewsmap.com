@@ -524,6 +524,12 @@ pub fn exec_engine() -> anyhow::Error {
         let cpu: u64 = std::env::var(CPU_DEADLINE_ENV)?.parse()?;
         rustix::thread::set_no_new_privs(true)?;
         rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
+        // The unit leads this process group. If it died before the line above, nothing else
+        // would stop this engine.
+        ensure!(
+            rustix::process::getppid() == Some(rustix::process::getpgrp()),
+            "the unit has gone"
+        );
         // CPU time, not wall time: a suspended task stops its engine, and this stops with it.
         limit(Resource::Cpu, cpu, cpu + 5)?;
         limit(Resource::As, MEMORY_BYTES, MEMORY_BYTES)?;
