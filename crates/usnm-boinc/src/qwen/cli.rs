@@ -153,6 +153,30 @@ pub enum QwenCommands {
         /// Keep each bundle page's verdict and both readings of it here.
         #[arg(long)]
         pages: Option<PathBuf>,
+        /// The rule that decides the pair. `strict-v1` is the rule in force.
+        #[arg(long, value_enum, default_value_t = super::validate::Rule::StrictV1)]
+        rule: super::validate::Rule,
+        /// Under `crop-consensus-v2`, keep each pair's crop states here.
+        #[arg(long)]
+        crop_states: Option<PathBuf>,
+    },
+    /// Measure validator rules against retained results, offline, with negative controls.
+    Replay {
+        /// The directory `check --keep` writes to.
+        #[arg(long)]
+        seen: PathBuf,
+        #[arg(long, default_value = "qwen3-vl-8b-q4km")]
+        model: String,
+        #[arg(long, default_value_t = 1420)]
+        seed: u64,
+        /// Random cross-page pairs and random crop pairs per control.
+        #[arg(long, default_value_t = 2000)]
+        controls: usize,
+        /// Leave Hebrew points out of the rule's comparison, for every vendor.
+        #[arg(long)]
+        fold_hebrew_points: bool,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
@@ -293,7 +317,27 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             min_dice,
             log,
             pages,
-        } => x::validate::compare(&files, &files2, min_dice, log.as_deref(), pages.as_deref())?,
+            rule,
+            crop_states,
+        } => x::validate::compare_with(
+            &files,
+            &files2,
+            x::validate::Compare {
+                min_dice,
+                rule,
+                log: log.as_deref(),
+                pages: pages.as_deref(),
+                crop_states: crop_states.as_deref(),
+            },
+        )?,
+        QwenCommands::Replay {
+            seen,
+            model,
+            seed,
+            controls,
+            fold_hebrew_points,
+            out,
+        } => x::replay::run(&seen, &model, seed, controls, fold_hebrew_points, &out)?,
         QwenCommands::PageLedger { root, pages } => {
             for p in x::ledger::run(&root, &pages)? {
                 println!("{}", serde_json::to_string(&p)?);

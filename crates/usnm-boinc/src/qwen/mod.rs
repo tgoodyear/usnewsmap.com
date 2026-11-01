@@ -10,6 +10,8 @@
 //!   writes the readings, a result and the diagnostics.
 //! - [`validate`] is what stock `script_validator` calls: a copy of every
 //!   result, and per-crop word-bag Dice between two hosts.
+//! - [`consensus`] is the crop-by-crop rule `compare --rule` can apply, and
+//!   [`replay`] measures any rule against the retained results.
 //! - [`summary`] reads those copies back into one table.
 //! - [`ledger`] lists each bundle page with its own pair verdicts.
 use anyhow::ensure;
@@ -19,7 +21,9 @@ use usnm_ocr_contract::qwen::Model;
 pub mod benchmark;
 pub mod candidates;
 pub mod cli;
+pub mod consensus;
 pub mod ledger;
+pub mod replay;
 pub mod retain;
 pub mod stage;
 pub mod submit;
