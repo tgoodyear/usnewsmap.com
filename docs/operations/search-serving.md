@@ -181,7 +181,7 @@ Each wake starts the API, which starts the searcher. The API stays about 5 minut
 
 ### Rollback
 
-Set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` and provision with `--api-tag live`. The stack recreates the endpoints and zones and removes the subnet rules, which takes minutes and leaves on-prem untouched. Setting the tier back is separate and only needed if releases turn out frequent. If the drill fails while on-prem is down, the spare can't serve until this finishes, so don't start the rollout during an on-prem incident.
+Set `USNM_DATA_PRIVATE_ENDPOINTS` back to `true` in `infra/env/prod.json`, commit it, and provision with `--api-tag live`. Provision refuses uncommitted settings; `--allow-dirty` is for an emergency that can't wait for a pull request. The stack recreates the endpoints and zones and removes the subnet rules, which takes minutes and leaves on-prem untouched. Setting the tier back is separate and only needed if releases turn out frequent. If the drill fails while on-prem is down, the spare can't serve until this finishes, so don't start the rollout during an on-prem incident.
 
 ### Cold drill
 
