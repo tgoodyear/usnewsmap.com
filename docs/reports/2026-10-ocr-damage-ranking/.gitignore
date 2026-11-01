@@ -1,0 +1,3 @@
+report.html
+# Input to summarize.py, which writes german-fraktur-pilot-candidates.csv from it.
+data/german-pilot.csv
