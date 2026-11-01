@@ -19,6 +19,11 @@
 //! read-only. A copy that differs is reported and left for an operator. The one exception is the
 //! tool's own stale `.partial`.
 //!
+//! A copy counts once its directory entry is durable. Each run syncs the directories on an
+//! object's path before accepting it, so a run that died or failed between linking a copy and
+//! syncing its directory is finished by the next one. A sync that fails leaves the object
+//! unconfirmed.
+//!
 //! No symbolic link is followed under the destination: each directory is opened from its parent
 //! without following one, and files are reached from that handle by bare name.
 
@@ -141,6 +146,14 @@ fn md5_of(digest: &[u8]) -> String {
 struct Dirs {
     root: OwnedFd,
     parent: Option<(String, OwnedFd)>,
+    sync: SyncDir,
+}
+
+/// Makes a directory's entries durable: [`sync_dir`], or a double in a test.
+type SyncDir = fn(&OwnedFd) -> std::io::Result<()>;
+
+fn sync_dir(dir: &OwnedFd) -> std::io::Result<()> {
+    Ok(rustix::fs::fsync(dir)?)
 }
 
 /// Open `name` under `dir` as a directory, without following a link.
@@ -154,13 +167,15 @@ fn open_dir(dir: &OwnedFd, name: &str) -> std::io::Result<OwnedFd> {
 }
 
 impl Dirs {
-    /// The directory `parts`, made if `create` and it's missing. `None` if it's not there.
+    /// The directory `parts`, made if `create` and it's missing. `None` if it's not there. Every
+    /// directory on the way is synced, whether or not this made it, so an entry an earlier run
+    /// failed to sync can't be taken for durable.
     fn enter(&mut self, parts: &[&str], create: bool) -> anyhow::Result<Option<&OwnedFd>> {
         let key = parts.join("/");
         if self.parent.as_ref().is_none_or(|(held, _)| *held != key) {
             let mut dir = rustix::io::dup(&self.root)?;
             for part in parts {
-                dir = match open_dir(&dir, part) {
+                let next = match open_dir(&dir, part) {
                     Ok(next) => next,
                     Err(e) if e.kind() == ErrorKind::NotFound && !create => return Ok(None),
                     Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -171,14 +186,14 @@ impl Dirs {
                                     .with_context(|| format!("creating {part}"))
                             }
                         }
-                        rustix::fs::fsync(&dir)
-                            .map_err(std::io::Error::from)
-                            .with_context(|| format!("syncing the entry for {part}"))?;
                         open_dir(&dir, part).with_context(|| format!("opening {part}"))?
                     }
                     Err(e) => return Err(e).with_context(|| format!("opening {part}")),
                 };
+                (self.sync)(&dir).with_context(|| format!("syncing the entry for {part}"))?;
+                dir = next;
             }
+            (self.sync)(&dir).context("syncing the directory")?;
             self.parent = Some((key, dir));
         }
         Ok(self.parent.as_ref().map(|(_, dir)| dir))
@@ -268,6 +283,7 @@ async fn fetch(
     name: &str,
     info: &ObjectInfo,
 ) -> anyhow::Result<u64> {
+    let sync = dirs.sync;
     let dir = dirs.enter(parts, true)?.context("no directory")?;
     let partial = format!("{name}{PARTIAL}");
     match regular_size(dir, &partial) {
@@ -291,7 +307,7 @@ async fn fetch(
     .map(std::fs::File::from)
     .map_err(std::io::Error::from)
     .with_context(|| format!("creating {partial}"))?;
-    let result = fetch_into(stream, file, dir, name, &partial, info).await;
+    let result = fetch_into(stream, file, dir, name, &partial, info, sync).await;
     if result.is_err() {
         let _ = rustix::fs::unlinkat(dir, partial.as_str(), AtFlags::empty());
     }
@@ -305,6 +321,7 @@ async fn fetch_into(
     name: &str,
     partial: &str,
     info: &ObjectInfo,
+    sync: SyncDir,
 ) -> anyhow::Result<u64> {
     let mut file = tokio::fs::File::from_std(file);
     let (mut hash, mut n) = (Md5::new(), 0u64);
@@ -340,7 +357,7 @@ async fn fetch_into(
         Err(e) => return Err(std::io::Error::from(e)).with_context(|| format!("linking {name}")),
     }
     rustix::fs::unlinkat(dir, partial, AtFlags::empty()).map_err(std::io::Error::from)?;
-    rustix::fs::fsync(dir).map_err(std::io::Error::from)?;
+    sync(dir)?;
     Ok(n)
 }
 
@@ -369,8 +386,21 @@ fn prepare(o: &Options<'_>) -> anyhow::Result<OwnedFd> {
 /// Copy what the destination lacks, or with `verify` only check it. `Err` for what stops the whole run; an object that can't be
 /// copied is in the report and the run goes on.
 pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Result<Report> {
+    copy_with(source, o, sync_dir).await
+}
+
+/// [`copy_objects`] with its directory sync given, so a test can make it fail.
+async fn copy_with(
+    source: &dyn ObjectStore,
+    o: &Options<'_>,
+    sync: SyncDir,
+) -> anyhow::Result<Report> {
     let root = prepare(o)?;
-    let previous = o.status.map(read_previous).unwrap_or_default();
+    let previous = match o.status {
+        Some(path) => read_previous(path)
+            .with_context(|| format!("reading the status file {}", path.display()))?,
+        None => Previous::default(),
+    };
     let listed = source
         .list_info(PREFIX)
         .await
@@ -379,7 +409,11 @@ pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::
         checked_at: o.now,
         ..Report::default()
     };
-    let mut dirs = Dirs { root, parent: None };
+    let mut dirs = Dirs {
+        root,
+        parent: None,
+        sync,
+    };
     for info in &listed {
         let Some((parts, name)) = split(info) else {
             report.ignored_objects += 1;
@@ -453,11 +487,15 @@ pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::
     Ok(report)
 }
 
-fn read_previous(path: &Path) -> Previous {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// What the last run recorded, or nothing if there's no status file yet. Any other failure is an
+/// error: the file holds the known mismatches, and a run without them would pass those copies on
+/// their size.
+fn read_previous(path: &Path) -> anyhow::Result<Previous> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(Previous::default()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]

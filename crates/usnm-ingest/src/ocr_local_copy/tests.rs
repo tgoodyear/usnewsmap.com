@@ -235,6 +235,66 @@ async fn verify_with_no_md5_reports_unverified_and_not_a_match() {
 }
 
 #[tokio::test]
+async fn a_status_file_that_cannot_be_read_stops_the_run() {
+    let f = fixture(false);
+    let status = f.dest.parent().unwrap().join("status.json");
+    let o = Options {
+        status: Some(&status),
+        ..options(&f.dest)
+    };
+    std::fs::write(&status, "{ not json").unwrap();
+    assert!(copy_objects(f.store.as_ref(), &o).await.is_err());
+    assert_eq!(
+        std::fs::read(&status).unwrap(),
+        b"{ not json",
+        "left as it is"
+    );
+    assert!(!f.dest.join("alto").exists(), "nothing copied");
+
+    std::fs::remove_file(&status).unwrap();
+    std::fs::create_dir(&status).unwrap();
+    assert!(copy_objects(f.store.as_ref(), &o).await.is_err());
+}
+
+fn sync_fails(_: &OwnedFd) -> std::io::Result<()> {
+    Err(std::io::Error::other("no sync"))
+}
+
+#[tokio::test]
+async fn a_left_copy_is_accepted_only_once_its_directory_syncs() {
+    let f = fixture(false);
+    copy_objects(f.store.as_ref(), &options(&f.dest))
+        .await
+        .unwrap();
+    // As a run leaves it when the unlink or the sync after the link fails.
+    let copy = f.dest.join("alto/a.node.1.xml");
+    std::fs::hard_link(&copy, f.dest.join("alto/a.node.1.xml.partial")).unwrap();
+
+    let failed = copy_with(f.store.as_ref(), &options(&f.dest), sync_fails)
+        .await
+        .unwrap();
+    assert_eq!(failed.copied_objects, 0);
+    assert_eq!(failed.mismatched_objects, 2);
+    assert_eq!(failed.last_success, None);
+    assert!(copy.exists());
+
+    let synced = copy_objects(f.store.as_ref(), &options(&f.dest))
+        .await
+        .unwrap();
+    assert_eq!((synced.copied_objects, synced.mismatched_objects), (2, 0));
+}
+
+#[tokio::test]
+async fn an_object_is_not_copied_when_its_new_directory_cannot_sync() {
+    let f = fixture(false);
+    let report = copy_with(f.store.as_ref(), &options(&f.dest), sync_fails)
+        .await
+        .unwrap();
+    assert_eq!((report.copied_objects, report.missing_objects), (0, 2));
+    assert!(!f.dest.join("alto/a.node.1.xml").exists());
+}
+
+#[tokio::test]
 async fn bytes_that_do_not_match_the_listing_never_land() {
     let f = fixture(true);
     let report = copy_objects(f.store.as_ref(), &options(&f.dest))
