@@ -1150,6 +1150,7 @@ mod tests {
             scope: "",
             bins: Vec::new(),
             bin_known: Vec::new(),
+            detail: Default::default(),
         }
     }
 

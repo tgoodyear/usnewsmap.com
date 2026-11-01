@@ -39,12 +39,40 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .nowrap { white-space:nowrap; }
 .throughput td { white-space:normal; }
 .throughput td:first-child { min-width:10em; }
-.throughput details > summary { cursor:pointer; }
-.throughput details p { margin:6px 0; color:var(--ink2); font-size:13px; max-width:30em; }
+.throughput td.chart, .throughput td.seconds { white-space:nowrap; }
+/* Fixed columns: what a row holds, open or shut, can't move them. */
+table.steps { table-layout:fixed; min-width:1130px; }
+.steps .c-step { width:176px; } .steps .c-hour { width:112px; } .steps .c-day { width:170px; }
+.steps .c-secs { width:104px; } .steps .c-week { width:392px; }
+.steps td:first-child { min-width:0; overflow-wrap:anywhere; }
+.steps details > summary { cursor:pointer; }
+/* A step's <details> opens the row under it. Without :has, the rows stay open. */
+.step-detail { display:none; }
+.steps tbody:has(details[open]) > .step-detail { display:table-row; }
+@supports not selector(:has(*)) { .step-detail { display:table-row; } }
+.steps-wrap { container-type:inline-size; }
+.detail-body { position:sticky; left:0; box-sizing:border-box; max-width:100cqw; padding:6px 0 10px;
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:10px 22px; color:var(--ink2); font-size:13px; }
+.step-detail > td { white-space:normal; }
+.detail-block { min-width:0; overflow-wrap:anywhere; }
+.detail-block.wide-block { grid-column:1 / -1; }
+.detail-block h4 { font-size:13px; margin:0 0 3px; color:var(--ink); }
+.detail-block p { margin:2px 0; }
+.detail-block table.windows { width:auto; }
+.detail-block table.windows td, .detail-block table.windows th { white-space:nowrap; padding-right:14px; }
+.reasons { margin:2px 0; padding-left:16px; }
 section.wide svg.spark { display:inline-block; width:252px; height:36px; min-width:0; margin:0; vertical-align:middle; }
-.spark rect { fill:var(--fill); }
+section.wide svg.spark.hourly { width:288px; }
+.spark:focus-visible { outline:2px solid var(--fill); outline-offset:2px; }
+.spark rect.v { fill:var(--fill); }
 .spark rect.s2 { fill:var(--series2); }
 .spark rect.unk { fill:var(--grid); opacity:.45; }
+/* Painted but clear, so the whole slot takes the pointer. */
+.spark rect.hit { fill:transparent; }
+.spark .bar:hover rect.hit, .spark .bar.on rect.hit { fill:var(--ring); }
+.bar-tip { position:fixed; z-index:10; max-width:min(320px,calc(100vw - 16px)); padding:4px 8px; border-radius:4px; pointer-events:none;
+  background:var(--ink); color:var(--plane); font-size:13px; }
+.bar-tip:empty { display:none; }
 .key { display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--fill); margin-right:4px; }
 .key.s2 { background:var(--series2); }
 .mobile-flow { display:none; }
@@ -143,11 +171,72 @@ const localTimes = (root) => {
     const d = new Date(t.getAttribute('datetime'));
     if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
   }
-  for (const t of root.querySelectorAll('title[data-at]')) {
-    const d = new Date(t.dataset.at);
-    if (!isNaN(d)) { t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'numeric'}) + ' ET, 4 hours: ' + t.textContent; delete t.dataset.at; }
+  // A bar's title becomes its tip, in Eastern; left alone it would show too.
+  for (const svg of root.querySelectorAll('svg.spark[data-start]')) {
+    const start = new Date(svg.dataset.start).getTime();
+    const hours = Number(svg.dataset.hours);
+    svg.querySelectorAll('.bar').forEach((bar, i) => {
+      const title = bar.querySelector('title');
+      if (!title) return;
+      const what = title.textContent.split(': ').slice(1).join(': ');
+      if (!isNaN(start)) {
+        const span = hours * 3600 * 1000;
+        bar.dataset.tip = barWindow(new Date(start + i * span), new Date(start + (i + 1) * span)) + ': ' + what;
+        title.remove();
+      }
+    });
   }
 };
+const eastern = (d, o) => d.toLocaleString('en-US', {timeZone:'America/New_York', ...o});
+const barWindow = (from, to) => {
+  const day = {month:'short', day:'numeric'};
+  const same = eastern(from, day) === eastern(to, day);
+  return eastern(from, {...day, hour:'numeric'}) + ' to ' + eastern(to, {...(same ? {} : day), hour:'numeric', timeZoneName:'short'});
+};
+const tip = document.createElement('div');
+tip.className = 'bar-tip';
+tip.setAttribute('role', 'status');
+document.body.append(tip);
+let tipBar = null;
+const hideTip = () => {
+  tipBar?.classList.remove('on');
+  tipBar = null;
+  tip.textContent = '';
+};
+const showTip = (bar) => {
+  if (tipBar !== bar) hideTip();
+  if (!bar.dataset.tip) return;
+  tipBar = bar;
+  bar.classList.add('on');
+  tip.textContent = bar.dataset.tip;
+  const at = bar.querySelector('.hit').getBoundingClientRect();
+  const box = tip.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(at.left + at.width / 2 - box.width / 2, innerWidth - box.width - 8)) + 'px';
+  tip.style.top = (at.top - box.height - 6 < 0 ? at.bottom + 6 : at.top - box.height - 6) + 'px';
+};
+const chartFocused = () => document.activeElement?.matches?.('svg.spark');
+document.addEventListener('pointerover', (e) => {
+  const bar = e.target.closest?.('.spark .bar');
+  if (bar) showTip(bar);
+  else if (tipBar && !chartFocused()) hideTip();
+});
+document.addEventListener('focusin', (e) => {
+  if (e.target.matches?.('svg.spark')) {
+    const bars = e.target.querySelectorAll('.bar');
+    if (bars.length) showTip(bars[bars.length - 1]);
+  }
+});
+document.addEventListener('focusout', hideTip);
+document.addEventListener('scroll', hideTip, true);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') return hideTip();
+  if (!chartFocused() || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const bars = [...document.activeElement.querySelectorAll('.bar')];
+  const at = tipBar ? bars.indexOf(tipBar) : bars.length - 1;
+  const to = {ArrowLeft: Math.max(0, at - 1), ArrowRight: Math.min(bars.length - 1, at + 1), Home: 0, End: bars.length - 1}[e.key];
+  e.preventDefault();
+  if (bars[to]) showTip(bars[to]);
+});
 const panelGroups = ['.dashboard', '.diagnostics > .grid'];
 const childPanels = (grid) => [...grid.children].filter(s => s.matches('section:not(#operational-details)'));
 const panels = (root = document) => panelGroups.flatMap(selector => childPanels(root.querySelector(selector)));
@@ -175,6 +264,7 @@ const swap = (old, fresh) => {
   const scrolls = [...old.querySelectorAll('.scroll, .table-wide')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
   const open = rowKeys(old).filter((k, i) => old.querySelectorAll('details')[i].open).filter(Boolean);
   const focused = old.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
+  const focusedChart = old.contains(document.activeElement) ? document.activeElement.dataset?.chart : null;
   const focusedDetail = [...old.querySelectorAll('details')].findIndex(d => d.querySelector(':scope > summary') === document.activeElement);
   const focusedKey = focusedDetail < 0 ? null : rowKeys(old)[focusedDetail];
   const left = old.scrollLeft;
@@ -194,6 +284,7 @@ const swap = (old, fresh) => {
   restore();
   const focus = [...node.querySelectorAll('.scroll, .table-wide')].find(e => e.getAttribute('aria-label') === focused);
   if (focus) focus.focus({preventScroll:true});
+  if (focusedChart) node.querySelector(`[data-chart="${focusedChart}"]`)?.focus({preventScroll:true});
   if (focusedKey) node.querySelectorAll('details')[keys.indexOf(focusedKey)]?.querySelector(':scope > summary')?.focus({preventScroll:true});
   requestAnimationFrame(() => { if (node.isConnected && node.checkVisibility()) restore(); });
   return node;
@@ -233,7 +324,9 @@ const update = async () => {
           old.some((s, i) => panelKey(s) !== panelKey(freshPanels[i])))) continue;
       const kept = freshPanels.map(fresh => {
         const current = old.find(s => panelKey(s) === panelKey(fresh));
-        if (current && (raw.get(current) === fresh.outerHTML || selecting(current))) return current;
+        // A bar being read stays until the next refresh.
+        const reading = tipBar && current?.contains(tipBar);
+        if (current && (raw.get(current) === fresh.outerHTML || selecting(current) || reading)) return current;
         const node = current ? swap(current, fresh) : document.importNode(fresh, true);
         raw.set(node, fresh.outerHTML);
         if (!current) localTimes(node);

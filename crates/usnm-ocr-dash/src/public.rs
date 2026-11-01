@@ -196,9 +196,15 @@ pub fn redact(v: &mut View) {
         }
     }
 
-    // Throughput: counts only, but a collector's limits are free text.
+    // Throughput: counts only, but limits and failure reasons are free text.
     for s in &mut v.throughput.steps {
         scrub_opt(&mut s.limit);
+        scrub_opt(&mut s.detail.limit_now);
+        if let Some(f) = &mut s.detail.failures {
+            for r in &mut f.reasons {
+                r.text = scrub(&r.text);
+            }
+        }
     }
     scrub_opt(&mut v.throughput.error);
 

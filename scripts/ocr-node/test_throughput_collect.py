@@ -55,6 +55,44 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(series["ticks_ok"][2], 0)
         self.assertIn("300 runnable", limits["usnm_ocr"])
 
+    def test_a_failed_tick_counts_under_the_kind_of_its_error(self):
+        w = window()
+        at = THIS_HOUR + 10
+        errors = ("bridge/batch-inventory failed; inspect the execution privately before retrying",
+                  "bridge/batch-inventory failed; inspect the execution privately before retrying",
+                  "terminal BOINC failure: sn123/1900-01-01/ed-1/seq-1 (job a1), sn123/2",
+                  "can't read /tank/ocr/scans/x.json",
+                  "ssh to 192.0.2.7 failed",
+                  "tank/ocr/scans/x failed",
+                  None)
+        collector.collect_controller(w, [(at, "", json.dumps({
+            "event": "boinc_batch_failure", "at": at, "error": e})) for e in errors])
+        reasons = {name: values[2] for name, values in w.series.items() if name.startswith("reason.")}
+        self.assertEqual(reasons, {"reason.controller.bridge-batch-inventory-failed": 2,
+                                   "reason.controller.terminal-boinc-failure": 1,
+                                   "reason.controller.other": 4})
+
+    def test_kinds_of_error_are_bounded(self):
+        seen = set()
+        names = {collector.reason_series(f"kind {'abcdefghijklmnopqrstuvwxyz'[i % 26]}{'x' * (i // 26)}", seen)
+                 for i in range(60)}
+        self.assertEqual(len(names), collector.MAX_REASONS + 1)
+        self.assertIn("reason.controller.other", names)
+        self.assertTrue(all(len(n) <= 64 for n in [collector.reason_series("a " * 40, set())]))
+
+    def test_the_last_passing_tick_says_how_near_its_limits_it_was(self):
+        at = THIS_HOUR + 10
+        event = json.loads(tick(at))
+        event |= {"global_pending": 1939, "backpressure": True, "cohort": {
+            "app": "usnm_ocr", "runnable_pending": 225, "low_watermark": 220}}
+        limits = collector.collect_controller(window(), [(at, "", json.dumps(event))])
+        self.assertIn("225 runnable", limits["usnm_ocr.now"])
+        self.assertIn("1939 pending", limits["ocr_claim.now"])
+        self.assertIn("held back", limits["ocr_claim.now"])
+        limits = collector.collect_controller(window(), [(at, "", tick(at))])
+        self.assertNotIn("usnm_ocr.now", limits)
+        self.assertNotIn("ocr_claim.now", limits)
+
     def test_a_tick_counts_in_the_hour_it_ended(self):
         w = window()
         began = THIS_HOUR - 300
@@ -132,6 +170,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(s["quality_load_seconds"][at], 12)
         self.assertEqual(s["qwen_load_pages"][at], 8)
         self.assertEqual(s["qwen_load_failed"][at], 1)
+        self.assertEqual(s["qwen_load_runs"][at], 2)
         self.assertEqual(s["qwen_load_seconds"][at], 55)
         self.assertEqual(s["quality_ship_pages"][0], 0)
 
