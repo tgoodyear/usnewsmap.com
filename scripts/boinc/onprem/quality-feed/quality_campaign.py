@@ -31,12 +31,16 @@ batch's manifest are asked for once. The default width is under the score's own 
 0.06 at a rate of 0.25 and 50 occurrences), so the grouping reorders only pages the score
 can't tell apart: no page ever sits ahead of one more than a tier width worse.
 
-The moderate sample. Each cell of language and decade gets up to --cell-pages pages. A cell's
-titles take turns, in hash order, so one title can't fill it, and a title's pages are the
-ones with the lowest hash, not its worst ones. Every row carries stratum_pages (eligible
-pages of its language, decade and title) and weight (scaled so a cell's weights sum to its
-eligible pages), so a result can be carried back to the band. The list is in hash order, so
-any prefix of it is mixed. The hash is the sampler's (crates/usnm-boinc assess::sample):
+The moderate sample. Each cell of language and decade gets up to --cell-pages pages. Where a
+cell has no more titles than that, its titles take turns, so one title can't fill it. Where
+it has more, not every title can have a page, and picking titles evenly would misstate a cell
+whose large titles differ from its small ones, so the picks fall at equal steps along the
+cell's pages, with the titles in hash order: every page has the same chance, and titles get
+pages in proportion to their size. A title's pages are the ones with the lowest hash, not its
+worst ones. Every row carries stratum_pages (eligible pages of its language, decade and
+title) and weight (the inverse of its chance, so a cell's weights sum to its eligible pages),
+so a result can be carried back to the band. The list is in hash order, so any prefix of it
+is mixed. The hash is the sampler's (crates/usnm-boinc assess::sample):
 SHA-256 of the seed, the stream and the doc id. The same input and seed give the same bytes.
 
 Exclusions: only pages our OCR has done or is about to do. That is a row in
@@ -191,21 +195,33 @@ def edition_seq(r):
 
 
 def allocate(sizes, cell_pages, seed):
-    """How many pages each stratum (language, decade, title) gets: {stratum: n}. A cell's
-    titles take a page each in turn, in hash order, up to --cell-pages or the whole cell."""
+    """How many pages each stratum (language, decade, title) gets: {stratum: n}. Titles in
+    hash order; turns where each can have a page, equal steps along the pages where not."""
     cells = collections.defaultdict(list)
     for (lang, decade, lccn), size in sizes.items():
         cells[(lang, decade)].append((order(seed, lccn), lccn, size))
     take = {}
     for (lang, decade), titles in sorted(cells.items()):
         titles.sort()
-        left = min(cell_pages, sum(size for _, _, size in titles))
+        pages = sum(size for _, _, size in titles)
         got = collections.Counter()
-        while left:
+        if len(titles) > cell_pages:
+            start = int(order(seed, f"cell\0{lang}\0{decade}"), 16) % pages
+            picks = iter(sorted((start + i * pages) // cell_pages % pages for i in range(cell_pages)))
+            pick = next(picks)
+            end = 0
             for _, lccn, size in titles:
-                if left and got[lccn] < size:
+                end += size
+                while pick is not None and pick < end:
                     got[lccn] += 1
-                    left -= 1
+                    pick = next(picks, None)
+        else:
+            left = min(cell_pages, pages)
+            while left:
+                for _, lccn, size in titles:
+                    if left and got[lccn] < size:
+                        got[lccn] += 1
+                        left -= 1
         for lccn, n in got.items():
             take[(lang, decade, lccn)] = n
     return take
@@ -229,22 +245,20 @@ def draw(path, eligible, take, seed):
     return [(h, r) for rows in heaps.values() for _, h, _, r in rows]
 
 
-def weigh(picked, sizes, take):
-    """stratum_pages and weight on each picked row, in hash order. A title's weight is its
-    pages over its picks; a cell whose turns ran out before every title had one is scaled
-    up to its eligible pages, so a cell's weights always sum to them."""
+def weigh(picked, sizes, take, cell_pages):
+    """stratum_pages and weight on each picked row, in hash order: a cell's pages over its
+    picks where every page had the same chance, else a title's pages over its picks."""
     cell_all = collections.Counter()
-    cell_drawn = collections.Counter()
-    for (lang, decade, lccn), size in sizes.items():
+    titles = collections.Counter()
+    for (lang, decade, _), size in sizes.items():
         cell_all[(lang, decade)] += size
-        if (lang, decade, lccn) in take:
-            cell_drawn[(lang, decade)] += size
+        titles[(lang, decade)] += 1
     out = []
     for _, r in sorted(picked, key=lambda x: x[0]):
         key = (r["page_lang"], r["decade"], r["lccn"])
         cell = key[:2]
-        out.append({**r, "stratum_pages": sizes[key],
-                    "weight": sizes[key] / take[key] * cell_all[cell] / cell_drawn[cell]})
+        weight = cell_all[cell] / cell_pages if titles[cell] > cell_pages else sizes[key] / take[key]
+        out.append({**r, "stratum_pages": sizes[key], "weight": weight})
     return out
 
 
@@ -266,15 +280,17 @@ def manifest_row(r):
 
 
 def manifest_slices(rows, pages):
-    """Consecutive slices of about `pages` rows; a slice ends only where an issue does."""
-    out, cur, last = [], [], None
+    """Consecutive slices of about `pages` rows. A slice ends only where an issue does, and
+    always where a tier does: a manifest is written in issue order, so one that crossed a
+    tier could put a page ahead of one more than a tier width worse."""
+    out, cur, last, tier = [], [], None, None
     for r in rows:
         issue = ocr_manifest.issue_of(r["doc_id"])
-        if len(cur) >= pages and issue != last:
+        if cur and (r.get("tier") != tier or (len(cur) >= pages and issue != last)):
             out.append(cur)
             cur = []
         cur.append(r)
-        last = issue
+        last, tier = issue, r.get("tier")
     return out + [cur] if cur else out
 
 
@@ -332,8 +348,13 @@ def build(a):
     names = (a.campaign, f"{a.campaign}-moderate")
     if not all(quality_feed.CAMPAIGN_RE.match(n) for n in names):
         sys.exit("--campaign: 1-32 of [a-z0-9-], so that <campaign>-moderate is a campaign name too")
-    if "outbox" in os.path.abspath(a.out_dir).split(os.sep):
-        sys.exit("--out-dir: this tool writes no outbox; give it a scratch directory")
+    dirs = [os.path.join(a.out_dir, n) for n in names]
+    for path in (os.path.abspath(a.out_dir), os.path.realpath(a.out_dir)):
+        if "outbox" in path.split(os.sep):
+            sys.exit("--out-dir: this tool writes no outbox; give it a scratch directory")
+    if any(os.path.lexists(d) for d in dirs):
+        # An old manifest left beside a new plan could fetch a page the plan no longer has.
+        sys.exit("--out-dir already holds this campaign; give it a new directory")
     os.makedirs(a.out_dir, exist_ok=True)
     source = a.input
     if a.dsn_file:
@@ -388,7 +409,7 @@ def build(a):
             sizes[(r["page_lang"], r["decade"], r["lccn"])] += 1
 
     take = allocate(sizes, a.cell_pages, a.seed)
-    moderate = weigh(draw(source, eligible, take, a.seed), sizes, take)
+    moderate = weigh(draw(source, eligible, take, a.seed), sizes, take, a.cell_pages)
     worst = order_worst(worst, a.tier_width)
     for r in worst:
         r["tier"] = tier_of(r["damage_rate"], a.tier_width)

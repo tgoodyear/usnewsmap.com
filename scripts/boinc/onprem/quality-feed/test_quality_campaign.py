@@ -144,6 +144,28 @@ class SampleTest(Built):
         self.assertAlmostEqual(s["moderate"]["weights_sum"], len(rows), places=3)
         self.assertEqual(s["moderate"]["most_pages_from_a_title_in_a_cell"], 1)
 
+    def test_unequal_titles_keep_a_page_level_estimate_unbiased(self):
+        # A 9-page title gaining 0.10 and a 1-page title gaining nothing, one pick: the band's
+        # mean gain is 0.09. Picking titles evenly would average 0.05.
+        sizes = {("eng", 1900, "big"): 9, ("eng", 1900, "tiny"): 1}
+        total = 0.0
+        runs = 4000
+        for i in range(runs):
+            take = qc.allocate(sizes, 1, f"seed-{i}")
+            self.assertEqual(sum(take.values()), 1)
+            key = next(iter(take))
+            row_ = {"page_lang": "eng", "decade": 1900, "lccn": key[2]}
+            weight = qc.weigh([("h", row_)], sizes, take, 1)[0]["weight"]
+            self.assertEqual(weight, 10)
+            total += weight * (0.10 if key[2] == "big" else 0.0) / 10
+        self.assertAlmostEqual(total / runs, 0.09, delta=0.005)
+
+    def test_a_cell_with_more_titles_than_picks_gets_exact_picks(self):
+        sizes = {("eng", 1900, f"sn{i}"): 1 + i % 5 for i in range(50)}
+        take = qc.allocate(sizes, 7, "s")
+        self.assertEqual(sum(take.values()), 7)
+        self.assertTrue(all(take[k] <= sizes[k] for k in take))
+
     def test_stratum_pages_are_the_title_cells_eligible_pages(self):
         rows = [row("sn1", 1, i, 0.2) for i in range(1, 11)]
         self.build(rows, cell="4")
@@ -298,6 +320,13 @@ class FormatTest(Built):
         self.assertEqual([len(s) for s in got], [3, 3, 3])
         self.assertEqual(qc.manifest_slices([], 2), [])
 
+    def test_a_manifest_never_crosses_a_tier(self):
+        rows = [row("sn1", 1, 1, 0.9, batch="zz_high"), row("sn2", 1, 1, 0.3, batch="aa_low")]
+        self.build(rows, "--manifest-pages", "100")
+        first = json.loads((self.d / "out/w/manifests/m00001.parquet").read_bytes())
+        second = json.loads((self.d / "out/w/manifests/m00002.parquet").read_bytes())
+        self.assertEqual(([r["batch"] for r in first], [r["batch"] for r in second]), (["zz_high"], ["aa_low"]))
+
     def test_summary_counts_by_band_language_and_decade(self):
         s = self.build(fixture())
         self.assertEqual(s["population"]["worst"]["by_language"], {"eng": 30})
@@ -357,6 +386,26 @@ class ArgsTest(Built):
                  "--out-dir", str(self.d / "outbox" / "w")])
         self.assertIn("outbox", str(e.exception))
         self.assertFalse((self.d / "outbox").exists())
+
+    def test_an_outbox_behind_a_link_is_refused(self):
+        write_csv(self.d / "in.csv", [])
+        (self.d / "outbox").mkdir()
+        (self.d / "scratch").symlink_to(self.d / "outbox")
+        with self.assertRaises(SystemExit) as e:
+            run(self.args(self.d / "in.csv", "scratch"))
+        self.assertIn("outbox", str(e.exception))
+
+    def test_a_rebuild_needs_a_new_directory(self):
+        self.build(fixture())
+        (self.d / "elsewhere").mkdir()
+        with self.assertRaises(SystemExit) as e:
+            self.build(fixture())
+        self.assertIn("new directory", str(e.exception))
+        # A link where a campaign directory would go is refused too.
+        (self.d / "two").mkdir()
+        (self.d / "two" / "w").symlink_to(self.d / "elsewhere")
+        with self.assertRaises(SystemExit):
+            self.build(fixture(), name="two")
 
     def test_a_campaign_name_must_leave_room_for_the_suffix(self):
         write_csv(self.d / "in.csv", [])
