@@ -42,6 +42,9 @@ class BatchTests(unittest.TestCase):
         collector.collect_batch(w, [
             (at, "", sync_line("import written", run="r-0000", imported=40, sources=80, titles=3)),
             (at + 1, "", sync_line("import written", run="r-0001", imported=31, sources=62, titles=2)),
+            (at + 2, "", sync_line("part quarantined", part="p1", reason="invalid")),
+            (at + 2, "", sync_line("part quarantined", part="p2", reason="invalid")),
+            (at + 2, "", sync_line("dead letters written", path="d", dead_letters=3)),
             (at + 2, "", sync_line("ocr sync finished", run="r", imported=71, rejected=2,
                                    dead_letters=3, dead_letters_rejected=1)),
             (at + 3, "", "usnm-ocr-sync.service: Deactivated successfully."),
@@ -51,10 +54,16 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(w.series["ocr_import_rejected"], [0, 0, 2])
         self.assertEqual(w.series["ocr_dead_letters"], [0, 0, 3])
 
-    def test_a_run_that_fails_after_its_import_keeps_the_import(self):
+    def test_a_run_that_fails_later_keeps_its_outcomes(self):
         w = window()
-        collector.collect_batch(w, [(THIS_HOUR + 1, "", sync_line("import written", imported=9))])
+        collector.collect_batch(w, [
+            (THIS_HOUR + 1, "", sync_line("import written", imported=9)),
+            (THIS_HOUR + 1, "", sync_line("part quarantined", part="p", reason="invalid")),
+            (THIS_HOUR + 1, "", sync_line("dead letters written", path="d", dead_letters=2)),
+        ])
         self.assertEqual(w.series["ocr_import_pages"][2], 9)
+        self.assertEqual(w.series["ocr_import_rejected"][2], 1)
+        self.assertEqual(w.series["ocr_dead_letters"][2], 2)
         self.assertEqual(w.series["ocr_sync_runs"][2], 0)
 
     def test_queue_depth_is_a_gauge_from_either_seed_outcome(self):

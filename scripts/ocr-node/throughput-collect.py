@@ -327,8 +327,8 @@ def collect_ship(window, entries):
 
 
 def collect_batch(window, entries):
-    """ocr-sync's log. `import written` follows the committed import record, so a run that fails
-    later still counts what it imported; an import that failed logs nothing here."""
+    """ocr-sync's log. Each outcome is counted from its own line, written once it is committed, so
+    a run that fails later keeps them; `ocr sync finished` only counts the run."""
     for name in ("ocr_sync_runs", "ocr_import_pages", "ocr_import_rejected", "ocr_dead_letters"):
         window.declare(name)
     for at, _, message in entries:
@@ -341,8 +341,9 @@ def collect_batch(window, entries):
             window.add("ocr_import_pages", at, number(fields.get("imported")))
         elif text == "ocr sync finished":
             window.add("ocr_sync_runs", at)
-            window.add("ocr_import_rejected", at, number(fields.get("rejected")))
-            # Not dead_letters_rejected: a stale attempt counts in both.
+        elif text == "part quarantined":
+            window.add("ocr_import_rejected", at)
+        elif text == "dead letters written":
             window.add("ocr_dead_letters", at, number(fields.get("dead_letters")))
         elif text in ("ocr-bulk is full enough; nothing seeded", "ocr seed finished"):
             if type(fields.get("queue_depth")) is int:
