@@ -360,6 +360,25 @@ class ExportTest(Built):
         self.assertTrue(sql.strip().startswith("BEGIN TRANSACTION READ ONLY;"))
         self.assertIsNone(re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|TEMP|DROP|TRUNCATE|CALL)\b", sql))
 
+    def test_a_timeout_leaves_no_partial_file_and_no_settings_in_the_error(self):
+        dsn = self.d / "dsn"
+        dsn.write_text("host=db password=hunter2\n")
+        target = self.d / "input.csv"
+
+        def slow(cmd, **kw):
+            raise qc.subprocess.TimeoutExpired(cmd, 1)
+
+        with mock.patch.object(qc.subprocess, "run", slow), self.assertRaises(SystemExit) as e:
+            qc.export(str(dsn), str(target))
+        self.assertNotIn("hunter2", str(e.exception))
+        self.assertEqual(list(self.d.glob("input.csv*")), [])
+
+    def test_a_uri_or_unknown_dsn_is_refused_without_echoing_it(self):
+        for dsn in ("postgresql://u:hunter2@db/x", "host=db application=hunter2", "host='db"):
+            with self.assertRaises(SystemExit) as e:
+                qc.dsn_env(dsn)
+            self.assertNotIn("hunter2", str(e.exception))
+
     def test_export_passes_read_only_and_keeps_the_dsn_out_of_errors(self):
         dsn = self.d / "dsn"
         dsn.write_text("host=db sslkey=/k\n")
@@ -375,6 +394,8 @@ class ExportTest(Built):
             qc.export(str(dsn), str(target))
         self.assertEqual(seen["env"]["PGOPTIONS"], "-c default_transaction_read_only=on")
         self.assertEqual(seen["sql"].decode(), qc.EXPORT_SQL)
+        self.assertEqual((seen["env"]["PGHOST"], seen["env"]["PGSSLKEY"]), ("db", "/k"))
+        self.assertFalse([arg for arg in seen["cmd"] if "sslkey" in arg or "host=" in arg])
         self.assertTrue(target.exists())
         with mock.patch.object(qc.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1, stderr=b"boom")):
             with self.assertRaises(SystemExit) as e:

@@ -77,6 +77,7 @@ import hashlib
 import heapq
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -102,7 +103,26 @@ COPY (
 ) TO STDOUT WITH CSV HEADER;
 COMMIT;
 """
+EXPORT_TIMEOUT = 3600
+DSN_ENV = {"dbname": "PGDATABASE", "host": "PGHOST", "password": "PGPASSWORD", "port": "PGPORT", "sslcert": "PGSSLCERT",
+           "sslkey": "PGSSLKEY", "sslmode": "PGSSLMODE", "sslrootcert": "PGSSLROOTCERT", "user": "PGUSER"}
 INDEX_FIELDS = ("bytes", "fetched_at", "scan", "sha256")
+
+
+def dsn_env(dsn):
+    """libpq's environment for a key=value DSN, so no setting reaches a command line, where
+    other users could read it and a traceback would print it. No value goes in an error."""
+    env = {}
+    try:
+        pairs = shlex.split(dsn)
+    except ValueError:
+        sys.exit("--dsn-file: not a key=value DSN")
+    for pair in pairs:
+        key, eq, value = pair.partition("=")
+        if not eq or key not in DSN_ENV:
+            sys.exit(f"--dsn-file: expected key=value settings of {', '.join(sorted(DSN_ENV))}")
+        env[DSN_ENV[key]] = value
+    return env
 
 
 def export(dsn_file, path):
@@ -110,12 +130,16 @@ def export(dsn_file, path):
     default is set too, so a mistake in the SQL can't write whichever role the DSN names."""
     with open(dsn_file) as f:
         dsn = f.read().strip()
-    env = {**os.environ, "PGOPTIONS": "-c default_transaction_read_only=on",
+    env = {**os.environ, **dsn_env(dsn), "PGOPTIONS": "-c default_transaction_read_only=on",
            "PGAPPNAME": "usnm-quality-campaign", "LC_ALL": "C.UTF-8"}
     tmp = path + ".tmp"
-    with open(tmp, "wb") as out:
-        p = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=EXPORT_SQL.encode(),
-                           stdout=out, stderr=subprocess.PIPE, env=env, timeout=3600)
+    try:
+        with open(tmp, "wb") as out:
+            p = subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1"], input=EXPORT_SQL.encode(),
+                               stdout=out, stderr=subprocess.PIPE, env=env, timeout=EXPORT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.unlink(tmp)
+        sys.exit(f"the export took over {EXPORT_TIMEOUT} seconds")
     if p.returncode:
         os.unlink(tmp)
         sys.exit(f"the export failed: {p.stderr.decode(errors='replace').strip()[-300:]}")
