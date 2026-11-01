@@ -19,14 +19,18 @@
 #  2. Copies the chunk into CT230's <share>/quality/<campaign>/incoming/<chunk>/ (tar over ssh).
 #  3. Runs quality_receive.py there: every file against SHA256SUMS, every page's scan present
 #     (so quality-stage never falls back to tile.loc.gov), then files the scans and texts.
-#  4. usnm-boinc-step quality-stage with QUALITY_SCANS_DIR, then quality-submit.
+#  4. usnm-boinc-step quality-stage with QUALITY_SCANS_DIR, then `usnm-boinc quality submit` in
+#     the server container, under the step lock.
 #  5. quality_receive.py --after-submit frees the server's copies it no longer needs (the
 #     received scans and texts, the per-page units' images), then the chunk leaves the
 #     outbox, so the feeder makes the next one.
 # A step that fails leaves the chunk in the outbox for the next run; staging and submitting
 # skip what is already done. quality-stage has its own lock on the host and never waits for
-# the controller. quality-submit takes the lock the controller's steps take: it tries for 30
-# minutes, then the run exits 75 with the chunk still READY and the timer tries again.
+# the controller. Submitting takes the lock the controller's steps take: it waits up to 30
+# minutes, then the run exits 75 with the chunk still READY and the timer tries again. It runs
+# in the server container because the quality-submit bridge step then walks the whole download
+# tree with the lock held, up to 8 minutes over NFS, and that tree's export fixes the owner and
+# submit sets each file's mode.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -216,8 +220,20 @@ print(count)
       exit "$rc"
     fi
   fi
-  run_step --step quality-submit \
-    --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
+  log "$chunk: submission waiting for the step lock"
+  # The status page caches its counts for a minute; the controller's next tick reads the queue
+  # these units joined, as after the bridge step.
+  if in_ct flock -w 1800 -E 75 /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
+    timeout --signal=TERM --kill-after=30s 30m sh -c \
+    'usnm-boinc quality submit "$@" && rm -f /project/usnmocr/html/cache/f2/server_status.php_job_status' sh \
+    --root "/project/quality/$CAMPAIGN" --project /project/usnmocr \
+    --max-units "$(((n + BUNDLE - 1) / BUNDLE + 5))"; then
+    :
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || log "$chunk: the lock stayed held for 30 minutes; READY retained"
+    exit "$rc"
+  fi
   freed=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$CAMPAIGN" --chunk "$chunk" --after-submit \
     < "$HERE/quality_receive.py")
   rm -rf "$dir"
