@@ -9,6 +9,7 @@
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
 #     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
+#     [--step-window-minutes 15] (0, the default, is no window)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
@@ -35,7 +36,7 @@ CAMPAIGN="" ENGINE="" OUTBOX=/var/lib/usnm-quality-feed/outbox SERVER=pve.tjg.fy
 READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
-QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000
+QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -50,6 +51,7 @@ while [ $# -gt 0 ]; do
     --max-chunks) MAX_CHUNKS=${2:-}; shift 2 ;;
     --min-free-gb) MIN_FREE=${2:-}; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
+    --step-window-minutes) STEP_WINDOW=${2:-}; shift 2 ;;
     --qwen-engine-plan) QWEN_PLAN=${2:-}; shift 2 ;;
     --qwen-models) QWEN_MODELS=${2:-}; shift 2 ;;
     --qwen-max-ready)
@@ -66,6 +68,8 @@ done
   die "--bundle-size, --max-unsent, --max-chunks, --min-free-gb and --server-ct: numbers"
 [[ $SERVER =~ ^[a-z0-9][a-z0-9.-]*$ ]] || die "--server-host: a host name"
 [[ $QWEN_MAX_READY =~ ^[1-9][0-9]*$ ]] || die "--qwen-max-ready: a positive integer"
+[[ $STEP_WINDOW =~ ^[0-9]{1,2}$ && $((10#$STEP_WINDOW)) -lt 60 ]] || die "--step-window-minutes: 0 to 59"
+STEP_WINDOW=$((10#$STEP_WINDOW))
 if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
   [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
     die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
@@ -81,6 +85,22 @@ in_ct() {
   printf -v quoted '%q ' "$@"
   "${SSH[@]}" "pct exec $CT -- $quoted"
 }
+# With --step-window-minutes N, the steps that hold the host's lock for long start only in the
+# first N minutes of an hour, which leaves the rest of the hour to the priority controller.
+# Sets LOCK_WAIT to the seconds left to take the lock, so a queued step can't start after the
+# window closes.
+wait_for_step_window() {
+  LOCK_WAIT=900
+  [ "$STEP_WINDOW" -gt 0 ] || return 0
+  local now minute second waited=false
+  while now=$(date +%M:%S) && minute=$((10#${now%:*})) && second=$((10#${now#*:})) &&
+    [ "$minute" -ge "$STEP_WINDOW" ]; do
+    [ "$waited" = true ] || log "waiting for the next step window"
+    waited=true
+    sleep 30
+  done
+  LOCK_WAIT=$((STEP_WINDOW * 60 - minute * 60 - second))
+}
 # One bridge step, waiting its turn: the host runs one step at a time, and the priority
 # controller's steps come every few minutes. Tries for up to 30 minutes.
 run_step() {
@@ -88,6 +108,7 @@ run_step() {
   err="$OUTBOX/.step-$CAMPAIGN-$$.err"
   (set -o noclobber; : > "$err") || die "step log already exists"
   for i in $(seq 60); do
+    [ "$2" != quality-stage ] || wait_for_step_window
     if in_ct "$STEP" --env prod --target bridge "$@" > /dev/null 2> "$err"; then
       rm -f "$err"
       return 0
@@ -180,8 +201,9 @@ print(count)
   if [ -n "$QWEN_PLAN" ]; then
     # Native admission, shared models, scientific identities and DB quorum are checked
     # before cleanup; failures leave the original READY chunk and receipts intact.
+    wait_for_step_window
     log "$chunk: native submission waiting for normal project mutex"
-    if in_ct flock -w 900 -E 75 /run/usnm-boinc-step.lock sh -c \
+    if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock sh -c \
       'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \

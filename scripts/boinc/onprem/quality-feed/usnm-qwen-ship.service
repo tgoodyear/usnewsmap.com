@@ -9,7 +9,7 @@ Type=oneshot
 Environment=QWEN_MAX_READY=1000
 EnvironmentFile=/etc/usnm/qwen-feed.env
 ExecStart=/opt/usnm-quality-feed/qwen-throughput/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
-  --server-host ${SERVER_HOST} --max-chunks 2 --min-free-gb 50 \
+  --server-host ${SERVER_HOST} --max-chunks 1 --step-window-minutes 15 --min-free-gb 50 \
   --qwen-engine-plan ${QWEN_ENGINE_PLAN} --qwen-models ${QWEN_MODELS} \
   --qwen-max-ready ${QWEN_MAX_READY}
 SuccessExitStatus=75
