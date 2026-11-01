@@ -112,6 +112,7 @@ pub(crate) fn summary_stage<'a>(v: &'a View, id: &str) -> Option<&'a crate::pipe
     let freshness = pipeline.stage_freshness.iter().find(|s| s.id == id)?;
     (stage.state == crate::pipeline::StageState::Observed
         && stage.count.is_some()
+        && !stage.historical
         && !freshness.stale)
         .then_some(stage)
 }

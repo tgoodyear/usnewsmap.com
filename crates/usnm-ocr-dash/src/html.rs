@@ -151,6 +151,25 @@ mod tests {
     }
 
     #[test]
+    fn a_historical_stage_inside_its_budget_is_not_a_current_summary() {
+        let now = Utc::now();
+        let mut v = summary_view();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["id"] = serde_json::json!("accepted");
+        source["stages"][0]["historical"] = serde_json::json!(true);
+        source["stages"][0]["observed_at"] = serde_json::json!(now.to_rfc3339());
+        v.pipeline.snapshot =
+            Some(crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), now).unwrap());
+        v.pipeline.stage_freshness = vec![crate::pipeline::StageFreshness {
+            id: "accepted".into(),
+            age_secs: Some(5),
+            stale: false,
+            historical: true,
+        }];
+        assert!(summary_stage(&v, "accepted").is_none());
+    }
+
+    #[test]
     fn a_stale_live_stage_outranks_the_historical_badge() {
         let now = Utc::now();
         let mut source = crate::pipeline::tests::fixture(now);

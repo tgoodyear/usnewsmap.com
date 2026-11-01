@@ -165,6 +165,22 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(c.ingest(rebuilt, batches[0])["replayed"], False)
         self.assertEqual(c.ingest(rebuilt, batches[1])["inserted"], 0)
 
+    def test_a_correction_to_the_same_hour_wins_whatever_its_digest(self):
+        for corrected in range(40, 48):  # Digests fall on both sides of the first one's.
+            path = self.throughput(ocr_import_pages=[1, 2, corrected])
+            minute = corrected - 40
+            self.refresh(path, f"2026-11-01T19:{minute:02}:00.000000Z")
+            stages = {stage["id"]: stage for stage in c.snapshot(self.db)["stages"]}
+            self.assertEqual(stages["live_imported"]["count"], 3 + corrected)
+
+    def test_an_unchanged_stage_adds_no_event(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        evidence = self.work / "evidence"
+        with mock.patch.object(c, "now", return_value="2026-11-01T19:55:00.000000Z"):
+            result = c.refresh_live(self.db, path, evidence, self.work / "catalog.json")
+        self.assertEqual(result["inserted"], 0)
+
     def test_refresh_rejects_bad_histories(self):
         good = self.throughput(ocr_import_pages=[1, 2, 3])
         for change in (lambda h: h.update(schema=2), lambda h: h.pop("sources"),

@@ -58,7 +58,7 @@ OCR system as human-reference accuracy.
 
 ## Rebuilding the dashboard data-flow observer and catalog
 
-The read-only observer/catalog scripts and their three systemd units are installed
+The read-only observer/catalog scripts and their five systemd units are installed
 separately from OCR workers. On the operator's checkout, select a reviewed full
 commit SHA, then stage an immutable Git archive (not dirty working-tree files):
 
@@ -68,7 +68,9 @@ git archive --format=tar --output=data-flow.tar "$COMMIT" \
   scripts/corpus/data_catalog.py scripts/corpus/data_flow_observer.py \
   scripts/ocr-node/usnm-data-catalog.service \
   scripts/ocr-node/usnm-data-flow-observer.service \
-  scripts/ocr-node/usnm-data-flow-observer.timer scripts/ocr-node/install-data-flow.py
+  scripts/ocr-node/usnm-data-flow-observer.timer \
+  scripts/ocr-node/usnm-data-catalog-refresh.service \
+  scripts/ocr-node/usnm-data-catalog-refresh.timer scripts/ocr-node/install-data-flow.py
 git show "$COMMIT:scripts/ocr-node/install-data-flow.py" > install-data-flow.py
 shasum -a 256 data-flow.tar
 ```
@@ -81,7 +83,7 @@ python3 install-data-flow.py --archive data-flow.tar --commit FULL_SHA --sha256 
 ```
 
 `--apply` requires root, the existing `ocrdash` account, and the catalog service,
-observer service and observer timer all inactive. Coordinate a read-only dashboard
+observer service, observer timer, refresh service and refresh timer all inactive. Coordinate a read-only dashboard
 maintenance window: stop only those units, wait for an in-flight observer to finish,
 and record their original active/enabled states. The installer does not stop, start
 or enable units. On first installation only, supply `--ocr-url` with the

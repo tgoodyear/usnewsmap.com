@@ -1686,6 +1686,20 @@ def live_stage(stored, spec, at):
                                      "coverage": stage_id + " (hourly evidence)"}
 
 
+def live_event_id(db, stage_id, observed, payload, batch_id):
+    """An unchanged stage reuses its id, so it replays. A changed one sorts after the id it
+    replaces, so a correction to the same evidence hour wins over the earlier count."""
+    conn = connect(db, writable=True)
+    try:
+        current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?",
+                               (digest([LIVE_SOURCE, "stage", [stage_id]]),)).fetchone()
+    finally:
+        conn.close()
+    if current and current["observed_at"] == timestamp(observed) and load_json(current["data"]) == payload:
+        return current["event_id"]
+    return batch_id + "-" + digest([observed, payload])
+
+
 def refresh_live(db, throughput, evidence_dir, out):
     """One bounded refresh: the dashboard's kept counts -> one immutable batch -> snapshot.
     Besides the catalog it reads one local file: no Postgres or cloud access."""
@@ -1706,7 +1720,7 @@ def refresh_live(db, throughput, evidence_dir, out):
             continue
         observed, payload = found
         event = {"schema_version": 1, "batch_id": batch_id,
-                 "event_id": "live-" + digest([observed, payload]),
+                 "event_id": live_event_id(db, payload["stage_id"], observed, payload, batch_id),
                  "kind": "stage", "source": LIVE_SOURCE, "observed_at": observed,
                  "page_id": None, "payload": payload}
         validate_event(event)

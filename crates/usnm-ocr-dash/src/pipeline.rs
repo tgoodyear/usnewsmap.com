@@ -331,9 +331,7 @@ impl Pipeline {
             if s.stages
                 .iter()
                 .zip(&v.stage_freshness)
-                .any(|(stage, freshness)| {
-                    stage.observed_at.is_some() && freshness.stale && !stage.historical
-                })
+                .any(|(stage, freshness)| freshness.stale && !stage.historical)
             {
                 v.stale = true;
                 if v.last_error.is_none() {
@@ -599,6 +597,25 @@ pub(crate) mod tests {
                    "observed_at":null}),
         );
         assert!(p.view(now).stale);
+    }
+
+    #[test]
+    fn a_stage_inheriting_the_snapshot_time_keeps_the_default_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        let now = Utc::now();
+        let mut p = Pipeline::new(Some(path.clone()), 900);
+        let mut source = fixture(now);
+        source["observed_at"] = json!((now - Duration::seconds(3600)).to_rfc3339());
+        source["stages"][1] = json!({
+            "id":"imported","label":"Imported","count":71,"state":"observed","detail":"",
+            "observed_at":(now - Duration::seconds(3600)).to_rfc3339(),"max_age_secs":10800
+        });
+        std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        p.poll(now);
+        let view = p.view(now);
+        assert!(view.stage_freshness[0].stale);
+        assert!(view.stale);
     }
 
     #[test]
