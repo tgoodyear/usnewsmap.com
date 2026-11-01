@@ -202,7 +202,7 @@ def collect_controller(window, entries):
     for name in ("ticks_ok", "ticks_failed", "tick_seconds", "ocr_claim_pages", "ocr_collect_pages"):
         window.declare(name)
     plan, selected, limits = None, None, {}
-    for _, _, message in entries:
+    for logged, _, message in entries:
         event = json_event(message)
         if event is None or type(event.get("at")) is not int:
             continue
@@ -214,6 +214,8 @@ def collect_controller(window, entries):
                 window.add(f"phase_seconds.{phase}", at, number(event.get("seconds")))
                 window.add(f"phase_failed.{phase}", at, event.get("ok") is not True)
         elif kind in ("boinc_batch_tick", "boinc_batch_failure"):
+            # A tick's own time is when it began; it counts when it ended.
+            at = logged
             good = kind == "boinc_batch_tick"
             window.add("ticks_ok" if good else "ticks_failed", at)
             timings = event.get("timings")
@@ -264,6 +266,10 @@ def collect_ship(window, entries):
             announced = re.fullmatch(r"([0-9]+) pages, server unsent .*", text)
             received = re.fullmatch(r"received ([0-9]+) pages .*", text)
             if announced:
+                # A chunk leaves the outbox when submitted, so its number coming round
+                # again is another campaign's chunk, not a retry.
+                if "submit" in chunk["seen"]:
+                    chunk = chunks[(lane, match[1])] = {"seen": set()}
                 chunk["began"] = at
             elif received:
                 chunk["pages"] = int(received[1])

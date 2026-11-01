@@ -345,23 +345,23 @@ const ROWS: &[Row] = &[
         label: "usnm_quality",
         unit: "units",
         counts: &["quality_units"],
-        seconds: &[],
+        seconds: &["quality_elapsed_seconds"],
         per: &[],
         scope: "Workunits with a canonical result. A unit is one page or a bundle of pages, and \
                 the database doesn't say which, so pages per hour stay unknown here: quality \
-                load counts them.",
+                load counts them. Seconds are device time per unit.",
         limit: "",
     },
     Row {
         id: "usnm_qwen",
         label: "usnm_qwen",
-        unit: "pages",
+        unit: "units",
         counts: &["qwen_units"],
         seconds: &["qwen_elapsed_seconds"],
         per: &[],
-        scope: "Workunits with a canonical result: pages two replicas agreed on, not replicas. \
-                Seconds are device time on those pages, every replica back, inconclusive and \
-                failed ones too.",
+        scope: "Workunits two replicas agreed on, not replicas. A unit can hold several pages and \
+                the database doesn't say how many: Qwen load counts them. Seconds are device time \
+                per unit, every replica back, inconclusive and failed ones too.",
         limit: "",
     },
     Row {
@@ -928,6 +928,7 @@ mod tests {
         );
         let v = view(&t, &BTreeMap::new(), None, now());
         assert_eq!(step(&v, "usnm_qwen").last_hour, Some(78.0));
+        assert_eq!(step(&v, "usnm_qwen").unit, "units");
         assert_eq!(step(&v, "usnm_qwen").seconds_per_page, Some(100.0));
         assert_eq!(step(&v, "usnm_qwen").failed_day, Some(2.0));
         let q = v.quorum.iter().find(|q| q.app == "usnm_qwen").unwrap();

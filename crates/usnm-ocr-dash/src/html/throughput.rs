@@ -201,9 +201,13 @@ fn day_cell(s: &StepRate) -> String {
 }
 
 fn seconds_cell(s: &StepRate) -> String {
-    let per = if s.id == "controller" { "tick" } else { "page" };
+    let per = match s.unit {
+        "ticks" => "tick",
+        "units" => "unit",
+        _ => "page",
+    };
     match (s.seconds_per_page, s.id) {
-        (_, "bridge_lock" | "usnm_quality") => "-".to_owned(),
+        (_, "bridge_lock") => "-".to_owned(),
         (Some(n), _) if n >= 100.0 => format!("{}&nbsp;s/{per}", int(n as u64)),
         (Some(n), _) => format!("{n:.1}&nbsp;s/{per}"),
         (None, _) => unknown(),
@@ -250,7 +254,7 @@ pub(super) fn panel(v: &ThroughputView) -> String {
     o.push_str(
         "<h3>Results by validation outcome, last 24 hours</h3>\
          <p class=\"note\"><span class=\"key\"></span>valid <span class=\"key s2\"></span>inconclusive \
-         &nbsp; Results are replicas, not pages (#1420). Pages are workunits with a canonical result. \
+         &nbsp; Results are replicas, not pages (#1420). \
          An inconclusive result can turn valid when another replica agrees, so recent hours can change.</p>",
     );
     o.push_str("<div class=\"table-wide\" tabindex=\"0\" role=\"region\" aria-label=\"Results by validation outcome\">");

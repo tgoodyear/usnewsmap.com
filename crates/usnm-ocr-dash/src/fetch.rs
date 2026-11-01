@@ -457,8 +457,10 @@ pub struct Fetch {
     events: VecDeque<(DateTime<Utc>, u64)>,
     /// Lines of the index and their download milliseconds, by the hour.
     pub hourly: BTreeMap<i64, (u64, u64)>,
-    /// When the index was last read to its end.
+    /// When the index was last read to its end, and the hour of its oldest
+    /// line, which outlives that hour's count in `hourly`.
     pub index_read_at: Option<DateTime<Utc>>,
+    index_first_hour: Option<i64>,
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
     pub dead: HashSet<String>,
@@ -502,6 +504,7 @@ impl Fetch {
             events: VecDeque::new(),
             hourly: BTreeMap::new(),
             index_read_at: None,
+            index_first_hour: None,
             failures: VecDeque::new(),
             dead: HashSet::new(),
             cooling: HashMap::new(),
@@ -541,6 +544,7 @@ impl Fetch {
         self.buffer = Tally::default();
         self.events.clear();
         self.hourly.clear();
+        self.index_first_hour = None;
     }
 
     /// Read what changed. Blocking (file reads); run it off the async
@@ -720,6 +724,7 @@ impl Fetch {
     fn add_fetch(&mut self, line: IndexLine) {
         self.events.push_back((line.fetched_at, line.bytes));
         let hour = line.fetched_at.timestamp().div_euclid(3600) * 3600;
+        self.index_first_hour = Some(self.index_first_hour.map_or(hour, |h| h.min(hour)));
         let tally = self.hourly.entry(hour).or_default();
         tally.0 += 1;
         tally.1 += line.download_ms;
@@ -798,11 +803,11 @@ impl Fetch {
         }
     }
 
-    /// The whole hours the index says something about: from its first kept
-    /// hour to the last one over before the last read. Inside them, an hour
-    /// with no lines is a real zero.
+    /// The whole hours the index says something about: from its oldest line
+    /// to the last one over before the last read. Inside them, an hour with
+    /// no lines is a real zero.
     pub fn hours_covered(&self) -> Option<(i64, i64)> {
-        let first = *self.hourly.keys().next()?;
+        let first = self.index_first_hour?;
         let last = self.index_read_at?.timestamp().div_euclid(3600) * 3600 - 3600;
         (first <= last).then_some((first, last))
     }
@@ -1366,6 +1371,12 @@ mod tests {
         let first = hour - 3 * 3600;
         assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
         assert_eq!(f.hourly[&first], (1, 1500));
+        // A quiet fortnight empties the counts, not the coverage.
+        let later = now + Duration::days(20);
+        f.poll(later);
+        assert!(f.hourly.is_empty());
+        assert_eq!(f.hours_covered().unwrap().0, first);
+        f.index_read_at = Some(now);
         // The index goes away: later hours aren't counted zeros.
         std::fs::remove_file(&index).unwrap();
         f.poll(now + Duration::hours(2));

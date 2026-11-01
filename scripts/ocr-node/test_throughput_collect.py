@@ -34,7 +34,7 @@ class ControllerTests(unittest.TestCase):
     def test_ticks_phases_and_page_counts(self):
         w = window()
         at = THIS_HOUR - HOUR + 10
-        entries = [(0, "", line) for line in (
+        entries = [(at, "", line) for line in (
             "Starting usnm-boinc-priority-controller.service...",
             tick(at, selected=100, published=1),
             tick(at + 300, selected=130, published=25, seconds=70.5),
@@ -55,11 +55,19 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(series["ticks_ok"][2], 0)
         self.assertIn("300 runnable", limits["usnm_ocr"])
 
+    def test_a_tick_counts_in_the_hour_it_ended(self):
+        w = window()
+        began = THIS_HOUR - 300
+        collector.collect_controller(w, [(THIS_HOUR + 300, "", tick(began, published=40, seconds=600))])
+        self.assertEqual(w.series["ticks_ok"], [0, 0, 1])
+        self.assertEqual(w.series["ocr_collect_pages"], [0, 0, 40])
+        self.assertEqual(w.series["tick_seconds"], [0, 0, 600])
+
     def test_a_new_plan_is_not_counted_as_claims(self):
         w = window()
         at = THIS_HOUR + 1
-        collector.collect_controller(w, [(0, "", tick(at, plan="a", selected=500)),
-                                         (0, "", tick(at + 300, plan="b", selected=20))])
+        collector.collect_controller(w, [(at, "", tick(at, plan="a", selected=500)),
+                                         (at, "", tick(at + 300, plan="b", selected=20))])
         self.assertEqual(w.series["ocr_claim_pages"][2], 0)
 
     def test_page_text_like_lines_and_bad_phase_names_are_dropped(self):
@@ -126,6 +134,24 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(s["qwen_load_failed"][at], 1)
         self.assertEqual(s["qwen_load_seconds"][at], 55)
         self.assertEqual(s["quality_ship_pages"][0], 0)
+
+    def test_a_chunk_number_used_again_after_it_was_submitted_is_a_new_chunk(self):
+        w = window()
+        base = THIS_HOUR
+        line = "quality-ship: c00001: "
+        collector.collect_ship(w, [
+            (base + 1, QUALITY, line + "100 pages, server unsent 0"),
+            (base + 2, QUALITY, line + "received 100 pages (deu); staging"),
+            (base + 3, QUALITY, line + "staged; submitting"),
+            (base + 4, QUALITY, line + "submitted, freed 5 bytes for 100 pages on the server"),
+            (base + 5, QUALITY, line + "50 pages, server unsent 0"),
+            (base + 6, QUALITY, line + "received 50 pages (eng); staging"),
+            (base + 7, QUALITY, line + "staged; submitting"),
+            (base + 8, QUALITY, line + "submitted, freed 5 bytes for 50 pages on the server"),
+        ])
+        self.assertEqual(w.series["quality_ship_pages"][2], 150)
+        self.assertEqual(w.series["quality_stage_pages"][2], 150)
+        self.assertEqual(w.series["quality_submit_pages"][2], 150)
 
     def test_limits_come_from_the_settings_and_nothing_else_is_read(self):
         with tempfile.TemporaryDirectory() as directory:
