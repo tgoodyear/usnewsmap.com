@@ -1,7 +1,7 @@
 //! Per-step throughput (#704): hourly counters for each pipeline step, kept
 //! in a small file so the history outlives a restart.
 //!
-//! Three collectors (`scripts/ocr-node/throughput-collect.py`) read what
+//! Four collectors (`scripts/ocr-node/throughput-collect.py`) read what
 //! their hosts already record and `PUT /api/throughput/<source>`, each from
 //! its own address only; the fetch index gives the scan fetch here. A
 //! collector recomputes whole hours, so a bucket is replaced, never added to.
@@ -28,7 +28,7 @@ pub const MAX_LIMIT_CHARS: usize = 160;
 const MAX_FILE: u64 = 4 * 1024 * 1024;
 /// A source that hasn't reported for this long is shown as stale.
 pub const SOURCE_FRESH: Duration = Duration::minutes(45);
-pub const SOURCES: [&str; 3] = ["controller", "ship", "boinc"];
+pub const SOURCES: [&str; 4] = ["controller", "ship", "boinc", "batch"];
 
 /// What a collector sends.
 #[derive(Debug, Clone, Deserialize)]
@@ -372,6 +372,17 @@ const ROWS: &[Row] = &[
         seconds: &["phase_seconds.collect"],
         per: &[],
         scope: "The controller's newly published pages at each passing tick.",
+        limit: "",
+    },
+    Row {
+        id: "ocr_import",
+        label: "OCR pages imported",
+        unit: "pages",
+        counts: &["ocr_import_pages"],
+        seconds: &[],
+        per: &[],
+        scope: "Pages in ocr-sync's committed import records. Structural import, not release \
+                selection.",
         limit: "",
     },
     Row {

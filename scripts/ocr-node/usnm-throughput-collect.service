@@ -1,5 +1,5 @@
 # Hourly pipeline counters for the OCR dashboard's step throughput panel (#704): one of the
-# controller, ship and boinc sources on the host that has it, as
+# controller, ship, boinc and batch sources on the host that has it, as
 # /usr/local/bin/usnm-throughput-collect (scripts/ocr-node/throughput-collect.py). Reads journals
 # and, for boinc, two bounded aggregate queries; changes nothing. Settings in
 # /etc/usnm/throughput-collect.env: USNM_THROUGHPUT_SOURCE, USNM_THROUGHPUT_HOURS and

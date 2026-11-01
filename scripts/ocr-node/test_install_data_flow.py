@@ -36,7 +36,7 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             path, digest = self.archive(root)
-            self.assertEqual(len(installer.read_archive(path, "a" * 40, digest)), 6)
+            self.assertEqual(len(installer.read_archive(path, "a" * 40, digest)), 8)
             for commit, checksum in (("b" * 40, digest), ("a" * 40, "0" * 64)):
                 with self.assertRaisesRegex(ValueError, "differs"):
                     installer.read_archive(path, commit, checksum)

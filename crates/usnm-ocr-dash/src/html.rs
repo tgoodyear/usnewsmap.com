@@ -127,6 +127,47 @@ mod tests {
         assert!(SCRIPT.contains("d.dataset.refreshKey ||"));
     }
 
+    #[test]
+    fn historical_stages_are_named_in_the_row_and_the_badge() {
+        let now = Utc::now();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["historical"] = serde_json::json!(true);
+        source["stages"][0]["observed_at"] =
+            serde_json::json!((now - chrono::Duration::days(8)).to_rfc3339());
+        source["stages"][1]["state"] = serde_json::json!("observed");
+        source["stages"][1]["count"] = serde_json::json!(5);
+        source["stages"][1]["observed_at"] = serde_json::json!(now.to_rfc3339());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let mut pipeline = crate::pipeline::Pipeline::new(Some(path), 900);
+        pipeline.poll(now);
+        let v = pipeline.view(now);
+        assert!(!v.stale, "{:?}", v.last_error);
+        let html = pipeline_panel(&v);
+        assert!(html.contains("Live stages current; 1 historical"));
+        assert!(html.contains("observed / historical"));
+        assert!(!html.contains("Some evidence old or unknown"));
+    }
+
+    #[test]
+    fn a_stale_live_stage_outranks_the_historical_badge() {
+        let now = Utc::now();
+        let mut source = crate::pipeline::tests::fixture(now);
+        source["stages"][0]["historical"] = serde_json::json!(true);
+        source["stages"][0]["observed_at"] =
+            serde_json::json!((now - chrono::Duration::days(8)).to_rfc3339());
+        source["stages"][1]["observed_at"] = serde_json::Value::Null;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let mut pipeline = crate::pipeline::Pipeline::new(Some(path), 900);
+        pipeline.poll(now);
+        let html = pipeline_panel(&pipeline.view(now));
+        assert!(html.contains("Some evidence old or unknown"));
+        assert!(!html.contains("Live stages current"));
+    }
+
     fn summary_view() -> View {
         let dir = tempfile::tempdir().unwrap();
         crate::view::build(
@@ -227,6 +268,7 @@ mod tests {
                 id: s.id.clone(),
                 age_secs: Some(5),
                 stale: false,
+                historical: false,
             })
             .collect();
         v.pipeline.snapshot = Some(snapshot);

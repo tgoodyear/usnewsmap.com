@@ -153,7 +153,9 @@ The dashboard reads a local bounded snapshot, not production databases.
 The snapshot includes schema version, producer, generation time, source
 observation time, coverage, stage counts, artifact/run aggregates and issues.
 Unknown stages have null counts. Successful snapshot generation does not make
-old source observations fresh.
+old source observations fresh. A stage may carry `max_age_secs`, its own age limit
+when its evidence is slower than the snapshot's, and `historical`, explained under
+[Overall evidence age](#overall-evidence-age).
 
 Show data flow separately from local host utilization. Each panel identifies
 coverage and age; retain the last valid reading with a visible stale/error state
@@ -317,9 +319,8 @@ so a frozen catalog does not fail its unit.
 
 Regenerating the snapshot with
 `data_catalog.py --db catalog.sqlite snapshot --out catalog.json` moves only
-`generated_at`. The flag stays until new evidence moves `observed_at`. BOINC
-results are not cataloged until an adapter for them exists under
-[#704](https://github.com/tgoodyear/usnewsmap.com/issues/704). To stop joining the
+`generated_at`. The flag stays until new evidence moves `observed_at`, which
+[`refresh-live`](#current-evidence) does every hour. To stop joining the
 catalog, drop `--catalog-snapshot` from the observer's unit. A unit that
 regenerates the snapshot needs more than the observer unit's 10% CPU quota: at
 112,640 inventory rows the snapshot took about 0.35 seconds unthrottled, missed its
@@ -331,6 +332,73 @@ acceptance, import and index observations with their original source timestamps
 and does not infer those stages from successful execution. A one-page import
 proof is one observed import, not the total imported corpus. Unconnected stages
 remain unknown.
+
+## Current evidence
+
+`usnm-data-catalog-refresh.timer` runs `data_catalog.py refresh-live` once an hour,
+as the observer's service user. It reads `throughput.json`, the two weeks of hourly
+counts the dashboard already keeps from its collectors
+([throughput sources](../operations/onprem-ocr.md)). It writes those counts as one
+immutable evidence batch of aggregate stages under
+`/var/lib/usnm-data-flow/live-evidence/`, imports the batch, and regenerates
+`catalog.json`. A batch is about 4 KB, so a year of them is about 35 MB. Besides
+the catalog, it reads only that file: no Postgres, cloud access or new credential.
+On a copy of the deployed catalog under the unit's limits, a run took 2.3 seconds
+and 35 MB of memory.
+
+| Panel row        | Source       | Evidence                                                                                                                                                      |
+| ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `queued`         | `batch`      | `ocr-bulk`'s approximate depth at ocr-sync's last run in the hour, leased messages included. `ocr-priority`'s depth is not logged, so it is not in this count |
+| `allocated`      | `controller` | `cohort_pending` at the hour's last tick: pages at BOINC, held for collection, or selected with no job yet                                                    |
+| `validated`      | `boinc`      | `usnm_ocr` workunits with a canonical result, last 336 hours                                                                                                  |
+| `collected`      | `controller` | Jobs the hand-off marked published, last 336 hours: results that passed its collection checks. Includes jobs superseded by an earlier import                  |
+| `imported`       | `batch`      | Pages in ocr-sync's `import written` log lines, which follow the committed import record, last 336 hours                                                      |
+| `rejected`       | `batch`      | Parts rejected and dead letters archived, last 336 hours. Invalid dead letters are not counted                                                                |
+| `quality_loaded` | `ship`       | Quality and Qwen pages loaded into the quality database, last 336 hours                                                                                       |
+
+Each row is a separate fact from its own source. None is derived from another, and
+a row that has no known hour stays unknown. A row's time is the end of its newest
+known hour, so a source that stops keeps its last count and ages until it is
+flagged. These are aggregates: `trace` still reports a page's stages only from
+page-level evidence, and the rows are not cumulative corpus totals.
+
+`queued` reads the depth of the Azure Storage queue that ocr-sync feeds. The
+dashboard's pgmq metrics cover the on-prem queues of
+[ADR-0025](adr/0025-onprem-database-client-certificates.md), which read zero
+because producers and the claim step still use Azure, so they are not used. The
+adapter adds no Postgres reads: quality load counts come from the loaders' logs,
+not the quality database.
+
+`accepted` stays release selection, as in
+[Release selection and search provenance](#release-selection-and-search-provenance).
+Hand-off collection is not that decision, so it has its own row. Release decisions
+reach the catalog only through `ingest-release`, and no scheduled export feeds it
+yet. Engine runs and per-file verified locations have no current source either:
+BOINC results are not cataloged as run records, and no job verifies scans file by
+file on a schedule.
+
+### Overall evidence age
+
+The overall age and the panel's warning used to follow the oldest stage, so one
+source that had stopped for good set both for the whole panel. They now work as
+follows:
+
+- `HISTORICAL_SOURCES` in `data_catalog.py` lists sources that will never report
+  again: one-off proofs and the retired worker receiver. Adding a source takes a
+  reviewed change. A source not on the list counts as live.
+- A stage is `historical` only if every source feeding it is on that list. A live
+  source sets the age of a stage that also has historical ones.
+- The overall `observed_at` is the oldest non-historical stage with a timestamp.
+- The panel warns if any non-historical stage is unknown or past its limit: its own
+  `max_age_secs`, else the dashboard's `--pipeline-max-age-secs`.
+- A historical stage keeps its count and original age, is marked historical in its
+  row and in the `historical-stages` issue, and never counts as current in the
+  summaries. The `historical` flag in `/api/pipeline.json` and the
+  `stage_freshness` entry say the same.
+
+The live rows' limit is three hours. They cover whole hours and refresh hourly, so a
+healthy row reaches about 90 minutes old. Other stages keep the 15-minute default.
+`catalog-frozen` still fires at three days from either timestamp.
 
 ## Release selection and search provenance
 

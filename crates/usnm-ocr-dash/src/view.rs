@@ -356,8 +356,8 @@ pub fn merge_queues(nodes: &Nodes, now: DateTime<Utc>) -> (Option<QueueStats>, O
 
 /// Why imports aren't shown.
 pub const IMPORTS_NOTE: &str =
-    "In Azure. ocr-sync's import counts and the damage of our text against LoC's are in the \
-curated store and the ocr-sync job's logs, which nothing on the LAN can read without a new grant.";
+    "ocr-sync's import counts are in the step throughput panel. The damage of our text against \
+LoC's is in the curated store, which nothing on the LAN can read without a new grant.";
 
 fn rate(t: Tally, secs: f64) -> Rate {
     Rate {

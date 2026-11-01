@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_COUNT: u64 = 1_000_000_000_000;
+/// The longest age budget a stage may claim: 30 days.
+pub const MAX_STAGE_BUDGET_SECS: u64 = 2_592_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +45,13 @@ pub struct Stage {
         skip_serializing_if = "Option::is_none"
     )]
     pub observed_at: Option<Option<DateTime<Utc>>>,
+    /// Fed only by sources that will never report again: it keeps its own age and is
+    /// flagged, but doesn't make the panel stale (14: Overall evidence age).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub historical: bool,
+    /// This stage's age budget, for evidence slower than the snapshot's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -156,6 +165,16 @@ pub fn parse(bytes: &[u8], now: DateTime<Utc>) -> anyhow::Result<Snapshot> {
             stage.state != StageState::Unknown || stage.count.is_none(),
             "unknown stage must have null count"
         );
+        ensure!(
+            !stage.historical || matches!(stage.observed_at, Some(Some(_))),
+            "historical stage needs a source timestamp"
+        );
+        ensure!(
+            stage
+                .max_age_secs
+                .is_none_or(|n| (1..=MAX_STAGE_BUDGET_SECS).contains(&n)),
+            "stage age budget out of range"
+        );
     }
     for issue in &s.issues {
         text(&issue.code, 64, false)?;
@@ -196,6 +215,7 @@ pub struct StageFreshness {
     pub id: String,
     pub age_secs: Option<i64>,
     pub stale: bool,
+    pub historical: bool,
 }
 
 impl Default for PipelineView {
@@ -268,9 +288,20 @@ impl Pipeline {
             .as_ref()
             .and_then(|s| s.observed_at)
             .map(|t| (now - t).num_seconds().max(0));
+        // The overall age is the oldest non-historical stage's, so it can't be held to a tighter
+        // budget than that stage's own. Each stage is checked against its own below.
+        let budget = v
+            .snapshot
+            .iter()
+            .flat_map(|s| &s.stages)
+            .filter(|stage| !stage.historical)
+            .filter_map(|stage| stage.max_age_secs)
+            .max()
+            .unwrap_or(0)
+            .max(self.max_age_secs);
         let unavailable = match v.age_secs {
             None => Some("source evidence time unknown; snapshot unavailable"),
-            Some(age) if age as u64 > self.max_age_secs => Some("source evidence is stale"),
+            Some(age) if age as u64 > budget => Some("source evidence is stale"),
             _ => None,
         };
         v.stale = v.last_error.is_some() || unavailable.is_some();
@@ -290,14 +321,19 @@ impl Pipeline {
                         id: stage.id.clone(),
                         age_secs: age,
                         stale: self.last.last_error.is_some()
-                            || age.is_none_or(|a| a as u64 > self.max_age_secs),
+                            || age.is_none_or(|a| {
+                                a as u64 > stage.max_age_secs.unwrap_or(self.max_age_secs)
+                            }),
+                        historical: stage.historical,
                     }
                 })
                 .collect();
             if s.stages
                 .iter()
                 .zip(&v.stage_freshness)
-                .any(|(stage, freshness)| stage.observed_at.is_some() && freshness.stale)
+                .any(|(stage, freshness)| {
+                    stage.observed_at.is_some() && freshness.stale && !stage.historical
+                })
             {
                 v.stale = true;
                 if v.last_error.is_none() {
@@ -486,5 +522,128 @@ pub(crate) mod tests {
         assert!(check(&source, now).is_err());
         source["stages"][0]["observed_at"] = json!("invalid");
         assert!(check(&source, now).is_err());
+    }
+
+    /// A snapshot like the observer's: a fresh stage and one more, written to `path`.
+    fn poll_with(
+        p: &mut Pipeline,
+        path: &std::path::Path,
+        now: DateTime<Utc>,
+        oldest: Duration,
+        second: Value,
+    ) {
+        let mut source = fixture(now);
+        source["observed_at"] = json!((now - oldest).to_rfc3339());
+        source["stages"][0]["observed_at"] = json!((now - oldest).to_rfc3339());
+        source["stages"][1] = second;
+        std::fs::write(path, serde_json::to_vec(&source).unwrap()).unwrap();
+        p.poll(now);
+    }
+
+    #[test]
+    fn historical_stage_keeps_its_age_but_does_not_make_the_panel_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        let now = Utc::now();
+        let mut p = Pipeline::new(Some(path.clone()), 900);
+        poll_with(
+            &mut p,
+            &path,
+            now,
+            Duration::seconds(60),
+            json!({"id":"accepted","label":"Accepted","count":1,"state":"observed","detail":"",
+                   "observed_at":(now - Duration::days(8)).to_rfc3339(),"historical":true}),
+        );
+        let view = p.view(now);
+        assert!(!view.stale, "{:?}", view.last_error);
+        assert_eq!(view.age_secs, Some(60));
+        let accepted = &view.stage_freshness[1];
+        assert_eq!(accepted.age_secs, Some(8 * 86400));
+        assert!(accepted.stale && accepted.historical);
+    }
+
+    #[test]
+    fn the_same_old_stage_without_the_mark_still_makes_the_panel_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        let now = Utc::now();
+        let mut p = Pipeline::new(Some(path.clone()), 900);
+        poll_with(
+            &mut p,
+            &path,
+            now,
+            Duration::seconds(60),
+            json!({"id":"accepted","label":"Accepted","count":1,"state":"observed","detail":"",
+                   "observed_at":(now - Duration::days(8)).to_rfc3339()}),
+        );
+        let view = p.view(now);
+        assert!(view.stale);
+        assert_eq!(
+            view.last_error.as_deref(),
+            Some("stage source evidence is stale or unknown")
+        );
+    }
+
+    #[test]
+    fn unknown_stage_still_makes_the_panel_stale_beside_historical_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        let now = Utc::now();
+        let mut p = Pipeline::new(Some(path.clone()), 900);
+        poll_with(
+            &mut p,
+            &path,
+            now,
+            Duration::seconds(60),
+            json!({"id":"queued","label":"Queued","count":null,"state":"unknown","detail":"",
+                   "observed_at":null}),
+        );
+        assert!(p.view(now).stale);
+    }
+
+    #[test]
+    fn a_stage_budget_replaces_the_default_for_that_stage_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        let now = Utc::now();
+        let mut p = Pipeline::new(Some(path.clone()), 900);
+        let hourly = |age: i64| {
+            json!({"id":"imported","label":"Imported","count":71,"state":"observed","detail":"",
+                   "observed_at":(now - Duration::seconds(age)).to_rfc3339(),
+                   "max_age_secs":10800})
+        };
+        poll_with(&mut p, &path, now, Duration::seconds(7200), hourly(7200));
+        // The first stage has no budget of its own, so at this age it is stale.
+        assert!(p.view(now).stale);
+        assert!(p.view(now).stage_freshness[0].stale);
+        assert!(!p.view(now).stage_freshness[1].stale);
+        poll_with(&mut p, &path, now, Duration::seconds(60), hourly(7200));
+        let view = p.view(now);
+        assert!(!view.stale, "{:?}", view.last_error);
+        assert_eq!(view.age_secs, Some(60));
+        poll_with(&mut p, &path, now, Duration::seconds(60), hourly(10801));
+        assert!(p.view(now).stale);
+        assert!(p.view(now).stage_freshness[1].stale);
+    }
+
+    #[test]
+    fn historical_and_budget_fields_are_checked() {
+        let now = Utc::now();
+        let mut v = fixture(now);
+        assert!(check(&v, now).is_ok());
+        v["stages"][1]["historical"] = json!(true);
+        assert!(check(&v, now).is_err(), "no timestamp");
+        v = fixture(now);
+        v["stages"][0]["historical"] = json!(true);
+        assert!(check(&v, now).is_err(), "inherited timestamp");
+        v["stages"][0]["observed_at"] = json!(now.to_rfc3339());
+        assert!(check(&v, now).is_ok());
+        v["stages"][0]["historical"] = json!("yes");
+        assert!(check(&v, now).is_err());
+        for budget in [json!(0), json!(MAX_STAGE_BUDGET_SECS + 1), json!(-1)] {
+            let mut v = fixture(now);
+            v["stages"][0]["max_age_secs"] = budget;
+            assert!(check(&v, now).is_err());
+        }
     }
 }

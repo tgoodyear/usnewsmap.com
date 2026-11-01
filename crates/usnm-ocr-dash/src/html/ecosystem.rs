@@ -7,16 +7,22 @@ use std::fmt::Write as _;
 pub(super) fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
     let mut o =
         String::from("<section class=\"wide\" id=\"corpus-data-flow\"><h2>Corpus data flow</h2>");
+    let historical = v.stage_freshness.iter().filter(|f| f.historical).count();
+    let current = match historical {
+        0 => "observed".to_owned(),
+        n => format!("Live stages current; {n} historical"),
+    };
     o.push_str(&badge(
         if v.stale { "warning" } else { "good" },
         if v.stale {
             "Some evidence old or unknown"
         } else {
-            "observed"
+            &current
         },
     ));
     o.push_str(
         "<p class=\"note\">Partial catalog; stage counts are separate from local worker totals, not whole-corpus totals. \
+        Historical stages come only from sources that will never report again; they keep their age and are left out of the overall evidence age. \
         <a href=\"/api/pipeline.json\">JSON</a></p>",
     );
     if let Some(s) = &v.snapshot {
@@ -43,7 +49,9 @@ pub(super) fn pipeline_panel(v: &crate::pipeline::PipelineView) -> String {
                     .map_or_else(|| "unknown".into(), time),
                 stage.count.map_or_else(|| "unknown".into(), int),
                 state,
-                if stage.state != crate::pipeline::StageState::Unknown
+                if stage.historical {
+                    " / historical"
+                } else if stage.state != crate::pipeline::StageState::Unknown
                     && freshness.is_none_or(|f| f.stale)
                 {
                     " / stale"
@@ -336,7 +344,7 @@ pub(super) fn ecosystem_panel(v: &View) -> String {
     let mut publishing = String::new();
     for (id, label) in [
         ("accepted", "Accepted"),
-        ("imported", "Curated imports"),
+        ("imported", "Curated imports, last 14 days"),
         ("indexed", "Search inclusion"),
     ] {
         let _ = write!(publishing, "<li>{}: {}</li>", label, summary_count(v, id));
