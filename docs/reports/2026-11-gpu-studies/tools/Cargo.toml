@@ -8,6 +8,7 @@ description = "Crop cutting, scoring and checks for the November 2026 GPU studie
 
 [dependencies]
 usnm-ocr-survey = { path = "../../../../crates/usnm-ocr-survey" }
+usnm-core = { path = "../../../../crates/usnm-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

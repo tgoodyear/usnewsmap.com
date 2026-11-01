@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use usnm_ocr_survey::score::{cer_wer, read_jsonl, Counts};
+use usnm_core::ja;
 use usnm_ocr_survey::{distance, text};
 
 #[derive(Parser)]
@@ -71,6 +72,23 @@ enum Cmd {
     Invent {
         #[arg(long)]
         refs: PathBuf,
+        #[arg(long = "hyp")]
+        hyps: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Japanese crops by the protocol's box rule: JSONL {id,page,group,image_path} in, PNGs and crops.jsonl out
+    JaCut {
+        #[arg(long)]
+        pages: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Japanese character bigram F1 between readers and against machine references; failure counts
+    JaScore {
+        /// JSONL rows {"id","page","group","ref"?}
+        #[arg(long)]
+        items: PathBuf,
         #[arg(long = "hyp")]
         hyps: Vec<String>,
         #[arg(long)]
@@ -449,6 +467,118 @@ fn cut(units: &Path, out: &Path) -> Result<()> {
     write_rows(&out.join("crops.jsonl"), &rows)
 }
 
+fn fnv(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+}
+
+fn ja_cut(pages: &Path, out: &Path) -> Result<()> {
+    fs::create_dir_all(out)?;
+    let mut rows = vec![];
+    for p in read_jsonl(pages)? {
+        let id = p["id"].as_str().context("id")?;
+        let img = image::ImageReader::open(p["image_path"].as_str().context("path")?)?.with_guessed_format()?.decode()?;
+        let (w, h) = (img.width() / 4, img.height() / 5);
+        let mut rng = Rng(fnv(id));
+        let x = (rng.next() % u64::from(img.width() - w)) as u32;
+        let y = (rng.next() % u64::from(img.height() - h)) as u32;
+        let file = format!("{id}.png");
+        img.crop_imm(x, y, w, h).save(out.join(&file))?;
+        rows.push(json!({"id": id, "page": p["page"], "group": p["group"], "file": file, "box": [x, y, w, h]}));
+    }
+    write_rows(&out.join("crops.jsonl"), &rows)
+}
+
+fn ja_chars(s: &str) -> Vec<char> {
+    s.chars().filter(|c| ja::is_ja(*c)).map(ja::fold_char).collect()
+}
+
+fn bigrams(c: &[char]) -> HashMap<(char, char), i64> {
+    let mut m = HashMap::new();
+    for w in c.windows(2) {
+        *m.entry((w[0], w[1])).or_default() += 1;
+    }
+    m
+}
+
+fn f1(a: &[char], b: &[char]) -> Option<f64> {
+    let (x, y) = (bigrams(a), bigrams(b));
+    let (nx, ny): (i64, i64) = (x.values().sum(), y.values().sum());
+    if nx == 0 || ny == 0 {
+        return None;
+    }
+    let hit: i64 = x.iter().map(|(k, v)| (*v).min(*y.get(k).unwrap_or(&0))).sum();
+    Some(2.0 * hit as f64 / (nx + ny) as f64)
+}
+
+fn ja_score(items: &Path, hyps: &[String], out: &Path) -> Result<()> {
+    let items = read_jsonl(items)?;
+    let hyps = specs(hyps)?;
+    let chars: Vec<HashMap<&str, Vec<char>>> = hyps.iter().map(|(_, m)| m.iter().map(|(k, v)| (k.as_str(), ja_chars(v))).collect()).collect();
+    let mut rows = vec![];
+    let mut detail = vec![];
+    for group in ["all", "typeset", "camp"] {
+        let set: Vec<&Value> = items.iter().filter(|i| group == "all" || i["group"].as_str() == Some(group)).collect();
+        for (i, (name, map)) in hyps.iter().enumerate() {
+            let (mut n, mut fail, mut lp, mut inv, mut vert, mut empty) = (0, 0, 0, 0, 0, 0);
+            let (mut ref_f1, mut ref_n) = (vec![], 0);
+            for it in &set {
+                let id = it["id"].as_str().unwrap_or("");
+                let Some(t) = map.get(id) else { continue };
+                n += 1;
+                let mine = &chars[i][id];
+                let visible = t.chars().filter(|c| !c.is_whitespace()).count();
+                let bad = visible == 0 || (mine.len() as f64) < 0.35 * visible as f64;
+                let others: Vec<&Vec<char>> = (0..hyps.len()).filter(|j| *j != i).filter_map(|j| chars[j].get(id)).collect();
+                let long = others.iter().filter(|o| o.len() >= 20).count();
+                empty += usize::from(visible == 0);
+                fail += usize::from(bad);
+                vert += usize::from(bad && long >= 2);
+                let b = bigrams(mine);
+                let total: i64 = b.values().sum();
+                let looped = total >= 20 && (b.len() as f64) < 0.5 * total as f64;
+                lp += usize::from(looped);
+                let reference = it["ref"].as_str().map(ja_chars);
+                let mut seen: HashMap<(char, char), i64> = HashMap::new();
+                for o in others.iter().copied().chain(reference.iter()) {
+                    for k in bigrams(o).into_keys() {
+                        seen.insert(k, 1);
+                    }
+                }
+                let unsup: i64 = b.iter().filter(|(k, _)| !seen.contains_key(*k)).map(|(_, v)| *v).sum();
+                let invented = mine.len() >= 20 && unsup * 2 > total;
+                inv += usize::from(invented);
+                if let Some(r) = &reference {
+                    ref_n += 1;
+                    ref_f1.push(f1(r, mine).unwrap_or(0.0));
+                }
+                if group == "all" && (invented || looped || bad) {
+                    detail.push(json!({"reader": name, "id": id, "group": it["group"], "fail": bad, "loop": looped, "invented": invented}));
+                }
+            }
+            let median = if ref_f1.is_empty() { None } else { Some(pct(&mut ref_f1, 0.5)) };
+            rows.push(json!({"kind": "reader", "group": group, "reader": name, "crops": n, "empty": empty, "not_japanese": fail, "loop": lp,
+                "invented": inv, "vertical_failure": vert, "machine_ref_crops": ref_n, "machine_ref_median_f1": median}));
+        }
+        for i in 0..hyps.len() {
+            for j in i + 1..hyps.len() {
+                let mut v = vec![];
+                for it in &set {
+                    let id = it["id"].as_str().unwrap_or("");
+                    if let (Some(a), Some(b)) = (chars[i].get(id), chars[j].get(id)) {
+                        v.push(f1(a, b).unwrap_or(0.0));
+                    }
+                }
+                if !v.is_empty() {
+                    let n = v.len();
+                    rows.push(json!({"kind": "pair", "group": group, "a": hyps[i].0, "b": hyps[j].0, "crops": n, "median_f1": pct(&mut v, 0.5), "note": "agreement, not accuracy"}));
+                }
+            }
+        }
+    }
+    rows.extend(detail);
+    write_rows(out, &rows)
+}
+
 fn attr(tag: &str, name: &str) -> Option<String> {
     let key = format!(" {name}=\"");
     let i = tag.find(&key)? + key.len();
@@ -525,6 +655,8 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Jpeg { input, out } => jpeg(&input, &out),
         Cmd::Columns { alto_dir, out } => columns(&alto_dir, &out),
+        Cmd::JaCut { pages, out } => ja_cut(&pages, &out),
+        Cmd::JaScore { items, hyps, out } => ja_score(&items, &hyps, &out),
         Cmd::Cut { units, out } => cut(&units, &out),
         Cmd::Score { refs, hyps, baseline, out, resamples, seed, fold } => score(&refs, &hyps, baseline, &out, resamples, seed, fold),
         Cmd::Agree { items, hyps, out, resamples, seed } => agree(&items, &hyps, &out, resamples, seed),

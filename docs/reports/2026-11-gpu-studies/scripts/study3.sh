@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Study 3: same crops for every reader. --step qwen|surya|tess|hf|as
+# Study 3: same crops for every reader. --step qwen|surya|hf. Tesseract and American Stories are CPU engines and run on a local node (tesseract-local.sh).
 set -uo pipefail
 W=/tank/ocr/gpu-studies-202611; cd "$W"
 QWEN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e
@@ -13,6 +13,7 @@ build() { P=$1; rm -rf "$P"; mkdir -p "$P/c"
   jq -r .image refs/ml-52.jsonl | while read -r i; do ln -s "$PWD/$C/$i" "$P/c/"; done
   jq -r .image refs/nzz-360.jsonl | while read -r i; do ln -s "$N/$i" "$P/c/"; done
   cat refs/op-100.jsonl refs/rz-100.jsonl refs/ml-52.jsonl refs/nzz-360.jsonl | jq -c '{id,image:("c/"+(.image|sub("images/";"")))}' >"$P/crops.jsonl"
+  [ "${JA_TOO:-1}" = 1 ] && { mkdir -p "$P/j"; ln -s "$PWD"/ja-set/c/*.png "$PWD"/ja-set/c/*.jpg "$P/j/"; jq -c '{id,image:("j/"+(.image|sub("c/";"")))}' ja-set/items.jsonl >>"$P/crops.jsonl"; }
   jq -r '[.id,.image]|@tsv' "$P/crops.jsonl" >"$P/list.tsv"; }
 case "$STEP" in
   qwen) build push/s3-qwen; cp push/smoke/params.env push/s3-qwen/
@@ -23,11 +24,7 @@ case "$STEP" in
       while IFS=$'\t' read -r i r; do ln -s /tank/usnm-dev/gpu-studies/pilot/work/pages/$i.jpg push/s3-surya/pages/; done <push/order-pages.tsv
       printf 'pages.tsv\ttiled\tsurya-pages\n' >>push/s3-surya/runs.tsv; fi
     scripts/rent.sh --study s3surya --image "$SURYA" --max-hours 4 --cap-dollars 2 --disk 40 --push-dir push/s3-surya --job scripts/jobs/surya.sh --prefer-machine "$PREFER" --out results/s3-surya;;
-  tess) build push/s3-tess; cp scripts/jobs/rootfs.sh push/s3-tess/
-    while read -r f lang; do jq -r '[.id,("c/"+(.image|sub("images/";"")))]|@tsv' refs/$f.jsonl >push/s3-tess/$f.tsv; printf '%s.tsv\t%s-psm6\t%s\t6\n' "$f" "$f" "$lang" >>push/s3-tess/runs.tsv; done <<<$'op-100 eng\nrz-100 frak2021\nnzz-360 frak2021\nml-52 fra+fin+swe'
-    scripts/rent.sh --study s3tess --image ubuntu:24.04 --max-hours 2 --cap-dollars 1 --disk 30 --push-dir push/s3-tess --job scripts/jobs/tesseract.sh --prefer-machine "$PREFER" --out results/s3-tess;;
   hf) build push/s3-hf; cp scripts/jobs/hf_engines.py push/s3-hf/
+    jq -c 'select(.image|startswith("j/"))' push/s3-hf/crops.jsonl >push/s3-hf/ja-crops.jsonl; jq -c 'select(.image|startswith("c/"))' push/s3-hf/crops.jsonl >push/s3-hf/latin-crops.jsonl
     scripts/rent.sh --study s3hf --image "$TRAIN" --max-hours 8 --cap-dollars 3 --disk 80 --push-dir push/s3-hf --job scripts/jobs/hf-engines.sh --prefer-machine "$PREFER" --out results/s3-hf;;
-  as) build push/s3-as
-    scripts/rent.sh --study s3as --image pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime --max-hours 3 --cap-dollars 1 --disk 40 --push-dir push/s3-as --job scripts/jobs/american-stories.sh --prefer-machine "$PREFER" --out results/s3-as;;
   *) exit 2;; esac
