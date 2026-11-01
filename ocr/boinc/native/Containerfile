@@ -1,0 +1,52 @@
+# The static Tesseract of the native `usnm_ocr` and `usnm_gold` app versions (#1418).
+#
+# Tesseract, Leptonica and the image libraries here are the same Debian packages at the same
+# versions as ocr/engines/tesseract/Containerfile, from the same snapshot: this links Debian's
+# own static libraries rather than building them again, so the code that reads a page is the
+# code the container runs. Only the command-line main() is compiled here, from Debian's source
+# package, because Debian's -dev packages don't ship it.
+#
+#   podman build -f ocr/boinc/native/Containerfile -t usnm-ocr/tesseract-native ocr/boinc/native
+#   podman run --rm --network=none usnm-ocr/tesseract-native cat /out/usnm_tesseract > usnm_tesseract
+#
+# The two differences from the container's engine are recorded in docs/boinc-native-ocr.md:
+# libcurl and libarchive are replaced by stubs.c, and main() is compiled without
+# HAVE_FEENABLEEXCEPT, which does what the container's LD_PRELOAD shim (fpshim.c) does.
+ARG BASE=mirror.gcr.io/library/debian:trixie-slim@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+ARG SNAPSHOT=20261001T000000Z
+
+FROM ${BASE}
+ARG SNAPSHOT
+RUN printf 'Types: deb deb-src\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+      "$SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends \
+      libssl3t64/trixie openssl/trixie \
+      g++ make dpkg-dev binutils autoconf automake libtool pkg-config file \
+      libtesseract-dev=5.5.0-1+b1 libleptonica-dev=1.84.1-4 \
+      libtiff-dev libpng-dev libjpeg62-turbo-dev libopenjp2-7-dev libwebp-dev libgif-dev \
+      libdeflate-dev libjbig-dev liblerc-dev liblzma-dev libzstd-dev libsharpyuv-dev zlib1g-dev \
+ && mkdir /src && cd /src && apt-get -o Acquire::Check-Valid-Until=false source tesseract=5.5.0-1
+COPY stubs.c /src/stubs.c
+# configure writes config_auto.h, which the internal headers tesseract.cpp includes depend on.
+RUN set -eu; cd /src/tesseract-5.5.0; ./autogen.sh >/dev/null; \
+    ./configure --disable-tessdata-prefix --prefix=/usr >/dev/null; \
+    sed -i '/HAVE_FEENABLEEXCEPT/d; /HAVE_LIBCURL/d; /HAVE_LIBARCHIVE/d' include/config_auto.h; \
+    grep -q 'define HAVE_TIFFIO_H' include/config_auto.h; \
+    mkdir /out; \
+    gcc -O2 -Wall -Werror -c /src/stubs.c -o /src/stubs.o; \
+    g++ -O2 -std=c++17 -fopenmp -DHAVE_CONFIG_H -DTESSDATADIR='"/nonexistent"' \
+      -I. -Iinclude -Isrc/api -Isrc/arch -Isrc/ccmain -Isrc/ccstruct -Isrc/ccutil -Isrc/classify \
+      -Isrc/cutil -Isrc/dict -Isrc/lstm -Isrc/textord -Isrc/viewer -Isrc/wordrec \
+      -I/usr/include/leptonica \
+      -c src/tesseract.cpp -o /src/main.o; \
+    g++ -static -fopenmp -s -o /out/usnm_tesseract /src/main.o /src/stubs.o \
+      -ltesseract -lleptonica -ltiff -lwebpmux -lwebp -lsharpyuv -lpng16 -ljpeg -lgif -lopenjp2 \
+      -ldeflate -lzstd -llzma -lLerc -ljbig -lz -lm; \
+    file /out/usnm_tesseract; \
+    ! ldd /out/usnm_tesseract; \
+    { dpkg-query -W libtesseract-dev libleptonica-dev libtiff-dev libpng-dev libjpeg62-turbo-dev \
+        libopenjp2-7-dev libwebp-dev libgif-dev libc6-dev libgomp1 libstdc++-14-dev; \
+      echo "tesseract source $(sed -n 's/^Version: //p' /src/tesseract_5.5.0-1.dsc)"; \
+    } > /out/usnm_tesseract.packages; \
+    sha256sum /out/usnm_tesseract

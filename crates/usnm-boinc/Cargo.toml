@@ -29,7 +29,7 @@ bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true
 image.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "thread"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -49,7 +49,7 @@
 # ocr_worker, ocr_dash: the OCR worker's and the LAN dashboard's EL9 build.
 # ocr_worker also runs the RHEL 10 and Tesseract image check. On main, either
 # one runs the release job, whose release holds both binaries.
-# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, boinc_native,
+# boinc_worker, boinc_qwen, boinc_surya, boinc_ndlocr, boinc_native, boinc_ocr_native,
 # ocr_dashboard: the BOINC worker image workflows, the native BOINC apps'
 # builds on five targets and the dashboard's static build, which read these
 # outputs from their own `inputs` job. They run for what each builds, not for
@@ -68,7 +68,7 @@ provision=false
 ops=false
 forced=
 all() {
-  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nquickwit_parity=true\nquickwit_pipeline=true\nquickwit_suites=["parity","pipeline"]\nweb=true\nimage=true\ne2e=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\nocr_dash=true\nocr_dashboard=true\nboinc_worker=true\nboinc_qwen=true\nboinc_surya=true\nboinc_ndlocr=true\nboinc_native=true\nboinc_ocr_native=true\ninfra=true\npage_language=true\ncontrib=true\nocr_gold=true\nboinc_pages=true\nedge=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -80,7 +80,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ]; then
         echo "ocr-worker publication scope requires refs/heads/main" >&2
         exit 1
       }
-      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native infra page_language contrib ocr_gold boinc_pages edge; do
+      for part in rust quickwit quickwit_parity quickwit_pipeline web image e2e fixtures ops code markdown provision ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native infra page_language contrib ocr_gold boinc_pages edge; do
         case "$part" in rust|ocr_worker) value=true ;; *) value=false ;; esac
         printf '%s=%s\n' "$part" "$value" >> "$out"
       done
@@ -163,6 +163,7 @@ workflow_input boinc_qwen boinc-qwen boinc-qwen-build
 workflow_input boinc_surya boinc-surya boinc-surya-build
 workflow_input boinc_ndlocr boinc-ndlocr-lite
 workflow_input boinc_native boinc-quality-native
+workflow_input boinc_ocr_native boinc-ocr-native
 workflow_input ocr_dashboard ocr-dashboard
 # The composite actions ci.yml's jobs call are steps of those jobs, as if written in ci.yml:
 # editing one runs the jobs that call it, by the flags their `if:` lines read
@@ -237,6 +238,9 @@ boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/sm
 # usnm-qwen-app and test those and the two crates they share with the engines;
 # usnm-ocr-contract's tests read the v1 contract files.
 boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1)$|rust-toolchain\.toml$)'
+# The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract, and
+# fetches the locked models for its smoke test.
+boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/smoke-native-ocr\.sh$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
@@ -438,6 +442,7 @@ narrow_release boinc_qwen usnm-boinc
 narrow_release boinc_surya usnm-boinc
 narrow_examples boinc_ndlocr usnm-boinc usnm-ocr-adapter
 narrow_examples boinc_native usnm-quality-app usnm-qwen-app usnm-ocr-quality usnm-ocr-contract
+narrow_examples boinc_ocr_native usnm-ocr-app
 # Changes to the shared Quickwit workflow/action or its matrix force both
 # suites; suite-specific workflow inputs can force just their own flag.
 if [[ " $forced " == *" quickwit "* ]] || [[ " $forced " == *" quickwit_suites "* ]]; then
@@ -445,7 +450,7 @@ if [[ " $forced " == *" quickwit "* ]] || [[ " $forced " == *" quickwit_suites "
 fi
 selected_parity=false
 selected_pipeline=false
-for part in rust quickwit_parity quickwit_pipeline web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native; do
+for part in rust quickwit_parity quickwit_pipeline web image e2e fixtures ocr_worker ocr_dash ocr_dashboard boinc_worker boinc_qwen boinc_surya boinc_ndlocr boinc_native boinc_ocr_native; do
   if matches_built "${!part}" ||
     { [ "$part" = rust ] && matches '^fixtures/ocr-gold/bundle-v1\.lock\.json$'; } ||
     [[ " $forced " == *" $part "* ]]; then

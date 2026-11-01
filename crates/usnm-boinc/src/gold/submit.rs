@@ -17,11 +17,20 @@ use tokio::process::Command;
 use usnm_ocr_contract::boinc::is_sha256;
 
 pub const APP: &str = "usnm_gold";
+/// The app of native gold units (#1418, docs/boinc-native-ocr.md): its own app, so a container
+/// unit can never be dispatched to a native version, or the reverse.
+pub const NATIVE_APP: &str = "usnm_gold_native";
+
+/// Whether `name` is a BOINC app whose results are gold reports.
+pub fn is_gold_app(name: &str) -> bool {
+    name == APP || name == NATIVE_APP
+}
 pub const RESULT_TEMPLATE: &str = "templates/usnm_gold_out";
 const INPUT_PREFIX: &str = "usnm_gold_input_";
 
 #[derive(Debug, Clone)]
 pub struct Options {
+    pub app: &'static str,
     pub root: PathBuf,
     pub project: PathBuf,
     pub units: u32,
@@ -154,10 +163,15 @@ pub fn job(p: &prepare::Prepared, engine: &Engine, unit: u32) -> anyhow::Result<
     Ok(j)
 }
 
-pub fn create_work_args(p: &prepare::Prepared, job: &Job) -> anyhow::Result<Vec<String>> {
+pub fn create_work_args(
+    app: &str,
+    p: &prepare::Prepared,
+    job: &Job,
+) -> anyhow::Result<Vec<String>> {
+    ensure!(is_gold_app(app), "{app} is not a gold app");
     let mut args: Vec<String> = [
         "--appname",
-        APP,
+        app,
         "--wu_name",
         &job.workunit(),
         "--wu_template",
@@ -398,7 +412,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             &hier_path(&project, &format!("{}_gold_json", j.id)).await?,
             &path,
         )?;
-        let mut args = create_work_args(&p, &j)?;
+        let mut args = create_work_args(opts.app, &p, &j)?;
         if let Some(host) = opts.target_host {
             args.extend(["--target_host".to_string(), host.to_string()]);
         }
@@ -531,6 +545,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("config.xml"), "<boinc><config/></boinc>").unwrap();
         let mut options = Options {
+            app: APP,
             root: tmp.path().join("campaign"),
             project: tmp.path().to_path_buf(),
             units: 1,
@@ -560,8 +575,11 @@ pub(crate) mod tests {
         assert_eq!(t.matches("<sticky/>").count(), 2);
         assert_eq!(t.matches("<no_delete/>").count(), 2);
         assert!(t.contains(&format!("<open_name>{}</open_name>", p.remotes[0].name)));
-        let a = create_work_args(&p, &j).unwrap();
+        let a = create_work_args(APP, &p, &j).unwrap();
         assert!(!a.iter().any(|s| s == "--remote_file"));
+        let native = create_work_args(NATIVE_APP, &p, &j).unwrap();
+        assert_eq!(native[1], NATIVE_APP);
+        assert!(create_work_args("usnm_ocr", &p, &j).is_err());
         assert_eq!(
             &a[a.len() - 3..],
             vec![

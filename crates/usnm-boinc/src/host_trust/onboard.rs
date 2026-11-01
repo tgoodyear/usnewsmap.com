@@ -202,6 +202,11 @@ async fn legacy_blocks_attempt(
     }
 }
 
+/// Whether this campaign may reach `host`: every host, unless it's a native campaign.
+fn in_campaign(c: &Config, host: &u64) -> bool {
+    c.native_hosts.is_empty() || c.native_hosts.contains(host)
+}
+
 /// Discover hosts centrally, skip hosts already trusted for this prepared campaign's exact
 /// `(language, profile, psm, dpi)`, `manifest_sha256`, and immutable worker image, and keep one
 /// gold unit outstanding per untrusted host and campaign: a host whose attempt failed gets a new
@@ -225,6 +230,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
     let pending: Vec<_> = inventory
         .into_iter()
+        .filter(|h| in_campaign(c, h))
         .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(h)))
         .collect();
     let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;
@@ -319,6 +325,11 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             )?;
         }
         let s = gold::submit::run(&gold::submit::Options {
+            app: if c.native_hosts.is_empty() {
+                gold::submit::APP
+            } else {
+                gold::submit::NATIVE_APP
+            },
             root,
             project: c.project.clone(),
             units: 1,
@@ -366,6 +377,23 @@ fn link_input_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_native_campaign_reaches_only_its_named_hosts() {
+        let config = |native_hosts: &[u64]| -> Config {
+            serde_json::from_value(serde_json::json!({
+                "root": "/r", "project": "/p", "jobs_root": "/j", "mysql_defaults": "/m",
+                "mysql_ca": "/c", "database": "d", "trust": "/t", "prepared": "/q",
+                "engine": {"base": "sha256:b", "dpi": 300, "image": "sha256:i", "psm": 3,
+                           "timeout_secs": 300, "version": "5.5.0"},
+                "native_hosts": native_hosts, "max_hosts": 1, "max_spots": 1, "sample_every": 1,
+            }))
+            .unwrap()
+        };
+        assert!(in_campaign(&config(&[]), &5));
+        assert!(in_campaign(&config(&[13]), &13));
+        assert!(!in_campaign(&config(&[13]), &5));
+    }
 
     #[test]
     fn gold_status_retries_only_terminal_failures_and_keeps_diagnostics() {

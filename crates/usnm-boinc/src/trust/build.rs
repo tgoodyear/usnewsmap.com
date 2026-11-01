@@ -108,7 +108,7 @@ impl Trust {
                         && row.workunit_assimilate_state
                             == crate::gold::collect::BOINC_ASSIMILATE_STATE_DONE
                         && row.workunit_result_count > 0
-                        && row.app == "usnm_gold"
+                        && crate::gold::submit::is_gold_app(&row.app)
                         && row.workunit.strip_prefix("usnm_gold_").is_some_and(
                             |id| id.len() == 64 && usnm_ocr_contract::boinc::is_sha256(id)
                         )
@@ -190,7 +190,7 @@ impl Trust {
                         .context("canonical report has no matching native BOINC result")?;
                     anyhow::ensure!(
                         native.canonical
-                            && native.app == "usnm_gold"
+                            && crate::gold::submit::is_gold_app(&native.app)
                             && native.host_id.is_some_and(|host| host > 0)
                             && native.host_id == row.host_id
                             && native.engine_image == row.engine_image

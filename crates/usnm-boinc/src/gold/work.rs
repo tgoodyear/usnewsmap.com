@@ -22,7 +22,7 @@ pub fn host_id(work: &Path) -> Option<u64> {
     s[start..end].trim().parse().ok()
 }
 
-fn sha256_file(p: &Path, max: u64) -> anyhow::Result<(u64, String)> {
+pub(crate) fn sha256_file(p: &Path, max: u64) -> anyhow::Result<(u64, String)> {
     use std::io::Read as _;
     let meta = std::fs::symlink_metadata(p).with_context(|| format!("{}", p.display()))?;
     ensure!(

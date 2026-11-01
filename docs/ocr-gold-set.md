@@ -728,6 +728,12 @@ directory. Incompatible locality candidates are skipped without stopping
 the search; incompatible lost-work resends are skipped without expiring
 the existing result. Other apps retain their existing routing.
 
+The native gold app, `usnm_gold_native`, passes through the same hook. It needs
+no Dockerfile: the selected app version's `usnm_native_build.json` must have the
+physical name that carries the job's image digest
+([boinc-native-ocr.md](boinc-native-ocr.md)), and the job's base must still
+match a reviewed entry in the platform table.
+
 Adding a new Gold worker requires independently verifying its per-architecture
 base digests and reviewing the registry entries before deployment; this is
 execution compatibility, not accuracy calibration or host trust. A refusal

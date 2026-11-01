@@ -34,6 +34,8 @@ pub mod cli;
 pub mod gold;
 pub mod handoff;
 pub mod host_trust;
+#[cfg(target_os = "linux")]
+pub mod native;
 pub mod ndlocr;
 pub mod quality;
 pub mod qwen;
@@ -59,6 +61,19 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
         options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
     let f = options.open(path)?;
+    ensure!(
+        f.metadata()?.is_file() && f.metadata()?.len() <= max as u64,
+        "file over size limit"
+    );
+    let mut bytes = Vec::new();
+    f.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= max, "file over size limit");
+    Ok(bytes)
+}
+/// As [`read`], for a file the BOINC client may have placed behind a symlink.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_following(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
+    let f = File::open(path).with_context(|| format!("reading {}", path.display()))?;
     ensure!(
         f.metadata()?.is_file() && f.metadata()?.len() <= max as u64,
         "file over size limit"

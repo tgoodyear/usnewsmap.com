@@ -77,9 +77,26 @@ pub(crate) async fn tesseract(
         psm: spec.psm,
         dpi: spec.dpi.into(),
         threads: 1,
-        timeout: Duration::from_secs(spec.timeout_secs.into()),
+        timeout: read_timeout(spec.timeout_secs),
     })
     .await
+}
+
+/// Set in the native worker's unit to the deadline of one read, in CPU seconds
+/// ([`crate::native`]).
+pub(crate) const CPU_DEADLINE_ENV: &str = "USNM_TESSERACT_CPU_SECS";
+/// A native task's reads by the clock: long enough for any suspension BOINC allows a task.
+const NATIVE_WALL_TIMEOUT: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// The clock's deadline on one page. Under the native worker the engine has a CPU limit
+/// instead, which doesn't run while BOINC has the task suspended; this clock would. A gold unit
+/// keeps its deadline: it starts again after a suspension, and its validator bounds crop times.
+fn read_timeout(secs: u32) -> Duration {
+    if std::env::var_os(CPU_DEADLINE_ENV).is_some() {
+        NATIVE_WALL_TIMEOUT
+    } else {
+        Duration::from_secs(secs.into())
+    }
 }
 
 /// The installed engine is the job's version and routes its language to its profile.

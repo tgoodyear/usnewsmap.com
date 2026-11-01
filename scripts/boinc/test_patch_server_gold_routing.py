@@ -178,6 +178,35 @@ int main(int argc, char** argv) {
         self.job["id"] = "b" * 64
         self.assertEqual(self.run_gate().returncode, 1)
 
+    def native_version(self, image=IMAGE):
+        name = "usnm_native_build_" + image.removeprefix("sha256:") + ".json"
+        return (
+            "<file_ref><file_name>usnm_ocr</file_name><main_program/></file_ref>"
+            f"<file_ref><file_name>{name}</file_name>"
+            "<open_name>usnm_native_build.json</open_name></file_ref>"
+        )
+
+    def test_native_app_needs_the_jobs_own_build(self):
+        self.version = self.native_version()
+        self.assertEqual(self.run_gate(app="usnm_gold_native").returncode, 0)
+        self.assertEqual(self.run_gate(app="usnm_gold_native", mode="assigned").returncode, 0)
+        self.version = self.native_version("sha256:" + "b" * 64)
+        result = self.run_gate(app="usnm_gold_native")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("differs from registered native build", result.stderr)
+
+    def test_native_app_keeps_the_reviewed_binding(self):
+        self.version = self.native_version()
+        self.job["engine"]["base"] = BASES["x86_64-pc-linux-gnu"]
+        self.assertEqual(self.run_gate(app="usnm_gold_native").returncode, 1)
+        self.assertEqual(self.run_gate(app="usnm_gold_native", mode="anonymous").returncode, 1)
+
+    def test_the_apps_cant_run_each_others_units(self):
+        # A container version in the native app, and a native version in the container app.
+        self.assertEqual(self.run_gate(app="usnm_gold_native").returncode, 1)
+        self.version = self.native_version()
+        self.assertEqual(self.run_gate(app="usnm_gold").returncode, 1)
+
     def test_other_apps_preserve_normal_routing(self):
         self.job = {}
         self.assertEqual(self.run_gate(app="usnm_quality").returncode, 0)

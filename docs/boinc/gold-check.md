@@ -344,6 +344,12 @@ explicitly has `<enable_assignment>1</enable_assignment>`. Installing these
 commands does **not** enable assignment: first verify scheduler and assignment
 behavior in dev and calibrate the first campaign.
 
+A native build is a different digest, so it starts with no trusted hosts. Its
+gold units run in the separate app `usnm_gold_native`, reach only the hosts
+named in `GOLD_NATIVE_HOSTS`, and are judged by the same `gold-promote` against
+the scope's existing threshold and challenge
+([boinc-native-ocr.md](../boinc-native-ocr.md#trust)).
+
 There are two distinct automation entrypoints:
 
 - The opt-in [host-trust follow-up
