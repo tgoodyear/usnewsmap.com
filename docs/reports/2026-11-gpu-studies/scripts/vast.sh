@@ -30,7 +30,7 @@ case "$ACTION" in
     q=$(jq -nc --arg g "$GPU" --argjson d "$MIN_DISK" --argjson r "$MIN_RAM_MB" --argjson l "$LIMIT" --argjson p "$MAX_DPH" '{
       verified:{eq:true}, rentable:{eq:true}, rented:{eq:false}, external:{eq:false},
       num_gpus:{eq:1}, gpu_name:{eq:$g}, gpu_ram:{gte:$r}, disk_space:{gte:$d},
-      inet_down:{gte:300}, inet_up:{gte:100}, cpu_cores_effective:{gte:8}, reliability2:{gte:0.97},
+      inet_down:{gte:600}, inet_up:{gte:300}, cpu_cores_effective:{gte:8}, reliability2:{gte:0.97},
       dph_total:{lte:$p}, inet_down_cost:{lte:0.005}, inet_up_cost:{lte:0.005}, cuda_max_good:{gte:12.4},
       geolocation:{notin:["CN","RU","BY","IR","KP"]}, direct_port_count:{gte:1},
       type:"on-demand", order:[["dph_total","asc"]], limit:$l}')
@@ -38,7 +38,7 @@ case "$ACTION" in
   create)
     b=$(jq -nc --arg i "$IMAGE" --arg l "$LABEL" --argjson d "$DISK" '{
       client_id:"me", image:$i, disk:$d, label:$l, runtype:"ssh_direc ssh_proxy",
-      env:"-e HOME=/root", onstart:"touch /root/.no_auto_tmux /tmp/.no_auto_tmux"}')
+      env:"-e HOME=/root", onstart:"touch /root/.no_auto_tmux /tmp/.no_auto_tmux \"$HOME/.no_auto_tmux\""}')
     call PUT "/v0/asks/$ASK/" "$b" | jq -r '.new_contract';;
   attach-key) call POST "/v0/instances/$INSTANCE/ssh/" "$(jq -nc --rawfile k "$PUBKEY" '{ssh_key:$k}')" >/dev/null;;
   destroy) call DELETE "/v0/instances/$INSTANCE/" >/dev/null;;

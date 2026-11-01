@@ -4,6 +4,7 @@
 //! score   pooled CER and WER by group, with page-clustered bootstrap limits and paired differences
 //! agree   pairwise symmetric edit rate and word-bag Dice between readers; never accuracy
 //! invent  the invented-text check of protocol.md
+//! columns geometric column order from ALTO
 //! order   rank correlation of a reader's word order against a geometric column order
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -50,6 +51,9 @@ enum Cmd {
         resamples: usize,
         #[arg(long, default_value_t = 202611)]
         seed: u64,
+        /// Post-hoc secondary score: fold long s, the double hyphen and superscript e on both sides
+        #[arg(long)]
+        fold: bool,
     },
     Agree {
         /// JSONL rows {"id","page","group"}
@@ -69,6 +73,14 @@ enum Cmd {
         refs: PathBuf,
         #[arg(long = "hyp")]
         hyps: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Column structure of ALTO pages: the geometric reading order and word count per page
+    Columns {
+        /// ALTO files, as <id>.xml
+        #[arg(long)]
+        alto_dir: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
@@ -144,7 +156,11 @@ fn paged<T: Clone>(rows: &[(String, T)]) -> Vec<Vec<T>> {
     m.into_values().collect()
 }
 
-fn score(refs: &Path, hyps: &[String], baseline: Option<String>, out: &Path, n: usize, seed: u64) -> Result<()> {
+fn folded(s: &str) -> String {
+    s.replace('ſ', "s").replace('⸗', "-").replace('\u{2E17}', "-").replace('\u{0364}', "\u{0308}").replace('ʒ', "z").replace('¬', "-")
+}
+
+fn score(refs: &Path, hyps: &[String], baseline: Option<String>, out: &Path, n: usize, seed: u64, fold: bool) -> Result<()> {
     let refs = read_jsonl(refs)?;
     let hyps = specs(hyps)?;
     let mut rng = Rng(seed);
@@ -159,9 +175,11 @@ fn score(refs: &Path, hyps: &[String], baseline: Option<String>, out: &Path, n: 
     }
     let counts = |name: usize, r: &Value| -> (Counts, bool) {
         let id = r["id"].as_str().unwrap_or("");
+        let truth = r["ref"].as_str().unwrap_or("");
+        let f = |x: &str| if fold { folded(x) } else { x.to_string() };
         match hyps[name].1.get(id) {
-            Some(t) => (cer_wer(r["ref"].as_str().unwrap_or(""), t), true),
-            None => (cer_wer(r["ref"].as_str().unwrap_or(""), ""), false),
+            Some(t) => (cer_wer(&f(truth), &f(t)), true),
+            None => (cer_wer(&f(truth), ""), false),
         }
     };
     let mut rows = vec![];
@@ -170,11 +188,12 @@ fn score(refs: &Path, hyps: &[String], baseline: Option<String>, out: &Path, n: 
         let base = baseline.as_ref().and_then(|b| hyps.iter().position(|h| &h.0 == b));
         for (i, (name, _)) in hyps.iter().enumerate() {
             let mut c = Counts { ref_chars: 0, char_edits: 0, ref_words: 0, word_edits: 0 };
-            let (mut missing, mut cr, mut wr, mut diff) = (0, vec![], vec![], vec![]);
+            let (mut missing, mut cr, mut wr, mut diff, mut crop) = (0, vec![], vec![], vec![], vec![]);
             for r in members {
                 let page = r["page"].as_str().unwrap_or("").to_string();
                 let (x, present) = counts(i, r);
                 missing += usize::from(!present);
+                crop.push(x.char_edits as f64 / x.ref_chars.max(1) as f64);
                 c.ref_chars += x.ref_chars;
                 c.char_edits += x.char_edits;
                 c.ref_words += x.ref_words;
@@ -189,7 +208,7 @@ fn score(refs: &Path, hyps: &[String], baseline: Option<String>, out: &Path, n: 
             let (cl, ch) = boot(&paged(&cr), n, &mut rng);
             let (wl, wh) = boot(&paged(&wr), n, &mut rng);
             let mut row = json!({
-                "group": g, "reader": name, "items": members.len(), "pages": page_count, "missing": missing,
+                "group": g, "reader": name, "folded": fold, "median_crop_cer": pct(&mut crop, 0.5), "items": members.len(), "pages": page_count, "missing": missing,
                 "ref_chars": c.ref_chars, "char_edits": c.char_edits, "ref_words": c.ref_words, "word_edits": c.word_edits,
                 "cer": c.char_edits as f64 / c.ref_chars.max(1) as f64, "cer_lo": cl, "cer_hi": ch,
                 "wer": c.word_edits as f64 / c.ref_words.max(1) as f64, "wer_lo": wl, "wer_hi": wh,
@@ -430,6 +449,70 @@ fn cut(units: &Path, out: &Path) -> Result<()> {
     write_rows(&out.join("crops.jsonl"), &rows)
 }
 
+fn attr(tag: &str, name: &str) -> Option<String> {
+    let key = format!(" {name}=\"");
+    let i = tag.find(&key)? + key.len();
+    let j = tag[i..].find('"')?;
+    Some(tag[i..i + j].to_string())
+}
+
+/// Text blocks in file order: (hpos, vpos, width, words). A plain scan, enough for LoC's generated ALTO.
+fn alto_blocks(xml: &str) -> Vec<(f64, f64, f64, Vec<String>)> {
+    let mut blocks = vec![];
+    for part in xml.split("<TextBlock").skip(1) {
+        let head = &part[..part.find('>').unwrap_or(0)];
+        let num = |n: &str| attr(head, n).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let body = &part[..part.find("</TextBlock").unwrap_or(part.len())];
+        let words = body
+            .split("<String")
+            .skip(1)
+            .filter_map(|w| attr(&w[..w.find('>').unwrap_or(0)], "CONTENT"))
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect();
+        blocks.push((num("HPOS"), num("VPOS"), num("WIDTH"), words));
+    }
+    blocks
+}
+
+/// Blocks clustered by x-centre with a gap of half the median block width, as the quality features count
+/// columns; left to right, top to bottom within a column. A heuristic order, not a truth.
+fn columns(dir: &Path, out: &Path) -> Result<()> {
+    let mut rows = vec![];
+    let mut files: Vec<_> = fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "xml")).collect();
+    files.sort();
+    for f in files {
+        let mut blocks = alto_blocks(&String::from_utf8_lossy(&fs::read(&f)?));
+        blocks.retain(|b| b.3.len() >= 5);
+        if blocks.is_empty() {
+            continue;
+        }
+        let mut widths: Vec<f64> = blocks.iter().map(|b| b.2).collect();
+        let median = pct(&mut widths, 0.5);
+        blocks.sort_by(|a, b| (a.0 + a.2 / 2.0).total_cmp(&(b.0 + b.2 / 2.0)));
+        let mut groups: Vec<Vec<usize>> = vec![vec![0]];
+        for i in 1..blocks.len() {
+            let (p, c) = (blocks[i - 1].0 + blocks[i - 1].2 / 2.0, blocks[i].0 + blocks[i].2 / 2.0);
+            if c - p > median / 2.0 {
+                groups.push(vec![]);
+            }
+            groups.last_mut().unwrap().push(i);
+        }
+        let mut words = vec![];
+        for g in &mut groups {
+            g.sort_by(|a, b| blocks[*a].1.total_cmp(&blocks[*b].1));
+            for &i in g.iter() {
+                words.extend(blocks[i].3.iter().cloned());
+            }
+        }
+        let id = f.file_stem().context("name")?.to_string_lossy().into_owned();
+        // LoC's own order: the file's block order.
+        let loc: Vec<String> = alto_blocks(&String::from_utf8_lossy(&fs::read(&f)?)).into_iter().flat_map(|b| b.3).collect();
+        rows.push(json!({"id": id, "columns": groups.len(), "words": words, "loc_text": loc.join(" ")}));
+    }
+    write_rows(out, &rows)
+}
+
 fn jpeg(input: &Path, out: &Path) -> Result<()> {
     let page = image::ImageReader::open(input)?.with_guessed_format()?.decode()?.into_luma8();
     let file = std::io::BufWriter::new(fs::File::create(out)?);
@@ -441,8 +524,9 @@ fn jpeg(input: &Path, out: &Path) -> Result<()> {
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Jpeg { input, out } => jpeg(&input, &out),
+        Cmd::Columns { alto_dir, out } => columns(&alto_dir, &out),
         Cmd::Cut { units, out } => cut(&units, &out),
-        Cmd::Score { refs, hyps, baseline, out, resamples, seed } => score(&refs, &hyps, baseline, &out, resamples, seed),
+        Cmd::Score { refs, hyps, baseline, out, resamples, seed, fold } => score(&refs, &hyps, baseline, &out, resamples, seed, fold),
         Cmd::Agree { items, hyps, out, resamples, seed } => agree(&items, &hyps, &out, resamples, seed),
         Cmd::Invent { refs, hyps, out } => invent(&refs, &hyps, &out),
         Cmd::Order { reference, hyps, out } => order(&reference, &hyps, &out),

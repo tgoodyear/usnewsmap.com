@@ -42,6 +42,8 @@ cleanup() { trap - EXIT INT TERM
     led "$ID" "$OFFER" "$DPH" "$GEO" "$T_CREATE" "$T_READY" "$T_JOB" "$(date +%s)" "$C0" "$c" "$OUTCOME"; log "destroyed $ID outcome=$OUTCOME credit $C0 -> $c"; fi
   rm -f "$KH"; }
 trap cleanup EXIT; trap 'OUTCOME=interrupted; exit 3' INT TERM
+BAD=/tank/ocr/gpu-studies-202611/bad-machines
+[ -f "$BAD" ] && EXCLUDE="$EXCLUDE $(sed 's/^/m/' "$BAD" | tr '\n' ' ')"
 tried=" $EXCLUDE "; hosts=0
 while [ $hosts -lt "$MAX_HOSTS" ]; do
   offers=$(V --action search --gpu "$GPU" --max-dph "$MAX_DPH" --min-disk "$DISK" --limit 12 || true)
@@ -61,23 +63,44 @@ while [ $hosts -lt "$MAX_HOSTS" ]; do
   while [ "$(date +%s)" -lt "$end" ]; do
     j=$(V --action list | jq -c --argjson i "$ID" 'select(.id==$i)')
     IP=$(echo "$j"|jq -r '.public_ipaddr//empty'|tr -d ' \n'); PORT=$(echo "$j"|jq -r '.ports["22/tcp"][0].HostPort//empty')
-    if [ -n "$IP" ] && [ -n "$PORT" ] && ssh_i 'echo ok; touch /root/.no_auto_tmux' 2>/dev/null | grep -q ok; then ok=1; break; fi
+    if [ -n "$IP" ] && [ -n "$PORT" ]; then
+      res=$(ssh_i 'echo ok' 2>&1)
+      if echo "$res" | grep -qx ok; then ok=1; break; fi
+      # Login reached the forced tmux. A terminal session gets past it, once, and turns it off for $HOME.
+      if echo "$res" | grep -q 'no sessions'; then
+        { sleep 4; printf 'touch "$HOME/.no_auto_tmux" /root/.no_auto_tmux; exit\n'; sleep 3; } |
+          timeout 20 script -qfc "env -u SSH_AUTH_SOCK ssh -F /dev/null -tt -p $PORT -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KH root@$IP" /dev/null >/dev/null 2>&1
+        ssh_i 'echo ok' 2>/dev/null | grep -qx ok && { ok=1; break; }
+      fi
+    fi
     V --action attach-key --instance "$ID" --pubkey-file "$KEY.pub" 2>/dev/null; sleep 20
   done
   if [ $ok = 1 ]; then T_READY=$(date +%s); log "ssh ready after $((T_READY-T_CREATE))s at $IP:$PORT"; break; fi
-  log "no ssh in ${SSH_WAIT}s on $offer ($(V --action list | jq -r --argjson i "$ID" 'select(.id==$i)|"\(.actual_status): \(.status_msg)"' | tr -cd '[:print:]' | cut -c1-120)), moving on"; OUTCOME=no-ssh; cl=$ID
+  log "no ssh in ${SSH_WAIT}s on $offer ($(V --action list | jq -r --argjson i "$ID" 'select(.id==$i)|"\(.actual_status): \(.status_msg)"' | tr -cd '[:print:]' | cut -c1-120)), moving on"; OUTCOME=no-ssh; cl=$ID; echo "$(echo "$row"|jq -r .machine_id)" >>"$BAD"
   destroy_one "$cl"; led "$cl" "$OFFER" "$DPH" "$GEO" "$T_CREATE" "" "" "$(date +%s)" "$C0" "$(V --action credit)" no-ssh; ID=""
 done
 [ -n "$ID" ] || { OUTCOME=no-host; exit 5; }
 OUTCOME=push
-ssh_i 'mkdir -p /work/in /work/out; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader > /work/out/gpu.txt 2>&1; nproc >> /work/out/gpu.txt'
-if [ -n "$PUSH" ]; then tar -C "$PUSH" -chf - . | ssh_in 'tar -C /work/in -xf -' || { OUTCOME=push-failed; exit 6; }; fi
+ssh_i 'mkdir -p /work/in /work/out; which tar >/dev/null; nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader > /work/out/gpu.txt 2>&1; nproc >> /work/out/gpu.txt'
+if [ -n "$PUSH" ]; then pushed=0; for t in 1 2 3 4; do
+    if tar -C "$PUSH" -chf - . | ssh_in 'mkdir -p /work/in && tar -C /work/in -xf -'; then pushed=1; break; fi
+    log "push try $t failed"; sleep 20; done
+  [ $pushed = 1 ] || { OUTCOME=push-failed; exit 6; }; fi
 ssh_in 'cat > /work/job.sh' <"$JOB" || { OUTCOME=push-failed; exit 6; }
 log "pushed in $(( $(date +%s)-T_READY ))s"
 ssh_i "setsid nohup bash -c 'timeout $(( DL-$(date +%s)-300 )) bash /work/job.sh > /work/out/job.log 2>&1; echo \$? > /work/job.exit' >/dev/null 2>&1 < /dev/null &"
 OUTCOME=running
+# Rent only for GPU work: sample the card each poll, confirm use within 10 minutes of the start, destroy after
+# 15 idle minutes. The samples give the GPU hours against hours paid in gpu-hours.csv.
+T_START=$(date +%s); LAST_BUSY=$T_START; POLLS=0; BUSY=0; CONFIRMED=0; IDLE_MIN=${IDLE_MIN:-15}; GPU_LOG=$OUT/gpu-samples.tsv
 while :; do
   now=$(date +%s)
+  g=$(ssh_i 'nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits' 2>/dev/null | tr -d ' ' | grep -E '^[0-9]+,[0-9]+$' | head -1)
+  POLLS=$((POLLS+1)); u=${g%%,*}; m=${g##*,}; printf '%s\t%s\t%s\n' "$now" "${u:-}" "${m:-}" >>"$GPU_LOG"
+  if [ -n "$u" ] && [ "$u" -ge 5 ] && [ "$m" -ge 500 ]; then BUSY=$((BUSY+1)); LAST_BUSY=$now
+    [ $CONFIRMED = 1 ] || { CONFIRMED=1; log "GPU use confirmed ${u}% ${m}MiB after $((now-T_START))s"; }; fi
+  [ $CONFIRMED = 0 ] && [ $((now-T_START)) -ge 600 ] && log "WARNING no GPU use 10 minutes after start"
+  [ $((now-LAST_BUSY)) -ge $((IDLE_MIN*60)) ] && { log "GPU idle ${IDLE_MIN} minutes, stopping"; OUTCOME=gpu-idle; break; }
   e=$(ssh_i 'cat /work/job.exit 2>/dev/null'); [ -n "$e" ] && { log "job exit $e"; break; }
   [ "$now" -ge $((DL-240)) ] && { log "wall clock limit"; OUTCOME=wall-limit; break; }
   c=$(V --action credit); if awk -v a="$C0" -v b="$c" -v m="$CAP" 'BEGIN{exit !((a-b)>=m)}'; then log "instance spend cap hit ($C0 -> $c)"; OUTCOME=cap; break; fi
@@ -91,4 +114,6 @@ while read -r n s; do [ -n "${n:-}" ] || continue
   ssh_i "cat /work/out/$n" | head -c "$s" >"$OUT/$n" || log "fetch failed $n"
 done <<<"$names"
 [ "$OUTCOME" = running ] && OUTCOME="job-exit-$e"
+[ -f "${LEDGER%/*}/gpu-hours.csv" ] || echo "study,instance,gpu,job_start,job_end,polls,busy_polls" >"${LEDGER%/*}/gpu-hours.csv"
+echo "$STUDY,$ID,$GPU,$T_START,$T_JOB,$POLLS,$BUSY" >>"${LEDGER%/*}/gpu-hours.csv"
 log "fetched $(ls "$OUT"|wc -l) files in $(( $(date +%s)-T_JOB ))s"

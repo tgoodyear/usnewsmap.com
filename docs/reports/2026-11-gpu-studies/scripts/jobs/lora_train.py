@@ -41,7 +41,6 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
 model.config.use_cache = False
 model = worker.attach_lora(model, a.rank)
 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-model.enable_input_require_grads()
 params = [p for p in model.parameters() if p.requires_grad]
 opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=0.0)
 sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / 100) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(s, a.steps) / a.steps))))
