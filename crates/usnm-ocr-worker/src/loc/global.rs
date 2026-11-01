@@ -13,6 +13,10 @@
 //! process, and it stays slow until an operator resets it
 //! (`usnm-ocr-worker loc-pacer --file <f> --reset`): the switch is never
 //! undone automatically. Holds (`Retry-After`) apply to every process too.
+//!
+//! This file format is the first implementation of the fetcher's
+//! [`Budget`](crate::fetcher::Budget), and any host policy can have one, so
+//! "LoC" in what follows is the case it was built for.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -58,6 +62,11 @@ pub struct GlobalPacer {
     path: PathBuf,
     normal: Duration,
     slow: Duration,
+    /// How logs name the budget's host.
+    label: String,
+    /// When set, a file holding the time of this user's last request (ms since
+    /// the epoch), so a restarted run keeps its own gap from it.
+    stamp: Option<PathBuf>,
 }
 
 /// Milliseconds since the epoch, `ahead` from now.
@@ -122,7 +131,40 @@ impl GlobalPacer {
     }
 
     pub fn with_gaps(path: PathBuf, normal: Duration, slow: Duration) -> Self {
-        Self { path, normal, slow }
+        Self {
+            path,
+            normal,
+            slow,
+            label: "LoC".into(),
+            stamp: None,
+        }
+    }
+
+    pub fn labelled(mut self, label: &str) -> Self {
+        label.clone_into(&mut self.label);
+        self
+    }
+
+    pub fn with_stamp(mut self, stamp: PathBuf) -> Self {
+        self.stamp = Some(stamp);
+        self
+    }
+
+    pub(crate) fn slow_gap(&self) -> Duration {
+        self.slow
+    }
+
+    pub(crate) fn read_stamp(&self) -> Option<u64> {
+        let text = std::fs::read_to_string(self.stamp.as_ref()?).ok()?;
+        text.trim().parse().ok()
+    }
+
+    pub(crate) fn write_stamp(&self) {
+        if let Some(stamp) = &self.stamp {
+            if let Err(e) = std::fs::write(stamp, now_ms().to_string()) {
+                tracing::warn!(path = %stamp.display(), error = %e, "can't record the request's time");
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -153,53 +195,11 @@ impl GlobalPacer {
 
     /// Whether a slot taken in `generation` still stands: no hold or
     /// slow-down came since, and no hold is running.
-    fn still_good(&self, generation: u64) -> bool {
+    pub(crate) fn is_still_good(&self, generation: u64) -> bool {
         with_state(&self.path, |s| {
             s.generation == generation && s.hold_until_ms <= now_ms()
         })
         .unwrap_or(false)
-    }
-
-    /// Wait for a slot in the host's budget at or after `not_before_ms`
-    /// (ms since the epoch); returns when it was. A hold or slow-down that
-    /// lands while waiting sends the caller back for a new slot.
-    pub async fn admit(&self, not_before_ms: u64) -> u64 {
-        loop {
-            let me = self.clone();
-            let (at, generation) = match tokio::task::spawn_blocking(move || {
-                me.reserve_at(not_before_ms)
-            })
-            .await
-            {
-                Ok(Ok(r)) => r,
-                other => {
-                    // Without the file there is no shared budget, and a request sent
-                    // without a slot could break it: wait, then try for a slot again.
-                    // Nothing goes out until the file works.
-                    if let Ok(Err(e)) = other {
-                        tracing::warn!(path = %self.path.display(), error = %e, "the global LoC pacer's file failed; waiting before trying again");
-                    }
-                    tokio::time::sleep(self.slow).await;
-                    continue;
-                }
-            };
-            let wait = at.saturating_sub(now_ms());
-            if wait > 0 {
-                tokio::time::sleep(Duration::from_millis(wait)).await;
-            }
-            let me = self.clone();
-            if tokio::task::spawn_blocking(move || me.still_good(generation))
-                .await
-                .unwrap_or(false)
-            {
-                return at;
-            }
-        }
-    }
-
-    /// Wait for the next slot in the host's budget.
-    pub async fn wait(&self) {
-        self.admit(0).await;
     }
 
     /// Count `n` more requests already sent (redirect hops a client followed
@@ -248,7 +248,9 @@ impl GlobalPacer {
             Ok(true) => tracing::error!(
                 why,
                 path = %self.path.display(),
-                "LoC pushed back: the global pacer drops to 10 requests a minute until reset"
+                "{} pushed back: the global pacer drops to {} requests a minute until reset",
+                self.label,
+                60_000 / self.slow.as_millis().max(1)
             ),
             Ok(false) => {}
             Err(e) => {
@@ -344,12 +346,12 @@ mod tests {
             Duration::from_millis(50),
         );
         let (_, g) = a.reserve_at(0).unwrap();
-        assert!(a.still_good(g));
+        assert!(a.is_still_good(g));
         a.slow_down("HTTP 429");
-        assert!(!a.still_good(g));
+        assert!(!a.is_still_good(g));
         let (_, g) = a.reserve_at(0).unwrap();
         a.hold(Duration::from_secs(60));
-        assert!(!a.still_good(g), "a hold after the slot was taken");
+        assert!(!a.is_still_good(g), "a hold after the slot was taken");
     }
 
     #[test]

@@ -125,9 +125,14 @@ async fn respond(
         None => {}
     }
     if let Some(to) = redirect {
+        let location = if to.starts_with("http") {
+            to
+        } else {
+            format!("{}{to}", s.root)
+        };
         return (
             StatusCode::PERMANENT_REDIRECT,
-            [(header::LOCATION, format!("{}{to}", s.root))],
+            [(header::LOCATION, location)],
         )
             .into_response();
     }
@@ -229,6 +234,12 @@ impl StandIn {
     /// Requests whose path ends with `suffix`.
     pub fn hits(&self, suffix: &str) -> usize {
         self.times(suffix).len()
+    }
+
+    /// Requests whose path starts with `prefix`.
+    pub fn hits_under(&self, prefix: &str) -> usize {
+        let i = self.inner.lock().unwrap();
+        i.hits.iter().filter(|(_, p)| p.starts_with(prefix)).count()
     }
 
     /// When each request whose path ends with `suffix` came.

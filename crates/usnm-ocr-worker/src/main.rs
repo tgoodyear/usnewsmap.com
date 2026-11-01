@@ -507,6 +507,27 @@ enum Command {
         /// At most this many archives this run.
         #[arg(long)]
         limit: Option<usize>,
+        /// A directory of host policies (one `<name>.toml` each), instead of the built-in ones.
+        #[arg(long, env = "USNM_FETCH_POLICIES")]
+        policies: Option<PathBuf>,
+        /// A mirror to prefer: an archive's URL is this plus its name.
+        #[arg(long, env = "USNM_BULK_MIRROR_URL", requires_all = ["mirror_manifest", "state"])]
+        mirror_url: Option<String>,
+        /// The mirror's manifest, naming each archive and its sha256.
+        #[arg(long, env = "USNM_BULK_MIRROR_MANIFEST", requires = "mirror_url")]
+        mirror_manifest: Option<PathBuf>,
+        /// Take archives only from the mirror, and ask LoC nothing.
+        #[arg(long, env = "USNM_BULK_MIRROR_ONLY", requires = "mirror_url")]
+        mirror_only: bool,
+        /// Keeps resumable `.part` files and the held-back and failure lists.
+        #[arg(long, env = "USNM_BULK_STATE")]
+        state: Option<PathBuf>,
+        /// Transfers at once, within each host's own limit.
+        #[arg(long, env = "USNM_BULK_WORKERS", default_value_t = 1)]
+        workers: usize,
+        /// Lowers the mirror's byte cap.
+        #[arg(long, env = "USNM_BULK_RATE_BYTES_PER_SEC")]
+        rate_bytes_per_sec: Option<u64>,
     },
     /// LoC's word confidence per page from the bulk OCR archives (#962): one Parquet file
     /// per archive, skipping archives already read. Reads only.
@@ -1222,7 +1243,23 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             max_hours,
             min_free_gb,
             limit,
+            policies,
+            mirror_url,
+            mirror_manifest,
+            mirror_only,
+            state,
+            workers,
+            rate_bytes_per_sec,
         } => {
+            let policies = match policies {
+                Some(dir) => usnm_ocr_worker::fetcher::Policies::load_dir(&dir)?,
+                None => usnm_ocr_worker::fetcher::Policies::builtin(),
+            };
+            let mirror = mirror_url.map(|base_url| usnm_ocr_worker::bulk::Mirror {
+                base_url,
+                manifest: mirror_manifest.unwrap_or_default(),
+                only: mirror_only,
+            });
             let status = usnm_ocr_worker::bulk::run(
                 usnm_ocr_worker::bulk::Options {
                     out,
@@ -1232,6 +1269,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     min_free_bytes: min_free_gb.saturating_mul(1_000_000_000),
                     limit,
                     global_pacer: loc_global_pacer,
+                    policies,
+                    mirror,
+                    state,
+                    workers,
+                    rate_bytes_per_sec,
                 },
                 stop_signal(),
             )
