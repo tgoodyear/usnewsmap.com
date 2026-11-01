@@ -172,9 +172,6 @@ pub enum QwenCommands {
         /// Random cross-page pairs and random crop pairs per control.
         #[arg(long, default_value_t = 2000)]
         controls: usize,
-        /// Leave Hebrew points out of the rule's comparison, for every vendor.
-        #[arg(long)]
-        fold_hebrew_points: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -335,9 +332,8 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             model,
             seed,
             controls,
-            fold_hebrew_points,
             out,
-        } => x::replay::run(&seen, &model, seed, controls, fold_hebrew_points, &out)?,
+        } => x::replay::run(&seen, &model, seed, controls, &out)?,
         QwenCommands::PageLedger { root, pages } => {
             for p in x::ledger::run(&root, &pages)? {
                 println!("{}", serde_json::to_string(&p)?);

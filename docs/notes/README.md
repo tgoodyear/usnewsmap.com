@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                                                      |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
+| 2026-11-01 | [Why Qwen replicas come back inconclusive](2026-11-01-qwen-cross-vendor-validation.md) | ocr, operations | Retained 8B results replayed under the strict rule and a crop-by-crop rule, with negative controls |
 | 2026-10-28 | [Reversible third-party OCR decision previews](2026-10-28-loc-alternate-decisions.md)                           | ocr, operations      | Synthetic paired-review selection, replay, revocation and fail-closed readers; no release effect |
 | 2026-10-28 | [Explicit third-party OCR staging](2026-10-28-loc-alternate-staging.md)                                         | ocr, operations      | Synthetic artifact-bound staging, replay and release-exclusion fixtures; no production selection |
 | 2026-10-28 | [Bounded JPEG-cache replenishment](2026-10-28-jpeg-cache-replenishment.md)                                      | ocr, operations      | Offline ordering/cursor/rollback tests, real Parquet CLI and 1M synthetic pages; not deployed    |

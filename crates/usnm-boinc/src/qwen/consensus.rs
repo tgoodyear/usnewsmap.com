@@ -9,8 +9,8 @@
 //!   counts for neither side.
 //! - `no_text`: neither side has a letter or digit (`[?]` on an
 //!   illustration). Nothing was read, so nothing can agree.
-//! - `agree`: the character similarity of the two readings is at least
-//!   [`Params::IN_RULE`]'s floor.
+//! - `agree`: the character similarity of the two readings, Hebrew points
+//!   left out, is at least [`Params::IN_RULE`]'s floor.
 //! - `disagree`: anything else, and it fails the pair.
 //!
 //! A pair agrees when no crop disagrees and `agree` crops are more than half
@@ -40,7 +40,8 @@ pub enum CropState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Metric {
-    /// `1 - edits / longer length` over characters, whitespace collapsed.
+    /// `1 - edits / longer length` over characters, whitespace collapsed and
+    /// Hebrew points left out.
     Similarity,
     /// The strict rule's word-bag Dice.
     Dice,
@@ -52,9 +53,6 @@ pub struct Params {
     pub floor: f64,
     /// `agree` crops must be more than this share of the crops with text.
     pub min_share: f64,
-    /// Leave Hebrew points out of the comparison, for every vendor alike.
-    /// The readings themselves stay as read.
-    pub fold_hebrew_points: bool,
     /// `agree` crops must hold at least this many characters. Two issues of a
     /// paper share a masthead, so a few agreeing words don't show the same page.
     pub min_agreed_chars: usize,
@@ -63,13 +61,12 @@ pub struct Params {
 impl Params {
     /// Measured in the November 2026 replay of the retained results
     /// (docs/notes/2026-11-01-qwen-cross-vendor-validation.md): against Dice at
-    /// the same floor, a third as many true Yiddish crop pairs fall short, at
-    /// a false-accept rate of 0.1% of shuffled pairs.
+    /// the same floor, a fifth as many true Yiddish crop pairs fall short, at
+    /// the same false-accept rate, 0.1% of shuffled pairs.
     pub const IN_RULE: Params = Params {
         metric: Metric::Similarity,
         floor: 0.5,
         min_share: 0.5,
-        fold_hebrew_points: false,
         min_agreed_chars: 100,
     };
 }
@@ -89,10 +86,16 @@ pub struct Side<'a> {
     pub looped: bool,
 }
 
-/// `1 - edits / longer length`, over characters with whitespace collapsed:
-/// 1.0 for two equal texts, including two empty ones.
+/// `1 - edits / longer length`, over characters with whitespace collapsed
+/// and Hebrew points left out, for every reader alike: 1.0 for two equal
+/// texts, including two empty ones. The readings themselves stay as read.
 pub fn similarity(a: &str, b: &str) -> f64 {
-    let squeeze = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let squeeze = |s: &str| {
+        without_hebrew_points(s)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let (a, b) = (squeeze(a), squeeze(b));
     let longer = a.chars().count().max(b.chars().count());
     if longer == 0 {
@@ -122,15 +125,6 @@ pub fn without_hebrew_points(text: &str) -> String {
         .collect()
 }
 
-/// The configured similarity of two readings.
-pub fn score_similarity(a: &str, b: &str, params: Params) -> f64 {
-    if params.fold_hebrew_points {
-        similarity(&without_hebrew_points(a), &without_hebrew_points(b))
-    } else {
-        similarity(a, b)
-    }
-}
-
 fn has_text(text: &str) -> bool {
     text.chars().any(char::is_alphanumeric)
 }
@@ -143,7 +137,7 @@ pub fn crop_state(a: Side<'_>, b: Side<'_>, params: Params) -> (CropState, Optio
         return (CropState::NoText, None);
     }
     let score = match params.metric {
-        Metric::Similarity => score_similarity(a.text, b.text, params),
+        Metric::Similarity => similarity(a.text, b.text),
         Metric::Dice => usnm_ocr_contract::boinc::dice(a.text, b.text),
     };
     let state = if score >= params.floor {
@@ -426,16 +420,11 @@ mod tests {
             "\u{5e7}\u{5e8}\u{5e4} \u{5be} \u{5e1}"
         );
         assert_eq!(without_hebrew_points("plain, text"), "plain, text");
-        let folded = Params {
-            fold_hebrew_points: true,
-            ..P
-        };
         let (a, b) = (
             "\u{5e7}\u{5b0}\u{5e8}\u{5b7}\u{5e4}\u{5bc}\u{5b0}",
             "\u{5e7}\u{5e8}\u{5e4}",
         );
-        assert!(score_similarity(a, b, P) < 0.5);
-        assert_eq!(score_similarity(a, b, folded), 1.0);
+        assert_eq!(similarity(a, b), 1.0);
     }
 
     #[test]

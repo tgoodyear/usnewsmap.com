@@ -30,8 +30,12 @@ authorized: `--app-version-num`, `--intel-app-version` and `--nvidia-app-version
 (default the published 1.14 pair, Intel67/NVIDIA66) name it, and redeploying with a
 successor pair is a reviewed step. `--prompt-version` (default 1) is the one request
 version admitted; 2 (`--image-min-tokens 1024`, [quality](boinc-quality.md)) needs
-1.15 or later. A job of another request version fails the tick rather than being
-admitted. A superseding release on any platform (including a
+1.15 or later, and 3 and 4 (the loop guard) need 1.17 or later. A job of another
+request version fails the tick rather than being admitted. The controller does not
+open AMD or Apple, but an unbounded class of either takes any unsent replica, so it
+also reads their dispatchable versions: if one cannot read the request version, the
+owned window closes and the receipt names it in
+`open_classes_that_cannot_read_request`. A superseding release on any platform (including a
 Windows release of either opened class) or changed project config closes the
 owned window instead of silently adopting a new release. The guard checks the
 complete non-deprecated version set the feeder would dispatch: with the app's

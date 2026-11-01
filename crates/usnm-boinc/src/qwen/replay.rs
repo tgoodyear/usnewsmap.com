@@ -78,7 +78,6 @@ fn candidates() -> Vec<(String, Params)> {
                         metric,
                         floor,
                         min_share: share,
-                        fold_hebrew_points: false,
                         min_agreed_chars: Params::IN_RULE.min_agreed_chars,
                     },
                 ));
@@ -147,14 +146,7 @@ fn roc(truth: &[(f64, f64)], shuffled: &[(f64, f64)]) -> serde_json::Value {
     serde_json::json!({"true_crops": truth.len(), "shuffled_crops": shuffled.len(), "floors": floors})
 }
 
-pub fn run(
-    seen: &Path,
-    model: &str,
-    seed: u64,
-    controls: usize,
-    fold_hebrew_points: bool,
-    out: &Path,
-) -> anyhow::Result<()> {
+pub fn run(seen: &Path, model: &str, seed: u64, controls: usize, out: &Path) -> anyhow::Result<()> {
     let (replicas, skipped) = loaded(seen, model)?;
     let crops: Vec<Crops<'_>> = replicas
         .iter()
@@ -220,10 +212,7 @@ pub fn run(
     }
 
     // The rule in force, per crop and per vendor pair.
-    let p = Params {
-        fold_hebrew_points,
-        ..Params::IN_RULE
-    };
+    let p = Params::IN_RULE;
     let mut states: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut vendors: BTreeMap<String, [usize; 6]> = BTreeMap::new();
     let mut by_language: BTreeMap<(String, String), [usize; 6]> = BTreeMap::new();
@@ -411,8 +400,8 @@ pub fn run(
                             continue;
                         }
                         let (x, y) = (crops[a][c.id.as_str()], crops[b][c.id.as_str()]);
-                        let hit = consensus::score_similarity(x.text, s.text, p) >= p.floor
-                            || consensus::score_similarity(y.text, s.text, p) >= p.floor;
+                        let hit = consensus::similarity(x.text, s.text) >= p.floor
+                            || consensus::similarity(y.text, s.text) >= p.floor;
                         let row = if was_strict {
                             (&mut third.2, &mut third.3)
                         } else {
@@ -439,10 +428,7 @@ pub fn run(
         for &(a, b) in pairs.iter().filter(|(a, _)| lang(*a) == g) {
             for (id, x) in &crops[a] {
                 if let Some(y) = crops[b].get(id).filter(|y| compared(*x, **y)) {
-                    truth.push((
-                        dice(x.text, y.text),
-                        consensus::score_similarity(x.text, y.text, p),
-                    ));
+                    truth.push((dice(x.text, y.text), consensus::similarity(x.text, y.text)));
                 }
             }
         }
@@ -475,7 +461,7 @@ pub fn run(
                 },
             );
             if compared(sx, sy) {
-                shuffled.push((dice(&x.0, &y.0), consensus::score_similarity(&x.0, &y.0, p)));
+                shuffled.push((dice(&x.0, &y.0), consensus::similarity(&x.0, &y.0)));
             }
         }
         roc_rows.insert(g, roc(&truth, &shuffled));
@@ -489,7 +475,6 @@ pub fn run(
     };
     let report = serde_json::json!({
         "accuracy_established": false,
-        "fold_hebrew_points": fold_hebrew_points,
         "replicas": n,
         "skipped_unreadable": skipped,
         "jobs": jobs.len(),
@@ -545,7 +530,7 @@ mod tests {
             validate::check(&files, Some(&keep)).unwrap();
         }
         let out = tmp.path().join("report.json");
-        run(&keep, "qwen3-vl-8b-q4km", 7, 10, false, &out).unwrap();
+        run(&keep, "qwen3-vl-8b-q4km", 7, 10, &out).unwrap();
         let r: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(r["replicas"], 2);
         assert_eq!(r["pairs"], 1);
