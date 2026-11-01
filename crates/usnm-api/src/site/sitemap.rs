@@ -485,14 +485,18 @@ async fn refresh_from(
     if let Some(checkpoint) = latest(store).await? {
         state.sitemap.committed.store(Some(Arc::new(checkpoint)));
     }
-    if !state.config.sitemap_generate
-        && state
+    if !state.config.sitemap_generate {
+        if state
             .sitemap
             .committed
             .load_full()
             .is_some_and(|checkpoint| spare_can_serve(&checkpoint, state, Utc::now()))
-    {
-        return Ok(());
+        {
+            return Ok(());
+        }
+        // Its age is the reason to generate, so an unchanged result still has
+        // to commit: a checkpoint that stays expired would regenerate hourly.
+        *finished = None;
     }
     let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
         .await
@@ -1784,6 +1788,49 @@ mod tests {
             .unwrap());
         refresh(&spare, &store, &dir.0, &mut None).await.unwrap();
         assert!(latest(&store).await.unwrap().unwrap().sequence > old.sequence);
+    }
+
+    #[tokio::test]
+    async fn a_spare_commits_again_when_its_own_unchanged_checkpoint_expires() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let mut spare = state(&dir, Some(Vec::new())).await;
+        Arc::get_mut(&mut spare).unwrap().config.sitemap_generate = false;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut finished = None;
+        refresh(&spare, &store, &dir.0, &mut finished)
+            .await
+            .unwrap();
+
+        let mut old = latest(&store).await.unwrap().unwrap();
+        old.sequence += 1;
+        old.observed_at -= chrono::Duration::days(SPARE_CHECKPOINT_DAYS + 1);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", old.sequence),
+                serde_json::to_vec(&old).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        // The completion mark survives from the week the checkpoint was made.
+        let finished_week_ago = finished.as_mut().unwrap();
+        finished_week_ago.3 -= chrono::Duration::days(SPARE_CHECKPOINT_DAYS + 1);
+
+        refresh(&spare, &store, &dir.0, &mut finished)
+            .await
+            .unwrap();
+        let fresh = latest(&store).await.unwrap().unwrap();
+        assert!(fresh.sequence > old.sequence);
+        assert!(spare_can_serve(&fresh, &spare, Utc::now()));
+
+        refresh(&spare, &store, &dir.0, &mut finished)
+            .await
+            .unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            fresh.sequence
+        );
     }
 
     #[tokio::test]
