@@ -30,6 +30,7 @@ pub struct Settings {
 #[derive(Debug, Serialize)]
 pub struct View {
     pub pipeline: crate::pipeline::PipelineView,
+    pub throughput: crate::throughput::ThroughputView,
     pub generated_at: DateTime<Utc>,
     pub refresh_secs: u64,
     pub hosts: Vec<HostView>,
@@ -649,6 +650,7 @@ pub fn build(
     let queues = merge_queues(nodes, now);
     View {
         pipeline: crate::pipeline::PipelineView::default(),
+        throughput: crate::throughput::ThroughputView::default(),
         generated_at: now,
         refresh_secs: s.refresh_secs,
         hosts: host_views(hosts, s, now),

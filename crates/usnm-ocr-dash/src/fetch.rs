@@ -317,6 +317,8 @@ struct IndexLine {
     doc_id: String,
     fetched_at: DateTime<Utc>,
     bytes: u64,
+    #[serde(default)]
+    download_ms: u64,
 }
 
 /// A failure line.
@@ -453,6 +455,12 @@ pub struct Fetch {
     pub buffer: Tally,
     /// Fetches (time, bytes) over the last day.
     events: VecDeque<(DateTime<Utc>, u64)>,
+    /// Lines of the index and their download milliseconds, by the hour.
+    pub hourly: BTreeMap<i64, (u64, u64)>,
+    /// When the index was last read to its end, and the hour of its oldest
+    /// line, which outlives that hour's count in `hourly`.
+    pub index_read_at: Option<DateTime<Utc>>,
+    index_first_hour: Option<i64>,
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
     pub dead: HashSet<String>,
@@ -494,6 +502,9 @@ impl Fetch {
             groups: [Tally::default(); 6],
             buffer: Tally::default(),
             events: VecDeque::new(),
+            hourly: BTreeMap::new(),
+            index_read_at: None,
+            index_first_hour: None,
             failures: VecDeque::new(),
             dead: HashSet::new(),
             cooling: HashMap::new(),
@@ -532,6 +543,8 @@ impl Fetch {
         self.groups = [Tally::default(); 6];
         self.buffer = Tally::default();
         self.events.clear();
+        self.hourly.clear();
+        self.index_first_hour = None;
     }
 
     /// Read what changed. Blocking (file reads); run it off the async
@@ -540,7 +553,13 @@ impl Fetch {
         self.read_status(now);
         self.load_plan(now);
         self.index_error = match self.read_index() {
-            Ok(()) => None,
+            Ok(()) => {
+                // A missing file reads as empty: that says nothing about the hour.
+                if self.index.path.is_file() {
+                    self.index_read_at = Some(now);
+                }
+                None
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "can't read the fetch index");
                 Some(format!("{e:#}"))
@@ -553,6 +572,8 @@ impl Fetch {
         if let Err(e) = self.read_failures() {
             tracing::warn!(error = %e, "can't read the fetch failures");
         }
+        let kept = now.timestamp() - crate::throughput::KEEP_HOURS * crate::throughput::HOUR;
+        self.hourly = self.hourly.split_off(&kept);
         let day = now - Duration::days(1);
         while self.events.front().is_some_and(|(t, _)| *t < day) {
             self.events.pop_front();
@@ -702,6 +723,11 @@ impl Fetch {
 
     fn add_fetch(&mut self, line: IndexLine) {
         self.events.push_back((line.fetched_at, line.bytes));
+        let hour = line.fetched_at.timestamp().div_euclid(3600) * 3600;
+        self.index_first_hour = Some(self.index_first_hour.map_or(hour, |h| h.min(hour)));
+        let tally = self.hourly.entry(hour).or_default();
+        tally.0 += 1;
+        tally.1 += line.download_ms;
         match self.all.entry(doc_hash(&line.doc_id)) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let t = e.get_mut();
@@ -775,6 +801,15 @@ impl Fetch {
                 }
             }
         }
+    }
+
+    /// The whole hours the index says something about: from its oldest line
+    /// to the last one over before the last read. Inside them, an hour with
+    /// no lines is a real zero.
+    pub fn hours_covered(&self) -> Option<(i64, i64)> {
+        let first = self.index_first_hour?;
+        let last = self.index_read_at?.timestamp().div_euclid(3600) * 3600 - 3600;
+        (first <= last).then_some((first, last))
     }
 
     /// Fetches and bytes since `since`.
@@ -1312,6 +1347,40 @@ mod tests {
         assert!(f.plan.is_none());
         assert!(f.plan_error.is_none());
         assert_eq!(f.total.pages, 3);
+    }
+
+    #[test]
+    fn hours_are_covered_up_to_the_last_whole_one_read_and_no_further() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index-full.jsonl");
+        let now = Utc::now();
+        let hour = now.timestamp().div_euclid(3600) * 3600;
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.poll(now);
+        assert_eq!(f.hours_covered(), None, "no index, no hours");
+        let at = now - Duration::hours(3);
+        std::fs::write(
+            &index,
+            format!(
+                "{{\"doc_id\":\"a\",\"fetched_at\":\"{}\",\"bytes\":5,\"download_ms\":1500}}\n",
+                at.to_rfc3339()
+            ),
+        )
+        .unwrap();
+        f.poll(now);
+        let first = hour - 3 * 3600;
+        assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
+        assert_eq!(f.hourly[&first], (1, 1500));
+        // A quiet fortnight empties the counts, not the coverage.
+        let later = now + Duration::days(20);
+        f.poll(later);
+        assert!(f.hourly.is_empty());
+        assert_eq!(f.hours_covered().unwrap().0, first);
+        f.index_read_at = Some(now);
+        // The index goes away: later hours aren't counted zeros.
+        std::fs::remove_file(&index).unwrap();
+        f.poll(now + Duration::hours(2));
+        assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
     }
 
     #[test]

@@ -322,6 +322,12 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
             if bulk.saturating_add(prio) > 0 {
                 m.get_mut("queues").unwrap().label = "queued";
             }
+            if let Some(n) = v.throughput.step("ocr_claim").and_then(|s| s.last_hour) {
+                let step = m.get_mut("queues").unwrap();
+                step.rate = Some(format!("{} pages/h*", int(n as u64)));
+                step.rate_scope = "Pages the controller took off the queues in the last full \
+                    hour. The counts in the box are stock.";
+            }
         }
     }
 
@@ -336,6 +342,11 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         step.rate_scope =
             "Scheduler stock, not throughput: assigned replicas are not unique pages \
             or active devices. Completion and collect rates are not connected.";
+        if let Some(n) = v.throughput.step("usnm_ocr").and_then(|s| s.last_hour) {
+            step.rate = Some(format!("{} pages/h*", int(n as u64)));
+            step.rate_scope = "Last full hour's workunits with a canonical result (Step \
+                throughput panel). The replicas in the box are stock.";
+        }
         m.insert("nodes", step);
     }
     for key in ["fetch-keep", "fetch-buffer", "store-keep", "store-buffer"] {
@@ -419,8 +430,60 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
             step.label = if count > 0 { label } else { "waiting" };
             step.rate_scope = "Scheduler stock, not throughput. Assigned replicas are not active devices \
                 or unique pages; source cache age is unavailable. Completion/dispatch rates are not connected.";
+            if let Some(n) = v
+                .throughput
+                .results_last_hour
+                .filter(|_| key == "boinc-assigned")
+            {
+                step.rate = Some(format!("{} results/h*", int(n as u64)));
+                step.rate_scope =
+                    "Replicas back in the last full hour from usnm_ocr, usnm_quality \
+                    and usnm_qwen. Replicas, not pages; other apps aren't counted.";
+            }
             m.insert(key, step);
         }
+    }
+    // What the volunteer lane does with its work, from the same counters.
+    if let Some(q) = v
+        .throughput
+        .quorum
+        .iter()
+        .filter_map(|q| Some((q.valid_day?, q.inconclusive_day?)))
+        .reduce(|a, b| (a.0 + b.0, a.1 + b.1))
+        .filter(|_| v.throughput.fresh("boinc"))
+    {
+        m.insert(
+            "boinc-validation",
+            StepState::with(
+                if q.0 + q.1 > 0.0 {
+                    "running"
+                } else {
+                    "waiting"
+                },
+                format!(
+                    "{} valid, {} inconclusive in 24 h",
+                    int(q.0 as u64),
+                    int(q.1 as u64)
+                ),
+            ),
+        );
+        if let Some(n) = v.throughput.valid_last_hour {
+            let step = m.get_mut("boinc-validation").unwrap();
+            step.rate = Some(format!("{} valid results/h*", int(n as u64)));
+            step.rate_scope = "Replicas validated, by when they came back, across usnm_ocr, \
+                usnm_quality and usnm_qwen. Replicas, not pages.";
+        }
+    }
+    if let Some(s) = v
+        .throughput
+        .step("stage")
+        .filter(|s| s.last_hour.is_some() && v.throughput.fresh("ship"))
+    {
+        let n = s.last_hour.unwrap_or(0.0);
+        let mut step = StepState::with(if n > 0.0 { "running" } else { "waiting" }, String::new());
+        step.rate = Some(format!("{} pages/h*", int(n as u64)));
+        step.rate_scope = "Chunks staged in the last full hour, from the shipper's logs.";
+        m.insert("boinc-staging", step);
     }
     m
 }
@@ -983,6 +1046,111 @@ mod tests {
             .iter_mut()
             .for_each(|s| s.stale = true);
         assert!(!steps(&v).contains_key("boinc-assigned"));
+    }
+
+    #[test]
+    fn a_connected_counter_replaces_rate_unknown_and_a_missing_one_does_not() {
+        let mut v = empty_view();
+        v.azure.queues_stale = false;
+        v.azure.queues = Some(usnm_ocr_contract::status::QueueStats {
+            counts: [("ocr-bulk".into(), 7), ("ocr-priority".into(), 0)].into(),
+            ..Default::default()
+        });
+        let mut source = crate::pipeline::tests::fixture(v.generated_at);
+        source["stages"] = serde_json::json!([
+            {"id":"boinc_usnm_ocr_in_progress","label":"A","count":79,"state":"observed","detail":""},
+            {"id":"boinc_unsent","label":"U","count":500,"state":"observed","detail":""},
+            {"id":"boinc_in_progress","label":"I","count":100,"state":"observed","detail":""}
+        ]);
+        v.pipeline.snapshot = Some(
+            crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), v.generated_at).unwrap(),
+        );
+        v.pipeline.stage_freshness = [
+            "boinc_usnm_ocr_in_progress",
+            "boinc_unsent",
+            "boinc_in_progress",
+        ]
+        .iter()
+        .map(|id| crate::pipeline::StageFreshness {
+            id: (*id).into(),
+            age_secs: Some(5),
+            stale: false,
+        })
+        .collect();
+        let st = steps(&v);
+        for key in ["nodes", "queues", "boinc-assigned"] {
+            assert!(st[key].rate.is_none(), "{key}");
+        }
+        assert!(!st.contains_key("boinc-staging"));
+        assert!(!st.contains_key("boinc-validation"));
+        let t = &mut v.throughput;
+        let at = rate_of_step("usnm_ocr", Some(41.0));
+        t.steps = vec![
+            at,
+            rate_of_step("ocr_claim", Some(12.0)),
+            rate_of_step("stage", Some(0.0)),
+        ];
+        t.sources = ["boinc", "ship"]
+            .iter()
+            .map(|name| crate::throughput::SourceRow {
+                name: (*name).to_owned(),
+                received: None,
+                observed_at: None,
+                stale: false,
+            })
+            .collect();
+        t.results_last_hour = Some(90.0);
+        t.valid_last_hour = Some(30.0);
+        t.quorum = vec![crate::throughput::QuorumRow {
+            app: "usnm_qwen",
+            valid_day: Some(158.0),
+            inconclusive_day: Some(422.0),
+            invalid_day: None,
+            error_day: None,
+            waiting_day: None,
+            valid_week: None,
+            inconclusive_week: None,
+            pages_day: None,
+            valid_bins: Vec::new(),
+            inconclusive_bins: Vec::new(),
+        }];
+        let st = steps(&v);
+        assert_eq!(st["nodes"].rate.as_deref(), Some("41 pages/h*"));
+        assert_eq!(st["queues"].rate.as_deref(), Some("12 pages/h*"));
+        assert_eq!(st["boinc-assigned"].rate.as_deref(), Some("90 results/h*"));
+        assert!(st["boinc-ready"].rate.is_none());
+        assert_eq!(
+            st["boinc-validation"].text,
+            "158 valid, 422 inconclusive in 24 h"
+        );
+        assert_eq!(
+            st["boinc-validation"].rate.as_deref(),
+            Some("30 valid results/h*")
+        );
+        assert_eq!(st["boinc-staging"].class, "waiting");
+        assert_eq!(st["boinc-staging"].rate.as_deref(), Some("0 pages/h*"));
+        // A collector that stopped doesn't keep them looking live.
+        v.throughput.sources.iter_mut().for_each(|s| s.stale = true);
+        let st = steps(&v);
+        assert!(!st.contains_key("boinc-validation"));
+        assert!(!st.contains_key("boinc-staging"));
+    }
+
+    fn rate_of_step(id: &'static str, last_hour: Option<f64>) -> crate::throughput::StepRate {
+        crate::throughput::StepRate {
+            id,
+            label: id,
+            unit: "pages",
+            last_hour,
+            last_day: None,
+            day_hours_known: 0,
+            seconds_per_page: None,
+            failed_day: None,
+            limit: None,
+            scope: "",
+            bins: Vec::new(),
+            bin_known: Vec::new(),
+        }
     }
 
     #[test]

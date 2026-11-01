@@ -10,6 +10,7 @@ mod assets;
 mod details;
 mod ecosystem;
 mod fmt;
+mod throughput;
 
 use assets::{SCRIPT, STYLE};
 use ecosystem::ecosystem_panel;
@@ -35,6 +36,7 @@ pub fn render(v: &View) -> String {
         v.refresh_secs
     );
     o.push_str(&ecosystem_panel(v));
+    o.push_str(&throughput::panel(&v.throughput));
     o.push_str(&crate::diagrams::section(v));
     o.push_str("<section class=\"wide\" id=\"operational-details\"><h2>Operational details</h2>\
         <details class=\"diagnostics\" data-refresh-key=\"operational-details\"><summary>\
