@@ -40,7 +40,8 @@ inline bool compatible(
     const std::string& version_xml,
     const nlohmann::json& bindings,
     const std::function<std::string(const std::string&)>& download_path,
-    const std::function<std::string(const std::string&)>& application_path
+    const std::function<std::string(const std::string&)>& application_path,
+    bool native = false
 ) {
     static const std::regex name("^usnm_gold_([0-9a-f]{64})$");
     std::smatch match;
@@ -60,12 +61,21 @@ inline bool compatible(
     }
 
     const std::regex refs("<file_ref>([\\s\\S]*?)</file_ref>");
+    const std::string open_name = native ? "usnm_native_build.json" : "Dockerfile";
     std::string dockerfile;
     for (std::sregex_iterator it(version_xml.begin(), version_xml.end(), refs), end; it != end; ++it) {
         const std::string ref = (*it)[1].str();
-        if (ref.find("<open_name>") == std::string::npos || tag(ref, "open_name") != "Dockerfile") continue;
-        if (!dockerfile.empty()) throw std::runtime_error("multiple Gold Dockerfile references");
+        if (ref.find("<open_name>") == std::string::npos || tag(ref, "open_name") != open_name) continue;
+        if (!dockerfile.empty()) throw std::runtime_error("multiple Gold " + open_name + " references");
         dockerfile = tag(ref, "file_name");
+    }
+    if (native) {
+        // A native build's identity is the digest of its manifest, which the file's physical
+        // name carries; the worker hashes the manifest again and refuses any other job.
+        if (dockerfile != "usnm_native_build_" + image.substr(image.find(':') + 1) + ".json") {
+            throw std::runtime_error("Gold job image differs from registered native build");
+        }
+        return true;
     }
     if (dockerfile.empty() || dockerfile.find_first_not_of(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") != std::string::npos) {

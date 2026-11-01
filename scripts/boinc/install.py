@@ -6,6 +6,7 @@ Does not edit project config, publish/sign files, or install server packages.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,10 @@ TEMPLATES = {
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
     "usnm_qwen_train": ["usnm_qwen_train_in", "usnm_qwen_train_out"],
     "usnm_iris": ["usnm_iris_in", "usnm_iris_out", "usnm_iris_bundle_in", "usnm_iris_bundle_out"],
+    # Tesseract with no container runtime (#1418): the same units as usnm_ocr and usnm_gold, in
+    # their own apps so that neither kind of version can be sent the other's work.
+    "usnm_ocr_native": ["usnm_ocr_in", "usnm_ocr_out", "usnm_ocr_bundle_in", "usnm_ocr_bundle_out"],
+    "usnm_gold_native": ["usnm_gold_out"],
 }
 QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",
@@ -71,6 +76,8 @@ PLATFORMS = (
 
 NATIVE_PLAN_CLASSES = {
     ("usnm_quality", ""): PLATFORMS,
+    ("usnm_ocr_native", ""): ("x86_64-pc-linux-gnu",),
+    ("usnm_gold_native", ""): ("x86_64-pc-linux-gnu",),
     ("usnm_qwen", "mt"): PLATFORMS,
     ("usnm_qwen", "apple_gpu_8b"): ("arm64-apple-darwin",),
     ("usnm_qwen", "nvidia_cuda_8b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
@@ -84,6 +91,36 @@ NATIVE_PLAN_CLASSES = {
 GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "amd_vulkan_8b"})
 NATIVE_API_VERSION = "8.3.0"
 LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
+NATIVE_OCR_APPS = ("usnm_ocr_native", "usnm_gold_native")
+NATIVE_OCR_MANIFEST = "usnm_native_build.json"
+
+
+def native_ocr_physical(parsed_extras, binary: Path) -> dict[str, str]:
+    """The physical name of each file of a native OCR build, checked against its manifest.
+
+    Names come from content, so the two apps share one download of the engine and the models.
+    The manifest's name carries its digest: that digest is the job's engine.image, and the
+    scheduler's Gold gate compares the two (scripts/boinc/gold-engine-routing.h).
+    """
+    extras = dict(parsed_extras)
+    if NATIVE_OCR_MANIFEST not in extras:
+        raise ValueError(f"a native OCR version requires {NATIVE_OCR_MANIFEST}")
+    manifest = extras[NATIVE_OCR_MANIFEST].read_bytes()
+    listed = json.loads(manifest)["files"]
+    worker = {"sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "bytes": binary.stat().st_size}
+    if listed.get("usnm_ocr") != worker:
+        raise ValueError("--binary differs from the build manifest's usnm_ocr")
+    physical = {NATIVE_OCR_MANIFEST: f"usnm_native_build_{hashlib.sha256(manifest).hexdigest()}.json"}
+    if set(extras) != (set(listed) - {"usnm_ocr"}) | {NATIVE_OCR_MANIFEST}:
+        raise ValueError("the staged files differ from the build manifest")
+    for logical, src in extras.items():
+        if logical == NATIVE_OCR_MANIFEST:
+            continue
+        sha256 = hashlib.sha256(src.read_bytes()).hexdigest()
+        if sha256 != listed[logical]["sha256"]:
+            raise ValueError(f"{logical} differs from the build manifest")
+        physical[logical] = f"usnm_native_{sha256[:16]}_{logical}"
+    return physical
 
 
 def parse_extra_files(extra_files, bundle_dir: Path | None = None) -> list[tuple[str, Path]]:
@@ -278,15 +315,19 @@ def install(
         ET.SubElement(main_file, "copy_file")
         staged_files = [target / main_name]
         executable_extras = {"llama-server", "llama-server.exe", "usnm-amd-device-map", "usnm-amd-device-map.exe"}
+        native_ocr = native_ocr_physical(parsed_extras, binary) if app in NATIVE_OCR_APPS else None
         for logical, src in parsed_extras:
-            phys = f"{suffix}_{logical}"
+            phys = native_ocr[logical] if native_ocr else f"{suffix}_{logical}"
             shutil.copyfile(src, target / phys)
             is_exec = logical in executable_extras or os.access(src, os.X_OK)
             (target / phys).chmod(0o755 if is_exec else 0o644)
             item = ET.SubElement(spec, "file")
             ET.SubElement(item, "physical_name").text = phys
             ET.SubElement(item, "logical_name").text = logical
-            ET.SubElement(item, "copy_file")
+            # 200 MiB of models stay in the project directory: the worker links them, and
+            # copying them into every slot would cost more than a page's download.
+            if native_ocr is None:
+                ET.SubElement(item, "copy_file")
             staged_files.append(target / phys)
         if plan_class in GPU_NATIVE_PLAN_CLASSES:
             ET.SubElement(spec, "dont_throttle")

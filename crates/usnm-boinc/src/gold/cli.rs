@@ -145,6 +145,7 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
             timeout_secs,
         } => {
             let s = x::submit::run(&x::submit::Options {
+                app: x::submit::APP,
                 root,
                 project,
                 units,

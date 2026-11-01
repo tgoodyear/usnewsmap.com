@@ -1,0 +1,101 @@
+name: boinc-ocr-native
+# The native usnm_ocr and usnm_gold build (#1418, docs/boinc-native-ocr.md). It builds and smoke
+# tests; it publishes nothing. The artifact is what a release would stage and sign.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/boinc-ocr-native.yml
+      - ocr/boinc/native/**
+      - ocr/engines/tesseract/models.lock
+      - ocr/engines/engines.toml
+      - .dockerignore
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      # Files the crates it builds embed (scripts/ci/changes.sh finds them).
+      - "fixtures/ocr-gold/bundle-v1.lock.json"
+      - "ocr/boinc/qwen/disk-policy.json"
+      - "ocr/boinc/qwen/weights.lock"
+      - "ocr/boinc/surya/engine.lock"
+      - "ocr/boinc/usnm_qwen_benchmark_in"
+      - "ocr/engines/ndlocr-lite/models.lock"
+      - "ocr/routing/routes.toml"
+      - "scripts/boinc/acceptance_server.py"
+      - "!**/*.md"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # A crate counts when the app builds it, not for being under crates/ (scripts/ci/changes.sh).
+  inputs:
+    name: native OCR inputs
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.f.outputs.boinc_ocr_native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: f
+        run: scripts/ci/changes.sh
+  build:
+    needs: inputs
+    if: needs.inputs.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Test the native worker
+        run: cargo test --locked -p usnm-boinc --lib native::
+      - name: Build the worker
+        run: >-
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          -p usnm-ocr-app --bin usnm_ocr --example native_fixture
+      - name: Build the static Tesseract
+        run: |
+          docker build -f ocr/boinc/native/Containerfile -t usnm-tesseract-native ocr/boinc/native
+          mkdir build
+          docker run --rm --network=none usnm-tesseract-native cat /out/usnm_tesseract > build/usnm_tesseract
+          docker run --rm --network=none usnm-tesseract-native cat /out/usnm_tesseract.packages > usnm_tesseract.packages
+          chmod +x build/usnm_tesseract
+      - name: Fetch the locked models
+        run: |
+          mkdir tessdata
+          grep '^tessdata/' ocr/engines/tesseract/models.lock | while read -r name url sum; do
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$url"
+            echo "$sum  $name" | sha256sum --check --quiet
+            cp "$name" "build/tessdata_${name#tessdata/}"
+          done
+      - name: Make the build manifest
+        run: |
+          cp target/x86_64-unknown-linux-musl/release/usnm_ocr build/usnm_ocr
+          build/usnm_ocr manifest --worker build/usnm_ocr --tesseract "$PWD/build/usnm_tesseract" \
+            --tessdata tessdata --out build/usnm_native_build.json | tee build.txt
+      - name: Read a page, and refuse a job for another build
+        run: scripts/boinc/smoke-native-ocr.sh --build build --fixture target/x86_64-unknown-linux-musl/release/examples/native_fixture
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-ocr-native-x86_64-pc-linux-gnu
+          path: |
+            build/
+            build.txt
+            usnm_tesseract.packages
+          if-no-files-found: error

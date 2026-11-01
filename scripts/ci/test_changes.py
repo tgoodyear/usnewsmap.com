@@ -67,7 +67,7 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual({key for key, value in flags.items() if value == "true"},
                          {"rust", "ocr_worker"})
-        self.assertEqual(len(flags), 26)
+        self.assertEqual(len(flags), 27)
         self.assertIn("quickwit_suites=[]", result.stdout)
         self.assertEqual(flags["image"], "false")
         self.assertEqual(flags["contrib"], "false")
@@ -359,7 +359,7 @@ class OcrCatalog(unittest.TestCase):
         self.assertIn("      - ocr/engines/engines.toml\n", workflow)
 
 
-BOINC_IMAGES = {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr"}
+BOINC_IMAGES = {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr", "boinc_ocr_native"}
 DASHBOARD = {"ocr_dash", "ocr_dashboard"}
 NATIVE = {"boinc_native"}
 # Workflow file -> the changes.sh output that gates its pull request job.
@@ -369,6 +369,7 @@ GATED_WORKFLOWS = {
     "boinc-surya.yml": "boinc_surya",
     "boinc-ndlocr-lite.yml": "boinc_ndlocr",
     "boinc-quality-native.yml": "boinc_native",
+    "boinc-ocr-native.yml": "boinc_ocr_native",
     "ocr-dashboard.yml": "ocr_dashboard",
 }
 # What the workflows leave to the crate closure and the lock-file check.
@@ -423,6 +424,7 @@ EMBED_ROOTS = {
     "boinc-ndlocr-lite.yml": ("true", "usnm-boinc", "usnm-ocr-adapter"),
     "boinc-quality-native.yml": ("true", "usnm-quality-app", "usnm-qwen-app", "usnm-ocr-quality",
                                  "usnm-ocr-contract"),
+    "boinc-ocr-native.yml": ("true", "usnm-ocr-app"),
     "ocr-dashboard.yml": ("false", "usnm-ocr-dash"),
 }
 
@@ -744,6 +746,7 @@ class BuildInputs(unittest.TestCase):
             (".github/actions/boinc-surya-build/action.yml", "boinc_surya"),
             (".github/workflows/boinc-ndlocr-lite.yml", "boinc_ndlocr"),
             (".github/workflows/boinc-quality-native.yml", "boinc_native"),
+            (".github/workflows/boinc-ocr-native.yml", "boinc_ocr_native"),
             (".github/workflows/ocr-dashboard.yml", "ocr_dashboard"),
         ]:
             with self.subTest(path=path):

@@ -11,6 +11,7 @@ members = [
     "crates/usnm-api",
     "crates/usnm-ingest",
     "crates/usnm-ocr-adapter",
+    "crates/usnm-ocr-app",
     "crates/usnm-ocr-contract",
     "crates/usnm-ocr-dash",
     "crates/usnm-ocr-local",

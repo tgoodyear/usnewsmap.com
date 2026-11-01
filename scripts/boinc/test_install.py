@@ -1,5 +1,7 @@
 """Installation tests: no server, wrapper execution, or registry is required."""
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -381,6 +383,49 @@ class InstallTest(unittest.TestCase):
         ):
             with self.subTest(**bad_kwargs), self.assertRaises(ValueError):
                 module.install(self.project, **bad_kwargs)
+
+    def native_ocr_build(self):
+        build = self.root / "build"
+        build.mkdir()
+        worker = self.root / "usnm_ocr"
+        worker.write_bytes(b"worker")
+        (build / "usnm_tesseract").write_bytes(b"engine")
+        (build / "usnm_tesseract").chmod(0o755)
+        (build / "tessdata_eng.traineddata").write_bytes(b"model")
+        entry = lambda data: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        manifest = json.dumps({"files": {
+            "tessdata_eng.traineddata": entry(b"model"),
+            "usnm_ocr": entry(b"worker"),
+            "usnm_tesseract": entry(b"engine"),
+        }})
+        (build / "usnm_native_build.json").write_text(manifest)
+        return worker, build, hashlib.sha256(manifest.encode()).hexdigest()
+
+    def test_native_ocr_stages_content_named_files_without_copies(self):
+        worker, build, digest = self.native_ocr_build()
+        target = module.install(self.project, None, None, "1.0", app="usnm_gold_native", kind="native",
+                                binary=worker, bundle_dir=build)
+        self.assertEqual(target.name, "x86_64-pc-linux-gnu")
+        manifest = f"usnm_native_build_{digest}.json"
+        self.assertTrue((target / manifest).is_file())
+        model = f"usnm_native_{hashlib.sha256(b'model').hexdigest()[:16]}_tessdata_eng.traineddata"
+        self.assertTrue((target / model).is_file())
+        version = ET.parse(target / "version.xml").getroot()
+        files = {f.findtext("logical_name"): f for f in version.findall("file")}
+        self.assertEqual(files["usnm_native_build.json"].findtext("physical_name"), manifest)
+        self.assertIsNone(files["tessdata_eng.traineddata"].find("copy_file"))
+        self.assertEqual(sorted(p.name for p in (self.project / "templates").iterdir()), ["usnm_gold_out"])
+
+    def test_native_ocr_refuses_files_the_manifest_does_not_list(self):
+        worker, build, _ = self.native_ocr_build()
+        (build / "usnm_tesseract").write_bytes(b"other")
+        with self.assertRaisesRegex(ValueError, "differs from the build manifest"):
+            module.install(self.project, None, None, "1.0", app="usnm_ocr_native", kind="native",
+                           binary=worker, bundle_dir=build)
+        worker.write_bytes(b"other")
+        with self.assertRaisesRegex(ValueError, "manifest's usnm_ocr"):
+            module.install(self.project, None, None, "1.1", app="usnm_ocr_native", kind="native",
+                           binary=worker, bundle_dir=build)
 
     def test_amd_native_rejects_unsupported_platforms_and_other_apps(self):
         for platform in module.PLATFORMS:
