@@ -304,6 +304,15 @@ class FormatTest(Built):
         fetched = json.loads((self.d / "out/w/manifests/m00001.parquet").read_bytes())
         self.assertEqual([r["doc_id"] for r in fetched], [rows[1][0]])
 
+    def test_a_scan_of_another_batch_version_is_not_the_pages(self):
+        rows = [row("sn1", 1, 1, 0.5, batch="rp_b", version=2)]
+        index = self.d / "index.jsonl"
+        index.write_text(json.dumps({"doc_id": rows[0][0], "batch": "rp_b", "batch_version": 1, "bytes": 9,
+                                     "sha256": "ab"}) + "\n")
+        s = self.build(rows, "--index", str(index))
+        self.assertEqual((s["worst"]["on_scan_server"], s["worst"]["to_fetch"]), (0, 1))
+        self.assertIsNone(lines(self.d / "out/w/plan.jsonl")[0]["sha256"])
+
     def test_manifest_rows_are_the_quality_pass_rows(self):
         src = self.d / "in.csv"
         write_csv(src, [row("sn1", 3, 4, 0.5, lang="ger", batch="rp_b", version=2, ed=2)])

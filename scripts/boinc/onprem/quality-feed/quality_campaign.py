@@ -137,7 +137,8 @@ def read_rows(path):
 
 
 def read_index(path):
-    """doc_id -> the fields a page takes from its index line (full-size scans only)."""
+    """(doc_id, batch, version) -> the fields a page takes from its index line, full-size
+    scans only. The key has the batch: a scan of another batch version isn't this page's."""
     out = {}
     if not path:
         return out
@@ -145,8 +146,9 @@ def read_index(path):
         for line in f:
             row = json.loads(line)
             if row.get("resolution", "full") == "full" and quality_feed.DOC_RE.match(row.get("doc_id") or ""):
-                out[row["doc_id"]] = {"bytes": int(row["bytes"]), "fetched_at": row.get("fetched_at", ""),
-                                      "scan": quality_feed.scan_path(row), "sha256": row["sha256"]}
+                key = (row["doc_id"], row.get("batch"), int(row.get("batch_version") or 1))
+                out[key] = {"bytes": int(row["bytes"]), "fetched_at": row.get("fetched_at", ""),
+                            "scan": quality_feed.scan_path(row), "sha256": row["sha256"]}
     return out
 
 
@@ -167,6 +169,10 @@ def ocr_pages(state):
     reasons = sorted({q["reason"] for q in queued if q.get("reason")})
     return ({q["doc_id"] for q in ocr_manifest.pending(queued, outcomes, reasons)}
             | {o["doc_id"] for o in outcomes if o.get("outcome") == "imported"})
+
+
+def scan_key(r):
+    return r["doc_id"], r["batch"], r["batch_version"]
 
 
 def order(seed, doc_id):
@@ -265,7 +271,7 @@ def weigh(picked, sizes, take, cell_pages):
 def feed_row(r, scans):
     """A page in the shape quality_feed.py select writes."""
     edition, seq = edition_seq(r)
-    scan = scans.get(r["doc_id"], dict.fromkeys(INDEX_FIELDS))
+    scan = scans.get(scan_key(r), dict.fromkeys(INDEX_FIELDS))
     return {"batch": r["batch"], "batch_version": r["batch_version"], "bytes": scan["bytes"],
             "damage_rate": r["damage_rate"], "date": r["date"], "doc_id": r["doc_id"], "edition": edition,
             "fetched_at": scan["fetched_at"] or "", "lang": quality_feed.lang_of(r["page_lang"]),
@@ -316,12 +322,12 @@ def write_campaign(out_dir, name, rows, extras, scans, manifest_pages):
                 ({**feed_row(r, scans), "band": r["band"], "decade": r["decade"], "decision": r["decision"],
                   "page_lang": r["page_lang"], "rank": i, **{k: r[k] for k in extras}}
                  for i, r in enumerate(rows, 1)))
-    write_lines(os.path.join(camp, "pages.jsonl"), (feed_row(r, scans) for r in rows if r["doc_id"] in scans))
-    slices = manifest_slices([r for r in rows if r["doc_id"] not in scans], manifest_pages)
+    write_lines(os.path.join(camp, "pages.jsonl"), (feed_row(r, scans) for r in rows if scan_key(r) in scans))
+    slices = manifest_slices([r for r in rows if scan_key(r) not in scans], manifest_pages)
     for i, chunk in enumerate(slices, 1):
         write_atomic(os.path.join(man_dir, f"m{i:05d}.parquet"),
                      ocr_manifest.manifest_bytes([manifest_row(r) for r in chunk]))
-    return {"manifests": len(slices), "on_scan_server": sum(1 for r in rows if r["doc_id"] in scans),
+    return {"manifests": len(slices), "on_scan_server": sum(1 for r in rows if scan_key(r) in scans),
             "to_fetch": sum(len(s) for s in slices)}
 
 
