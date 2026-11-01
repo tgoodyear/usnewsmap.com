@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "train": {
+    "sources": [
+      "austrian",
+      "newseye-bnf",
+      "newseye-nlf-sv"
+    ],
+    "rows": 4032,
+    "sha256": "2b3d75e3c4ab43b944854e72d40d97701e4d7a232ada29ad9f4b2cb73f50512d"
+  },
+  "validation": {
+    "sources": [
+      "nzz",
+      "newseye-nlf-fi"
+    ],
+    "rows": 378,
+    "sha256": "aacdece964ac958ced9ba4277e749d37e90e4ac12f0fb9006a9af198979af61c",
+    "refs_sha256": "b649fec6bc446bbc55e0210f53b94b01c707e9734c40e4a86de72ae48d7d8141"
+  },
+  "test": {
+    "sources": [
+      "reichsanzeiger",
+      "overproof-ca"
+    ],
+    "rows": 1000,
+    "sha256": "95e1b701c9974ac33ca4b933950592964fe87a33f4fa6e6d6d844a8177c1fc53",
+    "refs_sha256": "d9b926b7ccddc5fa94460e01a75248b8bfb15f44adfc6195dcaf4051e6db2fd3"
+  }
+}

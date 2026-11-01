@@ -1,0 +1,146 @@
+{"crops":64,"empty":0,"group":"all","invented":1,"kind":"reader","loop":0,"machine_ref_crops":23,"machine_ref_median_f1":0.8383838383838383,"not_japanese":5,"reader":"ndlocr-lite","vertical_failure":4}
+{"crops":64,"empty":0,"group":"all","invented":4,"kind":"reader","loop":15,"machine_ref_crops":23,"machine_ref_median_f1":0.7407407407407407,"not_japanese":6,"reader":"qwen-8b","vertical_failure":4}
+{"crops":64,"empty":0,"group":"all","invented":5,"kind":"reader","loop":2,"machine_ref_crops":23,"machine_ref_median_f1":0.7802197802197802,"not_japanese":2,"reader":"surya","vertical_failure":1}
+{"crops":64,"empty":0,"group":"all","invented":59,"kind":"reader","loop":0,"machine_ref_crops":23,"machine_ref_median_f1":0.2947903430749682,"not_japanese":0,"reader":"jpn_vert","vertical_failure":0}
+{"crops":64,"empty":0,"group":"all","invented":2,"kind":"reader","loop":3,"machine_ref_crops":23,"machine_ref_median_f1":0.8083491461100569,"not_japanese":5,"reader":"churro","vertical_failure":4}
+{"a":"ndlocr-lite","b":"qwen-8b","crops":64,"group":"all","kind":"pair","median_f1":0.6282722513089005,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"surya","crops":64,"group":"all","kind":"pair","median_f1":0.7728613569321534,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"jpn_vert","crops":64,"group":"all","kind":"pair","median_f1":0.2222222222222222,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"churro","crops":64,"group":"all","kind":"pair","median_f1":0.7540983606557377,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"surya","crops":64,"group":"all","kind":"pair","median_f1":0.6195652173913043,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"jpn_vert","crops":64,"group":"all","kind":"pair","median_f1":0.1027190332326284,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"churro","crops":64,"group":"all","kind":"pair","median_f1":0.6567164179104478,"note":"agreement, not accuracy"}
+{"a":"surya","b":"jpn_vert","crops":64,"group":"all","kind":"pair","median_f1":0.19689119170984457,"note":"agreement, not accuracy"}
+{"a":"surya","b":"churro","crops":64,"group":"all","kind":"pair","median_f1":0.7431192660550459,"note":"agreement, not accuracy"}
+{"a":"jpn_vert","b":"churro","crops":64,"group":"all","kind":"pair","median_f1":0.20298507462686566,"note":"agreement, not accuracy"}
+{"crops":32,"empty":0,"group":"typeset","invented":0,"kind":"reader","loop":0,"machine_ref_crops":12,"machine_ref_median_f1":0.8966183574879227,"not_japanese":2,"reader":"ndlocr-lite","vertical_failure":2}
+{"crops":32,"empty":0,"group":"typeset","invented":2,"kind":"reader","loop":9,"machine_ref_crops":12,"machine_ref_median_f1":0.7879828326180257,"not_japanese":3,"reader":"qwen-8b","vertical_failure":3}
+{"crops":32,"empty":0,"group":"typeset","invented":1,"kind":"reader","loop":0,"machine_ref_crops":12,"machine_ref_median_f1":0.8843243243243243,"not_japanese":1,"reader":"surya","vertical_failure":1}
+{"crops":32,"empty":0,"group":"typeset","invented":29,"kind":"reader","loop":0,"machine_ref_crops":12,"machine_ref_median_f1":0.3613595706618962,"not_japanese":0,"reader":"jpn_vert","vertical_failure":0}
+{"crops":32,"empty":0,"group":"typeset","invented":0,"kind":"reader","loop":2,"machine_ref_crops":12,"machine_ref_median_f1":0.8369829683698297,"not_japanese":2,"reader":"churro","vertical_failure":2}
+{"a":"ndlocr-lite","b":"qwen-8b","crops":32,"group":"typeset","kind":"pair","median_f1":0.764102564102564,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"surya","crops":32,"group":"typeset","kind":"pair","median_f1":0.8222222222222222,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"jpn_vert","crops":32,"group":"typeset","kind":"pair","median_f1":0.34782608695652173,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"churro","crops":32,"group":"typeset","kind":"pair","median_f1":0.7947019867549668,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"surya","crops":32,"group":"typeset","kind":"pair","median_f1":0.7639751552795031,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"jpn_vert","crops":32,"group":"typeset","kind":"pair","median_f1":0.31607629427792916,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"churro","crops":32,"group":"typeset","kind":"pair","median_f1":0.7428571428571429,"note":"agreement, not accuracy"}
+{"a":"surya","b":"jpn_vert","crops":32,"group":"typeset","kind":"pair","median_f1":0.36683417085427134,"note":"agreement, not accuracy"}
+{"a":"surya","b":"churro","crops":32,"group":"typeset","kind":"pair","median_f1":0.8008474576271186,"note":"agreement, not accuracy"}
+{"a":"jpn_vert","b":"churro","crops":32,"group":"typeset","kind":"pair","median_f1":0.34857849196538937,"note":"agreement, not accuracy"}
+{"crops":32,"empty":0,"group":"camp","invented":1,"kind":"reader","loop":0,"machine_ref_crops":11,"machine_ref_median_f1":0.7706422018348624,"not_japanese":3,"reader":"ndlocr-lite","vertical_failure":2}
+{"crops":32,"empty":0,"group":"camp","invented":2,"kind":"reader","loop":6,"machine_ref_crops":11,"machine_ref_median_f1":0.7407407407407407,"not_japanese":3,"reader":"qwen-8b","vertical_failure":1}
+{"crops":32,"empty":0,"group":"camp","invented":4,"kind":"reader","loop":2,"machine_ref_crops":11,"machine_ref_median_f1":0.7608695652173914,"not_japanese":1,"reader":"surya","vertical_failure":0}
+{"crops":32,"empty":0,"group":"camp","invented":30,"kind":"reader","loop":0,"machine_ref_crops":11,"machine_ref_median_f1":0.06451612903225806,"not_japanese":0,"reader":"jpn_vert","vertical_failure":0}
+{"crops":32,"empty":0,"group":"camp","invented":2,"kind":"reader","loop":1,"machine_ref_crops":11,"machine_ref_median_f1":0.7923497267759563,"not_japanese":3,"reader":"churro","vertical_failure":2}
+{"a":"ndlocr-lite","b":"qwen-8b","crops":32,"group":"camp","kind":"pair","median_f1":0.568,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"surya","crops":32,"group":"camp","kind":"pair","median_f1":0.6486486486486487,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"jpn_vert","crops":32,"group":"camp","kind":"pair","median_f1":0.06802721088435375,"note":"agreement, not accuracy"}
+{"a":"ndlocr-lite","b":"churro","crops":32,"group":"camp","kind":"pair","median_f1":0.6810810810810811,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"surya","crops":32,"group":"camp","kind":"pair","median_f1":0.5422222222222223,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"jpn_vert","crops":32,"group":"camp","kind":"pair","median_f1":0.04938271604938271,"note":"agreement, not accuracy"}
+{"a":"qwen-8b","b":"churro","crops":32,"group":"camp","kind":"pair","median_f1":0.625,"note":"agreement, not accuracy"}
+{"a":"surya","b":"jpn_vert","crops":32,"group":"camp","kind":"pair","median_f1":0.05172413793103448,"note":"agreement, not accuracy"}
+{"a":"surya","b":"churro","crops":32,"group":"camp","kind":"pair","median_f1":0.6776859504132231,"note":"agreement, not accuracy"}
+{"a":"jpn_vert","b":"churro","crops":32,"group":"camp","kind":"pair","median_f1":0.06956521739130435,"note":"agreement, not accuracy"}
+{"fail":true,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-2.new","invented":false,"loop":false,"reader":"ndlocr-lite"}
+{"fail":true,"group":"camp","id":"sn84025150_1943-08-28_ed-1_seq-7.new","invented":false,"loop":false,"reader":"ndlocr-lite"}
+{"fail":true,"group":"camp","id":"sn82016478_1942-12-18_ed-1_seq-5.new","invented":false,"loop":false,"reader":"ndlocr-lite"}
+{"fail":true,"group":"camp","id":"sn84025150_1942-10-24_ed-1_seq-3.new","invented":false,"loop":false,"reader":"ndlocr-lite"}
+{"fail":true,"group":"typeset","id":"sn83025518_1945-10-27_ed-1_seq-2__crop","invented":false,"loop":false,"reader":"ndlocr-lite"}
+{"fail":false,"group":"camp","id":"sn83025521_1942-10-21_ed-1_seq-8__crop","invented":true,"loop":false,"reader":"ndlocr-lite"}
+{"fail":true,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-2.new","invented":false,"loop":false,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-09-25_ed-1_seq-2.new","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-07-10_ed-1_seq-2.new","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-07-10_ed-1_seq-3.new","invented":true,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-3.new","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-02-21_ed-1_seq-2.new","invented":true,"loop":true,"reader":"qwen-8b"}
+{"fail":true,"group":"camp","id":"sn84025150_1944-12-13_ed-1_seq-5.new","invented":false,"loop":false,"reader":"qwen-8b"}
+{"fail":false,"group":"camp","id":"sn93070119_1943-07-10_ed-1_seq-2.new","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":true,"group":"camp","id":"sn83025521_1942-10-24_ed-1_seq-8.new","invented":false,"loop":false,"reader":"qwen-8b"}
+{"fail":false,"group":"camp","id":"sn83025353_1945-01-06_ed-1_seq-8.new","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"camp","id":"sn84024049_1943-08-21_ed-1_seq-10.new","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"camp","id":"sn83025352_1945-09-19_ed-1_seq-3.new","invented":true,"loop":true,"reader":"qwen-8b"}
+{"fail":true,"group":"camp","id":"sn84025150_1942-10-24_ed-1_seq-3.new","invented":false,"loop":false,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-09-25_ed-1_seq-3__crop","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-11-08_ed-1_seq-2__crop","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":true,"group":"typeset","id":"sn83025517_1944-11-08_ed-1_seq-3__crop","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-10-29_ed-1_seq-2__crop","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":true,"group":"typeset","id":"sn83025518_1945-10-27_ed-1_seq-2__crop","invented":false,"loop":false,"reader":"qwen-8b"}
+{"fail":false,"group":"camp","id":"sn84024049_1943-08-21_ed-1_seq-9__crop","invented":false,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"camp","id":"sn94050512_1945-03-03_ed-1_seq-2__crop","invented":true,"loop":true,"reader":"qwen-8b"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-2.new","invented":true,"loop":false,"reader":"surya"}
+{"fail":false,"group":"camp","id":"sn83025333_1943-11-07_ed-1_seq-5.new","invented":true,"loop":false,"reader":"surya"}
+{"fail":false,"group":"camp","id":"sn84025150_1944-05-20_ed-1_seq-6.new","invented":true,"loop":true,"reader":"surya"}
+{"fail":true,"group":"camp","id":"sn84025150_1942-10-24_ed-1_seq-3.new","invented":false,"loop":false,"reader":"surya"}
+{"fail":false,"group":"camp","id":"sn83025353_1942-10-14_ed-1_seq-8__crop","invented":true,"loop":false,"reader":"surya"}
+{"fail":true,"group":"typeset","id":"sn83025517_1944-11-08_ed-1_seq-3__crop","invented":false,"loop":false,"reader":"surya"}
+{"fail":false,"group":"camp","id":"sn83025521_1942-10-21_ed-1_seq-8__crop","invented":true,"loop":true,"reader":"surya"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-09-25_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-08-23_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-06-16_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-02-21_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-09-06_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-07-10_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-06-20_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-02-28_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-06-07_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-08-14_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-03-24_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-02-28_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-09-06_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-02-21_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-03-24_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025150_1943-08-28_ed-1_seq-7.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025522_1943-09-01_ed-1_seq-9.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025150_1944-12-13_ed-1_seq-5.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025333_1945-04-28_ed-1_seq-8.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn94050512_1945-04-14_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025150_1944-12-13_ed-1_seq-6.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025522_1943-05-15_ed-1_seq-10.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025353_1945-01-06_ed-1_seq-8.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn82016478_1942-12-18_ed-1_seq-5.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025952_1944-08-31_ed-1_seq-7.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025352_1945-09-19_ed-1_seq-4.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84024049_1943-08-21_ed-1_seq-10.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025333_1943-11-07_ed-1_seq-5.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025150_1944-05-20_ed-1_seq-6.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025352_1945-09-19_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025521_1942-10-21_ed-1_seq-2.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025352_1945-09-08_ed-1_seq-5.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025150_1942-10-24_ed-1_seq-3.new","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025333_1943-04-24_ed-1_seq-9__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025352_1945-09-08_ed-1_seq-4__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025353_1942-10-14_ed-1_seq-8__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025353_1943-11-20_ed-1_seq-8__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-08-23_ed-1_seq-2__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-09-25_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-11-08_ed-1_seq-2__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1944-11-08_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-06-20_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-10-29_ed-1_seq-2__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-10-29_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-06-07_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-06-16_ed-1_seq-2__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-08-14_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-10-27_ed-1_seq-2__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-10-27_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025521_1942-10-21_ed-1_seq-8__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn83025522_1943-09-01_ed-1_seq-10__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84024049_1943-08-21_ed-1_seq-9__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025952_1944-04-20_ed-1_seq-7__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn84025952_1944-04-20_ed-1_seq-8__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn85040043_1943-09-21_ed-1_seq-5__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn85040043_1943-09-30_ed-1_seq-3__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":false,"group":"camp","id":"sn94050512_1945-03-03_ed-1_seq-2__crop","invented":true,"loop":false,"reader":"jpn_vert"}
+{"fail":true,"group":"typeset","id":"sn83025518_1945-07-19_ed-1_seq-2.new","invented":false,"loop":false,"reader":"churro"}
+{"fail":true,"group":"typeset","id":"sn83025517_1944-07-10_ed-1_seq-3.new","invented":false,"loop":false,"reader":"churro"}
+{"fail":false,"group":"typeset","id":"sn83025518_1945-08-14_ed-1_seq-2.new","invented":false,"loop":true,"reader":"churro"}
+{"fail":false,"group":"typeset","id":"sn83025517_1945-02-21_ed-1_seq-2.new","invented":false,"loop":true,"reader":"churro"}
+{"fail":false,"group":"camp","id":"sn84025150_1943-08-28_ed-1_seq-7.new","invented":true,"loop":false,"reader":"churro"}
+{"fail":true,"group":"camp","id":"sn82016478_1942-12-18_ed-1_seq-5.new","invented":false,"loop":false,"reader":"churro"}
+{"fail":true,"group":"camp","id":"sn84025150_1942-10-24_ed-1_seq-3.new","invented":false,"loop":false,"reader":"churro"}
+{"fail":true,"group":"camp","id":"sn83025352_1945-09-08_ed-1_seq-4__crop","invented":false,"loop":false,"reader":"churro"}
+{"fail":false,"group":"camp","id":"sn83025353_1942-10-14_ed-1_seq-8__crop","invented":true,"loop":true,"reader":"churro"}

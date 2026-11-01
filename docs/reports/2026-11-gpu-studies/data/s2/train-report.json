@@ -1,0 +1,1 @@
+{"accum": 4, "base_revision": "89644892e4d85e24eaac8bacfd4f463576704203", "examples": 4032, "gpu": "NVIDIA GeForce RTX 3090", "lr": 0.0001, "max_pixels": 2097152, "min_pixels": 1048576, "peak_gpu_bytes": 8763369472, "rank": 8, "seconds": 3653.1, "seed": 583, "skipped": 0, "status": "untrusted-requires-held-out-evaluation", "steps": 2000, "torch": "2.8.0+cu128"}
