@@ -24,7 +24,7 @@ A worker holds its current page and one row group in memory. It streams the tar,
 
 ## Schema
 
-A row is one ALTO `String`, in document order. A page's rows are consecutive. A page with no `String` still gets one row, with null `text` and `-1` for `block`, `line` and `word`, so every page read is in the file. A page whose XML can't be parsed is left out and logged. If an archive holds a page twice, the first is kept, as in `loc-alto-stats`.
+A row is one ALTO `String`, in document order. A page's rows are consecutive. A page with no `String` still gets one row, with null `text` and `-1` for `block`, `line` and `word`, so every page read is in the file. A page whose XML can't be parsed, or that ends inside an element, is left out and logged. If an archive holds a page twice, the first is kept, as in `loc-alto-stats`.
 
 | Column                | Type    | ALTO source                                                                                       |
 | --------------------- | ------- | ------------------------------------------------------------------------------------------------- |
@@ -50,7 +50,7 @@ A row is one ALTO `String`, in document order. A page's rows are consecutive. A 
 | `dpi`                 | float32 | The dpi used to convert. Null when `dpi_source` is `pixel` or `none`                              |
 | `dpi_source`          | string  | Where `dpi` came from, below                                                                      |
 | `alto_version`        | string  | The root's `xsi:schemaLocation` file (`1.4`), else the LoC namespace (`2`), else the namespace    |
-| `software`            | string  | The first `softwareName` in the file: the same value as `loc-alto-stats`                          |
+| `software`            | string  | The first `softwareName` in the file, the element `loc-alto-stats` reports                          |
 | `software_version`    | string  | The first `softwareVersion` in the file                                                           |
 | `ocr_software`        | string  | The first `softwareName` under `ocrProcessingStep`                                                |
 | `ocr_version`         | string  | The first `softwareVersion` under `ocrProcessingStep`                                             |
@@ -76,7 +76,7 @@ Boxes are stored in pixels of the page image where the ALTO allows it. `dpi_sour
 | `grid`        | Inferred, `inch1200` only: every coordinate on the page is a multiple of 4 (300 dpi), 3 (400 dpi) or 2 (600 dpi). Needs 40 or more coordinates. A page that fits both 4 and 3 gets no dpi |
 | `none`        | No way to tell, or a unit we don't know. Boxes stay in the ALTO unit, and `coord_unit` says which                                                                                             |
 
-To go back to ALTO units: `value / (dpi / 1200)` for `inch1200`, `value / (dpi / 254)` for `mm10`.
+For `image_width` the conversion uses the exact width ratio, and `dpi` is that ratio rounded. To go back to ALTO units, multiply by `Page/@WIDTH / page_width`; for the others, `value / (dpi / 1200)` for `inch1200` and `value / (dpi / 254)` for `mm10`.
 
 **`none` is common.** On 19 of the archives in [the proof](#proof), 26,686 of 59,086 pages have no dpi. Their ALTO says `inch1200` but gives no image size, and their coordinates fit no grid. The archives hold no images, so nothing in them gives the dpi. For those pages, map a box onto a scan by proportion: `x / page_width * image_width`. That works for every page, whatever its `coord_unit`. At least one batch's `inch1200` values look like pixels already (`fu_cofrin_ver01`, pages 1,420 units wide), so don't assume the unit is true.
 

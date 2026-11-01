@@ -173,25 +173,32 @@ impl Page {
                 }
             }
         };
-        let stated = self.head.xdpi.filter(|d| *d > 0.0).map(|d| (d, "settings"));
+        let by_dpi = |d: f64, source| (d, source, d / per_inch);
+        let stated = self
+            .head
+            .xdpi
+            .filter(|d| *d > 0.0)
+            .map(|d| by_dpi(d, "settings"));
+        // The image's width is exact, so the factor comes from it, not from the rounded dpi.
         let sized = || {
             let (px, units) = (self.head.image_width?, self.head.alto_width?);
-            (px > 0.0 && units > 0.0).then(|| ((px * per_inch / units).round(), "image_width"))
+            (px > 0.0 && units > 0.0)
+                .then(|| ((px * per_inch / units).round(), "image_width", px / units))
         };
         let grid = || {
-            (unit.eq_ignore_ascii_case("inch1200"))
+            unit.eq_ignore_ascii_case("inch1200")
                 .then(|| self.grid_dpi())
                 .flatten()
         };
         match stated
             .or_else(sized)
-            .or_else(|| grid().map(|d| (d, "grid")))
+            .or_else(|| grid().map(|d| by_dpi(d, "grid")))
         {
-            Some((dpi, source)) => Scale {
+            Some((dpi, source, factor)) => Scale {
                 dpi: Some(dpi),
                 source,
                 coord_unit: "pixel".into(),
-                factor: dpi / per_inch,
+                factor,
             },
             None => Scale {
                 dpi: None,
@@ -363,6 +370,10 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
     let mut open = Open::None;
     let mut in_ocr_step = false;
     let mut seen_root = false;
+    // Open elements, so a page cut off between tags is an error, not a shorter page.
+    let mut depth = 0u32;
+    // An element's text, which entities and CDATA split into several events.
+    let mut text = String::new();
     loop {
         let event = reader
             .read_event_into(&mut buf)
@@ -370,6 +381,7 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let is_start = matches!(event, Event::Start(_));
+                depth += u32::from(is_start);
                 match e.local_name().as_ref() {
                     "alto" if !seen_root => {
                         seen_root = true;
@@ -416,22 +428,26 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
                     _ => {}
                 }
             }
-            Event::Text(ref t) if open == Open::Alternative => {
-                page.extend_alternative(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
-            }
-            Event::GeneralRef(ref r) if open == Open::Alternative => {
-                if let Some(s) = entity(r) {
-                    page.extend_alternative(&s);
-                }
-            }
-            Event::Text(ref t) if open != Open::None => {
+            Event::Text(ref t) => {
                 let s = t.xml_content(quick_xml::XmlVersion::Implicit1_0);
-                let s = s.trim();
-                if !s.is_empty() {
-                    read_description_text(open, s, in_ocr_step, &mut page.head);
+                take_text(open, &s, page, &mut text);
+            }
+            Event::CData(ref t) => {
+                let s = t.xml_content(quick_xml::XmlVersion::Implicit1_0);
+                take_text(open, &s, page, &mut text);
+            }
+            Event::GeneralRef(ref r) => {
+                if let Some(s) = entity(r) {
+                    take_text(open, &s, page, &mut text);
                 }
             }
             Event::End(ref e) => {
+                depth = depth.saturating_sub(1);
+                let s = text.trim();
+                if !s.is_empty() {
+                    read_description_text(open, s, in_ocr_step, &mut page.head);
+                }
+                text.clear();
                 open = Open::None;
                 if e.local_name().as_ref() == "ocrProcessingStep" {
                     in_ocr_step = false;
@@ -443,7 +459,16 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
         buf.clear();
     }
     anyhow::ensure!(seen_root, "no alto element");
+    anyhow::ensure!(depth == 0, "ALTO ends inside an element");
     Ok(())
+}
+
+fn take_text(open: Open, s: &str, page: &mut Page, text: &mut String) {
+    match open {
+        Open::None => {}
+        Open::Alternative => page.extend_alternative(s),
+        _ => text.push_str(s),
+    }
 }
 
 fn read_description_text(open: Open, s: &str, in_ocr_step: bool, head: &mut PageHead) {
@@ -814,6 +839,8 @@ pub fn write_archive(
     if rows.len > 0 {
         w.write(&rows.finish()?)?;
     }
+    // Tar stops at its end marker, which can be before bzip2's checksum and end of stream.
+    std::io::copy(&mut tar.into_inner(), &mut std::io::sink())?;
     let out = w.into_inner()?;
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
@@ -884,10 +911,11 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let stem = name.trim_end_matches(".tar.bz2").to_owned();
         let signature = format!("{size} {SCHEMA_VERSION}");
         let done = opts.out.join(format!("{stem}.done"));
-        if std::fs::read_to_string(&done)
+        let finished = std::fs::read_to_string(&done)
             .ok()
             .is_some_and(|d| d.trim() == signature)
-        {
+            && opts.out.join(format!("{stem}.parquet")).is_file();
+        if finished {
             s.already += 1;
             continue;
         }
@@ -1054,6 +1082,11 @@ xdpi:320
         let sized = V2.replace("xdpi:320", "");
         let s = parse(&sized).scale();
         assert_eq!((s.dpi, s.source), (Some(320.0), "image_width"));
+
+        // 324.32 dpi: the rounded dpi would make this 4995 pixels wide.
+        let p = parse(&sized.replace(r#"WIDTH="18750""#, r#"WIDTH="18500""#));
+        assert_eq!(p.scale().dpi, Some(324.0));
+        assert!((18500.0 * p.scale().factor - 5000.0).abs() < 1e-9);
     }
 
     fn grid_page(step: u32) -> String {
@@ -1105,6 +1138,28 @@ xdpi:320
             r#"<alto><Description><MeasurementUnit>mm10</MeasurementUnit><OCRProcessing><ocrProcessingStep><processingStepSettings>xdpi:254</processingStepSettings></ocrProcessingStep></OCRProcessing></Description></alto>"#,
         );
         assert!((p.scale().factor - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn text_split_by_entities_and_cdata_stays_whole() {
+        let p = parse(
+            r#"<alto><Description><OCRProcessing><ocrProcessingStep><processingStepSettings><![CDATA[xdpi:300]]></processingStepSettings>
+<processingSoftware><softwareName>A&amp;<![CDATA[B]]>C</softwareName></processingSoftware></ocrProcessingStep></OCRProcessing></Description>
+<String CONTENT="w"><ALTERNATIVE><![CDATA[d&ux]]></ALTERNATIVE><ALTERNATIVE>a&#98;c</ALTERNATIVE></String></alto>"#,
+        );
+        assert_eq!(p.head.software.as_deref(), Some("A&BC"));
+        assert_eq!(p.head.ocr_software.as_deref(), Some("A&BC"));
+        assert_eq!(p.head.xdpi, Some(300.0));
+        assert_eq!(
+            &p.buf[p.words[0].alternatives.clone().unwrap()],
+            "d&ux\u{1f}abc"
+        );
+    }
+
+    #[test]
+    fn a_page_cut_off_between_tags_is_left_out() {
+        let mut p = Page::default();
+        assert!(read_page(r#"<alto><String CONTENT="w"/>"#.as_bytes(), &mut p).is_err());
     }
 
     #[test]
@@ -1275,6 +1330,54 @@ xdpi:320
             .collect();
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(!opts.out.join("b_a_ver01.done").exists());
+    }
+
+    #[test]
+    fn a_cut_tail_fails_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let arch = dir.path().join("in");
+        std::fs::create_dir(&arch).unwrap();
+        archive(
+            &arch,
+            "b_a_ver01.tar.bz2",
+            &[("sn1/1900/01/02/ed-1/seq-1/ocr.xml", V2)],
+        );
+        let body = std::fs::read(arch.join("b_a_ver01.tar.bz2")).unwrap();
+        std::fs::write(arch.join("b_a_ver01.tar.bz2"), &body[..body.len() - 4]).unwrap();
+        let opts = Options {
+            archives: arch,
+            out: dir.path().join("out"),
+            workers: 1,
+            limit: None,
+            min_free_bytes: 0,
+        };
+        let s = run(&opts).unwrap();
+        assert_eq!((s.read, s.failed), (0, 1));
+        assert!(!opts.out.join("b_a_ver01.parquet").exists());
+    }
+
+    #[test]
+    fn a_done_marker_without_its_file_reads_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let arch = dir.path().join("in");
+        std::fs::create_dir(&arch).unwrap();
+        archive(
+            &arch,
+            "b_a_ver01.tar.bz2",
+            &[("sn1/1900/01/02/ed-1/seq-1/ocr.xml", V2)],
+        );
+        let opts = Options {
+            archives: arch,
+            out: dir.path().join("out"),
+            workers: 1,
+            limit: None,
+            min_free_bytes: 0,
+        };
+        assert_eq!(run(&opts).unwrap().read, 1);
+        std::fs::remove_file(opts.out.join("b_a_ver01.parquet")).unwrap();
+        let again = run(&opts).unwrap();
+        assert_eq!((again.read, again.already), (1, 0));
+        assert!(opts.out.join("b_a_ver01.parquet").exists());
     }
 
     #[test]
