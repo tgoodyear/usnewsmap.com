@@ -21,6 +21,7 @@ pub mod kafka;
 pub mod local_holder;
 pub mod merges;
 pub mod ocr_ja;
+pub mod ocr_local_copy;
 pub mod onprem;
 pub mod page_language;
 pub mod pictures;

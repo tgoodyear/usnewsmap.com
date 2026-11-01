@@ -262,6 +262,7 @@ mod tests {
                 size: 0,
                 etag: String::new(),
                 created: None,
+                content_md5: None,
             }),
             Some(NaiveDate::from_ymd_opt(2026, 10, 14).unwrap())
         );
@@ -275,6 +276,7 @@ mod tests {
                 size: 0,
                 etag: String::new(),
                 created: None,
+                content_md5: None,
             })
             .is_none());
         }

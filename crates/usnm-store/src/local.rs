@@ -255,6 +255,7 @@ impl ObjectStore for LocalStore {
                     etag: local_etag(&m),
                     size: m.len(),
                     created: m.modified().ok(),
+                    content_md5: None,
                     path,
                 }),
                 // Deleted since the listing.

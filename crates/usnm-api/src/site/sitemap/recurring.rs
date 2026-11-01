@@ -337,6 +337,7 @@ pub(super) mod tests {
                     size: self.size,
                     etag: "listed".into(),
                     created: None,
+                    content_md5: None,
                 }])
             }
             async fn get_if_match(

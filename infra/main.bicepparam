@@ -47,6 +47,7 @@ param onPremServing = bool(readEnvironmentVariable('USNM_ONPREM_SERVING', 'false
 param onPremServingHost = readEnvironmentVariable('USNM_ONPREM_SERVING_HOST', '')
 param searchLogCopy = bool(readEnvironmentVariable('USNM_SEARCH_LOG_COPY', 'false'))
 param searchLogCopyHost = readEnvironmentVariable('USNM_SEARCH_LOG_COPY_HOST', '')
+param ocrLocalCopy = bool(readEnvironmentVariable('USNM_OCR_LOCAL_COPY', 'false'))
 param boincHandoffRunner = readEnvironmentVariable('USNM_BOINC_HANDOFF_RUNNER', '')
 param boincControllerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_CONTROLLER_ONPREM', 'false'))
 param boincServerOnPrem = bool(readEnvironmentVariable('USNM_BOINC_SERVER_ONPREM', 'false'))

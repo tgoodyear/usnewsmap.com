@@ -142,6 +142,9 @@ param searchLogCopy bool = false
 @description('Object id of the search log copy host\'s Arc machine identity (with searchLogCopy). Settings only, never in the repository.')
 param searchLogCopyHost string = ''
 
+@description('Copy curated/ocr-local/ to a dataset on tank each day: searchLogCopyHost gets read and list on that prefix (modules/ocr-local-copy.bicep), and the data lake opens to ocrNodeIps only (the firewall denies everything else; the private endpoint stays).')
+param ocrLocalCopy bool = false
+
 @description('Object id of the scan fetcher\'s identity (#469): the scan-fetch container\'s Arc machine identity, which pushes cached scans with scripts/ocr-node/push-boinc-scan.sh. It gets the node writer role on the exchange account\'s boinc-handoff container (modules/ocr-exchange.bicep) and Log Analytics Reader on the BOINC workspace (modules/boinc-handoff-logs.bicep). Set it only after the BOINC stack is deployed: the workspace grant needs its workspace. Settings only, never in the repository.')
 param boincHandoffRunner string = ''
 
@@ -509,12 +512,12 @@ var ingestIdentityOn = (ingestJobs && useAcr) || ocr
 
 // The data lake opens to the node IPs only for the on-prem Serial Set
 // runner (serialSetOnPrem), the Japanese OCR, the release, the serving
-// container, the on-prem OCR pickup (#917) or the search log copy (#1097); the
-// Cosmos account only for the serving container (#955). The public-network
-// policy then exempts each by resource id, like the accounts below. Provision
+// container, the on-prem OCR pickup (#917), the search log copy (#1097) or the
+// OCR output copy; the Cosmos account only for the serving container (#955). The
+// public-network policy then exempts each by resource id, like the accounts below. Provision
 // writes the policy's exemptions before the stack (policy-exemptions.bicep, #336).
 var dataLakeOpen = lakeOpen(
-  serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy,
+  serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy || ocrLocalCopy,
   ocrNodeIps
 )
 var indexAccountOpen = indexOpen(onPremRelease, indexStorage, ocrNodeIps)
@@ -922,6 +925,16 @@ module onPremServingGrant 'modules/onprem-serving.bicep' = if (onPremServing && 
 module searchLogCopyGrant 'modules/searchlog-copy.bicep' = if (searchLogCopy && !empty(trim(searchLogCopyHost))) {
   scope: rg
   name: 'searchlog-copy'
+  params: {
+    storageName: storage.outputs.name
+    principalId: trim(searchLogCopyHost)
+  }
+}
+
+// The OCR output copy's grant: the same host and identity as the search log's.
+module ocrLocalCopyGrant 'modules/ocr-local-copy.bicep' = if (ocrLocalCopy && !empty(trim(searchLogCopyHost))) {
+  scope: rg
+  name: 'ocr-local-copy'
   params: {
     storageName: storage.outputs.name
     principalId: trim(searchLogCopyHost)

@@ -30,12 +30,14 @@ anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 bytes.workspace = true
 bzip2.workspace = true
 chrono.workspace = true
 clap.workspace = true
 flate2.workspace = true
 futures.workspace = true
+md-5.workspace = true
 opentelemetry.workspace = true
 parquet.workspace = true
 reqwest = { workspace = true, features = ["stream", "http2"] }

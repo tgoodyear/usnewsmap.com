@@ -281,6 +281,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_OCR_LOCAL_COPY": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Copy curated/ocr-local/ to a dataset on tank each day. The grant goes to USNM_SEARCH_LOG_COPY_HOST."
+    },
     "USNM_OCR_NODES": {
       "x-usnm-visibility": "public",
       "type": "boolean"

@@ -36,6 +36,8 @@ param indexStorage bool = false
 param onPremServing bool = false
 @description('The search log is copied to tank (main.bicep searchLogCopy, #1097): the data lake opens to the node IPs.')
 param searchLogCopy bool = false
+@description('Our OCR output is copied to tank (main.bicep ocrLocalCopy): the data lake opens to the node IPs.')
+param ocrLocalCopy bool = false
 @description('As in main.bicep.')
 param cosmosOnPremAccess bool = false
 @description('The OCR pickup runs on-prem (main.bicep ocrSyncOnPrem, #917): the lake and Cosmos open to the node IPs.')
@@ -62,7 +64,7 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
           n,
           ocrNodes,
           lakeOpen(
-            serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy,
+            serialSetOnPrem || jaOcrOnPrem || onPremRelease || onPremServing || ocrSyncOnPrem || searchLogCopy || ocrLocalCopy,
             ocrNodeIps
           ),
           indexOpen(onPremRelease, indexStorage, ocrNodeIps),
