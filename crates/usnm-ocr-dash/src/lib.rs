@@ -154,12 +154,7 @@ impl App {
                 read_at: fetch.index_read_at,
                 // The same hours as the pages, from a file of their own, which
                 // may not be there.
-                failed_day: fetch
-                    .failures_read_at
-                    .and(fetch.hours_covered())
-                    .map(|(from, to)| {
-                        fetch.failures_in_hours(from.max(last_full_day), to + throughput::HOUR)
-                    }),
+                failed_day: fetch.failures_in_covered_hours(last_full_day),
                 last_failed: fetch
                     .failures_read_at
                     .and(fetch.failures.back())

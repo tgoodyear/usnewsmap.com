@@ -223,7 +223,8 @@ document.addEventListener('pointerover', (e) => {
   else if (tipBar && !chartFocused()) hideTip();
 });
 document.addEventListener('focusin', (e) => {
-  if (e.target.matches?.('svg.spark')) {
+  // A click or tap focuses the chart with its bar already showing: keep that bar.
+  if (e.target.matches?.('svg.spark') && !e.target.contains(tipBar)) {
     const bars = e.target.querySelectorAll('.bar');
     if (bars.length) showTip(bars[bars.length - 1]);
   }
@@ -234,7 +235,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') return hideTip();
   if (!chartFocused() || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
   const bars = [...document.activeElement.querySelectorAll('.bar')];
-  const at = tipBar ? bars.indexOf(tipBar) : bars.length - 1;
+  // A tip on another chart, from the pointer, says nothing about this one.
+  const at = bars.includes(tipBar) ? bars.indexOf(tipBar) : bars.length - 1;
   const to = {ArrowLeft: Math.max(0, at - 1), ArrowRight: Math.min(bars.length - 1, at + 1), Home: 0, End: bars.length - 1}[e.key];
   e.preventDefault();
   if (bars[to]) showTip(bars[to]);

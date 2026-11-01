@@ -1151,6 +1151,15 @@ impl Fetch {
             .count()
     }
 
+    /// Failures in the hours from `first` that the index covers: the hours
+    /// their rate is taken over. Unknown if the failure log wasn't read, or the
+    /// index reaches none of those hours.
+    pub fn failures_in_covered_hours(&self, first: i64) -> Option<usize> {
+        self.failures_read_at?;
+        let (from, to) = self.hours_covered().filter(|(_, to)| *to >= first)?;
+        Some(self.failures_in_hours(from.max(first), to + crate::throughput::HOUR))
+    }
+
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
         self.failure_times.iter().filter(|t| **t >= since).count()
     }
@@ -1651,5 +1660,19 @@ mod tests {
         // The current hour isn't in the full hours; the hour 25 ago is kept
         // only as far as they reach.
         assert_eq!(f.failures_in_hours(hour - 86_400, hour), 2);
+        // An index last read two days ago covers none of those hours.
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
+        std::fs::write(
+            dir.path().join("index-full.jsonl"),
+            format!(
+                "{{\"doc_id\":\"d\",\"fetched_at\":\"{}\",\"bytes\":1}}\n",
+                at(hour - 172_800)
+            ),
+        )
+        .unwrap();
+        f.poll(now);
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), Some(2));
+        f.index_read_at = Some(now - Duration::days(2));
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
     }
 }

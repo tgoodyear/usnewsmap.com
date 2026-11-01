@@ -731,7 +731,7 @@ impl ThroughputView {
         }
         (d.seconds_p50, d.seconds_p95) = facts.seconds.unzip();
         d.last_failed = facts.last_failed;
-        d.last_failed_exact = facts.failed_day.is_some();
+        d.last_failed_exact = facts.last_failed.is_some() || facts.failed_day.is_some();
         let Some(failed) = facts.failed_day else {
             return;
         };
