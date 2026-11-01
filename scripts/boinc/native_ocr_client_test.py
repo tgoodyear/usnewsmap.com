@@ -108,12 +108,11 @@ def handler(project):
             if self.path == "/sched":
                 self.send(project.reply(body.decode("utf-8", "replace")).encode())
                 return
-            name = re.search(rb"<get_file_size>(.*?)</get_file_size>", body)
-            if name:
+            if b"<get_file_size>" in body:
                 self.send(b"<data_server_reply><status>0</status><file_size>0</file_size></data_server_reply>\n")
                 return
             head, _, data = body.partition(b"<data>\n")
-            name = re.search(rb"<name>(.*?)</name>", head)[1].decode()
+            name = head.partition(b"<name>")[2].partition(b"</name>")[0].decode()
             (project.out / name).write_bytes(data)
             self.send(b"<data_server_reply><status>0</status></data_server_reply>\n")
 
