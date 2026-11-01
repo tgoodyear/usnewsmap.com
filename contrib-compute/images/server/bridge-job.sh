@@ -169,6 +169,11 @@ set -euo pipefail
 . /usr/local/lib/usnm-boinc/lib.sh
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 step="${BRIDGE_STEP:-submit}"
+validate_handoff_location() {
+  [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ||
+    ( "${HANDOFF_URL:-}" = /handoff-state && -d /handoff-state ) ]] ||
+    fail "HANDOFF_URL must name the Azure hand-off container or the mounted /handoff-state"
+}
 # A tick's jobs in one execution (#932): JOB_IDS for submit-remote, HANDOFF_SPOOLS for
 # spool-out. Each job runs this script's single-job path again, so every check is the same.
 # submit-remote stops at the first failure (the next tick reconciles that job before any other
@@ -216,8 +221,7 @@ if [ "$step" = submit-remote ] && [ -n "${JOB_UNITS:-}" ]; then
   [[ $JOB_UNITS =~ ^$unit_re(,$unit_re)*$ ]] || fail "JOB_UNITS is <id>[+<id>...][,...], up to 32 ids a unit"
   [ "$(tr ',+' '\n' <<< "$JOB_UNITS" | wc -l)" -le 100 ] || fail "JOB_UNITS holds at most 100 ids"
   [[ ${BUNDLE_APP_VERSION:-} =~ ^[1-9][0-9]{0,8}$ ]] || fail "BUNDLE_APP_VERSION is the usnm_ocr version_num whose worker reads bundles"
-  [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
-    fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+  validate_handoff_location
   : "${HANDOFF_DIR:?}"
   for template in usnm_ocr_bundle_in usnm_ocr_bundle_out; do
     cp "$TEMPLATES/$template" "$PROJ/templates/$template"
@@ -391,8 +395,7 @@ case "$step" in
     # No database or secrets: reads the hand-off texts, scan archive and LoC, writes the share.
     mkdir -p "$QUALITY/texts" "$QUALITY/function-words"
     if [ -n "${HANDOFF_URL:-}" ]; then
-      [[ "$HANDOFF_URL" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
-        fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+      validate_handoff_location
       usnm-boinc handoff get --from-url "$HANDOFF_URL" --prefix texts --to "$QUALITY/texts"
     fi
     if [ -n "${QUALITY_LANGS:-}" ]; then
@@ -522,8 +525,7 @@ if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != su
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
 if [ "$step" = submit-remote ] || [ "$step" = spool-out ]; then
-  [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
-    fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+  validate_handoff_location
 fi
 if [ "$step" = spool-out ]; then
   # Reads the spool and, for the host id, the database; writes only the hand-off container.
@@ -592,8 +594,7 @@ PY
 if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
   write_mycnf
   if [ "$step" = batch-inventory ]; then
-    [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
-      fail "HANDOFF_URL must name the hand-off container"
+    validate_handoff_location
     [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
     mkdir -p "$HANDOFF_DIR/scheduler"
     python3 "$TEMPLATES/batch-inventory.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
