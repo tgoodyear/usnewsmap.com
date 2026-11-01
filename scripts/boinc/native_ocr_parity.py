@@ -61,7 +61,8 @@ def read_page(page, a, images):
         slot.mkdir(parents=True)
     native.mkdir()
     link_build(native, a.build)
-    fixture = [str(a.fixture), "--scan", str(scan), "--language", page["language"]]
+    fixture = [str(a.fixture), "--scan", str(scan), "--language", page["language"],
+               "--timeout-secs", str(a.timeout_secs)]
     subprocess.run([*fixture, "--image", images["native"], "--dir", str(native)], check=True)
     subprocess.run([*fixture, "--image", images["container"], "--dir", str(container)], check=True)
     chroot = ["chroot", str(a.rootfs), "/usr/bin/env", "-i", *(f"{k}={v}" for k, v in CHROOT_ENV.items()),
@@ -192,6 +193,7 @@ def main():
     r.add_argument("--container-base", required=True)
     r.add_argument("--work", type=Path, required=True)
     r.add_argument("--parallel", type=int, default=1, help="pages at a time; each uses two CPUs")
+    r.add_argument("--timeout-secs", type=int, default=1200, help="the jobs' deadline for one read")
     r.set_defaults(func=run)
     p = sub.add_parser("report")
     p.add_argument("--work", type=Path, required=True)

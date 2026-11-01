@@ -91,7 +91,16 @@ Every new native build starts over, as every new worker image does.
 
 ## Parity
 
-@@PARITY@@
+Run in progress on 1 November: the numbers below are 20 of 50 pages, and this section gets the full run before review closes.
+
+The same pages through `usnm_ocr` and through `usnm-boinc work` from the unpacked `247c…` worker image, at the same moment, on one 8-core host under other load. Both builds report Tesseract 5.5.0 with Leptonica 1.84.1, and the same versions of every image library. All 22 models have the hashes in the lock.
+
+| Language and format  | Pages | Text identical | ALTO identical | CER between builds |
+| -------------------- | ----: | -------------: | -------------: | -----------------: |
+| German Fraktur, JPEG |    13 |             13 |             13 |                  0 |
+| English, JPEG        |     7 |              7 |              7 |                  0 |
+
+Text and ALTO are compared byte for byte. CER between the builds is 0 because the files are the same, so the CER against any reference is the same too.
 
 ## Rollout
 

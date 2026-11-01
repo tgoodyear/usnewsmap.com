@@ -4,7 +4,7 @@
  * fetches an http(s) input, which a task never passes, and libarchive only opens a model
  * packed as an archive, which the locked plain .traineddata files aren't. With these stubs a
  * URL input fails, and TessdataManager::Init falls through to its ordinary file read, the
- * path the container's plain models also end up on. No network library is in the binary.
+ * path the container's plain models also end up on.
  */
 #include <stddef.h>
 

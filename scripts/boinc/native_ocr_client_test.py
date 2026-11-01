@@ -42,12 +42,14 @@ class Project:
         self.sent = False
         self.reported = threading.Event()
         self.exit_status = None
+        self.stderr = ""
 
     def reply(self, request):
         for match in re.finditer(r"<result>(.*?)</result>", request, re.S):
             status = re.search(r"<exit_status>(-?\d+)</exit_status>", match[1])
             if status and "<name>wu_0</name>" in match[1]:
                 self.exit_status = int(status[1])
+                self.stderr = match[1]
                 self.reported.set()
         xml = [f"<scheduler_reply>\n<scheduler_version>800</scheduler_version>\n<master_url>{URL}</master_url>\n"
                "<project_name>native ocr test</project_name>\n<request_delay>1</request_delay>\n"
@@ -205,10 +207,9 @@ def scenario(a, client, project):
         client.cmd("--project", URL, "update")
     evidence["exit_status"] = project.exit_status
     evidence["uploaded"] = {f.name: f.stat().st_size for f in sorted((a.work / "out").iterdir())}
-    log = "".join(p.read_text(errors="replace") for p in (a.work / "client").rglob("stderr*.txt"))
-    evidence["resumed_from_checkpoint"] = "resumed from checkpoint" in log
-    tasks = (a.work / "client.log").read_text(errors="replace")
-    evidence["client_says_failed"] = "Computation for task wu_0 finished" not in tasks
+    # The client sends the task's stderr with its report.
+    evidence["resumed_from_checkpoint"] = "resumed from checkpoint" in project.stderr
+    evidence["refused_as_another_build"] = "made for build" in project.stderr
     return evidence
 
 
