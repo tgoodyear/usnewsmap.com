@@ -441,14 +441,62 @@ fn canonical_path(path: &str) -> bool {
         || super::search_query(path).is_some_and(|query| super::search_path(&query) == path)
 }
 
+type Identity = (String, DateTime<Utc>, String, chrono::NaiveDate, u32);
+
+/// How long a spare serves a checkpoint before it generates again. Checkpoints
+/// also decide which search pages are indexed and rendered on the server, so
+/// the spare's mustn't drift far from on-prem's.
+const SPARE_CHECKPOINT_DAYS: i64 = 7;
+
+/// Whether a spare can keep serving this checkpoint: it's for the published
+/// version and recent enough. With none, or a stale one, a spare generates once.
+fn spare_can_serve(checkpoint: &Checkpoint, state: &AppState, now: DateTime<Utc>) -> bool {
+    checkpoint.version == state.snapshot.load_full().refdata.version()
+        && now.signed_duration_since(checkpoint.observed_at)
+            < chrono::Duration::days(SPARE_CHECKPOINT_DAYS)
+}
+
+/// Whether a checkpoint already covers this hour's identity. A start has no
+/// memory of its own, so without this each one would search for every page
+/// again to reach the same checkpoint.
+fn made_for(checkpoint: &Checkpoint, identity: &Identity) -> bool {
+    checkpoint.observed_at.date_naive() == identity.3 && checkpoint.observed_at.hour() == identity.4
+}
+
+#[cfg(test)]
 async fn refresh(
     state: &Arc<AppState>,
     store: &dyn ObjectStore,
     dir: &std::path::Path,
-    finished: &mut Option<(String, DateTime<Utc>, String, chrono::NaiveDate, u32)>,
+    finished: &mut Option<Identity>,
+) -> Result<()> {
+    refresh_from(state, store, dir, finished, false).await
+}
+
+/// One refresh. With `resume`, the first after a start, a checkpoint made for
+/// this hour's identity counts as this process's own finished run.
+async fn refresh_from(
+    state: &Arc<AppState>,
+    store: &dyn ObjectStore,
+    dir: &std::path::Path,
+    finished: &mut Option<Identity>,
+    resume: bool,
 ) -> Result<()> {
     if let Some(checkpoint) = latest(store).await? {
         state.sitemap.committed.store(Some(Arc::new(checkpoint)));
+    }
+    if !state.config.sitemap_generate {
+        if state
+            .sitemap
+            .committed
+            .load_full()
+            .is_some_and(|checkpoint| spare_can_serve(&checkpoint, state, Utc::now()))
+        {
+            return Ok(());
+        }
+        // Its age is the reason to generate, so an unchanged result still has
+        // to commit: a checkpoint that stays expired would regenerate hourly.
+        *finished = None;
     }
     let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
         .await
@@ -464,6 +512,14 @@ async fn refresh(
         Utc::now().hour(),
     );
     let committed = state.sitemap.committed.load_full();
+    if resume
+        && finished.is_none()
+        && committed
+            .as_ref()
+            .is_some_and(|checkpoint| made_for(checkpoint, &identity))
+    {
+        *finished = Some(identity.clone());
+    }
     if finished.as_ref() == Some(&identity)
         && committed.as_ref().is_some_and(|checkpoint| {
             checkpoint.version == identity.0
@@ -518,7 +574,7 @@ pub(crate) fn spawn(state: Arc<AppState>) {
         loop {
             let refresh = async {
                 let store = usnm_store::open(&url).map_err(backend)?;
-                refresh(&state, store.as_ref(), &dir, &mut finished).await
+                refresh_from(&state, store.as_ref(), &dir, &mut finished, true).await
             };
             if let Err(error) = refresh.await {
                 tracing::warn!(?error, "sitemap refresh failed; retaining committed dates");
@@ -985,18 +1041,18 @@ mod tests {
             checkpoint.sequence
         );
         assert_eq!(http(&restarted, "/sitemap.xml").await.1, original);
+        // A healthy start in the same hour takes the checkpoint as done. Across
+        // an hour's end it generates again, and the sitemap is the same.
         let healthy_restart = state(&dir, Some(Vec::new())).await;
         crate::spawn_background(healthy_restart.clone());
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                if latest(&store).await.unwrap().unwrap().sequence > checkpoint.sequence {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        assert_eq!(wait_for_sitemap(&healthy_restart).await, original);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if checkpoint.observed_at.hour() == Utc::now().hour() {
+            assert_eq!(
+                latest(&store).await.unwrap().unwrap().sequence,
+                checkpoint.sequence
+            );
+        }
         assert_eq!(http(&healthy_restart, "/sitemap.xml").await.1, original);
         // Explicit fixture mode still serves Vite's undated fallback.
         let mut fixture = state(&dir, None).await;
@@ -1642,6 +1698,139 @@ mod tests {
         )
         .unwrap();
         assert!(still_current(&st, &st.snapshot.load_full()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_start_resumes_this_hours_checkpoint_and_rebuilds_a_changed_one() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let st = state(&dir, Some(Vec::new())).await;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        refresh(&st, &store, &dir.0, &mut None).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+        let hour = first.observed_at.hour();
+
+        let mut finished = None;
+        refresh_from(&st, &store, &dir.0, &mut finished, true)
+            .await
+            .unwrap();
+        if hour == Utc::now().hour() {
+            assert_eq!(
+                latest(&store).await.unwrap().unwrap().sequence,
+                first.sequence
+            );
+            assert!(finished.is_some());
+        }
+
+        let mut older = latest(&store).await.unwrap().unwrap();
+        older.sequence += 1;
+        older.observed_at -= chrono::Duration::hours(2);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", older.sequence),
+                serde_json::to_vec(&older).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        refresh_from(&st, &store, &dir.0, &mut None, true)
+            .await
+            .unwrap();
+        assert!(latest(&store).await.unwrap().unwrap().sequence > older.sequence);
+    }
+
+    #[tokio::test]
+    async fn a_spare_serves_the_checkpoint_and_never_generates() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let st = state(&dir, Some(Vec::new())).await;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        refresh(&st, &store, &dir.0, &mut None).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+
+        let mut spare = state(&dir, None).await;
+        Arc::get_mut(&mut spare).unwrap().config.sitemap_generate = false;
+        let mut finished = None;
+        refresh_from(&spare, &store, &dir.0, &mut finished, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            first.sequence
+        );
+        assert_eq!(
+            spare.sitemap.committed.load_full().unwrap().sequence,
+            first.sequence
+        );
+        assert!(finished.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_spare_generates_when_it_has_no_checkpoint_or_a_stale_one() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let mut spare = state(&dir, Some(Vec::new())).await;
+        Arc::get_mut(&mut spare).unwrap().config.sitemap_generate = false;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        refresh(&spare, &store, &dir.0, &mut None).await.unwrap();
+        let first = latest(&store).await.unwrap().unwrap();
+
+        let mut old = first.clone();
+        old.sequence += 1;
+        old.observed_at -= chrono::Duration::days(SPARE_CHECKPOINT_DAYS + 1);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", old.sequence),
+                serde_json::to_vec(&old).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        refresh(&spare, &store, &dir.0, &mut None).await.unwrap();
+        assert!(latest(&store).await.unwrap().unwrap().sequence > old.sequence);
+    }
+
+    #[tokio::test]
+    async fn a_spare_commits_again_when_its_own_unchanged_checkpoint_expires() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let mut spare = state(&dir, Some(Vec::new())).await;
+        Arc::get_mut(&mut spare).unwrap().config.sitemap_generate = false;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        let mut finished = None;
+        refresh(&spare, &store, &dir.0, &mut finished)
+            .await
+            .unwrap();
+
+        let mut old = latest(&store).await.unwrap().unwrap();
+        old.sequence += 1;
+        old.observed_at -= chrono::Duration::days(SPARE_CHECKPOINT_DAYS + 1);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", old.sequence),
+                serde_json::to_vec(&old).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        // The completion mark survives from the week the checkpoint was made.
+        let finished_week_ago = finished.as_mut().unwrap();
+        finished_week_ago.3 -= chrono::Duration::days(SPARE_CHECKPOINT_DAYS + 1);
+
+        refresh(&spare, &store, &dir.0, &mut finished)
+            .await
+            .unwrap();
+        let fresh = latest(&store).await.unwrap().unwrap();
+        assert!(fresh.sequence > old.sequence);
+        assert!(spare_can_serve(&fresh, &spare, Utc::now()));
+
+        refresh(&spare, &store, &dir.0, &mut finished)
+            .await
+            .unwrap();
+        assert_eq!(
+            latest(&store).await.unwrap().unwrap().sequence,
+            fresh.sequence
+        );
     }
 
     #[tokio::test]

@@ -30,6 +30,8 @@
 #   place of the Blob container.
 # - USNM_SITEMAP_STATE_URL: a shared durable directory, never cache-cleaned,
 #   independent of visitor search logging.
+# - USNM_SITEMAP_GENERATE: unset, so on-prem generates. An Azure app at zero
+#   replicas sets it false and serves its last checkpoint.
 # - USNM_SEARCH_LOG_URL and USNM_OCR_REQUESTS_URL: unset until the public
 #   cutover (#955 Phase 3), because the API records same-origin searches on
 #   any hostname.
@@ -187,7 +189,7 @@ if $CHECK_APP; then
     ($azure | map({(.name): (.value // "(a secret)")}) | add) as $a
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
     | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
-    | (["AZURE_CLIENT_ID"] + (if $production then [] else ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL"] end)) as $azure_only
+    | (["AZURE_CLIENT_ID", "USNM_SITEMAP_GENERATE"] + (if $production then [] else ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL"] end)) as $azure_only
     | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
     | [($ak - $ok - $azure_only)[] as $k | "\($k): only in the Azure app (\($a[$k]))"]

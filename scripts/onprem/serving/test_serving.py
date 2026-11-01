@@ -530,6 +530,7 @@ class GenEnv(unittest.TestCase):
         self.assertEqual(api["USNM_QUICKWIT_URL"], "http://127.0.0.1:7280")
         self.assertEqual(api["USNM_RESPONSE_CACHE_URL"], "/srv/usnm-serving/cache")
         self.assertEqual(api["USNM_SITEMAP_STATE_URL"], "/srv/usnm-serving/sitemap-state")
+        self.assertNotIn("USNM_SITEMAP_GENERATE", api)
         self.assertEqual(api["USNM_ALLOWED_ORIGINS"], "https://usnewsmap.com,https://www.usnewsmap.com")
         self.assertEqual(api["USNM_CONGRESS_SEARCH"], "false")
         self.assertEqual(api["USNM_BROWSE_PAGES"], "true")
@@ -583,6 +584,7 @@ class GenEnv(unittest.TestCase):
             del api[k]
         api.update({"USNM_QUICKWIT_URL": "http://usnm-search-ca-prod", "USNM_RESPONSE_CACHE_URL": "https://x/cache",
                     "USNM_TRUSTED_PROXY_HOPS": "1", "USNM_COMPUTE_CONCURRENCY": "1", "AZURE_CLIENT_ID": "id",
+                    "USNM_SITEMAP_GENERATE": "false",
                     "USNM_SEARCH_LOG_URL": "https://x/searches", "USNM_OCR_REQUESTS_URL": "https://x/ocr-requests",
                     "USNM_ALLOWED_ORIGINS": "https://usnewsmap.com,https://www.usnewsmap.com,https://ca.example"})
         api.update(changes)
