@@ -172,7 +172,7 @@ const setPosition = (el, top, left) => {
   positions.set(el, [top, left]);
 };
 const swap = (old, fresh) => {
-  const scrolls = [...old.querySelectorAll('.scroll')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
+  const scrolls = [...old.querySelectorAll('.scroll, .table-wide')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
   const open = rowKeys(old).filter((k, i) => old.querySelectorAll('details')[i].open).filter(Boolean);
   const focused = old.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
   const focusedDetail = [...old.querySelectorAll('details')].findIndex(d => d.querySelector(':scope > summary') === document.activeElement);
@@ -187,12 +187,12 @@ const swap = (old, fresh) => {
     node.getBoundingClientRect();
     setPosition(node, 0, left);
     for (const [label, top, lf] of scrolls) {
-      const e = [...node.querySelectorAll('.scroll')].find((x) => x.getAttribute('aria-label') === label);
+      const e = [...node.querySelectorAll('.scroll, .table-wide')].find((x) => x.getAttribute('aria-label') === label);
       if (e) setPosition(e, top, lf);
     }
   };
   restore();
-  const focus = [...node.querySelectorAll('.scroll')].find(e => e.getAttribute('aria-label') === focused);
+  const focus = [...node.querySelectorAll('.scroll, .table-wide')].find(e => e.getAttribute('aria-label') === focused);
   if (focus) focus.focus({preventScroll:true});
   if (focusedKey) node.querySelectorAll('details')[keys.indexOf(focusedKey)]?.querySelector(':scope > summary')?.focus({preventScroll:true});
   requestAnimationFrame(() => { if (node.isConnected && node.checkVisibility()) restore(); });

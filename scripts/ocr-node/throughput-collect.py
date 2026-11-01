@@ -38,9 +38,11 @@ import urllib.request
 SCHEMA = 1
 HOUR = 3600
 MAX_HOURS = 336
-# Each journal is read this far before the window, to see a chunk's earlier attempts and the
-# last cumulative counter.
-LOOKBACK_HOURS = 48
+# Each journal is read this far before the window: the controller's for its last cumulative
+# counter, the shippers' and loaders' for a chunk's or unit's first attempt, up to the history
+# the dashboard keeps, so a late retry isn't counted twice.
+CONTROLLER_LOOKBACK_HOURS = 48
+SHIP_LOOKBACK_HOURS = 336
 COMMAND_TIMEOUT = 60
 CONTROLLER_UNIT = "usnm-boinc-priority-controller.service"
 SHIP_UNITS = {"usnm-quality-ship.service": "quality", "usnm-qwen-ship.service": "qwen"}
@@ -389,11 +391,12 @@ def step_events(since):
 
 def collect(args):
     window = Window(args.now if args.now is not None else int(datetime.now(timezone.utc).timestamp()), args.hours)
-    since = window.first - LOOKBACK_HOURS * HOUR
     if args.source == "controller":
+        since = window.first - CONTROLLER_LOOKBACK_HOURS * HOUR
         limits = collect_controller(window, journal([CONTROLLER_UNIT], since))
         window.forget_before(lambda name: True, oldest_journal_entry([CONTROLLER_UNIT]))
     elif args.source == "ship":
+        since = window.first - SHIP_LOOKBACK_HOURS * HOUR
         collect_ship(window, journal([*SHIP_UNITS, *LOADERS], since))
         for unit, lane in SHIP_UNITS.items():
             window.forget_before(lambda name, lane=lane: name.startswith(f"{lane}_") and "_load_" not in name,

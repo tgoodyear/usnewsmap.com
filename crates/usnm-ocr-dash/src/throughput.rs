@@ -514,7 +514,18 @@ fn total(hours: impl Iterator<Item = i64>, get: impl Fn(i64) -> Option<f64>) -> 
     (if known > 0 { Some(sum) } else { None }, known)
 }
 
-/// `series` summed at an hour: unknown only if every one is.
+/// `series` summed at an hour: unknown if any is, since the row or total
+/// stands for all of them.
+fn sum_all(get: &impl Fn(&str, i64) -> Option<f64>, series: &[&str], hour: i64) -> Option<f64> {
+    series
+        .iter()
+        .map(|s| get(s, hour))
+        .sum::<Option<f64>>()
+        .filter(|_| !series.is_empty())
+}
+
+/// `series` of seconds summed at an hour, unknown only if every one is: a
+/// phase that hasn't run yet has no series.
 fn sum_at(get: &impl Fn(&str, i64) -> Option<f64>, series: &[&str], hour: i64) -> Option<f64> {
     series
         .iter()
@@ -581,14 +592,14 @@ pub fn view(
         .collect();
     let mut steps = Vec::with_capacity(ROWS.len());
     for r in ROWS {
-        let count_at = |h: i64| sum_at(&get, r.counts, h);
+        let count_at = |h: i64| sum_all(&get, r.counts, h);
         let (last_day, day_hours_known) = total(range(end, 24), count_at);
         let (bin_values, bin_known) = bins(count_at, current);
         // Seconds over the same hours, only where both are known.
         let per: &[&str] = if r.per.is_empty() { r.counts } else { r.per };
         let (mut secs, mut pages) = (0.0, 0.0);
         for h in range(end, 24) {
-            if let (Some(n), Some(s)) = (sum_at(&get, per, h), sum_at(&get, r.seconds, h)) {
+            if let (Some(n), Some(s)) = (sum_all(&get, per, h), sum_at(&get, r.seconds, h)) {
                 secs += s;
                 pages += n;
             }
@@ -696,8 +707,8 @@ pub fn view(
         .collect();
     let results: Vec<&str> = results.iter().map(String::as_str).collect();
     ThroughputView {
-        results_last_hour: sum_at(&get, &results, end),
-        valid_last_hour: sum_at(&get, &["ocr_valid", "quality_valid", "qwen_valid"], end),
+        results_last_hour: sum_all(&get, &results, end),
+        valid_last_hour: sum_all(&get, &["ocr_valid", "quality_valid", "qwen_valid"], end),
         steps,
         quorum,
         phases,
@@ -913,6 +924,23 @@ mod tests {
     }
 
     #[test]
+    fn a_row_of_two_lanes_is_unknown_while_one_of_them_is() {
+        let mut t = Throughput::default();
+        let end = hour_of(now()) - HOUR;
+        apply(&mut t, "ship", end, json!({"quality_ship_pages": [100]}));
+        let v = view(&t, &BTreeMap::new(), None, now());
+        assert!(step(&v, "quality_ship").last_hour.is_none());
+        apply(
+            &mut t,
+            "ship",
+            end,
+            json!({"quality_ship_pages": [100], "qwen_ship_pages": [0]}),
+        );
+        let v = view(&t, &BTreeMap::new(), None, now());
+        assert_eq!(step(&v, "quality_ship").last_hour, Some(100.0));
+    }
+
+    #[test]
     fn replicas_are_not_pages() {
         let mut t = Throughput::default();
         let end = hour_of(now()) - HOUR;
@@ -1047,7 +1075,12 @@ mod tests {
     fn bins_cover_a_week_and_a_bin_nobody_observed_stays_unknown() {
         let mut t = Throughput::default();
         let end = hour_of(now()) - HOUR;
-        apply(&mut t, "ship", end, json!({"quality_ship_pages": [40]}));
+        apply(
+            &mut t,
+            "ship",
+            end,
+            json!({"quality_ship_pages": [30], "qwen_ship_pages": [10]}),
+        );
         let v = view(&t, &BTreeMap::new(), None, now());
         let s = step(&v, "quality_ship");
         assert_eq!(s.bins.len(), (CHART_HOURS / BIN_HOURS) as usize);
