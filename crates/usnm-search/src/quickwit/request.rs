@@ -48,6 +48,21 @@ pub fn summary_request(
     }))
 }
 
+/// The summary with the whole cube under its `places`: one request reads
+/// both, which [`super::parse_summary`] and [`super::parse_cube`] decode.
+/// The planner sends it for few enough buckets ([`crate::plan`]), whatever
+/// the upper bound: the engine refuses what it can't hold.
+pub fn summary_with_cube_request(
+    node: &Node,
+    filters: &Filters,
+    indexes: &IndexSet,
+    spec: &BucketSpec,
+) -> Result<Value, SearchError> {
+    let mut body = summary_request(node, filters, indexes, spec)?;
+    body["aggs"]["places"]["aggs"]["t"] = histogram(spec, 1);
+    Ok(body)
+}
+
 pub fn cube_request(
     node: &Node,
     filters: &Filters,
@@ -254,6 +269,30 @@ mod tests {
             .ends_with("AND place_shard:IN [0 5]"));
         let all = cube_request(&q, &filters(), &none(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         assert!(!all["query"].as_str().unwrap().contains("place_shard"));
+    }
+
+    /// The combined request is the summary's, with the cube's histogram
+    /// under each place, and its response decodes as each of the two.
+    #[test]
+    fn the_combined_request_is_the_summary_with_the_cubes_histogram() {
+        let q = parse("gold").unwrap();
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        let mut combined = summary_with_cube_request(&q, &filters(), &none(), &spec).unwrap();
+        let cube = cube_request(&q, &filters(), &none(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+        assert_eq!(combined["query"], cube["query"]);
+        assert_eq!(
+            combined["aggs"]["places"]["aggs"]["t"],
+            cube["aggs"]["places"]["aggs"]["t"]
+        );
+        let t = combined["aggs"]["places"]["aggs"]
+            .as_object_mut()
+            .unwrap()
+            .remove("t");
+        assert!(t.is_some());
+        assert_eq!(
+            combined,
+            summary_request(&q, &filters(), &none(), &spec).unwrap()
+        );
     }
 
     #[test]
