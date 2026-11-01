@@ -578,8 +578,11 @@ export interface OcrCount {
 export interface OcrJa {
   /** Reported recently with pages left. */
   running: boolean;
+  /** The digitized pages to read. */
   targets: OcrCount;
   done: OcrCount;
+  /** Pages LoC lists with no scan, not in `targets`. Absent from older APIs. */
+  undigitized?: OcrCount;
   /** Of the target pages, to one decimal, never rounded up to 100. */
   percent: number;
   engine: string | null;

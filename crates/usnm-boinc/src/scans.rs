@@ -11,19 +11,27 @@
 //!    to www.loc.gov's item API.
 //! 3. Neither: the page is missing.
 //!
+//! With a scan fetcher's tree in hand ([`fetched`]) neither is asked: the
+//! host's fetcher has already spent its LoC budget on the page.
+//!
 //! LoC politeness: one request at a time, at least `gap` (5 s or more)
 //! between any two, the storage service and the image server sharing one
 //! pacer; no retries. A 403, 429 or 5xx, a network failure, or an HTML page
 //! where a file was expected (a bot challenge) is an error the caller turns
 //! into a hold.
 use bytes::Bytes;
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::boinc::sha256;
 use usnm_ocr_worker::{
     archive::Archive,
     batch::{self, jp2_url_of},
     loc::{image_url, BatchPage, FetchError, ImageSize, LocClient, LocConfig, ScanFormat},
+    prefetch::{matches_sidecar, sidecar_path, Sidecar},
 };
 
 pub const MIN_GAP: Duration = Duration::from_secs(5);
@@ -64,6 +72,40 @@ pub fn blob_name(batch: &str, key: &PageKey, format: ScanFormat) -> String {
         key.seq,
         format.ext()
     )
+}
+
+/// The page in a copy of the scan fetcher's tree (`keep/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`
+/// and its `.json` sidecar), for a stage that sends nothing to LoC. `Ok(None)`: not there.
+/// A scan that isn't the page its sidecar names, or that doesn't match it, is an error.
+pub fn fetched(scans: &Path, batch: &str, key: &PageKey) -> anyhow::Result<Option<Got>> {
+    for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
+        let path = scans.join(blob_name(batch, key, format));
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        anyhow::ensure!(meta.is_file(), "{}: not a regular file", path.display());
+        let side: Sidecar = serde_json::from_slice(&crate::read(
+            &sidecar_path(&path),
+            usnm_ocr_contract::boinc::MAX_JSON,
+        )?)?;
+        let bytes = Bytes::from(crate::read(&path, usnm_ocr_contract::boinc::MAX_SCAN)?);
+        anyhow::ensure!(
+            side.doc_id == key.doc_id()
+                && side.batch == batch
+                && side.resolution == "full"
+                && side.format == format.name()
+                && matches_sidecar(&bytes, &side),
+            "{}: differs from its sidecar",
+            path.display()
+        );
+        return Ok(Some(Got {
+            bytes,
+            url: side.loc_url,
+            iiif_base: side.iiif_base,
+            from_archive: false,
+        }));
+    }
+    Ok(None)
 }
 
 /// LoC's ALTO URL beside the JP2 for a known IIIF base.

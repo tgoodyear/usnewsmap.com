@@ -5,6 +5,8 @@
                                       list the pages to OCR (writes ocr-ja/targets-v3.jsonl)
     python3 jaocr.py run [--limit N] [--mixed-below 0.65]
                                       OCR the targets not done yet
+    python3 jaocr.py status [--mixed-below 0.65]
+                                      write the progress record from the listing; no OCR, nothing sent to LoC
     python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
     python3 jaocr.py quality [--sample-pct 2] [--min-pages 50] [--metric v2]
                                       how good LoC's OCR is, by language and decade (quality.py)
@@ -48,8 +50,9 @@ pages together, and writes each page's ALTO to ocr-ja/alto/<doc_id>.xml
 (alto.py, #151) and then ocr-ja/pages/<issue>[.<n>].parquet, an overlay keyed
 by doc_id (see write_part; not the full curated schema). A part is written
 only when every image-available page it was asked for has text and ALTO.
-Explicitly undigitized source pages stay pending without blocking the rest.
-A page is done when
+Explicitly undigitized source pages stay pending without blocking the rest,
+and the ones the availability audit lists (undigitized.py) are neither asked
+for nor counted as targets. A page is done when
 its doc_id is in a part and it has ALTO, so an issue done before new targets
 appeared, or before the job wrote ALTO, gets another part for those pages. loc.gov's API is paced JAOCR_API_GAP seconds
 per request and the image server JAOCR_TILE_GAP seconds, each multiplied by
@@ -79,6 +82,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import alto
+import undigitized
 
 UA = "usnewsmap-ja-ocr/1.0 (+https://usnewsmap.com)"
 OCR_SOURCE = "usnm-ndlocr-lite"
@@ -623,15 +627,22 @@ def progress(curated, rows: list[dict]) -> dict:
     """Target and done pages and issues, from the ALTO listing alone: a page's
     ALTO is written just before its part, so a page with ALTO is done but for
     a part write that failed, which is close enough for a progress bar. An
-    issue is done when all its target pages are."""
+    issue is done when all its target pages are. Pages with no scan
+    (undigitized.py) are counted apart, so targets are digitized pages."""
     with_alto = alto_pages(curated)
     per_issue: dict[str, list[bool]] = {}
+    no_scan: dict[str, int] = {}
     for r in rows:
-        per_issue.setdefault(issue_key(r["lccn"], r["date"], r["edition"]), []).append(r["doc_id"] in with_alto)
+        issue = issue_key(r["lccn"], r["date"], r["edition"])
+        if r["doc_id"] in undigitized.DOC_IDS:
+            no_scan[issue] = no_scan.get(issue, 0) + 1
+        else:
+            per_issue.setdefault(issue, []).append(r["doc_id"] in with_alto)
     return {
-        "targets": {"pages": len(rows), "issues": len(per_issue)},
+        "targets": {"pages": sum(len(v) for v in per_issue.values()), "issues": len(per_issue)},
         "done": {"pages": sum(sum(v) for v in per_issue.values()),
                  "issues": sum(all(v) for v in per_issue.values())},
+        "undigitized": {"pages": sum(no_scan.values()), "issues": len(no_scan)},
     }
 
 
@@ -654,6 +665,16 @@ def write_status(reference, curated, rows: list[dict], started: datetime, done_a
     return body
 
 
+def status(reference, curated, ndl_root: Path, mixed_below: float = MIXED_BELOW) -> dict:
+    """The progress record from the existing target list and the ALTO listing, for pages another
+    path wrote (BOINC's collect, the native promotion). It needs the list `targets` wrote."""
+    rows = [json.loads(x) for x in curated.read(f"{PREFIX}/{targets_name(mixed_below)}.jsonl").decode().splitlines() if x]
+    now = datetime.now(timezone.utc)
+    # The pace needs pages this run read: none, so no estimate.
+    return write_status(reference, curated, rows, now, progress(curated, rows)["done"]["pages"],
+                        f"ndlocr-lite {ndlocr_version(ndl_root)}")
+
+
 def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,
         mixed_below: float = MIXED_BELOW, *, fail_on_issue_error: bool = False) -> None:
     replicas = max(1, int(os.environ.get("JAOCR_REPLICAS", "1")))
@@ -671,7 +692,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,
     done = done_pages(curated, parts) & alto_pages(curated)
     by_issue: dict[str, list[dict]] = {}
     for r in rows:
-        if r["doc_id"] not in done:
+        if r["doc_id"] not in done and r["doc_id"] not in undigitized.DOC_IDS:
             by_issue.setdefault(issue_key(r["lccn"], r["date"], r["edition"]), []).append(r)
     todo = sorted(by_issue)
     log("ocr starting", targets=len(rows), targets_file=tfile, done_pages=len(done), todo_issues=len(todo),
@@ -787,13 +808,13 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write",
+    ap.add_argument("command", choices=["targets", "run", "status", "audit", "quality", "mixed", "american-stories", "american-stories-write",
                                         "damage-parity"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--fail-on-issue-error", action="store_true",
                     help="run: finish without retries, then exit nonzero if any claimed issue failed")
     ap.add_argument("--mixed-below", type=float,
-                    help=f"targets, run: OCR pages whose LoC text is under this word-like share, a whole "
+                    help=f"targets, run, status: OCR pages whose LoC text is under this word-like share, a whole "
                          f"percentage (default JAOCR_MIXED_BELOW or {MIXED_BELOW}; {GARBLED_BELOW} or less: "
                          f"no mixed pages)")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
@@ -848,6 +869,10 @@ def main() -> None:
         for r in rows:
             why[r["loc_text"]] = why.get(r["loc_text"], 0) + 1
         log("targets written", pages=len(rows), issues=len(issues), by_loc_text=why)
+    elif a.command == "status":
+        body = status(reference, curated, Path(os.environ.get("NDLOCR_ROOT", "/opt/ndlocr-lite")),
+                      mixed_below_setting(a.mixed_below))
+        log("status written", targets=body["targets"], done=body["done"], undigitized=body["undigitized"])
     else:
         ndl = Path(os.environ.get("NDLOCR_ROOT", "/opt/ndlocr-lite"))
         owner = os.environ.get("CONTAINER_APP_REPLICA_NAME") or os.environ.get("HOSTNAME") or "local"

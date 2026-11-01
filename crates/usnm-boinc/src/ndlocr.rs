@@ -151,13 +151,15 @@ pub fn load_job(unit: &Path) -> anyhow::Result<Job> {
     Ok(job)
 }
 
-/// `reason:jpn:doc_id:batch_verNN` pages use the existing polite scan source.
+/// `reason:jpn:doc_id:batch_verNN` pages use the existing polite scan source, or with `scans`,
+/// a copy of the scan fetcher's tree and nothing else: no request goes to LoC.
 pub async fn stage(
     root: &Path,
     pages: &[crate::surya::Page],
     spec: boinc::Engine,
     archive: Option<&str>,
     cache: Option<PathBuf>,
+    scans: Option<&Path>,
 ) -> anyhow::Result<usize> {
     let _lock = Lock::take(root)?;
     crate::assess::check_no_hold(root)?;
@@ -207,7 +209,11 @@ pub async fn stage(
             );
             continue;
         }
-        let scan = match sources.jpeg(&key, &page.batches).await {
+        let found = match scans {
+            Some(dir) => Ok(crate::scans::fetched(dir, batch, &key)?),
+            None => sources.jpeg(&key, &page.batches).await,
+        };
+        let scan = match found {
             Ok(Some(scan)) => scan,
             Ok(None) => anyhow::bail!("{}: scan not found", key.doc_id()),
             Err(error) => {
@@ -218,15 +224,9 @@ pub async fn stage(
                 return Err(anyhow::anyhow!("{error}"));
             }
         };
-        let iiif_base = scan
-            .url
-            .split("/full/")
-            .next()
-            .context("IIIF URL")?
-            .to_owned();
         job.scan = boinc::Scan {
             url: scan.url,
-            iiif_base,
+            iiif_base: scan.iiif_base,
             sha256: sha256(&scan.bytes),
             bytes: scan.bytes.len() as u64,
             md5: None,

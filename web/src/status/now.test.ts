@@ -522,7 +522,7 @@ describe("japaneseOcr", () => {
       eta: null,
       done: { pages: 11_000, issues: 1500 },
     });
-    expect(japaneseOcr(s, NOW)!.text).toBe("All 11,000 Japanese pages read.");
+    expect(japaneseOcr(s, NOW)!.text).toBe("All 11,000 Japanese pages read (100%).");
     // Nothing to read: done, and no zero-length bar.
     s.ocr_ja = ocrJa({
       running: false,
@@ -534,6 +534,33 @@ describe("japaneseOcr", () => {
       text: "There are no Japanese pages to read.",
       searchable: "Processed text becomes searchable only after acceptance and an index update.",
     });
+  });
+
+  it("pages with no scan aren't missing", () => {
+    const s = status({});
+    const undigitized = { pages: 24, issues: 16 };
+    s.ocr_ja = ocrJa({
+      running: false,
+      eta: null,
+      targets: { pages: 12_787, issues: 1500 },
+      done: { pages: 12_787, issues: 1500 },
+      undigitized,
+    });
+    expect(japaneseOcr(s, NOW)).toMatchObject({
+      text: "All 12,787 digitized Japanese pages read (100%). No scan exists for 24 more.",
+      progress: { done: 12_787, total: 12_787, label: "12,787 of 12,787 digitized Japanese pages read" },
+    });
+    s.ocr_ja = ocrJa({
+      running: false,
+      eta: null,
+      targets: { pages: 12_787, issues: 1500 },
+      done: { pages: 12_769, issues: 1490 },
+      undigitized,
+      updated_at: ago(120),
+    });
+    expect(japaneseOcr(s, NOW)!.text).toBe(
+      "The first pass read 12,769 of 12,787 digitized Japanese pages (99%) and last reported 2 h ago. Any further OCR runs through BOINC, below. No scan exists for 24 more.",
+    );
   });
 
   it("nothing to show without a report or a Japanese index", () => {
