@@ -317,6 +317,8 @@ struct IndexLine {
     doc_id: String,
     fetched_at: DateTime<Utc>,
     bytes: u64,
+    #[serde(default)]
+    download_ms: u64,
 }
 
 /// A failure line.
@@ -453,6 +455,10 @@ pub struct Fetch {
     pub buffer: Tally,
     /// Fetches (time, bytes) over the last day.
     events: VecDeque<(DateTime<Utc>, u64)>,
+    /// Lines of the index and their download milliseconds, by the hour.
+    pub hourly: BTreeMap<i64, (u64, u64)>,
+    /// When the index was last read to its end.
+    pub index_read_at: Option<DateTime<Utc>>,
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
     pub dead: HashSet<String>,
@@ -494,6 +500,8 @@ impl Fetch {
             groups: [Tally::default(); 6],
             buffer: Tally::default(),
             events: VecDeque::new(),
+            hourly: BTreeMap::new(),
+            index_read_at: None,
             failures: VecDeque::new(),
             dead: HashSet::new(),
             cooling: HashMap::new(),
@@ -532,6 +540,7 @@ impl Fetch {
         self.groups = [Tally::default(); 6];
         self.buffer = Tally::default();
         self.events.clear();
+        self.hourly.clear();
     }
 
     /// Read what changed. Blocking (file reads); run it off the async
@@ -540,7 +549,10 @@ impl Fetch {
         self.read_status(now);
         self.load_plan(now);
         self.index_error = match self.read_index() {
-            Ok(()) => None,
+            Ok(()) => {
+                self.index_read_at = Some(now);
+                None
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "can't read the fetch index");
                 Some(format!("{e:#}"))
@@ -553,6 +565,8 @@ impl Fetch {
         if let Err(e) = self.read_failures() {
             tracing::warn!(error = %e, "can't read the fetch failures");
         }
+        let kept = now.timestamp() - crate::throughput::KEEP_HOURS * crate::throughput::HOUR;
+        self.hourly = self.hourly.split_off(&kept);
         let day = now - Duration::days(1);
         while self.events.front().is_some_and(|(t, _)| *t < day) {
             self.events.pop_front();
@@ -702,6 +716,10 @@ impl Fetch {
 
     fn add_fetch(&mut self, line: IndexLine) {
         self.events.push_back((line.fetched_at, line.bytes));
+        let hour = line.fetched_at.timestamp().div_euclid(3600) * 3600;
+        let tally = self.hourly.entry(hour).or_default();
+        tally.0 += 1;
+        tally.1 += line.download_ms;
         match self.all.entry(doc_hash(&line.doc_id)) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let t = e.get_mut();
@@ -775,6 +793,14 @@ impl Fetch {
                 }
             }
         }
+    }
+
+    /// The hours the index says something about: from its first kept hour to
+    /// the last read. Inside them, an hour with no lines is a real zero.
+    pub fn hours_covered(&self) -> Option<(i64, i64)> {
+        let first = *self.hourly.keys().next()?;
+        let last = self.index_read_at?.timestamp().div_euclid(3600) * 3600;
+        Some((first, last))
     }
 
     /// Fetches and bytes since `since`.

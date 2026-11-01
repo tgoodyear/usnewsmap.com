@@ -1,9 +1,9 @@
 pub(super) const STYLE: &str = r#"
 :root { --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
-  --grid:#e1e0d9; --track:#e1e0d9; --fill:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
+  --grid:#e1e0d9; --track:#e1e0d9; --fill:#2a78d6; --series2:#eb6834; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
   --ring:rgba(11,11,11,0.10); }
 @media (prefers-color-scheme: dark) { :root { --surface:#1a1a19; --plane:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7;
-  --grid:#2c2c2a; --track:#383835; --fill:#3987e5; --ring:rgba(255,255,255,0.10); } }
+  --grid:#2c2c2a; --track:#383835; --fill:#3987e5; --series2:#d95926; --ring:rgba(255,255,255,0.10); } }
 * { box-sizing: border-box; }
 body { margin:0; padding:16px 20px 40px; background:var(--plane); color:var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -35,6 +35,18 @@ section.wide svg { margin:6px 0 10px; min-width:760px; }
 .step-rates th, .step-rates td { white-space:normal; overflow-wrap:anywhere; }
 .step-rates th:first-child { width:25%; }
 .step-rates th:nth-child(2) { width:20%; }
+.table-wide { overflow-x:auto; }
+.nowrap { white-space:nowrap; }
+.throughput td { white-space:normal; }
+.throughput td:first-child { min-width:10em; }
+.throughput details > summary { cursor:pointer; }
+.throughput details p { margin:6px 0; color:var(--ink2); font-size:13px; max-width:30em; }
+section.wide svg.spark { display:inline-block; width:252px; height:36px; min-width:0; margin:0; vertical-align:middle; }
+.spark rect { fill:var(--fill); }
+.spark rect.s2 { fill:var(--series2); }
+.spark rect.unk { fill:var(--grid); opacity:.45; }
+.key { display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--fill); margin-right:4px; }
+.key.s2 { background:var(--series2); }
 .mobile-flow { display:none; }
 .diagram-hint { display:none; }
 .sub, .ecosystem-card, .kv td { overflow-wrap:anywhere; }
@@ -130,6 +142,10 @@ const localTimes = (root) => {
   for (const t of root.querySelectorAll('time[datetime]')) {
     const d = new Date(t.getAttribute('datetime'));
     if (!isNaN(d)) t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short'});
+  }
+  for (const t of root.querySelectorAll('title[data-at]')) {
+    const d = new Date(t.dataset.at);
+    if (!isNaN(d)) { t.textContent = d.toLocaleString('en-US', {timeZone:'America/New_York', month:'short', day:'numeric', hour:'numeric'}) + ' ET, 4 hours: ' + t.textContent; delete t.dataset.at; }
   }
 };
 const panelGroups = ['.dashboard', '.diagnostics > .grid'];

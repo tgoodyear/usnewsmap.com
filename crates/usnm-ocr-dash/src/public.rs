@@ -196,6 +196,12 @@ pub fn redact(v: &mut View) {
         }
     }
 
+    // Throughput: counts only, but a collector's limits are free text.
+    for s in &mut v.throughput.steps {
+        scrub_opt(&mut s.limit);
+    }
+    scrub_opt(&mut v.throughput.error);
+
     // Nodes: numbered, without their addresses.
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     for (i, n) in v.nodes.iter_mut().enumerate() {

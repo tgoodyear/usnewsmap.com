@@ -15,6 +15,7 @@ pub mod public;
 pub mod queues;
 pub mod sset;
 pub mod tail;
+pub mod throughput;
 pub mod view;
 
 use std::collections::BTreeMap;
@@ -45,6 +46,7 @@ pub struct App {
     pub hosts: Mutex<Hosts>,
     pub ssets: Mutex<Ssets>,
     pub queues: Mutex<queues::Queues>,
+    pub throughput: Mutex<throughput::Throughput>,
     pub seed_plan_path: Option<PathBuf>,
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
@@ -55,6 +57,8 @@ pub struct App {
     /// Serial Set fetch → the addresses that may push its status (the
     /// node that runs it).
     pub sset_pushers: BTreeMap<String, Allow>,
+    /// Throughput source → the addresses that may push it (its host's).
+    pub throughput_pushers: BTreeMap<String, Allow>,
 }
 
 impl App {
@@ -136,6 +140,12 @@ impl App {
             now,
         );
         v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        v.throughput = throughput::view(
+            &self.throughput.lock().expect("throughput lock"),
+            &fetch.hourly,
+            fetch.hours_covered(),
+            now,
+        );
         self.queues
             .lock()
             .expect("queues lock")
@@ -218,6 +228,7 @@ async fn api_as(app: Arc<App>, part: &str, public: bool) -> Response {
         "serialset" => serde_json::to_value(&v.serial_set),
         "next" => serde_json::to_value(&v.next),
         "ocred" => serde_json::to_value(&v.ocred),
+        "throughput" => serde_json::to_value(&v.throughput),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     let cache = if public { PUBLIC_CACHE } else { LAN_CACHE };
@@ -281,6 +292,48 @@ async fn put_sset(
     }
 }
 
+/// A collector pushes its hourly counts: only from its own host's address,
+/// and only its own source.
+async fn put_throughput(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(source): Path<String>,
+    body: Bytes,
+) -> Response {
+    let ip = peer.ip().to_canonical();
+    if !app
+        .throughput_pushers
+        .get(&source)
+        .is_some_and(|a| a.contains(ip))
+    {
+        tracing::info!(peer = %ip, source, "refused a throughput push");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let now = Utc::now();
+    let packet = match throughput::parse(&body, &source, now) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+    };
+    let saved = tokio::task::spawn_blocking(move || {
+        app.throughput
+            .lock()
+            .expect("throughput lock")
+            .apply(packet, now)
+    })
+    .await;
+    match saved {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            tracing::error!(
+                error = format!("{e:#}"),
+                "can't save the throughput history"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
@@ -288,6 +341,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/{part}", get(api))
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
+        .route("/api/throughput/{source}", put(put_throughput))
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
         .with_state(app)
@@ -324,8 +378,9 @@ pub fn public_router(app: Arc<App>) -> Router {
 /// Plain HTTP when the page itself is served over HTTPS: every request is
 /// redirected to `https://<authority>` (the name, and the port unless 443)
 /// with the same path and query, except
-/// the hosts' stats pushes (`PUT /api/host/{name}`) and the Serial Set
-/// status push (`PUT /api/sset/{name}`), which carry no secret,
+/// the hosts' stats pushes (`PUT /api/host/{name}`), the Serial Set status
+/// push (`PUT /api/sset/{name}`) and the throughput counters
+/// (`PUT /api/throughput/{source}`), which carry no secret,
 /// are checked by address, and come from `curl` that doesn't follow
 /// redirects. The same `--allow` as the page.
 pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
@@ -338,6 +393,10 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
         // Any other method on the push path is redirected too, not a 405.
         .route("/api/host/{name}", put(put_host).fallback(redirect.clone()))
         .route("/api/sset/{name}", put(put_sset).fallback(redirect.clone()))
+        .route(
+            "/api/throughput/{source}",
+            put(put_throughput).fallback(redirect.clone()),
+        )
         .fallback(redirect)
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
@@ -360,6 +419,7 @@ mod tests {
             hosts: Mutex::new(Hosts::new(Vec::new())),
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
+            throughput: Mutex::new(throughput::Throughput::default()),
             seed_plan_path: None,
             seed_plan: Mutex::new(None),
             settings: Settings {
@@ -369,6 +429,11 @@ mod tests {
                 workbook_url: None,
             },
             allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
+            throughput_pushers: [(
+                "ship".to_owned(),
+                Allow::new(vec!["198.51.100.14".parse().unwrap()]),
+            )]
+            .into(),
             pushers: [(
                 "pve".to_owned(),
                 Allow::new(vec!["198.51.100.12".parse().unwrap()]),
@@ -637,6 +702,108 @@ mod tests {
         assert!(page.contains("Serial Set"));
     }
 
+    fn throughput_push() -> String {
+        let hour = (Utc::now().timestamp() / 3600 - 1) * 3600;
+        format!(
+            r#"{{"schema":1,"source":"ship","observed_at":"{}","first_hour":{hour},"hours":1,
+                "series":{{"quality_load_pages":[200]}},
+                "limits":{{"quality_ship":"1 chunk a run on pve-laptop"}}}}"#,
+            Utc::now().to_rfc3339()
+        )
+    }
+
+    #[tokio::test]
+    async fn a_throughput_source_pushes_from_its_own_address_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let body = throughput_push();
+        let push = |from, uri| call(a.clone(), from, "PUT", uri, &body);
+        assert_eq!(
+            push("198.51.100.50", "/api/throughput/ship").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            push("198.51.100.14", "/api/throughput/boinc").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            push("203.0.113.3", "/api/throughput/ship").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (s, _) = call(
+            a.clone(),
+            "198.51.100.14",
+            "PUT",
+            "/api/throughput/ship",
+            "{}",
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            push("198.51.100.14", "/api/throughput/ship").await.0,
+            StatusCode::NO_CONTENT
+        );
+        // Plain HTTP takes the push too.
+        let ((s, _), _) = call_on(
+            redirect_router(a.clone(), "ocr.example.org"),
+            "198.51.100.14",
+            "PUT",
+            "/api/throughput/ship",
+            &body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let (_, json) = call(
+            a.clone(),
+            "198.51.100.50",
+            "GET",
+            "/api/throughput.json",
+            "",
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let step = v["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "quality_load")
+            .unwrap();
+        assert_eq!(step["last_hour"], 200.0);
+        assert!(json.contains("1 chunk a run on pve-laptop"));
+        let (_, page) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(page.contains("id=\"step-throughput\""));
+        // On the public listener: in the view, scrubbed; no push and no part of its own.
+        let ((_, public), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/api/view.json",
+            "",
+        )
+        .await;
+        assert!(public.contains("\"quality_load\""));
+        assert!(public.contains("1 chunk a run on a lab host"));
+        assert!(leaks(&public).is_empty(), "{:?}", leaks(&public));
+        let ((s, _), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/api/throughput.json",
+            "",
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let ((s, _), _) = call_on(
+            public_router(a),
+            "198.51.100.14",
+            "PUT",
+            "/api/throughput/ship",
+            &body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
     /// The lab's names, numbers, paths and addresses, as the LAN sees them.
     fn realistic(dir: &std::path::Path) -> Arc<App> {
         use usnm_ocr_contract::status::{
@@ -687,6 +854,7 @@ mod tests {
             hosts: Mutex::new(Hosts::new(Vec::new())),
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
+            throughput: Mutex::new(throughput::Throughput::default()),
             seed_plan_path: None,
             seed_plan: Mutex::new(Some(
                 [("pve-big".to_owned(), "/etc/usnm/seed.env".to_owned())].into(),
@@ -700,6 +868,7 @@ mod tests {
             allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
             pushers: BTreeMap::new(),
             sset_pushers: BTreeMap::new(),
+            throughput_pushers: BTreeMap::new(),
         });
         let guest = |vmid, kind: &str, name: &str, node: &str| PveGuest {
             vmid,
