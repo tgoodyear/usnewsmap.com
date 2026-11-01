@@ -112,19 +112,35 @@ environment join and identity assign checks an update makes). That role can
 change those jobs, so the host can act as their identities; this was accepted
 for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, the non-secret
 outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
-`/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority"]`,
-`claim_languages ["eng"]`, `lease_hours` 36), its state in
+`/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority", "ocr-bulk"]`,
+`claim_languages ["eng", "deu"]`, `lease_hours` 36), its state in
 `/var/lib/usnm-priority-controller`, and the push command
 `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local, no SSH).
 
 The service passes `--server-status-url
 https://boinc.usnewsmap.com/server_status.php?xml=1` and
-`--max-global-pending 1000`. Without per-app status, conservative inventory
-accounting treats every application's pending work as OCR and can prevent
-priority claims while unrelated GPU queues are full. Keep `max_pending: 40`,
-`pages_per_host: 2`, and `batch_size: 10`: OCR admission is bounded by
-`min(40, active_hosts * 2)` independently of the global safety cap. Status fetch
-or parsing failures stop the tick rather than admitting unmeasured work.
+`--max-global-pending 2000`, and `--low-watermark 220 --high-watermark 300`. Without
+per-app status, conservative inventory accounting treats every application's pending
+work as OCR and can prevent priority claims while unrelated GPU queues are full. The
+plan's `max_pending: 400`, `pages_per_host: 24` and `batch_size: 100` would bound OCR
+admission by `min(400, active_hosts * 24)`, but the explicit watermarks replace that:
+`active_hosts` counts every host that made contact, including those that cannot run
+`usnm_ocr`. Status fetch or parsing failures stop the tick rather than admitting
+unmeasured work.
+
+Keep the low watermark close to the high one. `cohort_pending` counts results a host
+has already taken and results returned but not yet collected, and a host can take
+dozens of pages at once. With the default watermarks (half of the high one) a slow host
+holding a batch kept the count above the low watermark for hours while the others asked
+for work and got none: one refill about every 3 hours, on 31 Oct 2026.
+
+`--cap-exempt-app usnm_qwen` leaves that app's unsent results out of the global safety
+cap. They are queued on the server and on no host, and Qwen keeps a ready baseline of
+about 1,800 results on purpose (`contrib-compute/docs/app-release.md`), so without the
+flag the cap has to stay above that baseline plus the OCR high watermark. Results in
+progress and every other app's work still count; the tick's `cap_exempt_pending` says
+how much was left out.
+
 Use these existing runtime flags rather than changing an initialized
 configuration's immutable hash; never delete or reset controller state to
 change admission settings.
@@ -249,10 +265,10 @@ storage must remain. Do not remove the setting or provision until a main-based
 what-if, live API pin comparison and serialized maintainer apply are approved.
 
 The on-prem launcher remains fail-fast on the shared project mutex by default.
-For owner-coordinated rollout only, the host can set
-`USNM_BOINC_STEP_LOCK_WAIT_SECS=120` in the controller's fixed SSH forced-command
-environment to tolerate a concurrent ordinary producer. The permitted range is
-0..300 seconds and must be shorter than `--wait-mins`. Lock waiting subtracts from
+The host sets `USNM_BOINC_STEP_LOCK_WAIT_SECS=300` in the controller's fixed SSH
+forced-command environment to tolerate a concurrent ordinary producer (120 until 31 Oct
+2026, when `quality-stage` held the mutex about 7 hours a day, p50 5 minutes and up to
+32). The permitted range is 0..300 seconds and must be shorter than `--wait-mins`. Lock waiting subtracts from
 the container's existing runtime budget; timeout still fails explicitly and never
 starts a container without the mutex. Do not stop a producer, remove the lock or
 edit an immutable plan to avoid contention. Deploy the reviewed launcher before
@@ -609,8 +625,10 @@ message only when all of these hold, and otherwise puts it back:
 - with `claim_languages` (`CLAIM_LANGUAGES`, `--language`), the page's source
   language is one of them (#866).
 
-Set `claim_languages` to the trust calibration's language (`["eng"]` today:
-`trust.json` has one `scope.language`, and German failed its gate in #835).
+Set `claim_languages` to languages `trust.json` has a policy for. It now lists one policy
+per scope in `policies`: `eng`/`eng` and `deu`/`frak2021`, each with its own hosts. The
+German policy has no calibrated error limit (`max_cer` 1.0): its output is kept under the
+20 Oct 2026 decision to re-OCR it later.
 Without it the claim takes any language the worker image can read, and
 `collect --trust` holds back a result outside the calibrated scope, so that
 page's message would stay hidden for the whole lease instead of going back to
