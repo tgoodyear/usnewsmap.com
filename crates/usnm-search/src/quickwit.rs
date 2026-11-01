@@ -41,7 +41,7 @@ pub use response::{
     check_complete, parse_browse, parse_cube, parse_hits, parse_summary, SearchResponse, StoredHit,
 };
 
-use error::{failure_cause, map_err, splits_named};
+use error::{aggregation_limit, failure_cause, map_err, splits_named};
 
 /// Upper bound on places in one terms aggregation.
 const MAX_PLACES: u32 = 5_000;
@@ -163,7 +163,9 @@ impl QuickwitBackend {
                 failure_cause(&body, &sent),
                 splits_named(&body, &sent)
             );
-            return Err(if status.is_client_error() {
+            return Err(if aggregation_limit(&body).is_some() {
+                SearchError::OverAggregationLimit(msg)
+            } else if status.is_client_error() {
                 SearchError::Rejected(msg)
             } else {
                 SearchError::Backend(msg)
@@ -172,17 +174,6 @@ impl QuickwitBackend {
         let parsed: SearchResponse = resp.json().await.map_err(map_err)?;
         check_complete(&parsed, &sent)?;
         Ok(parsed)
-    }
-}
-
-/// Whether Quickwit refused an aggregation for its size, by the cause
-/// [`QuickwitBackend::search`] puts in the message.
-fn over_aggregation_limit(e: &SearchError) -> bool {
-    match e {
-        SearchError::Backend(m) | SearchError::Rejected(m) => {
-            m.contains("bucket_limit") || m.contains("memory_limit")
-        }
-        _ => false,
     }
 }
 
@@ -222,7 +213,7 @@ impl SearchBackend for QuickwitBackend {
                 parse_summary(&resp, spec)?,
                 parse_cube(&resp, spec)?,
             ))),
-            Err(e) if over_aggregation_limit(&e) => Ok(None),
+            Err(SearchError::OverAggregationLimit(_)) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -406,11 +397,15 @@ mod tests {
                 .unwrap();
             assert!(out.is_none());
         }
-        let body = r#"{"message":"internal error: `storage error`"}"#;
-        let qw =
-            QuickwitBackend::new(&stub_saying(500, body).await, Duration::from_secs(5)).unwrap();
-        let err = qw.summary_with_cube(&set, &q, &f, &spec).await.unwrap_err();
-        assert!(matches!(err, SearchError::Backend(_)), "{err}");
+        for body in [
+            r#"{"message":"internal error: `storage error`"}"#,
+            r#"{"message":"internal error: `could not read the bucket from storage`"}"#,
+        ] {
+            let qw = QuickwitBackend::new(&stub_saying(500, body).await, Duration::from_secs(5))
+                .unwrap();
+            let err = qw.summary_with_cube(&set, &q, &f, &spec).await.unwrap_err();
+            assert!(matches!(err, SearchError::Backend(_)), "{err}");
+        }
         let qw = QuickwitBackend::new(&stub(408).await, Duration::from_secs(5)).unwrap();
         let err = qw.summary_with_cube(&set, &q, &f, &spec).await.unwrap_err();
         assert!(matches!(err, SearchError::Timeout), "{err}");

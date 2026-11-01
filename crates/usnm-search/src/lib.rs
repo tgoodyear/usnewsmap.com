@@ -521,6 +521,11 @@ pub enum SearchError {
     /// `Backend`, trying again won't help.
     #[error("search backend rejected the request: {0}")]
     Rejected(String),
+    /// The engine refused an aggregation for its size. The API treats it as
+    /// [`SearchError::Backend`]; [`SearchBackend::summary_with_cube`] takes it
+    /// as the sign to ask call by call.
+    #[error("search backend error: {0}")]
+    OverAggregationLimit(String),
     /// The backend has no index by this id: a lookup found nothing (Quickwit's
     /// metastore answered 404). Only [`SearchBackend::prepare`] returns it.
     #[error("the search backend has no index `{0}`")]
