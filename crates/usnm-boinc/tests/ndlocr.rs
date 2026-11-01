@@ -367,16 +367,18 @@ async fn invalid_stage_metadata_is_rejected_before_fetching_scans() {
 
 const FETCHED_PAGE: &str = "sn83025333_1943-01-30_ed-1_seq-8";
 
-/// One JP2 and its sidecar as the fetcher lays them out; returns the scan's path.
+/// One JPEG and its sidecar as the fetcher lays them out; returns the scan's path.
 fn fetched_scan(scans: &Path, bytes: &[u8]) -> PathBuf {
-    let path = scans.join("keep/dlc_dupontcircle/sn83025333/1943-01-30/1/8.jp2");
+    let path = scans.join("keep/dlc_dupontcircle/sn83025333/1943-01-30/1/8.jpg");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, bytes).unwrap();
     let side = Sidecar {
         doc_id: FETCHED_PAGE.into(),
         batch: "dlc_dupontcircle".into(),
         batch_version: 1,
-        loc_url: "https://tile.loc.gov/storage-services/service/sgp/page.jp2".into(),
+        loc_url:
+            "https://tile.loc.gov/image-services/iiif/service:sgp:page/full/full/0/default.jpg"
+                .into(),
         iiif_base: "https://tile.loc.gov/image-services/iiif/service:sgp:page".into(),
         resolution: "full".into(),
         fetched_at: chrono::Utc::now(),
@@ -384,8 +386,8 @@ fn fetched_scan(scans: &Path, bytes: &[u8]) -> PathBuf {
         sha256: sha256(bytes),
         download_ms: 1,
         user_agent: "test".into(),
-        format: "jp2".into(),
-        md5: Some(usnm_ocr_worker::batch::md5_hex(bytes)),
+        format: "jpeg".into(),
+        md5: None,
     };
     std::fs::write(sidecar_path(&path), serde_json::to_vec(&side).unwrap()).unwrap();
     path
@@ -402,7 +404,7 @@ async fn stage_from_the_fetchers_tree_keeps_its_urls_and_sends_nothing_to_loc() 
     let dir = tempfile::tempdir().unwrap();
     let scans = dir.path().join("scans");
     let root = dir.path().join("stage");
-    fetched_scan(&scans, b"\xff\x4f\xff\x51 a scan");
+    fetched_scan(&scans, b"\xff\xd8\xff a scan");
     let staged = ndlocr::stage(
         &root,
         &[fetched_stage_page()],
@@ -418,7 +420,7 @@ async fn stage_from_the_fetchers_tree_keeps_its_urls_and_sends_nothing_to_loc() 
     let staged_job = ndlocr::load_job(&unit).unwrap();
     assert_eq!(
         staged_job.scan.url,
-        "https://tile.loc.gov/storage-services/service/sgp/page.jp2"
+        "https://tile.loc.gov/image-services/iiif/service:sgp:page/full/full/0/default.jpg"
     );
     assert_eq!(
         staged_job.scan.iiif_base,
@@ -427,7 +429,7 @@ async fn stage_from_the_fetchers_tree_keeps_its_urls_and_sends_nothing_to_loc() 
     assert_eq!(staged_job.batch, "dlc_dupontcircle");
     assert_eq!(
         std::fs::read(unit.join("page")).unwrap(),
-        b"\xff\x4f\xff\x51 a scan"
+        b"\xff\xd8\xff a scan"
     );
 }
 
@@ -473,6 +475,32 @@ async fn stage_from_the_fetchers_tree_refuses_a_changed_scan_and_never_falls_bac
     let error = stage().await.unwrap_err();
     assert!(
         error.to_string().contains("differs from its sidecar"),
+        "{error:#}"
+    );
+    assert!(!root.join("units").join(FETCHED_PAGE).exists());
+}
+
+#[tokio::test]
+async fn stage_from_the_fetchers_tree_refuses_a_jp2_master() {
+    let dir = tempfile::tempdir().unwrap();
+    let scans = dir.path().join("scans");
+    let root = dir.path().join("stage");
+    let jpg = fetched_scan(&scans, b"a master");
+    let jp2 = jpg.with_extension("jp2");
+    std::fs::rename(&jpg, &jp2).unwrap();
+    std::fs::rename(sidecar_path(&jpg), sidecar_path(&jp2)).unwrap();
+    let error = ndlocr::stage(
+        &root,
+        &[fetched_stage_page()],
+        job("missing").engine,
+        None,
+        None,
+        Some(&scans),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("volunteers get JPEGs"),
         "{error:#}"
     );
     assert!(!root.join("units").join(FETCHED_PAGE).exists());

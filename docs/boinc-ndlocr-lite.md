@@ -392,12 +392,14 @@ usnm-boinc ndlocr collect --root ./ndlocr-stage --spool /project/usnmocr/results
   --curated-url https://ACCOUNT.blob.core.windows.net/curated
 ```
 
-`--scans DIR` stages from a copy of the scan fetcher's tree instead
-(`keep/<batch>/<lccn>/<date>/<edition>/<seq>.<jp2|jpg>` and the sidecars) and sends
-nothing to LoC. It's the route for pages queued through `usnm-loc-fetch`, whose
-requests stay inside the host's global LoC budget. Each scan has to match its
-sidecar, the unit keeps the sidecar's LoC URL and IIIF base, and a page the tree
-lacks fails the stage. A JP2 scan goes to the worker as it is, as `usnm_ocr`'s cached scans do.
+`--scans DIR` stages the JPEGs in a copy of the scan fetcher's tree instead
+(`keep/<batch>/<lccn>/<date>/<edition>/<seq>.jpg` and the sidecars) and sends
+nothing to LoC, so pages queued through `usnm-loc-fetch` stay inside the host's
+global LoC budget. Each scan has to match its sidecar, and the unit keeps the
+sidecar's LoC URL and IIIF base. A page the tree lacks fails the stage, and so does
+a page it holds only as a JP2: volunteers get JPEGs, never masters
+([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)), and `usnm-boinc`
+can't reproduce the Pillow conversion in `scripts/ocr-node/quality-jpeg-cache.py`.
 
 Each unit is under `units/<doc_id>/`. `submitting` is written **before**
 `create_work`, so an interrupted or failed submit is uncertain and is never

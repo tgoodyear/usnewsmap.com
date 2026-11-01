@@ -12,7 +12,8 @@
 //! 3. Neither: the page is missing.
 //!
 //! With a scan fetcher's tree in hand ([`fetched`]) neither is asked: the
-//! host's fetcher has already spent its LoC budget on the page.
+//! host's fetcher has already spent its LoC budget on the page. Only its
+//! JPEGs are taken; a JP2 master is refused.
 //!
 //! LoC politeness: one request at a time, at least `gap` (5 s or more)
 //! between any two, the storage service and the image server sharing one
@@ -74,44 +75,49 @@ pub fn blob_name(batch: &str, key: &PageKey, format: ScanFormat) -> String {
     )
 }
 
-/// The page in a copy of the scan fetcher's tree (`keep/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`
+/// The page's JPEG in a copy of the scan fetcher's tree (`keep/<batch>/<lccn>/<date>/<ed>/<seq>.jpg`
 /// and its `.json` sidecar), for a stage that sends nothing to LoC. `Ok(None)`: not there.
-/// A scan that isn't the page its sidecar names, or that doesn't match it, is an error.
+/// A scan that isn't the page its sidecar names, or that doesn't match it, is an error, and so
+/// is a JP2 with no JPEG: volunteers get JPEGs, never masters (#1415), and the production
+/// conversion is Pillow's (`scripts/ocr-node/quality-jpeg-cache.py`), which this can't reproduce.
 pub fn fetched(
     scans: &Path,
     batch: &str,
     version: u16,
     key: &PageKey,
 ) -> anyhow::Result<Option<Got>> {
-    for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
-        let path = scans.join(blob_name(batch, key, format));
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        anyhow::ensure!(meta.is_file(), "{}: not a regular file", path.display());
-        let side: Sidecar = serde_json::from_slice(&crate::read(
-            &sidecar_path(&path),
-            usnm_ocr_contract::boinc::MAX_JSON,
-        )?)?;
-        let bytes = Bytes::from(crate::read(&path, usnm_ocr_contract::boinc::MAX_SCAN)?);
+    let path = scans.join(blob_name(batch, key, ScanFormat::Jpeg));
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        let jp2 = scans.join(blob_name(batch, key, ScanFormat::Jp2));
         anyhow::ensure!(
-            side.doc_id == key.doc_id()
-                && side.batch == batch
-                && side.batch_version == version
-                && side.resolution == "full"
-                && side.format == format.name()
-                && matches_sidecar(&bytes, &side),
-            "{}: differs from its sidecar",
-            path.display()
+            std::fs::symlink_metadata(&jp2).is_err(),
+            "{}: a JP2 master, and volunteers get JPEGs",
+            jp2.display()
         );
-        return Ok(Some(Got {
-            bytes,
-            url: side.loc_url,
-            iiif_base: side.iiif_base,
-            from_archive: false,
-        }));
-    }
-    Ok(None)
+        return Ok(None);
+    };
+    anyhow::ensure!(meta.is_file(), "{}: not a regular file", path.display());
+    let side: Sidecar = serde_json::from_slice(&crate::read(
+        &sidecar_path(&path),
+        usnm_ocr_contract::boinc::MAX_JSON,
+    )?)?;
+    let bytes = Bytes::from(crate::read(&path, usnm_ocr_contract::boinc::MAX_SCAN)?);
+    anyhow::ensure!(
+        side.doc_id == key.doc_id()
+            && side.batch == batch
+            && side.batch_version == version
+            && side.resolution == "full"
+            && side.format == ScanFormat::Jpeg.name()
+            && matches_sidecar(&bytes, &side),
+        "{}: differs from its sidecar",
+        path.display()
+    );
+    Ok(Some(Got {
+        bytes,
+        url: side.loc_url,
+        iiif_base: side.iiif_base,
+        from_archive: false,
+    }))
 }
 
 /// LoC's ALTO URL beside the JP2 for a known IIIF base.
