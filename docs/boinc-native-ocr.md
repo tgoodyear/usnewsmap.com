@@ -1,6 +1,6 @@
 # Native OCR without a container runtime
 
-Issue [#1418](https://github.com/tgoodyear/usnewsmap.com/issues/1418). `usnm_ocr` and `usnm_gold` ship only as container apps, so a host without Docker or Podman can't read pages. This is the Linux x86_64 build that needs no container runtime, how a host running it can earn trust, and what has to happen before any host gets it.
+Issue [#1418](https://github.com/tgoodyear/usnewsmap.com/issues/1418). `usnm_ocr` and `usnm_gold` ship only as container apps, so a host without Docker or Podman can't read pages. This doc covers the Linux x86_64 build that needs no container runtime, how a host running it can earn trust, and what has to happen before any host gets it.
 
 Nothing here is released. No app version exists, no plan class changed, and no unit has been sent to a host. Windows and macOS aren't built ([Other platforms](#other-platforms)).
 
@@ -45,7 +45,7 @@ The models stay in the project directory. They're hard-linked into the slot, or 
 | `--read-only`, `--cap-drop=ALL`  | No equivalent beyond `no_new_privs`. The task runs as the BOINC user, as `usnm_quality` does.                         |
 | `core`: default                  | `RLIMIT_CORE` of 0 and 256 open files.                                                                                |
 
-The last three rows are real differences. A native task is contained by the BOINC account, not by a sandbox. That's the same position as native `usnm_quality`, and the difference is that this one runs a large C++ program over scans. The scans come from the project.
+The three rows with no equivalent are real differences. A native task runs under the BOINC account with no sandbox. That's the same position as native `usnm_quality`, and the difference is that this one runs a large C++ program over scans. The scans come from the project.
 
 A gold unit starts again after a suspension instead of stopping mid-crop, because it reports crop times by the clock and its validator bounds them. It takes minutes and has no checkpoint to lose.
 
@@ -67,7 +67,7 @@ Separate apps avoid all of this. A unit can only ever reach versions of its own 
 
 ## Trust
 
-Today's lists are keyed to the worker image digest, `247c…`. A native build is a different digest, so it starts with nobody in either language. An English result from an untrusted host is quarantined and stops the controller's tick ([boinc-batch-scheduler.md](boinc-batch-scheduler.md#gold-onboarding-901)). So no native OCR unit can reach a host before that host is trusted for the native digest.
+Today's lists are keyed to the worker image digest, `247c…`. A native build is a different digest, so it starts with nobody in either language. An English result from an untrusted host is quarantined and stops the controller's tick ([boinc-batch-scheduler.md](boinc-batch-scheduler.md#gold-onboarding-901)). So no native OCR unit may reach a host before that host is trusted for the native digest.
 
 What doesn't work, and why:
 
@@ -80,18 +80,18 @@ What does, all of it in this change:
 
 1. `usnm_gold_native` runs the gold unit in the native worker. Its report has the same schema and goes through the same `usnm_gold_check`.
 2. The scheduler's gold hook covers the new app. In place of a Dockerfile, it requires the version's `usnm_native_build.json` to have the physical name that carries the job's image digest. The job's base must still match a reviewed entry in `gold-engine-platforms.json`.
-3. `GOLD_NATIVE_HOSTS` on `gold-onboard` and `gold-promote` names the hosts. A native campaign reaches only those hosts and uses the native app. A person sets it: it isn't in the controller's allowed ssh inputs.
+3. `GOLD_NATIVE_HOSTS` on `gold-onboard` and `gold-promote` names the hosts. A native campaign reaches only those hosts and uses the native app. A person sets it. It isn't in the controller's allowed ssh inputs.
 4. `gold-promote` judges each host against the scope's existing `max_cer` and `manifest_sha256`, and refuses a campaign that isn't the calibrated challenge. It adds hosts under the native digest and nothing else. For English that's the frozen 30-crop challenge `d8cd7279…` and the threshold 0.08734328574534386. Neither changes.
 
 `trust/tests.rs` covers this: a pass at the threshold admits the host for the native digest only, a miss by 1e-9 doesn't, and a result from another app is refused as evidence.
 
 Every new native build starts over, as every new worker image does.
 
-**Does the threshold carry over?** It was calibrated on the container's output, and the page results below say the native build's output is the same on one machine. That isn't proof for the challenge. So before any volunteer host runs it, a project host runs the calibrated challenge on both builds. The per-crop edit counts must be identical. If they aren't, the threshold doesn't carry over and this stops for a new calibration decision.
+**Threshold carry-over.** The threshold was calibrated on the container's output, and the page results below say the native build's output is the same on one machine. That isn't proof for the challenge. So before any volunteer host runs it, a project host runs the calibrated challenge on both builds. The per-crop edit counts must be identical. If they aren't, the threshold doesn't carry over and this stops for a new calibration decision.
 
 ## Parity
 
-Run in progress on 1 November: the numbers below are 20 of 50 pages, and this section gets the full run before review closes.
+Run in progress on 1 November. The numbers below cover 20 of 50 pages, and this section gets the full run before review closes.
 
 The same pages through `usnm_ocr` and through `usnm-boinc work` from the unpacked `247c…` worker image, at the same moment, on one 8-core host under other load. Both builds report Tesseract 5.5.0 with Leptonica 1.84.1, and the same versions of every image library. All 22 models have the hashes in the lock.
 
@@ -106,28 +106,28 @@ Text and ALTO are compared byte for byte. CER between the builds is 0 because th
 
 Each step needs the one before it.
 
-1. **Merge this.** Nothing changes on the server: the new app names don't exist there, `publish-appver.sh` still refuses them, and `gold-engine-platforms.json` has no native entry.
+1. **Merge this.** Nothing changes on the server. The new app names don't exist there, `publish-appver.sh` still refuses them, and `gold-engine-platforms.json` has no native entry.
 2. **Register `usnm_gold_native` only.** Add it to `project.xml` with its validator and assimilator daemons, allow it in `publish-appver.sh`, `check_appver.py` and `boinc-app-release.sh`, add the reviewed binding to `gold-engine-platforms.json`, rebuild the server image for the hook, then sign and publish. No workunit exists yet, so no host gets anything.
-3. **Check the challenge.** A project host with a stock client and no container runtime runs the calibrated challenge natively, and the per-crop counts are compared with the container's.
-4. **Gold for named hosts.** `gold-onboard` and `gold-promote` with `GOLD_NATIVE_HOSTS`, one host first. Gold units can't stall a tick: a failure is an alert, and a host that doesn't pass stays off the list.
-5. **Build the OCR dispatch.** None of this exists yet, and it's the server-side limit:
+3. **Check the challenge.** A project host with a container runtime runs the calibrated challenge on both builds, and the per-crop counts are compared.
+4. **Gold for named hosts.** `gold-onboard` and `gold-promote` with `GOLD_NATIVE_HOSTS`, one host first. Gold units can't stall a tick. A failure is an alert, and a host that doesn't pass stays off the list.
+5. **Build the OCR dispatch.** None of this exists yet. These are the server-side limits on native OCR work:
    - **A targeted unit only.** `usnm_ocr_native` units are created with `--target_host`, for a host chosen by the plan. Assignment is already enabled for gold.
    - **Trust checked at submission.** Submission calls `Trust::refuse_job` for that host and the job's exact scope and digest, and doesn't create the unit if it's refused. Today trust is only read at collection. This moves the refusal to before the work exists, so an untrusted host can't return a native page at all.
-   - **A held native result doesn't stop the tick.** Trust can still change while a unit is out, because a rebuild can revoke it. A held native page stays held and unpublished, as today, but it pauses the native plan and raises an alert. Container work carries on. Nothing about publication is relaxed: it changes which plan stops, not whether the page is held.
+   - **A held native result doesn't stop the tick.** Trust can still change while a unit is out, because a rebuild can revoke it. A held native page stays held and unpublished, as today, but it pauses the native plan and raises an alert. Container work carries on. Publication rules don't change. This changes which plan stops, and the page is still held.
    - **A bound.** The native plan gets its own `max_pending` and `pages_per_host`, within the global cap.
 6. **Canary.** One trusted host, 10 English pages, one at a time. Independent-host spot checks on every page (`host-trust spot`, a trusted container host reading the same page).
 7. **Widen by hand.** One host at a time, by plan. German waits for its own decision (#835), on either build.
 
-To roll back at any step: stop creating native work. Units already out finish and collect under their own digest, or stay held. Nothing touches the container apps.
+To roll back at any step, stop creating native work. Units already out finish and collect under their own digest, or stay held. Nothing touches the container apps.
 
 ## Other platforms
 
-The design keeps these open, and neither is built.
+The design keeps Windows and macOS open, and neither is built.
 
 - **Build identity.** `platform` is in the manifest, and the binding table is keyed by platform, so each platform is its own digest and starts with its own trust.
 - **Windows.** The worker needs a job object in place of process groups and rlimits, and a copy in place of the `tesseract` link. `BoincControl` already handles the Windows channel. Debian's libraries don't apply, so Tesseract has to be built from the same versions with another toolchain and C library.
 - **macOS.** Same shape as Linux, and the same toolchain point, with Mach-O and ad hoc signing as `usnm_quality` has.
-- **Parity.** A different libm and compiler mean byte-identical output can't be assumed, so these need the comparison below, not this one.
+- **Parity.** A different libm and compiler mean byte-identical output can't be assumed, so these need their own parity comparison.
 
 ## Reproducing
 
