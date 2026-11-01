@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh corpus catalog evidence every hour
+
+[Timer]
+# After ocr-sync at minute 17 and the collector run that follows it.
+OnCalendar=*:27
+RandomizedDelaySec=60
+Persistent=false
+Unit=usnm-data-catalog-refresh.service
+
+[Install]
+WantedBy=timers.target

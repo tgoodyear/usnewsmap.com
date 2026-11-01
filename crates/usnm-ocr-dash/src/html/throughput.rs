@@ -520,6 +520,7 @@ fn source_label(name: &str) -> &'static str {
         "controller" => "Controller journal",
         "ship" => "Shipper and loader logs",
         "boinc" => "BOINC database and step containers",
+        "batch" => "OCR sync journal",
         _ => "Fetch index",
     }
 }
@@ -737,9 +738,13 @@ mod tests {
         assert!(html.contains(": 0 (counted)</title>"));
         assert!(html.contains(": 1,200 pages</title>"));
         assert!(html.contains(": unknown</title>"));
-        assert_eq!(html.matches("data-hours=\"4\"").count(), 16);
-        assert_eq!(html.matches("data-hours=\"1\"").count(), 13);
-        assert_eq!(html.matches("tabindex=\"0\" data-chart=").count(), 29);
+        let (steps, apps) = (v.steps.len(), v.quorum.len());
+        assert_eq!(html.matches("data-hours=\"4\"").count(), steps + apps);
+        assert_eq!(html.matches("data-hours=\"1\"").count(), steps);
+        assert_eq!(
+            html.matches("tabindex=\"0\" data-chart=").count(),
+            2 * steps + apps
+        );
     }
 
     #[test]

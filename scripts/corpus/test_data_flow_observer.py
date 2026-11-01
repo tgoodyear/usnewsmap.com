@@ -211,6 +211,79 @@ class Observer(unittest.TestCase):
         self.assertEqual(value["artifacts"]["locations"], 10)
         self.assertEqual(next(s for s in value["stages"] if s["id"] == "artifact_verified")["count"], 1)
 
+    def live_catalog(self, **stages):
+        """A catalog holding `stages` as {id: (count, observed_at, extra fields)}."""
+        catalog = observer.snapshot([], [], NOW)
+        rows = []
+        for identifier, (amount, at, extra) in stages.items():
+            rows.append({"id": identifier, "label": identifier, "count": amount, "observed_at": at,
+                         "state": "observed", "detail": "From a test.", **extra})
+        catalog.update(observed_at=max(row["observed_at"] for row in rows), stages=rows)
+        return catalog
+
+    def join_live(self, catalog):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            path.write_text(json.dumps(catalog))
+            return observer.add_catalog(observer.snapshot([], [], NOW), path, NOW)
+
+    def test_live_rows_take_aggregates_and_carry_their_budget(self):
+        value = self.join_live(self.live_catalog(live_queued=(1005, ago(hours=1), {}),
+                                              live_allocated=(225, ago(hours=1), {}),
+                                              live_imported=(71, ago(hours=1), {}),
+                                              imported=(201, ago(days=15), {"historical": True})))
+        rows = {item["id"]: item for item in value["stages"]}
+        self.assertEqual((rows["queued"]["count"], rows["queued"]["state"]), (1005, "observed"))
+        self.assertEqual(rows["allocated"]["max_age_secs"], observer.LIVE_MAX_AGE_SECS)
+        # A live import count replaces the one-page proof, and isn't historical for having had one.
+        self.assertEqual(rows["imported"]["count"], 71)
+        self.assertNotIn("historical", rows["imported"])
+        self.assertEqual(value["observed_at"], ago(hours=1))
+
+    def test_a_row_without_live_evidence_stays_unknown_not_inferred(self):
+        value = self.join_live(self.live_catalog(live_imported=(71, ago(hours=1), {})))
+        rows = {item["id"]: item for item in value["stages"]}
+        for identifier in ("queued", "allocated", "collected", "validated", "quality_loaded"):
+            self.assertEqual((rows[identifier]["state"], rows[identifier]["count"]), ("unknown", None))
+        self.assertEqual((rows["accepted"]["state"], rows["accepted"]["count"]), ("unknown", None))
+
+    def test_historical_stage_leaves_the_overall_age_but_keeps_its_own(self):
+        value = self.join_live(self.live_catalog(
+            live_imported=(71, ago(hours=1), {}),
+            accepted=(1, ago(days=8), {"historical": True}),
+            runs=(0, ago(days=15), {"historical": True})))
+        rows = {item["id"]: item for item in value["stages"]}
+        self.assertIs(rows["accepted"]["historical"], True)
+        self.assertEqual(rows["accepted"]["observed_at"], ago(days=8))
+        self.assertEqual(value["observed_at"], ago(hours=1))
+        issue = next(i for i in value["issues"] if i["code"] == "historical-stages")
+        self.assertIn("accepted, run_history", issue["detail"])
+
+    def test_a_stopped_live_stage_still_pins_the_overall_age(self):
+        value = self.join_live(self.live_catalog(live_imported=(71, ago(days=2), {}),
+                                              accepted=(1, ago(days=8), {"historical": True})))
+        self.assertEqual(value["observed_at"], ago(days=2))
+
+    def test_a_stage_without_the_historical_mark_pins_the_overall_age(self):
+        value = self.join_live(self.live_catalog(accepted=(1, ago(days=8), {}),
+                                              live_imported=(71, ago(hours=1), {})))
+        self.assertEqual(value["observed_at"], ago(days=8))
+
+    def test_catalog_cannot_mark_undated_or_nonboolean_evidence_historical(self):
+        for mark in ("yes", 1):
+            with self.assertRaises(ValueError):
+                self.join_live(self.live_catalog(accepted=(1, ago(days=8), {"historical": mark})))
+        catalog = self.live_catalog(live_imported=(71, ago(hours=1), {}))
+        catalog["stages"].append({"id": "accepted", "state": "unknown", "count": None,
+                                  "observed_at": None, "detail": "None.", "historical": True})
+        with self.assertRaises(ValueError):
+            self.join_live(catalog)
+
+    def test_a_full_issue_list_keeps_the_dashboards_limit_with_historical_stages(self):
+        catalog = self.live_catalog(accepted=(1, ago(days=8), {"historical": True}))
+        catalog["issues"] = [{"code": f"issue-{index}", "detail": "Detail."} for index in range(128)]
+        self.assertLessEqual(len(self.join_live(catalog)["issues"]), observer.MAX_ISSUES)
+
     def test_combined_inventory_retains_mandatory_stages_within_dashboard_budget(self):
         apps = b"".join(
             f"<app><name>usnm_app{index}</name><unsent>2</unsent><in_progress>1</in_progress></app>".encode()

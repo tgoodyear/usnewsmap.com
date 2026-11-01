@@ -58,7 +58,7 @@ OCR system as human-reference accuracy.
 
 ## Rebuilding the dashboard data-flow observer and catalog
 
-The read-only observer/catalog scripts and their three systemd units are installed
+The read-only observer/catalog scripts and their five systemd units are installed
 separately from OCR workers. On the operator's checkout, select a reviewed full
 commit SHA, then stage an immutable Git archive (not dirty working-tree files):
 
@@ -68,7 +68,9 @@ git archive --format=tar --output=data-flow.tar "$COMMIT" \
   scripts/corpus/data_catalog.py scripts/corpus/data_flow_observer.py \
   scripts/ocr-node/usnm-data-catalog.service \
   scripts/ocr-node/usnm-data-flow-observer.service \
-  scripts/ocr-node/usnm-data-flow-observer.timer scripts/ocr-node/install-data-flow.py
+  scripts/ocr-node/usnm-data-flow-observer.timer \
+  scripts/ocr-node/usnm-data-catalog-refresh.service \
+  scripts/ocr-node/usnm-data-catalog-refresh.timer scripts/ocr-node/install-data-flow.py
 git show "$COMMIT:scripts/ocr-node/install-data-flow.py" > install-data-flow.py
 shasum -a 256 data-flow.tar
 ```
@@ -81,7 +83,7 @@ python3 install-data-flow.py --archive data-flow.tar --commit FULL_SHA --sha256 
 ```
 
 `--apply` requires root, the existing `ocrdash` account, and the catalog service,
-observer service and observer timer all inactive. Coordinate a read-only dashboard
+observer service, observer timer, refresh service and refresh timer all inactive. Coordinate a read-only dashboard
 maintenance window: stop only those units, wait for an in-flight observer to finish,
 and record their original active/enabled states. The installer does not stop, start
 or enable units. On first installation only, supply `--ocr-url` with the
@@ -101,6 +103,9 @@ contents if the disk fills. If an individual restoration fails, the installer
 still attempts every remaining restoration and daemon reload, reports all errors
 and retains the needed recovery links. Restore the original unit activation after
 success or failure; enable the observer timer explicitly for a new installation.
+The refresh timer is new, so after a dashboard that accepts `historical` and
+`max_age_secs` is running, run `systemctl enable --now usnm-data-catalog-refresh.timer`
+once on each host. Installing these units does not start it.
 The catalog listener remains loopback-only (`127.0.0.1:8764`).
 
 No SQLite database, pipeline/catalog snapshot, retained evidence, producer timer,
@@ -379,6 +384,7 @@ The numbers come from what each step already records. The scan fetch is read fro
 | `controller` | the priority controller's host | its journal                                                                                                                     | ticks passed and failed, tick and phase seconds, pages claimed and collected                 |
 | `ship`       | the quality shipper's host     | the shippers' and result loaders' journals                                                                                      | pages shipped, staged, submitted and loaded                                                  |
 | `boinc`      | the BOINC server               | two bounded aggregate queries on the `result` and `workunit` tables, and podman's start and died events for the step containers | results by outcome, workunits with a canonical result, device seconds, bridge lock hold time |
+| `batch`      | the host that runs `ocr-sync`  | `usnm-ocr-sync.service`'s journal                                                                                               | pages in committed imports, rejected parts, dead letters, `ocr-bulk`'s depth at each run     |
 
 Each collector recomputes complete hours, so a repeated run corrects a bucket and never adds to it, and a source that stops leaves unknown hours rather than a short one. The `boinc` queries run in a read-only session, stop after five seconds, return aggregates only and take well under a second on a table of some 30,000 rows; the dashboard asks the server nothing, and page views cost the server nothing. Validation states change while a quorum completes, so run the `boinc` source with a longer window (`USNM_THROUGHPUT_HOURS=72`) than the journal sources (3). To fill the history once, run each source with `--hours 336`; `boinc` is good for that too, since `db_purge` keeps results for 30 days.
 
@@ -386,7 +392,7 @@ The history is `throughput.json` in the state directory: two weeks of hours, a f
 
 **Deployment.** Use infrastructure tooling to install the released dashboard binary, configure its source URLs, mounts and TLS, and install host-stat collectors. The application repository provides the binary, API schemas and service definitions, not lab provisioning.
 
-**Corpus data flow snapshot (#704).** The optional "Corpus data flow" panel reads a local metadata-only `corpus-catalog` JSON file at the usual file polling cadence (15 seconds by default). It appears at `/api/pipeline.json` and as `pipeline` in `/api/view.json`, under the same LAN access controls. It never queries a database or cloud service and needs no credentials. Cataloged stage, run and artifact counts are separate from local worker journal totals, not whole-corpus totals: zero can mean no catalog loaded. The producer must include coverage and issues for absent sources and must not include OCR text or storage URIs.
+**Corpus data flow snapshot (#704).** The optional "Corpus data flow" panel reads a local metadata-only `corpus-catalog` JSON file at the usual file polling cadence (15 seconds by default). It appears at `/api/pipeline.json` and as `pipeline` in `/api/view.json`, under the same LAN access controls. It never queries a database or cloud service and needs no credentials. Its current counts come hourly from this page's throughput history ([14: Current evidence](../design/14-corpus-data-flow.md#current-evidence)). Cataloged stage, run and artifact counts are separate from local worker journal totals, not whole-corpus totals: zero can mean no catalog loaded. The producer must include coverage and issues for absent sources and must not include OCR text or storage URIs.
 
 The panel spans the operational-details section below "At a glance". Its stage list scrolls independently; expand a stage for provenance, or "Coverage, provenance and issues" for source limits and diagnostics. Open details and list positions survive automatic refresh. Closed operational details retain their existing panels and refresh on reopening, preserving list positions while summaries continue to update.
 

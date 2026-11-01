@@ -1,0 +1,33 @@
+# Turns the dashboard's kept hourly counts into one retained evidence batch and regenerates the
+# catalog snapshot the observer joins (14: Current evidence). Reads one local file, so it needs no
+# credentials or network.
+[Unit]
+Description=Refresh corpus catalog evidence from the dashboard's hourly counts
+After=usnm-ocrdash.service
+ConditionPathExists=/var/lib/usnm-data-flow/catalog.sqlite
+ConditionPathExists=/var/lib/usnm-ocrdash/throughput.json
+
+[Service]
+Type=oneshot
+User=ocrdash
+Group=ocrdash
+ExecStart=/usr/bin/python3 /usr/local/lib/usnm-data-flow/data_catalog.py --db /var/lib/usnm-data-flow/catalog.sqlite refresh-live --throughput /var/lib/usnm-ocrdash/throughput.json --evidence-dir /var/lib/usnm-data-flow/live-evidence --out /var/lib/usnm-data-flow/catalog.json
+StateDirectory=usnm-data-flow usnm-data-flow/live-evidence
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+TimeoutStartSec=2min
+Nice=10
+MemoryMax=128M
+# The snapshot query has a two-second deadline, which a 10% quota misses (14: Retired worker evidence
+# transport).
+CPUQuota=50%

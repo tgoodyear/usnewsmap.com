@@ -46,6 +46,50 @@ ENGINE_LEGACY_RE = re.compile(
     r"([a-z0-9][a-z0-9_.+]{0,63})-([0-9A-Za-z][0-9A-Za-z.+-]{0,63})/([a-z0-9][a-z0-9_.+-]{0,63})\Z"
 )
 INDEXED_KEY_SCOPE_VERSION = 2
+# Sources that will never report again: one-off proofs, and the worker receiver retired with the
+# direct OCR path. A stage fed only by these is historical (14: Overall evidence age). A source
+# absent from this list counts as live, so a source that stops is flagged rather than excused.
+HISTORICAL_SOURCES = frozenset((
+    "ct212-cached-stat", "curated-import-proof", "instrumentation-smoke-eng-not-quality",
+    "issue704-current-release", "issue704-current-search", "issue780-committed-import",
+    "issue780-live-search", "issue780-serving-release", "issue780-verified-cache",
+    "worker-node3-live",
+))
+LIVE_SOURCE = "throughput-live"
+HOUR = 3600
+# All the dashboard keeps, so a trailing total is as long as its evidence goes.
+LIVE_WINDOW_HOURS = 336
+MAX_THROUGHPUT_FILE = 4 * 1024 * 1024
+# (stage_id, label, throughput source, series, "gauge" or a trailing "total", detail)
+LIVE_STAGES = (
+    ("live_queued", "Pages in the ocr-bulk queue", "batch", ("ocr_bulk_queue_pages",), "gauge",
+     "ocr-sync's approximate depth of ocr-bulk at its last run in the newest reported hour, "
+     "leased messages included. ocr-priority's depth is not logged, so this is not every "
+     "queued page."),
+    ("live_allocated", "OCR pages at BOINC or awaiting collection", "controller",
+     ("ocr_pending_pages",), "gauge",
+     "The controller's cohort_pending at its last tick in the newest reported hour: pages at "
+     "BOINC, held for collection, or selected with no job yet."),
+    ("live_validated", "BOINC OCR workunits with a canonical result, last 14 days", "boinc", ("ocr_units",),
+     "total", "From the BOINC database, by when the canonical result returned. A bundled "
+     "workunit holds an unknown number of pages, so this counts workunits. Validation, not "
+     "collection or import."),
+    ("live_collected", "OCR pages collected through hand-off checks, last 14 days", "controller",
+     ("ocr_collect_pages",), "total",
+     "Jobs the hand-off marked published: results that passed its collection checks. Includes "
+     "jobs superseded by an earlier import, which publish nothing. Not import or release "
+     "selection."),
+    ("live_imported", "OCR pages in committed imports, last 14 days", "batch", ("ocr_import_pages",), "total",
+     "From ocr-sync's log, after each committed import record. Structural import into "
+     "ocr-local, not release selection or search."),
+    ("live_rejected", "OCR parts rejected or dead-lettered, last 14 days", "batch",
+     ("ocr_import_rejected", "ocr_dead_letters"), "total",
+     "Parts ocr-sync rejected and dead letters it archived. Attempts, not pages lost."),
+    ("live_quality_loaded", "Quality and Qwen pages loaded, last 14 days", "ship",
+     ("quality_load_pages", "qwen_load_pages"), "total",
+     "Pages of finished units loaded into the quality database, from the loaders' logs. "
+     "Scores, not OCR acceptance."),
+)
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -1504,6 +1548,15 @@ def acceptance_report(db, cohort, index_version, as_of, max_age_seconds):
     }
 
 
+def stage_age(rows):
+    """(as-of time, historical) from a stage's (source, newest observation) rows. A historical
+    source can't hold back a stage that also has a live one."""
+    live = [at for source, at in rows if source not in HISTORICAL_SOURCES]
+    if live:
+        return min(live), False
+    return min((at for _, at in rows), default=None), bool(rows)
+
+
 def snapshot(db):
     def read(conn):
         def count(sql, args=()):
@@ -1511,32 +1564,39 @@ def snapshot(db):
 
         observed = count("SELECT max(observed_at) FROM latest")
         stages, coverage, issues = [], [], []
+        aggregates = {load_json(row[0])["stage_id"]: row[1] for row in conn.execute(
+            "SELECT data,state FROM latest WHERE kind='stage' LIMIT 25")}
         for stage in ("runs", "artifacts") + STAGES:
             if stage in ("runs", "artifacts"):
                 kind = {"runs": "run", "artifacts": "artifact"}[stage]
                 kinds = (kind, "execution" if kind == "run" else kind)
                 total = count("SELECT count(*) FROM latest WHERE kind IN (?,?)", kinds)
                 n = count("SELECT count(DISTINCT page_id) FROM latest WHERE kind IN (?,?)", kinds)
-                as_of = count("""SELECT min(t) FROM
-                    (SELECT max(observed_at) t FROM latest WHERE kind IN (?,?) GROUP BY source)""", kinds)
+                sources = conn.execute("""SELECT source,max(observed_at) FROM latest
+                    WHERE kind IN (?,?) GROUP BY source""", kinds).fetchall()
                 blocked = 0
             else:
                 total = count("SELECT count(*) FROM latest WHERE kind='page_state' AND stage=?", (stage,))
-                as_of = count("""SELECT min(t) FROM (SELECT max(observed_at) t FROM latest
-                    WHERE kind='page_state' AND stage=? GROUP BY source)""", (stage,))
+                sources = conn.execute("""SELECT source,max(observed_at) FROM latest
+                    WHERE kind='page_state' AND stage=? GROUP BY source""", (stage,)).fetchall()
                 n = count("""SELECT count(DISTINCT page_id) FROM latest
                     WHERE kind='page_state' AND stage=? AND state='present'""", (stage,))
                 blocked = count("""SELECT count(*) FROM latest
                     WHERE kind='page_state' AND stage=? AND state='blocked'""", (stage,))
-            coverage.append(stage + (":observed" if total else ":unknown"))
-            if not total:
+            as_of, historical = stage_age([tuple(row) for row in sources])
+            aggregate = aggregates.get("live_" + stage) == "observed"
+            coverage.append(stage + (":observed" if total else ":aggregate" if aggregate else ":unknown"))
+            if not total and not aggregate:
                 issues.append({"code": "missing_source", "detail": stage + ": no observations imported"})
-            stages.append({"id": stage, "label": stage.capitalize(),
-                           "count": n if total else None,
-                           "state": "blocked" if blocked else "observed" if total else "unknown",
-                           "observed_at": as_of,
-                           "detail": "Independent source observations; not inferred from engine success."
-                           if total else "No source evidence; adapter/export required."})
+            row = {"id": stage, "label": stage.capitalize(),
+                   "count": n if total else None,
+                   "state": "blocked" if blocked else "observed" if total else "unknown",
+                   "observed_at": as_of,
+                   "detail": "Independent source observations; not inferred from engine success."
+                   if total else "No source evidence; adapter/export required."}
+            if historical:
+                row["historical"] = True
+            stages.append(row)
         aggregate_rows = conn.execute("SELECT * FROM latest WHERE kind='stage' ORDER BY key LIMIT 25").fetchall()
         require(len(aggregate_rows) <= MAX_AGGREGATES, "aggregate stage limit exceeded")
         ids = [load_json(row["data"])["stage_id"] for row in aggregate_rows]
@@ -1572,6 +1632,104 @@ def snapshot(db):
                     "missing": count("SELECT count(*) FROM latest WHERE kind='artifact' AND state='missing'")},
                 "issues": issues}
     return bounded_query(db, read)
+
+
+def utc_text(epoch):
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def throughput_values(stored, name, first, last):
+    """{hour: value} of one series' known hours in [first, last]."""
+    series = stored["series"].get(name)
+    if series is None:
+        return {}
+    require(isinstance(series, dict) and type(series.get("first")) is int and
+            isinstance(series.get("values"), list), "invalid throughput series")
+    known = {}
+    for index, value in enumerate(series["values"]):
+        hour = series["first"] + index * HOUR
+        if value is None or not first <= hour <= last:
+            continue
+        require(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1e12,
+                "invalid throughput value")
+        known[hour] = value
+    return known
+
+
+def live_stage(stored, spec, at):
+    """One stage from the dashboard's hourly history, or None with no known hour to report: the
+    stage then keeps its last evidence and age. The evidence time is the end of the newest known
+    hour, never the time of this run."""
+    stage_id, label, source, names, form, detail = spec
+    state = stored["sources"].get(source)
+    if state is None or state.get("observed_at") is None:
+        return None
+    reported = timestamp(state["observed_at"])
+    require(timestamp_ns(reported) <= timestamp_ns(at) + 60 * 10**9, "future throughput observation")
+    # Collectors report complete hours, so the newest is the one before the report's.
+    last = timestamp_ns(reported) // 10**9 // HOUR * HOUR - HOUR
+    first = last - (LIVE_WINDOW_HOURS - 1) * HOUR
+    series = [throughput_values(stored, name, first, last) for name in names]
+    # Every series must cover an hour, so one that stopped can't pass as the whole stage.
+    known = set.intersection(*(set(values) for values in series))
+    if not known:
+        return None
+    newest = max(known)
+    if form == "gauge":
+        amount = sum(values.get(newest, 0) for values in series)
+        text = detail
+    else:
+        amount = sum(values[hour] for values in series for hour in known)
+        text = f"Last {LIVE_WINDOW_HOURS} hours, {len(known)} reported. {detail}"
+    return utc_text(newest + HOUR), {"stage_id": stage_id, "label": label, "count": round(amount),
+                                     "state": "observed", "detail": text,
+                                     "coverage": stage_id + " (hourly evidence)"}
+
+
+def live_event_id(db, stage_id, observed, payload, batch_id):
+    """An unchanged stage reuses its id, so it replays. A changed one sorts after the id it
+    replaces, so a correction to the same evidence hour wins over the earlier count."""
+    conn = connect(db, writable=True)
+    try:
+        current = conn.execute("SELECT event_id,observed_at,data FROM latest WHERE key=?",
+                               (digest([LIVE_SOURCE, "stage", [stage_id]]),)).fetchone()
+    finally:
+        conn.close()
+    if current and current["observed_at"] == timestamp(observed) and load_json(current["data"]) == payload:
+        return current["event_id"]
+    return batch_id + "-" + digest([observed, payload])
+
+
+def refresh_live(db, throughput, evidence_dir, out):
+    """One bounded refresh: the dashboard's kept counts -> one immutable batch -> snapshot.
+    Besides the catalog it reads one local file: no Postgres or cloud access."""
+    at = now()
+    with Path(throughput).open("rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "throughput input must be a regular file")
+        raw = stream.read(MAX_THROUGHPUT_FILE + 1)
+    require(0 < len(raw) <= MAX_THROUGHPUT_FILE, "empty or oversized throughput history")
+    stored = load_json(raw)
+    require(isinstance(stored, dict) and stored.get("schema") == 1 and
+            isinstance(stored.get("sources"), dict) and isinstance(stored.get("series"), dict),
+            "unsupported throughput history")
+    batch_id = "live-" + re.sub(r"[-:]", "", at)[:15] + "Z"
+    events = []
+    for spec in LIVE_STAGES:
+        found = live_stage(stored, spec, at)
+        if found is None:
+            continue
+        observed, payload = found
+        event = {"schema_version": 1, "batch_id": batch_id,
+                 "event_id": live_event_id(db, payload["stage_id"], observed, payload, batch_id),
+                 "kind": "stage", "source": LIVE_SOURCE, "observed_at": observed,
+                 "page_id": None, "payload": payload}
+        validate_event(event)
+        events.append(canonical(event) + "\n")
+    require(events, "no throughput source has reported")
+    path = Path(evidence_dir) / (batch_id + ".jsonl")
+    result = ingest(db, write_atomic_evidence(path, db, events))
+    atomic_snapshot(out, snapshot(db), db)
+    return result
 
 
 def plan_missing(db, page_id, limit=50, after=""):
@@ -1834,6 +1992,10 @@ def main(argv=None):
     p.add_argument("--after", default="")
     p = subs.add_parser("snapshot", help="source-fresh dashboard summary; atomically replace --out")
     p.add_argument("--out")
+    p = subs.add_parser("refresh-live", help="the dashboard's kept hourly counts -> one evidence batch -> snapshot")
+    p.add_argument("--throughput", required=True, help="the dashboard's throughput.json, read-only")
+    p.add_argument("--evidence-dir", required=True, help="where retained batches are kept")
+    p.add_argument("--out", required=True)
     p = subs.add_parser("serve", help="optional read-only GET /page?page_id=... and /runs?engine=...")
     p.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "::1"))
     p.add_argument("--port", type=int, default=8764)
@@ -1887,6 +2049,8 @@ def main(argv=None):
             if args.out:
                 atomic_snapshot(args.out, result, args.db)
                 return 0
+        elif args.command == "refresh-live":
+            result = refresh_live(args.db, args.throughput, args.evidence_dir, args.out)
         else:
             require(0 <= args.port <= 65535, "invalid port")
             with make_server(args.db, args.host, args.port) as server:
