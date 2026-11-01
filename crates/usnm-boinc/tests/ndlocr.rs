@@ -451,6 +451,24 @@ async fn stage_from_the_fetchers_tree_refuses_a_changed_scan_and_never_falls_bac
     let error = stage().await.unwrap_err();
     assert!(error.to_string().contains("scan not found"), "{error:#}");
     let path = fetched_scan(&scans, b"a scan");
+    // The same page under another batch version is not this scan.
+    let other: usnm_boinc::surya::Page = format!("mixed:jpn:{FETCHED_PAGE}:dlc_dupontcircle_ver02")
+        .parse()
+        .unwrap();
+    let error = ndlocr::stage(
+        &root,
+        &[other],
+        job("missing").engine,
+        None,
+        None,
+        Some(&scans),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("differs from its sidecar"),
+        "{error:#}"
+    );
     std::fs::write(&path, b"another").unwrap();
     let error = stage().await.unwrap_err();
     assert!(

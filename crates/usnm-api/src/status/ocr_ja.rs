@@ -37,6 +37,9 @@ pub struct Progress {
     /// `targets`. The job's reports before #1415 don't have it.
     #[serde(default)]
     pub undigitized: Count,
+    /// `jaocr.py status` refreshed the counts: nothing is running.
+    #[serde(default)]
+    pub idle: bool,
     #[serde(default)]
     pub eta: Option<DateTime<Utc>>,
 }
@@ -65,8 +68,9 @@ pub fn section(p: Progress, now: DateTime<Utc>) -> OcrJa {
         pages: p.done.pages.min(p.targets.pages),
         issues: p.done.issues.min(p.targets.issues),
     };
-    let running =
-        done.pages < p.targets.pages && now - p.updated_at < Duration::minutes(RUNNING_WITHIN);
+    let running = !p.idle
+        && done.pages < p.targets.pages
+        && now - p.updated_at < Duration::minutes(RUNNING_WITHIN);
     let percent = if p.targets.pages == 0 {
         100.0
     } else {
@@ -117,6 +121,7 @@ mod tests {
                 issues: done / 9,
             },
             undigitized: Count::default(),
+            idle: false,
             eta: Some(now + Duration::hours(5)),
         }
     }
@@ -151,6 +156,16 @@ mod tests {
         assert_eq!(s.percent, 100.0);
         assert_eq!(s.targets.pages, 9000);
         assert_eq!(s.undigitized.pages, 24);
+    }
+
+    #[test]
+    fn a_count_refresh_isnt_a_running_job() {
+        let now = Utc::now();
+        let mut p = progress(3000, 1, now);
+        p.idle = true;
+        let s = section(p, now);
+        assert!(!s.running);
+        assert_eq!(s.eta, None);
     }
 
     #[test]

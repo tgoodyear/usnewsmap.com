@@ -647,8 +647,9 @@ def progress(curated, rows: list[dict]) -> dict:
 
 
 def write_status(reference, curated, rows: list[dict], started: datetime, done_at_start: int,
-                 engine: str) -> dict:
-    """Write the progress record, with a finish estimate from this run's pace."""
+                 engine: str, *, refresh: bool = False) -> dict:
+    """Write the progress record, with a finish estimate from this run's pace. With `refresh` it
+    is a count, not a running job's heartbeat (`idle`), and a failed write is the caller's."""
     p = progress(curated, rows)
     now = datetime.now(timezone.utc)
     gained = p["done"]["pages"] - done_at_start
@@ -658,6 +659,10 @@ def write_status(reference, curated, rows: list[dict], started: datetime, done_a
         eta = (now + (now - started) * (remaining / gained)).isoformat()
     body = {"schema": 1, "updated_at": now.isoformat(), "started_at": started.isoformat(),
             "engine": engine, **p, "eta": eta}
+    if refresh:
+        body["idle"] = True
+        reference.write(STATUS, json.dumps(body).encode())
+        return body
     try:
         reference.write(STATUS, json.dumps(body).encode())
     except Exception as e:  # the status page is not worth stopping the OCR for
@@ -672,7 +677,7 @@ def status(reference, curated, ndl_root: Path, mixed_below: float = MIXED_BELOW)
     now = datetime.now(timezone.utc)
     # The pace needs pages this run read: none, so no estimate.
     return write_status(reference, curated, rows, now, progress(curated, rows)["done"]["pages"],
-                        f"ndlocr-lite {ndlocr_version(ndl_root)}")
+                        f"ndlocr-lite {ndlocr_version(ndl_root)}", refresh=True)
 
 
 def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,

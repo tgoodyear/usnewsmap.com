@@ -370,6 +370,18 @@ class Resilience(unittest.TestCase):
             self.assertEqual(saved["done"], {"pages": 1, "issues": 0})
             self.assertEqual(saved["undigitized"], {"pages": 1, "issues": 1})
             self.assertIsNone(body["eta"])
+            self.assertTrue(saved["idle"])
+
+    def test_a_status_refresh_that_cant_write_fails(self):
+        rows = [{"doc_id": "sn1_1945-01-01_ed-1_seq-1", "lccn": "sn1", "date": "1945-01-01", "edition": 1, "seq": 1}]
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", json.dumps(rows[0]).encode())
+            from unittest.mock import patch
+            with patch.object(jaocr, "ndlocr_version", return_value="test"), \
+                 patch.object(cur, "write", side_effect=OSError("refused")):
+                with self.assertRaises(OSError):
+                    jaocr.status(cur, cur, jaocr.Path("/unused"))
 
     def test_pages_without_alto_are_read_again(self):
         with tempfile.TemporaryDirectory() as d:

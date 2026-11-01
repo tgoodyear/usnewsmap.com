@@ -77,7 +77,12 @@ pub fn blob_name(batch: &str, key: &PageKey, format: ScanFormat) -> String {
 /// The page in a copy of the scan fetcher's tree (`keep/<batch>/<lccn>/<date>/<ed>/<seq>.<ext>`
 /// and its `.json` sidecar), for a stage that sends nothing to LoC. `Ok(None)`: not there.
 /// A scan that isn't the page its sidecar names, or that doesn't match it, is an error.
-pub fn fetched(scans: &Path, batch: &str, key: &PageKey) -> anyhow::Result<Option<Got>> {
+pub fn fetched(
+    scans: &Path,
+    batch: &str,
+    version: u16,
+    key: &PageKey,
+) -> anyhow::Result<Option<Got>> {
     for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
         let path = scans.join(blob_name(batch, key, format));
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -92,6 +97,7 @@ pub fn fetched(scans: &Path, batch: &str, key: &PageKey) -> anyhow::Result<Optio
         anyhow::ensure!(
             side.doc_id == key.doc_id()
                 && side.batch == batch
+                && side.batch_version == version
                 && side.resolution == "full"
                 && side.format == format.name()
                 && matches_sidecar(&bytes, &side),

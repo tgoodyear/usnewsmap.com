@@ -210,7 +210,7 @@ pub async fn stage(
             continue;
         }
         let found = match scans {
-            Some(dir) => Ok(crate::scans::fetched(dir, batch, &key)?),
+            Some(dir) => Ok(crate::scans::fetched(dir, batch, *version, &key)?),
             None => sources.jpeg(&key, &page.batches).await,
         };
         let scan = match found {

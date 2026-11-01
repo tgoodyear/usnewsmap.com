@@ -397,7 +397,7 @@ usnm-boinc ndlocr collect --root ./ndlocr-stage --spool /project/usnmocr/results
 nothing to LoC. It's the route for pages queued through `usnm-loc-fetch`, whose
 requests stay inside the host's global LoC budget. Each scan has to match its
 sidecar, the unit keeps the sidecar's LoC URL and IIIF base, and a page the tree
-lacks fails the stage. A JP2 scan goes to the worker as it is.
+lacks fails the stage. A JP2 scan goes to the worker as it is, as `usnm_ocr`'s cached scans do.
 
 Each unit is under `units/<doc_id>/`. `submitting` is written **before**
 `create_work`, so an interrupted or failed submit is uncertain and is never
