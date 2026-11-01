@@ -9,6 +9,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -91,6 +92,13 @@ enum Cmd {
         items: PathBuf,
         #[arg(long = "hyp")]
         hyps: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Freeze the GT4HistOCR dta19 sample of the Study 5 amendment
+    SelectDta {
+        #[arg(long)]
+        dta: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
@@ -467,6 +475,45 @@ fn cut(units: &Path, out: &Path) -> Result<()> {
     write_rows(&out.join("crops.jsonl"), &rows)
 }
 
+fn sha(s: &str) -> String {
+    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn select_dta(dta: &Path, out: &Path) -> Result<()> {
+    let images = out.join("images/dta");
+    fs::create_dir_all(&images)?;
+    let mut docs: Vec<(String, String)> = fs::read_dir(dta)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .map(|d| (sha(&format!("gpu-studies-202611:dta19:{d}")), d))
+        .collect();
+    docs.sort();
+    let mut rows = vec![];
+    for (_, d) in docs.iter().take(30) {
+        let mut lines: Vec<(String, String)> = fs::read_dir(dta.join(d))?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".gt.txt").map(str::to_string))
+            .map(|b| (sha(&format!("gpu-studies-202611:dta19:{d}/{b}")), b))
+            .collect();
+        lines.sort();
+        let mut n = 0;
+        for (_, b) in lines {
+            if n == 10 {
+                break;
+            }
+            let (nrm, bin) = (dta.join(d).join(format!("{b}.nrm.png")), dta.join(d).join(format!("{b}.bin.png")));
+            let img = if nrm.exists() { nrm } else if bin.exists() { bin } else { continue };
+            let id = format!("dta19-{}", &sha(&format!("{d}/{b}"))[..16]);
+            fs::copy(img, images.join(format!("{id}.png")))?;
+            let t = fs::read_to_string(dta.join(d).join(format!("{b}.gt.txt")))?;
+            rows.push(json!({"id": id, "ref": t, "page": d, "source": "dta19", "lang": "deu", "file": format!("images/dta/{id}.png")}));
+            n += 1;
+        }
+    }
+    write_rows(&out.join("dta.jsonl"), &rows)
+}
+
 fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
@@ -655,6 +702,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Jpeg { input, out } => jpeg(&input, &out),
         Cmd::Columns { alto_dir, out } => columns(&alto_dir, &out),
+        Cmd::SelectDta { dta, out } => select_dta(&dta, &out),
         Cmd::JaCut { pages, out } => ja_cut(&pages, &out),
         Cmd::JaScore { items, hyps, out } => ja_score(&items, &hyps, &out),
         Cmd::Cut { units, out } => cut(&units, &out),
