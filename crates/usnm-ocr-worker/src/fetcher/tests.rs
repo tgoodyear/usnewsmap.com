@@ -1135,6 +1135,117 @@ fn a_manifest_is_found_wherever_its_rows_are() {
     assert!(bulk::parse_manifest(&serde_json::json!({"rows": []})).is_none());
 }
 
+/// One job failing mustn't lose the job another worker was holding back.
+#[tokio::test]
+async fn a_failure_frees_the_limit_for_a_job_held_back() {
+    let mut r = Rig::new().await;
+    r.archive("a", b"body");
+    r.archive("b", b"body");
+    r.s.put("/hf/b.tar.bz2", b"body".to_vec());
+    r.s.delay(Duration::from_millis(100));
+    r.write_list();
+    let m = manifest(&[("a", sha(b"body")), ("b", sha(b"body"))]);
+    let mut o = r.mirrored(m, mirror_policy("concurrency = 2\n"), true);
+    o.workers = 2;
+    o.limit = Some(1);
+    let s = go(o).await.unwrap();
+    assert_eq!(s.fetched_this_run, 1);
+    assert!(r.has("b"), "{:?}", s.failed);
+}
+
+#[tokio::test]
+async fn two_runs_cant_share_a_state_directory() {
+    let mut r = Rig::new().await;
+    r.archive("a", b"body");
+    r.write_list();
+    let m = manifest(&[("a", sha(b"body"))]);
+    let o = r.mirrored(m, mirror_policy(""), true);
+    std::fs::create_dir_all(r.state()).unwrap();
+    let held = std::fs::File::create(r.state().join(".state.lock")).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let e = go(o).await.unwrap_err().to_string();
+    assert!(e.contains(".state.lock"), "{e}");
+    assert_eq!(r.s.hits_under("/hf/"), 0);
+}
+
+#[test]
+fn a_reservation_follows_the_bytes_still_to_come() {
+    let total = std::sync::atomic::AtomicU64::new(100);
+    {
+        let room = Reservation::new(&total);
+        assert_eq!(room.set(50), 100, "what others hold");
+        assert_eq!(total.load(Ordering::SeqCst), 150);
+        room.set(10);
+        assert_eq!(total.load(Ordering::SeqCst), 110);
+        room.set(50);
+        assert_eq!(total.load(Ordering::SeqCst), 150, "a restart takes it back");
+    }
+    assert_eq!(total.load(Ordering::SeqCst), 100);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failure_records_stay_whole_and_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(FileJobs::new(
+        Vec::new(),
+        dir.path().join("s.json"),
+        Some(dir.path().to_owned()),
+    ));
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..64 {
+        let store = Arc::clone(&store);
+        set.spawn(async move {
+            let job = Job {
+                name: format!("n{i}"),
+                size: 0,
+                sha256: String::new(),
+                dest: PathBuf::new(),
+                sources: Vec::new(),
+            };
+            store
+                .checksum_failed(&job, &"x".repeat(4096))
+                .await
+                .unwrap()
+        });
+    }
+    let mut counts = Vec::new();
+    while let Some(n) = set.join_next().await {
+        counts.push(n.unwrap());
+    }
+    counts.sort_unstable();
+    assert_eq!(counts, (1..=64).collect::<Vec<u64>>());
+    let text = std::fs::read_to_string(dir.path().join("checksum-failures.tsv")).unwrap();
+    assert!(text.lines().all(|l| l.split('\t').count() == 3));
+}
+
+/// A low byte cap can mean a long wait, and a stop has to end it.
+#[tokio::test]
+async fn a_stop_ends_a_throttled_wait_and_keeps_the_part() {
+    let mut r = Rig::new().await;
+    let body = vec![7u8; 3_000_000];
+    r.archive("a", &body);
+    r.s.put("/hf/a.tar.bz2", body.clone());
+    r.write_list();
+    let m = manifest(&[("a", sha(&body))]);
+    let mut o = r.mirrored(
+        m,
+        mirror_policy("max_bytes_per_sec = 1000\nresume = true\n"),
+        true,
+    );
+    o.workers = 1;
+    let (tx, rx) = no_stop();
+    let run = tokio::spawn(bulk::run(o, rx));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    tx.send_replace(true);
+    let s = tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .expect("a stop doesn't wait for the throttle")
+        .unwrap()
+        .unwrap();
+    assert_eq!(s.state, "stopped");
+    assert_eq!(only_parts(&r.state().join("part")).len(), 1);
+}
+
 #[tokio::test]
 async fn the_limit_holds_with_workers_racing_for_it() {
     let mut r = Rig::new().await;
@@ -1309,6 +1420,7 @@ async fn budgets_are_a_seam_any_implementation_can_fill() {
     };
     let (_tx, rx) = no_stop();
     let far = Instant::now() + Duration::from_secs(60);
+    let total = std::sync::atomic::AtomicU64::new(0);
     let got = engine
         .fetch(
             &job,
@@ -1316,6 +1428,7 @@ async fn budgets_are_a_seam_any_implementation_can_fill() {
             &r.out().join("f.part"),
             &rx,
             far,
+            &Reservation::new(&total),
         )
         .await
         .unwrap();

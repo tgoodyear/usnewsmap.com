@@ -8,7 +8,7 @@
 
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use super::engine::{Engine, Fail, Gate, Got};
+use super::engine::{Engine, Fail, Gate, Got, Reservation};
 use super::job::{Attempt, Job, JobStore, Status};
 
 /// Entries kept in [`Status::failed`].
@@ -49,6 +49,14 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// Where a run stands against its limit.
+enum Limit {
+    Room,
+    /// Jobs in hand fill it, but they haven't all succeeded.
+    Wait,
+    Reached,
+}
+
 struct Track {
     status: Status,
     /// Jobs workers hold now, counted against the limit.
@@ -70,6 +78,8 @@ struct Shared {
     track: Mutex<Track>,
     /// Bytes promised to transfers in flight, on top of the free-space floor.
     reserved: AtomicU64,
+    /// Bumped when a worker puts a job down, for those waiting on the limit.
+    freed: watch::Sender<u64>,
     /// One status write at a time, newest last.
     publishing: tokio::sync::Mutex<()>,
     /// Set by the caller's stop signal or by a reason to halt.
@@ -150,22 +160,49 @@ impl Shared {
         }
     }
 
-    /// Count a job against the limit, or say the limit is reached. One check
-    /// and one count, so workers can't all pass it together.
-    fn take_on(&self) -> bool {
+    /// Count a job against the limit: one check and one count, so workers
+    /// can't all pass it together.
+    fn take_on(&self) -> Limit {
         let mut t = self.track();
-        let room = self
-            .opts
-            .limit
-            .is_none_or(|l| t.status.fetched_this_run + t.in_hand < l);
-        if room {
-            t.in_hand += 1;
+        let (fetched, in_hand) = (t.status.fetched_this_run, t.in_hand);
+        match self.opts.limit {
+            Some(l) if fetched >= l => Limit::Reached,
+            Some(l) if fetched + in_hand >= l => Limit::Wait,
+            _ => {
+                t.in_hand += 1;
+                Limit::Room
+            }
         }
-        room
+    }
+
+    /// Wait for the limit to answer. A job held by another worker may yet fail
+    /// and leave room, so a full limit only ends the run once it's met. False
+    /// if the limit is met or the run stopped.
+    async fn wait_for_room(&self, stop: &watch::Receiver<bool>) -> bool {
+        let mut freed = self.freed.subscribe();
+        let mut stop = stop.clone();
+        loop {
+            match self.take_on() {
+                Limit::Room => return true,
+                Limit::Reached => {
+                    self.end("limit", None);
+                    return false;
+                }
+                Limit::Wait => {}
+            }
+            tokio::select! {
+                _ = freed.changed() => {}
+                _ = stop.wait_for(|s| *s) => {
+                    self.end(self.stopped_state(), None);
+                    return false;
+                }
+            }
+        }
     }
 
     fn put_down(&self) {
         self.track().in_hand -= 1;
+        self.freed.send_modify(|n| *n += 1);
     }
 
     /// Try `job`'s sources in order. False ends this worker.
@@ -201,14 +238,14 @@ impl Shared {
                 0
             };
             let need = job.size.saturating_sub(have);
-            let others = self.reserved.fetch_add(need, Ordering::SeqCst);
+            let held = Reservation::new(&self.reserved);
+            let others = held.set(need);
             let room = free_bytes(&self.opts.out);
             if room
                 < need
                     .saturating_add(self.opts.min_free_bytes)
                     .saturating_add(others)
             {
-                self.reserved.fetch_sub(need, Ordering::SeqCst);
                 self.halt(
                     "disk",
                     anyhow::anyhow!(
@@ -224,10 +261,10 @@ impl Shared {
             self.began();
             let res = self
                 .engine
-                .fetch(job, url, &part, stop, self.deadline)
+                .fetch(job, url, &part, stop, self.deadline, &held)
                 .await;
             self.ended();
-            self.reserved.fetch_sub(need, Ordering::SeqCst);
+            drop(held);
             match res {
                 Ok(Got { written, placed }) => {
                     {
@@ -315,13 +352,15 @@ impl Shared {
             } else if Instant::now() >= self.deadline {
                 tracing::info!("the run's time is up; the next run goes on");
                 Some("paused")
-            } else if !self.take_on() {
-                Some("limit")
             } else {
                 None
             };
             if let Some(state) = why {
                 self.end(state, None);
+                self.store.release(&job).await?;
+                return Ok(());
+            }
+            if !self.wait_for_room(&stop).await {
                 self.store.release(&job).await?;
                 return Ok(());
             }
@@ -384,6 +423,7 @@ pub async fn run(
             end: None,
         }),
         reserved: AtomicU64::new(0),
+        freed: watch::channel(0).0,
         publishing: tokio::sync::Mutex::new(()),
         halt,
         outside: stop.clone(),

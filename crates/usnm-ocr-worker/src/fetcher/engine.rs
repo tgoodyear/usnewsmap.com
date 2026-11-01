@@ -72,6 +72,39 @@ pub struct EngineOptions {
     pub rate_file: Option<PathBuf>,
 }
 
+/// Disk space promised to one transfer, inside a run's total. It tracks the
+/// bytes still to come: what's written already shows in the free space.
+#[derive(Debug)]
+pub struct Reservation<'a> {
+    total: &'a AtomicU64,
+    held: AtomicU64,
+}
+
+impl<'a> Reservation<'a> {
+    pub fn new(total: &'a AtomicU64) -> Self {
+        Self {
+            total,
+            held: AtomicU64::new(0),
+        }
+    }
+
+    /// `n` bytes are still to come. Returns the run's total before this change.
+    pub fn set(&self, n: u64) -> u64 {
+        let held = self.held.swap(n, Ordering::SeqCst);
+        if n >= held {
+            self.total.fetch_add(n - held, Ordering::SeqCst)
+        } else {
+            self.total.fetch_sub(held - n, Ordering::SeqCst)
+        }
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        self.total.fetch_sub(*self.held.get_mut(), Ordering::SeqCst);
+    }
+}
+
 /// A policy's byte-rate cap, shared by its transfers.
 #[derive(Debug)]
 pub(super) struct ByteCap {
@@ -374,6 +407,17 @@ pub(super) fn publish(part: &Path, job: &Job) -> std::io::Result<bool> {
     }
 }
 
+/// One try at a file from one source.
+#[derive(Clone, Copy)]
+struct Attempt<'a> {
+    job: &'a Job,
+    url: &'a str,
+    part: &'a Path,
+    stop: &'a watch::Receiver<bool>,
+    deadline: Instant,
+    room: &'a Reservation<'a>,
+}
+
 /// Fetches files within host policies.
 pub struct Engine {
     http: reqwest::Client,
@@ -560,6 +604,7 @@ impl Engine {
         part: &Path,
         stop: &watch::Receiver<bool>,
         deadline: Instant,
+        room: &Reservation<'_>,
     ) -> Result<Got, Fail> {
         let gate = self.gate_for(url).await?;
         let mut s = stop.clone();
@@ -573,7 +618,15 @@ impl Engine {
         let mut tries: u32 = 0;
         loop {
             gate.cap.refresh();
-            let m = match self.attempt(&gate, job, url, part, stop, deadline).await {
+            let this = Attempt {
+                job,
+                url,
+                part,
+                stop,
+                deadline,
+                room,
+            };
+            let m = match self.attempt(&gate, this).await {
                 Ok(g) => {
                     gate.in_a_row.store(0, Ordering::Relaxed);
                     return Ok(g);
@@ -611,15 +664,15 @@ impl Engine {
         }
     }
 
-    async fn attempt(
-        &self,
-        gate: &Gate,
-        job: &Job,
-        url: &str,
-        part: &Path,
-        stop: &watch::Receiver<bool>,
-        deadline: Instant,
-    ) -> Result<Got, Fail> {
+    async fn attempt(&self, gate: &Gate, this: Attempt<'_>) -> Result<Got, Fail> {
+        let Attempt {
+            job,
+            url,
+            part,
+            stop,
+            deadline,
+            room,
+        } = this;
         let resume = gate.policy.resume;
         let name = &job.name;
         let mut have = if resume {
@@ -650,6 +703,7 @@ impl Engine {
                     // The server sent the whole file, so the part starts over.
                     have = 0;
                     hash = Sha256::new();
+                    room.set(job.size);
                 } else if range_start(&resp) != Some(have) {
                     remove(part).await;
                     return Err(Fail::Transient(format!(
@@ -676,6 +730,8 @@ impl Engine {
                 .map_err(|e| Fail::Transient(format!("{}: {e}", part.display())))?;
             let mut window = Instant::now();
             let mut in_window: u64 = 0;
+            // Time this run chose to wait isn't the source being slow.
+            let mut throttled = Duration::ZERO;
             let mut s = stop.clone();
             loop {
                 let got = tokio::select! {
@@ -707,17 +763,30 @@ impl Engine {
                 file.write_all(&chunk)
                     .await
                     .map_err(|e| Fail::Transient(format!("{}: {e}", part.display())))?;
-                gate.cap.take(chunk.len() as u64).await;
+                room.set(job.size - have);
+                let t = Instant::now();
+                let mut wait = stop.clone();
+                let waited = tokio::select! {
+                    () = gate.cap.take(chunk.len() as u64) => true,
+                    () = async { let _ = wait.wait_for(|s| *s).await; } => false,
+                };
+                if !waited {
+                    keep_or_remove(file, part, resume).await;
+                    return Err(Fail::Stopped);
+                }
+                throttled += t.elapsed();
                 in_window += chunk.len() as u64;
-                if window.elapsed() >= STALL_WINDOW {
+                let active = window.elapsed().saturating_sub(throttled);
+                if active >= STALL_WINDOW {
                     if let Some(min) = gate.policy.min_bytes_per_sec {
-                        if in_window < min.saturating_mul(STALL_WINDOW.as_secs()) {
+                        if in_window < min.saturating_mul(active.as_secs()) {
                             keep_or_remove(file, part, resume).await;
                             return Err(Fail::Transient(format!("{name}: stalled")));
                         }
                     }
                     window = Instant::now();
                     in_window = 0;
+                    throttled = Duration::ZERO;
                 }
             }
             file.sync_all()

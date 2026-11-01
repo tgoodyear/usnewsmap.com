@@ -99,6 +99,8 @@ pub struct FileJobs {
     /// The directory for `held-back.tsv` and `checksum-failures.tsv`. Without
     /// one, verification failures aren't kept across runs.
     state: Option<PathBuf>,
+    /// One failure record at a time, and its count with it.
+    failures: Mutex<()>,
 }
 
 impl FileJobs {
@@ -107,6 +109,15 @@ impl FileJobs {
             pending: Mutex::new(jobs.into()),
             status,
             state,
+            failures: Mutex::new(()),
+        }
+    }
+
+    fn count_failures(path: &std::path::Path) -> anyhow::Result<u64> {
+        match std::fs::read_to_string(path) {
+            Ok(t) => Ok(t.lines().count() as u64),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -157,24 +168,23 @@ impl JobStore for FileJobs {
         let Some(path) = self.failures_file() else {
             return Ok(0);
         };
-        match std::fs::read_to_string(path) {
-            Ok(t) => Ok(t.lines().count() as u64),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(e.into()),
-        }
+        let _one = self.failures.lock().expect("failures lock");
+        Self::count_failures(&path)
     }
 
     async fn checksum_failed(&self, job: &Job, detail: &str) -> anyhow::Result<u64> {
         let Some(path) = self.failures_file() else {
             return Ok(0);
         };
+        let at = chrono::Utc::now().format("%FT%TZ");
+        let line = format!("{at}\t{}\t{detail}\n", job.name);
+        let _one = self.failures.lock().expect("failures lock");
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
-        let at = chrono::Utc::now().format("%FT%TZ");
-        writeln!(f, "{at}\t{}\t{detail}", job.name)?;
-        self.checksum_failures().await
+        f.write_all(line.as_bytes())?;
+        Self::count_failures(&path)
     }
 
     async fn status(&self, status: &Status) -> anyhow::Result<()> {

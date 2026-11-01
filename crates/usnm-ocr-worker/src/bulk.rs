@@ -210,6 +210,18 @@ fn plan(
     (jobs, held)
 }
 
+/// An exclusive lock on `path`, held until the file is dropped.
+fn hold_lock(path: &Path) -> anyhow::Result<std::fs::File> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| anyhow::anyhow!("another bulk-ocr run holds {}", path.display()))?;
+    Ok(lock)
+}
+
 /// The datasets table, once, into `path`.
 async fn fetch_list(
     engine: &Engine,
@@ -245,19 +257,7 @@ async fn fetch_list(
 pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<Status> {
     tokio::fs::create_dir_all(&opts.out).await?;
     // One bulk process at a time.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(opts.out.join(".bulk.lock"))?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(
-        |_| {
-            anyhow::anyhow!(
-                "another bulk-ocr run holds {}",
-                opts.out.join(".bulk.lock").display()
-            )
-        },
-    )?;
+    let _lock = hold_lock(&opts.out.join(".bulk.lock"))?;
     let mut policies = opts.policies.clone();
     if let Some(loc) = policies.named_mut(LOC) {
         loc.min_gap_secs = opts.gap.as_secs();
@@ -266,6 +266,14 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         (Some(_), None) => bail!("a mirror needs a state directory"),
         (Some(_), Some(s)) => s.join("part"),
         (None, _) => opts.out.clone(),
+    };
+    // Partials and failure records are shared by whatever uses this state directory.
+    let _state_lock = match (&opts.mirror, &opts.state) {
+        (Some(_), Some(s)) => {
+            tokio::fs::create_dir_all(s).await?;
+            Some(hold_lock(&s.join(".state.lock"))?)
+        }
+        _ => None,
     };
     let mirror_url = opts.mirror.as_ref().map(|m| m.base_url.clone());
     if let (Some(url), Some(rate)) = (&mirror_url, opts.rate_bytes_per_sec) {
