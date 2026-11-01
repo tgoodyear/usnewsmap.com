@@ -11,6 +11,9 @@ Reads what each host already records and writes one small JSON document of hourl
   boinc       the BOINC database (two bounded, read-only aggregate queries, on the server's
               own connection settings) and podman's step containers (bridge lock hold time)
 
+Device seconds are every returned replica of the workunits that got a canonical result in the
+hour, failures and inconclusive replicas included: what a finished page cost.
+
 It takes no lock, changes nothing, and reads no page text, file names or result output: only
 counts, durations and ids of steps. Every hour in the window is recomputed on each run, so a late
 or repeated run corrects a bucket and never adds to it. The window ends at the last complete hour,
@@ -43,6 +46,7 @@ CONTROLLER_UNIT = "usnm-boinc-priority-controller.service"
 SHIP_UNITS = {"usnm-quality-ship.service": "quality", "usnm-qwen-ship.service": "qwen"}
 QUALITY_LOAD_UNIT = "usnm-quality-results.service"
 QWEN_LOAD_UNIT = "usnm-qwen-results.service"
+LOADERS = {QUALITY_LOAD_UNIT: "quality", QWEN_LOAD_UNIT: "qwen"}
 # The apps a page goes through, and the database's result states (boinc/html/inc/common_defs.inc).
 APPS = {"usnm_ocr": "ocr", "usnm_quality": "quality", "usnm_qwen": "qwen"}
 SUCCESS = 1
@@ -74,13 +78,14 @@ $found = $db->do_query("SELECT id, name FROM app WHERE name IN ('usnm_ocr','usnm
 while ($row = $found->fetch_row()) $apps[(int)$row[0]] = $row[1];
 $ids = implode(',', array_keys($apps));
 $results = $read("SELECT /*+ MAX_EXECUTION_TIME(5000) */ appid, FLOOR(received_time/3600)*3600,
-    outcome = 1, validate_state, COUNT(*), ROUND(SUM(elapsed_time)),
-    SUM(name LIKE 'usnm\\_ocrb\\_%')
+    outcome = 1, validate_state, COUNT(*), SUM(name LIKE 'usnm\\_ocrb\\_%')
   FROM result WHERE server_state = 5 AND received_time >= $from AND appid IN ($ids)
   GROUP BY 1, 2, 3, 4 LIMIT 20000");
-$units = $read("SELECT /*+ MAX_EXECUTION_TIME(5000) */ r.appid, FLOOR(r.received_time/3600)*3600, COUNT(*)
-  FROM result r JOIN workunit w ON w.id = r.workunitid AND w.canonical_resultid = r.id
-  WHERE r.server_state = 5 AND r.received_time >= $from AND r.appid IN ($ids)
+$units = $read("SELECT /*+ MAX_EXECUTION_TIME(5000) */ c.appid, FLOOR(c.received_time/3600)*3600,
+    COUNT(DISTINCT c.id), ROUND(SUM(r.elapsed_time))
+  FROM result c JOIN workunit w ON w.id = c.workunitid AND w.canonical_resultid = c.id
+  JOIN result r ON r.workunitid = c.workunitid AND r.received_time > 0
+  WHERE c.server_state = 5 AND c.received_time >= $from AND c.appid IN ($ids)
   GROUP BY 1, 2 LIMIT 20000");
 echo json_encode(['apps' => $apps, 'results' => $results, 'units' => $units]);
 """
@@ -96,11 +101,6 @@ class Window:
         self.first = self.last - (hours - 1) * HOUR
         self.start = self.first
         self.series = {}
-
-    def reach(self, oldest):
-        """The source goes back only to `oldest`: its first whole hour is the first observed."""
-        if oldest is not None:
-            self.start = max(self.start, -(-oldest // HOUR) * HOUR)
 
     def declare(self, name):
         return self.series.setdefault(name, [
@@ -121,10 +121,9 @@ class Window:
             at = stop
 
     def forget_before(self, wanted, oldest):
-        """Series `wanted` picks come from a record that begins at `oldest`."""
-        if oldest is None:
-            return
-        start = -(-oldest // HOUR) * HOUR
+        """Series `wanted` picks come from a record that begins at `oldest`, None if it is
+        empty: its first whole hour is the first observed."""
+        start = self.now + HOUR if oldest is None else -(-oldest // HOUR) * HOUR
         for name, values in self.series.items():
             if wanted(name):
                 for index in range(self.hours):
@@ -162,8 +161,9 @@ def journal(units, since):
         except (ValueError, KeyError, TypeError):
             continue
         message = entry.get("MESSAGE")
+        # systemd's own lines about a unit name it in UNIT, and are init.scope's otherwise.
         if isinstance(message, str):
-            yield at, entry.get("_SYSTEMD_UNIT", ""), message
+            yield at, entry.get("UNIT") or entry.get("_SYSTEMD_UNIT", ""), message
 
 
 def oldest_journal_entry(units):
@@ -241,11 +241,19 @@ def collect_ship(window, entries):
                  "qwen_load_pages", "qwen_load_seconds", "qwen_load_failed"):
         window.declare(name)
     chunks, seen_units = {}, set()
-    locked = {}
-    readings = None
+    began = {}
+    readings = pending_readings = None
     for at, unit, message in entries:
-        if message.startswith(f"{unit}: Failed with result") and unit in (QUALITY_LOAD_UNIT, QWEN_LOAD_UNIT):
-            window.add("quality_load_failed" if unit == QUALITY_LOAD_UNIT else "qwen_load_failed", at)
+        if unit in LOADERS:
+            lane = LOADERS[unit]
+            ended = message.startswith((f"{unit}: Failed with result", f"{unit}: Deactivated successfully"))
+            if message.startswith("Starting "):
+                began[unit] = at
+                pending_readings = None if unit == QWEN_LOAD_UNIT else pending_readings
+            elif ended and unit in began:
+                window.spread(f"{lane}_load_seconds", began.pop(unit), at)
+            if "Failed with result" in message and message.startswith(f"{unit}:"):
+                window.add(f"{lane}_load_failed", at)
         if unit in SHIP_UNITS:
             lane = SHIP_UNITS[unit]
             match = SHIP_LINE.fullmatch(message)
@@ -275,27 +283,22 @@ def collect_ship(window, entries):
                 window.add(f"{lane}_deferred", at)
         elif unit == QUALITY_LOAD_UNIT:
             event = json_event(message)
-            if message == "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED":
-                locked[unit] = at
-            elif event and "selected_unit" in event:
+            if event and "selected_unit" in event:
                 key = (event.get("campaign"), event.get("selected_unit"))
-                if key not in seen_units:
+                # A visit before the results are in loads no pages, and the unit comes back.
+                if key not in seen_units and number(event.get("pages")) > 0:
                     seen_units.add(key)
                     window.add("quality_load_pages", at, number(event.get("pages")))
-                if unit in locked:
-                    window.spread("quality_load_seconds", locked.pop(unit), at)
         elif unit == QWEN_LOAD_UNIT:
             event = json_event(message)
             summary = re.match(r"Summary \{ pages: [0-9]+, with_readings: ([0-9]+),", message)
-            acquired = re.fullmatch(r"USNM_QUALITY_STEP_LOCK_ACQUIRED ([0-9TZ:-]+)", message)
-            if acquired:
-                locked[unit] = datetime.fromisoformat(acquired[1].replace("Z", "+00:00")).timestamp()
-            elif summary:
+            if summary:
+                pending_readings = int(summary[1])
+            elif event and "loaded_at" in event and pending_readings is not None:
+                # The summary comes before the load, which can still fail.
                 if readings is not None:
-                    window.add("qwen_load_pages", at, max(0, int(summary[1]) - readings))
-                readings = int(summary[1])
-            elif event and "loaded_at" in event and unit in locked:
-                window.spread("qwen_load_seconds", locked.pop(unit), at)
+                    window.add("qwen_load_pages", at, max(0, pending_readings - readings))
+                readings, pending_readings = pending_readings, None
     return {}
 
 
@@ -324,14 +327,14 @@ def collect_boinc(window, rows):
     for lane in apps.values():
         for name in RESULT_SERIES:
             window.declare(f"{lane}_{name}")
-    for appid, hour, success, state, count, seconds, bundles in rows["results"]:
+    for appid, hour, success, state, count, bundles in rows["results"]:
         lane = apps[appid]
         name = VALIDATE_NAMES.get(state, "invalid") if success == SUCCESS else "error"
         window.add(f"{lane}_{name}", hour, count)
-        window.add(f"{lane}_elapsed_seconds", hour, seconds)
         window.add(f"{lane}_bundles", hour, bundles)
-    for appid, hour, count in rows["units"]:
+    for appid, hour, count, seconds in rows["units"]:
         window.add(f"{apps[appid]}_units", hour, count)
+        window.add(f"{apps[appid]}_elapsed_seconds", hour, seconds)
 
 
 def collect_steps(window, events):
@@ -382,12 +385,16 @@ def collect(args):
     window = Window(args.now if args.now is not None else int(datetime.now(timezone.utc).timestamp()), args.hours)
     since = window.first - LOOKBACK_HOURS * HOUR
     if args.source == "controller":
-        window.reach(oldest_journal_entry([CONTROLLER_UNIT]))
         limits = collect_controller(window, journal([CONTROLLER_UNIT], since))
+        window.forget_before(lambda name: True, oldest_journal_entry([CONTROLLER_UNIT]))
     elif args.source == "ship":
-        units = [*SHIP_UNITS, QUALITY_LOAD_UNIT, QWEN_LOAD_UNIT]
-        window.reach(oldest_journal_entry(units))
-        collect_ship(window, journal(units, since))
+        collect_ship(window, journal([*SHIP_UNITS, *LOADERS], since))
+        for unit, lane in SHIP_UNITS.items():
+            window.forget_before(lambda name, lane=lane: name.startswith(f"{lane}_") and "_load_" not in name,
+                                 oldest_journal_entry([unit]))
+        for unit, lane in LOADERS.items():
+            window.forget_before(lambda name, lane=lane: name.startswith(f"{lane}_load_"),
+                                 oldest_journal_entry([unit]))
         environment = run(["systemctl", "show", "--property=Environment", "--value", "usnm-qwen-ship.service"])
         limits = ship_limits(args.ship_env, environment)
     else:

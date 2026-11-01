@@ -550,7 +550,10 @@ impl Fetch {
         self.load_plan(now);
         self.index_error = match self.read_index() {
             Ok(()) => {
-                self.index_read_at = Some(now);
+                // A missing file reads as empty: that says nothing about the hour.
+                if self.index.path.is_file() {
+                    self.index_read_at = Some(now);
+                }
                 None
             }
             Err(e) => {
@@ -795,12 +798,13 @@ impl Fetch {
         }
     }
 
-    /// The hours the index says something about: from its first kept hour to
-    /// the last read. Inside them, an hour with no lines is a real zero.
+    /// The whole hours the index says something about: from its first kept
+    /// hour to the last one over before the last read. Inside them, an hour
+    /// with no lines is a real zero.
     pub fn hours_covered(&self) -> Option<(i64, i64)> {
         let first = *self.hourly.keys().next()?;
-        let last = self.index_read_at?.timestamp().div_euclid(3600) * 3600;
-        Some((first, last))
+        let last = self.index_read_at?.timestamp().div_euclid(3600) * 3600 - 3600;
+        (first <= last).then_some((first, last))
     }
 
     /// Fetches and bytes since `since`.
@@ -1338,6 +1342,34 @@ mod tests {
         assert!(f.plan.is_none());
         assert!(f.plan_error.is_none());
         assert_eq!(f.total.pages, 3);
+    }
+
+    #[test]
+    fn hours_are_covered_up_to_the_last_whole_one_read_and_no_further() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index-full.jsonl");
+        let now = Utc::now();
+        let hour = now.timestamp().div_euclid(3600) * 3600;
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.poll(now);
+        assert_eq!(f.hours_covered(), None, "no index, no hours");
+        let at = now - Duration::hours(3);
+        std::fs::write(
+            &index,
+            format!(
+                "{{\"doc_id\":\"a\",\"fetched_at\":\"{}\",\"bytes\":5,\"download_ms\":1500}}\n",
+                at.to_rfc3339()
+            ),
+        )
+        .unwrap();
+        f.poll(now);
+        let first = hour - 3 * 3600;
+        assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
+        assert_eq!(f.hourly[&first], (1, 1500));
+        // The index goes away: later hours aren't counted zeros.
+        std::fs::remove_file(&index).unwrap();
+        f.poll(now + Duration::hours(2));
+        assert_eq!(f.hours_covered(), Some((first, hour - 3600)));
     }
 
     #[test]

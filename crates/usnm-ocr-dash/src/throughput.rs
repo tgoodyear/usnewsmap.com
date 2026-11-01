@@ -69,6 +69,16 @@ pub fn parse(body: &[u8], source: &str, now: DateTime<Utc>) -> anyhow::Result<Pa
         (1..=KEEP_HOURS as usize).contains(&p.hours),
         "hours out of range"
     );
+    // Hours are in the past: a far future one would stretch every series to it.
+    let end = i64::try_from(p.hours)
+        .ok()
+        .and_then(|n| n.checked_mul(HOUR))
+        .and_then(|n| n.checked_add(p.first_hour))
+        .context("hours out of range")?;
+    ensure!(
+        end <= hour_of(now.min(p.observed_at)) + HOUR,
+        "hours beyond the observation"
+    );
     ensure!(p.series.len() <= MAX_SERIES, "too many series");
     for (name, values) in &p.series {
         ensure!(name_ok(name), "bad series name");
@@ -326,8 +336,8 @@ const ROWS: &[Row] = &[
         seconds: &["ocr_elapsed_seconds"],
         per: &[],
         scope: "Workunits with a canonical result, by when that result came back. One workunit, \
-                one page, unless bundles run, when the hour is not counted. Seconds are device \
-                time, failed replicas excluded.",
+                one page, and an hour with bundles has no count. Seconds are device time on those \
+                workunits, every replica back, failed ones too.",
         limit: "",
     },
     Row {
@@ -350,7 +360,8 @@ const ROWS: &[Row] = &[
         seconds: &["qwen_elapsed_seconds"],
         per: &[],
         scope: "Workunits with a canonical result: pages two replicas agreed on, not replicas. \
-                Seconds are device time over those pages, so inconclusive replicas cost in them.",
+                Seconds are device time on those pages, every replica back, inconclusive and \
+                failed ones too.",
         limit: "",
     },
     Row {
@@ -370,7 +381,8 @@ const ROWS: &[Row] = &[
         counts: &["quality_load_pages"],
         seconds: &["quality_load_seconds"],
         per: &[],
-        scope: "Pages of each unit loaded into the quality database, from the loader's logs.",
+        scope: "Pages of each unit loaded into the quality database, from the loader's logs. \
+                Seconds are whole loader runs, including runs that loaded nothing.",
         limit: "one unit a run",
     },
     Row {
@@ -380,8 +392,8 @@ const ROWS: &[Row] = &[
         counts: &["qwen_load_pages"],
         seconds: &["qwen_load_seconds"],
         per: &[],
-        scope: "Growth of the loader's pages with readings. Seconds are its time under the \
-                bridge lock.",
+        scope: "Growth of the loader's pages with readings at each successful load. Seconds are \
+                whole loader runs, including waits for the lock.",
         limit: "",
     },
     Row {
@@ -483,6 +495,11 @@ impl ThroughputView {
     pub fn step(&self, id: &str) -> Option<&StepRate> {
         self.steps.iter().find(|s| s.id == id)
     }
+
+    /// The source reported lately, so its last hour can stand for now.
+    pub fn fresh(&self, source: &str) -> bool {
+        self.sources.iter().any(|s| s.name == source && !s.stale)
+    }
 }
 
 /// `get` over `hours`: the sum of what is known, and how many hours were.
@@ -546,6 +563,13 @@ pub fn view(
                     ms as f64 / 1000.0
                 })
             }
+            // A bundled OCR unit holds an unknown number of pages, so an hour
+            // with one has no page count.
+            "ocr_units" | "ocr_elapsed_seconds"
+                if t.get("ocr_bundles", hour).is_some_and(|n| n > 0.0) =>
+            {
+                None
+            }
             _ => t.get(series, hour),
         }
     };
@@ -595,20 +619,6 @@ pub fn view(
             bins: bin_values,
             bin_known,
         });
-    }
-    // Bundled OCR units hold an unknown number of pages: such an hour's page
-    // count is unknown, not the count of units.
-    if let Some(ocr) = steps.iter_mut().find(|s| s.id == "usnm_ocr") {
-        let bundled = |h: i64| get("ocr_bundles", h).is_some_and(|n| n > 0.0);
-        if range(end, 24).any(bundled) {
-            *ocr = StepRate {
-                last_hour: None,
-                last_day: None,
-                day_hours_known: 0,
-                seconds_per_page: None,
-                ..ocr.clone()
-            };
-        }
     }
     let quorum = [
         ("usnm_ocr", "ocr"),
@@ -749,7 +759,21 @@ mod tests {
         ] {
             assert!(parse(&bad, "ship", now()).is_err());
         }
+        // One sample a year on would stretch every series out to it.
+        let far = hour_of(now()) + 365 * 24 * HOUR;
+        assert!(parse(&packet("ship", far, json!({"a": [1]})), "ship", now()).is_err());
+        let current = hour_of(now());
+        assert!(parse(&packet("ship", current, json!({"a": [1]})), "ship", now()).is_ok());
+        assert!(parse(
+            &packet("ship", current + HOUR, json!({"a": [1]})),
+            "ship",
+            now()
+        )
+        .is_err());
         let mut v: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        v["first_hour"] = json!(i64::MAX / HOUR * HOUR);
+        assert!(parse(&serde_json::to_vec(&v).unwrap(), "ship", now()).is_err());
+        v["first_hour"] = json!(3600);
         v["hours"] = json!(3);
         assert!(parse(&serde_json::to_vec(&v).unwrap(), "ship", now()).is_err());
         v["hours"] = json!(2);
@@ -838,12 +862,14 @@ mod tests {
         );
         // Time passes: the oldest hours go.
         let later = now() + Duration::days(7);
-        let p = parse(
-            &packet("boinc", hour_of(later), json!({"lock_seconds": [9]})),
+        let mut body: serde_json::Value = serde_json::from_slice(&packet(
             "boinc",
-            later,
-        )
+            hour_of(later),
+            json!({"lock_seconds": [9]}),
+        ))
         .unwrap();
+        body["observed_at"] = json!(later.to_rfc3339());
+        let p = parse(&serde_json::to_vec(&body).unwrap(), "boinc", later).unwrap();
         let mut t = again;
         t.apply(p, later).unwrap();
         assert_eq!(t.get("lock_seconds", end - (KEEP_HOURS - 1) * HOUR), None);
@@ -938,9 +964,17 @@ mod tests {
             end,
             json!({"ocr_units": [10], "ocr_bundles": [3]}),
         );
+        apply(
+            &mut t,
+            "boinc",
+            end - HOUR,
+            json!({"ocr_units": [4], "ocr_bundles": [0]}),
+        );
         let v = view(&t, &BTreeMap::new(), None, now());
+        // The bundled hour is unknown; the hour before it still counts.
         assert!(step(&v, "usnm_ocr").last_hour.is_none());
-        assert!(step(&v, "usnm_ocr").last_day.is_none());
+        assert_eq!(step(&v, "usnm_ocr").last_day, Some(4.0));
+        assert_eq!(step(&v, "usnm_ocr").bins.iter().flatten().sum::<f64>(), 4.0);
     }
 
     #[test]

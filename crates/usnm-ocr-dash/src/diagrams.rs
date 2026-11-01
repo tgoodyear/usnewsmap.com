@@ -450,6 +450,7 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         .iter()
         .filter_map(|q| Some((q.valid_day?, q.inconclusive_day?)))
         .reduce(|a, b| (a.0 + b.0, a.1 + b.1))
+        .filter(|_| v.throughput.fresh("boinc"))
     {
         m.insert(
             "boinc-validation",
@@ -473,7 +474,11 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
                 usnm_quality and usnm_qwen. Replicas, not pages.";
         }
     }
-    if let Some(s) = v.throughput.step("stage").filter(|s| s.last_hour.is_some()) {
+    if let Some(s) = v
+        .throughput
+        .step("stage")
+        .filter(|s| s.last_hour.is_some() && v.throughput.fresh("ship"))
+    {
         let n = s.last_hour.unwrap_or(0.0);
         let mut step = StepState::with(if n > 0.0 { "running" } else { "waiting" }, String::new());
         step.rate = Some(format!("{} pages/h*", int(n as u64)));
@@ -1085,6 +1090,15 @@ mod tests {
             rate_of_step("ocr_claim", Some(12.0)),
             rate_of_step("stage", Some(0.0)),
         ];
+        t.sources = ["boinc", "ship"]
+            .iter()
+            .map(|name| crate::throughput::SourceRow {
+                name: (*name).to_owned(),
+                received: None,
+                observed_at: None,
+                stale: false,
+            })
+            .collect();
         t.results_last_hour = Some(90.0);
         t.valid_last_hour = Some(30.0);
         t.quorum = vec![crate::throughput::QuorumRow {
@@ -1115,6 +1129,11 @@ mod tests {
         );
         assert_eq!(st["boinc-staging"].class, "waiting");
         assert_eq!(st["boinc-staging"].rate.as_deref(), Some("0 pages/h*"));
+        // A collector that stopped doesn't keep them looking live.
+        v.throughput.sources.iter_mut().for_each(|s| s.stale = true);
+        let st = steps(&v);
+        assert!(!st.contains_key("boinc-validation"));
+        assert!(!st.contains_key("boinc-staging"));
     }
 
     fn rate_of_step(id: &'static str, last_hour: Option<f64>) -> crate::throughput::StepRate {

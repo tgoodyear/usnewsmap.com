@@ -86,17 +86,25 @@ class ShipTests(unittest.TestCase):
             (base + 50, QWEN, "quality-ship: c00081: native publication deferred; READY retained; no acknowledgement"),
             (base + 60, QWEN, "quality-ship: c00081: received 24 pages (srp); staging"),
             (base + 70, QWEN, "quality-ship: c00081: staged; submitting"),
-            (base + 80, collector.QUALITY_LOAD_UNIT, "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"),
+            (base + 75, collector.QUALITY_LOAD_UNIT, "Starting usnm-quality-results.service - results..."),
+            (base + 76, collector.QUALITY_LOAD_UNIT, json.dumps(
+                {"campaign": "w", "pages": 0, "reader_rows": 0, "selected_unit": "bundle-1"})),
             (base + 85, collector.QUALITY_LOAD_UNIT, json.dumps(
                 {"campaign": "w", "pages": 200, "reader_rows": 1, "selected_unit": "bundle-1"})),
             (base + 86, collector.QUALITY_LOAD_UNIT, json.dumps(
                 {"campaign": "w", "pages": 200, "reader_rows": 1, "selected_unit": "bundle-1"})),
+            (base + 87, collector.QUALITY_LOAD_UNIT, "usnm-quality-results.service: Deactivated successfully."),
             (base + 90, collector.QWEN_LOAD_UNIT, "Summary { pages: 2094, with_readings: 70, pending: 0 }"),
-            (base + 95, collector.QWEN_LOAD_UNIT, "USNM_QUALITY_STEP_LOCK_ACQUIRED 2026-11-01T10:30:00Z"),
-            (base + 1800, collector.QWEN_LOAD_UNIT, "Summary { pages: 2094, with_readings: 78, pending: 0 }"),
-            (base + 1830, collector.QWEN_LOAD_UNIT, json.dumps({"loaded_at": 1.5})),
-            (base + 1900, collector.QWEN_LOAD_UNIT,
+            (base + 91, collector.QWEN_LOAD_UNIT, json.dumps({"loaded_at": 1.0})),
+            (base + 1000, collector.QWEN_LOAD_UNIT, "Starting usnm-qwen-results.service - results..."),
+            # This run's load fails: its summary doesn't count, and the next run's does.
+            (base + 1010, collector.QWEN_LOAD_UNIT, "Summary { pages: 2094, with_readings: 75, pending: 0 }"),
+            (base + 1020, collector.QWEN_LOAD_UNIT,
              "usnm-qwen-results.service: Failed with result 'exit-code'."),
+            (base + 1800, collector.QWEN_LOAD_UNIT, "Starting usnm-qwen-results.service - results..."),
+            (base + 1810, collector.QWEN_LOAD_UNIT, "Summary { pages: 2094, with_readings: 78, pending: 0 }"),
+            (base + 1830, collector.QWEN_LOAD_UNIT, json.dumps({"loaded_at": 1.5})),
+            (base + 1835, collector.QWEN_LOAD_UNIT, "usnm-qwen-results.service: Deactivated successfully."),
         ]
 
     def test_chunks_and_loads_are_counted_once_in_their_hour(self):
@@ -113,10 +121,10 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(s["qwen_submit_pages"][at], 0)
         self.assertEqual(s["qwen_deferred"][at], 1)
         self.assertEqual(s["quality_load_pages"][at], 200)
-        self.assertEqual(s["quality_load_seconds"][at], 5)
+        self.assertEqual(s["quality_load_seconds"][at], 12)
         self.assertEqual(s["qwen_load_pages"][at], 8)
         self.assertEqual(s["qwen_load_failed"][at], 1)
-        self.assertEqual(s["qwen_load_seconds"][at], 30)
+        self.assertEqual(s["qwen_load_seconds"][at], 55)
         self.assertEqual(s["quality_ship_pages"][0], 0)
 
     def test_limits_come_from_the_settings_and_nothing_else_is_read(self):
@@ -138,10 +146,10 @@ class BoincTests(unittest.TestCase):
         collector.collect_boinc(w, {
             "apps": {"1": "usnm_ocr", "6": "usnm_qwen"},
             "results": [
-                [6, hour, 1, 1, 15, 3000, 0], [6, hour, 1, 4, 60, 9000, 0], [6, hour, 1, 0, 223, 100, 0],
-                [6, hour, 1, 2, 3, 30, 0], [6, hour, 0, 2, 4, 0, 0], [1, hour, 1, 1, 9, 900, 2],
+                [6, hour, 1, 1, 15, 0], [6, hour, 1, 4, 60, 0], [6, hour, 1, 0, 223, 0],
+                [6, hour, 1, 2, 3, 0], [6, hour, 0, 2, 4, 0], [1, hour, 1, 1, 9, 2],
             ],
-            "units": [[6, hour, 5], [1, hour, 9]],
+            "units": [[6, hour, 5, 12130], [1, hour, 9, 900]],
         })
         s = w.series
         self.assertEqual((s["qwen_valid"][1], s["qwen_inconclusive"][1], s["qwen_waiting"][1]), (15, 60, 223))
@@ -184,8 +192,8 @@ class BoincTests(unittest.TestCase):
 class DocumentTests(unittest.TestCase):
     def test_hours_before_the_source_begins_are_null_not_zero(self):
         w = window()
-        w.reach(THIS_HOUR - HOUR + 1)
         w.add("a", THIS_HOUR)
+        w.forget_before(lambda name: True, THIS_HOUR - HOUR + 1)
         document = w.document("ship", {})
         self.assertEqual(document["series"]["a"], [None, None, 1])
         self.assertEqual(document["first_hour"], THIS_HOUR - 2 * HOUR)
@@ -204,6 +212,20 @@ class DocumentTests(unittest.TestCase):
         w.forget_before(lambda name: name == "lock_seconds", THIS_HOUR - HOUR + 1)
         self.assertEqual(w.series["lock_seconds"], [None, None, 5])
         self.assertEqual(w.series["qwen_valid"], [2, 0, 0])
+
+    def test_an_empty_journal_observed_nothing(self):
+        w = window()
+        w.add("a", THIS_HOUR)
+        w.forget_before(lambda name: True, None)
+        self.assertEqual(w.series["a"], [None, None, None])
+
+    def test_journal_entries_about_a_unit_are_that_units(self):
+        lines = [json.dumps({"__REALTIME_TIMESTAMP": "5000000", "UNIT": "x.service",
+                             "_SYSTEMD_UNIT": "init.scope", "MESSAGE": "x.service: Failed with result 'signal'."}),
+                 json.dumps({"__REALTIME_TIMESTAMP": "6000000", "_SYSTEMD_UNIT": "y.service", "MESSAGE": "hi"})]
+        with patch.object(collector, "run", return_value="\n".join(lines)):
+            entries = list(collector.journal(["x.service"], 1))
+        self.assertEqual([entry[1] for entry in entries], ["x.service", "y.service"])
 
     def test_an_event_outside_the_window_is_ignored(self):
         w = window()
