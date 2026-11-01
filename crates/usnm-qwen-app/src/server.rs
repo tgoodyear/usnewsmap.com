@@ -7,15 +7,16 @@ use crate::{
 };
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use sha2::{Digest as _, Sha256};
 use std::{
-    io::{Read as _, Write as _},
+    io::{BufRead, BufReader, Read, Write as _},
     net::{TcpListener, TcpStream},
     ops::ControlFlow,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use usnm_ocr_contract::qwen::{tail_repetition, MAX_CROP_TEXT, PROMPT};
+use usnm_ocr_contract::qwen::{loop_cut, tail_repetition, MAX_CROP_TEXT, PROMPT};
 use usnm_ocr_quality::slot::{resolve_slot_file, BoincControl};
 
 pub const ENV_LLAMA_SERVER: &str = "USNM_LLAMA_SERVER";
@@ -164,10 +165,11 @@ pub fn chat_completion(
     png: &[u8],
     max_tokens: u32,
     image_min_tokens: Option<u32>,
+    guard: bool,
     timeout: Duration,
 ) -> anyhow::Result<(String, u32, String)> {
     let url = format!("data:image/png;base64,{}", BASE64.encode(png));
-    let body = serde_json::to_vec(&serde_json::json!({
+    let mut request = serde_json::json!({
         "messages": [{
             "role": "user",
             "content": [
@@ -179,7 +181,13 @@ pub fn chat_completion(
         "temperature": 0.0,
         "top_p": 1.0,
         "seed": 42,
-    }))?;
+    });
+    if guard {
+        request["stream"] = true.into();
+        let body = serde_json::to_vec(&request)?;
+        return guarded_completion(port, &body, max_tokens, image_min_tokens, timeout);
+    }
+    let body = serde_json::to_vec(&request)?;
     let (status, resp) = http_request(port, "POST", "/v1/chat/completions", Some(&body), timeout)?;
     if status != 200 {
         bail!(
@@ -188,6 +196,208 @@ pub fn chat_completion(
         );
     }
     parse_completion(&resp, max_tokens, image_min_tokens)
+}
+
+/// The response body of a chunked reply, as a plain stream.
+struct Dechunk<R> {
+    inner: R,
+    left: usize,
+    done: bool,
+}
+
+impl<R: BufRead> Read for Dechunk<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.done || buf.is_empty() {
+            return Ok(0);
+        }
+        if self.left == 0 {
+            let mut line = String::new();
+            // The CRLF that ends the previous chunk comes first, except before the first.
+            while line.trim().is_empty() {
+                line.clear();
+                if self.inner.read_line(&mut line)? == 0 {
+                    return Err(std::io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            let size = line.trim().split(';').next().unwrap_or("");
+            self.left = usize::from_str_radix(size, 16)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            if self.left == 0 {
+                self.done = true;
+                return Ok(0);
+            }
+        }
+        let want = buf.len().min(self.left);
+        let n = self.inner.read(&mut buf[..want])?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        self.left -= n;
+        Ok(n)
+    }
+}
+
+/// What a streamed completion delivered before it ended or was stopped.
+#[derive(Debug, Default)]
+struct Streamed {
+    raw: String,
+    finish_reason: Option<String>,
+    finish_invalid: bool,
+    tokens_reported: Option<u32>,
+    deltas: u32,
+    stopped: bool,
+    digest: Sha256,
+    bytes: usize,
+}
+
+/// The most a guarded stream may deliver; `http_request`'s limit for a whole reply.
+const MAX_STREAM: usize = 1024 * 1024;
+
+/// Reads server-sent events until the reply ends or the reading starts to
+/// repeat, checked every eight tokens from the twelfth, as Study 5 did.
+fn read_stream(mut events: impl BufRead, deadline: Instant) -> anyhow::Result<Streamed> {
+    let mut out = Streamed::default();
+    let mut line = String::new();
+    loop {
+        ensure!(Instant::now() < deadline, "completion deadline reached");
+        line.clear();
+        if events.read_line(&mut line)? == 0 {
+            return Ok(out);
+        }
+        out.digest.update(line.as_bytes());
+        out.bytes += line.len();
+        ensure!(out.bytes <= MAX_STREAM, "completion stream over size limit");
+        let Some(data) = line.trim().strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            return Ok(out);
+        }
+        let v: serde_json::Value = serde_json::from_str(data).context("stream event JSON")?;
+        if let Some(e) = v.get("error") {
+            bail!(
+                "llama-server stream error: {}",
+                redacted_tail(&e.to_string(), 256)
+            );
+        }
+        if let Some(t) = v
+            .pointer("/usage/completion_tokens")
+            .and_then(|t| t.as_u64())
+            .and_then(|t| u32::try_from(t).ok())
+        {
+            out.tokens_reported = Some(t);
+        }
+        match v.pointer("/choices/0/finish_reason") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(f) => match f.as_str().filter(|s| s.len() <= 128) {
+                Some(f) => out.finish_reason = Some(f.to_owned()),
+                None => out.finish_invalid = true,
+            },
+        }
+        if let Some(delta) = v
+            .pointer("/choices/0/delta/content")
+            .and_then(|c| c.as_str())
+        {
+            if !delta.is_empty() {
+                out.raw.push_str(delta);
+                out.deltas += 1;
+                if out.deltas >= 12 && out.deltas % 8 == 0 && tail_repetition(&out.raw).is_some() {
+                    out.stopped = true;
+                    return Ok(out);
+                }
+            }
+        }
+    }
+}
+
+/// One crop's reading through a streamed request. Closing the connection
+/// is what stops the server's generation, so a looping reading costs only
+/// the tokens up to the check that caught it.
+fn guarded_completion(
+    port: u16,
+    body: &[u8],
+    max_tokens: u32,
+    image_min_tokens: Option<u32>,
+    timeout: Duration,
+) -> anyhow::Result<(String, u32, String)> {
+    let deadline = Instant::now() + timeout;
+    let mut s = TcpStream::connect(("127.0.0.1", port))?;
+    s.set_read_timeout(Some(timeout))?;
+    s.set_write_timeout(Some(timeout))?;
+    write!(
+        s,
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )?;
+    s.write_all(body)?;
+    let mut reader = BufReader::new(s);
+    let mut head = String::new();
+    reader.read_line(&mut head)?;
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .context("HTTP status code")?;
+    let mut chunked = false;
+    loop {
+        let mut h = String::new();
+        ensure!(reader.read_line(&mut h)? > 0, "malformed HTTP response");
+        if h.trim().is_empty() {
+            break;
+        }
+        chunked |= h
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked");
+    }
+    let got = if chunked {
+        let plain = Dechunk {
+            inner: reader,
+            left: 0,
+            done: false,
+        };
+        if status != 200 {
+            return reply_error(status, plain);
+        }
+        read_stream(BufReader::new(plain), deadline)?
+    } else {
+        if status != 200 {
+            return reply_error(status, reader);
+        }
+        read_stream(reader, deadline)?
+    };
+    let sha = hex_digest(&got.digest);
+    let invalid = got.finish_invalid;
+    generation_record(
+        &got.raw,
+        Generation {
+            finish_reason: got.finish_reason.as_deref(),
+            finish_invalid: invalid,
+            tokens_reported: got.tokens_reported.or(Some(got.deltas)),
+            max_tokens,
+            image_min_tokens,
+            response_sha256: sha,
+            response_bytes: got.bytes,
+            guard: Some(got.stopped),
+        },
+    )
+}
+
+fn reply_error<T>(status: u16, body: impl Read) -> anyhow::Result<T> {
+    let mut text = Vec::new();
+    body.take(64 * 1024).read_to_end(&mut text)?;
+    bail!(
+        "llama-server status {status}: {}",
+        redacted_tail(&String::from_utf8_lossy(&text), 256)
+    )
+}
+
+fn hex_digest(digest: &Sha256) -> String {
+    digest
+        .clone()
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn parse_completion(
@@ -204,17 +414,50 @@ fn parse_completion(
         .pointer("/usage/completion_tokens")
         .and_then(|t| t.as_u64())
         .and_then(|t| u32::try_from(t).ok());
-    let tokens = tokens_reported.unwrap_or(0);
-    let cleaned = clean_reading(text);
     let finish_reason_raw = v.pointer("/choices/0/finish_reason");
     let finish_reason = finish_reason_raw
         .and_then(|v| v.as_str())
         .filter(|s| s.len() <= 128);
+    generation_record(
+        text,
+        Generation {
+            finish_reason,
+            finish_invalid: finish_reason_raw.is_some_and(|v| !v.is_null())
+                && finish_reason.is_none(),
+            tokens_reported,
+            max_tokens,
+            image_min_tokens,
+            response_sha256: usnm_ocr_contract::boinc::sha256(resp),
+            response_bytes: resp.len(),
+            guard: None,
+        },
+    )
+}
+
+/// How one completion ended, for its generation record.
+struct Generation<'a> {
+    finish_reason: Option<&'a str>,
+    finish_invalid: bool,
+    tokens_reported: Option<u32>,
+    max_tokens: u32,
+    image_min_tokens: Option<u32>,
+    response_sha256: String,
+    response_bytes: usize,
+    /// Under the loop guard, whether it stopped the generation.
+    guard: Option<bool>,
+}
+
+/// The reading and its generation record. Without the guard the reading is
+/// the raw text as read; with it, the raw text cut by the `stop` rule.
+fn generation_record(text: &str, g: Generation<'_>) -> anyhow::Result<(String, u32, String)> {
+    let tokens = g.tokens_reported.unwrap_or(0);
+    let cut = g.guard.and_then(|_| loop_cut(text));
+    let cleaned = clean_reading(cut.as_deref().unwrap_or(text));
     let mut flags = Vec::new();
-    if finish_reason_raw.is_some_and(|v| !v.is_null()) && finish_reason.is_none() {
+    if g.finish_invalid {
         flags.push("invalid_or_oversized_finish_reason");
     }
-    let budget_exhausted = tokens >= max_tokens || finish_reason == Some("length");
+    let budget_exhausted = tokens >= g.max_tokens || g.finish_reason == Some("length");
     if budget_exhausted {
         flags.push("completion_token_budget_exhausted");
     }
@@ -224,6 +467,9 @@ fn parse_completion(
         if budget_exhausted {
             flags.push("repetition_loop_at_token_budget");
         }
+    }
+    if cut.is_some() {
+        flags.push("repetition_loop_guard_cut");
     }
     if cleaned.is_empty() {
         flags.push("empty_reading");
@@ -245,16 +491,16 @@ fn parse_completion(
     if duplicate_lines {
         flags.push("consecutive_duplicate_lines");
     }
-    let metadata = serde_json::to_string(&serde_json::json!({
+    let mut record = serde_json::json!({
         "schema": 2,
-        "finish_reason": finish_reason,
-        "completion_tokens_reported": tokens_reported,
-        "max_tokens_requested": max_tokens,
+        "finish_reason": g.finish_reason,
+        "completion_tokens_reported": g.tokens_reported,
+        "max_tokens_requested": g.max_tokens,
         "stop_strings_requested": [],
         "repetition_penalty_requested": null,
-        "image_min_tokens_requested": image_min_tokens,
-        "response_sha256": usnm_ocr_contract::boinc::sha256(resp),
-        "response_bytes": resp.len(),
+        "image_min_tokens_requested": g.image_min_tokens,
+        "response_sha256": g.response_sha256,
+        "response_bytes": g.response_bytes,
         "raw_content_sha256": usnm_ocr_contract::boinc::sha256(text.as_bytes()),
         "raw_content_bytes": text.len(),
         "cleaning_changed_content": text != cleaned,
@@ -263,8 +509,12 @@ fn parse_completion(
         "tail_repetition": tail.map(|(period, span)| serde_json::json!({"period_chars": period, "span_chars": span})),
         "generation_flags": flags,
         "scientific_acceptance": "not_established_by_generation_metadata",
-    }))?;
-    Ok((cleaned, tokens, metadata))
+    });
+    if let Some(stopped) = g.guard {
+        record["schema"] = 3.into();
+        record["loop_guard"] = serde_json::json!({"rule": "stop", "stopped_generation": stopped});
+    }
+    Ok((cleaned, tokens, serde_json::to_string(&record)?))
 }
 
 pub(crate) struct Server {
@@ -415,6 +665,161 @@ impl Server {
                 active_elapsed += step_start.elapsed();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn event(delta: &str) -> String {
+        let v =
+            serde_json::json!({"choices": [{"delta": {"content": delta}, "finish_reason": null}]});
+        format!("data: {v}\n\n")
+    }
+
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
+    fn chunked(body: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for piece in body.as_bytes().chunks(17) {
+            out.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+            out.extend_from_slice(piece);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"0\r\n\r\n");
+        out
+    }
+
+    #[test]
+    fn a_natural_stop_is_kept_whole() {
+        let mut body = ["The ship ", "sailed ", "home."].map(event).concat();
+        let end = serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 3}});
+        body.push_str(&format!("data: {end}\n\ndata: [DONE]\n\n"));
+        let got = read_stream(Cursor::new(body), far()).unwrap();
+        assert!(!got.stopped);
+        assert_eq!(got.raw, "The ship sailed home.");
+        assert_eq!(got.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(got.tokens_reported, Some(3));
+    }
+
+    #[test]
+    fn a_repeating_reading_stops_at_the_first_check_that_sees_it() {
+        let body = std::iter::once(event("Head line. "))
+            .chain((0..500).map(|_| event("[?] ")))
+            .collect::<String>();
+        let got = read_stream(Cursor::new(body), far()).unwrap();
+        assert!(got.stopped);
+        assert_eq!(got.deltas, 16);
+        assert!(got.finish_reason.is_none());
+        let (text, tokens, metadata) = generation_record(
+            &got.raw,
+            Generation {
+                finish_reason: None,
+                finish_invalid: false,
+                tokens_reported: Some(got.deltas),
+                max_tokens: 1304,
+                image_min_tokens: None,
+                response_sha256: hex_digest(&got.digest),
+                response_bytes: got.bytes,
+                guard: Some(true),
+            },
+        )
+        .unwrap();
+        assert_eq!(text, "Head line. [?]");
+        assert_eq!(tokens, 16);
+        let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(m["schema"], 3);
+        assert_eq!(m["loop_guard"]["stopped_generation"], true);
+        assert!(m["generation_flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "repetition_loop_guard_cut"));
+    }
+
+    #[test]
+    fn a_repetition_too_short_for_a_check_is_still_cut() {
+        let mut body = (0..11).map(|_| event("0123456789 ")).collect::<String>();
+        body.push_str("data: [DONE]\n\n");
+        let got = read_stream(Cursor::new(body), far()).unwrap();
+        assert!(!got.stopped);
+        let (text, ..) = generation_record(
+            &got.raw,
+            Generation {
+                finish_reason: Some("stop"),
+                finish_invalid: false,
+                tokens_reported: Some(got.deltas),
+                max_tokens: 1304,
+                image_min_tokens: None,
+                response_sha256: hex_digest(&got.digest),
+                response_bytes: got.bytes,
+                guard: Some(false),
+            },
+        )
+        .unwrap();
+        assert_eq!(text, "0123456789");
+    }
+
+    #[test]
+    fn stream_errors_and_the_deadline_end_the_read() {
+        let e = read_stream(Cursor::new("data: {\"error\": {\"code\": 500}}\n\n"), far());
+        assert!(format!("{:#}", e.unwrap_err()).contains("stream error"));
+        let past = Instant::now() - Duration::from_secs(1);
+        assert!(read_stream(Cursor::new(event("x")), past).is_err());
+    }
+
+    #[test]
+    fn chunked_replies_read_as_a_plain_stream() {
+        let body = event("one ") + &event("two") + "data: [DONE]\n\n";
+        let wire = chunked(&body);
+        let plain = Dechunk {
+            inner: Cursor::new(wire),
+            left: 0,
+            done: false,
+        };
+        let got = read_stream(BufReader::new(plain), far()).unwrap();
+        assert_eq!(got.raw, "one two");
+    }
+
+    #[test]
+    fn the_connection_closes_when_the_guard_stops_the_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                seen.extend_from_slice(&buf[..n]);
+            }
+            s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .unwrap();
+            // A generation that goes on until the client hangs up.
+            for _ in 0..100_000 {
+                if s.write_all(
+                    &chunked(&event("[?] "))[..]
+                        .strip_suffix(b"0\r\n\r\n")
+                        .map(<[u8]>::to_vec)
+                        .unwrap(),
+                )
+                .is_err()
+                {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            false
+        });
+        let (text, tokens, _) =
+            chat_completion(port, b"png", 4096, None, true, Duration::from_secs(30)).unwrap();
+        assert_eq!(text, "[?]");
+        assert!(tokens < 64, "stopped early, after {tokens} tokens");
+        assert!(server.join().unwrap(), "the client hung up");
     }
 }
 

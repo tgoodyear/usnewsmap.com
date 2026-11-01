@@ -45,8 +45,9 @@ use usnm_ocr_contract::{
     boinc::sha256,
     quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{
-        image_min_tokens, Crop, Engine, Job, Outcome, Reading, Readings, ResultManifest, MAX_ERROR,
-        MAX_JOB_JSON, PROMPT_VERSION, SUPPORTED_PROMPT_VERSIONS, VERSION,
+        image_min_tokens, loop_guard, Crop, Engine, Job, Outcome, Reading, Readings,
+        ResultManifest, MAX_ERROR, MAX_JOB_JSON, PROMPT_VERSION, SUPPORTED_PROMPT_VERSIONS,
+        VERSION,
     },
     surya::Host,
 };
@@ -584,6 +585,7 @@ fn run_crops(
             &png,
             l.job.max_tokens(crop),
             image_min_tokens(l.job.prompt_version),
+            loop_guard(l.job.prompt_version),
             remaining,
         ) {
             Ok((text, tokens, metadata)) => {
@@ -636,7 +638,11 @@ fn run_crops(
         if serde_json::from_str::<serde_json::Value>(metadata)
             .ok()
             .and_then(|m| m.get("generation_flags")?.as_array().cloned())
-            .is_some_and(|f| f.iter().any(|f| f == "repetition_loop_at_token_budget"))
+            .is_some_and(|f| {
+                f.iter().any(|f| {
+                    f == "repetition_loop_at_token_budget" || f == "repetition_loop_guard_cut"
+                })
+            })
         {
             loop_crops.push(crop.id.clone());
             loop_bits[i / 8] |= 1 << (i % 8);
@@ -662,8 +668,17 @@ fn run_crops(
         "image_min_tokens".into(),
         image_min_tokens(l.job.prompt_version).map_or("default".into(), |n| n.to_string()),
     );
-    // Readings stay as read; this marks the crops whose reading ran out of tokens while
-    // repeating, so they are not mistaken for complete transcriptions.
+    r_diag.insert(
+        "loop_guard".into(),
+        if loop_guard(l.job.prompt_version) {
+            "stop"
+        } else {
+            "none"
+        }
+        .into(),
+    );
+    // Marks the crops whose reading ran out of tokens while repeating, or was cut by the
+    // loop guard, so they are not mistaken for complete transcriptions.
     r_diag.insert(
         "repetition_loop_crops".into(),
         bounded_list(&loop_crops, 256),
@@ -784,7 +799,7 @@ mod tests {
     fn a_unit_error_keeps_the_jobs_supported_request_version() {
         for (raw, want) in [
             (2, usnm_ocr_contract::qwen::PROMPT_VERSION_IMAGE_MIN_TOKENS),
-            (3, PROMPT_VERSION),
+            (5, PROMPT_VERSION),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let job = serde_json::json!({
