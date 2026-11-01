@@ -78,7 +78,7 @@ time difficult to bound.
    succeeded.
 
 9. The spare is stripped down without losing any of this: no private endpoints
-   on its data services, and a Cool index
+   on its data services
    ([ADR-0008, amendment of November 2026](0008-private-networking.md);
    [runbook](../../operations/search-serving.md#the-azure-cold-spare)).
 

@@ -17,7 +17,7 @@
   "USNM_DNS_ZONE": "usnewsmap.com",
   "USNM_DNS_ZONE_HOSTED": false,
   "USNM_GITHUB_REPO": "tgoodyear/usnewsmap.com",
-  "USNM_INDEX_ACCESS_TIER": "Cool",
+  "USNM_INDEX_ACCESS_TIER": "Hot",
   "USNM_INDEX_STORAGE": true,
   "USNM_INDEX_STORAGE_SERVE": true,
   "USNM_INGEST_JOBS": false,

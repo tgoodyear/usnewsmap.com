@@ -76,3 +76,5 @@ Production serves on-prem ([ADR-0029](0029-onprem-primary-azure-failover.md)), a
 - **Identity doesn't change.** Shared keys, local auth and anonymous access stay off, there's no SAS, and the roles are the same. A request from an allowed subnet still needs an Entra token with a data-plane role.
 
 The traffic stays on the Azure backbone. The change gives up one layer of defence. The accounts' public addresses now answer and refuse requests, where before they were closed. dev keeps its endpoints by default. The Azure portal still can't reach the data from outside the allowed addresses.
+
+The index account stays Hot. Moving the spare's index to Cool would save about $0.30 a day, but October's releases came 2 to 12 days apart. Each release costs $0.70 more in writes, and deleting a version early bills the rest of its 30 days in Cool, about $0.36 a day. Cool breaks even at about 18 days between releases, and loses about $0.30 a day at 12 days and about $5 a day at 2. So the maintainer kept Hot ([runbook](../../operations/search-serving.md#the-azure-cold-spare)). `USNM_INDEX_ACCESS_TIER` stays in the settings.

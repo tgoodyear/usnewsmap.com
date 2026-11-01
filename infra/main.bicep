@@ -56,7 +56,7 @@ param searcherAppRetain bool = false
 param indexStorage bool = false
 @description('Serve the separate index account instead of the lake. Requires indexStorage. Enable only after the staged rebuild is verified and its pending pointer is promoted.')
 param indexStorageServe bool = false
-@description('The index account\'s default access tier. Cool suits a cold spare: storage costs less, and reads, writes and blobs retired within 30 days cost more (docs/operations/search-serving.md, "The Azure cold spare").')
+@description('The index account\'s default access tier. Prod stays Hot: Cool only pays if full releases come at least about 18 days apart (docs/operations/search-serving.md, "The Azure cold spare").')
 @allowed(['Hot', 'Cool'])
 param indexAccessTier string = 'Hot'
 @description('Private endpoints and private DNS for the data lake, the index account and Cosmos (ADR-0008). Off (a cold spare, ADR-0008 amendment of November 2026): none of them, and each allows snet-cae through a service endpoint and a firewall rule, with Entra ID the only way in as always.')
