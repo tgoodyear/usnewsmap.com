@@ -24,10 +24,73 @@ def window(hours=3):
     return collector.Window(NOW, hours)
 
 
-def tick(at, plan="p", selected=10, published=2, seconds=30.0):
+def tick(at, plan="p", selected=10, published=2, seconds=30.0, **extra):
     return json.dumps({"event": "boinc_batch_tick", "at": at, "plan": plan, "selected": selected,
                        "newly_published": published, "high_watermark": 300, "max_global_pending": 2000,
-                       "timings": {"tick_seconds": seconds}})
+                       "timings": {"tick_seconds": seconds}, **extra})
+
+
+def sync_line(message, **fields):
+    return json.dumps({"timestamp": "2026-11-01T11:17:34.239078Z", "level": "INFO",
+                       "fields": {"message": message, **fields}, "target": "usnm_ocr_local::sync"})
+
+
+class BatchTests(unittest.TestCase):
+    def test_committed_imports_and_outcomes(self):
+        w = window()
+        at = THIS_HOUR + 1000
+        collector.collect_batch(w, [
+            (at, "", sync_line("import written", run="r-0000", imported=40, sources=80, titles=3)),
+            (at + 1, "", sync_line("import written", run="r-0001", imported=31, sources=62, titles=2)),
+            (at + 2, "", sync_line("part quarantined", part="p1", reason="invalid")),
+            (at + 2, "", sync_line("part quarantined", part="p2", reason="invalid")),
+            (at + 2, "", sync_line("dead letters written", path="d", dead_letters=3)),
+            (at + 2, "", sync_line("ocr sync finished", run="r", imported=71, rejected=2,
+                                   dead_letters=3, dead_letters_rejected=1)),
+            (at + 3, "", "usnm-ocr-sync.service: Deactivated successfully."),
+        ])
+        self.assertEqual(w.series["ocr_import_pages"], [0, 0, 71])
+        self.assertEqual(w.series["ocr_sync_runs"], [0, 0, 1])
+        self.assertEqual(w.series["ocr_import_rejected"], [0, 0, 2])
+        self.assertEqual(w.series["ocr_dead_letters"], [0, 0, 3])
+
+    def test_a_run_that_fails_later_keeps_its_outcomes(self):
+        w = window()
+        collector.collect_batch(w, [
+            (THIS_HOUR + 1, "", sync_line("import written", imported=9)),
+            (THIS_HOUR + 1, "", sync_line("part quarantined", part="p", reason="invalid")),
+            (THIS_HOUR + 1, "", sync_line("dead letters written", path="d", dead_letters=2)),
+        ])
+        self.assertEqual(w.series["ocr_import_pages"][2], 9)
+        self.assertEqual(w.series["ocr_import_rejected"][2], 1)
+        self.assertEqual(w.series["ocr_dead_letters"][2], 2)
+        self.assertEqual(w.series["ocr_sync_runs"][2], 0)
+
+    def test_queue_depth_is_a_gauge_from_either_seed_outcome(self):
+        w = window()
+        collector.collect_batch(w, [
+            (THIS_HOUR - HOUR + 1, "", sync_line("ocr-bulk is full enough; nothing seeded",
+                                                 queue_depth=705, refill_below=500)),
+            (THIS_HOUR + 1, "", sync_line("ocr-bulk is full enough; nothing seeded", queue_depth=1005)),
+            (THIS_HOUR + 2, "", sync_line("ocr seed finished", queue_depth=400)),
+        ])
+        self.assertEqual(w.series["ocr_bulk_queue_pages"], [None, 705, 400])
+
+    def test_unrelated_and_malformed_lines_are_ignored(self):
+        w = window()
+        collector.collect_batch(w, [
+            (THIS_HOUR, "", "{not json"), (THIS_HOUR, "", "[]"), (THIS_HOUR, "", '{"fields": 1}'),
+            (THIS_HOUR, "", sync_line("user-requested page not queued", imported=5)),
+            (THIS_HOUR, "", sync_line("ocr seed finished", queue_depth="many")),
+        ])
+        self.assertEqual(w.series["ocr_import_pages"], [0, 0, 0])
+        self.assertNotIn("ocr_bulk_queue_pages", w.series)
+
+    def test_hours_before_the_journal_stay_unknown(self):
+        with patch.object(collector, "journal", return_value=[]), \
+                patch.object(collector, "oldest_journal_entry", return_value=THIS_HOUR):
+            document = collector.collect(type("Args", (), {"now": NOW, "hours": 3, "source": "batch"})())
+        self.assertEqual(document["series"]["ocr_import_pages"], [None, None, 0])
 
 
 class ControllerTests(unittest.TestCase):
@@ -54,6 +117,18 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(series["phase_failed.submit"][1], 1)
         self.assertEqual(series["ticks_ok"][2], 0)
         self.assertIn("300 runnable", limits["usnm_ocr"])
+
+    def test_pending_pages_are_the_hours_last_reading_and_unknown_without_one(self):
+        w = window()
+        entries = [(THIS_HOUR + 10, "", tick(THIS_HOUR + 10, cohort_pending=225)),
+                   (THIS_HOUR + 310, "", tick(THIS_HOUR + 310, cohort_pending=190))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_pending_pages"], [None, None, 190])
+
+    def test_a_tick_without_the_field_gives_no_reading(self):
+        w = window()
+        collector.collect_controller(w, [(THIS_HOUR + 10, "", tick(THIS_HOUR + 10))])
+        self.assertNotIn("ocr_pending_pages", w.series)
 
     def test_a_tick_counts_in_the_hour_it_ended(self):
         w = window()

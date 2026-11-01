@@ -532,7 +532,7 @@ mod tests {
         let path = dir.path().join("pipeline.json");
         std::fs::write(
             &path,
-            serde_json::to_vec(&pipeline::tests::fixture(now)).unwrap(),
+            serde_json::to_vec(&pipeline::tests::healthy(now)).unwrap(),
         )
         .unwrap();
         *a.pipeline.lock().unwrap() = pipeline::Pipeline::new(Some(path), 900);

@@ -25,10 +25,15 @@ FILES = {
         "etc/systemd/system/usnm-data-flow-observer.service",
     "scripts/ocr-node/usnm-data-flow-observer.timer":
         "etc/systemd/system/usnm-data-flow-observer.timer",
+    "scripts/ocr-node/usnm-data-catalog-refresh.service":
+        "etc/systemd/system/usnm-data-catalog-refresh.service",
+    "scripts/ocr-node/usnm-data-catalog-refresh.timer":
+        "etc/systemd/system/usnm-data-catalog-refresh.timer",
     "scripts/ocr-node/install-data-flow.py": "usr/local/sbin/usnm-data-flow-install",
 }
 UNITS = ("usnm-data-catalog.service", "usnm-data-flow-observer.service",
-         "usnm-data-flow-observer.timer")
+         "usnm-data-flow-observer.timer", "usnm-data-catalog-refresh.service",
+         "usnm-data-catalog-refresh.timer")
 ENV = "etc/usnm/data-flow-observer.env"
 STAMP = "usr/local/lib/usnm-data-flow/COMMIT"
 

@@ -20,6 +20,19 @@ MAX_ISSUES = 128
 # joined but flagged `catalog-frozen`. It is above the one to two day gaps the observer tests use;
 # --catalog-max-age-days overrides it.
 CATALOG_MAX_AGE_DAYS = 3
+# Panel row -> (catalog aggregate from refresh-live, placeholder label).
+LIVE_ROWS = {
+    "queued": ("live_queued", "Pages in the ocr-bulk queue"),
+    "allocated": ("live_allocated", "OCR pages at BOINC or awaiting collection"),
+    "validated": ("live_validated", "BOINC OCR workunits with a canonical result"),
+    "collected": ("live_collected", "OCR pages collected through hand-off checks"),
+    "imported": ("live_imported", "Curated imports"),
+    "rejected": ("live_rejected", "OCR parts rejected or dead-lettered"),
+    "quality_loaded": ("live_quality_loaded", "Quality and Qwen pages loaded"),
+}
+# Those rows cover whole hours and the catalog refreshes hourly, so a healthy one reaches about 90
+# minutes old. One missed refresh stays inside three hours; a second doesn't.
+LIVE_MAX_AGE_SECS = 3 * 3600
 
 
 def timestamp(value):
@@ -290,10 +303,10 @@ def snapshot(events, failures, now=None):
                            "state": "unknown", "observed_at": None,
                            "detail": failure["detail"]})
     for identifier, label in [
+        *((row, label) for row, (_, label) in LIVE_ROWS.items()),
         ("artifact_verified", "Per-file verified locations"),
         ("run_history", "Cataloged engine runs"),
         ("accepted", "Accepted OCR"),
-        ("imported", "Curated imports"),
         ("indexed", "Released search inclusion"),
     ]:
         if any(item["id"] == identifier for item in stages):
@@ -303,7 +316,7 @@ def snapshot(events, failures, now=None):
                        "detail": "Source adapter not connected; aggregate status cannot establish this stage."})
     mandatory = {"scan_cached", "scan_planned", "scan_remaining", "boinc_unsent",
                  "boinc_in_progress", "artifact_verified", "run_history",
-                 "accepted", "imported", "indexed"}
+                 "accepted", "indexed", *LIVE_ROWS}
     room = 64 - sum(item["id"] in mandatory for item in stages)
     retained = []
     for item in stages:
@@ -334,7 +347,10 @@ def snapshot(events, failures, now=None):
 
 
 def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
-    """Join cataloged evidence counts without claiming a complete corpus inventory."""
+    """Join cataloged evidence counts without claiming a complete corpus inventory.
+
+    A stage the catalog marks historical keeps its count and age but leaves the overall age
+    (14: Overall evidence age); every other stage keeps counting against it."""
     now = now or datetime.now(timezone.utc)
     with Path(path).open("rb") as stream:
         body = stream.read(MAX_BYTES + 1)
@@ -359,10 +375,11 @@ def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
     if not isinstance(catalog_stages, list) or len(catalog_stages) > 256:
         raise ValueError("Invalid catalog stage inventory")
     evidence = {}
+    aggregates = {aggregate for aggregate, _ in LIVE_ROWS.values()}
     for candidate in catalog_stages:
         candidate = object_value(candidate)
         identifier = candidate["id"]
-        if identifier not in ("runs", "artifacts", "accepted", "imported", "indexed"):
+        if identifier not in ("runs", "artifacts", "accepted", "imported", "indexed", *aggregates):
             continue
         if identifier in evidence:
             raise ValueError("Duplicate catalog evidence stage")
@@ -386,8 +403,14 @@ def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
             raise ValueError("Inconsistent catalog evidence stage")
         if amount is None and total:
             raise ValueError("Nonempty catalog totals have no stage evidence")
-        evidence[identifier] = {"state": state, "count": amount, "observed_at": source_at}
-        if identifier in ("accepted", "imported", "indexed"):
+        historical = candidate.get("historical", False)
+        if type(historical) is not bool or (historical and source_at is None):
+            raise ValueError("Invalid historical catalog evidence")
+        evidence[identifier] = {"state": state, "count": amount, "observed_at": source_at,
+                                "historical": historical}
+        if identifier in aggregates:
+            evidence[identifier]["label"] = bounded_text(candidate["label"], 128)
+        if identifier in ("accepted", "imported", "indexed", *aggregates):
             evidence[identifier]["detail"] = bounded_text(candidate["detail"], 512)
     for identifier, expected in (("runs", runs["total"]), ("artifacts", artifacts["locations"])):
         if identifier not in evidence:
@@ -427,6 +450,9 @@ def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
                               ("indexed", "Cataloged search inclusion")):
         if identifier in evidence:
             replacements[identifier] = (identifier, label, evidence[identifier]["count"])
+    for row, (aggregate, _) in LIVE_ROWS.items():
+        if aggregate in evidence:
+            replacements[row] = (aggregate, evidence[aggregate]["label"], evidence[aggregate]["count"])
     for item in value["stages"]:
         # The serving index's own count is current; the catalog's search-inclusion evidence is not.
         if item["id"] == "indexed" and item["state"] == "observed":
@@ -438,8 +464,19 @@ def add_catalog(value, path, now=None, max_age_days=CATALOG_MAX_AGE_DAYS):
                         state=source["state"], observed_at=source["observed_at"],
                         detail=source.get("detail",
                             "Imported page evidence only; source age is independent of live aggregate refresh."))
+            if identifier in aggregates:
+                item["max_age_secs"] = LIVE_MAX_AGE_SECS
+            elif source.get("historical"):
+                item["historical"] = True
+    historical = sorted(item["id"] for item in value["stages"] if item.get("historical"))
+    if historical:
+        value["issues"].insert(0, {"code": "historical-stages",
+                                   "detail": "Only frozen sources feed " + ", ".join(historical) +
+                                             ". They keep their own age and do not count toward the "
+                                             "overall evidence age."})
+        del value["issues"][MAX_ISSUES:]
     times = [timestamp(item["observed_at"]) for item in value["stages"]
-             if item.get("observed_at") is not None]
+             if item.get("observed_at") is not None and not item.get("historical")]
     value["observed_at"] = utc(min(times)) if times else None
     return value
 

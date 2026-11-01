@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Hourly pipeline counters for the OCR dashboard's step throughput panel (#704).
 
-    throughput-collect.py --source controller|ship|boinc [--hours 3] [--out FILE]
+    throughput-collect.py --source controller|ship|boinc|batch [--hours 3] [--out FILE]
         [--push-url http://<dashboard>/api/throughput/<source>] [--now EPOCH]
 
 Reads what each host already records and writes one small JSON document of hourly counts:
 
-  controller  the priority controller's journal: ticks, phases, pages claimed and collected
+  controller  the priority controller's journal: ticks, phases, pages claimed and collected, and
+              its cohort_pending at each hour's last tick
   ship        the shipper's and result loaders' journals: pages shipped, staged, submitted, loaded
   boinc       the BOINC database (two bounded, read-only aggregate queries, on the server's
               own connection settings) and podman's step containers (bridge lock hold time)
+  batch       ocr-sync's journal: pages in committed imports, rejected sources, dead letters and
+              ocr-bulk's approximate depth at the hour's last run
 
 Device seconds are every returned replica of the workunits that got a canonical result in the
 hour, failures and inconclusive replicas included: what a finished page cost.
@@ -18,7 +21,8 @@ It takes no lock, changes nothing, and reads no page text, file names or result 
 counts, durations and ids of steps. Every hour in the window is recomputed on each run, so a late
 or repeated run corrects a bucket and never adds to it. The window ends at the last complete hour,
 so a source that stops leaves unknown hours, not a short one. A value is `null` for an hour its
-source doesn't reach back to; 0 means the hour was read and nothing happened.
+source doesn't reach back to; 0 means the hour was read and nothing happened. A gauge
+(ocr_pending_pages, ocr_bulk_queue_pages) holds the hour's last reading, `null` if there was none.
 
 With --push-url it PUTs the document to usnm-ocrdash, which takes it from this host's address
 only and keeps the history. --hours 336 once backfills the dashboard's two weeks.
@@ -48,6 +52,7 @@ CONTROLLER_UNIT = "usnm-boinc-priority-controller.service"
 SHIP_UNITS = {"usnm-quality-ship.service": "quality", "usnm-qwen-ship.service": "qwen"}
 QUALITY_LOAD_UNIT = "usnm-quality-results.service"
 QWEN_LOAD_UNIT = "usnm-qwen-results.service"
+OCR_SYNC_UNIT = "usnm-ocr-sync.service"
 LOADERS = {QUALITY_LOAD_UNIT: "quality", QWEN_LOAD_UNIT: "qwen"}
 # The apps a page goes through, and the database's result states (boinc/html/inc/common_defs.inc).
 APPS = {"usnm_ocr": "ocr", "usnm_quality": "quality", "usnm_qwen": "qwen"}
@@ -113,6 +118,14 @@ class Window:
         index = (int(at) // HOUR * HOUR - self.first) // HOUR
         if 0 <= index < self.hours and values[index] is not None:
             values[index] += amount
+
+    def gauge(self, name, at, value):
+        """A reading, not a count: a later one in the hour replaces it, and an hour without one
+        stays unknown."""
+        values = self.series.setdefault(name, [None] * self.hours)
+        index = (int(at) // HOUR * HOUR - self.first) // HOUR
+        if 0 <= index < self.hours:
+            values[index] = value
 
     def spread(self, name, begin, end):
         """Seconds of [begin, end), each in the hour it fell in."""
@@ -229,6 +242,9 @@ def collect_controller(window, entries):
                 if event.get("plan") == plan and selected is not None:
                     window.add("ocr_claim_pages", at, max(0, number(event.get("selected")) - selected))
                 plan, selected = event.get("plan"), number(event.get("selected"))
+                # At BOINC, held for collection, or selected with no job yet.
+                if type(event.get("cohort_pending")) is int:
+                    window.gauge("ocr_pending_pages", at, number(event["cohort_pending"]))
                 limits = {"usnm_ocr": f"{int(number(event.get('high_watermark')))} runnable workunits "
                                       "(controller high watermark)",
                           "ocr_claim": f"{int(number(event.get('high_watermark')))} pending pages; "
@@ -307,6 +323,31 @@ def collect_ship(window, entries):
                 if readings is not None:
                     window.add("qwen_load_pages", at, max(0, pending_readings - readings))
                 readings, pending_readings = pending_readings, None
+    return {}
+
+
+def collect_batch(window, entries):
+    """ocr-sync's log. Each outcome is counted from its own line, written once it is committed, so
+    a run that fails later keeps them; `ocr sync finished` only counts the run."""
+    for name in ("ocr_sync_runs", "ocr_import_pages", "ocr_import_rejected", "ocr_dead_letters"):
+        window.declare(name)
+    for at, _, message in entries:
+        event = json_event(message)
+        fields = event.get("fields") if event else None
+        if not isinstance(fields, dict):
+            continue
+        text = fields.get("message")
+        if text == "import written":
+            window.add("ocr_import_pages", at, number(fields.get("imported")))
+        elif text == "ocr sync finished":
+            window.add("ocr_sync_runs", at)
+        elif text == "part quarantined":
+            window.add("ocr_import_rejected", at)
+        elif text == "dead letters written":
+            window.add("ocr_dead_letters", at, number(fields.get("dead_letters")))
+        elif text in ("ocr-bulk is full enough; nothing seeded", "ocr seed finished"):
+            if type(fields.get("queue_depth")) is int:
+                window.gauge("ocr_bulk_queue_pages", at, number(fields["queue_depth"]))
     return {}
 
 
@@ -406,6 +447,9 @@ def collect(args):
                                  oldest_journal_entry([unit]))
         environment = run(["systemctl", "show", "--property=Environment", "--value", "usnm-qwen-ship.service"])
         limits = ship_limits(args.ship_env, environment)
+    elif args.source == "batch":
+        limits = collect_batch(window, journal([OCR_SYNC_UNIT], window.first))
+        window.forget_before(lambda name: True, oldest_journal_entry([OCR_SYNC_UNIT]))
     else:
         rows = boinc_rows(window.first)
         collect_boinc(window, rows)
@@ -435,7 +479,7 @@ def hours(text):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--source", required=True, choices=("controller", "ship", "boinc"))
+    parser.add_argument("--source", required=True, choices=("controller", "ship", "boinc", "batch"))
     parser.add_argument("--hours", type=hours, default=3, help="complete hours to recompute, up to the last one")
     parser.add_argument("--out", help="also write the document here")
     parser.add_argument("--push-url", help="PUT the document to the dashboard")

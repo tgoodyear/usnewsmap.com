@@ -1033,6 +1033,7 @@ mod tests {
                 id: (*id).into(),
                 age_secs: Some(5),
                 stale: false,
+                historical: false,
             })
             .collect();
         let st = steps(&v);
@@ -1075,6 +1076,7 @@ mod tests {
             id: (*id).into(),
             age_secs: Some(5),
             stale: false,
+            historical: false,
         })
         .collect();
         let st = steps(&v);
@@ -1167,6 +1169,7 @@ mod tests {
             id: "boinc_usnm_ocr_in_progress".into(),
             age_secs: Some(5),
             stale: false,
+            historical: false,
         }];
         let st = steps(&v);
         assert_eq!(st["nodes"].class, "running");

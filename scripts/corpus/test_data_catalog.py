@@ -92,6 +92,157 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(result.returncode, code, result.stderr)
         return json.loads(result.stdout if code == 0 else result.stderr)
 
+    def throughput(self, reported="2026-11-01T18:52:21Z", **series):
+        """A dashboard history whose sources reported at `reported`; hours end at 18:00."""
+        first = 1793556000 - 3 * 3600  # 15:00, so the last value is the 17:00 hour.
+        history = {"schema": 1,
+                   "sources": {name: {"received": reported, "observed_at": reported, "limits": {}}
+                               for name in ("batch", "boinc", "controller", "ship")},
+                   "series": {name: {"first": first, "values": values} for name, values in series.items()}}
+        path = self.work / "throughput.json"
+        path.write_text(json.dumps(history))
+        return path
+
+    def refresh(self, path, stamp="2026-11-01T18:55:00.000000Z"):
+        evidence = self.work / "evidence"
+        evidence.mkdir(exist_ok=True)
+        out = self.work / "catalog.json"
+        with mock.patch.object(c, "now", return_value=stamp):
+            c.refresh_live(self.db, path, evidence, out)
+        return json.loads(out.read_text())
+
+    def test_refresh_turns_hourly_counts_into_dated_stage_evidence(self):
+        catalog = self.refresh(self.throughput(ocr_import_pages=[10, None, 30],
+                                               ocr_bulk_queue_pages=[700, 705, None],
+                                               ocr_pending_pages=[220, 225, 190],
+                                               ocr_collect_pages=[5, 6, 7]))
+        stages = {stage["id"]: stage for stage in catalog["stages"]}
+        self.assertEqual(stages["live_imported"]["count"], 40)
+        self.assertIn("2 reported", stages["live_imported"]["detail"])
+        self.assertEqual(stages["live_imported"]["observed_at"], "2026-11-01T18:00:00.000000000Z")
+        # The hours since the last reading are unknown, so the reading keeps its own hour.
+        self.assertEqual(stages["live_queued"]["count"], 705)
+        self.assertEqual(stages["live_queued"]["observed_at"], "2026-11-01T17:00:00.000000000Z")
+        self.assertEqual(stages["live_allocated"]["count"], 190)
+        self.assertEqual(catalog["observed_at"], "2026-11-01T18:00:00.000000000Z")
+        self.assertNotIn("missing_source", {issue["code"] for issue in catalog["issues"]
+                                            if "allocated" in issue["detail"] or "queued" in issue["detail"]})
+        self.assertIn("queued:aggregate", catalog["coverage"])
+
+    def test_refresh_never_claims_a_stage_it_has_no_evidence_for(self):
+        catalog = self.refresh(self.throughput(ocr_import_pages=[None, None, None],
+                                               ocr_collect_pages=[0, 0, 0]))
+        stages = {stage["id"]: stage for stage in catalog["stages"]}
+        self.assertNotIn("live_imported", stages)
+        self.assertEqual(stages["queued"]["state"], "unknown")
+        self.assertIn("queued: no observations imported",
+                      [issue["detail"] for issue in catalog["issues"]])
+
+    def test_refresh_leaves_out_a_source_that_never_reported(self):
+        path = self.throughput(ocr_units=[1, 2, 3], ocr_import_pages=[1, 2, 3])
+        history = json.loads(path.read_text())
+        del history["sources"]["boinc"]
+        path.write_text(json.dumps(history))
+        stages = {stage["id"] for stage in self.refresh(path)["stages"]}
+        self.assertNotIn("live_validated", stages)
+        self.assertIn("live_imported", stages)
+
+    def test_a_stage_counts_only_hours_every_series_covers(self):
+        catalog = self.refresh(self.throughput(quality_load_pages=[None, 5, None],
+                                               qwen_load_pages=[1, 2, 3]))
+        stage = next(item for item in catalog["stages"] if item["id"] == "live_quality_loaded")
+        self.assertEqual(stage["count"], 7)
+        self.assertIn("1 reported", stage["detail"])
+        self.assertEqual(stage["observed_at"], "2026-11-01T17:00:00.000000000Z")
+
+    def test_a_stage_with_one_silent_series_is_not_observed(self):
+        catalog = self.refresh(self.throughput(quality_load_pages=[None, None, None],
+                                               qwen_load_pages=[1, 2, 3],
+                                               ocr_import_pages=[1, 2, 3]))
+        self.assertNotIn("live_quality_loaded", {item["id"] for item in catalog["stages"]})
+
+    def test_refresh_does_not_age_forward_when_the_source_stops(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        first = self.refresh(path)
+        later = self.refresh(path, "2026-11-02T18:55:00.000000Z")
+        self.assertEqual(later["observed_at"], first["observed_at"])
+        self.assertNotEqual(later["generated_at"], first["generated_at"])
+
+    def test_refresh_replays_and_retains_each_batch(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        self.refresh(path, "2026-11-01T19:55:00.000000Z")
+        batches = sorted((self.work / "evidence").glob("live-*.jsonl"))
+        self.assertEqual([item.name for item in batches],
+                         ["live-20261101T185500Z.jsonl", "live-20261101T195500Z.jsonl"])
+        rebuilt = self.work / "rebuilt.sqlite"
+        self.assertEqual(c.ingest(rebuilt, batches[0])["replayed"], False)
+        self.assertEqual(c.ingest(rebuilt, batches[1])["inserted"], 0)
+
+    def test_a_correction_to_the_same_hour_wins_whatever_its_digest(self):
+        for corrected in range(40, 48):  # Digests fall on both sides of the first one's.
+            path = self.throughput(ocr_import_pages=[1, 2, corrected])
+            minute = corrected - 40
+            self.refresh(path, f"2026-11-01T19:{minute:02}:00.000000Z")
+            stages = {stage["id"]: stage for stage in c.snapshot(self.db)["stages"]}
+            self.assertEqual(stages["live_imported"]["count"], 3 + corrected)
+
+    def test_an_unchanged_stage_adds_no_event(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        self.refresh(path)
+        evidence = self.work / "evidence"
+        with mock.patch.object(c, "now", return_value="2026-11-01T19:55:00.000000Z"):
+            result = c.refresh_live(self.db, path, evidence, self.work / "catalog.json")
+        self.assertEqual(result["inserted"], 0)
+
+    def test_refresh_rejects_bad_histories(self):
+        good = self.throughput(ocr_import_pages=[1, 2, 3])
+        for change in (lambda h: h.update(schema=2), lambda h: h.pop("sources"),
+                       lambda h: h["sources"]["batch"].update(observed_at="2026-11-03T00:00:00Z"),
+                       lambda h: h["series"]["ocr_import_pages"]["values"].__setitem__(0, -1),
+                       lambda h: h["series"]["ocr_import_pages"]["values"].__setitem__(0, "1"),
+                       lambda h: h["series"]["ocr_import_pages"].update(first="now")):
+            history = json.loads(good.read_text())
+            change(history)
+            path = self.work / "bad.json"
+            path.write_text(json.dumps(history))
+            with self.assertRaises(c.CatalogError):
+                self.refresh(path)
+        (self.work / "bad.json").write_text("x" * (c.MAX_THROUGHPUT_FILE + 1))
+        with self.assertRaises(c.CatalogError):
+            self.refresh(self.work / "bad.json")
+
+    def test_refresh_requires_some_known_hour(self):
+        with self.assertRaises(c.CatalogError):
+            self.refresh(self.throughput())
+
+    def test_refresh_command(self):
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        evidence = self.work / "evidence"
+        evidence.mkdir()
+        # The clock is real here, so the history must be older than it.
+        result = self.cli("refresh-live", "--throughput", str(path), "--evidence-dir", str(evidence),
+                          "--out", str(self.work / "catalog.json"))
+        self.assertEqual(result["replayed"], False)
+
+    def test_age_rule_excuses_only_declared_historical_sources(self):
+        self.assertEqual(c.stage_age([]), (None, False))
+        self.assertEqual(c.stage_age([("worker-node3-live", "2026-10-18T00:00:00Z"),
+                                      ("issue780-committed-import", "2026-10-17T00:00:00Z")]),
+                         ("2026-10-17T00:00:00Z", True))
+        # A live source decides the age, and a stopped one that isn't declared stays old.
+        self.assertEqual(c.stage_age([("worker-node3-live", "2026-10-18T00:00:00Z"),
+                                      ("live", "2026-11-01T00:00:00Z")]),
+                         ("2026-11-01T00:00:00Z", False))
+        self.assertEqual(c.stage_age([("new-source", "2026-10-18T00:00:00Z")]),
+                         ("2026-10-18T00:00:00Z", False))
+
+    def test_a_stage_fed_only_by_historical_sources_says_so(self):
+        self.ingest(event("old", kind="artifact", source="ct212-cached-stat"))
+        stages = {stage["id"]: stage for stage in c.snapshot(self.db)["stages"]}
+        self.assertIs(stages["artifacts"]["historical"], True)
+        self.assertNotIn("historical", stages["runs"])
+
     def test_actual_rust_schema_not_replacement(self):
         rust = (ROOT / "crates/usnm-ocr-contract/src/runs.rs").read_text()
         struct = rust.split("pub struct RunRecord {", 1)[1].split("\n}", 1)[0]

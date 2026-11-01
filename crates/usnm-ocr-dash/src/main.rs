@@ -113,7 +113,7 @@ struct Cli {
     sset_push: Vec<String>,
     /// A throughput collector that pushes its hourly counts, as `<source>=<the
     /// host name or address of the host running it>`, with source `controller`,
-    /// `ship` or `boinc`.
+    /// `ship`, `boinc` or `batch`.
     #[arg(long, env = "USNM_OCRDASH_THROUGHPUT_PUSH", value_delimiter = ',')]
     throughput_push: Vec<String>,
     /// An OCR node's worker status, as `<name>=http://<address>:<port>`.
@@ -202,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
     for p in &cli.throughput_push {
         let (name, host) = pair(p, "--throughput-push")?;
         if !usnm_ocr_dash::throughput::SOURCES.contains(&name.as_str()) {
-            bail!("--throughput-push {p:?}: the source must be controller, ship or boinc");
+            bail!("--throughput-push {p:?}: the source must be controller, ship, boinc or batch");
         }
         let source: Source = host
             .parse()
