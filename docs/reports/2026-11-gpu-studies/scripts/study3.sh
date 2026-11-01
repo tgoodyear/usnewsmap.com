@@ -27,4 +27,12 @@ case "$STEP" in
   hf) build push/s3-hf; cp scripts/jobs/hf_engines.py push/s3-hf/
     jq -c 'select(.image|startswith("j/"))' push/s3-hf/crops.jsonl >push/s3-hf/ja-crops.jsonl; jq -c 'select(.image|startswith("c/"))' push/s3-hf/crops.jsonl >push/s3-hf/latin-crops.jsonl
     scripts/rent.sh --study s3hf --image "$TRAIN" --max-hours 8 --cap-dollars 3 --disk 80 --push-dir push/s3-hf --job scripts/jobs/hf-engines.sh --prefer-machine "$PREFER" --out results/s3-hf;;
+  granite) build push/s3-granite; cp scripts/jobs/hf_engines.py push/s3-granite/
+    jq -c 'select(.image|startswith("c/"))' push/s3-granite/crops.jsonl >push/s3-granite/latin-crops.jsonl
+    # The rest of the list, read on a 12 GB card: Granite peaks near 2 GB. Same settings, one crop at a time.
+    if [ -s results/s3-granite-3090/granite.jsonl ]; then jq -r .id results/s3-granite-3090/granite.jsonl >/tmp/gdone
+      jq -c --rawfile d /tmp/gdone '($d|split("\n")) as $x|select(.id as $i|$x|index($i)|not)' push/s3-granite/latin-crops.jsonl >/tmp/grest; mv /tmp/grest push/s3-granite/latin-crops.jsonl; fi
+    scripts/rent.sh --study s3granite --image "$TRAIN" --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 11 --cap-dollars 3 --disk 40 --push-dir push/s3-granite --job scripts/jobs/granite.sh --prefer-machine "$PREFER" --out results/s3-granite;;
+  churro) build push/s3-churro; cp scripts/jobs/hf_engines.py push/s3-churro/
+    scripts/rent.sh --study s3churro --image "$TRAIN" --max-hours 6 --cap-dollars 2 --disk 60 --push-dir push/s3-churro --job scripts/jobs/churro.sh --prefer-machine "$PREFER" --out results/s3-churro;;
   *) exit 2;; esac

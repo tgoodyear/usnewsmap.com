@@ -17,4 +17,4 @@ else
   while read -r d; do ln -s "$PC/pages/$d.jpg" "$P/pages/"; echo -e "$d\tpages/$d.jpg"; done <"$P/pages.ids" >"$P/pages.tsv"
   printf 'pages.tsv\ttiled\tsurya-pages\n' >"$P/runs.tsv"; IMG=$SURYA
 fi
-scripts/rent.sh --study "s4$KIND$TAG" --image "$IMG" --gpu "$GPU" --max-dph "$MAXDPH" --max-hours 5 --cap-dollars 3 --disk 40 --push-dir "$P" --job scripts/jobs/throughput.sh --prefer-machine "$PREFER" --out "results/s4-$KIND-$TAG"
+scripts/rent.sh --study "s4$KIND$TAG" --image "$IMG" --gpu "$GPU" --max-dph "$MAXDPH" --max-hours 8 --cap-dollars 6 --disk 40 --push-dir "$P" --job scripts/jobs/throughput.sh --prefer-machine "$PREFER" --out "results/s4-$KIND-$TAG"

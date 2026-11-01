@@ -18,8 +18,8 @@ rows = [json.loads(l) for l in a.list.read_text(encoding="utf-8").splitlines() i
 prog = open("/work/out/progress.txt", "a", buffering=1)
 
 if a.engine == "churro":
-    sys.path.insert(0, "/work/in/scripts")
-    from churro_ocr.ocr import OCRClient, OCRBackendSpec, build_ocr_backend, HuggingFaceOptions  # noqa
+    from churro_ocr.ocr import OCRClient
+    from churro_ocr.providers import HuggingFaceOptions, OCRBackendSpec, build_ocr_backend
     backend = build_ocr_backend(OCRBackendSpec(provider="hf", model="stanford-oval/churro-3B", options=HuggingFaceOptions(
         processor_kwargs={"revision": a.revision},
         model_kwargs={"revision": a.revision, "device_map": "auto", "dtype": torch.float16},
@@ -48,14 +48,16 @@ else:
         raw = proc.decode(ids[0, b["input_ids"].shape[1]:], skip_special_tokens=False)
         return re.sub(r"<[^>]+>", " ", re.sub(r"<loc_\d+>", "", raw)).strip()
 
-t0 = time.time()
+t0 = time.time(); errors = 0
 with a.out.open("w", buffering=1, encoding="utf-8") as out:
     for i, row in enumerate(rows):
         s = time.time()
         try:
             text = read(i, a.root / row["image"]); status = "ok"
         except Exception as e:  # recorded and scored as missing; the run goes on
-            text = None; status = f"error: {str(e)[:200]}"
+            text = None; status = f"error: {str(e)[:200]}"; errors += 1
+            if errors >= 20 and errors == i + 1:
+                raise SystemExit(f"stopping: the first {errors} items all failed: {status}")
         rec = {"id": row["id"], "status": status, "ms": int((time.time() - s) * 1000)}
         if text is not None:
             rec["text"] = text
