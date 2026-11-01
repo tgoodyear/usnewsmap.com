@@ -91,7 +91,7 @@ Every new native build starts over, as every new worker image does.
 
 ## Parity
 
-Measured on 1 November 2026. Every page went through `usnm_ocr` and through `usnm-boinc work` from the unpacked `247c…` worker image, started at the same moment on one 8-core host under other load (load average around 25). The container arm ran under chroot with the image's environment, not under a container runtime. One German page was also read under podman with the `job.toml` limits, and its text and ALTO had the same hashes.
+Measured on 1 November 2026. The per-page results are in [2026-11-01-native-ocr-parity.json](notes/2026-11-01-native-ocr-parity.json). Every page went through `usnm_ocr` and through `usnm-boinc work` from the unpacked `247c…` worker image, started at the same moment on one 8-core host under other load (load average around 25). The container arm ran under chroot with the image's environment, not under a container runtime. One German page was also read under podman with the `job.toml` limits, and its text and ALTO had the same hashes.
 
 Both builds report Tesseract 5.5.0, Leptonica 1.84.1, libjpeg-turbo 2.1.5, libpng 1.6.48, libtiff 4.7.0, OpenJPEG 2.5.3, libwebp 1.5.0 and libgif 5.2.2. The 22 models have the hashes in the lock. CI built `usnm_tesseract` separately and got the same sha256, `21877bc3…`.
 
@@ -103,13 +103,13 @@ Both builds report Tesseract 5.5.0, Leptonica 1.84.1, libjpeg-turbo 2.1.5, libpn
 | English, JP2         |    13 |             13 |             13 |                  0 |              4.23 |                 4.17 |
 | All                  |    56 |             56 |             56 |                  0 |              6.74 |                 6.74 |
 
-- **What was compared.** Text and ALTO byte for byte. Identical files mean the CER against any reference is identical too. On the 31 pages with LoC OCR on disk, the mean CER against it was 0.625 for both builds. That's agreement with LoC's own OCR in a different reading order, not accuracy.
+- **What was compared.** Text and ALTO byte for byte. Identical files mean the CER against any reference is identical too. On the 31 pages with LoC OCR on disk, the mean CER against it was 0.625 for both builds. That measures agreement with LoC's own OCR, which has a different reading order, so it isn't accuracy.
 - **Speed.** Both builds spent about 245 CPU seconds a page: 243.8 native, 246.6 container. The host was loaded, so pages per hour compares the two builds and doesn't predict a volunteer's rate.
 - **Which build.** 42 pages ran on the first worker build, and 14 ran on the final one, `db763b6f…`, after the review fixes. Both have the same `usnm_tesseract`.
 - **Reruns.** 8 of the 56 are reruns. Two native reads were killed by mistake during testing. Six pages hit the 1200 s job deadline in one or both builds, so they ran again with a 3600 s deadline. Those 8 are the only reruns, and 6 English JP2 pages were added to the sample at the same time.
 - **Gold.** A local bundle of 45 crops, 30 Fraktur and 15 Finnish, scored identically crop by crop with 0 skipped, and the native report passed `usnm-boinc gold check`. It's built from public sources on disk. It has no English and isn't the calibrated challenge, so it doesn't stand in for rollout step 3.
-- **Stock client.** Debian's BOINC 8.0.4 ran the final build against a local stand-in project, with no container runtime on the host. A plain task finished and uploaded. Suspend and resume stopped and restarted the engine. A client restart mid-bundle resumed from the checkpoint and left no engine running. A job for another build was refused. Killing the parent of a stopped task also took the unit and the engine with it. A newer client hasn't been tried, and `docs/boinc-volunteer.md` recommends 8.2.13.
-- **Clean host.** One page on a clean Ubuntu 24.04 container matched byte for byte.
+- **Stock client.** Debian's BOINC 8.0.4 ran the final build against a local stand-in project, with no container runtime on the host. A plain task finished and uploaded. Suspend and resume stopped and restarted the engine. A client restart mid-bundle resumed from the checkpoint and left no engine running. A job for another build was refused. Killing the parent of a stopped task also killed the unit and the engine. A newer client hasn't been tried, and `docs/boinc-volunteer.md` recommends 8.2.13.
+- **Clean host.** On a clean Ubuntu 24.04 container, the native build's output for one German page had the same hashes as the container worker's.
 
 **This doesn't show the builds are equivalent.** It shows identical output on 56 pages on one CPU. Tesseract picks its code path by CPU feature, and glibc's `libm` does too, so output can differ between CPUs in either build. No second machine was compared. If a page ever differs on the same CPU, treat the builds as different until explained. The safe comparison then is per-crop edit counts on the calibrated challenge, plus independent-host spot checks on pages, and neither licenses calling them equivalent. Any other platform starts from that position.
 
@@ -126,9 +126,9 @@ Under this host's load, with the usual 1200 s deadline, the first pass of 48 pag
 | Only container   |     0 |
 | Neither          |     1 |
 
-The container failed 6 pages for taking over 1200 s on the clock. Native finished 5 of them, using 497 to 1099 CPU seconds. The sixth page needs 1368 CPU seconds in either build, so `SIGXCPU` stopped native too. All 6 are identical at the 3600 s deadline. The 2 native reads killed in testing are left out of this table.
+The container failed 6 pages for taking over 1200 s on the clock. Native finished 5 of them, using 497 to 1099 CPU seconds. The sixth page needs about 1370 CPU seconds in either build, so `SIGXCPU` stopped native too. All 6 are identical at the 3600 s deadline. The 2 native reads killed in testing are left out of this table.
 
-So on a loaded host a native task gets more clock time than a container task for the same job. A native page can take far longer than `timeout_secs` by the clock if the host is busy, up to BOINC's own bounds. A page that needs more CPU than `timeout_secs` fails in both. Output isn't affected, and a page either finishes with the same bytes or doesn't finish. Gold doesn't differ: it keeps its clock deadline in both builds.
+So on a loaded host a native task gets more clock time than a container task for the same job. A native page can take far longer than `timeout_secs` by the clock if the host is busy, up to BOINC's own bounds. A page that needs more CPU than `timeout_secs` fails in both. The deadline doesn't change a page's bytes, only whether the page finishes. Gold keeps its clock deadline in both builds.
 
 ## Rollout
 
