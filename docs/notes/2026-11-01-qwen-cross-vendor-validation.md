@@ -16,25 +16,25 @@ Over seven days, `usnm_qwen` had 162 valid results against 422 inconclusive. Is 
 
 **Word-bag Dice is the wrong measure for this text.** A one-letter error loses a whole word, and Hebrew-script readings have many. Character similarity with Hebrew points left out separates true pairs from shuffled ones better:
 
-| Crop pairs at floor 0.5 | Word-bag Dice | Character similarity |
-| --- | ---: | ---: |
-| Yiddish true pairs falling short (2,419) | 14.5% | 3.0% |
-| Yiddish shuffled pairs passing (2,000) | 0.1% | 0.1% |
-| Other true pairs falling short (1,925) | 0.31% | 0.47% |
-| Other shuffled pairs passing (2,000) | 0% | 0% |
+| Crop pairs at floor 0.5                  | Word-bag Dice | Character similarity |
+| ---------------------------------------- | ------------: | -------------------: |
+| Yiddish true pairs falling short (2,419) |         14.5% |                 3.0% |
+| Yiddish shuffled pairs passing (2,000)   |          0.1% |                 0.1% |
+| Other true pairs falling short (1,925)   |         0.31% |                0.47% |
+| Other shuffled pairs passing (2,000)     |            0% |                   0% |
 
 **Extra replicas rarely help, and most of the cost is elsewhere.** Of 386 units with two or more returns, 204 ended valid: 185 on two replicas and 19 on three. 99 units reached a third replica and 19 resolved; 80 are waiting for a fourth. That is 871 replicas for 204 valid units, 4.3 against the 2 a unit needs. A larger cost is starvation: 905 units had one returned result and an unsent peer once the NVIDIA and Intel windows closed.
 
 **AMD isn't the outlier. One Intel host is.** Share of compared crops that disagree under the rule:
 
-| Pair | Yiddish pairs | Disagree |
-| --- | ---: | ---: |
-| AMD + Apple | 129 | 1.6% (10 of 628) |
-| AMD + NVIDIA | 12 | 1.8% (1 of 56) |
-| AMD + Intel | 13 | 5.2% (3 of 58) |
-| Apple + NVIDIA | 100 | 1.3% (6 of 456) |
-| Apple + Intel | 110 | 7.0% (33 of 471) |
-| Intel + NVIDIA | 194 | 6.6% (52 of 783) |
+| Pair           | Yiddish pairs |         Disagree |
+| -------------- | ------------: | ---------------: |
+| AMD + Apple    |           129 | 1.6% (10 of 628) |
+| AMD + NVIDIA   |            12 |   1.8% (1 of 56) |
+| AMD + Intel    |            13 |   5.2% (3 of 58) |
+| Apple + NVIDIA |           100 |  1.3% (6 of 456) |
+| Apple + Intel  |           110 | 7.0% (33 of 471) |
+| Intel + NVIDIA |           194 | 6.6% (52 of 783) |
 
 The Intel figures come from one host with an Iris Xe GPU, so this may be that host's driver or build and not Intel in general. On WU 21128 c09 it wrote fully pointed Hebrew where AMD and Apple wrote none. AMD agrees on all 57 compared crops of 7 Serbian and Spanish pairs and has read no German, so outside Yiddish its sample is small.
 
@@ -49,24 +49,24 @@ The Intel figures come from one host with an Iris Xe GPU, so this may be that ho
 
 A pair agrees when no crop disagrees and `agree` crops are more than half of the crops with text and hold at least 100 characters, or when no crop has text at all, as under the strict rule. The 0.5 floor is the number already in force, not a fitted one. A pair vouches only for its `agree` crops, so the rule claims less than the strict rule does. The 100-character limit came from this data: two issues of one Yiddish paper matched on their mastheads alone.
 
-| Measure, 751 pairs | Strict | `crop-consensus-v2` |
-| --- | ---: | ---: |
-| Yiddish pairs agreeing, of 558 | 91 | 241 |
-| Other pairs agreeing, of 193 | 168 | 180 |
-| Units resolved, of 515 | 259 | 333 |
-| Units resolved by their first two replicas | 240 | 316 |
-| Extra replicas not needed | 0 | 45 |
+| Measure, 751 pairs                         | Strict | `crop-consensus-v2` |
+| ------------------------------------------ | -----: | ------------------: |
+| Yiddish pairs agreeing, of 558             |     91 |                 241 |
+| Other pairs agreeing, of 193               |    168 |                 180 |
+| Units resolved, of 515                     |    259 |                 333 |
+| Units resolved by their first two replicas |    240 |                 316 |
+| Extra replicas not needed                  |      0 |                  45 |
 
 Pairs that must fail:
 
-| Control | Pairs | Strict passes | Rule passes |
-| --- | ---: | ---: | ---: |
-| Different pages, same language | 2,000 | 0 | 0 |
-| Crops rotated within a page | 751 | 21 | 13 |
-| Every crop looped | 751 | 0 | 0 |
-| Half the crops looped | 751 | 0 | 0 |
-| One crop replaced | 706 | 0 | 0 |
-| Every crop unread | 751 | 2 | 2 |
+| Control                        | Pairs | Strict passes | Rule passes |
+| ------------------------------ | ----: | ------------: | ----------: |
+| Different pages, same language | 2,000 |             0 |           0 |
+| Crops rotated within a page    |   751 |            21 |          13 |
+| Every crop looped              |   751 |             0 |           0 |
+| Half the crops looped          |   751 |             0 |           0 |
+| One crop replaced              |   706 |             0 |           0 |
+| Every crop unread              |   751 |             2 |           2 |
 
 An earlier sample drew one different-page pair that both rules passed. An exhaustive scan of different-job pairs found matches above the 100-character limit on three pairs of jobs, each the same page staged twice. The rotated passes inspected are pages whose crops read alike or blank. The two unread passes are pages with no text on either side.
 

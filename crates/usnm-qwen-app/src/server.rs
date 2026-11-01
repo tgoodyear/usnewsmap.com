@@ -262,6 +262,8 @@ fn read_stream(mut events: impl BufRead, deadline: Instant) -> anyhow::Result<St
         ensure!(Instant::now() < deadline, "completion deadline reached");
         line.clear();
         if events.read_line(&mut line)? == 0 {
+            // A reply that just ends may be missing text, so it isn't a reading.
+            ensure!(out.finish_reason.is_some(), "completion stream ended early");
             return Ok(out);
         }
         out.digest.update(line.as_bytes());
@@ -762,6 +764,13 @@ mod guard_tests {
         )
         .unwrap();
         assert_eq!(text, "0123456789");
+    }
+
+    #[test]
+    fn a_stream_that_just_ends_is_not_a_reading() {
+        let e = read_stream(Cursor::new(event("half a rea")), far()).unwrap_err();
+        assert!(format!("{e:#}").contains("ended early"));
+        assert!(read_stream(Cursor::new(""), far()).is_err());
     }
 
     #[test]

@@ -27,7 +27,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use usnm_ocr_contract::qwen::{tail_repetition, Outcome};
-use usnm_ocr_quality::align;
+use usnm_ocr_quality::distance;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,7 +101,7 @@ pub fn similarity(a: &str, b: &str) -> f64 {
     if longer == 0 {
         return 1.0;
     }
-    1.0 - align::edits(&align::chars(&a, &b)) as f64 / longer as f64
+    1.0 - distance::chars(&a, &b) as f64 / longer as f64
 }
 
 /// `text` without Hebrew cantillation marks and points, U+0591 to U+05C7
@@ -187,7 +187,9 @@ pub fn judge_crops(
         .filter(|v| v.state == CropState::Agree)
         .map(|v| chars(a, &v.id).min(chars(b, &v.id)))
         .sum();
-    let verdict = if let Some(v) = verdicts.iter().find(|v| v.state == CropState::Disagree) {
+    let verdict = if verdicts.is_empty() {
+        Err("no crop in common".to_owned())
+    } else if let Some(v) = verdicts.iter().find(|v| v.state == CropState::Disagree) {
         Err(format!(
             "{}: reading agreement {:.4}",
             v.id,
@@ -258,17 +260,18 @@ pub fn record(
     states: &[CropVerdict],
     agree: bool,
 ) -> anyhow::Result<()> {
-    let mut names = [
-        crate::quality::validate::result_name(&a[1])?,
-        crate::quality::validate::result_name(&b[1])?,
+    let mut sides = [
+        (crate::quality::validate::result_name(&a[1])?, la),
+        (crate::quality::validate::result_name(&b[1])?, lb),
     ];
-    names.sort();
+    sides.sort_by(|x, y| x.0.cmp(&y.0));
+    let names = [sides[0].0.clone(), sides[1].0.clone()];
     let record = serde_json::json!({
         "v": 1,
         "rule": "crop-consensus-v2",
         "job_id": la.result.job_id,
         "results": names,
-        "readings_sha256": [la.result.readings_sha256, lb.result.readings_sha256],
+        "readings_sha256": [sides[0].1.result.readings_sha256, sides[1].1.result.readings_sha256],
         "agree": agree,
         "crops": states,
         "accuracy_established": false,
@@ -293,6 +296,7 @@ pub fn record(
 mod tests {
     use super::*;
     use crate::qwen::validate::{compare_with, tests::write, Compare, Rule};
+    use std::path::PathBuf;
 
     const P: Params = Params::IN_RULE;
 
@@ -439,6 +443,11 @@ mod tests {
     }
 
     #[test]
+    fn no_crops_at_all_is_not_agreement() {
+        assert_eq!(verdict(&[], &[]).unwrap_err(), "no crop in common");
+    }
+
+    #[test]
     fn a_page_with_no_text_keeps_the_strict_rules_answer() {
         let blank = [("c01", "[?]", false), ("c02", "", false)];
         assert_eq!(verdict(&blank, &blank), Ok(()));
@@ -488,6 +497,24 @@ mod tests {
         assert_eq!(line["crop_states"][1]["state"], "agree");
         assert!(line["strict_reason"].as_str().unwrap().contains("c02"));
         let job = std::fs::read_dir(&states).unwrap().next().unwrap().unwrap();
-        assert_eq!(std::fs::read_dir(job.path()).unwrap().count(), 1);
+        let kept = std::fs::read_dir(job.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        // Compared either way round, the record pairs each name with its own digest.
+        std::fs::remove_file(kept.path()).unwrap();
+        compare_with(&b, &a, opts(Rule::CropConsensusV2)).unwrap();
+        let r: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(kept.path()).unwrap()).unwrap();
+        let load = |f: &[PathBuf]| crate::qwen::validate::load(f).unwrap().result;
+        let names = (
+            crate::quality::validate::result_name(&a[1]).unwrap(),
+            crate::quality::validate::result_name(&b[1]).unwrap(),
+        );
+        assert!(names.0 < names.1);
+        assert_eq!(r["results"][0], names.0);
+        assert_eq!(r["readings_sha256"][0], load(&a).readings_sha256);
+        assert_eq!(r["readings_sha256"][1], load(&b).readings_sha256);
     }
 }
