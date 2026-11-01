@@ -175,7 +175,7 @@ Each wake starts the API, which starts the searcher. The API stays about 5 minut
 ### Rollout
 
 1. Check that on-prem serves and no index is being published or promoted. Bring a local checkout to `origin/main`.
-2. `scripts/azure/provision.sh --env prod --what-if --api-tag live`, and compare it with the summary in the pull request. Stop on anything new.
+2. `scripts/azure/provision.sh --env prod --what-if --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`, and compare it with the summary in the pull request. Stop on anything new. Without the two flags the rename guard fails it, as it should.
 3. Provision: `scripts/azure/provision.sh --env prod --api-tag live --allow-rename=privatelink.blob.core.windows.net --allow-rename=privatelink.documents.azure.com`. The policy step writes the exempt list first. The stack then adds the service endpoints, firewall rules and tier, and deletes the endpoints and zones last, as unmanaged resources.
 4. Run the cold drill below. Do nothing else until it passes.
 
