@@ -148,18 +148,18 @@ impl ByteCap {
             .store(c.max(MIN_BYTE_CAP.min(cap)), Ordering::Relaxed);
     }
 
-    /// Halve the cap, down to `floor`, for the rest of the run.
-    fn halve(&self, floor: u64) -> Option<u64> {
-        let cap = self.cap.load(Ordering::Relaxed);
-        (cap > floor).then(|| {
-            let lower = (cap / 2).max(floor);
+    /// Halve the cap in force, down to `floor`, for the rest of the run.
+    pub(super) fn halve(&self, floor: u64) -> Option<u64> {
+        let now = self.now.load(Ordering::Relaxed);
+        (now > floor).then(|| {
+            let lower = (now / 2).max(floor);
             self.cap.store(lower, Ordering::Relaxed);
             self.refresh();
             lower
         })
     }
 
-    /// Wait until `n` more bytes fit the cap. Up to a second of unused rate
+    /// Wait until these `n` bytes have been paid for. Up to a second of unused rate
     /// carries over, so timer granularity doesn't lower the real rate.
     pub(super) async fn take(&self, n: u64) {
         let Some(cap) = self.current() else {
@@ -174,7 +174,7 @@ impl ByteCap {
             *next = Some(at + cost);
             at
         };
-        tokio::time::sleep_until(at).await;
+        tokio::time::sleep_until(at + cost).await;
     }
 }
 
@@ -416,6 +416,8 @@ struct Attempt<'a> {
     stop: &'a watch::Receiver<bool>,
     deadline: Instant,
     room: &'a Reservation<'a>,
+    /// Bytes over the network for this file, across attempts.
+    came: &'a AtomicU64,
 }
 
 /// Fetches files within host policies.
@@ -445,9 +447,11 @@ impl Engine {
                 .read_timeout(Duration::from_secs(120))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
+            // A probe asks only the page it names: a redirect counts as a failure.
             probe_http: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             policies,
             budgets,
@@ -616,6 +620,7 @@ impl Engine {
             () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
         };
         let mut tries: u32 = 0;
+        let came = AtomicU64::new(0);
         loop {
             gate.cap.refresh();
             let this = Attempt {
@@ -625,6 +630,7 @@ impl Engine {
                 stop,
                 deadline,
                 room,
+                came: &came,
             };
             let m = match self.attempt(&gate, this).await {
                 Ok(g) => {
@@ -672,6 +678,7 @@ impl Engine {
             stop,
             deadline,
             room,
+            came,
         } = this;
         let resume = gate.policy.resume;
         let name = &job.name;
@@ -693,7 +700,6 @@ impl Engine {
                 return Err(Fail::Stopped);
             }
         }
-        let mut written = 0;
         if have < job.size {
             let mut resp = self
                 .open(url, (have > 0).then_some(have), stop, deadline)
@@ -751,7 +757,7 @@ impl Engine {
                     }
                 };
                 have += chunk.len() as u64;
-                written += chunk.len() as u64;
+                came.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 if have > job.size {
                     remove(part).await;
                     return Err(Fail::Transient(format!(
@@ -805,6 +811,9 @@ impl Engine {
         }
         let placed = publish(part, job)
             .map_err(|e| Fail::Transient(format!("{}: {e}", job.dest.display())))?;
-        Ok(Got { written, placed })
+        Ok(Got {
+            written: came.load(Ordering::Relaxed),
+            placed,
+        })
     }
 }

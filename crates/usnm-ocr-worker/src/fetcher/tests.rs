@@ -1063,6 +1063,61 @@ async fn the_byte_cap_is_shared_and_keeps_to_its_rate() {
 }
 
 #[test]
+fn a_slow_api_halves_the_cap_in_force() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("rate-bytes-per-sec");
+    std::fs::write(&f, "40000000").unwrap();
+    let cap = ByteCap::new(Some(85_000_000), Some(f));
+    assert_eq!(cap.halve(15_000_000), Some(20_000_000));
+    assert_eq!(cap.current(), Some(20_000_000));
+    assert_eq!(cap.halve(15_000_000), Some(15_000_000), "the floor");
+    assert_eq!(cap.halve(15_000_000), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lone_chunk_pays_for_itself() {
+    let cap = ByteCap::new(Some(1_000_000), None);
+    let t = Instant::now();
+    cap.take(500_000).await;
+    assert!(
+        t.elapsed() >= Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
+    );
+}
+
+/// Six bytes, a dropped connection, then the rest: all ten count.
+#[tokio::test]
+async fn bytes_from_earlier_tries_count() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let answers = [
+            "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n012345",
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 6-9/10\r\n\
+             Content-Length: 4\r\nConnection: close\r\n\r\n6789",
+        ];
+        for a in answers {
+            let (mut c, _) = l.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = c.read(&mut buf).await.unwrap();
+            c.write_all(a.as_bytes()).await.unwrap();
+            c.shutdown().await.unwrap();
+        }
+    });
+    let mut r = Rig::new().await;
+    r.archive("a", b"0123456789");
+    r.write_list();
+    let m = manifest(&[("a", sha(b"0123456789"))]);
+    let mut o = r.mirrored(m, mirror_policy("attempts = 2\nresume = true\n"), true);
+    o.mirror.as_mut().unwrap().base_url = format!("http://localhost:{port}/hf/");
+    let s = go(o).await.unwrap();
+    assert_eq!(s.bytes_this_run, 10, "{:?}", s.failed);
+    assert!(r.has("a"));
+}
+
+#[test]
 fn a_configured_cap_under_the_floor_stands() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("rate-bytes-per-sec");
