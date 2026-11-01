@@ -5,7 +5,7 @@ use serde_json::Value;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
-use super::error::{cause, splits_named};
+use super::error::{failure_cause, splits_named};
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 use crate::{
     ja_snippets, rank, CubeCell, Hit, HitsPage, IndexSet, KeyCount, PlaceSummary, SearchError,
@@ -72,7 +72,8 @@ impl StoredHit {
 }
 
 /// Reject responses that report partial failures, without echoing their
-/// content: the error names how many, what they were about ([`cause`]) and
+/// content: the error names how many, what they were about
+/// ([`failure_cause`]) and
 /// up to 5 of the failed splits, whose ids are opaque.
 pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchError> {
     if resp.errors.is_empty() {
@@ -83,7 +84,7 @@ pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchEr
     for e in &resp.errors {
         // Quickwit 0.9's REST response gives each error as a string.
         let text = e.as_str().map_or_else(|| e.to_string(), str::to_owned);
-        *causes.entry(cause(&text, query)).or_default() += 1;
+        *causes.entry(failure_cause(&text, query)).or_default() += 1;
         texts.push(text);
     }
     let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{c}×{n}")).collect();

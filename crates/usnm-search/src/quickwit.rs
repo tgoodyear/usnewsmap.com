@@ -35,13 +35,13 @@ pub use query::{
 };
 pub use request::{
     american_stories_only_request, browse_request, cube_request, hits_request, place_cube_request,
-    summary_request,
+    summary_request, summary_with_cube_request,
 };
 pub use response::{
     check_complete, parse_browse, parse_cube, parse_hits, parse_summary, SearchResponse, StoredHit,
 };
 
-use error::{map_err, splits_named};
+use error::{failure_cause, map_err, splits_named};
 
 /// Upper bound on places in one terms aggregation.
 const MAX_PLACES: u32 = 5_000;
@@ -160,7 +160,7 @@ impl QuickwitBackend {
             // split's failure this way, naming the split in the body.
             let msg = format!(
                 "quickwit returned {status} ({}){}",
-                cause(&body, &sent),
+                failure_cause(&body, &sent),
                 splits_named(&body, &sent)
             );
             return Err(if status.is_client_error() {
@@ -172,6 +172,17 @@ impl QuickwitBackend {
         let parsed: SearchResponse = resp.json().await.map_err(map_err)?;
         check_complete(&parsed, &sent)?;
         Ok(parsed)
+    }
+}
+
+/// Whether Quickwit refused an aggregation for its size, by the cause
+/// [`QuickwitBackend::search`] puts in the message.
+fn over_aggregation_limit(e: &SearchError) -> bool {
+    match e {
+        SearchError::Backend(m) | SearchError::Rejected(m) => {
+            m.contains("bucket_limit") || m.contains("memory_limit")
+        }
+        _ => false,
     }
 }
 
@@ -196,6 +207,24 @@ impl SearchBackend for QuickwitBackend {
             .search(indexes, &summary_request(query, filters, indexes, spec)?)
             .await?;
         parse_summary(&resp, spec)
+    }
+
+    async fn summary_with_cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        let body = summary_with_cube_request(query, filters, indexes, spec)?;
+        match self.search(indexes, &body).await {
+            Ok(resp) => Ok(Some((
+                parse_summary(&resp, spec)?,
+                parse_cube(&resp, spec)?,
+            ))),
+            Err(e) if over_aggregation_limit(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn cube(
@@ -331,6 +360,60 @@ mod tests {
             }
         });
         url
+    }
+
+    /// Answers every request with `status` and `body`.
+    async fn stub_saying(status: u16, body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0; 16 * 1024];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 {status} Stub\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        url
+    }
+
+    /// Only a refusal for its size sends the search back to separate calls;
+    /// any other failure is the search's.
+    #[tokio::test]
+    async fn only_a_refusal_for_size_falls_back_from_the_combined_request() {
+        use usnm_core::time::BucketUnit;
+        let q = usnm_core::query::parse("gold").unwrap();
+        let (set, f) = (test_support::none(), test_support::filters());
+        let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+        for body in [
+            r#"{"message":"internal error: `tantivy error: Aborting aggregation because bucket limit was exceeded. Limit: 200000, Current: 633432`"}"#,
+            r#"{"message":"internal error: `tantivy error: Aborting aggregation because memory limit was exceeded. Limit: 768MB`"}"#,
+        ] {
+            let qw = QuickwitBackend::new(&stub_saying(500, body).await, Duration::from_secs(5))
+                .unwrap();
+            let out = qw.summary_with_cube(&set, &q, &f, &spec).await.unwrap();
+            assert!(out.is_none());
+            // The same for a search of the very words of the refusal.
+            let echoed = usnm_core::query::parse("bucket memory").unwrap();
+            let out = qw
+                .summary_with_cube(&set, &echoed, &f, &spec)
+                .await
+                .unwrap();
+            assert!(out.is_none());
+        }
+        let body = r#"{"message":"internal error: `storage error`"}"#;
+        let qw =
+            QuickwitBackend::new(&stub_saying(500, body).await, Duration::from_secs(5)).unwrap();
+        let err = qw.summary_with_cube(&set, &q, &f, &spec).await.unwrap_err();
+        assert!(matches!(err, SearchError::Backend(_)), "{err}");
+        let qw = QuickwitBackend::new(&stub(408).await, Duration::from_secs(5)).unwrap();
+        let err = qw.summary_with_cube(&set, &q, &f, &spec).await.unwrap_err();
+        assert!(matches!(err, SearchError::Timeout), "{err}");
     }
 
     #[tokio::test]

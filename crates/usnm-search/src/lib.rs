@@ -549,6 +549,20 @@ pub trait SearchBackend: Send + Sync {
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError>;
 
+    /// The summary and the whole cube in one request, the same as
+    /// [`Self::summary`] and [`Self::cube`] of every shard. `None` from a
+    /// backend without such a request, or when the engine refuses it for
+    /// its size: the caller then asks for them separately.
+    async fn summary_with_cube(
+        &self,
+        _indexes: &IndexSet,
+        _query: &Node,
+        _filters: &Filters,
+        _spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        Ok(None)
+    }
+
     /// Cube cells for the places in `places` only, whatever their shard
     /// (`/v1/days`). Callers pass validated place ids. A backend without it
     /// refuses.

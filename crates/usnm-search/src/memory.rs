@@ -371,6 +371,19 @@ impl SearchBackend for MemoryBackend {
         })
     }
 
+    async fn summary_with_cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        let shards: Vec<u8> = (0..usnm_core::cube::PLACE_SHARDS).collect();
+        let summary = self.summary(indexes, query, filters, spec).await?;
+        let cells = self.cube(indexes, query, filters, spec, &shards).await?;
+        Ok(Some((summary, cells)))
+    }
+
     async fn cube(
         &self,
         indexes: &IndexSet,

@@ -29,6 +29,20 @@ pub(super) fn map_err(e: reqwest::Error) -> SearchError {
     SearchError::Backend(format!("quickwit {kind} error: {msg}"))
 }
 
+/// [`cause`], and for the engine's own refusal of an aggregation the limit
+/// it hit, whatever words the query shares with the message: the planner
+/// tells such a refusal from any other failure by it, so a search for
+/// `bucket` must not read as something else.
+pub(super) fn failure_cause(message: &str, query: &str) -> &'static str {
+    if message.contains("Aborting aggregation because bucket limit") {
+        "bucket_limit"
+    } else if message.contains("Aborting aggregation because memory limit") {
+        "memory_limit"
+    } else {
+        cause(message, query)
+    }
+}
+
 /// What a Quickwit error message is about, by keyword, so its cause can be
 /// logged without its text (which may echo the query, 09 §9.4.2). The
 /// message is compared word by word, leaving out the words of `query` (the
