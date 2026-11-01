@@ -41,6 +41,11 @@ remote = next(i for i, arg in enumerate(args) if arg.startswith("root@")) + 1
 args = args[:remote] + shlex.split(" ".join(args[remote:]))
 with (root / "calls.jsonl").open("a") as f:
     f.write(json.dumps(args) + "\\n")
+locked = os.environ.get("SHIP_TEST_LOCKED_STEP")
+if locked and locked in args:
+    print(os.environ.get("SHIP_TEST_LOCKED_MESSAGE",
+                         "error: another bridge step is running on this host"), file=sys.stderr)
+    sys.exit(1)
 if "df" in args:
     print("Avail\\n100")
     if "/srv/usnm-boinc/project/quality" in args:
@@ -98,24 +103,39 @@ elif "python3" in args and "-" in args:
                 self.assertEqual(probe.returncode, 0, probe.stderr)
                 self.assertEqual(probe.stdout, "locked argv survives")
 
-    def test_long_lock_steps_wait_for_the_step_window(self):
-        # Minute 40, then 41, then 03: two closed readings and one open.
-        minutes = self.root / "minutes"
-        minutes.write_text("40:00\n41:00\n03:00\n")
-        self.stub("date", f"""#!/bin/bash
-head -1 {minutes}
-sed -i.bak 1d {minutes}
-""")
+    def test_stage_and_submit_do_not_wait_for_the_step_window(self):
+        # The stage has its own lock on the host, and only native publication reads the clock.
+        self.stub("date", "#!/bin/bash\nexit 9\n")
         self.stub("sleep", "#!/bin/bash\necho \"$@\" >> " + str(self.root / "slept") + "\n")
         result = self.run_ship(["--step-window-minutes", "15"], native=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr.count("waiting for the next step window"), 1)
-        self.assertEqual((self.root / "slept").read_text().split(), ["30", "30"])
+        self.assertNotIn("waiting for the next step window", result.stderr)
+        self.assertFalse((self.root / "slept").exists())
         self.assertIn("shipped 1 chunk(s)", result.stderr)
+
+    def test_a_step_that_stays_locked_defers_and_retains_ready(self):
+        # quality-submit never gets the lock: 60 tries 30 s apart, then exit 75, no acknowledgement.
+        self.env["SHIP_TEST_LOCKED_STEP"] = "quality-submit"
+        self.stub("sleep", "#!/bin/bash\necho \"$@\" >> " + str(self.root / "slept") + "\n")
+        result = self.run_ship(["--step-window-minutes", "15"], native=False)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("quality-submit: the lock stayed held for 30 minutes; READY retained", result.stderr)
+        self.assertEqual(len((self.root / "slept").read_text().split()), 60)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any("--after-submit" in c for c in calls))
+
+    def test_a_step_that_fails_for_another_reason_is_not_deferred(self):
+        self.env["SHIP_TEST_LOCKED_STEP"] = "quality-stage"
+        self.env["SHIP_TEST_LOCKED_MESSAGE"] = "error: the step's container ended with status 1"
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("ended with status 1", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
 
     def test_native_submit_waits_for_the_step_window_too(self):
         minutes = self.root / "minutes"
-        minutes.write_text("03:00\n40:00\n14:30\n")
+        minutes.write_text("40:00\n14:30\n")
         self.stub("date", f"""#!/bin/bash
 head -1 {minutes}
 sed -i.bak 1d {minutes}

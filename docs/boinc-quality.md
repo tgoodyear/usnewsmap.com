@@ -651,8 +651,11 @@ no LoC request:
    `quality_receive.py` there (every file against `SHA256SUMS`, and every page's scan present,
    so `quality stage` never falls back to tile.loc.gov from the server), then runs
    `usnm-boinc-step` `quality-stage` with `QUALITY_SCANS_DIR` and `quality-submit`. It ships
-   nothing while the server has more than 300 results unsent, and waits its turn on the step
-   lock.
+   nothing while the server has more than 300 results unsent. `quality-stage` holds its own
+   lock on the host, so one stage runs at a time while the controller's steps go on: it uses no
+   database or project files, and later steps ignore a unit until its `quality.json`, written
+   last, or its `submitted` marker exists. `quality-submit` waits its turn on the step lock for
+   up to 30 minutes; if the lock stays held, the run exits 75 and the chunk stays `READY`.
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
    On the preparation host, `usnm-quality-results.timer` runs two minutes after
    the previous pass finishes, with up to 15 seconds of jitter:
