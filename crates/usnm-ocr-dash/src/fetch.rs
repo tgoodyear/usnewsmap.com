@@ -317,8 +317,9 @@ struct IndexLine {
     doc_id: String,
     fetched_at: DateTime<Utc>,
     bytes: u64,
+    /// Absent on lines from before downloads were timed.
     #[serde(default)]
-    download_ms: u64,
+    download_ms: Option<u64>,
 }
 
 /// A failure line.
@@ -779,10 +780,12 @@ impl Fetch {
         self.index_first_hour = Some(self.index_first_hour.map_or(hour, |h| h.min(hour)));
         let tally = self.hourly.entry(hour).or_default();
         tally.0 += 1;
-        tally.1 += line.download_ms;
-        self.hourly_times
-            .entry(hour)
-            .or_insert_with(|| Box::new([0; TIME_BUCKETS]))[time_bucket(line.download_ms)] += 1;
+        tally.1 += line.download_ms.unwrap_or(0);
+        if let Some(ms) = line.download_ms {
+            self.hourly_times
+                .entry(hour)
+                .or_insert_with(|| Box::new([0; TIME_BUCKETS]))[time_bucket(ms)] += 1;
+        }
         match self.all.entry(doc_hash(&line.doc_id)) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let t = e.get_mut();
@@ -1662,6 +1665,7 @@ mod tests {
         assert_eq!(f.failures_in_hours(hour - 86_400, hour), 2);
         // An index last read two days ago covers none of those hours.
         assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
+        // This line has no download time: it's a page, not a sample of 0 ms.
         std::fs::write(
             dir.path().join("index-full.jsonl"),
             format!(
@@ -1671,6 +1675,8 @@ mod tests {
         )
         .unwrap();
         f.poll(now);
+        assert_eq!(f.hourly.values().map(|t| t.0).sum::<u64>(), 1);
+        assert_eq!(f.download_seconds(hour - 172_800, 48), None);
         assert_eq!(f.failures_in_covered_hours(hour - 86_400), Some(2));
         f.index_read_at = Some(now - Duration::days(2));
         assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);

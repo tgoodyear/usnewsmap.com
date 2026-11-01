@@ -834,6 +834,7 @@ mod tests {
             let body = format!(
                 r#"{{"schema":1,"source":"ship","observed_at":"{}","first_hour":{hour},"hours":1,
                     "series":{{"reason.controller.pve-lab-unreachable":[2],
+                               "reason.controller.usnm-ocr-node9-unreachable":[2],
                                "reason.controller.bridge-submit-failed":[1],"ticks_failed":[3]}},
                     "limits":{{"usnm_ocr.now":"225 runnable on usnm-ocr-node9 at 192.0.2.7:8381"}}}}"#,
                 now.to_rfc3339()
@@ -872,7 +873,9 @@ mod tests {
                 assert!(!body.contains(bad), "{bad} in {path}");
             }
             assert!(body.contains("bridge submit failed"));
-            assert!(body.contains("a lab host lab unreachable"));
+            assert!(!body.contains("node9"), "{path}");
+            assert!(body.contains("a lab host"));
+            assert!(body.contains("an OCR node"));
             assert!(body.contains("transient: a lab host at an address refused from a container"));
             assert!(body.contains("225 runnable on an OCR node at an address"));
         }

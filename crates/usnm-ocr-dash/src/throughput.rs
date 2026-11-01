@@ -518,12 +518,8 @@ const ROWS: &[Row] = &[
         scope: "Seconds step containers ran, each under the host's one lock; a minimum, since \
                 loaders and native submission hold it without a container.",
         limit: "3,600 seconds an hour",
-        failed: &["phase_failed.lock"],
-        attempts: &["phase_runs.lock"],
-        failed_unit: "lock attempts",
-        phases: &["lock"],
         busy: "lock_seconds",
-        sources: &["boinc", "controller"],
+        sources: &["boinc"],
         ..ROW
     },
 ];
@@ -1569,9 +1565,9 @@ mod tests {
         assert_eq!(c.last_ok, DateTime::from_timestamp(end, 0));
         assert_eq!(c.hours_searched, 2);
         assert_eq!(c.failed_hours_searched, 2);
-        // The lock's seconds can arrive before anyone counted its failures.
-        let lock = &step(&v, "stage").detail;
-        assert_eq!(lock.failed_hours_searched, 0);
+        // The controller's lock phase is a lease on a blob, not this lock:
+        // nothing counts this one's failures.
+        assert!(step(&v, "bridge_lock").detail.failures.is_none());
     }
 
     #[test]

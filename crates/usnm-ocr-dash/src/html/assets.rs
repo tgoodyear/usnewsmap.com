@@ -222,6 +222,10 @@ document.addEventListener('pointerover', (e) => {
   if (bar) showTip(bar);
   else if (tipBar && !chartFocused()) hideTip();
 });
+// Leaving the window fires no pointerover, and a tip left up holds its panel.
+document.addEventListener('pointerout', (e) => {
+  if (!e.relatedTarget && !chartFocused()) hideTip();
+});
 document.addEventListener('focusin', (e) => {
   // A click or tap focuses the chart with its bar already showing: keep that bar.
   if (e.target.matches?.('svg.spark') && !e.target.contains(tipBar)) {
