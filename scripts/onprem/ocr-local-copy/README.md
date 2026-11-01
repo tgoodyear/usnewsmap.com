@@ -26,15 +26,17 @@ The command is `crates/usnm-ingest/src/cli/ocr_local_copy.rs` and the logic `cra
      --exclude requests/ <existing ocr-local copy>/ /tank/azure/lake-alto/
    ```
 
-5. **First run.** Check the seeded bytes against the lake's Content-MD5, then enable the timer. `--verify` reads only the local copy:
+5. **First run.** Check the seeded bytes against the lake's Content-MD5, then enable the timer. `--verify` lists the lake, reads only the local copy, and copies nothing:
 
    ```sh
    sudo -u usnm-searchlog sh -c 'set -a; . /etc/usnm/ocr-local-copy.env; set +a; USNM_CURATED_URL=/var/empty USNM_REFERENCE_URL=/var/empty USNM_STATE_FILE=/var/lib/usnm-ocr-local-copy/unused-state.json usnm-ingest ocr-local-copy --to /tank/azure/lake-alto --status /var/lib/usnm-ocr-local-copy/status.json --verify'
    systemctl enable --now usnm-ocr-local-copy.timer
    ```
 
+   Objects the seed didn't cover are reported as missing, and fail this check once they're older than 48 hours. The timer's run copies them; `systemctl start usnm-ocr-local-copy.service` does it sooner. Read `mismatched_objects` in the status file: only those need a person.
+
 ## The alert
 
-A run fails, and the unit with it, when an object is still missing or different more than 48 hours after it was written. `/var/lib/usnm-ocr-local-copy/status.json` has `ok`, the counts and the first overdue paths. home-infra's watcher reads it each hour.
+A run fails, and the unit with it, when an object is still missing, different or unverified more than 48 hours after it was written. Only `--verify` reports unverified objects: those listed with no Content-MD5, which it can't check. `/var/lib/usnm-ocr-local-copy/status.json` has `ok`, the counts, the first overdue paths and every path that differs. home-infra's watcher reads it each hour.
 
-A copy that differs is left alone. Move it aside by hand and run the copy again.
+A copy that differs is left alone. Move it aside by hand and run the copy again. The daily run checks sizes only, but it reads `mismatched_paths` from the last status file and hashes those copies again, so a same-sized mismatch stays reported until it's fixed. That reads local files only. Keep the status file: deleting it forgets them.

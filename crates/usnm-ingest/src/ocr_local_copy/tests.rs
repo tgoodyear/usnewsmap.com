@@ -124,9 +124,12 @@ async fn a_seeded_file_is_kept_and_verify_reads_only_the_copy() {
         ..options(&f.dest)
     };
     let report = copy_objects(f.store.as_ref(), &verify).await.unwrap();
-    assert_eq!(report.copied_this_run, 1, "only the part crossed");
-    assert_eq!(report.copied_objects, 2);
+    assert_eq!(report.copied_this_run, 0, "verify downloads nothing");
+    assert_eq!(report.copied_objects, 1);
+    assert_eq!(report.missing_objects, 1);
     assert_eq!(report.mismatched_objects, 0);
+    assert!(!f.dest.join("pages").exists(), "nor makes a directory");
+    assert_eq!(report.last_success, None, "the gap isn't a success");
 }
 
 #[tokio::test]
@@ -142,6 +145,93 @@ async fn a_copy_that_differs_is_left_and_verify_finds_same_sized_damage() {
     let report = copy_objects(f.store.as_ref(), &verify).await.unwrap();
     assert_eq!(report.mismatched_objects, 1);
     assert_eq!(std::fs::read(&copy).unwrap(), b"alto b");
+}
+
+#[tokio::test]
+async fn a_mismatch_stays_reported_until_it_is_fixed() {
+    let f = fixture(false);
+    let status = f.dest.parent().unwrap().join("status.json");
+    let plain = Options {
+        status: Some(&status),
+        ..options(&f.dest)
+    };
+    copy_objects(f.store.as_ref(), &plain).await.unwrap();
+    let copy = f.dest.join("alto/a.node.1.xml");
+    std::fs::remove_file(&copy).unwrap();
+    std::fs::write(&copy, "alto b").unwrap();
+    let path = "ocr-local/alto/a.node.1.xml";
+
+    let before = copy_objects(f.store.as_ref(), &plain).await.unwrap();
+    assert_eq!(before.mismatched_objects, 0, "size alone can't see it");
+
+    let verify = Options {
+        verify: true,
+        ..plain.clone()
+    };
+    let found = copy_objects(f.store.as_ref(), &verify).await.unwrap();
+    assert_eq!(found.mismatched_paths, [path]);
+
+    let later = Options {
+        now: Utc::now() + chrono::TimeDelta::hours(2),
+        ..plain.clone()
+    };
+    let daily = copy_objects(f.store.as_ref(), &later).await.unwrap();
+    assert_eq!(daily.mismatched_paths, [path], "a plain run keeps it");
+    assert_eq!(daily.overdue_sample, [path]);
+    assert!(!daily.ok);
+    assert_eq!(daily.last_success, before.last_success);
+    assert_eq!(std::fs::read(&copy).unwrap(), b"alto b");
+
+    std::fs::remove_file(&copy).unwrap();
+    let fixed = copy_objects(f.store.as_ref(), &plain).await.unwrap();
+    assert_eq!(fixed.copied_this_run, 1);
+    assert!(fixed.ok && fixed.mismatched_paths.is_empty());
+    assert_eq!(fixed.last_success, Some(plain.now));
+}
+
+#[tokio::test]
+async fn a_status_file_from_before_the_paths_still_gives_the_last_success() {
+    let f = fixture(true);
+    let status = f.dest.parent().unwrap().join("status.json");
+    std::fs::write(&status, r#"{"last_success":"2026-10-30T03:30:00Z"}"#).unwrap();
+    let o = Options {
+        status: Some(&status),
+        ..options(&f.dest)
+    };
+    let report = copy_objects(f.store.as_ref(), &o).await.unwrap();
+    assert_eq!(report.missing_objects, 2);
+    assert_eq!(
+        report.last_success,
+        Some("2026-10-30T03:30:00Z".parse().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn verify_with_no_md5_reports_unverified_and_not_a_match() {
+    let f = fixture(false);
+    let status = f.dest.parent().unwrap().join("status.json");
+    let store = LocalStore::new(&f.root);
+    let plain = Options {
+        status: Some(&status),
+        ..options(&f.dest)
+    };
+    let copied = copy_objects(&store, &plain).await.unwrap();
+    assert_eq!(copied.copied_objects, 2);
+    std::fs::remove_file(f.dest.join("alto/a.node.1.xml")).unwrap();
+    std::fs::write(f.dest.join("alto/a.node.1.xml"), "alto b").unwrap();
+    let verify = Options {
+        verify: true,
+        now: Utc::now() + chrono::TimeDelta::hours(2),
+        ..plain.clone()
+    };
+    let report = copy_objects(&store, &verify).await.unwrap();
+    assert_eq!(report.unverified_objects, 2);
+    assert_eq!(report.no_md5_objects, 2);
+    assert_eq!(report.copied_objects, 0);
+    assert_eq!(report.mismatched_objects, 0);
+    assert_eq!(report.last_success, copied.last_success, "not advanced");
+    assert_eq!(report.overdue_objects, 2);
+    assert!(!report.ok);
 }
 
 #[tokio::test]

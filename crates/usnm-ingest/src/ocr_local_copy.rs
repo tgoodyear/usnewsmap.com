@@ -7,8 +7,10 @@
 //! - the objects are under nested paths, and there are tens of thousands of them, so the run
 //!   stats the objects it lists and never walks the dataset;
 //! - the listing's `Content-MD5` is the check on the bytes. Every object here has one, so a copy
-//!   is compared with the lake's own hash and `verify` reads only the local side. A seeded
-//!   dataset is checked that way without downloading it;
+//!   is compared with the lake's own hash and `verify` reads only the local side: it reports what
+//!   is absent and copies nothing, so a seeded dataset is checked without downloading it;
+//! - a copy that failed that check stays reported: the status file names every mismatch, and each
+//!   later run hashes those copies again until they match, were moved aside or left the lake;
 //! - `requests/` is left out: it's rewritten in place, and it can be made again from the
 //!   `ocr-requests` container.
 //!
@@ -20,6 +22,7 @@
 //! No symbolic link is followed under the destination: each directory is opened from its parent
 //! without following one, and files are reached from that handle by bare name.
 
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::os::fd::OwnedFd;
 use std::path::Path;
@@ -58,9 +61,11 @@ pub struct Options<'a> {
     pub status: Option<&'a Path>,
     /// The time now, for the overdue test and the status file.
     pub now: DateTime<Utc>,
-    /// How long an object may be missing from the copy, or differ, before it is overdue.
+    /// How long an object may be missing from the copy, differ or stay unverified before it is
+    /// overdue.
     pub alert_after: Duration,
-    /// Also read every copy and compare its MD5 with the listing's.
+    /// Read every copy and compare its MD5 with the listing's, and copy nothing: what's absent is
+    /// reported, and nothing but the listing touches the lake.
     pub verify: bool,
     /// Refuse a destination that is not a mount point.
     pub require_mount: bool,
@@ -70,7 +75,7 @@ pub struct Options<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub checked_at: DateTime<Utc>,
-    /// The last run that left nothing missing or different, this one included.
+    /// The last run that left nothing missing, different or unverified, this one included.
     pub last_success: Option<DateTime<Utc>>,
     /// Nothing is overdue.
     pub ok: bool,
@@ -85,19 +90,26 @@ pub struct Report {
     pub missing_objects: u64,
     /// In both, and the copy differs (left as it is).
     pub mismatched_objects: u64,
-    /// Missing or different for longer than `alert_after`; the command fails on these.
+    /// With `verify`: in both at the right size, with no Content-MD5 to check the bytes against.
+    pub unverified_objects: u64,
+    /// Missing, different or unverified for longer than `alert_after`; the command fails on these.
     pub overdue_objects: u64,
     /// The first paths of those.
     pub overdue_sample: Vec<String>,
     /// Listed under `ocr-local/`, and not copied: `requests/`, or a path the tool won't write.
     pub ignored_objects: u64,
-    /// Listed with no Content-MD5, so checked by size alone.
+    /// Listed with no Content-MD5, so checked by size alone, or not at all with `verify`.
     pub no_md5_objects: u64,
+    /// Every path counted in `mismatched_objects`. The next run hashes these copies whether or
+    /// not it's told to verify, so a same-sized one isn't taken for good on its size.
+    pub mismatched_paths: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Previous {
     last_success: Option<DateTime<Utc>>,
+    #[serde(default)]
+    mismatched_paths: HashSet<String>,
 }
 
 /// The directories of a path relative to the prefix and its file name, or `None` for a path this
@@ -109,7 +121,8 @@ fn split(info: &ObjectInfo) -> Option<(Vec<&str>, &str)> {
     }
     let mut parts: Vec<&str> = relative.split('/').collect();
     let name = parts.pop()?;
-    (parts.iter().chain([&name]).all(|s| is_safe_segment(s))).then_some((parts, name))
+    let safe = parts.iter().chain([&name]).all(|s| is_safe_segment(s));
+    safe.then_some((parts, name))
 }
 
 fn is_overdue(now: DateTime<Utc>, info: &ObjectInfo, after: Duration) -> bool {
@@ -158,6 +171,9 @@ impl Dirs {
                                     .with_context(|| format!("creating {part}"))
                             }
                         }
+                        rustix::fs::fsync(&dir)
+                            .map_err(std::io::Error::from)
+                            .with_context(|| format!("syncing the entry for {part}"))?;
                         open_dir(&dir, part).with_context(|| format!("opening {part}"))?
                     }
                     Err(e) => return Err(e).with_context(|| format!("opening {part}")),
@@ -174,6 +190,8 @@ enum Held {
     Absent,
     Matches,
     Differs,
+    /// Asked for a check of the bytes, with no Content-MD5 to check them against.
+    Unverified,
 }
 
 /// The size of `name` if it's a regular file, `None` if it's anything else.
@@ -212,12 +230,15 @@ async fn md5_file(file: std::fs::File) -> anyhow::Result<String> {
     }
 }
 
+/// `suspect` is a copy a run found different: its bytes are read as with `verify`, and it stays
+/// different until they're shown to match.
 async fn compare(
     dirs: &mut Dirs,
     parts: &[&str],
     name: &str,
     info: &ObjectInfo,
     verify: bool,
+    suspect: bool,
 ) -> anyhow::Result<Held> {
     let Some(dir) = dirs.enter(parts, false)? else {
         return Ok(Held::Absent);
@@ -228,14 +249,15 @@ async fn compare(
         Ok(size) if size != Some(info.size) => return Ok(Held::Differs),
         Ok(_) => {}
     }
-    if verify {
-        if let Some(expected) = &info.content_md5 {
-            if md5_file(open_read(dir, name)?).await? != *expected {
-                return Ok(Held::Differs);
-            }
-        }
+    if !verify && !suspect {
+        return Ok(Held::Matches);
     }
-    Ok(Held::Matches)
+    match &info.content_md5 {
+        Some(expected) if md5_file(open_read(dir, name)?).await? == *expected => Ok(Held::Matches),
+        Some(_) => Ok(Held::Differs),
+        None if suspect => Ok(Held::Differs),
+        None => Ok(Held::Unverified),
+    }
 }
 
 /// Stream an object into a partial, check it, and link it into place. Returns its size.
@@ -344,10 +366,11 @@ fn prepare(o: &Options<'_>) -> anyhow::Result<OwnedFd> {
     Ok(root)
 }
 
-/// Copy what the destination lacks. `Err` for what stops the whole run; an object that can't be
+/// Copy what the destination lacks, or with `verify` only check it. `Err` for what stops the whole run; an object that can't be
 /// copied is in the report and the run goes on.
 pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::Result<Report> {
     let root = prepare(o)?;
+    let previous = o.status.map(read_previous).unwrap_or_default();
     let listed = source
         .list_info(PREFIX)
         .await
@@ -364,8 +387,14 @@ pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::
         };
         report.source_objects += 1;
         report.no_md5_objects += u64::from(info.content_md5.is_none());
-        let confirmed = match compare(&mut dirs, &parts, name, info, o.verify).await {
+        let suspect = previous.mismatched_paths.contains(&info.path);
+        let confirmed = match compare(&mut dirs, &parts, name, info, o.verify, suspect).await {
             Ok(Held::Matches) => true,
+            Ok(Held::Absent) if o.verify => {
+                tracing::warn!(path = %info.path, "not in the copy");
+                report.missing_objects += 1;
+                false
+            }
             Ok(Held::Absent) => match fetch(source, &mut dirs, &parts, name, info).await {
                 Ok(bytes) => {
                     report.copied_this_run += 1;
@@ -381,11 +410,18 @@ pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::
             Ok(Held::Differs) => {
                 tracing::warn!(path = %info.path, "the copy differs from the lake's; left as it is");
                 report.mismatched_objects += 1;
+                report.mismatched_paths.push(info.path.clone());
+                false
+            }
+            Ok(Held::Unverified) => {
+                tracing::warn!(path = %info.path, "no Content-MD5 to check the copy against");
+                report.unverified_objects += 1;
                 false
             }
             Err(e) => {
                 tracing::warn!(path = %info.path, error = %format!("{e:#}"), "could not be checked");
                 report.mismatched_objects += 1;
+                report.mismatched_paths.push(info.path.clone());
                 false
             }
         };
@@ -399,11 +435,13 @@ pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::
         }
     }
     report.ok = report.overdue_objects == 0;
-    let caught_up = report.missing_objects == 0 && report.mismatched_objects == 0;
+    let caught_up = report.missing_objects == 0
+        && report.mismatched_objects == 0
+        && report.unverified_objects == 0;
     report.last_success = if caught_up {
         Some(o.now)
     } else {
-        o.status.and_then(previous_success)
+        previous.last_success
     };
     if let Some(path) = o.status {
         write_status_file(path, &report)
@@ -415,10 +453,11 @@ pub async fn copy_objects(source: &dyn ObjectStore, o: &Options<'_>) -> anyhow::
     Ok(report)
 }
 
-fn previous_success(path: &Path) -> Option<DateTime<Utc>> {
-    serde_json::from_slice::<Previous>(&std::fs::read(path).ok()?)
-        .ok()?
-        .last_success
+fn read_previous(path: &Path) -> Previous {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
