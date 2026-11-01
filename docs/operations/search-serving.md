@@ -142,17 +142,17 @@ Budget division runs in `infra/main.bicep` using deployment parameters only; the
 
 ### What a failover needs
 
-| Azure service                               | Used for                                                                                                      | Without it                                                                       |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Index account, `qw-index`                   | The searcher's metastore and splits. `/readyz` asks the searcher's health, so the Worker's readiness needs it | `/readyz` fails; `/v1/aggregate`, `/v1/hits` and `/v1/days` fail; no failover     |
-| Lake, `reference`                           | Loaded at start and refreshed every 10 minutes: `current.json`, catalog, places, baselines                    | The API can't start; every route fails                                            |
-| Lake, `cache`                               | Stored responses and search screenshots, read with a 2 s limit                                                | Searches are computed each time; nothing else breaks                             |
-| Lake, `searches`                            | The anonymous search log, and `/v1/search-report`                                                             | Searches still answer; the log loses them                                          |
-| Lake, `ocr-requests`                        | Page ids from hit results                                                                                     | Hits still answer; the requests are lost                                           |
-| Cosmos DB                                   | `/v1/status` only                                                                                             | The status page has no pipeline state; search is unaffected                        |
-| Application Insights                        | `POST /v1/beacon` (page views), telemetry, the API alerts                                                     | Beacons are accepted and dropped                                                   |
-| Registry                                    | The API and searcher images, pulled on each start                                                             | A start can't pull an image a node doesn't hold                                    |
-| OCR exchange account and scan archive       | Nothing. The API has no setting for either                                                                    | Nothing                                                                            |
+| Azure service                         | Used for                                                                                                      | Without it                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Index account, `qw-index`             | The searcher's metastore and splits. `/readyz` asks the searcher's health, so the Worker's readiness needs it | `/readyz` fails; `/v1/aggregate`, `/v1/hits` and `/v1/days` fail; no failover |
+| Lake, `reference`                     | Loaded at start and refreshed every 10 minutes: `current.json`, catalog, places, baselines                    | The API can't start; every route fails                                        |
+| Lake, `cache`                         | Stored responses and search screenshots, read with a 2 s limit                                                | Searches are computed each time; nothing else breaks                          |
+| Lake, `searches`                      | The anonymous search log, and `/v1/search-report`                                                             | Searches still answer; the log loses them                                     |
+| Lake, `ocr-requests`                  | Page ids from hit results                                                                                     | Hits still answer; the requests are lost                                      |
+| Cosmos DB                             | `/v1/status` only                                                                                             | The status page has no pipeline state; search is unaffected                   |
+| Application Insights                  | `POST /v1/beacon` (page views), telemetry, the API alerts                                                     | Beacons are accepted and dropped                                              |
+| Registry                              | The API and searcher images, pulled on each start                                                             | A start can't pull an image a node doesn't hold                               |
+| OCR exchange account and scan archive | Nothing. The API has no setting for either                                                                    | Nothing                                                                       |
 
 Page images come from the Library of Congress. The site itself is in the API image.
 
