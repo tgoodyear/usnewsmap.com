@@ -401,7 +401,7 @@ Work that ran as Azure jobs, and where it runs now:
 
 ## LAN access (#1357)
 
-**Status: rolled back on 30 October 2026, so home hosts go through Cloudflare.** Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section describes the setup as designed.
+**Status: the network-wide records were rolled back on 30 October 2026, and [project-run clients](#project-run-clients) now use a hosts entry instead.** Everything else on the LAN goes through Cloudflare. Firefox failed with `SSL_ERROR_INTERNAL_ERROR_ALERT`, because the gateway still forwarded the public HTTPS record advertising Cloudflare's Encrypted Client Hello, and Caddy here can't answer its outer name, `cloudflare-ech.com`. Both local records were removed. Caddy, the certificate, its timer and the guard remain. Don't restore the records until browsers are handled and tested as well as BOINC clients. The rest of this section, up to the 30 October live acceptance, describes that setup as designed.
 
 Home hosts don't go out to Cloudflare and back in through the tunnel. The UniFi gateway's local
 DNS answers `boinc.usnewsmap.com` with CT230's LAN IPv4 and IPv6 addresses. Its IPv4 address has a DHCP reservation, the same
@@ -445,9 +445,48 @@ again with an unchanged certificate. The BOINC server's PID and startup timestam
 change. A CT230 reboot was deliberately not performed during active work; boot ordering was
 checked with systemd instead.
 
+### Project-run clients
+
+Clients the project runs on the LAN reach CT230 through one entry in their own
+`/etc/hosts`, so the network's DNS and every browser stay as they are. This covers hosts 2, 9, 10
+and 12. The master URL, scheduler, download and upload URLs don't change. Certificate validation
+stays on. The client checks Caddy's public Let's Encrypt certificate against the roots it already
+trusts, with nothing disabled and no new root added. The client resolves the name for each new
+connection, so running tasks and the client itself need no restart. A connection already open to
+Cloudflare stays in use until it's been idle for about two minutes, so the Caddy log can lag the
+change by a few minutes.
+
+In the client's container, as root, using CT230's current LAN IPv4 address:
+
+```sh
+cp -p /etc/hosts "/etc/hosts.pre-boinc-lan-$(date -u +%Y%m%dT%H%M%SZ)"
+printf '%s boinc.usnewsmap.com\n' "$CT230_LAN_IPV4" >> /etc/hosts
+getent ahosts boinc.usnewsmap.com    # only that address
+curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://boinc.usnewsmap.com/server_status.php?xml=1
+```
+
+Append in place, keeping the file's inode, because a client in its own mount namespace may hold
+the same file. Keep the entry outside the `# --- BEGIN PVE ---` block. Proxmox rewrites only that block,
+so the entry survives a restart. Check the result in `/var/log/caddy/boinc-lan.log`, where
+the client's LAN address appears, and in the validator log.
+
+**There's no automatic fallback to Cloudflare.** If Caddy or its certificate fails, these clients
+retry with BOINC's usual backoff and keep their finished work. The tunnel runs on the same container,
+so losing the container stops both paths anyway. If CT230's address changes, update each entry.
+
+**Rollback:** delete the entry, or restore the backup, on that client. Its next connection goes
+through Cloudflare. No restart is needed.
+
+Live acceptance (1 November 2026, all four hosts, no client restarted): real scheduler RPCs on
+each host and real uploads on hosts 2, 9 and 10 returned 200 in the Caddy log from each client's LAN address, and
+the validators accepted the results those uploads carried. Host 12 runs no tasks, so it proved the
+scheduler path only. In Cloudflare's analytics the LAN's public address went from 367 POSTs and
+62 MB of uploads in the hour before, to 1 POST and 0.1 MB in a 30-minute window after. Caddy logged
+about the same upload rate over that period.
+
 ## Qwen model files on R2
 
-The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change: the Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a host that reaches the server directly would download from the server. While LAN access stays rolled back, home hosts follow the redirect like any other client.
+The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change. The Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a client that reaches the server directly downloads from the server. [Project-run clients](#project-run-clients) do that, so all four files must stay on the server while they use the LAN path. Other clients follow the redirect.
 
 The rule lists exact paths on purpose, so a file that isn't in the bucket keeps coming from the server. The server's copies stay in place as the source of truth.
 
