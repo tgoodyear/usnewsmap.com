@@ -119,6 +119,13 @@ impl Policy {
         if self.concurrency == 0 || self.attempts == 0 {
             bail!("policy {n}: concurrency and attempts start at 1");
         }
+        if self
+            .serving_probe
+            .as_ref()
+            .is_some_and(|p| p.floor_bytes_per_sec == 0)
+        {
+            bail!("policy {n}: a probe floor of zero would lift the byte cap");
+        }
         for h in &self.hosts {
             let bare = h.strip_prefix("*.").unwrap_or(h);
             let ok = !bare.is_empty()

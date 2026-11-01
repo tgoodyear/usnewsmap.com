@@ -6,17 +6,18 @@
 //! source go on with it, and the rest wait for a later run. Running out of
 //! disk, or too many verification failures, stops the whole run.
 
-use std::collections::HashSet;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anyhow::Context;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use super::engine::{Engine, Fail, Got};
+use super::engine::{Engine, Fail, Gate, Got};
 use super::job::{Attempt, Job, JobStore, Status};
 
 /// Entries kept in [`Status::failed`].
@@ -50,14 +51,14 @@ fn now() -> String {
 
 struct Track {
     status: Status,
+    /// Jobs workers hold now, counted against the limit.
+    in_hand: usize,
     /// Jobs downloading now, and since when any has been.
     busy: usize,
     busy_since: Option<Instant>,
     downloading: Duration,
     /// The first reason the run ended early, and its error if it is one.
     end: Option<(String, Option<anyhow::Error>)>,
-    /// Policies that get nothing more this run.
-    closed: HashSet<String>,
 }
 
 struct Shared {
@@ -69,6 +70,8 @@ struct Shared {
     track: Mutex<Track>,
     /// Bytes promised to transfers in flight, on top of the free-space floor.
     reserved: AtomicU64,
+    /// One status write at a time, newest last.
+    publishing: tokio::sync::Mutex<()>,
     /// Set by the caller's stop signal or by a reason to halt.
     halt: watch::Sender<bool>,
     outside: watch::Receiver<bool>,
@@ -105,10 +108,11 @@ impl Shared {
         }
     }
 
-    /// This policy gets nothing more this run.
-    fn close(&self, policy: &str, state: &str, err: anyhow::Error) {
+    /// This policy gets nothing more this run, including from jobs already
+    /// waiting for it, which go on to their next source.
+    fn close(&self, gate: &Gate, state: &str, err: anyhow::Error) {
         self.end(state, Some(err));
-        self.track().closed.insert(policy.to_owned());
+        gate.close();
     }
 
     fn began(&self) {
@@ -128,6 +132,7 @@ impl Shared {
     }
 
     async fn publish(&self) {
+        let _one = self.publishing.lock().await;
         let s = {
             let mut t = self.track();
             let (bytes, secs) = (t.status.bytes_this_run, t.downloading.as_secs_f64());
@@ -145,12 +150,22 @@ impl Shared {
         }
     }
 
-    /// Whether this worker should take no more jobs.
-    fn limit_reached(&self) -> bool {
-        let t = self.track();
-        self.opts
+    /// Count a job against the limit, or say the limit is reached. One check
+    /// and one count, so workers can't all pass it together.
+    fn take_on(&self) -> bool {
+        let mut t = self.track();
+        let room = self
+            .opts
             .limit
-            .is_some_and(|l| t.status.fetched_this_run + t.busy >= l)
+            .is_none_or(|l| t.status.fetched_this_run + t.in_hand < l);
+        if room {
+            t.in_hand += 1;
+        }
+        room
+    }
+
+    fn put_down(&self) {
+        self.track().in_hand -= 1;
     }
 
     /// Try `job`'s sources in order. False ends this worker.
@@ -169,13 +184,13 @@ impl Shared {
                 Err(_) => continue,
             };
             let policy = gate.policy.name.clone();
-            if self.track().closed.contains(&policy) {
+            if gate.is_closed() {
                 continue;
             }
             // A push-back to any process ends this host's part of the run before
             // its next job, as one to this run's own requests does.
             if let Err(e) = gate.not_slowed().await {
-                self.close(&policy, "slowed", e);
+                self.close(&gate, "slowed", e);
                 continue;
             }
             // A partial that won't be resumed goes before the space is counted.
@@ -237,7 +252,8 @@ impl Shared {
                     self.store.release(job).await?;
                     return Ok(false);
                 }
-                Err(Fail::Slowed(e)) => self.close(&policy, "slowed", e),
+                Err(Fail::Closed) => {}
+                Err(Fail::Slowed(e)) => self.close(&gate, "slowed", e),
                 Err(Fail::Blocked(m)) => {
                     self.failed(m.clone());
                     let lasting = gate.policy.slow_requests_per_minute.is_some();
@@ -249,7 +265,7 @@ impl Shared {
                     } else {
                         anyhow::anyhow!("{label} ({m}): nothing more to it this run")
                     };
-                    self.close(&policy, "blocked", e);
+                    self.close(&gate, "blocked", e);
                     tried = true;
                 }
                 Err(Fail::Transient(m) | Fail::Refused(m)) => {
@@ -299,7 +315,7 @@ impl Shared {
             } else if Instant::now() >= self.deadline {
                 tracing::info!("the run's time is up; the next run goes on");
                 Some("paused")
-            } else if self.limit_reached() {
+            } else if !self.take_on() {
                 Some("limit")
             } else {
                 None
@@ -309,9 +325,10 @@ impl Shared {
                 self.store.release(&job).await?;
                 return Ok(());
             }
-            let go_on = self.one(&job, &stop).await?;
+            let go_on = self.one(&job, &stop).await;
+            self.put_down();
             self.publish().await;
-            if !go_on {
+            if !go_on? {
                 return Ok(());
             }
         }
@@ -328,6 +345,18 @@ pub async fn run(
     mut status: Status,
     stop: watch::Receiver<bool>,
 ) -> anyhow::Result<Status> {
+    // A hard link gives a file its name, so find out now rather than after a download.
+    let dev = |p: &Path| {
+        std::fs::metadata(p)
+            .map(|m| m.dev())
+            .with_context(|| p.display().to_string())
+    };
+    anyhow::ensure!(
+        dev(&opts.part_dir)? == dev(&opts.out)?,
+        "{} and {} have to be on one filesystem",
+        opts.part_dir.display(),
+        opts.out.display()
+    );
     let failures = store.checksum_failures().await?;
     if let Some(l) = opts.max_checksum_failures {
         anyhow::ensure!(
@@ -348,13 +377,14 @@ pub async fn run(
         opts,
         track: Mutex::new(Track {
             status,
+            in_hand: 0,
             busy: 0,
             busy_since: None,
             downloading: Duration::ZERO,
             end: None,
-            closed: HashSet::new(),
         }),
         reserved: AtomicU64::new(0),
+        publishing: tokio::sync::Mutex::new(()),
         halt,
         outside: stop.clone(),
     });

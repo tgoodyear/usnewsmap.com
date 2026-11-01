@@ -225,7 +225,7 @@ async fn fetch_list(
             Fail::Blocked(m) | Fail::Transient(m) | Fail::Refused(m) | Fail::Checksum(m) => {
                 anyhow::anyhow!("the datasets list: {m}")
             }
-            Fail::Stopped | Fail::RangeRefused => anyhow::anyhow!("stopped"),
+            Fail::Stopped | Fail::RangeRefused | Fail::Closed => anyhow::anyhow!("stopped"),
             Fail::Slowed(e) => e,
         })?;
     let mut body = Vec::new();

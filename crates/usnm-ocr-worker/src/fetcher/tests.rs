@@ -23,11 +23,16 @@ fn sha(b: &[u8]) -> String {
 }
 
 fn test_policy(name: &str, host: &str, extra: &str) -> Policy {
+    let rate = if extra.contains("requests_per_minute = 3") {
+        ""
+    } else {
+        "requests_per_minute = 60000"
+    };
     let text = format!(
         r#"
 hosts = ["{host}"]
 label = "{name}"
-requests_per_minute = 60000
+{rate}
 {extra}
 [push_back]
 default_hold_secs = 1
@@ -216,8 +221,8 @@ fn only_https_on_a_policys_hosts() {
     assert!(name("https://loc.gov.example.com/x").is_err());
     assert!(name("https://notloc.gov/x").is_err());
     assert!(name("https://example.com/loc.gov").is_err());
-    let e = name("https://example.com/x?sig=secret").unwrap_err();
-    assert!(e.contains("no policy") && !e.contains("secret"), "{e}");
+    let e = name("https://example.com/x?ticket=hidden").unwrap_err();
+    assert!(e.contains("no policy") && !e.contains("hidden"), "{e}");
 }
 
 #[test]
@@ -490,7 +495,7 @@ async fn a_redirect_cant_cross_into_another_policy() {
     let m = manifest(&[("a", sha(b"body"))]);
     let s = go(r.mirrored(m, mirror_policy(""), true)).await.unwrap();
     assert!(s.failed[0].contains("out of"), "{:?}", s.failed);
-    assert_eq!(r.s.hits("/loc/"), 0);
+    assert_eq!(r.s.hits_under("/loc/"), 0);
     assert!(!r.has("a"));
 }
 
@@ -756,7 +761,7 @@ async fn a_mirror_only_run_never_touches_loc_or_its_budget() {
     let s = go(r.mirrored(m, mirror_policy(""), true)).await.unwrap();
     assert_eq!(s.state, "incomplete");
     assert_eq!(s.fetched_this_run, 1);
-    assert_eq!(r.s.hits("/loc/"), 0);
+    assert_eq!(r.s.hits_under("/loc/"), 0);
     assert_eq!(r.pacer_state(), st);
 }
 
@@ -786,7 +791,7 @@ async fn a_slowed_loc_stops_only_what_needs_loc() {
         .unwrap_err();
     assert!(e.to_string().contains("slowed"), "{e}");
     assert!(r.has("b") && !r.has("a"));
-    assert_eq!(r.s.hits("/loc/"), 0);
+    assert_eq!(r.s.hits_under("/loc/"), 0);
     assert_eq!(status_of(&r).state, "slowed");
 }
 
@@ -1058,6 +1063,35 @@ async fn the_byte_cap_is_shared_and_keeps_to_its_rate() {
 }
 
 #[test]
+fn a_configured_cap_under_the_floor_stands() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("rate-bytes-per-sec");
+    std::fs::write(&f, "5").unwrap();
+    assert_eq!(
+        ByteCap::new(Some(500_000), Some(f)).current(),
+        Some(500_000)
+    );
+}
+
+#[tokio::test]
+async fn a_byte_cap_of_zero_is_refused_not_taken_as_none() {
+    let mut r = Rig::new().await;
+    r.archive("a", b"body");
+    r.write_list();
+    let m = manifest(&[("a", sha(b"body"))]);
+    let mut o = r.mirrored(m, mirror_policy(""), true);
+    o.rate_bytes_per_sec = Some(0);
+    let e = go(o).await.unwrap_err().to_string();
+    assert!(e.contains("byte cap of zero"), "{e}");
+    assert_eq!(r.s.hits_under("/hf/"), 0);
+    let text = "hosts = [\"a.example\"]\nlabel = \"x\"\nrequests_per_minute = 1\n\
+                [push_back]\ndefault_hold_secs = 1\nhtml = true\nmax_hold_secs = 1\n\
+                statuses = []\n[serving_probe]\nevery_secs = 1\nfloor_bytes_per_sec = 0\n\
+                slow_secs = 1.0\nurl = \"https://a.example/\"\n";
+    assert!(Policy::parse("x", text).is_err());
+}
+
+#[test]
 fn a_rate_file_only_lowers_the_cap() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("rate-bytes-per-sec");
@@ -1099,6 +1133,124 @@ fn a_manifest_is_found_wherever_its_rows_are() {
     let flat = serde_json::json!([{"archive_name": "x", "sha256": "1"}]);
     assert_eq!(bulk::parse_manifest(&flat).unwrap().len(), 1);
     assert!(bulk::parse_manifest(&serde_json::json!({"rows": []})).is_none());
+}
+
+#[tokio::test]
+async fn the_limit_holds_with_workers_racing_for_it() {
+    let mut r = Rig::new().await;
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    for n in names {
+        r.archive(n, b"body");
+        r.s.put(&format!("/hf/{n}.tar.bz2"), b"body".to_vec());
+    }
+    r.write_list();
+    r.s.delay(Duration::from_millis(50));
+    let m = manifest(&names.map(|n| (n, sha(b"body"))));
+    let mut o = r.mirrored(m, mirror_policy("concurrency = 8\n"), true);
+    o.workers = 8;
+    o.limit = Some(1);
+    let s = go(o).await.unwrap();
+    assert_eq!(s.fetched_this_run, 1);
+    assert_eq!(r.s.hits_under("/hf/"), 1);
+}
+
+/// Workers finish together, and the status file has to stay whole throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_writes_from_many_workers_stay_whole() {
+    let mut r = Rig::new().await;
+    let names: Vec<String> = (0..60).map(|i| format!("n{i}")).collect();
+    for n in &names {
+        r.archive(n, b"body");
+        r.s.put(&format!("/hf/{n}.tar.bz2"), b"body".to_vec());
+    }
+    r.write_list();
+    let rows: Vec<(&str, String)> = names.iter().map(|n| (n.as_str(), sha(b"body"))).collect();
+    let mut o = r.mirrored(manifest(&rows), mirror_policy("concurrency = 8\n"), true);
+    o.workers = 8;
+    let status = r.out().join("bulk-status.json");
+    let run = tokio::spawn(go(o));
+    while !run.is_finished() {
+        if let Ok(b) = std::fs::read(&status) {
+            assert!(serde_json::from_slice::<Status>(&b).is_ok(), "torn status");
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(run.await.unwrap().unwrap().fetched_this_run, 60);
+    assert!(!r.out().join("bulk-status.json.tmp").exists());
+}
+
+/// A partial's name comes from a hard link, so the run says so before it downloads.
+#[tokio::test]
+async fn parts_off_the_destinations_filesystem_are_refused_up_front() {
+    if !Path::new("/dev/shm").is_dir() {
+        return;
+    }
+    let shm = tempfile::tempdir_in("/dev/shm").unwrap();
+    let r = Rig::new().await;
+    std::fs::create_dir_all(r.out()).unwrap();
+    let (_tx, rx) = no_stop();
+    let engine = Engine::new(
+        Policies::new(vec![loc_policy()]).unwrap(),
+        Box::new(FileBudgets::new(None)),
+        EngineOptions {
+            who: "test".into(),
+            rate_file: None,
+        },
+    )
+    .unwrap();
+    let e = run::run(
+        Arc::new(engine),
+        Arc::new(FileJobs::new(Vec::new(), r.out().join("s.json"), None)),
+        run::RunOptions {
+            part_dir: shm.path().to_owned(),
+            out: r.out(),
+            workers: 1,
+            run_for: Duration::from_secs(60),
+            min_free_bytes: 0,
+            limit: None,
+            max_checksum_failures: None,
+        },
+        Status::default(),
+        rx,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("one filesystem"), "{e}");
+}
+
+/// A 429 on the mirror holds its budget for an hour. Jobs already queued for
+/// that host mustn't wait it out and then ask anyway: they go to LoC now.
+async fn closed_while_waiting(extra: &str) {
+    let mut r = Rig::new().await;
+    r.archive("a", b"body a");
+    r.archive("b", b"body b");
+    r.s.put("/hf/a.tar.bz2", b"body a".to_vec());
+    r.s.put("/hf/b.tar.bz2", b"body b".to_vec());
+    // Either worker can get there first.
+    r.s.script("/hf/a.tar.bz2", Scripted::RetryAfter(429, 3600));
+    r.s.script("/hf/b.tar.bz2", Scripted::RetryAfter(429, 3600));
+    r.write_list();
+    let m = manifest(&[("a", sha(b"body a")), ("b", sha(b"body b"))]);
+    let mut o = r.mirrored(m, mirror_policy(extra), false);
+    o.workers = 2;
+    let e = tokio::time::timeout(Duration::from_secs(10), go(o))
+        .await
+        .expect("a closed host's hold isn't waited out")
+        .unwrap_err();
+    assert!(e.to_string().contains("nothing more"), "{e}");
+    assert_eq!(r.s.hits_under("/hf/"), 1, "one 429 was enough");
+    assert!(r.has("a") && r.has("b"), "both came from LoC");
+}
+
+#[tokio::test]
+async fn a_closed_host_gets_nothing_from_requests_waiting_for_their_turn() {
+    closed_while_waiting("concurrency = 2\nrequests_per_minute = 300\n".trim_end()).await;
+}
+
+#[tokio::test]
+async fn a_closed_host_gets_nothing_from_jobs_waiting_for_a_slot() {
+    closed_while_waiting("concurrency = 1\n").await;
 }
 
 #[tokio::test]

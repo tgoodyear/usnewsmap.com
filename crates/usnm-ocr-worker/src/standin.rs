@@ -236,6 +236,12 @@ impl StandIn {
         self.times(suffix).len()
     }
 
+    /// Requests whose path starts with `prefix`.
+    pub fn hits_under(&self, prefix: &str) -> usize {
+        let i = self.inner.lock().unwrap();
+        i.hits.iter().filter(|(_, p)| p.starts_with(prefix)).count()
+    }
+
     /// When each request whose path ends with `suffix` came.
     pub fn times(&self, suffix: &str) -> Vec<std::time::Instant> {
         self.inner

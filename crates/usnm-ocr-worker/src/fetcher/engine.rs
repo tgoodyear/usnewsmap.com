@@ -25,7 +25,7 @@ use crate::loc::{Pacer, USER_AGENT};
 const MAX_HOPS: usize = 5;
 /// Measured against [`Policy::min_bytes_per_sec`].
 const STALL_WINDOW: Duration = Duration::from_secs(180);
-/// The byte cap never goes under this, however it was lowered.
+/// A lowered byte cap stops here, unless it was configured lower still.
 const MIN_BYTE_CAP: u64 = 1_000_000;
 /// A failed serving probe counts as this many seconds.
 const PROBE_FAILED_SECS: f64 = 99.0;
@@ -50,6 +50,8 @@ pub enum Fail {
     Slowed(anyhow::Error),
     /// The server won't give the rest of this `.part`.
     RangeRefused,
+    /// This run has stopped asking the host; the request didn't go out.
+    Closed,
 }
 
 /// A file in place.
@@ -109,7 +111,8 @@ impl ByteCap {
             .and_then(|f| std::fs::read_to_string(f).ok())
             .and_then(|t| t.trim().parse::<u64>().ok());
         let c = asked.map_or(cap, |a| a.min(cap));
-        self.now.store(c.max(MIN_BYTE_CAP), Ordering::Relaxed);
+        self.now
+            .store(c.max(MIN_BYTE_CAP.min(cap)), Ordering::Relaxed);
     }
 
     /// Halve the cap, down to `floor`, for the rest of the run.
@@ -202,6 +205,9 @@ pub(super) struct Gate {
     slots: Semaphore,
     pub(super) cap: Arc<ByteCap>,
     in_a_row: AtomicU32,
+    /// True once this run asks the host nothing more, which also wakes every
+    /// request waiting for its turn: a hold can last an hour.
+    closed: watch::Sender<bool>,
 }
 
 /// `ms` since the epoch as an `Instant`, if it isn't too far back to say.
@@ -212,6 +218,15 @@ pub(super) fn instant_of(ms: u64) -> Option<Instant> {
 }
 
 impl Gate {
+    /// This run asks the host nothing more. Transfers already under way finish.
+    pub(super) fn close(&self) {
+        self.closed.send_replace(true);
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        *self.closed.borrow()
+    }
+
     /// An error once this budget has been slowed (a push-back to any process):
     /// nothing goes to the host until an operator resets it.
     pub(super) async fn not_slowed(&self) -> anyhow::Result<()> {
@@ -235,9 +250,11 @@ impl Gate {
         at: &str,
     ) -> Result<(), Fail> {
         let mut s = stop.clone();
+        let mut closed = self.closed.subscribe();
         tokio::select! {
             () = self.pacer.wait() => {}
             _ = s.wait_for(|s| *s) => return Err(Fail::Stopped),
+            _ = closed.wait_for(|c| *c) => return Err(Fail::Closed),
             () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
         }
         // Belt and braces over the pacer: never two requests closer than the gap.
@@ -250,12 +267,16 @@ impl Gate {
                 tokio::select! {
                     () = tokio::time::sleep(gap - since) => {}
                     _ = s.wait_for(|s| *s) => return Err(Fail::Stopped),
+                    _ = closed.wait_for(|c| *c) => return Err(Fail::Closed),
                     () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
                 }
             }
         }
         if *stop.borrow() || Instant::now() >= deadline {
             return Err(Fail::Stopped);
+        }
+        if self.is_closed() {
+            return Err(Fail::Closed);
         }
         // The waits above can outlast a push-back to another process: checked again
         // just before the request (each redirect hop too), not only between jobs.
@@ -369,6 +390,10 @@ impl Engine {
         budgets: Box<dyn Budgets>,
         opts: EngineOptions,
     ) -> anyhow::Result<Self> {
+        // Checked here, after a caller's overrides: to a byte cap, zero means none.
+        if let Some(p) = policies.iter().find(|p| p.max_bytes_per_sec == Some(0)) {
+            bail!("policy {}: a byte cap of zero", p.name);
+        }
         Ok(Self {
             http: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
@@ -421,6 +446,7 @@ impl Engine {
             slots: Semaphore::new(policy.concurrency as usize),
             cap,
             in_a_row: AtomicU32::new(0),
+            closed: watch::channel(false).0,
         });
         gates.insert(policy.name.clone(), Arc::clone(&g));
         Ok(g)
@@ -537,9 +563,11 @@ impl Engine {
     ) -> Result<Got, Fail> {
         let gate = self.gate_for(url).await?;
         let mut s = stop.clone();
+        let mut closed = gate.closed.subscribe();
         let _slot = tokio::select! {
             p = gate.slots.acquire() => p.map_err(|_| Fail::Stopped)?,
             _ = s.wait_for(|s| *s) => return Err(Fail::Stopped),
+            _ = closed.wait_for(|c| *c) => return Err(Fail::Closed),
             () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
         };
         let mut tries: u32 = 0;
@@ -578,6 +606,7 @@ impl Engine {
             tokio::select! {
                 () = tokio::time::sleep(Duration::from_secs(wait)) => {}
                 _ = s.wait_for(|s| *s) => return Err(Fail::Stopped),
+                _ = closed.wait_for(|c| *c) => return Err(Fail::Closed),
             }
         }
     }
