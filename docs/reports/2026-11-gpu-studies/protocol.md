@@ -128,6 +128,16 @@ Scored for 2B: baseline with guard and adapter with guard, against Study 2's bas
 
 Adapters stay `untrusted-requires-held-out-evaluation`. Study 5 runs under the same total limit of $40.
 
+## Amendment, 1 November 2026: Study 6, a fair Surya retest
+
+Added on the maintainer's approval, before any Study 6 run. Study 3's Surya rows measure our configuration: `full_page=True` on line crops, where layout often finds no block; tiled text joined tile by tile; layout on CPU; and the GGUF through llama.cpp. `whole` and `capped` weren't scored. Study 6 tests the engine as it's meant to be used. Study 3's crops and pages have been seen, so these are second uses; no training is involved. No Surya training is done.
+
+- **(a) Line recognition.** The same 612 crops, `full_page` off, each crop one line or block as Surya's recognition expects. Scored as Study 3, by source, with the same limits and checks.
+- **(b) Page modes.** The same 20 reading-order pages in `whole` and `capped` modes, using Surya's own block order, with layout on GPU. Scored by the reading-order measure of Study 3, and by pages per hour.
+- **(c) Native against GGUF.** If the native weights can be used under their terms, 50 crops by `sha256("gpu-studies-202611:surya-native:"+id)` order from the 612, read with both, and compared by paired CER.
+
+The card is the cheapest that fits, or the local 2060 SUPER at low priority. Any change to Surya's settings beyond these is recorded.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.
