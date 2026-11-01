@@ -97,6 +97,37 @@ These are mechanical signals. A person who reads Japanese has not checked them.
 
 The same 40 pages, the first 40 of the pilot sample by hash rank, on a 3090 and an RTX 4090. Workload: 12 Qwen crops per page and one tiled Surya page read, the two GPU reads in production. Measured: pages per hour during the run, and dollars per 1,000 pages over all instance time, including startup, push, model load and failed hosts.
 
+## Amendment, 1 November 2026: Study 5, loop guard, 8B training and the deployed path
+
+Added on the maintainer's approval, after Studies 1 to 4 and before any Study 5 run. The readings of Studies 1 to 4 have been seen, and this design is informed by them.
+
+**Held-out data.** Study 2 said its test set would be scored once. Using Reichsanzeiger `all-700` and Overproof `all-300` again is a departure. They stay as the like-for-like comparison and every result on them is labelled **second use**. Clean confirmation comes from two human-referenced sets not used by any study here, frozen before any reading:
+
+- **BLN600**, English: 200 excerpts by `sha256("gpu-studies-202611:bln600:"+crop_id)` order. CC BY-NC-ND 4.0, research use, original image bytes.
+- **GT4HistOCR `dta19`**, 19th-century German Fraktur books: 300 lines from the first 30 documents by `sha256("gpu-studies-202611:dta19:"+document)` order, at most 10 lines per document by the same hash. CC BY 4.0. These are books and not newspapers.
+
+If a set can't be fetched or converted, the report says so and the comparison stands as second use only.
+
+**Step 1, loop guard.** Candidates, all on Qwen3-VL-2B in the Study 2 settings, one crop at a time:
+
+| Name | Method |
+| --- | --- |
+| `none` | No guard, Study 2's reading |
+| `rp105` | Repetition penalty 1.05 |
+| `rp110` | Repetition penalty 1.10 |
+| `stop` | Stop on repeat: stop when `tail_repetition` of the contract fires, and keep the text before the repeated run plus one period |
+| `stop-retry` | `stop`, then one retry at penalty 1.10, capped at twice the tokens used before the loop |
+
+Selection uses the 378 validation crops of Study 2 only, once, with no use of the test sets or the new sets. The guard is the candidate with the lowest pooled CER among those whose under-length and word-overlap counts each stay within 2 of `none`. If several are within 0.2 points, the first in this order wins: `stop`, `rp105`, `rp110`, `stop-retry`. The same guard applies to 8B without further selection.
+
+Scored for 2B: baseline with guard and adapter with guard, against Study 2's baseline and adapter without guard, on the second-use sets and the new sets. New sets also get both unguarded readers. Scored for 8B on the same guard: Study 1's measured set (second use) and the pilot pages' loop rate. Primary: the share of Study 2's -44.7 point Reichsanzeiger difference that baseline with guard gives alone, and the guarded paired difference between adapter and baseline. Under-length, word-overlap and invented-text counts are reported for every reader, since a guard can cut real text.
+
+**Step 2, 8B training.** Study 2's data, split, method and hyperparameters on Qwen3-VL-8B-Instruct, at a pinned revision: rank 8, learning rate 1e-4 with cosine decay, accumulation 4, seed 583, 2,000 steps, checkpoints at 250, 500, 1,000 and 2,000, 1,024 to 2,048 image tokens, BF16. Any change is recorded. Checkpoint chosen on validation once, by the Study 2 rule, read with the chosen guard. Test once on the second-use sets and the new sets, with the guard. Peak memory is measured first, and the card is the cheapest that fits.
+
+**Step 3, deployed path.** The selected adapter or adapters are merged into their base and converted to GGUF with the llama.cpp commit of the pinned server image, 2B at Q8_0 and 8B at Q4_K_M, the quantizations `usnm_qwen` runs, with the unchanged vision projectors. They are read in the `usnm_qwen` image with request version 2, on the same test crops, next to the unmodified GGUF. The result is the loss from export and quantization, as paired CER differences. Nothing is published, signed or sent to BOINC.
+
+Adapters stay `untrusted-requires-held-out-evaluation`. Study 5 runs under the same total limit of $40.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.
