@@ -98,6 +98,40 @@ elif "python3" in args and "-" in args:
                 self.assertEqual(probe.returncode, 0, probe.stderr)
                 self.assertEqual(probe.stdout, "locked argv survives")
 
+    def test_long_lock_steps_wait_for_the_step_window(self):
+        # Minute 40, then 41, then 03: two closed readings and one open.
+        minutes = self.root / "minutes"
+        minutes.write_text("40\n41\n03\n")
+        self.stub("date", f"""#!/bin/bash
+head -1 {minutes}
+sed -i.bak 1d {minutes}
+""")
+        self.stub("sleep", "#!/bin/bash\necho \"$@\" >> " + str(self.root / "slept") + "\n")
+        result = self.run_ship(["--step-window-minutes", "15"], native=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("waiting for the next step window"), 1)
+        self.assertEqual((self.root / "slept").read_text().split(), ["30", "30"])
+        self.assertIn("shipped 1 chunk(s)", result.stderr)
+
+    def test_native_submit_waits_for_the_step_window_too(self):
+        minutes = self.root / "minutes"
+        minutes.write_text("03\n40\n03\n")
+        self.stub("date", f"""#!/bin/bash
+head -1 {minutes}
+sed -i.bak 1d {minutes}
+""")
+        self.stub("sleep", "#!/bin/bash\nexit 0\n")
+        result = self.run_ship(["--step-window-minutes", "15"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("waiting for the next step window"), 1)
+
+    def test_step_window_is_off_by_default_and_checked(self):
+        self.stub("date", "#!/bin/bash\nexit 9\n")
+        self.assertEqual(self.run_ship([], native=False).returncode, 0)
+        result = self.run_ship(["--step-window-minutes", "60"], native=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--step-window-minutes", result.stderr)
+
     def test_full_watermark_defers_repeated_ticks_before_any_transfer_or_stage(self):
         self.env["SHIP_TEST_PREFLIGHT_EXIT"] = "75"
         for _ in range(2):
