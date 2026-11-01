@@ -74,6 +74,25 @@ CHURRO's training data includes Chronicling America, so its English result can't
 
 **Reading order (#925).** 20 multi-column pages, the first by the sample's hash rank with at least 3 ALTO columns. The check is Kendall's tau over words occurring once on both sides, against a geometric column order built from LoC's ALTO blocks. That order is a heuristic reference and not a truth.
 
+### Amendment, 1 November 2026: Japanese
+
+Added on the maintainer's approval, before any reader ran on these crops under this study.
+
+**Crops.** The 24 crops of the #128 comparison (12 typeset, 12 camp papers), plus 40 new crops: 20 typeset and 20 camp, one per page, from the same 124 public scans, taken in order of `sha256("gpu-studies-202611:ja:"+page_id)` from pages not already cut. The box rule is `crops.py`'s: a quarter of the width and a fifth of the height, at a position seeded by the same hash. Typeset means the Rocky Shimpo and Colorado Times; the rest are camp papers, mostly hand-lettered mimeograph.
+
+**Readers.** NDLOCR-Lite, Qwen3-VL 8B, CHURRO, Surya, Tesseract `jpn_vert`, and dots.ocr if it runs. GOT-OCR, Granite-Docling and American Stories don't claim Japanese and aren't run on these crops. NDLOCR-Lite and Tesseract are CPU engines and run on a local node.
+
+**Measures.** Character bigrams over Japanese characters only (kana and kanji, `usnm_core::ja::is_ja`), with old forms folded by `usnm_core::ja::fold_char`, as F1. Never whitespace word bags ([why](../../boinc-ndlocr-lite.md)). The 23 references are machine-made and barely checked (#135), so a score against them is **agreement with a machine reference, not accuracy**, in every table. Pairwise F1 between readers is agreement too. This study has no measured accuracy for Japanese unless a verifiable public human transcription of these crops turns up, and the report says which it is.
+
+**Invented text and vertical layout.** Counted per reader:
+
+- reading fails: under 35% of its non-space characters are Japanese, the page-language rule of the #128 sample;
+- loop: the reading hits the token budget, or its Japanese bigrams repeat so that distinct bigrams are under half of all bigrams;
+- invented text: over half of its Japanese bigrams occur in no other reader's text for that crop and in no reference, with at least 20 characters;
+- vertical-layout failure: reading fails on a crop where at least two other readers produced 20 or more Japanese characters.
+
+These are mechanical signals. A person who reads Japanese has not checked them.
+
 ## Study 4: pages per dollar (#296)
 
 The same 40 pages, the first 40 of the pilot sample by hash rank, on a 3090 and an RTX 4090. Workload: 12 Qwen crops per page and one tiled Surya page read, the two GPU reads in production. Measured: pages per hour during the run, and dollars per 1,000 pages over all instance time, including startup, push, model load and failed hosts.
