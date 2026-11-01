@@ -20,6 +20,10 @@ pub enum NdlocrCommands {
         scan_archive: Option<String>,
         #[arg(long)]
         batch_cache: Option<PathBuf>,
+        /// A copy of the scan fetcher's tree (`keep/<batch>/...` with sidecars): stage its
+        /// JPEGs alone, sending nothing to LoC. A page it lacks, or has only as a JP2, fails.
+        #[arg(long, conflicts_with = "scan_archive")]
+        scans: Option<PathBuf>,
     },
     Submit {
         #[arg(long)]
@@ -61,6 +65,7 @@ pub async fn run(command: NdlocrCommands) -> anyhow::Result<()> {
             timeout_secs,
             scan_archive,
             batch_cache,
+            scans,
         } => {
             println!(
                 "staged {}",
@@ -69,7 +74,8 @@ pub async fn run(command: NdlocrCommands) -> anyhow::Result<()> {
                     &pages,
                     x::engine(engine_image, timeout_secs),
                     scan_archive.as_deref(),
-                    batch_cache
+                    batch_cache,
+                    scans.as_deref()
                 )
                 .await?
             );

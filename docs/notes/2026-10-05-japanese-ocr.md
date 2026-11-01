@@ -18,7 +18,7 @@ The size of the gap (#135, `jaocr.py audit`): LoC's per-title "Pages (Full Text)
 
 **Indexing** (#139, #145). Every release reads the overlay: each part under `ocr-ja/pages/`, the newest row per page, only pages of catalogued titles in the version. It builds a separate index, `pages-ja-{stamp}-{n}`, from scratch each time. Japanese has no spaces, so each character is a token and a word is a phrase of its characters. Old forms fold to modern, small kana to large, and compatibility ideographs and halfwidth katakana to their standard forms (`usnm_core::ja`). `current.json` names the fold version so the API can check that its own folding matches. A Japanese query searches that index and nothing else, so a page with garbled LoC text in the main index and our OCR in the Japanese index is never counted twice; a version without the index answers a Japanese query `422`. Pages curation never had are added to the baselines at release. An incremental release with no new batches still publishes when the overlay's parts differ from the published version's, so new OCR goes live at the next run without waiting for new LoC batches (#145).
 
-**Visible on the status page** (#149, #157): "Japanese pages read: X of Y", the pace, how many are searchable, when the job last reported. It sits in its own "OCR experiments" section because the OCR isn't a pipeline step.
+**Visible on the status page** (#149, #157): "X of Y Japanese pages read" (from #1415, Y is the digitized pages and the placeholders with no scan are counted apart), the pace, how many are searchable, when the job last reported. It sits in its own "OCR experiments" section because the OCR isn't a pipeline step.
 
 ## What we measured
 

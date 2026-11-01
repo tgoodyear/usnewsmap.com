@@ -210,9 +210,10 @@ describe("DatasetsPage", () => {
       ocr_ja: {
         available: true,
         running: false,
-        targets: { pages: 12_811, issues: 1500 },
+        targets: { pages: 12_787, issues: 1500 },
         done: { pages: 12_768, issues: 1490 },
-        percent: 99.6,
+        undigitized: { pages: 24, issues: 16 },
+        percent: 99.8,
         engine: null,
         started_at: null,
         updated_at: new Date(Date.now() - 3_600_000).toISOString(),
@@ -241,7 +242,9 @@ describe("DatasetsPage", () => {
         "10,305 Japanese pages in an index of their own; the English and other Latin-script text we read on 5,647 pages in the main search, 647 pages of them where the Library of Congress text was partly readable",
       ),
     ).toBeTruthy();
-    expect(screen.getByText(/^The first pass read 12,768 of 12,811 Japanese pages/)).toBeTruthy();
+    expect(
+      screen.getByText(/^The first pass read 12,768 of 12,787 digitized Japanese pages.*No scan exists for 24 more\.$/),
+    ).toBeTruthy();
     expect(screen.getByText(/^5,647 pages of 1 newspaper are searched with the Latin-script text/)).toBeTruthy();
     const reasons = screen.getByRole("table", { name: "Pages we read, by reason" });
     expect(within(reasons).getByText("No text from the Library of Congress")).toBeTruthy();

@@ -17,6 +17,7 @@ on:
       - ocr/ja-ocr/testdata/**
       - ocr/ja-ocr/alto.py
       - ocr/ja-ocr/jaocr.py
+      - ocr/ja-ocr/undigitized.py
       - crates/**
       - Cargo.toml
       - Cargo.lock

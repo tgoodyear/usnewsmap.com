@@ -16,7 +16,7 @@ RUN grep -v '^flet' /opt/ndlocr-lite/requirements.txt > /tmp/ndlocr-requirements
     && pip install --no-cache-dir -r /tmp/ndlocr-requirements.txt -r /opt/jaocr/requirements.txt \
     && rm /tmp/ndlocr-requirements.txt
 
-COPY ocr/ja-ocr/jaocr.py ocr/ja-ocr/audit.py ocr/ja-ocr/alto.py ocr/ja-ocr/quality.py ocr/ja-ocr/damage_v2.py ocr/ja-ocr/damage_parity.py ocr/ja-ocr/mixed.py ocr/ja-ocr/solo.py ocr/ja-ocr/american_stories.py ocr/ja-ocr/american_stories_write.py /opt/jaocr/
+COPY ocr/ja-ocr/jaocr.py ocr/ja-ocr/undigitized.py ocr/ja-ocr/audit.py ocr/ja-ocr/alto.py ocr/ja-ocr/quality.py ocr/ja-ocr/damage_v2.py ocr/ja-ocr/damage_parity.py ocr/ja-ocr/mixed.py ocr/ja-ocr/solo.py ocr/ja-ocr/american_stories.py ocr/ja-ocr/american_stories_write.py /opt/jaocr/
 COPY ocr/ja-ocr/wordlists/*.txt /opt/jaocr/wordlists/
 RUN useradd --system --uid 10001 --home-dir /work --create-home usnm
 USER usnm

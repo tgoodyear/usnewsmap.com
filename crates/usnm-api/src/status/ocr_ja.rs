@@ -33,6 +33,13 @@ pub struct Progress {
     pub engine: Option<String>,
     pub targets: Count,
     pub done: Count,
+    /// Target pages with no scan: LoC lists them as undigitized. Not in
+    /// `targets`. The job's reports before #1415 don't have it.
+    #[serde(default)]
+    pub undigitized: Count,
+    /// `jaocr.py status` refreshed the counts: nothing is running.
+    #[serde(default)]
+    pub idle: bool,
     #[serde(default)]
     pub eta: Option<DateTime<Utc>>,
 }
@@ -42,8 +49,12 @@ pub struct Progress {
 pub struct OcrJa {
     /// The job wrote its progress recently and has pages left.
     pub running: bool,
+    /// The digitized pages to read.
     pub targets: Count,
     pub done: Count,
+    /// Pages with no scan to read, not in `targets`.
+    pub undigitized: Count,
+    /// Of `targets`.
     pub percent: f64,
     pub engine: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
@@ -57,8 +68,9 @@ pub fn section(p: Progress, now: DateTime<Utc>) -> OcrJa {
         pages: p.done.pages.min(p.targets.pages),
         issues: p.done.issues.min(p.targets.issues),
     };
-    let running =
-        done.pages < p.targets.pages && now - p.updated_at < Duration::minutes(RUNNING_WITHIN);
+    let running = !p.idle
+        && done.pages < p.targets.pages
+        && now - p.updated_at < Duration::minutes(RUNNING_WITHIN);
     let percent = if p.targets.pages == 0 {
         100.0
     } else {
@@ -68,6 +80,7 @@ pub fn section(p: Progress, now: DateTime<Utc>) -> OcrJa {
         running,
         targets: p.targets,
         done,
+        undigitized: p.undigitized,
         percent,
         engine: p.engine,
         started_at: p.started_at,
@@ -107,6 +120,8 @@ mod tests {
                 pages: done,
                 issues: done / 9,
             },
+            undigitized: Count::default(),
+            idle: false,
             eta: Some(now + Duration::hours(5)),
         }
     }
@@ -126,6 +141,31 @@ mod tests {
         let s = section(progress(9000, 1, now), now);
         assert!(!s.running);
         assert_eq!(s.percent, 100.0);
+    }
+
+    #[test]
+    fn pages_with_no_scan_dont_hold_the_percent_back() {
+        let now = Utc::now();
+        let mut p = progress(9000, 1, now);
+        p.undigitized = Count {
+            pages: 24,
+            issues: 16,
+        };
+        let s = section(p, now);
+        assert!(!s.running);
+        assert_eq!(s.percent, 100.0);
+        assert_eq!(s.targets.pages, 9000);
+        assert_eq!(s.undigitized.pages, 24);
+    }
+
+    #[test]
+    fn a_count_refresh_isnt_a_running_job() {
+        let now = Utc::now();
+        let mut p = progress(3000, 1, now);
+        p.idle = true;
+        let s = section(p, now);
+        assert!(!s.running);
+        assert_eq!(s.eta, None);
     }
 
     #[test]

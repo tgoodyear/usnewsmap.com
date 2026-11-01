@@ -331,6 +331,58 @@ class Resilience(unittest.TestCase):
             self.assertEqual(p["targets"], {"pages": 4, "issues": 2})
             self.assertEqual(p["done"], {"pages": 3, "issues": 1})
 
+    def test_undigitized_pages_are_neither_targets_nor_asked_for(self):
+        no_scan = "sn83025333_1943-01-30_ed-1_seq-7"
+        self.assertIn(no_scan, jaocr.undigitized.DOC_IDS)
+        page = lambda doc, seq: {"doc_id": doc, "page_key": doc, "lccn": "sn83025333", "date": "1943-01-30",
+                                 "edition": 1, "seq": seq, "batch": "dlc_dupontcircle", "loc_text": "garbled"}
+        read = "sn83025333_1943-01-30_ed-1_seq-6"
+        rows = [page(read, 6), page(no_scan, 7)]
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            cur.write(f"ocr-ja/alto/{read}.xml", b"<alto/>")
+            self.assertEqual(jaocr.progress(cur, rows), {
+                "targets": {"pages": 1, "issues": 1}, "done": {"pages": 1, "issues": 1},
+                "undigitized": {"pages": 1, "issues": 1}})
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+            from unittest.mock import patch
+            with patch.object(jaocr, "done_pages", return_value={read}), \
+                 patch.object(jaocr, "ocr_issue") as ocr, patch.object(jaocr, "ndlocr_version", return_value="test"):
+                jaocr.run(cur, cur, jaocr.Path("/unused"), None, "test")
+                ocr.assert_not_called()
+
+    def test_status_reads_the_listing_and_no_scan_is_reported_apart(self):
+        rows = [{"doc_id": f"sn1_1945-01-01_ed-1_seq-{s}", "lccn": "sn1", "date": "1945-01-01",
+                 "edition": 1, "seq": s} for s in (1, 2)]
+        rows.append({"doc_id": "sn83025333_1943-01-30_ed-1_seq-7", "lccn": "sn83025333", "date": "1943-01-30",
+                     "edition": 1, "seq": 7})
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+            cur.write(f"ocr-ja/alto/{rows[0]['doc_id']}.boinc-{'a' * 64}.xml", b"<alto/>")
+            from unittest.mock import patch
+            with patch.object(jaocr, "ndlocr_version", return_value="test"), \
+                 patch.object(jaocr, "fetch") as fetch:
+                body = jaocr.status(cur, cur, jaocr.Path("/unused"))
+                fetch.assert_not_called()
+            saved = json.loads(cur.read(jaocr.STATUS))
+            self.assertEqual(saved["targets"], {"pages": 2, "issues": 1})
+            self.assertEqual(saved["done"], {"pages": 1, "issues": 0})
+            self.assertEqual(saved["undigitized"], {"pages": 1, "issues": 1})
+            self.assertIsNone(body["eta"])
+            self.assertTrue(saved["idle"])
+
+    def test_a_status_refresh_that_cant_write_fails(self):
+        rows = [{"doc_id": "sn1_1945-01-01_ed-1_seq-1", "lccn": "sn1", "date": "1945-01-01", "edition": 1, "seq": 1}]
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", json.dumps(rows[0]).encode())
+            from unittest.mock import patch
+            with patch.object(jaocr, "ndlocr_version", return_value="test"), \
+                 patch.object(cur, "write", side_effect=OSError("refused")):
+                with self.assertRaises(OSError):
+                    jaocr.status(cur, cur, jaocr.Path("/unused"))
+
     def test_pages_without_alto_are_read_again(self):
         with tempfile.TemporaryDirectory() as d:
             cur = jaocr.LocalStore(d)
