@@ -374,7 +374,8 @@ fn guarded_completion(
         Generation {
             finish_reason: got.finish_reason.as_deref(),
             finish_invalid: invalid,
-            tokens_reported: got.tokens_reported.or(Some(got.deltas)),
+            tokens_reported: got.tokens_reported,
+            stream_deltas: Some(got.deltas),
             max_tokens,
             image_min_tokens,
             response_sha256: sha,
@@ -427,6 +428,7 @@ fn parse_completion(
             finish_invalid: finish_reason_raw.is_some_and(|v| !v.is_null())
                 && finish_reason.is_none(),
             tokens_reported,
+            stream_deltas: None,
             max_tokens,
             image_min_tokens,
             response_sha256: usnm_ocr_contract::boinc::sha256(resp),
@@ -441,6 +443,9 @@ struct Generation<'a> {
     finish_reason: Option<&'a str>,
     finish_invalid: bool,
     tokens_reported: Option<u32>,
+    /// Text events in a stream: an estimate of the tokens when a stopped
+    /// reply never reached its usage event.
+    stream_deltas: Option<u32>,
     max_tokens: u32,
     image_min_tokens: Option<u32>,
     response_sha256: String,
@@ -452,7 +457,7 @@ struct Generation<'a> {
 /// The reading and its generation record. Without the guard the reading is
 /// the raw text as read; with it, the raw text cut by the `stop` rule.
 fn generation_record(text: &str, g: Generation<'_>) -> anyhow::Result<(String, u32, String)> {
-    let tokens = g.tokens_reported.unwrap_or(0);
+    let tokens = g.tokens_reported.or(g.stream_deltas).unwrap_or(0);
     let cut = g.guard.and_then(|_| loop_cut(text));
     let cleaned = clean_reading(cut.as_deref().unwrap_or(text));
     let mut flags = Vec::new();
@@ -514,7 +519,7 @@ fn generation_record(text: &str, g: Generation<'_>) -> anyhow::Result<(String, u
     });
     if let Some(stopped) = g.guard {
         record["schema"] = 3.into();
-        record["loop_guard"] = serde_json::json!({"rule": "stop", "stopped_generation": stopped});
+        record["loop_guard"] = serde_json::json!({"rule": "stop", "stopped_generation": stopped, "stream_deltas": g.stream_deltas});
     }
     Ok((cleaned, tokens, serde_json::to_string(&record)?))
 }
@@ -722,7 +727,8 @@ mod guard_tests {
             Generation {
                 finish_reason: None,
                 finish_invalid: false,
-                tokens_reported: Some(got.deltas),
+                tokens_reported: got.tokens_reported,
+                stream_deltas: Some(got.deltas),
                 max_tokens: 1304,
                 image_min_tokens: None,
                 response_sha256: hex_digest(&got.digest),
@@ -735,6 +741,8 @@ mod guard_tests {
         assert_eq!(tokens, 16);
         let m: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(m["schema"], 3);
+        assert!(m["completion_tokens_reported"].is_null());
+        assert_eq!(m["loop_guard"]["stream_deltas"], 16);
         assert_eq!(m["loop_guard"]["stopped_generation"], true);
         assert!(m["generation_flags"]
             .as_array()
@@ -754,7 +762,8 @@ mod guard_tests {
             Generation {
                 finish_reason: Some("stop"),
                 finish_invalid: false,
-                tokens_reported: Some(got.deltas),
+                tokens_reported: got.tokens_reported,
+                stream_deltas: Some(got.deltas),
                 max_tokens: 1304,
                 image_min_tokens: None,
                 response_sha256: hex_digest(&got.digest),

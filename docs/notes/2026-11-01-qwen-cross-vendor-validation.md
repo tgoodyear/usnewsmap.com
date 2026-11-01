@@ -45,7 +45,7 @@ The Intel figures come from one host with an Iris Xe GPU, so this may be that ho
 - `looped`: a side's reading ends in a repeated run or its result marks the crop looped. It counts for neither side.
 - `no_text`: neither side has a letter or digit.
 - `agree`: character similarity is at least 0.5, with Hebrew points left out for every vendor. Readings stay as read.
-- `disagree`: anything else. It fails the pair.
+- `disagree`: anything else, including text on one side only. It fails the pair.
 
 A pair agrees when no crop disagrees and `agree` crops are more than half of the crops with text and hold at least 100 characters, or when no crop has text at all, as under the strict rule. The 0.5 floor is the number already in force, not a fitted one. A pair vouches only for its `agree` crops, so the rule claims less than the strict rule does. The 100-character limit came from this data: two issues of one Yiddish paper matched on their mastheads alone.
 

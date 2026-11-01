@@ -133,8 +133,11 @@ pub fn crop_state(a: Side<'_>, b: Side<'_>, params: Params) -> (CropState, Optio
     if a.looped || b.looped {
         return (CropState::Looped, None);
     }
-    if !has_text(a.text) && !has_text(b.text) {
-        return (CropState::NoText, None);
+    match (has_text(a.text), has_text(b.text)) {
+        (false, false) => return (CropState::NoText, None),
+        // `[?]` markers alone read like text to the metric, and aren't.
+        (true, false) | (false, true) => return (CropState::Disagree, Some(0.0)),
+        (true, true) => {}
     }
     let score = match params.metric {
         Metric::Similarity => similarity(a.text, b.text),
@@ -440,6 +443,26 @@ mod tests {
         let (crops, verdict) = judge_crops(&map(&masthead), &map(&masthead), P);
         assert_eq!(crops[0].state, CropState::Agree);
         assert_eq!(verdict.unwrap_err(), "22 characters agree");
+    }
+
+    #[test]
+    fn uncertainty_markers_do_not_agree_with_text() {
+        let (a, b) = ("The [?] [?] [?] [?]", "[?] [?] [?] [?]");
+        assert!(similarity(a, b) > 0.5);
+        assert_eq!(
+            crop_state(
+                Side {
+                    text: a,
+                    looped: false
+                },
+                Side {
+                    text: b,
+                    looped: false
+                },
+                P
+            ),
+            (CropState::Disagree, Some(0.0))
+        );
     }
 
     #[test]
