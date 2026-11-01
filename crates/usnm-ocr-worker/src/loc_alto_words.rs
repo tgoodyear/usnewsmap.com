@@ -32,6 +32,7 @@ use parquet::schema::types::ColumnPath;
 use quick_xml::events::{BytesRef, BytesStart, Event};
 use serde::Serialize;
 
+use crate::bulk::hold_lock;
 use crate::loc_alto::{batch_of, doc_id_of};
 
 /// Goes into each `.done`: a change that alters the rows bumps it, and every archive is read
@@ -890,6 +891,8 @@ fn free_bytes(dir: &Path) -> anyhow::Result<u64> {
 pub fn run(opts: &Options) -> anyhow::Result<Summary> {
     anyhow::ensure!(opts.workers > 0, "--workers: at least 1");
     std::fs::create_dir_all(&opts.out)?;
+    // Two runs on one directory would write the same `.part` files.
+    let _lock = hold_lock(&opts.out.join(".words.lock"))?;
     let mut names: Vec<String> = std::fs::read_dir(&opts.archives)?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
         .filter(|n| n.ends_with(".tar.bz2") && !n.starts_with('.'))
@@ -1328,8 +1331,31 @@ xdpi:320
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(
+            names.len(),
+            3,
+            "the good archive's two files and the lock: {names:?}"
+        );
         assert!(!opts.out.join("b_a_ver01.done").exists());
+    }
+
+    #[test]
+    fn a_second_run_on_one_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let arch = dir.path().join("in");
+        std::fs::create_dir(&arch).unwrap();
+        let opts = Options {
+            archives: arch,
+            out: dir.path().join("out"),
+            workers: 1,
+            limit: None,
+            min_free_bytes: 0,
+        };
+        std::fs::create_dir(&opts.out).unwrap();
+        let held = hold_lock(&opts.out.join(".words.lock")).unwrap();
+        assert!(run(&opts).is_err());
+        drop(held);
+        assert!(run(&opts).is_ok());
     }
 
     #[test]
