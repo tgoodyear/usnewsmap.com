@@ -29,6 +29,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, Encoding, ZstdLevel};
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder, WriterVersion};
 use parquet::schema::types::ColumnPath;
+use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesRef, BytesStart, Event};
 use serde::Serialize;
 
@@ -257,15 +258,15 @@ fn number(v: &str) -> Option<f64> {
 }
 
 /// `CONTENT` and its like, with entities decoded. Most values have none, so they skip the
-/// decoder.
-fn value_of(a: &quick_xml::events::attributes::Attribute<'_>) -> String {
+/// decoder. A value that can't be decoded is an error, so the page is left out, not altered.
+fn value_of(a: &Attribute<'_>) -> anyhow::Result<String> {
     if !a.value.contains(['&', '\t', '\n', '\r']) {
-        return a.value.to_string();
+        return Ok(a.value.to_string());
     }
-    match a.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
-        Ok(v) => v.into_owned(),
-        Err(_) => a.value.to_string(),
-    }
+    let v = a
+        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+        .map_err(|e| anyhow::anyhow!("bad attribute value: {e}"))?;
+    Ok(v.into_owned())
 }
 
 /// `key:` followed by a number, anywhere in `processingStepSettings` (some producers run the
@@ -331,24 +332,25 @@ enum Open {
 
 /// The ALTO version from the root element: `2.0` from a LoC namespace or a schema's file name,
 /// else the namespace itself, so a producer's own dialect stays visible.
-fn alto_version(root: &BytesStart<'_>) -> Option<String> {
+fn alto_version(root: &BytesStart<'_>) -> anyhow::Result<Option<String>> {
     let (mut ns, mut schema) = (None, None);
-    for a in root.attributes().flatten() {
+    for a in root.attributes() {
+        let a = a?;
         match a.key.as_ref() {
-            "xmlns" => ns = Some(value_of(&a)),
+            "xmlns" => ns = Some(value_of(&a)?),
             "xsi:schemaLocation" | "xsi:noNamespaceSchemaLocation" => {
-                schema = Some(value_of(&a));
+                schema = Some(value_of(&a)?);
             }
             _ => {}
         }
     }
     if let Some(v) = schema.as_deref().and_then(schema_version) {
-        return Some(v);
+        return Ok(Some(v));
     }
-    ns.map(|n| match n.split_once("/ns-v") {
+    Ok(ns.map(|n| match n.split_once("/ns-v") {
         Some((_, v)) => v.trim_end_matches('#').to_owned(),
         None => n,
-    })
+    }))
 }
 
 /// `.../alto-1-4.xsd` -> `1.4`; `.../alto-v2.0.xsd` -> `2.0`.
@@ -386,17 +388,19 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
                 match e.local_name().as_ref() {
                     "alto" if !seen_root => {
                         seen_root = true;
-                        page.head.alto_version = alto_version(e);
+                        page.head.alto_version = alto_version(e)?;
                     }
                     "String" => {
                         word += 1;
-                        let w = read_string(e, page, block, line, word, lang.clone());
+                        let w = read_string(e, page, block, line, word, lang.clone())?;
                         page.words.push(w);
                     }
                     "SP" => {}
-                    "ALTERNATIVE" if is_start => {
-                        open = Open::Alternative;
+                    "ALTERNATIVE" => {
                         page.open_alternative();
+                        if is_start {
+                            open = Open::Alternative;
+                        }
                     }
                     "HYP" => {
                         if let Some(w) = page.words.last_mut() {
@@ -412,15 +416,16 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
                         line = -1;
                         word = -1;
                         lang = None;
-                        for a in e.attributes().flatten() {
+                        for a in e.attributes() {
+                            let a = a?;
                             let k = a.key.as_ref();
                             if k == "language" || k == "LANG" {
-                                let v = value_of(&a);
+                                let v = value_of(&a)?;
                                 lang = Some(page.keep(&v));
                             }
                         }
                     }
-                    "Page" => read_page_element(e, &mut page.head),
+                    "Page" => read_page_element(e, &mut page.head)?,
                     "ocrProcessingStep" if is_start => in_ocr_step = true,
                     "MeasurementUnit" if is_start => open = Open::Unit,
                     "softwareName" if is_start => open = Open::Software,
@@ -437,10 +442,9 @@ pub fn read_page<R: std::io::BufRead>(xml: R, page: &mut Page) -> anyhow::Result
                 let s = t.xml_content(quick_xml::XmlVersion::Implicit1_0);
                 take_text(open, &s, page, &mut text);
             }
-            Event::GeneralRef(ref r) => {
-                if let Some(s) = entity(r) {
-                    take_text(open, &s, page, &mut text);
-                }
+            Event::GeneralRef(ref r) if open != Open::None => {
+                let s = entity(r).ok_or_else(|| anyhow::anyhow!("undefined entity"))?;
+                take_text(open, &s, page, &mut text);
             }
             Event::End(ref e) => {
                 depth = depth.saturating_sub(1);
@@ -499,8 +503,9 @@ fn read_description_text(open: Open, s: &str, in_ocr_step: bool, head: &mut Page
     }
 }
 
-fn read_page_element(e: &BytesStart<'_>, head: &mut PageHead) {
-    for a in e.attributes().flatten() {
+fn read_page_element(e: &BytesStart<'_>, head: &mut PageHead) -> anyhow::Result<()> {
+    for a in e.attributes() {
+        let a = a?;
         match a.key.as_ref() {
             "WIDTH" => head.alto_width = head.alto_width.or(number(&a.value)),
             "HEIGHT" => head.alto_height = head.alto_height.or(number(&a.value)),
@@ -509,6 +514,7 @@ fn read_page_element(e: &BytesStart<'_>, head: &mut PageHead) {
             _ => {}
         }
     }
+    Ok(())
 }
 
 fn read_string(
@@ -518,7 +524,7 @@ fn read_string(
     line: i32,
     word: i32,
     lang: Option<Range<usize>>,
-) -> Word {
+) -> anyhow::Result<Word> {
     let mut w = Word {
         block,
         line,
@@ -526,18 +532,19 @@ fn read_string(
         lang,
         ..Word::default()
     };
-    for a in e.attributes().flatten() {
+    for a in e.attributes() {
+        let a = a?;
         match a.key.as_ref() {
-            "CONTENT" => w.text = page.keep(&value_of(&a)),
+            "CONTENT" => w.text = page.keep(&value_of(&a)?),
             "WC" => {
                 // As `loc-alto-stats` counts it: outside 0 to 1 is no confidence.
                 w.wc = number(&a.value)
                     .filter(|v| (0.0..=1.0).contains(v))
                     .map(|v| v as f32);
             }
-            "CC" => w.cc = Some(page.keep(&value_of(&a))),
-            "SUBS_CONTENT" => w.subs_content = Some(page.keep(&value_of(&a))),
-            "SUBS_TYPE" => w.subs_type = Some(page.keep(&value_of(&a))),
+            "CC" => w.cc = Some(page.keep(&value_of(&a)?)),
+            "SUBS_CONTENT" => w.subs_content = Some(page.keep(&value_of(&a)?)),
+            "SUBS_TYPE" => w.subs_type = Some(page.keep(&value_of(&a)?)),
             "HPOS" => w.x = number(&a.value),
             "VPOS" => w.y = number(&a.value),
             "WIDTH" => w.w = number(&a.value),
@@ -545,7 +552,7 @@ fn read_string(
             _ => {}
         }
     }
-    w
+    Ok(w)
 }
 
 pub fn schema() -> SchemaRef {
@@ -878,7 +885,6 @@ struct Job {
     stem: String,
     batch: String,
     version: i16,
-    signature: String,
 }
 
 fn free_bytes(dir: &Path) -> anyhow::Result<u64> {
@@ -927,7 +933,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             stem,
             batch,
             version,
-            signature,
         });
     }
     let next = AtomicUsize::new(0);
@@ -1002,7 +1007,7 @@ fn one_archive(opts: &Options, job: &Job) -> anyhow::Result<(ArchiveCount, u64)>
     }
     let bytes = std::fs::metadata(&part)?.len();
     std::fs::rename(&part, &name)?;
-    std::fs::write(&done, format!("{}\n", job.signature))?;
+    std::fs::write(&done, format!("{before} {SCHEMA_VERSION}\n"))?;
     Ok((n, bytes))
 }
 
@@ -1157,6 +1162,27 @@ xdpi:320
             &p.buf[p.words[0].alternatives.clone().unwrap()],
             "d&ux\u{1f}abc"
         );
+    }
+
+    #[test]
+    fn an_empty_alternative_keeps_its_place() {
+        let p = parse(
+            r#"<alto><String CONTENT="w"><ALTERNATIVE/><ALTERNATIVE>a</ALTERNATIVE></String></alto>"#,
+        );
+        assert_eq!(&p.buf[p.words[0].alternatives.clone().unwrap()], "\u{1f}a");
+    }
+
+    #[test]
+    fn malformed_values_leave_the_page_out() {
+        let mut p = Page::default();
+        for xml in [
+            r#"<alto><String CONTENT="a" CONTENT="b"/></alto>"#,
+            r#"<alto><String CONTENT="a&undefined;b"/></alto>"#,
+            "<alto><String CONTENT=\"w\"><ALTERNATIVE>a&undefined;b</ALTERNATIVE></String></alto>",
+            "<alto><softwareName>a&undefined;b</softwareName></alto>",
+        ] {
+            assert!(read_page(xml.as_bytes(), &mut p).is_err(), "{xml}");
+        }
     }
 
     #[test]
