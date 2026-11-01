@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Study 4: the same 40 pages on one card class. --gpu "RTX 3090" --tag 3090 --kind qwen|surya
 set -uo pipefail
-W=/tank/ocr/gpu-studies-202611; cd "$W"
+W=${GPU_STUDY_ROOT}; cd "$W"
 QWEN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e
 SURYA=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494
 GPU=""; TAG=""; KIND=""; MAXDPH=0.30; PREFER=""
 while [ $# -gt 0 ]; do case "$1" in --gpu) GPU=$2; shift 2;; --tag) TAG=$2; shift 2;; --kind) KIND=$2; shift 2;; --max-dph) MAXDPH=$2; shift 2;; --prefer-machine) PREFER=$2; shift 2;; *) exit 2;; esac; done
-PC=/tank/usnm-dev/gpu-studies/pilot/work; P=push/s4-$KIND-$TAG; rm -rf "$P"; mkdir -p "$P/crops" "$P/pages"
+PC=${GPU_STUDY_DEV}/pilot/work; P=push/s4-$KIND-$TAG; rm -rf "$P"; mkdir -p "$P/crops" "$P/pages"
 cut -d, -f1 samples/de-pilot-100.csv | head -40 >"$P/pages.ids"
 echo "$KIND" >"$P/kind.txt"; cp scripts/jobs/qwen.sh scripts/jobs/surya.sh scripts/jobs/surya_read.py "$P/"
 if [ "$KIND" = qwen ]; then

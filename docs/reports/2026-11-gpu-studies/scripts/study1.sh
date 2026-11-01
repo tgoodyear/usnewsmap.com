@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Study 1: build the two push directories from the frozen sets and run them, then decode. Run on the node.
 set -uo pipefail
-W=/tank/ocr/gpu-studies-202611; cd "$W"
+W=${GPU_STUDY_ROOT}; cd "$W"
 QWEN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e
 TESS=ubuntu:24.04
 STEP=""; PREFER=""
 while [ $# -gt 0 ]; do case "$1" in --step) STEP=$2; shift 2;; --prefer-machine) PREFER=$2; shift 2;; *) exit 2;; esac; done
-B=bench-v1.0.0/usnm-ocr-bench-v1.0.0; N=/tank/usnm-dev/gpu-studies/data/conv/nzz; PC=/tank/usnm-dev/gpu-studies/pilot/work
+B=bench-v1.0.0/usnm-ocr-bench-v1.0.0; N=${GPU_STUDY_DEV}/data/conv/nzz; PC=${GPU_STUDY_DEV}/pilot/work
 build() { P=$1; rm -rf "$P"; mkdir -p "$P/rz" "$P/nzz" "$P/pilot" "$P/pages"
   ln -s "$PWD/$B/images"/pub-reichsanzeiger-* "$P/rz/" 2>/dev/null
   { jq -r '[.id,("rz/"+(.image|sub("images/";"")))]|@tsv' refs/rz-700.jsonl

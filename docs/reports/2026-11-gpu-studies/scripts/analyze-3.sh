@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study 3 tables: every reader on the same human-referenced crops, by source. A missing output scores as empty.
 set -euo pipefail
-W=/tank/ocr/gpu-studies-202611; cd "$W"; T=${TOOL:-/tank/usnm-dev/gpu-studies/target/release/gpu-study}; A=analysis/s3; mkdir -p "$A"; L=/tank/usnm-dev/gpu-studies/local
+W=${GPU_STUDY_ROOT}; cd "$W"; T=${TOOL:-${GPU_STUDY_DEV}/target/release/gpu-study}; A=analysis/s3; mkdir -p "$A"; L=${GPU_STUDY_DEV}/local
 cat refs/op-100.jsonl refs/rz-100.jsonl refs/ml-52.jsonl refs/nzz-360.jsonl | jq -c 'del(.image)' >"$A/refs.jsonl"
 jq -r .id "$A/refs.jsonl" | LC_ALL=C sort >"$A/ids"
 only() { jq -c --rawfile l "$A/ids" '($l|split("\n")) as $x|select(.id as $i|$x|index($i))' "$1"; }

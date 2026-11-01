@@ -2,7 +2,7 @@
 # Freeze the source-disjoint LoRA split from converted public sets and benchmark releases. Writes the row files, one
 # JSON summary, and a push directory. Run once, before training; --out must not exist.
 set -euo pipefail
-CONV=/tank/usnm-dev/gpu-studies/data/conv; REFS=/tank/ocr/gpu-studies-202611/refs; BENCH=/tank/ocr/gpu-studies-202611/bench-v1.0.0/usnm-ocr-bench-v1.0.0; OUT=""
+CONV=${GPU_STUDY_DEV}/data/conv; REFS=${GPU_STUDY_ROOT}/refs; BENCH=${GPU_STUDY_ROOT}/bench-v1.0.0/usnm-ocr-bench-v1.0.0; OUT=""
 while [ $# -gt 0 ]; do case "$1" in --conv) CONV=$2; shift 2;; --refs) REFS=$2; shift 2;; --bench) BENCH=$2; shift 2;; --out) OUT=$2; shift 2;; *) exit 2;; esac; done
 [ -e "$OUT" ] && { echo "--out must not exist" >&2; exit 2; }
 mkdir -p "$OUT/images"

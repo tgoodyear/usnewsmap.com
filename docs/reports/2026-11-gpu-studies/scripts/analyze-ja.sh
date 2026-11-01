@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Japanese: bigram agreement between readers, agreement with the machine references, failure counts. Not accuracy.
 set -euo pipefail
-W=/tank/ocr/gpu-studies-202611; cd "$W"; T=${TOOL:-/tank/usnm-dev/gpu-studies/target/release/gpu-study}; A=analysis/ja; mkdir -p "$A"; L=/tank/usnm-dev/gpu-studies/local
+W=${GPU_STUDY_ROOT}; cd "$W"; T=${TOOL:-${GPU_STUDY_DEV}/target/release/gpu-study}; A=analysis/ja; mkdir -p "$A"; L=${GPU_STUDY_DEV}/local
 jq -r .id ja-set/items.jsonl | LC_ALL=C sort >"$A/ids"
 ids() { jq -c --rawfile l "$A/ids" '($l|split("\n")) as $x|select(.id as $i|$x|index($i))' "$1"; }
 scripts/decode.sh --kind qwen --in results/s3-qwen/readings.b64 --out "$A/qwen-all.jsonl"; ids "$A/qwen-all.jsonl" >"$A/qwen.jsonl"

@@ -2,7 +2,7 @@
 # LoC's ALTO for a frozen page list: S3 bucket ndnp-batches for public batches, one request at a time, then the
 # batch archive on disk, which takes minutes per archive to decompress. Nothing goes to LoC's web hosts. Writes <out>/<doc_id>.xml and <out>/provenance.tsv.
 set -uo pipefail
-SAMPLE=""; OUT=""; INDEX=/tank/ocr/scans/index-full.jsonl; ARCHIVES=/tank/locbulk/ocr; BUCKET=/tank/ocr/manifests/bucket-batches.tsv; GAP=3
+SAMPLE=""; OUT=""; INDEX=${SCAN_ROOT}/index-full.jsonl; ARCHIVES=${LOC_ARCHIVES}; BUCKET=${SCAN_MANIFESTS}/bucket-batches.tsv; GAP=3
 while [ $# -gt 0 ]; do case "$1" in
   --sample) SAMPLE=$2; shift 2;; --out) OUT=$2; shift 2;; --index) INDEX=$2; shift 2;;
   --archives) ARCHIVES=$2; shift 2;; --bucket) BUCKET=$2; shift 2;; --gap-seconds) GAP=$2; shift 2;; *) echo "unknown flag $1" >&2; exit 2;; esac; done

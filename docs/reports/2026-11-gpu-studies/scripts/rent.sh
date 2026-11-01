@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# Paths are environment variables: GPU_STUDY_ROOT, GPU_STUDY_DEV, SCAN_ROOT, SCAN_MANIFESTS, LOC_ARCHIVES, GPU_STUDY_SECRETS.
 # Run one job on one rented GPU, then destroy the instance whatever happened.
 # Hosts are untrusted: they get --push-dir and --job and nothing else. Results come back as plain
 # files with checked names and capped sizes, into an empty directory, and are never executed here.
 set -uo pipefail
 HERE=$(dirname "$(readlink -f "$0")")
 STUDY=""; IMAGE=""; GPU="RTX 3090"; MAX_DPH=0.30; MAX_HOURS=2; CAP=1; DISK=80; PUSH=""; JOB=""; OUT=""
-LEDGER=/tank/ocr/gpu-studies-202611/ledger.csv; KEY=/run/usnm-gpu-studies/rental_ed25519
+LEDGER=${GPU_STUDY_ROOT}/ledger.csv; KEY=${GPU_STUDY_SECRETS}/rental_ed25519
 SSH_WAIT=600; MAX_HOSTS=5; MAX_FILE_MB=4096; EXCLUDE=""; ONLY=""; MINRAM=23000
 while [ $# -gt 0 ]; do case "$1" in
   --study) STUDY=$2; shift 2;; --image) IMAGE=$2; shift 2;; --gpu) GPU=$2; shift 2;;
@@ -42,7 +43,7 @@ cleanup() { trap - EXIT INT TERM
     led "$ID" "$OFFER" "$DPH" "$GEO" "$T_CREATE" "$T_READY" "$T_JOB" "$(date +%s)" "$C0" "$c" "$OUTCOME"; log "destroyed $ID outcome=$OUTCOME credit $C0 -> $c"; fi
   rm -f "$KH"; }
 trap cleanup EXIT; trap 'OUTCOME=interrupted; exit 3' INT TERM
-BAD=/tank/ocr/gpu-studies-202611/bad-machines
+BAD=${GPU_STUDY_ROOT}/bad-machines
 [ -f "$BAD" ] && EXCLUDE="$EXCLUDE $(sed 's/^/m/' "$BAD" | tr '\n' ' ')"
 tried=" $EXCLUDE "; hosts=0
 while [ $hosts -lt "$MAX_HOSTS" ]; do

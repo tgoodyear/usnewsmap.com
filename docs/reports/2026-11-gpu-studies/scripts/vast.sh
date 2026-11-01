@@ -2,7 +2,7 @@
 # Thin Vast.ai API helper. Named flags only. The API key is read from --key-file and never printed.
 # Actions: credit | list | search | create | attach-key | destroy
 set -euo pipefail
-ACTION=""; KEY_FILE="${VAST_KEY_FILE:-/run/usnm-gpu-studies/vast.key}"
+ACTION=""; KEY_FILE="${VAST_KEY_FILE:-${GPU_STUDY_SECRETS}/vast.key}"
 GPU="RTX 3090"; MIN_DISK=80; MIN_RAM_MB=23000; LIMIT=10; MAX_DPH=0.40
 ASK=""; IMAGE=""; DISK=80; LABEL=""; INSTANCE=""; PUBKEY=""
 while [ $# -gt 0 ]; do case "$1" in

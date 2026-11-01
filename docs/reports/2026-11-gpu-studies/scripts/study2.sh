@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study 2: phase 1 trains and reads validation; phase 2 reads the test split once. --step 1|2
 set -uo pipefail
-W=/tank/ocr/gpu-studies-202611; cd "$W"
+W=${GPU_STUDY_ROOT}; cd "$W"
 TRAIN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:960ba48cb33e6c164764246bba2c9aded7d791b48a6aed49f39c3a95acff3ee1
 STEP=""; PREFER=""; ADAPTER=""
 while [ $# -gt 0 ]; do case "$1" in --step) STEP=$2; shift 2;; --prefer-machine) PREFER=$2; shift 2;; --adapter) ADAPTER=$2; shift 2;; *) exit 2;; esac; done

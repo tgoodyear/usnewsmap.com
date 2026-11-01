@@ -2,7 +2,7 @@
 # Run in the dev container: frozen pilot pages to JPEG and Qwen units, then cut the crops.
 # --pages lists doc_id,tier,lccn. --scans holds the page scans; --alto LoC's ALTO; --work the output.
 set -uo pipefail
-PAGES=""; SCANS=""; ALTO=""; WORK=""; BIN=/root/work/gpu-studies/target/release
+PAGES=""; SCANS=""; ALTO=""; WORK=""; BIN=${GPU_STUDY_DEV}/target/release
 while [ $# -gt 0 ]; do case "$1" in --pages) PAGES=$2; shift 2;; --scans) SCANS=$2; shift 2;; --alto) ALTO=$2; shift 2;; --work) WORK=$2; shift 2;; --bin) BIN=$2; shift 2;; *) exit 2;; esac; done
 mkdir -p "$WORK/units" "$WORK/pages"; : >"$WORK/prep.log"
 LLAMA=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea

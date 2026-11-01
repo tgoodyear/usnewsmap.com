@@ -3,7 +3,7 @@
 # ALTO reachable without LoC's web hosts (batch archive on disk, or batch public in the S3 bucket). Ranked by
 # sha256("gpu-studies-202611:de-pilot:"+doc_id); 75 bad and 25 moderate_high pages, at most 3 per title.
 set -euo pipefail
-CSV=""; INDEX=/tank/ocr/scans/index-full.jsonl; SCANS=/tank/ocr/scans; ARCHIVES=/tank/locbulk/ocr; BUCKET=/tank/ocr/manifests/bucket-batches.tsv; OUT=""
+CSV=""; INDEX=${SCAN_ROOT}/index-full.jsonl; SCANS=${SCAN_ROOT}; ARCHIVES=${LOC_ARCHIVES}; BUCKET=${SCAN_MANIFESTS}/bucket-batches.tsv; OUT=""
 while [ $# -gt 0 ]; do case "$1" in
   --csv) CSV=$2; shift 2;; --index) INDEX=$2; shift 2;; --scans) SCANS=$2; shift 2;;
   --archives) ARCHIVES=$2; shift 2;; --bucket) BUCKET=$2; shift 2;; --out) OUT=$2; shift 2;; *) echo "unknown flag $1" >&2; exit 2;; esac; done

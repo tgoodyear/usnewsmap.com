@@ -19,6 +19,6 @@ while read -r id label; do
 done
 echo "$(date -Is) tick credit=$credit instances=$(echo -n "$list" | grep -c . )" >>"$LOG"
 if [ "$FINAL" -gt 0 ] && [ "$now" -ge "$FINAL" ] && [ -z "$list" ]; then
-  shred -u /run/usnm-gpu-studies/vast.key 2>/dev/null; systemctl stop usnm-gpu-studies-watchdog.timer
+  shred -u ${GPU_STUDY_SECRETS}/vast.key 2>/dev/null; systemctl stop usnm-gpu-studies-watchdog.timer
 fi
 exit 0

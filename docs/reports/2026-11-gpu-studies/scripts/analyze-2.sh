@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study 2. --phase validation scores checkpoints and names the selection; --phase test scores the test split once.
 set -euo pipefail
-W=/tank/ocr/gpu-studies-202611; cd "$W"; T=${TOOL:-/tank/usnm-dev/gpu-studies/target/release/gpu-study}; A=analysis/s2; mkdir -p "$A"
+W=${GPU_STUDY_ROOT}; cd "$W"; T=${TOOL:-${GPU_STUDY_DEV}/target/release/gpu-study}; A=analysis/s2; mkdir -p "$A"
 PHASE=""
 while [ $# -gt 0 ]; do case "$1" in --phase) PHASE=$2; shift 2;; *) exit 2;; esac; done
 R=results/s2-1
