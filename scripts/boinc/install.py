@@ -315,7 +315,11 @@ def install(
         ET.SubElement(main_file, "copy_file")
         staged_files = [target / main_name]
         executable_extras = {"llama-server", "llama-server.exe", "usnm-amd-device-map", "usnm-amd-device-map.exe"}
-        native_ocr = native_ocr_physical(parsed_extras, binary) if app in NATIVE_OCR_APPS else None
+        native_ocr = None
+        if app in NATIVE_OCR_APPS:
+            # A build directory holds the worker too, and it's the main program here.
+            parsed_extras = [(logical, src) for logical, src in parsed_extras if logical != "usnm_ocr"]
+            native_ocr = native_ocr_physical(parsed_extras, binary)
         for logical, src in parsed_extras:
             phys = native_ocr[logical] if native_ocr else f"{suffix}_{logical}"
             shutil.copyfile(src, target / phys)

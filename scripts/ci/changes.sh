@@ -240,7 +240,7 @@ boinc_ndlocr='^(ocr/engines/ndlocr-lite/|ocr/boinc/ndlocr-lite/|scripts/boinc/sm
 boinc_native='^(ocr/contract/|ocr/boinc/qwen/amd-device-map\.cpp$|scripts/boinc/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1)$|rust-toolchain\.toml$)'
 # The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract, and
 # fetches the locked models for its smoke test.
-boinc_ocr_native='^(ocr/boinc/native/|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ocr_native='^(ocr/boinc/native/|scripts/boinc/smoke-native-ocr\.sh$|ocr/engines/tesseract/models\.lock$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the

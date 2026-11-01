@@ -54,6 +54,7 @@ const OPEN_FILES: u64 = 256;
 const ENGINE_DIR: &str = "usnm_engine";
 const TMP_DIR: &str = "usnm_tmp";
 const REAL_TESSERACT_ENV: &str = "USNM_TESSERACT_REAL";
+const PARENT_ENV: &str = "USNM_TASK_PID";
 /// These two carry the output configs the engine image copies from Debian's package.
 const CONFIGS: [(&str, &str); 2] = [
     ("alto", "tessedit_create_alto 1\n"),
@@ -281,12 +282,10 @@ fn load_build(work: &Path) -> anyhow::Result<(Build, BTreeMap<String, PathBuf>)>
         let path = if name == WORKER_FILE {
             std::env::current_exe()?
         } else {
-            let path = resolve_slot_file(work, name);
-            if path.is_absolute() {
-                path
-            } else {
-                std::env::current_dir()?.join(path)
-            }
+            // The pointer file, or a real link: the client makes either.
+            resolve_slot_file(work, name)
+                .canonicalize()
+                .with_context(|| format!("the build's {name}"))?
         };
         let got = digest(&path).with_context(|| format!("the build's {name}"))?;
         ensure!(got == *want, "the build's {name} differs from its manifest");
@@ -464,6 +463,7 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
             .env("TMPDIR", &tmp)
             .env("USNM_TESSERACT_IMAGE", &build.base)
             .env(REAL_TESSERACT_ENV, &real)
+            .env(PARENT_ENV, std::process::id().to_string())
             .env(CPU_DEADLINE_ENV, unit.timeout_secs.to_string())
             .process_group(0)
             .stdin(Stdio::null())
@@ -482,19 +482,16 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
 
 /// The unit, in the child [`run_slot`] starts: what `usnm-boinc work` does in the container.
 pub async fn run_unit(work: &Path) -> anyhow::Result<()> {
-    // The client can kill the parent alone; nothing here may outlive it.
-    let parent = rustix::process::getppid();
-    std::thread::Builder::new()
-        .name("parent-watch".into())
-        .spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(1));
-            if rustix::process::getppid() != parent {
-                let _ = rustix::process::kill_process_group(
-                    rustix::process::getpid(),
-                    rustix::process::Signal::KILL,
-                );
-            }
-        })?;
+    // The client can kill the parent alone, even with this group stopped, when only a signal
+    // from the kernel still reaches it. The engine sets the same in `exec_engine`.
+    rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
+    ensure!(
+        std::env::var(PARENT_ENV)?
+            == rustix::process::getppid()
+                .map(|pid| pid.as_raw_pid().to_string())
+                .unwrap_or_default(),
+        "the task's parent has gone"
+    );
     crate::worker::run(work).await
 }
 
@@ -526,6 +523,7 @@ pub fn exec_engine() -> anyhow::Error {
         let real = std::env::var_os(REAL_TESSERACT_ENV).context("no engine named")?;
         let cpu: u64 = std::env::var(CPU_DEADLINE_ENV)?.parse()?;
         rustix::thread::set_no_new_privs(true)?;
+        rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
         // CPU time, not wall time: a suspended task stops its engine, and this stops with it.
         limit(Resource::Cpu, cpu, cpu + 5)?;
         limit(Resource::As, MEMORY_BYTES, MEMORY_BYTES)?;

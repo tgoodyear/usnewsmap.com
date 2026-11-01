@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/boinc-ocr-native.yml
       - ocr/boinc/native/**
+      - scripts/boinc/smoke-native-ocr.sh
       - ocr/engines/tesseract/models.lock
       - ocr/engines/engines.toml
       - .dockerignore

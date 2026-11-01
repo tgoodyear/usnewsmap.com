@@ -88,9 +88,10 @@ pub(crate) const CPU_DEADLINE_ENV: &str = "USNM_TESSERACT_CPU_SECS";
 /// A native task's reads by the clock: long enough for any suspension BOINC allows a task.
 const NATIVE_WALL_TIMEOUT: Duration = Duration::from_secs(30 * 24 * 3600);
 
-/// The clock's deadline on one read. Under the native worker the engine has a CPU limit
-/// instead, which doesn't run while BOINC has the task suspended; this clock would.
-pub(crate) fn read_timeout(secs: u32) -> Duration {
+/// The clock's deadline on one page. Under the native worker the engine has a CPU limit
+/// instead, which doesn't run while BOINC has the task suspended; this clock would. A gold unit
+/// keeps its deadline: it starts again after a suspension, and its validator bounds crop times.
+fn read_timeout(secs: u32) -> Duration {
     if std::env::var_os(CPU_DEADLINE_ENV).is_some() {
         NATIVE_WALL_TIMEOUT
     } else {

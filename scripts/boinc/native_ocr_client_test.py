@@ -26,6 +26,8 @@ APP = "usnm_ocr_native"
 VERSION = 100
 AUTHENTICATOR = "0123456789abcdef0123456789abcdef"
 PORT = 8123
+# Not the default, so a client already on this host is never the one spoken to.
+RPC_PORT = 31499
 URL = f"http://127.0.0.1:{PORT}/"
 
 
@@ -139,10 +141,10 @@ class Client:
     def start(self, *args):
         self.process = subprocess.Popen(
             [str(self.a.boinc), "--dir", str(self.data), "--allow_multiple_clients",
-             "--no_gpus", "--no_priority_change", *args], stdout=self.log, stderr=self.log)
+             "--no_gpus", "--no_priority_change", "--gui_rpc_port", str(RPC_PORT), *args], stdout=self.log, stderr=self.log)
 
     def cmd(self, *args):
-        return subprocess.run([str(self.a.boinccmd), "--host", "localhost", "--passwd", "test", *args],
+        return subprocess.run([str(self.a.boinccmd), "--host", f"localhost:{RPC_PORT}", "--passwd", "test", *args],
                               cwd=self.data, capture_output=True, text=True)
 
     def task(self):
@@ -268,6 +270,12 @@ def main():
             client.process.kill()
     print(json.dumps(evidence, indent=1))
     (a.work / "evidence.json").write_text(json.dumps(evidence, indent=1))
+    wrong = a.scenario == "wrong-build"
+    passed = (evidence["exit_status"] != 0 and evidence["refused_as_another_build"]) if wrong else (
+        evidence["exit_status"] == 0 and len(evidence["uploaded"]) == len(outputs)
+        and (a.scenario != "restart" or evidence["resumed_from_checkpoint"]))
+    if not passed:
+        raise SystemExit(f"the {a.scenario} scenario failed")
 
 
 if __name__ == "__main__":

@@ -387,7 +387,7 @@ class InstallTest(unittest.TestCase):
     def native_ocr_build(self):
         build = self.root / "build"
         build.mkdir()
-        worker = self.root / "usnm_ocr"
+        worker = build / "usnm_ocr"
         worker.write_bytes(b"worker")
         (build / "usnm_tesseract").write_bytes(b"engine")
         (build / "usnm_tesseract").chmod(0o755)

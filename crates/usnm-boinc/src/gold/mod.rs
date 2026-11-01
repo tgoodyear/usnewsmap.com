@@ -171,7 +171,7 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
                 psm: opts.psm,
                 dpi: opts.dpi,
                 threads: 1,
-                timeout: crate::worker::read_timeout(opts.timeout_secs),
+                timeout: Duration::from_secs(opts.timeout_secs.into()),
             })
             .await?,
         )

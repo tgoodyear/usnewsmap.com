@@ -233,6 +233,8 @@ def check(files: dict[str, str], allowed: dict[str, int]) -> list[str]:
 # an error for anything else), checked by eye: reads of `env::args()` per
 # file. A new one is reviewed and added here, or uses clap.
 HAND_PARSED = {
+    # argv[0] says it started as `tesseract`; the rest goes to the engine unread (#1418).
+    "crates/usnm-boinc/src/native.rs": 2,
     "crates/usnm-core/examples/add_text_cg.rs": 1,
     "crates/usnm-core/examples/term_skew.rs": 1,
     "crates/usnm-ingest/examples/decade_fixture.rs": 1,

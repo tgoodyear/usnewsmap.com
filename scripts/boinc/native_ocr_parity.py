@@ -87,6 +87,9 @@ def read_page(page, a, images):
 
 
 def run(a):
+    # The workers run from their slots and under chroot.
+    a.pages, a.build, a.fixture = a.pages.resolve(), a.build.resolve(), a.fixture.resolve()
+    a.rootfs, a.work = a.rootfs.resolve(), a.work.resolve()
     pages = json.loads(a.manifest.read_text())
     build = json.loads((a.build / "usnm_native_build.json").read_text())
     images = {
