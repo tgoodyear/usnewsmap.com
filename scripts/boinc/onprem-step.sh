@@ -17,6 +17,11 @@
 # budget rather than extending it. --what-if prints the settings and runs nothing.
 # --target is bridge, publish or handoff.
 #
+# quality-stage is the exception to that lock (#1415): it takes a lock of its own, so one stage
+# runs at a time while the other steps go on. It uses no database, secrets or project files and
+# writes only its campaign's tree, where a unit counts once its quality.json is in place and
+# later steps wait for that or for `submitted`. It takes half an hour per 200 pages.
+#
 # --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
 # contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
@@ -331,7 +336,9 @@ lock_wait=$((10#$lock_wait))
 [ "$lock_wait" -le 300 ] || die "USNM_BOINC_STEP_LOCK_WAIT_SECS must be 0..300"
 step_timeout=$((WAIT_MINS * 60))
 [ "$lock_wait" -lt "$step_timeout" ] || die "lock wait must be shorter than --wait-mins"
-exec 9> "$RUN_DIR/usnm-boinc-step.lock"
+lock_file=usnm-boinc-step.lock
+[ "$TARGET:$STEP" != bridge:quality-stage ] || lock_file=usnm-boinc-stage.lock
+exec 9> "$RUN_DIR/$lock_file"
 lock_started=$SECONDS
 if [ "$lock_wait" -eq 0 ]; then
   flock -n 9 || die "another bridge step is running on this host - wait for it to end first"

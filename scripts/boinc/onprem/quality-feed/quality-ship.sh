@@ -9,7 +9,7 @@
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
 #     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
-#     [--step-window-minutes 15] (0, the default, is no window)
+#     [--step-window-minutes 15] (native publication only; 0, the default, is no window)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
@@ -19,13 +19,18 @@
 #  2. Copies the chunk into CT230's <share>/quality/<campaign>/incoming/<chunk>/ (tar over ssh).
 #  3. Runs quality_receive.py there: every file against SHA256SUMS, every page's scan present
 #     (so quality-stage never falls back to tile.loc.gov), then files the scans and texts.
-#  4. usnm-boinc-step quality-stage with QUALITY_SCANS_DIR, then quality-submit.
+#  4. usnm-boinc-step quality-stage with QUALITY_SCANS_DIR, then `usnm-boinc quality submit` in
+#     the server container, under the step lock.
 #  5. quality_receive.py --after-submit frees the server's copies it no longer needs (the
 #     received scans and texts, the per-page units' images), then the chunk leaves the
 #     outbox, so the feeder makes the next one.
 # A step that fails leaves the chunk in the outbox for the next run; staging and submitting
-# skip what is already done. The step runner allows one step at a time on the host, so a
-# run that meets the controller's step fails and the timer tries again.
+# skip what is already done. quality-stage has its own lock on the host and never waits for
+# the controller. Submitting takes the lock the controller's steps take: it waits up to 30
+# minutes, then the run exits 75 with the chunk still READY and the timer tries again. It runs
+# in the server container because the quality-submit bridge step then walks the whole download
+# tree with the lock held, up to 8 minutes over NFS, and that tree's export fixes the owner and
+# submit sets each file's mode.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -85,10 +90,9 @@ in_ct() {
   printf -v quoted '%q ' "$@"
   "${SSH[@]}" "pct exec $CT -- $quoted"
 }
-# With --step-window-minutes N, the steps that hold the host's lock for long start only in the
-# first N minutes of an hour, which leaves the rest of the hour to the priority controller.
-# Sets LOCK_WAIT to the seconds left to take the lock, so a queued step can't start after the
-# window closes.
+# With --step-window-minutes N, native publication starts only in the first N minutes of an
+# hour, which leaves the rest of the hour to the priority controller. Sets LOCK_WAIT to the
+# seconds left to take the lock, so a queued step can't start after the window closes.
 wait_for_step_window() {
   LOCK_WAIT=900
   [ "$STEP_WINDOW" -gt 0 ] || return 0
@@ -101,14 +105,14 @@ wait_for_step_window() {
   done
   LOCK_WAIT=$((STEP_WINDOW * 60 - minute * 60 - second))
 }
-# One bridge step, waiting its turn: the host runs one step at a time, and the priority
-# controller's steps come every few minutes. Tries for up to 30 minutes.
+# One bridge step, waiting its turn: the step that holds its lock may run for a while, and the
+# priority controller's steps come every few minutes. Tries for up to 30 minutes, then defers
+# to the next run (exit 75) rather than waiting into the service's timeout.
 run_step() {
   local i err
   err="$OUTBOX/.step-$CAMPAIGN-$$.err"
   (set -o noclobber; : > "$err") || die "step log already exists"
   for i in $(seq 60); do
-    [ "$2" != quality-stage ] || wait_for_step_window
     if in_ct "$STEP" --env prod --target bridge "$@" > /dev/null 2> "$err"; then
       rm -f "$err"
       return 0
@@ -118,7 +122,8 @@ run_step() {
     sleep 30
   done
   rm -f "$err"
-  die "the step lock stayed held for 30 minutes"
+  log "$2: the lock stayed held for 30 minutes; READY retained"
+  exit 75
 }
 
 shipped=0
@@ -215,8 +220,20 @@ print(count)
       exit "$rc"
     fi
   fi
-  run_step --step quality-submit \
-    --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_MAX=$(((n + BUNDLE - 1) / BUNDLE + 5))" --wait-mins 30
+  log "$chunk: submission waiting for the step lock"
+  # The status page caches its counts for a minute; the controller's next tick reads the queue
+  # these units joined, as after the bridge step.
+  if in_ct flock -w 1800 -E 75 /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
+    timeout --signal=TERM --kill-after=30s 30m sh -c \
+    'usnm-boinc quality submit "$@" && rm -f /project/usnmocr/html/cache/f2/server_status.php_job_status' sh \
+    --root "/project/quality/$CAMPAIGN" --project /project/usnmocr \
+    --max-units "$(((n + BUNDLE - 1) / BUNDLE + 5))"; then
+    :
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || log "$chunk: the lock stayed held for 30 minutes; READY retained"
+    exit "$rc"
+  fi
   freed=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$CAMPAIGN" --chunk "$chunk" --after-submit \
     < "$HERE/quality_receive.py")
   rm -rf "$dir"

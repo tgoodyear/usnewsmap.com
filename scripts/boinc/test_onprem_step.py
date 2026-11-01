@@ -472,6 +472,35 @@ class OnpremStep(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("BRIDGE_STEP=submit", captured)
 
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_quality_stage_has_its_own_lock_and_other_steps_keep_the_shared_one(self):
+        import fcntl
+        import shlex
+
+        stage = ("--env", "prod", "--step", "quality-stage", "--wait-mins", "1")
+        submit = ("--env", "prod", "--step", "quality-submit", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(*stage, flock_script=script)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("BRIDGE_STEP=quality-stage", captured)
+            Path(self.conf.name, "envfile").unlink()
+            done, captured = self.run_for_real(*submit, flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+        with (directory / "usnm-boinc-stage.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            # The shipper retries on these words, for its one stage at a time.
+            done, captured = self.run_for_real(*stage, flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+            done, captured = self.run_for_real(*submit, flock_script=script)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("BRIDGE_STEP=quality-submit", captured)
+
     def test_pgmq_handoff_mounts_only_fixed_certificate_files_read_only(self):
         url = ("postgres://queue.example/usnm_queue?user=boinc_claim"
                "&sslcert=/etc/usnm/queue/client.crt&sslkey=/etc/usnm/queue/client.key"

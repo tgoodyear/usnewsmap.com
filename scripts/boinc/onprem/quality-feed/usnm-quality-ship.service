@@ -12,4 +12,5 @@ EnvironmentFile=/etc/usnm/quality-ship.env
 ExecStart=/opt/usnm-quality-feed/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
   --max-unsent ${MAX_UNSENT} --max-chunks ${MAX_CHUNKS} --bundle-size ${BUNDLE_SIZE} \
   --step-window-minutes 15
+SuccessExitStatus=75
 TimeoutStartSec=3h
