@@ -681,6 +681,45 @@ class BoincDb {static $q=0;static function get(){return new self();}
         self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
         self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
 
+    def open_amd(self):
+        root = ET.fromstring(self.policy.read_bytes())
+        amd = root.find("plan_class[name='amd_vulkan_8b']")
+        for tag in ("min_wu_id", "max_wu_id"):
+            if (node := amd.find(tag)) is not None:
+                amd.remove(node)
+        return ET.tostring(root)
+
+    def test_open_amd_or_apple_version_that_cannot_read_the_request_is_named(self):
+        amd = {"id": 68, "version_num": 114, "platformid": 7, "plan_class": "amd_vulkan_8b"}
+        old = {"id": 61, "version_num": 109, "platformid": 1, "plan_class": "amd_vulkan_8b"}
+        apple = {"id": 71, "version_num": 115, "platformid": 3, "plan_class": "apple_gpu_8b"}
+        versions = [old, amd, apple, *self.database["versions"]]
+        payload = self.open_amd()
+        # Request version 1 is read by everything, so a general AMD class changes nothing.
+        self.assertEqual(R.unreadable_by_open_classes(payload, versions, 0, 1), [])
+        self.assertEqual(R.unreadable_by_open_classes(payload, versions, 0, 2),
+                         [["amd_vulkan_8b", 1, 109], ["amd_vulkan_8b", 7, 114]])
+        self.assertEqual(R.unreadable_by_open_classes(payload, versions, 0, 3),
+                         [["amd_vulkan_8b", 1, 109], ["amd_vulkan_8b", 7, 114],
+                          ["apple_gpu_8b", 3, 115]])
+        # The feeder's newest-version rule: a superseded row is not dispatched.
+        newer = {**amd, "id": 80, "version_num": 117}
+        self.assertEqual(R.unreadable_by_open_classes(payload, [amd, newer], 0, 3), [])
+        self.assertEqual(R.unreadable_by_open_classes(payload, [amd, newer], 114, 3),
+                         [["amd_vulkan_8b", 7, 114]])
+        # A closed class takes nothing, whatever its version.
+        self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [amd], 0, 2), [])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_open_class_that_cannot_read_the_request_closes_admission(self):
+        with patch.object(R, "read_database", return_value=self.database):
+            R.run(self.args)
+        with patch.object(R, "unreadable_by_open_classes", return_value=[["amd_vulkan_8b", 7, 114]]), \
+                patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [2, 1])
+
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_reviewed_successor_release_and_request_version_are_pinned_together(self):
         self.database["versions"] = [{"id": 70, "version_num": 115, "platformid": 1, "plan_class": "nvidia_vulkan_8b"},
@@ -697,8 +736,9 @@ class BoincDb {static $q=0;static function get(){return new self();}
         base = ["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
                 "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "100",
                 "--enabled-until", str(int(time.time()) + 60)]
-        with self.assertRaisesRegex(Exception, "needs app versions that read it"):
-            R.main(base + ["--prompt-version", "2"])
+        for version in ("2", "3", "4"):
+            with self.assertRaisesRegex(Exception, "needs app versions that read it"):
+                R.main(base + ["--prompt-version", version])
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_standalone_fresh_pair_helper_also_requires_distinct_host_gate(self):

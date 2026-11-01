@@ -35,6 +35,10 @@ class OutOfCohort(ValueError):
 
 
 COHORT_LANGUAGES = ("yid", "srp")
+# The first app version that reads each request version.
+REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
+# Classes this controller does not open: with no workunit bounds they take any unsent replica.
+UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b")
 
 
 def sha(payload):
@@ -69,6 +73,28 @@ def policy_window(payload):
         require(match is not None, "Malformed AMD reservation")
         reserved = int(match[1])
     return ranges[0], reserved
+
+
+def dispatchable(versions, minimum):
+    """The (plan class, platform, version) rows the feeder would load. With app.min_version 0 it
+    loads only the newest per platform and plan class; otherwise everything from min_version up."""
+    newest = {}
+    for row in versions:
+        key = (row["plan_class"], int(row["platformid"]))
+        newest[key] = max(newest.get(key, 0), int(row["version_num"]))
+    return sorted((row["plan_class"], int(row["platformid"]), int(row["version_num"])) for row in versions
+                  if (int(row["version_num"]) >= minimum if minimum
+                      else int(row["version_num"]) == newest[(row["plan_class"], int(row["platformid"]))]))
+
+
+def unreadable_by_open_classes(payload, versions, minimum, prompt_version):
+    """Open AMD/Apple versions that cannot read the request version. Such a host would take a
+    replica this controller admitted and return a unit error, so admission closes first."""
+    classes = {node.findtext("name"): node for node in ET.fromstring(payload).findall("plan_class")}
+    is_open = [name for name in UNBOUNDED_READERS
+               if name in classes and classes[name].find("min_wu_id") is None]
+    return [list(row) for row in dispatchable(versions, minimum)
+            if row[0] in is_open and row[2] < REQUEST_MIN_APP[prompt_version]]
 
 
 def class_scope(payload, without_bounds=False):
@@ -399,7 +425,10 @@ def run(args):
                                                               else int(row["version_num"]) == newest))
                 allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
                     and dispatchable == [(1, args.app_version_num, expected)]
-            release = int(time.time()) >= args.enabled_until or not all(allowed.values())
+            minimum = int(database["app"].get("min_version") or 0)
+            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum, args.prompt_version)
+            output["open_classes_that_cannot_read_request"] = unreadable
+            release = int(time.time()) >= args.enabled_until or not all(allowed.values()) or bool(unreadable)
         if release:
             command = ["--stop"]
             selected, proof = [], []
@@ -552,14 +581,15 @@ def main(argv=None):
     parser.add_argument("--app-version-num", type=int, default=114)
     parser.add_argument("--nvidia-app-version", type=int, default=66)
     parser.add_argument("--intel-app-version", type=int, default=67)
-    # Request version 2 (--image-min-tokens 1024) is read only by app versions 1.15 and later.
-    parser.add_argument("--prompt-version", type=int, choices=(1, 2), default=1)
+    # Request version 2 (--image-min-tokens 1024) is read only by app versions 1.15 and later,
+    # and versions 3 and 4 (the loop guard) only by 1.17 and later.
+    parser.add_argument("--prompt-version", type=int, choices=sorted(REQUEST_MIN_APP), default=1)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     require(args.app_version_num >= 114 and args.nvidia_app_version > 0 and args.intel_app_version > 0
             and args.nvidia_app_version != args.intel_app_version, "Expected reviewed app versions")
-    require(args.prompt_version == 1 or args.app_version_num >= 115,
-            "Request version 2 needs app versions that read it")
+    require(args.app_version_num >= REQUEST_MIN_APP[args.prompt_version],
+            "This request version needs app versions that read it")
     require(re.fullmatch("[a-f0-9]{32}", args.controller) is not None, "Expected controller identity")
     require(all(re.fullmatch("[a-f0-9]{64}", value) for value in
                 (args.helper_sha256, args.config_sha256, args.initial_policy_sha256)), "Expected SHA256 guards")
