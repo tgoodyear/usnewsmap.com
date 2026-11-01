@@ -321,6 +321,7 @@ impl Pipeline {
                         id: stage.id.clone(),
                         age_secs: age,
                         stale: self.last.last_error.is_some()
+                            || stage.state == StageState::Unknown
                             || age.is_none_or(|a| {
                                 a as u64 > stage.max_age_secs.unwrap_or(self.max_age_secs)
                             }),
@@ -364,6 +365,14 @@ pub(crate) mod tests {
             "artifacts":{"locations":5,"verified":2,"missing":1},
             "issues":[{"code":"partial","detail":"local coverage only"}]
         })
+    }
+
+    /// A snapshot with no unknown stage, so nothing in it warns.
+    pub(crate) fn healthy(now: DateTime<Utc>) -> Value {
+        let mut v = fixture(now);
+        v["stages"][1]["state"] = json!("observed");
+        v["stages"][1]["count"] = json!(5);
+        v
     }
 
     fn check(v: &Value, now: DateTime<Utc>) -> anyhow::Result<Snapshot> {
@@ -438,11 +447,11 @@ pub(crate) mod tests {
         let v = p.view(now);
         assert!(v.stale && v.snapshot.is_none());
         assert!(v.last_error.unwrap().contains("missing/unreadable"));
-        let good = serde_json::to_vec(&fixture(now)).unwrap();
+        let good = serde_json::to_vec(&healthy(now)).unwrap();
         std::fs::write(&path, &good).unwrap();
         p.poll(now);
         assert!(!p.view(now).stale);
-        let mut future = fixture(now);
+        let mut future = healthy(now);
         future["generated_at"] = json!((now + Duration::seconds(120)).to_rfc3339());
         for bad in [
             b"{".to_vec(),
@@ -470,7 +479,7 @@ pub(crate) mod tests {
         let path = dir.path().join("pipeline.json");
         let now = Utc::now();
         let mut p = Pipeline::new(Some(path.clone()), 900);
-        let mut v = fixture(now);
+        let mut v = healthy(now);
         v["observed_at"] = json!((now - Duration::seconds(901)).to_rfc3339());
         std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
         p.poll(now);
@@ -500,7 +509,7 @@ pub(crate) mod tests {
         let path = dir.path().join("pipeline.json");
         let now = Utc::now();
         let mut p = Pipeline::new(Some(path.clone()), 60);
-        let mut source = fixture(now);
+        let mut source = healthy(now);
         source["stages"][0]["observed_at"] = json!((now - Duration::seconds(61)).to_rfc3339());
         source["stages"][1]["observed_at"] = json!(now.to_rfc3339());
         std::fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
@@ -597,6 +606,24 @@ pub(crate) mod tests {
                    "observed_at":null}),
         );
         assert!(p.view(now).stale);
+    }
+
+    #[test]
+    fn an_unknown_stage_with_a_recent_time_still_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.json");
+        let now = Utc::now();
+        let mut p = Pipeline::new(Some(path.clone()), 900);
+        poll_with(
+            &mut p,
+            &path,
+            now,
+            Duration::seconds(60),
+            json!({"id":"queued","label":"Queued","count":null,"state":"unknown","detail":"",
+                   "observed_at":now.to_rfc3339()}),
+        );
+        let view = p.view(now);
+        assert!(view.stale && view.stage_freshness[1].stale);
     }
 
     #[test]

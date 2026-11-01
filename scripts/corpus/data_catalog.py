@@ -70,22 +70,22 @@ LIVE_STAGES = (
      ("ocr_pending_pages",), "gauge",
      "The controller's cohort_pending at its last tick in the newest reported hour: pages at "
      "BOINC, held for collection, or selected with no job yet."),
-    ("live_validated", "BOINC OCR workunits with a canonical result", "boinc", ("ocr_units",),
+    ("live_validated", "BOINC OCR workunits with a canonical result, last 14 days", "boinc", ("ocr_units",),
      "total", "From the BOINC database, by when the canonical result returned. A bundled "
      "workunit holds an unknown number of pages, so this counts workunits. Validation, not "
      "collection or import."),
-    ("live_collected", "OCR pages collected through hand-off checks", "controller",
+    ("live_collected", "OCR pages collected through hand-off checks, last 14 days", "controller",
      ("ocr_collect_pages",), "total",
      "Jobs the hand-off marked published: results that passed its collection checks. Includes "
      "jobs superseded by an earlier import, which publish nothing. Not import or release "
      "selection."),
-    ("live_imported", "OCR pages in committed imports", "batch", ("ocr_import_pages",), "total",
+    ("live_imported", "OCR pages in committed imports, last 14 days", "batch", ("ocr_import_pages",), "total",
      "From ocr-sync's log, after each committed import record. Structural import into "
      "ocr-local, not release selection or search."),
-    ("live_rejected", "OCR parts rejected or dead-lettered", "batch",
+    ("live_rejected", "OCR parts rejected or dead-lettered, last 14 days", "batch",
      ("ocr_import_rejected", "ocr_dead_letters"), "total",
      "Parts ocr-sync rejected and dead letters it archived. Attempts, not pages lost."),
-    ("live_quality_loaded", "Quality and Qwen pages loaded", "ship",
+    ("live_quality_loaded", "Quality and Qwen pages loaded, last 14 days", "ship",
      ("quality_load_pages", "qwen_load_pages"), "total",
      "Pages of finished units loaded into the quality database, from the loaders' logs. "
      "Scores, not OCR acceptance."),
@@ -1670,7 +1670,8 @@ def live_stage(stored, spec, at):
     last = timestamp_ns(reported) // 10**9 // HOUR * HOUR - HOUR
     first = last - (LIVE_WINDOW_HOURS - 1) * HOUR
     series = [throughput_values(stored, name, first, last) for name in names]
-    known = set().union(*series)
+    # Every series must cover an hour, so one that stopped can't pass as the whole stage.
+    known = set.intersection(*(set(values) for values in series))
     if not known:
         return None
     newest = max(known)
@@ -1678,9 +1679,8 @@ def live_stage(stored, spec, at):
         amount = sum(values.get(newest, 0) for values in series)
         text = detail
     else:
-        amount = sum(sum(values.values()) for values in series)
-        hours = min(len(values) for values in series)
-        text = f"Last {LIVE_WINDOW_HOURS} hours, {hours} reported. {detail}"
+        amount = sum(values[hour] for values in series for hour in known)
+        text = f"Last {LIVE_WINDOW_HOURS} hours, {len(known)} reported. {detail}"
     return utc_text(newest + HOUR), {"stage_id": stage_id, "label": label, "count": round(amount),
                                      "state": "observed", "detail": text,
                                      "coverage": stage_id + " (hourly evidence)"}

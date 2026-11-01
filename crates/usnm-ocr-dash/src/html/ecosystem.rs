@@ -345,10 +345,19 @@ pub(super) fn ecosystem_panel(v: &View) -> String {
     let mut publishing = String::new();
     for (id, label) in [
         ("accepted", "Accepted"),
-        ("imported", "Curated imports, last 14 days"),
+        ("imported", "Curated imports"),
         ("indexed", "Search inclusion"),
     ] {
-        let _ = write!(publishing, "<li>{}: {}</li>", label, summary_count(v, id));
+        // The count's own label says what it covers: a trailing window or retained evidence.
+        let label = summary_stage(v, id)
+            .filter(|_| id == "imported")
+            .map_or(label, |s| s.label.as_str());
+        let _ = write!(
+            publishing,
+            "<li>{}: {}</li>",
+            esc(label),
+            summary_count(v, id)
+        );
     }
     let publication_connected = ["accepted", "imported", "indexed"]
         .iter()

@@ -357,7 +357,8 @@ and 35 MB of memory.
 | `quality_loaded` | `ship`       | Quality and Qwen pages loaded into the quality database, last 336 hours                                                                                       |
 
 Each row is a separate fact from its own source. None is derived from another, and
-a row that has no known hour stays unknown. A row's time is the end of its newest
+a row that has no known hour stays unknown. A row built from two series counts only
+hours both cover. A row's time is the end of its newest
 known hour, so a source that stops keeps its last count and ages until it is
 flagged. These are aggregates: `trace` still reports a page's stages only from
 page-level evidence, and the rows are not cumulative corpus totals.

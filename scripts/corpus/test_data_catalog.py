@@ -147,6 +147,20 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("live_validated", stages)
         self.assertIn("live_imported", stages)
 
+    def test_a_stage_counts_only_hours_every_series_covers(self):
+        catalog = self.refresh(self.throughput(quality_load_pages=[None, 5, None],
+                                               qwen_load_pages=[1, 2, 3]))
+        stage = next(item for item in catalog["stages"] if item["id"] == "live_quality_loaded")
+        self.assertEqual(stage["count"], 7)
+        self.assertIn("1 reported", stage["detail"])
+        self.assertEqual(stage["observed_at"], "2026-11-01T17:00:00.000000000Z")
+
+    def test_a_stage_with_one_silent_series_is_not_observed(self):
+        catalog = self.refresh(self.throughput(quality_load_pages=[None, None, None],
+                                               qwen_load_pages=[1, 2, 3],
+                                               ocr_import_pages=[1, 2, 3]))
+        self.assertNotIn("live_quality_loaded", {item["id"] for item in catalog["stages"]})
+
     def test_refresh_does_not_age_forward_when_the_source_stops(self):
         path = self.throughput(ocr_import_pages=[1, 2, 3])
         first = self.refresh(path)

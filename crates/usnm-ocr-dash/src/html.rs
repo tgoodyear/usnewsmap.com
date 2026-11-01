@@ -151,6 +151,25 @@ mod tests {
     }
 
     #[test]
+    fn the_import_summary_uses_the_label_of_the_count_it_shows() {
+        let now = Utc::now();
+        let mut v = summary_view();
+        let mut source = crate::pipeline::tests::healthy(now);
+        source["stages"][0]["id"] = serde_json::json!("imported");
+        source["stages"][0]["label"] = serde_json::json!("Cataloged curated imports");
+        v.pipeline.snapshot =
+            Some(crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), now).unwrap());
+        v.pipeline.stage_freshness = vec![crate::pipeline::StageFreshness {
+            id: "imported".into(),
+            age_secs: Some(5),
+            stale: false,
+            historical: false,
+        }];
+        let html = render(&v);
+        assert!(html.contains("<li>Cataloged curated imports: 1,234</li>"));
+    }
+
+    #[test]
     fn a_historical_stage_inside_its_budget_is_not_a_current_summary() {
         let now = Utc::now();
         let mut v = summary_view();

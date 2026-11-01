@@ -103,6 +103,9 @@ contents if the disk fills. If an individual restoration fails, the installer
 still attempts every remaining restoration and daemon reload, reports all errors
 and retains the needed recovery links. Restore the original unit activation after
 success or failure; enable the observer timer explicitly for a new installation.
+The refresh timer is new, so after a dashboard that accepts `historical` and
+`max_age_secs` is running, run `systemctl enable --now usnm-data-catalog-refresh.timer`
+once on each host. Installing these units does not start it.
 The catalog listener remains loopback-only (`127.0.0.1:8764`).
 
 No SQLite database, pipeline/catalog snapshot, retained evidence, producer timer,
