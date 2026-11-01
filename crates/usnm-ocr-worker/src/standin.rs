@@ -125,9 +125,14 @@ async fn respond(
         None => {}
     }
     if let Some(to) = redirect {
+        let location = if to.starts_with("http") {
+            to
+        } else {
+            format!("{}{to}", s.root)
+        };
         return (
             StatusCode::PERMANENT_REDIRECT,
-            [(header::LOCATION, format!("{}{to}", s.root))],
+            [(header::LOCATION, location)],
         )
             .into_response();
     }

@@ -16,6 +16,8 @@ pub mod cache;
 /// Engines behind the engine contract: long-lived instances (#307).
 pub mod contract;
 pub mod engine;
+/// Fetching outside content: host policies and one fetcher (#1413).
+pub mod fetcher;
 pub mod loc;
 /// LoC's word confidence per page from the bulk OCR archives (#962).
 pub mod loc_alto;

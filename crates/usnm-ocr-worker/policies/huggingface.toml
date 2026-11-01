@@ -1,0 +1,29 @@
+# Hugging Face and the CDN its downloads redirect to, for the mirror of LoC's bulk OCR archives.
+#
+# A push-back ends this host's part of the run and holds the budget for a while. There is no
+# slow rate, so nothing stays set for the next run.
+attempts = 5
+concurrency = 4
+hosts = ["huggingface.co", "*.huggingface.co", "*.hf.co"]
+label = "Hugging Face"
+max_bytes_per_sec = 85000000
+max_failures_in_a_row = 20
+# Under this for three minutes counts as a stalled transfer.
+min_bytes_per_sec = 102400
+requests_per_minute = 120
+resume = true
+retry_backoff_secs = 30
+
+[push_back]
+default_hold_secs = 300
+html = true
+max_hold_secs = 3600
+statuses = [401, 403, 429]
+
+# Mirror transfers share the uplink with public traffic: when the API slows down, the byte cap
+# halves, down to the floor, and stays lowered for the run.
+[serving_probe]
+every_secs = 60
+floor_bytes_per_sec = 20000000
+slow_secs = 1.0
+url = "https://api.usnewsmap.com/readyz"

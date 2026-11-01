@@ -20,23 +20,36 @@
 //! ends the run with an error, so a block is reported, never pressed on. A
 //! run doesn't start, and starts no further archive, while the global budget
 //! is slowed, whichever process LoC pushed back on.
+//!
+//! The downloads themselves go through [`crate::fetcher`]; LoC's rules above
+//! are its policy, `policies/loc.toml`. With a mirror
+//! ([`Options::mirror`]), an archive's job lists the mirror first and LoC
+//! second, so both are one code path. The mirror's manifest says what it holds,
+//! and an archive it lacks or lists with another hash is recorded as held back
+//! and comes from LoC alone, or waits if the run is mirror-only. The hash
+//! checked is always LoC's. A slowed LoC budget then stops only what needs LoC.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use crate::loc::global::GlobalPacer;
-use crate::loc::{Pacer, USER_AGENT};
+use crate::fetcher::run::RunOptions;
+use crate::fetcher::{
+    Engine, EngineOptions, Fail, FileBudgets, FileJobs, HeldBack, Job, JobStore, Policies, LOC,
+};
+
+pub use crate::fetcher::Status;
 
 pub const LIST_URL: &str = "https://www.loc.gov/collections/chronicling-america/datasets/?fo=json";
+
+/// Verification failures on record that stop a run with a mirror, and keep it from restarting.
+pub const MAX_CHECKSUM_FAILURES: u64 = 3;
 
 /// One archive, as LoC's datasets table lists it.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -67,22 +80,29 @@ pub struct Options {
     pub limit: Option<usize>,
     /// The host's global LoC budget.
     pub global_pacer: PathBuf,
+    /// The hosts this run may ask.
+    pub policies: Policies,
+    /// A mirror to prefer.
+    pub mirror: Option<Mirror>,
+    /// Keeps what outlives a run beyond the archives: `.part` files that can
+    /// resume, budgets other than LoC's, and the held-back and failure lists.
+    /// Needed with a mirror.
+    pub state: Option<PathBuf>,
+    /// Transfers at once, within each host's own limit.
+    pub workers: usize,
+    /// Lowers the mirror's byte cap.
+    pub rate_bytes_per_sec: Option<u64>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct Status {
-    pub state: String,
-    pub archives: usize,
-    pub done: usize,
-    pub fetched_this_run: usize,
-    pub bytes_done: u64,
-    pub bytes_total: u64,
-    pub bytes_this_run: u64,
-    pub elapsed_secs: f64,
-    /// Bytes a second this run, while downloading.
-    pub bytes_per_sec: f64,
-    pub failed: Vec<String>,
-    pub updated_at: String,
+/// A mirror of the archives.
+#[derive(Debug, Clone)]
+pub struct Mirror {
+    /// An archive's URL is this plus its name.
+    pub base_url: String,
+    /// The mirror's manifest: JSON holding rows with `archive_name` and `sha256`.
+    pub manifest: PathBuf,
+    /// Never ask LoC. Archives the mirror can't supply wait.
+    pub only: bool,
 }
 
 /// The archives in LoC's datasets JSON.
@@ -116,274 +136,109 @@ fn check_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Only `https://` on loc.gov or a host under it.
-pub fn allowed(url: &reqwest::Url) -> bool {
-    url.scheme() == "https"
-        && url
-            .host_str()
-            .is_some_and(|h| h == "loc.gov" || h.ends_with(".loc.gov"))
-}
-
-fn free_bytes(path: &Path) -> u64 {
-    rustix::fs::statvfs(path).map_or(0, |s| s.f_bavail.saturating_mul(s.f_frsize))
-}
-
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-struct Fetcher {
-    http: reqwest::Client,
-    pacer: Pacer,
-    global: Arc<GlobalPacer>,
-    /// The minimum between any two requests (archive starts, redirect hops, the list).
-    gap: Duration,
-    /// When the last request went: checked again before each send and logged, so the
-    /// journal shows every request's spacing.
-    last_sent: std::sync::Mutex<Option<Instant>>,
-    /// `<out>/.last-request`: the last send's time (ms since the epoch), so a restarted run
-    /// keeps the gap from the previous run's last request too.
-    stamp: PathBuf,
-}
-
-fn epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
-/// The previous run's last request, as an `Instant`, if its stamp is readable and recent.
-fn last_from_stamp(stamp: &Path) -> Option<Instant> {
-    let ms: u64 = std::fs::read_to_string(stamp).ok()?.trim().parse().ok()?;
-    // A stamp from the future (the clock moved back) counts as now: a full gap.
-    let ago = Duration::from_millis(epoch_ms().saturating_sub(ms));
-    Instant::now().checked_sub(ago)
-}
-
-enum Fail {
-    /// LoC pushed back: stop the run.
-    Blocked(String),
-    /// Try again next run.
-    Transient(String),
-    /// Stopped, or the run's time is up, before a request went out.
-    Stopped,
-    /// The host's global pacer was slowed (a push-back to any process) while this
-    /// request waited for its turn; it didn't go out.
-    Slowed(anyhow::Error),
-}
-
-/// The `Retry-After` of a response, capped at an hour.
-fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
-    resp.headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| usnm_core::retry_after::parse(v, std::time::SystemTime::now()))
-        .map(|d| d.min(Duration::from_secs(3600)))
-}
-
-fn is_html(resp: &reqwest::Response) -> bool {
-    resp.headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.to_ascii_lowercase().contains("text/html"))
-}
-
-impl Fetcher {
-    /// GET `url`, following redirects by hand, each request paced. Stops
-    /// before any request once `stop` is set or `deadline` has passed,
-    /// including while waiting for a slot.
-    async fn open(
-        &self,
-        url: &str,
-        stop: &watch::Receiver<bool>,
-        deadline: Instant,
-    ) -> Result<reqwest::Response, Fail> {
-        let mut at =
-            reqwest::Url::parse(url).map_err(|e| Fail::Transient(format!("{url}: {e}")))?;
-        for _ in 0..5 {
-            if !allowed(&at) {
-                return Err(Fail::Transient(format!("{at}: not an https loc.gov URL")));
-            }
-            let mut stop = stop.clone();
-            tokio::select! {
-                () = self.pacer.wait() => {}
-                _ = stop.wait_for(|s| *s) => return Err(Fail::Stopped),
-                () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
-            }
-            // Belt and braces over the pacer: never two requests closer than the gap.
-            let prev = *self.last_sent.lock().expect("last_sent lock");
-            if let Some(p) = prev {
-                let since = p.elapsed();
-                if since < self.gap {
-                    let mut stop = stop.clone();
-                    tokio::select! {
-                        () = tokio::time::sleep(self.gap - since) => {}
-                        _ = stop.wait_for(|s| *s) => return Err(Fail::Stopped),
-                        () = tokio::time::sleep_until(deadline) => return Err(Fail::Stopped),
-                    }
-                }
-            }
-            if *stop.borrow() || Instant::now() >= deadline {
-                return Err(Fail::Stopped);
-            }
-            // The waits above can outlast a push-back to another process: checked again
-            // just before the request (each redirect hop too), not only between archives.
-            not_slowed(&self.global).map_err(Fail::Slowed)?;
-            let now = Instant::now();
-            let since = prev.map(|p| (now - p).as_secs_f64());
-            *self.last_sent.lock().expect("last_sent lock") = Some(now);
-            if let Err(e) = std::fs::write(&self.stamp, epoch_ms().to_string()) {
-                tracing::warn!(path = %self.stamp.display(), error = %e, "can't record the bulk request's time");
-            }
-            tracing::info!(url = %at, since_last_request_secs = since, "bulk OCR request");
-            let resp = self
-                .http
-                .get(at.clone())
-                .send()
-                .await
-                .map_err(|e| Fail::Transient(format!("{at}: {}", e.without_url())))?;
-            let status = resp.status();
-            if status.is_redirection() {
-                let to = resp
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|l| l.to_str().ok())
-                    .and_then(|l| at.join(l).ok())
-                    .ok_or_else(|| Fail::Transient(format!("{at}: a redirect with no location")))?;
-                at = to;
-                continue;
-            }
-            // An HTML page is a challenge or block page whatever its status.
-            if is_html(&resp)
-                || matches!(
-                    status,
-                    StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
-                )
-            {
-                let d = retry_after(&resp).unwrap_or(Duration::from_secs(3600));
-                self.global.hold(d);
-                let why = if is_html(&resp) {
-                    format!("HTTP {} with an HTML page", status.as_u16())
-                } else {
-                    format!("HTTP {}", status.as_u16())
-                };
-                self.global.slow_down(&format!("bulk OCR: {why}"));
-                return Err(Fail::Blocked(format!("{at}: {why}")));
-            }
-            if !status.is_success() {
-                if status.is_server_error() {
-                    // This run's own pacer, not the host's budget: a 503 is load.
-                    self.pacer.hold(
-                        retry_after(&resp)
-                            .unwrap_or(Duration::ZERO)
-                            .max(Duration::from_secs(300)),
-                    );
-                }
-                return Err(Fail::Transient(format!("{at}: HTTP {}", status.as_u16())));
-            }
-            return Ok(resp);
-        }
-        Err(Fail::Transient(format!("{url}: too many redirects")))
-    }
-
-    /// Download `a` into `out`, checked; returns the bytes written.
-    async fn fetch(
-        &self,
-        a: &Archive,
-        out: &Path,
-        stop: &watch::Receiver<bool>,
-        deadline: Instant,
-    ) -> Result<u64, Fail> {
-        let path = out.join(&a.archive_name);
-        let part = out.join(format!("{}.part", a.archive_name));
-        let mut resp = self.open(&a.url, stop, deadline).await?;
-        if let Some(len) = resp.content_length() {
-            if len != a.size {
-                return Err(Fail::Transient(format!(
-                    "{}: LoC offers {len} bytes, the table lists {}",
-                    a.archive_name, a.size
-                )));
-            }
-        }
-        let mut file = tokio::fs::File::create(&part)
-            .await
-            .map_err(|e| Fail::Transient(format!("{}: {e}", part.display())))?;
-        let mut hash = Sha256::new();
-        let mut n: u64 = 0;
-        loop {
-            if *stop.borrow() {
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(Fail::Stopped);
-            }
-            let chunk = match resp.chunk().await {
-                Ok(Some(c)) => c,
-                Ok(None) => break,
-                Err(e) => {
-                    let _ = tokio::fs::remove_file(&part).await;
-                    return Err(Fail::Transient(format!(
-                        "{}: {}",
-                        a.archive_name,
-                        e.without_url()
-                    )));
-                }
-            };
-            n += chunk.len() as u64;
-            if n > a.size {
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(Fail::Transient(format!(
-                    "{}: longer than the listed {} bytes",
-                    a.archive_name, a.size
-                )));
-            }
-            hash.update(&chunk);
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| Fail::Transient(format!("{}: {e}", part.display())))?;
-        }
-        file.sync_all()
-            .await
-            .map_err(|e| Fail::Transient(format!("{}: {e}", part.display())))?;
-        drop(file);
-        let got = usnm_core::digest::hex(&hash.finalize());
-        if n != a.size || got != a.sha256.to_ascii_lowercase() {
-            let _ = tokio::fs::remove_file(&part).await;
-            return Err(Fail::Transient(format!(
-                "{}: {n} bytes with sha256 {got}, not the listed {} and {}",
-                a.archive_name, a.size, a.sha256
-            )));
-        }
-        tokio::fs::rename(&part, &path)
-            .await
-            .map_err(|e| Fail::Transient(format!("{}: {e}", path.display())))?;
-        Ok(n)
-    }
-}
-
 /// An archive already on disk with the listed size (its sha256 was checked
-/// before the rename that put it there).
+/// before it got that name).
 fn done(out: &Path, a: &Archive) -> bool {
     std::fs::metadata(out.join(&a.archive_name)).is_ok_and(|m| m.len() == a.size)
 }
 
-async fn write_status(out: &Path, s: &Status) {
-    let tmp = out.join("bulk-status.json.tmp");
-    if let Ok(b) = serde_json::to_vec_pretty(s) {
-        if tokio::fs::write(&tmp, b).await.is_ok() {
-            let _ = tokio::fs::rename(&tmp, out.join("bulk-status.json")).await;
+/// The rows of a mirror's manifest, wherever in the JSON they are: name to sha256.
+pub fn parse_manifest(v: &serde_json::Value) -> Option<HashMap<String, String>> {
+    let found =
+        |rows: &Vec<serde_json::Value>| rows.first().is_some_and(|r| r.get("sha256").is_some());
+    let inner: Vec<&serde_json::Value> = match v {
+        serde_json::Value::Array(rows) if found(rows) => {
+            return Some(
+                rows.iter()
+                    .filter_map(|r| {
+                        Some((
+                            r.get("archive_name")?.as_str()?.to_owned(),
+                            r.get("sha256")?.as_str()?.to_ascii_lowercase(),
+                        ))
+                    })
+                    .collect(),
+            );
         }
-    }
+        serde_json::Value::Array(rows) => rows.iter().collect(),
+        serde_json::Value::Object(m) => m.values().collect(),
+        _ => Vec::new(),
+    };
+    inner.into_iter().find_map(parse_manifest)
 }
 
-/// An error once the host's global LoC pacer has been slowed (a push-back to any
-/// process): bulk OCR starts no archive until an operator's `loc-pacer --reset`.
-fn not_slowed(global: &GlobalPacer) -> anyhow::Result<()> {
-    if let Some(slowed) = global.state()?.slowed {
-        bail!(
-            "the global LoC pacer has been slowed since {} ({}); bulk OCR waits for `loc-pacer --reset`",
-            slowed.at,
-            slowed.why
-        );
+/// The jobs for every archive not on disk, and those held back from the mirror.
+fn plan(
+    archives: &[Archive],
+    out: &Path,
+    mirror: Option<(&Mirror, &HashMap<String, String>)>,
+) -> (Vec<Job>, Vec<HeldBack>) {
+    let mut jobs = Vec::new();
+    let mut held = Vec::new();
+    for a in archives.iter().filter(|a| !done(out, a)) {
+        let sha256 = a.sha256.to_ascii_lowercase();
+        let mut sources = Vec::new();
+        if let Some((m, listed)) = mirror {
+            let reason = match listed.get(&a.archive_name) {
+                None => Some("absent-from-mirror"),
+                Some(s) if *s != sha256 => Some("sha256-differs"),
+                Some(_) => None,
+            };
+            match reason {
+                None => sources.push(format!("{}{}", m.base_url, a.archive_name)),
+                Some(reason) => held.push(HeldBack {
+                    reason,
+                    name: a.archive_name.clone(),
+                    size: a.size,
+                    sha256: sha256.clone(),
+                    page_count: a.page_count.unwrap_or(0),
+                }),
+            }
+        }
+        if !mirror.is_some_and(|(m, _)| m.only) {
+            sources.push(a.url.clone());
+        }
+        if !sources.is_empty() {
+            jobs.push(Job {
+                name: a.archive_name.clone(),
+                size: a.size,
+                sha256,
+                dest: out.join(&a.archive_name),
+                sources,
+            });
+        }
     }
+    (jobs, held)
+}
+
+/// The datasets table, once, into `path`.
+async fn fetch_list(
+    engine: &Engine,
+    url: &str,
+    path: &Path,
+    stop: &watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let far = Instant::now() + Duration::from_secs(24 * 3600);
+    let mut resp = engine
+        .open(url, None, stop, far)
+        .await
+        .map_err(|e| match e {
+            Fail::Blocked(m) | Fail::Transient(m) | Fail::Refused(m) | Fail::Checksum(m) => {
+                anyhow::anyhow!("the datasets list: {m}")
+            }
+            Fail::Stopped | Fail::RangeRefused => anyhow::anyhow!("stopped"),
+            Fail::Slowed(e) => e,
+        })?;
+    let mut body = Vec::new();
+    while let Some(c) = resp.chunk().await? {
+        body.extend_from_slice(&c);
+        if body.len() > 64 << 20 {
+            bail!("the datasets list is over 64 MiB");
+        }
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).context("the datasets list isn't JSON")?;
+    parse_list(&v)?;
+    tokio::fs::write(path, &body).await?;
     Ok(())
 }
 
@@ -403,175 +258,115 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
             )
         },
     )?;
-    let global = Arc::new(GlobalPacer::new(opts.global_pacer.clone()));
-    // After a push-back the budget is at the slow rate for every process; the bulk
-    // archives can wait for an operator's reset rather than add to it.
-    not_slowed(&global)?;
-    let last = last_from_stamp(&opts.out.join(".last-request"));
-    let f = Fetcher {
-        http: reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(120))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?,
-        pacer: Pacer::with_global(opts.gap, Some(Arc::clone(&global))),
-        global: Arc::clone(&global),
-        gap: opts.gap,
-        last_sent: std::sync::Mutex::new(last),
-        stamp: opts.out.join(".last-request"),
+    let mut policies = opts.policies.clone();
+    if let Some(loc) = policies.named_mut(LOC) {
+        loc.min_gap_secs = opts.gap.as_secs();
+    }
+    let part_dir = match (&opts.mirror, &opts.state) {
+        (Some(_), None) => bail!("a mirror needs a state directory"),
+        (Some(_), Some(s)) => s.join("part"),
+        (None, _) => opts.out.clone(),
     };
-    // The previous run's remainder of the gap goes on the pacer first, so the first request
-    // waits it out before it takes a slot in the host's budget.
-    if let Some(left) = last.and_then(|l| opts.gap.checked_sub(l.elapsed())) {
-        f.pacer.hold(left);
+    let mirror_url = opts.mirror.as_ref().map(|m| m.base_url.clone());
+    if let (Some(url), Some(rate)) = (&mirror_url, opts.rate_bytes_per_sec) {
+        let u = reqwest::Url::parse(url)?;
+        let name = policies
+            .for_url(&u)
+            .map_err(|e| anyhow::anyhow!(e))?
+            .name
+            .clone();
+        if let Some(p) = policies.named_mut(&name) {
+            p.max_bytes_per_sec = Some(p.max_bytes_per_sec.map_or(rate, |c| c.min(rate)));
+        }
+    }
+    let budgets = FileBudgets::new(opts.state.as_ref().map(|s| s.join("budgets"))).with_file(
+        LOC,
+        opts.global_pacer.clone(),
+        Some(opts.out.join(".last-request")),
+    );
+    let engine = Arc::new(Engine::new(
+        policies,
+        Box::new(budgets),
+        EngineOptions {
+            who: "bulk OCR".into(),
+            rate_file: opts.state.as_ref().map(|s| s.join("rate-bytes-per-sec")),
+        },
+    )?);
+    if opts.mirror.is_none() {
+        // After a push-back the budget is at the slow rate for every process; the bulk
+        // archives can wait for an operator's reset rather than add to it.
+        engine.check_not_slowed(&opts.list_url).await?;
     }
     let list_path = opts.out.join("datasets.json");
     if !list_path.exists() {
-        let far = Instant::now() + Duration::from_secs(24 * 3600);
-        let mut resp = f
-            .open(&opts.list_url, &stop, far)
-            .await
-            .map_err(|e| match e {
-                Fail::Blocked(m) | Fail::Transient(m) => anyhow::anyhow!("the datasets list: {m}"),
-                Fail::Stopped => anyhow::anyhow!("stopped"),
-                Fail::Slowed(e) => e,
-            })?;
-        let mut body = Vec::new();
-        while let Some(c) = resp.chunk().await? {
-            body.extend_from_slice(&c);
-            if body.len() > 64 << 20 {
-                bail!("the datasets list is over 64 MiB");
-            }
+        if opts.mirror.as_ref().is_some_and(|m| m.only) {
+            bail!(
+                "{} is missing, and a mirror-only run never asks LoC",
+                list_path.display()
+            );
         }
-        let v: serde_json::Value =
-            serde_json::from_slice(&body).context("the datasets list isn't JSON")?;
-        parse_list(&v)?;
-        tokio::fs::write(&list_path, &body).await?;
+        fetch_list(&engine, &opts.list_url, &list_path, &stop).await?;
     }
     let v: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&list_path).await?)?;
     let archives = parse_list(&v)?;
-    let start = Instant::now();
-    let deadline = start + Duration::from_secs_f64(opts.max_hours * 3600.0);
+    let listed = match &opts.mirror {
+        Some(m) => {
+            let text = tokio::fs::read(&m.manifest)
+                .await
+                .with_context(|| m.manifest.display().to_string())?;
+            let v: serde_json::Value =
+                serde_json::from_slice(&text).context("the mirror's manifest isn't JSON")?;
+            Some(parse_manifest(&v).context("the mirror's manifest has no archive rows")?)
+        }
+        None => None,
+    };
+    let (jobs, held) = plan(
+        &archives,
+        &opts.out,
+        opts.mirror.as_ref().zip(listed.as_ref()),
+    );
+    if let Some(s) = &opts.state {
+        tokio::fs::create_dir_all(s.join("part")).await?;
+    }
     let mut s = Status {
-        state: "running".into(),
         archives: archives.len(),
         bytes_total: archives.iter().map(|a| a.size).sum(),
+        held_back: held.len() as u64,
         ..Status::default()
     };
-    let mut downloading = Duration::ZERO;
-    for a in &archives {
-        if done(&opts.out, a) {
-            s.done += 1;
-            s.bytes_done += a.size;
-        }
+    for a in archives.iter().filter(|a| done(&opts.out, a)) {
+        s.done += 1;
+        s.bytes_done += a.size;
     }
-    s.updated_at = now();
-    write_status(&opts.out, &s).await;
     tracing::info!(
         archives = s.archives,
         done = s.done,
+        held_back = s.held_back,
         "bulk OCR run starting"
     );
-    let mut result = Ok(());
-    for a in &archives {
-        if done(&opts.out, a) {
-            continue;
-        }
-        if *stop.borrow() {
-            s.state = "stopped".into();
-            break;
-        }
-        if Instant::now() >= deadline {
-            s.state = "paused".into();
-            tracing::info!(
-                hours = opts.max_hours,
-                "the run's time is up; the next run goes on"
-            );
-            break;
-        }
-        if opts.limit.is_some_and(|l| s.fetched_this_run >= l) {
-            s.state = "limit".into();
-            break;
-        }
-        // A push-back to any process (the scan fetcher's, say) ends the run before its
-        // next archive, as one to this run's own requests does.
-        if let Err(e) = not_slowed(&global) {
-            s.state = "slowed".into();
-            result = Err(e);
-            break;
-        }
-        // Downloads restart rather than resume: a partial from an earlier run
-        // goes before the space is counted.
-        let _ = tokio::fs::remove_file(opts.out.join(format!("{}.part", a.archive_name))).await;
-        if free_bytes(&opts.out) < a.size.saturating_add(opts.min_free_bytes) {
-            s.state = "disk".into();
-            result = Err(anyhow::anyhow!(
-                "{}: {} bytes needed, and {} must stay free; stopping",
-                a.archive_name,
-                a.size,
-                opts.min_free_bytes
-            ));
-            break;
-        }
-        let t = Instant::now();
-        match f.fetch(a, &opts.out, &stop, deadline).await {
-            Ok(n) => {
-                downloading += t.elapsed();
-                s.done += 1;
-                s.fetched_this_run += 1;
-                s.bytes_done += n;
-                s.bytes_this_run += n;
-                tracing::info!(archive = %a.archive_name, bytes = n, secs = t.elapsed().as_secs(), "bulk OCR archive fetched");
-            }
-            Err(Fail::Stopped) => {
-                s.state = if *stop.borrow() {
-                    "stopped".into()
-                } else {
-                    "paused".into()
-                };
-                break;
-            }
-            Err(Fail::Slowed(e)) => {
-                s.state = "slowed".into();
-                result = Err(e);
-                break;
-            }
-            Err(Fail::Blocked(m)) => {
-                s.state = "blocked".into();
-                s.failed.push(m.clone());
-                result = Err(anyhow::anyhow!(
-                    "LoC pushed back ({m}); the global pacer is at the slow rate; stopping"
-                ));
-                break;
-            }
-            Err(Fail::Transient(m)) => {
-                tracing::warn!(archive = %a.archive_name, error = %m, "bulk OCR archive failed; the next run tries it again");
-                if s.failed.len() < 100 {
-                    s.failed.push(m);
-                }
-            }
-        }
-        s.elapsed_secs = start.elapsed().as_secs_f64();
-        s.bytes_per_sec = if downloading.is_zero() {
-            0.0
-        } else {
-            s.bytes_this_run as f64 / downloading.as_secs_f64()
-        };
-        s.updated_at = now();
-        write_status(&opts.out, &s).await;
-    }
-    if s.state == "running" {
-        s.state = if s.done == s.archives {
-            "done".into()
-        } else {
-            "incomplete".into()
-        };
-    }
-    s.elapsed_secs = start.elapsed().as_secs_f64();
-    s.updated_at = now();
-    write_status(&opts.out, &s).await;
-    result.map(|()| s)
+    let state_for_jobs = opts.mirror.as_ref().and(opts.state.clone());
+    let store = Arc::new(FileJobs::new(
+        jobs,
+        opts.out.join("bulk-status.json"),
+        state_for_jobs,
+    ));
+    store.held_back(&held).await?;
+    crate::fetcher::run::run(
+        engine,
+        store,
+        RunOptions {
+            part_dir,
+            out: opts.out.clone(),
+            workers: opts.workers,
+            run_for: Duration::from_secs_f64(opts.max_hours * 3600.0),
+            min_free_bytes: opts.min_free_bytes,
+            limit: opts.limit,
+            max_checksum_failures: opts.mirror.as_ref().map(|_| MAX_CHECKSUM_FAILURES),
+        },
+        s,
+        stop,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -590,48 +385,5 @@ mod tests {
         assert_eq!(l[0].archive_name, "a_y_ver01.tar.bz2");
         let bad = serde_json::json!({"datasets": [{"archive_name": "../x.tar.bz2", "batch": "x", "url": "https://loc.gov/x", "size": 1, "sha256": "a".repeat(64)}]});
         assert!(parse_list(&bad).is_err());
-    }
-
-    #[test]
-    fn a_restart_keeps_the_last_requests_time() {
-        let dir = tempfile::tempdir().unwrap();
-        let stamp = dir.path().join(".last-request");
-        assert!(last_from_stamp(&stamp).is_none());
-        std::fs::write(&stamp, (epoch_ms() - 30_000).to_string()).unwrap();
-        let at = last_from_stamp(&stamp).unwrap();
-        let ago = at.elapsed();
-        assert!(
-            ago >= Duration::from_secs(29) && ago <= Duration::from_secs(31),
-            "{ago:?}"
-        );
-        std::fs::write(&stamp, (epoch_ms() + 600_000).to_string()).unwrap();
-        assert!(
-            last_from_stamp(&stamp).unwrap().elapsed() < Duration::from_secs(1),
-            "the future is now"
-        );
-        std::fs::write(&stamp, "garbage").unwrap();
-        assert!(last_from_stamp(&stamp).is_none());
-    }
-
-    #[test]
-    fn a_slowed_pacer_stops_the_next_archive() {
-        let dir = tempfile::tempdir().unwrap();
-        let g = GlobalPacer::new(dir.path().join("pacer.json"));
-        assert!(not_slowed(&g).is_ok());
-        g.slow_down("HTTP 503 (challenge page)");
-        let e = not_slowed(&g).unwrap_err().to_string();
-        assert!(e.contains("HTTP 503 (challenge page)"), "{e}");
-        g.reset().unwrap();
-        assert!(not_slowed(&g).is_ok());
-    }
-
-    #[test]
-    fn only_https_loc_gov() {
-        let ok = |u: &str| allowed(&reqwest::Url::parse(u).unwrap());
-        assert!(ok("https://chroniclingamerica.loc.gov/data/ocr/x.tar.bz2"));
-        assert!(ok("https://tile.loc.gov/storage-services/x"));
-        assert!(!ok("http://tile.loc.gov/x"));
-        assert!(!ok("https://loc.gov.example.com/x"));
-        assert!(!ok("https://example.com/loc.gov"));
     }
 }
