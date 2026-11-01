@@ -1260,6 +1260,21 @@ class QueueModeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different message"):
             self.tick()
 
+    def test_the_other_claims_are_kept_when_a_different_message_stops_the_feed(self):
+        self.tick()
+        other = message(1)
+        other["message_sha256"] = "f" * 64
+        fresh = message(90)
+        self.fake.waiting = [other, fresh]
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        with self.assertRaisesRegex(ValueError, "different message"):
+            self.tick()
+        self.assertIn(fresh["page"], self.state["claims"])
+        self.assertEqual(self.state["claims"][fresh["page"]]["message"], fresh["message_sha256"])
+        self.assertIn(fresh["page"], self.saved[-1]["claims"])
+        self.assertNotEqual(self.state["claims"][other["page"]]["message"], "f" * 64)
+
     def test_claims_made_before_a_failed_claim_step_are_kept(self):
         def failing(count):
             raise batch.ClaimFailed("claim step failed", [message(1)])

@@ -1236,17 +1236,19 @@ class QueueFeed:
 
     def record(self, fresh, need):
         require(isinstance(fresh, list) and len(fresh) <= need, "claimed more pages than asked")
+        conflict = False
         for item in fresh:
             page, claim = self.checked(item)
             if page in self.claims:
                 # Its lease ran out while the job was pending and the same message came again,
                 # now hidden for a fresh lease: the existing claim, its scan and its job stand.
-                # A different message for the page is two attempts at once: stop.
-                require(claim["message"] is not None and claim["message"] == self.claims[page].get("message"),
-                        "claimed a page already in this plan with a different message")
+                # A different message for the page is two attempts at once: stop, once the
+                # others are kept. Their messages are hidden for the lease.
+                conflict = conflict or claim["message"] is None or claim["message"] != self.claims[page].get("message")
                 continue
             self.claims[page] = claim
         self.persist()
+        require(not conflict, "claimed a page already in this plan with a different message")
 
     def retry_releases(self):
         pages = sorted(page for page, claim in self.claims.items() if claim.get("release"))
