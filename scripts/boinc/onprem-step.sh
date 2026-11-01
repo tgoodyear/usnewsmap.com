@@ -30,7 +30,7 @@
 # sends them over ssh: copies of the scan fetcher's files, named keep/<batch>/<lccn>/<date>/<ed>/
 # <seq>.<jp2|jpg> with their .json sidecars. Only that layout is taken (regular files, size
 # capped); each is written to $USNM_BOINC_SCAN_STAGE (default /srv/usnm-boinc/project/
-# handoff-scans) through a temporary name, and staged files older than 10 days are pruned. The
+# handoff-scans) through a temporary name, and staged files older than 4 days are pruned. The
 # hand-off export reads them (mounted read-only as /scans), and the bridge's submit takes a job's
 # page from them, so no scan goes through Azure. The BOINC host never reads /tank/ocr itself.
 #
@@ -182,8 +182,8 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
             # A short or broken stream leaves no partial file behind.
             if os.path.exists(tmp):
                 os.unlink(tmp)
-# Prune what no job needs any more: a lease is at most seven days.
-cutoff = time.time() - 10 * 86400
+# Prune what no job needs any more: a scan is read until its job is submitted, and the lease is 36 hours.
+cutoff = time.time() - 4 * 86400
 pruned = 0
 for root, dirs, files in os.walk(os.path.join(stage, "keep"), topdown=False):
     for f in files:
