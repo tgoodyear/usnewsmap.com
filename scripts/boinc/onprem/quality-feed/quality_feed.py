@@ -652,7 +652,22 @@ def cmd_follow(a):
                                           done_path, skip_path)
         if a.once:
             return
-        time.sleep(a.every_secs)
+        wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=room == 0 or bool(todo))
+
+
+def wait_for_room(camp_dir, max_pending, every_secs, busy, poll_secs=15, min_secs=60):
+    """Waits for the next round: --every-secs when the last one had room and found nothing to
+    feed. After a round that made chunks or found the outbox full, only until the shipper takes
+    one (polled every 15 s; at least a minute,
+    at most --every-secs), since the shipper drains a full outbox in minutes and a flat sleep
+    left it empty for the rest of it."""
+    if not busy:
+        time.sleep(every_secs)
+        return
+    start = time.monotonic()
+    time.sleep(min(min_secs, every_secs))
+    while time.monotonic() - start < every_secs and len(pending_chunks(camp_dir)) >= max_pending:
+        time.sleep(poll_secs)
 
 
 def main(argv=None):

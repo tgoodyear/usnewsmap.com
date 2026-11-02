@@ -388,7 +388,8 @@ doesn't keep publishing or submits waiting, and a publish doesn't fail a claim o
 To ship a hand-off fix without a new server image, build the changed `usnm-boinc` or
 `handoff-job.sh` over the running image, built on bookworm from the running image's source plus the
 fix, and put the new image's `sha256:<id>` in `/etc/usnm-boinc/handoff-image`. Only hand-off steps
-read that file. Delete it once `SERVER_IMAGE` carries the fix:
+read that file. `/etc/usnm-boinc/stage-image` does the same for `quality-stage` alone, which
+writes only its campaign's tree (#529). Delete either once `SERVER_IMAGE` carries the fix:
 
 ```dockerfile
 FROM <SERVER_IMAGE>

@@ -13,45 +13,139 @@ use usnm_ocr_contract::quality::{
     MAX_PLACES, MAX_SCAN, MAX_TEXTS, VERSION,
 };
 
-/// Packs any staged single-page units in `page_dir` that are not yet present in
-/// a bundle under `units_dir` into multi-page bundle units of up to `bundle_size` pages.
+/// The names of the bundle directories under `units_dir`. Only the names:
+/// a listing is cheap on the share, a stat per bundle is not.
+pub(super) fn bundle_names(units_dir: &Path) -> anyhow::Result<Vec<String>> {
+    if !units_dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut names: Vec<String> = std::fs::read_dir(units_dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with("bundle-"))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// The page a bundle's name starts with: `bundle-<n>-<doc_id>`.
+pub(super) fn first_doc(name: &str) -> Option<&str> {
+    name.strip_prefix("bundle-")?
+        .split_once('-')
+        .map(|(_, d)| d)
+}
+
+/// The pages the bundles `names` under `units_dir` hold, after clearing
+/// what a crash left behind, and how many of them were removed. A bundle that
+/// is neither `submitted` nor `submitting` is removed when its `quality.json`
+/// is missing (packing stopped part way) or when any of its inputs no longer
+/// matches the hash the job records (the share lost or cut short a write it
+/// had acknowledged, as it can with synchronous writes off). Its pages then
+/// count as unbundled, so the run packs them again. A submitted or submitting
+/// bundle is never touched: BOINC may already hold it.
+pub(super) fn bundled(
+    units_dir: &Path,
+    names: &[&str],
+) -> anyhow::Result<(BTreeSet<String>, usize)> {
+    let mut docs = BTreeSet::new();
+    let mut removed = 0usize;
+    for name in names {
+        let p = units_dir.join(name);
+        if !p.is_dir() {
+            continue;
+        }
+        let sent = p.join("submitted").exists() || p.join("submitting").exists();
+        if !p.join(JOB_FILE).exists() {
+            if !sent {
+                eprintln!("{}: no quality.json; packing it again", p.display());
+                std::fs::remove_dir_all(&p)?;
+                removed += 1;
+            }
+            continue;
+        }
+        let job = read(&p.join(JOB_FILE), MAX_JOB_JSON)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Job>(&b).ok());
+        if !sent {
+            if let Some(why) = damage(&p, job.as_ref(), true) {
+                eprintln!("{}: {why}; packing it again", p.display());
+                std::fs::remove_dir_all(&p)?;
+                removed += 1;
+                continue;
+            }
+        }
+        if let Some(job) = job {
+            if job.pages.is_empty() {
+                docs.insert(job.doc_id);
+            } else {
+                docs.extend(job.pages.into_iter().map(|bp| bp.doc_id));
+            }
+        }
+    }
+    Ok((docs, removed))
+}
+
+/// Why a staged unit's inputs can't be trusted, or `None` when they all
+/// match the hashes in its `quality.json`. A page unit whose page, ALTO and
+/// texts are all gone has been freed after its bundle was submitted
+/// (`quality_receive.py --after-submit`); that is `None` too unless
+/// `bundle` is set, as a bundle is never freed.
+pub(super) fn damage(dir: &Path, job: Option<&Job>, bundle: bool) -> Option<String> {
+    let Some(job) = job else {
+        return Some("quality.json does not parse".into());
+    };
+    let files = [
+        (PAGE_FILE, &job.inputs.page, MAX_BUNDLE_SCAN.max(MAX_SCAN)),
+        (ALTO_FILE, &job.inputs.alto, MAX_BUNDLE_ALTO.max(MAX_ALTO)),
+        (
+            TEXTS_FILE,
+            &job.inputs.texts,
+            MAX_BUNDLE_TEXTS.max(MAX_TEXTS),
+        ),
+    ];
+    let present = files
+        .iter()
+        .filter(|(f, _, _)| dir.join(f).exists())
+        .count();
+    if present == 0 && !bundle {
+        return None;
+    }
+    for (file, input, max) in files.iter().chain(std::iter::once(&(
+        PLACES_FILE,
+        &job.inputs.places,
+        MAX_PLACES,
+    ))) {
+        match read(&dir.join(file), *max) {
+            Ok(bytes) if input.matches(&bytes) => {}
+            Ok(_) => return Some(format!("{file} differs from its hash")),
+            Err(e) => return Some(format!("{file}: {e:#}")),
+        }
+    }
+    None
+}
+
+/// Packs the staged single-page units of `docs` in `page_dir` that no
+/// bundle holds yet (`bundled`) into multi-page bundle units of up to
+/// `bundle_size` pages under `units_dir`, numbered after its `existing`
+/// bundles. Only the run's own pages are looked at: `page_dir` keeps every
+/// page the campaign ever staged, and listing it all over the share took
+/// minutes once it held tens of thousands.
 pub(super) fn pack_bundles(
     page_dir: &Path,
     units_dir: &Path,
     bundle_size: usize,
+    docs: &[String],
+    bundled_docs: &BTreeSet<String>,
+    existing_bundles: usize,
 ) -> anyhow::Result<usize> {
-    let mut bundled_docs = BTreeSet::new();
-    let mut existing_bundles = 0usize;
-    if units_dir.exists() {
-        for entry in std::fs::read_dir(units_dir)?.filter_map(|e| e.ok()) {
-            let p = entry.path();
-            if p.join(JOB_FILE).exists() {
-                existing_bundles += 1;
-                if let Ok(job) =
-                    serde_json::from_slice::<Job>(&read(&p.join(JOB_FILE), MAX_JOB_JSON)?)
-                {
-                    if job.pages.is_empty() {
-                        bundled_docs.insert(job.doc_id);
-                    } else {
-                        for bp in job.pages {
-                            bundled_docs.insert(bp.doc_id);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let mut unbundled: Vec<PathBuf> = std::fs::read_dir(page_dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| !bundled_docs.contains(n))
-                && p.join(JOB_FILE).exists()
-        })
+    let mut unbundled: Vec<PathBuf> = docs
+        .iter()
+        .filter(|d| !bundled_docs.contains(*d))
+        .map(|d| page_dir.join(d))
+        .filter(|p| p.join(JOB_FILE).exists())
         .collect();
     unbundled.sort();
+    unbundled.dedup();
     let mut created = 0usize;
     let mut chunk: Vec<PathBuf> = Vec::new();
     let mut scan_bytes = 0usize;

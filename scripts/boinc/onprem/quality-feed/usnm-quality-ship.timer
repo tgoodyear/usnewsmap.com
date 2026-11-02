@@ -1,9 +1,10 @@
 [Unit]
-Description=usnewsmap quality shipper, every 15 minutes (#962)
+Description=usnewsmap quality shipper, 3 minutes after the last run (#962, #529)
 
 [Timer]
 OnBootSec=10min
-OnUnitInactiveSec=15min
+# A run ships every READY chunk (MAX_CHUNKS), so this only matters once the outbox is empty.
+OnUnitInactiveSec=3min
 
 [Install]
 WantedBy=timers.target

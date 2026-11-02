@@ -5,8 +5,8 @@
 #
 #   quality-feed-install.sh --campaign NAME --engine-image sha256:<worker digest>
 #     [--host pve-laptop.tjg.fyi] [--ctid 215] [--scan-server http://usnm-scanfetch.tjg.fyi:8380]
-#     [--chunk-pages 200] [--max-pending 5] [--workers 4]
-#     [--max-unsent 300] [--max-chunks 1] [--bundle-size 200] [--enable]
+#     [--chunk-pages 200] [--max-pending 8] [--workers 4]
+#     [--max-unsent 300] [--max-chunks 30] [--bundle-size 200] [--enable]
 #     [--follow [--strata 1] [--pass-pages 2000] [--pass-batches /srv/locstats/bucket-batches.tsv]]
 #
 # Before it: home-infra's scripts/host-ssh-trust.sh --from pve-laptop.tjg.fyi --to pve.tjg.fyi
@@ -38,7 +38,7 @@ die() { echo "error: $*" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 CAMPAIGN="" ENGINE="" HOST=pve-laptop.tjg.fyi CTID=215 SCAN_SERVER=http://usnm-scanfetch.tjg.fyi:8380
-CHUNK=200 PENDING=5 WORKERS=4 MAX_UNSENT=300 MAX_CHUNKS=1 BUNDLE=200 ENABLE=false
+CHUNK=200 PENDING=8 WORKERS=4 MAX_UNSENT=300 MAX_CHUNKS=30 BUNDLE=200 ENABLE=false
 FOLLOW=false STRATA=1 PASS_PAGES=2000 PASS_BATCHES=""
 while [ $# -gt 0 ]; do
   case $1 in

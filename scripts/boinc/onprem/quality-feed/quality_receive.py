@@ -44,17 +44,34 @@ def own(path):
         os.lchown(path, OWNER, OWNER)
 
 
+def sample_docs(path):
+    with open(path) as f:
+        return [json.loads(line)["doc_id"] for line in f]
+
+
 def after_submit(camp, inc):
     units = os.path.join(camp, "units")
-    bundles = [d for d in os.listdir(units) if os.path.isdir(os.path.join(units, d))] if os.path.isdir(units) else []
+    # A directory without quality.json is no bundle yet: packing stopped part way, and the next
+    # stage removes it. Submit takes only bundles with one.
+    bundles = [d for d in os.listdir(units) if os.path.isfile(os.path.join(units, d, "quality.json"))] \
+        if os.path.isdir(units) else []
     if not bundles or any(not os.path.exists(os.path.join(units, b, "submitted")) for b in bundles):
         fail("a bundle has no submitted marker; nothing freed")
-    with open(os.path.join(inc, "sample.jsonl")) as f:
-        docs = [json.loads(line)["doc_id"] for line in f]
+    docs = sample_docs(os.path.join(inc, "sample.jsonl"))
+    # The shipper receives the next chunk while this one stages and submits: a page that chunk
+    # holds too keeps its scan and texts, so its stage never has to ask LoC.
+    keep = set()
+    incoming = os.path.dirname(inc)
+    for other in os.listdir(incoming):
+        sample = os.path.join(incoming, other, "sample.jsonl")
+        if other != os.path.basename(inc) and CHUNK_RE.match(other) and os.path.isfile(sample):
+            keep.update(sample_docs(sample))
     freed = 0
     for d in docs:
         if not DOC_RE.match(d):
             fail(f"not a page id: {d}")
+        if d in keep:
+            continue
         paths = [os.path.join(camp, "scans", f"{d}.jpg"), os.path.join(camp, "scans", f"{d}.xml"),
                  os.path.join(camp, "texts", f"{d}.json"), os.path.join(camp, "texts", f"{d}.ours.xml")]
         paths += [os.path.join(camp, "pages", d, n) for n in ("page.jpg", "loc.xml", "texts.json")]
