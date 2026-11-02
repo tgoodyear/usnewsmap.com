@@ -76,7 +76,10 @@ pub(super) fn for_page(path: &str, query: &str) -> Option<Head> {
         "/credits" => return Some(Head::fixed(CREDITS)),
         _ => {}
     }
-    let phrase_mode = param(query, "mode").is_none_or(|mode| mode == "phrase");
+    let phrase_mode = !matches!(
+        param(query, "mode").as_deref(),
+        Some("all" | "any" | "near")
+    );
     let q = search_query_in_mode(path, phrase_mode)?;
     let example = EXAMPLES
         .get(&search_path_in_mode(&q, phrase_mode))
@@ -93,6 +96,36 @@ fn param(query: &str, name: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
+/// A filter's value as the app reads it (`parseView` in web/src/state/url.ts):
+/// empty when it's the default or invalid, and lists in one case and order.
+fn normalized(key: &str, value: &str) -> String {
+    let keep = match key {
+        "mode" => matches!(value, "all" | "any" | "near"),
+        "near" => value
+            .parse::<u8>()
+            .is_ok_and(|near| (1..=20).contains(&near) && near != 5),
+        "source" => value == "congress",
+        "from" | "to" => {
+            value.len() == 10 && chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+        }
+        _ => {
+            let mut items: Vec<String> = value
+                .split(',')
+                .map(|item| item.trim().to_lowercase())
+                .filter(|item| !item.is_empty())
+                .collect();
+            items.sort();
+            items.dedup();
+            return items.join(",");
+        }
+    };
+    if keep {
+        value.to_owned()
+    } else {
+        String::new()
+    }
+}
+
 /// Whether a URL's filters are the example's, or absent as in the sitemap.
 fn same_filters(example: &Example, query: &str) -> bool {
     let wanted = |key: &str| match example.view.get(key) {
@@ -104,19 +137,11 @@ fn same_filters(example: &Example, query: &str) -> bool {
         Some(value) => value.as_str().unwrap_or_default().to_owned(),
         None => String::new(),
     };
-    // A filter named at its default is no filter.
-    let requested = |key: &str| {
-        param(query, key)
-            .filter(|value| {
-                !matches!(
-                    (key, value.as_str()),
-                    ("mode", "phrase") | ("near", "5") | ("source", "news")
-                )
-            })
-            .unwrap_or_default()
-    };
+    let requested = |key: &str| normalized(key, &param(query, key).unwrap_or_default());
     FILTERS.iter().all(|key| requested(key).is_empty())
-        || FILTERS.iter().all(|key| requested(key) == wanted(key))
+        || FILTERS
+            .iter()
+            .all(|key| requested(key) == normalized(key, &wanted(key)))
 }
 
 fn for_example(example: &Example) -> Head {
@@ -361,6 +386,12 @@ mod tests {
             format!("{} · US News Map", krieg.title)
         );
         assert_eq!(
+            for_page(&path, "from=1870-01-01&to=1871-12-31&lang=GER,ger")
+                .unwrap()
+                .title,
+            format!("{} · US News Map", krieg.title)
+        );
+        assert_eq!(
             for_page(&path, "lang=fre").unwrap().title,
             "Newspaper coverage of krieg · US News Map"
         );
@@ -380,6 +411,17 @@ mod tests {
         ] {
             let head = for_page(&path, query).unwrap();
             assert_ne!(head.title, "Mexican-American War · US News Map", "{query}");
+        }
+        // Filters the app would ignore or normalize are the same search.
+        for query in [
+            "from=not-a-date",
+            "mode=bogus",
+            "near=5",
+            "source=news",
+            "from=1846-01-01&to=1849-12-31&state=",
+        ] {
+            let head = for_page(&path, query).unwrap();
+            assert_eq!(head.title, "Mexican-American War · US News Map", "{query}");
         }
         // Naming the default match type is the same search.
         assert_eq!(

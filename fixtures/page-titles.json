@@ -12,6 +12,11 @@
   { "title": "Newspaper coverage of mexican war · US News Map", "url": "/search/mexican-war?state=GA" },
   { "title": "Newspaper coverage of mexican war · US News Map", "url": "/search/mexican-war?from=1846-01-01" },
   { "title": "Records of Congress: mexican war · US News Map", "url": "/search/mexican-war?source=congress" },
+  { "title": "Mexican-American War · US News Map", "url": "/search/mexican-war?from=not-a-date&mode=bogus" },
+  {
+    "title": "Krieg in German papers, 1870 · US News Map",
+    "url": "/search/krieg?from=1870-01-01&to=1871-12-31&lang=GER"
+  },
   { "title": "Whig Party · US News Map", "url": "/search/Whig%20OR%20Whigs" },
   { "title": "Newspaper coverage of old glory · US News Map", "url": "/search/old-glory" },
   {
