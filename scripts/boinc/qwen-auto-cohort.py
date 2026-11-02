@@ -281,21 +281,24 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
 
 
 def raised_workunits(project, ids, limit=10):
-    """The lowest-id candidates with a raised workunit priority, at most `limit`."""
+    """Up to `limit` candidates with a raised workunit priority and an unsent replica, not yet
+    validated, highest priority first and then by id."""
     if not ids:
         return []
     code = """
 require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true); $out=[];
 foreach(array_chunk(array_map('intval',$ids),5000) as $chunk)
- foreach(BoincWorkunit::enum_fields('id',"appid=6 AND priority>0 AND id IN (".implode(',',$chunk).")") as $w)
-  $out[]=intval($w->id);
+ foreach(BoincWorkunit::enum_fields('id,priority',"appid=6 AND priority>0 AND canonical_resultid=0 AND "
+   ."id IN (".implode(',',$chunk).") AND id IN (SELECT workunitid FROM result WHERE appid=6 AND server_state=2)") as $w)
+  $out[]=[intval($w->id),intval($w->priority)];
 echo json_encode($out);
 """
     proc = subprocess.run(["php", "-r", code, json.dumps(ids)], cwd=project / "html/inc",
                           text=True, capture_output=True, check=True, timeout=15)
     found = json.loads(proc.stdout)
-    require(isinstance(found, list) and set(found) <= set(ids), "Raised-priority lookup out of range")
-    return sorted(found)[:limit]
+    require(isinstance(found, list) and {unit for unit, _ in found} <= set(ids),
+            "Raised-priority lookup out of range")
+    return [unit for unit, _ in sorted(found, key=lambda row: (-row[1], row[0]))][:limit]
 
 
 def read_database(project, ids, hosts=(9, 10)):
@@ -431,8 +434,11 @@ def run(args):
                                 and workunit != reserved)
             later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
             # Raised-priority units join the page wherever they sit, so choose() can take them first.
-            raised = raised_workunits(project, candidates)
-            ids = sorted(set((later or candidates)[:1000 - len(raised)]) | set(raised))
+            # The cursor still follows the ordinary page alone, so no ordinary unit is skipped.
+            passed_over = {int(unit) for unit in state.get("out_of_cohort", {})}
+            raised = raised_workunits(project, [unit for unit in candidates if unit not in passed_over])
+            page = [unit for unit in (later or candidates) if unit not in raised][:1000 - len(raised)]
+            ids = sorted(set(page) | set(raised))
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
             wanted = sorted(set(ids + current_ids))
             if not wanted:
@@ -476,8 +482,8 @@ def run(args):
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
             scanned = set(ids)
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
-            if not fresh_count and ids:
-                state["scan_after"] = ids[-1]
+            if not sum(fresh(row) for row in rows if int(row["unit"]["id"]) in set(page)) and page:
+                state["scan_after"] = page[-1]
                 if args.apply:
                     persist(state_path, state)
             output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs_in_scan": fresh_count,
@@ -534,10 +540,10 @@ def run(args):
             if skipped:
                 output |= {"out_of_cohort_skipped": skipped, "out_of_cohort_remembered": remembered}
             if not selected:
-                if skipped and ids:
+                if skipped and page:
                     # Every fresh unit in this page is out of cohort and never becomes admissible:
                     # move past it so later in-cohort work is reached.
-                    state["scan_after"] = ids[-1]
+                    state["scan_after"] = page[-1]
                     if args.apply:
                         persist(state_path, state)
                 return output | {"status": "no-fresh-verified-pairs"}
