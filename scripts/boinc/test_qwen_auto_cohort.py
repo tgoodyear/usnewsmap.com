@@ -124,6 +124,15 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertFalse(R.fresh(rows[0]))
         self.assertEqual(R.choose(rows, 100, None, 0), [])
 
+    def test_raised_priority_units_are_chosen_first_as_one_run(self):
+        rows = [self.input(i) for i in range(100, 115)]
+        for row in rows:
+            row["unit"]["priority"] = 10 if int(row["unit"]["id"]) in (105, 106, 108) else 0
+        self.assertEqual([int(r["unit"]["id"]) for r in R.choose(rows, 100, None, 500)], [105, 106])
+        for row in rows:
+            row["unit"]["priority"] = 0
+        self.assertEqual([int(r["unit"]["id"]) for r in R.choose(rows, 100, None, 3)], [100, 101, 102])
+
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_out_of_cohort_language_is_passed_over_and_never_inside_the_window(self):
         languages = ["spa", "yid", "yid", "deu", "yid", "srp"]

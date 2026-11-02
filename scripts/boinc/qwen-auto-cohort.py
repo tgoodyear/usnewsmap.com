@@ -160,13 +160,16 @@ def assignable_units(rows, window, host):
 def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
     if remaining <= 0:
         return []
+    # Highest workunit priority first, as the feeder orders (a calibration batch is raised to 10),
+    # then by id; the run stays a contiguous id range of one priority.
     candidates = sorted((row for row in rows if int(row["unit"]["id"]) >= floor
                          and int(row["unit"]["id"]) != reserved and fresh(row)),
-                        key=lambda row: int(row["unit"]["id"]))
+                        key=lambda row: (-int(row["unit"].get("priority") or 0), int(row["unit"]["id"])))
     result = []
     for row in candidates:
         current = int(row["unit"]["id"])
-        if result and current != int(result[-1]["unit"]["id"]) + 1:
+        if result and (current != int(result[-1]["unit"]["id"]) + 1
+                       or int(row["unit"].get("priority") or 0) != int(result[-1]["unit"].get("priority") or 0)):
             break
         # The window is a workunit id range: an inadmissible unit ends the run rather than
         # being opened inside it, and one before the run is passed over.
@@ -290,7 +293,7 @@ $out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum
  ."(SELECT id FROM workunit WHERE appid=6 AND batch=8 AND rsc_disk_bound=19327352832)")];
 $assigned=[];foreach(BoincDb::get()->enum_fields('assignment','StdClass','workunitid',"workunitid IN ($clause)",'') as $a)
  $assigned[$a->workunitid]=($assigned[$a->workunitid]??0)+1;
-foreach(BoincWorkunit::enum_fields('id,name,appid,batch,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
+foreach(BoincWorkunit::enum_fields('id,name,appid,batch,priority,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
  .'transitioner_flags,need_validate,app_version_num,hr_class,xml_doc', "id IN ($clause)") as $w) {
  $out['rows'][]=['unit'=>$w,'results'=>$group[$w->id]??[],'assignments'=>$assigned[$w->id]??0];
 } echo json_encode($out);
