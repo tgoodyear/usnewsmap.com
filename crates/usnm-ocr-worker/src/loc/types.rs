@@ -217,7 +217,16 @@ pub struct LocConfig {
     /// ([`super::LocClient::bucket_jp2`]) the JP2 of a batch it holds,
     /// paced and held on its own, outside the host's LoC budget. None: off.
     pub bucket: Option<super::bucket::BucketConfig>,
+    /// Requests to LoC's own servers (loc.gov, tile.loc.gov, Chronicling
+    /// America) in flight at once, from the start of each to the end of its
+    /// body, whatever the pages in flight (the maintainer's decision of 2
+    /// November 2026: many at once can look like a burst to LoC's challenge
+    /// system even under the per-minute limit). The bucket isn't counted.
+    pub max_in_flight: usize,
 }
+
+/// [`LocConfig::max_in_flight`]'s default.
+pub const DEFAULT_MAX_IN_FLIGHT: usize = 4;
 
 impl Default for LocConfig {
     fn default() -> Self {
@@ -237,6 +246,7 @@ impl Default for LocConfig {
             html_is_block: false,
             global_pacer: None,
             bucket: None,
+            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
         }
     }
 }

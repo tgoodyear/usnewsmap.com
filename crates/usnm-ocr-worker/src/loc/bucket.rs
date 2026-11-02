@@ -35,7 +35,9 @@
 //! **Pacing.** As for a mirror ([`super::mirror`]): one request at a time,
 //! the next at least [`BucketConfig::gap`] ([`DEFAULT_GAP`], never less from
 //! the flag than [`MIN_GAP`]) after the last one ended, never through LoC's pacers or the
-//! host's LoC budget. A request waits at most [`BucketConfig::max_wait`]
+//! host's LoC budget. With [`BucketConfig::lanes`] over one
+//! (`--loc-bucket-concurrency`, the maintainer's decision of 2 November
+//! 2026), up to that many run at once and their starts are `gap` apart. A request waits at most [`BucketConfig::max_wait`]
 //! for its turn and then goes to LoC. A 429 or 503 (S3's SlowDown) holds
 //! the bucket for `Retry-After` (at least [`BucketConfig::backoff`], at
 //! most an hour); a challenge, an HTML page or a redirect for
@@ -102,7 +104,16 @@ pub struct BucketConfig {
     /// The longest one request may take (120 s: a 10,000-page batch's
     /// manifest is about 3 MB); an issue METS at most 30 s.
     pub timeout: Duration,
+    /// Requests at once (`--loc-bucket-concurrency`, 1 to [`MAX_LANES`]).
+    /// With one, `gap` runs from the end of a request to the start of the
+    /// next; with more, from start to start.
+    pub lanes: usize,
 }
+
+/// The most requests to the bucket at once. The bucket is S3, not LoC's
+/// Cloudflare-fronted hosts, so LoC's per-minute limits don't cover it; 16
+/// JP2s of about 5 MB at S3's speeds stay well inside the home link.
+pub const MAX_LANES: usize = 16;
 
 impl Default for BucketConfig {
     fn default() -> Self {
@@ -113,6 +124,7 @@ impl Default for BucketConfig {
             block_hold: Duration::from_secs(3600),
             max_wait: Duration::from_secs(30),
             timeout: Duration::from_secs(120),
+            lanes: 1,
         }
     }
 }
@@ -120,10 +132,19 @@ impl Default for BucketConfig {
 impl BucketConfig {
     /// The bucket at `root` (`--loc-bucket`), `gap` apart
     /// (`--loc-bucket-gap-ms`, at least [`MIN_GAP`]), with the default
-    /// holds; `None` for an empty `root`: off. Only an `amazonaws.com` host
-    /// is taken: a loc.gov one would be asked outside LoC's pacers and the
-    /// host's LoC budget.
+    /// holds and one request at a time; `None` for an empty `root`: off.
+    /// Only an `amazonaws.com` host is taken: a loc.gov one would be asked
+    /// outside LoC's pacers and the host's LoC budget.
     pub fn at(root: &str, gap: Duration) -> anyhow::Result<Option<Self>> {
+        Self::with_lanes(root, gap, 1)
+    }
+
+    /// The same, with `lanes` requests at once (1 to [`MAX_LANES`]).
+    pub fn with_lanes(root: &str, gap: Duration, lanes: usize) -> anyhow::Result<Option<Self>> {
+        anyhow::ensure!(
+            (1..=MAX_LANES).contains(&lanes),
+            "--loc-bucket-concurrency must be 1 to {MAX_LANES}"
+        );
         let root = root.trim();
         if root.is_empty() {
             return Ok(None);
@@ -155,6 +176,7 @@ impl BucketConfig {
         Ok(Some(Self {
             root,
             gap,
+            lanes,
             ..Self::default()
         }))
     }
@@ -268,7 +290,7 @@ impl Bucket {
             .build()?;
         Ok(Self {
             http,
-            gate: Gate::new(cfg.gap),
+            gate: Gate::with_lanes(cfg.gap, cfg.lanes),
             counts: Counts::default(),
             batches: Mutex::new(HashMap::new()),
             cfg,

@@ -254,19 +254,33 @@ struct Counts {
 #[derive(Debug)]
 pub(super) struct Gate {
     gap: Duration,
+    /// Requests at once. With one, `gap` runs from the end of a request to
+    /// the start of the next; with more, it runs from start to start.
+    lanes: usize,
     one: Semaphore,
     /// No request before this: the gap after the last one, or a hold.
     next: Mutex<Instant>,
     held: Mutex<Option<Instant>>,
+    /// With lanes, when the last request actually started: a caller woken
+    /// late can't start within `gap` of it.
+    last_start: Mutex<Option<Instant>>,
 }
 
 impl Gate {
     pub(super) fn new(gap: Duration) -> Self {
+        Self::with_lanes(gap, 1)
+    }
+
+    /// Up to `lanes` requests at once, their starts at least `gap` apart.
+    pub(super) fn with_lanes(gap: Duration, lanes: usize) -> Self {
+        let lanes = lanes.max(1);
         Self {
             gap,
-            one: Semaphore::new(1),
+            lanes,
+            one: Semaphore::new(lanes),
             next: Mutex::new(Instant::now()),
             held: Mutex::new(None),
+            last_start: Mutex::new(None),
         }
     }
 
@@ -295,11 +309,41 @@ impl Gate {
             .await
             .ok()?
             .ok()?;
-        let at = *self.next.lock().expect("gate lock");
-        if self.held_until().is_some() || at > deadline {
-            return None;
-        }
+        let at = {
+            // `held` before `next`, the order `hold` takes them in.
+            let held = self.held.lock().expect("gate lock");
+            let mut next = self.next.lock().expect("gate lock");
+            let at = (*next).max(Instant::now());
+            if held.is_some_and(|h| h > Instant::now()) || at > deadline {
+                return None;
+            }
+            // With lanes, this start is reserved: the next starts a gap later.
+            if self.lanes > 1 {
+                *next = at + self.gap;
+            }
+            at
+        };
         tokio::time::sleep_until(at).await;
+        // Callers woken late together still start a gap apart.
+        if self.lanes > 1 {
+            loop {
+                let earliest = {
+                    let mut last = self.last_start.lock().expect("gate lock");
+                    let now = Instant::now();
+                    let earliest = last.map_or(now, |t| t + self.gap);
+                    // Past the deadline: the caller goes to LoC instead.
+                    if earliest > deadline || now > deadline {
+                        return None;
+                    }
+                    if earliest <= now {
+                        *last = Some(now);
+                        break;
+                    }
+                    earliest
+                };
+                tokio::time::sleep_until(earliest).await;
+            }
+        }
         // A hold set while this caller slept (by a request that just
         // ended) still holds.
         if self.held_until().is_some() {
@@ -308,8 +352,11 @@ impl Gate {
         Some(permit)
     }
 
-    /// A request ended: the next waits the gap.
+    /// A request ended: with one lane, the next waits the gap.
     pub(super) fn done(&self) {
+        if self.lanes > 1 {
+            return;
+        }
         let mut next = self.next.lock().expect("gate lock");
         *next = (*next).max(Instant::now() + self.gap);
     }

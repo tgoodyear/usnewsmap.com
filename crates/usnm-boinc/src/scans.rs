@@ -15,8 +15,8 @@
 //! host's fetcher has already spent its LoC budget on the page. Only its
 //! JPEGs are taken; a JP2 master is refused.
 //!
-//! LoC politeness: one request at a time, at least `gap` (2 s or more, which
-//! is 30 a minute, the host's whole LoC budget) between any two, the storage
+//! LoC politeness: one request at a time, at least `gap` (3 s or more, which
+//! is 20 a minute, the host's whole LoC budget) between any two, the storage
 //! service and the image server sharing one pacer; no retries. With
 //! `USNM_LOC_GLOBAL_PACER` set, every request also takes a slot in the host's
 //! shared budget (the scan fetcher's state file, #962), so a stage running
@@ -38,9 +38,9 @@ use usnm_ocr_worker::{
     prefetch::{matches_sidecar, sidecar_path, Sidecar},
 };
 
-/// The shortest gap a stage may take: 30 requests a minute, the host's whole
+/// The shortest gap a stage may take: 20 requests a minute, the host's whole
 /// LoC budget (the maintainer's decision of 2 November 2026; 5 s before).
-pub const MIN_GAP: Duration = Duration::from_secs(2);
+pub const MIN_GAP: Duration = Duration::from_secs(3);
 
 /// The gap a stage takes when it isn't given one: 12 requests a minute, so a
 /// stage alone, outside the shared budget, stays where it was before the floor
@@ -68,7 +68,7 @@ pub fn loc_client_with(
     batch_cache: Option<PathBuf>,
     global_pacer: Option<PathBuf>,
 ) -> anyhow::Result<LocClient> {
-    anyhow::ensure!(gap >= MIN_GAP, "--gap-secs must be at least 2");
+    anyhow::ensure!(gap >= MIN_GAP, "--gap-secs must be at least 3");
     LocClient::new(LocConfig {
         global_pacer,
         api_gap: gap,
@@ -427,10 +427,10 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_is_two_seconds() {
-        assert!(loc_client_with(Duration::from_secs(2), None, None).is_ok());
-        let e = loc_client_with(Duration::from_millis(1999), None, None).unwrap_err();
-        assert!(e.to_string().contains("at least 2"), "{e}");
+    fn the_floor_is_three_seconds() {
+        assert!(loc_client_with(Duration::from_secs(3), None, None).is_ok());
+        let e = loc_client_with(Duration::from_millis(2999), None, None).unwrap_err();
+        assert!(e.to_string().contains("at least 3"), "{e}");
     }
 
     /// A stage with the shared budget takes a slot in it for every request,
@@ -449,7 +449,7 @@ mod tests {
             ..test_config(&s)
         })
         .unwrap();
-        // The shared budget's own gap (2 s) spaces the two requests.
+        // The shared budget's own gap (3 s) spaces the two requests.
         let got = src.jpeg_of(&key(), "xx_test", &base).await.unwrap();
         assert!(got.is_some());
         assert_eq!(g.state().unwrap().sent, 1);

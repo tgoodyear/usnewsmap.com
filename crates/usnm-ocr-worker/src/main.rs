@@ -437,7 +437,7 @@ enum Command {
         )]
         batch_cache: PathBuf,
         /// The host's global LoC budget (#962): a state file every LoC client
-        /// on the host shares, 30 requests a minute in all, 12 for 24 hours
+        /// on the host shares, 20 requests a minute in all, 12 for 24 hours
         /// after LoC pushes back. Without it, only this process's own gaps apply.
         #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
         loc_global_pacer: Option<PathBuf>,
@@ -459,8 +459,8 @@ enum Command {
         /// each batch it holds (1,074 of 3,010 batches, 38.1% of pages, on 24
         /// October 2026), each checked as LoC's are. A manifest from it is
         /// kept under the LoC URL the batch's name gives, marked as a guess
-        /// until LoC confirms it. One request at a time, outside the host's
-        /// LoC budget; anything it can't serve goes to LoC. Only an
+        /// until LoC confirms it. One request at a time unless
+        /// `--loc-bucket-concurrency` says more, outside the host's LoC budget; anything it can't serve goes to LoC. Only an
         /// amazonaws.com host. Empty: off (the default).
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET")]
         loc_bucket: Option<String>,
@@ -468,6 +468,19 @@ enum Command {
         /// next; at least 1000.
         #[arg(long, env = "USNM_PREFETCH_LOC_BUCKET_GAP_MS", default_value_t = 2000)]
         loc_bucket_gap_ms: u64,
+        /// Requests to LoC's bucket at once, 1 to 16. Above 1, the gap runs
+        /// from one request's start to the next's.
+        #[arg(
+            long,
+            env = "USNM_PREFETCH_LOC_BUCKET_CONCURRENCY",
+            default_value_t = 1
+        )]
+        loc_bucket_concurrency: usize,
+        /// Requests to LoC's own servers in flight at once, whatever
+        /// `--concurrency` is (1 to 16; LoC's bucket isn't counted).
+        #[arg(long, env = "USNM_PREFETCH_LOC_IN_FLIGHT", default_value_t = 4,
+              value_parser = clap::value_parser!(u16).range(1..=16))]
+        loc_in_flight: u16,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
         #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
@@ -827,8 +840,13 @@ mod cli_tests {
                 Command::Prefetch {
                     loc_bucket,
                     loc_bucket_gap_ms,
+                    loc_bucket_concurrency,
                     ..
-                } => loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms),
+                } => loc_bucket_config(
+                    loc_bucket.as_deref(),
+                    loc_bucket_gap_ms,
+                    loc_bucket_concurrency,
+                ),
                 _ => panic!("expected prefetch"),
             }
         };
@@ -845,6 +863,14 @@ mod cli_tests {
         assert_eq!(b.gap, Duration::from_secs(9));
         assert!(bucket(&["--loc-bucket", root, "--loc-bucket-gap-ms", "0"]).is_err());
         assert!(bucket(&["--loc-bucket", "https://tile.loc.gov/"]).is_err());
+        // One request at a time unless told otherwise, at most 16.
+        assert_eq!(bucket(&["--loc-bucket", root]).unwrap().unwrap().lanes, 1);
+        let b = bucket(&["--loc-bucket", root, "--loc-bucket-concurrency", "8"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.lanes, 8);
+        assert!(bucket(&["--loc-bucket", root, "--loc-bucket-concurrency", "0"]).is_err());
+        assert!(bucket(&["--loc-bucket", root, "--loc-bucket-concurrency", "17"]).is_err());
         // The environment, as the unit sets it.
         std::env::set_var(NAMES[0], root);
         std::env::set_var(NAMES[1], "7000");
@@ -908,15 +934,17 @@ enum Priority {
     Bulk,
 }
 
-/// LoC's bucket from `--loc-bucket` and `--loc-bucket-gap-ms`: `None` when
-/// the flag is absent or empty.
+/// LoC's bucket from `--loc-bucket`, `--loc-bucket-gap-ms` and
+/// `--loc-bucket-concurrency`: `None` when the flag is absent or empty.
 fn loc_bucket_config(
     root: Option<&str>,
     gap_ms: u64,
+    lanes: usize,
 ) -> anyhow::Result<Option<usnm_ocr_worker::loc::bucket::BucketConfig>> {
-    usnm_ocr_worker::loc::bucket::BucketConfig::at(
+    usnm_ocr_worker::loc::bucket::BucketConfig::with_lanes(
         root.unwrap_or_default(),
         Duration::from_millis(gap_ms),
+        lanes,
     )
 }
 
@@ -1187,6 +1215,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             wayback_gap_ms,
             loc_bucket,
             loc_bucket_gap_ms,
+            loc_bucket_concurrency,
+            loc_in_flight,
             awardees,
             no_loc_prefixes,
         } => {
@@ -1202,7 +1232,11 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     Some(Arc::new(usnm_ocr_worker::loc::mirror::Mirrors::new(cfg)?))
                 }
             };
-            let bucket = loc_bucket_config(loc_bucket.as_deref(), loc_bucket_gap_ms)?;
+            let bucket = loc_bucket_config(
+                loc_bucket.as_deref(),
+                loc_bucket_gap_ms,
+                loc_bucket_concurrency,
+            )?;
             let loc = Arc::new(LocClient::new(LocConfig {
                 global_pacer: loc_global_pacer,
                 bucket,
@@ -1212,6 +1246,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 storage_own_budget,
                 batch_cache: Some(batch_cache),
                 html_is_block: true,
+                max_in_flight: usize::from(loc_in_flight),
                 ..LocConfig::default()
             })?);
             let opts = prefetch::Options {

@@ -34,6 +34,7 @@ pub(super) fn batch_client(
         html_is_block: false,
         global_pacer: None,
         bucket: None,
+        max_in_flight: DEFAULT_MAX_IN_FLIGHT,
     })
     .unwrap()
 }

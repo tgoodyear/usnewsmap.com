@@ -1,8 +1,8 @@
 # The Library of Congress: every LoC server, one budget.
 #
-# 30 requests a minute, 12 for 24 hours after a push-back (the maintainer's decision of
-# 2 November 2026; 45 and 10 until reset from 24 October, docs/design/12-onprem-ocr-pipeline.md,
-# #962). LoC publishes 150 a minute each for its storage and image services and 20 for its
+# 20 requests a minute, 12 for 24 hours after a push-back (the maintainer's decision of
+# 2 November 2026, after LoC sent challenge pages at about 30 a minute; 45 and 10 until reset
+# from 24 October, docs/design/12-onprem-ocr-pipeline.md, #962). LoC publishes 150 a minute each for its storage and image services and 20 for its
 # JSON API, each with a one-hour block past it, and may block below them under load.
 # A push-back while slowed starts the 24 hours again. `usnm-ocr-worker loc-pacer --file <f>
 # --reset` lifts the slow rate sooner. Changing these numbers changes LoC's budget, which is
@@ -12,7 +12,7 @@ hosts = ["loc.gov", "*.loc.gov"]
 label = "LoC"
 # LoC asks for at most 10 bulk requests in 10 minutes per IP; bulk-ocr's --gap-secs overrides this.
 min_gap_secs = 60
-requests_per_minute = 30
+requests_per_minute = 20
 # A 503 is load: it holds this run's requests, not the shared budget.
 server_error_hold_secs = 300
 slow_for_secs = 86400

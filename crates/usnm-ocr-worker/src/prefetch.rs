@@ -374,6 +374,9 @@ struct Counts {
     /// This run's buffer pages found on disk or fetched (for the status and
     /// `--max-total-bytes`; consumed scans aren't taken off).
     run_buffer_bytes: AtomicU64,
+    /// This run's buffer pages fetched (written), only: what a walk running
+    /// alongside may have missed.
+    buffer_written: AtomicU64,
     failed_item_error: AtomicU64,
     deferred_needs_loc: AtomicU64,
 }
@@ -619,6 +622,9 @@ impl Run {
     /// so the fetcher waits rather than overfill the pool.
     async fn count_buffer(&self) {
         let dir = self.opts.out.join(Set::Buffer.dir());
+        // Pages this run writes while the walk runs may or may not be in it:
+        // they're added on top, so the count can be high but never low.
+        let before = self.counts.buffer_written.load(Ordering::SeqCst);
         let n = match tokio::task::spawn_blocking(move || dir_scan_bytes(&dir)).await {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => {
@@ -630,7 +636,20 @@ impl Run {
                 u64::MAX
             }
         };
-        self.counts.buffer_bytes.store(n, Ordering::SeqCst);
+        // A page is counted in `buffer_written` before `buffer_bytes`. Read
+        // inside the compare-and-swap, a page written meanwhile is either in
+        // `during` (and its later add only counts it twice, high) or makes the
+        // swap fail and be tried again: never lost.
+        let c = &self.counts;
+        let _ = c
+            .buffer_bytes
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |_| {
+                let during = c
+                    .buffer_written
+                    .load(Ordering::SeqCst)
+                    .saturating_sub(before);
+                Some(n.saturating_add(during))
+            });
     }
 
     /// Wait while the buffer is at its cap, counting it again every
@@ -822,7 +841,13 @@ impl Run {
                     Set::Keep => c.keep_bytes.fetch_add(side.bytes, Ordering::SeqCst),
                     Set::Buffer => {
                         c.run_buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst);
-                        c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
+                        c.buffer_written.fetch_add(side.bytes, Ordering::SeqCst);
+                        // Saturating: a failed count (`u64::MAX`, full) stays full.
+                        c.buffer_bytes
+                            .try_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
+                                Some(b.saturating_add(side.bytes))
+                            })
+                            .unwrap_or_default()
                     }
                 };
                 // A page from LoC's bucket or a mirror says nothing about
@@ -1053,7 +1078,30 @@ pub async fn run(
         no_loc = run.no_loc,
         "prefetch starting"
     );
-    run.count_buffer().await;
+    // The buffer walk reads every file in it (over 300 GB on tank took about
+    // ten minutes a run). The last run's count, when recent and well under
+    // the cap, stands in while the walk runs alongside the fetching; scans
+    // are only ever deleted from the buffer by others, so it can only be high.
+    match previous_buffer_bytes(&run.status_path, run.opts.buffer_cap) {
+        Some(n) => {
+            run.counts.buffer_bytes.store(n, Ordering::SeqCst);
+            tracing::info!(
+                buffer_bytes = n,
+                "the buffer's size from the last run; counting it again alongside"
+            );
+            let run = Arc::clone(&run);
+            tokio::spawn(async move {
+                let t = Instant::now();
+                run.count_buffer().await;
+                tracing::info!(
+                    buffer_bytes = run.counts.buffer_bytes.load(Ordering::SeqCst),
+                    secs = t.elapsed().as_secs(),
+                    "buffer counted"
+                );
+            });
+        }
+        None => run.count_buffer().await,
+    }
     run.write_status();
     // A status write every 30 s, so a long hold still shows.
     let ticker = {
@@ -1161,6 +1209,38 @@ pub async fn run(
         bail!(error.unwrap_or_else(|| "prefetch failed".into()));
     }
     Ok(status)
+}
+
+/// How old the last run's status may be for its buffer count to stand in
+/// for a walk at the start.
+const BUFFER_COUNT_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
+
+/// The buffer's size the last run wrote to `status`, if it was written in
+/// the last [`BUFFER_COUNT_MAX_AGE`], leaves at least a tenth of `cap` free,
+/// and no other run's status beside it (`status-<tag>.json` of another
+/// resolution, which shares the buffer) was written later; otherwise the run
+/// counts before it starts, as it always did.
+fn previous_buffer_bytes(status: &Path, cap: u64) -> Option<u64> {
+    fn read(p: &Path) -> Option<(DateTime<chrono::FixedOffset>, u64)> {
+        let st: serde_json::Value = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+        let at = DateTime::parse_from_rfc3339(st.get("updated_at")?.as_str()?).ok()?;
+        Some((at, st.get("buffer_bytes")?.as_u64()?))
+    }
+    let (at, n) = read(status)?;
+    let dir = status.parent()?;
+    for e in std::fs::read_dir(dir).ok()? {
+        let p = e.ok()?.path();
+        let name = p.file_name()?.to_str()?;
+        if p != status && name.starts_with("status-") && name.ends_with(".json") {
+            match read(&p) {
+                // Timestamps are whole seconds: a tie could be later.
+                Some((other, _)) if other < at => {}
+                _ => return None,
+            }
+        }
+    }
+    let age = Utc::now().signed_duration_since(at).to_std().ok()?;
+    (age <= BUFFER_COUNT_MAX_AGE && n <= cap - cap / 10).then_some(n)
 }
 
 #[cfg(test)]

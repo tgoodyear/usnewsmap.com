@@ -61,7 +61,7 @@ pub struct Summary {
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
-    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 2");
+    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 3");
     ensure!(
         opts.engine
             .image

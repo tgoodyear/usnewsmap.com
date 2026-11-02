@@ -230,7 +230,7 @@ fn gold_job(e: &Entry, jpeg: &[u8], engine: &Engine, timeout_secs: u32) -> anyho
 /// (or fetched) once for all the crops it has among them, and every crop of
 /// it is cut before any unit of the page is written.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
-    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 2");
+    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 3");
     let loc = match opts.pages_dir {
         Some(_) => None,
         None => Some(scans::loc_client(opts.gap, None)?),

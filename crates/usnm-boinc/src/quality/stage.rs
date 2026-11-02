@@ -138,7 +138,7 @@ pub fn pages_of(opts: &Options) -> anyhow::Result<Vec<(PageSpec, Option<SampleRo
 
 /// Stages up to `max_pages` units; stops at the first LoC refusal.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
-    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 2");
+    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 3");
     let src = crate::scans::Sources::new(
         crate::scans::loc_client(opts.gap, opts.batch_cache.clone())?,
         crate::scans::archive(opts.scan_archive.as_deref())?,
