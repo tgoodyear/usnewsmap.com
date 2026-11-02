@@ -12,7 +12,7 @@ All limits are 95% bootstrap limits, resampling source pages. A number from the 
 
 Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, a difference of 8.2 points with limits of -4.6 to 25.4, so no difference is called. On the German measured set the protocol's pooled CER is 49.6% for Qwen 8B against 17.9% for `frak2021` PSM 3, a difference that is called, against Qwen. Repetition loops are the visible cause: leaving out the 9 looped crops of 1,060 (post-hoc) brings Qwen to 10.9%. Loops were rarer on some sets than others: 3.9% of pilot crops and 15 of 64 Japanese crops. A loop guard is the first change to make.
 
-A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%. Study 5 found that a loop guard alone gives all of that: with the guard on both, the 2B adapter's own gain is -6.9 points on Reichsanzeiger (second use) and -1.0 on unseen Fraktur books, with none on English. An 8B adapter gains -4.5 on Reichsanzeiger and little or nothing on the clean sets. Both survive export to the GGUF the BOINC app runs, with little or no loss. They stay untrusted.
+A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%. Study 5 found that a loop guard alone gives the same gain (-45.0 points against the adapter's -44.7): with the guard on both, the 2B adapter's own gain is -6.9 points on Reichsanzeiger (second use) and -1.0 on unseen Fraktur books, with none on English. An 8B adapter gains -4.5 on Reichsanzeiger and little or nothing on the clean sets. Both lose little or nothing when exported to the GGUF the BOINC app runs. They stay untrusted.
 
 The guard is `stop`: end the reading when the contract's `tail_repetition` fires and keep the text before the repeat. It costs little real text. Study 7 found no image-token setting better than 1,024.
 
@@ -261,7 +261,7 @@ The adapter was merged into its base and converted with llama.cpp commit `091b6a
 
 Export and quantization lost nothing measurable. The same adapter, GGUF against BF16: Reichsanzeiger -0.1 points (-0.4 to 0.3), `dta19` -0.1 (-0.2 to 0.1), Overproof -0.6 (-1.3 to -0.1), BLN600 -0.8 (-1.7 to 0). The GGUF path was better than BF16 where a difference shows, which isn't an export gain: the runtimes also differ in image handling. Peak VRAM was 3.5 GB on 2B Q8_0.
 
-**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision `0c351dd0`), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed it anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
+**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision `0c351dd0`), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed the instance anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
 
 Validation, with guard, 378 crops: baseline 5.3% (3.8 to 7.5); 250 steps 3.5%; 500 steps 2.6%; 1,000 steps 2.5%; 2,000 steps 2.1% (1.6 to 2.8). The 2,000-step adapter was selected.
 
@@ -380,7 +380,7 @@ Of 69 instances, 37 ended with a clean job exit. The others: 20 with no SSH with
 | Granite | 3090, then 2060 SUPER | 1.4 GB on the 3090, 3.9 GB shared | about $1.10 per 1,000 crops on the 3090 |
 | Tesseract, NDLOCR-Lite, American Stories | Local CPU, after the first Tesseract rental | none | no rental cost |
 
-From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an hour. Readers ran on different cards, which affects speed comparisons and not accuracy.
+From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an hour. Readers ran on different cards, which affects speed comparisons.
 
 # Departures from the protocol
 
@@ -419,7 +419,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Nobody has read the invented-text crops. The ids are in the data.
 - The adapters are exported and read in the `usnm_qwen` images, but nothing was signed, published or sent to BOINC, and no volunteer has run them.
 - The guard isn't in `usnm-boinc` yet. The same rule can run either as a stop during generation or as a cut on finished readings, using the existing `repetition_loop_at_token_budget` label.
-- Podman temp files from a cancelled pull remain on the BOINC client container; removing them was refused by the permission check here.
+- Podman temp files from a cancelled pull remain on the BOINC client container; a permission check blocked their removal, so they still need deleting.
 - Surya's native weights scored worse than the GGUF on 50 crops, with server settings that may be the cause.
 - Yiddish has no transcribed crops, so Study 7 can't say whether any image-token value reads it better.
 - MinerU and dots.ocr remain unrun.
