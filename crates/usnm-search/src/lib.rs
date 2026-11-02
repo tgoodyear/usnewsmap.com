@@ -521,6 +521,11 @@ pub enum SearchError {
     /// `Backend`, trying again won't help.
     #[error("search backend rejected the request: {0}")]
     Rejected(String),
+    /// The engine refused an aggregation for its size. The API treats it as
+    /// [`SearchError::Backend`]; [`SearchBackend::summary_with_cube`] takes it
+    /// as the sign to ask call by call.
+    #[error("search backend error: {0}")]
+    OverAggregationLimit(String),
     /// The backend has no index by this id: a lookup found nothing (Quickwit's
     /// metastore answered 404). Only [`SearchBackend::prepare`] returns it.
     #[error("the search backend has no index `{0}`")]
@@ -548,6 +553,20 @@ pub trait SearchBackend: Send + Sync {
         spec: &BucketSpec,
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError>;
+
+    /// The summary and the whole cube in one request, the same as
+    /// [`Self::summary`] and [`Self::cube`] of every shard. `None` from a
+    /// backend without such a request, or when the engine refuses it for
+    /// its size: the caller then asks for them separately.
+    async fn summary_with_cube(
+        &self,
+        _indexes: &IndexSet,
+        _query: &Node,
+        _filters: &Filters,
+        _spec: &BucketSpec,
+    ) -> Result<Option<(Summary, Vec<CubeCell>)>, SearchError> {
+        Ok(None)
+    }
 
     /// Cube cells for the places in `places` only, whatever their shard
     /// (`/v1/days`). Callers pass validated place ids. A backend without it

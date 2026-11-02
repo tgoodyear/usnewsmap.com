@@ -211,14 +211,14 @@ fn plan(
 }
 
 /// An exclusive lock on `path`, held until the file is dropped.
-fn hold_lock(path: &Path) -> anyhow::Result<std::fs::File> {
+pub(crate) fn hold_lock(path: &Path) -> anyhow::Result<std::fs::File> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(path)?;
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-        .map_err(|_| anyhow::anyhow!("another bulk-ocr run holds {}", path.display()))?;
+        .map_err(|_| anyhow::anyhow!("another run holds {}", path.display()))?;
     Ok(lock)
 }
 

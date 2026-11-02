@@ -29,6 +29,25 @@ pub(super) fn map_err(e: reqwest::Error) -> SearchError {
     SearchError::Backend(format!("quickwit {kind} error: {msg}"))
 }
 
+/// The limit behind the engine's own refusal of an aggregation, if `message`
+/// is that refusal: the words of tantivy's error, not a keyword a storage
+/// error or an echoed query could hold.
+pub(super) fn aggregation_limit(message: &str) -> Option<&'static str> {
+    if message.contains("Aborting aggregation because bucket limit") {
+        Some("bucket_limit")
+    } else if message.contains("Aborting aggregation because memory limit") {
+        Some("memory_limit")
+    } else {
+        None
+    }
+}
+
+/// [`cause`], except that the engine's refusal of an aggregation is named
+/// whatever words the query shares with it.
+pub(super) fn failure_cause(message: &str, query: &str) -> &'static str {
+    aggregation_limit(message).unwrap_or_else(|| cause(message, query))
+}
+
 /// What a Quickwit error message is about, by keyword, so its cause can be
 /// logged without its text (which may echo the query, 09 §9.4.2). The
 /// message is compared word by word, leaving out the words of `query` (the

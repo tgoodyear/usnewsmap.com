@@ -317,8 +317,9 @@ struct IndexLine {
     doc_id: String,
     fetched_at: DateTime<Utc>,
     bytes: u64,
+    /// Absent on lines from before downloads were timed.
     #[serde(default)]
-    download_ms: u64,
+    download_ms: Option<u64>,
 }
 
 /// A failure line.
@@ -457,12 +458,18 @@ pub struct Fetch {
     events: VecDeque<(DateTime<Utc>, u64)>,
     /// Lines of the index and their download milliseconds, by the hour.
     pub hourly: BTreeMap<i64, (u64, u64)>,
+    /// Download times by the hour, for the last day or so: a count in each
+    /// of [`TIME_BUCKETS`] buckets.
+    hourly_times: BTreeMap<i64, Box<[u32; TIME_BUCKETS]>>,
     /// When the index was last read to its end, and the hour of its oldest
     /// line, which outlives that hour's count in `hourly`.
     pub index_read_at: Option<DateTime<Utc>>,
     index_first_hour: Option<i64>,
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
+    /// When the failure log was last read to its end; `None` if it's missing
+    /// or unreadable, so its count isn't known.
+    pub failures_read_at: Option<DateTime<Utc>>,
     pub dead: HashSet<String>,
     /// Pages skipped because loc.gov couldn't serve their issue's item
     /// (`loc_item_error`), and when they last were; until permanent.
@@ -477,6 +484,37 @@ pub struct Fetch {
 }
 
 const KEEP_FAILURES: usize = 50;
+/// Four buckets to a doubling, so a percentile is good to about 19%, from a
+/// millisecond to weeks.
+const TIME_BUCKETS: usize = 128;
+/// Hours of download times kept: the 24 the page shows and the two around them.
+const TIME_HOURS: i64 = 26;
+
+fn time_bucket(ms: u64) -> usize {
+    ((ms.max(1) as f64).log2() * 4.0)
+        .ceil()
+        .clamp(0.0, (TIME_BUCKETS - 1) as f64) as usize
+}
+
+/// The top of a bucket.
+fn bucket_seconds(bucket: usize) -> f64 {
+    2f64.powf(bucket as f64 / 4.0) / 1000.0
+}
+
+/// What went wrong, without what it went wrong with: no URLs or page ids, no
+/// detail in brackets, and only the first clause, so failures group.
+fn failure_reason(f: &FailureLine) -> String {
+    let words: Vec<&str> = f
+        .error
+        .split_whitespace()
+        .filter(|w| !w.contains('/'))
+        .collect();
+    let text = words.join(" ");
+    let head = text.split([';', '(']).next().unwrap_or_default().trim();
+    let head = head.trim_end_matches([':', ',']);
+    let short: String = head.chars().take(80).collect();
+    format!("{}: {short}", f.kind)
+}
 
 impl Fetch {
     pub fn new(scans: PathBuf, manifest: Option<PathBuf>) -> Self {
@@ -503,9 +541,11 @@ impl Fetch {
             buffer: Tally::default(),
             events: VecDeque::new(),
             hourly: BTreeMap::new(),
+            hourly_times: BTreeMap::new(),
             index_read_at: None,
             index_first_hour: None,
             failures: VecDeque::new(),
+            failures_read_at: None,
             dead: HashSet::new(),
             cooling: HashMap::new(),
             failure_times: VecDeque::new(),
@@ -544,6 +584,7 @@ impl Fetch {
         self.buffer = Tally::default();
         self.events.clear();
         self.hourly.clear();
+        self.hourly_times.clear();
         self.index_first_hour = None;
     }
 
@@ -569,16 +610,28 @@ impl Fetch {
         self.bulk.poll();
         self.pacer.poll();
         self.publish.poll();
-        if let Err(e) = self.read_failures() {
-            tracing::warn!(error = %e, "can't read the fetch failures");
-        }
+        self.failures_read_at = match self.read_failures() {
+            Ok(()) => self
+                .scans
+                .join("failures-full.jsonl")
+                .is_file()
+                .then_some(now),
+            Err(e) => {
+                tracing::warn!(error = %e, "can't read the fetch failures");
+                None
+            }
+        };
         let kept = now.timestamp() - crate::throughput::KEEP_HOURS * crate::throughput::HOUR;
         self.hourly = self.hourly.split_off(&kept);
+        let kept = now.timestamp() - TIME_HOURS * crate::throughput::HOUR;
+        self.hourly_times = self.hourly_times.split_off(&kept);
         let day = now - Duration::days(1);
         while self.events.front().is_some_and(|(t, _)| *t < day) {
             self.events.pop_front();
         }
-        while self.failure_times.front().is_some_and(|t| *t < day) {
+        // The last 24 full hours began up to 25 hours ago.
+        let oldest = now - Duration::hours(TIME_HOURS);
+        while self.failure_times.front().is_some_and(|t| *t < oldest) {
             self.failure_times.pop_front();
         }
         while self.holds.front().is_some_and(|t| *t < day) {
@@ -727,7 +780,12 @@ impl Fetch {
         self.index_first_hour = Some(self.index_first_hour.map_or(hour, |h| h.min(hour)));
         let tally = self.hourly.entry(hour).or_default();
         tally.0 += 1;
-        tally.1 += line.download_ms;
+        tally.1 += line.download_ms.unwrap_or(0);
+        if let Some(ms) = line.download_ms {
+            self.hourly_times
+                .entry(hour)
+                .or_insert_with(|| Box::new([0; TIME_BUCKETS]))[time_bucket(ms)] += 1;
+        }
         match self.all.entry(doc_hash(&line.doc_id)) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let t = e.get_mut();
@@ -1050,6 +1108,59 @@ impl Fetch {
             })
             .take(n)
             .collect()
+    }
+
+    /// Download seconds per page at the median and the 95th percentile, over
+    /// the `hours` hours from `first`, to within a bucket.
+    pub fn download_seconds(&self, first: i64, hours: i64) -> Option<(f64, f64)> {
+        let mut all = [0u64; TIME_BUCKETS];
+        let last = first + (hours - 1) * crate::throughput::HOUR;
+        for counts in self.hourly_times.range(first..=last).map(|(_, c)| c) {
+            for (a, c) in all.iter_mut().zip(counts.iter()) {
+                *a += u64::from(*c);
+            }
+        }
+        let pages: u64 = all.iter().sum();
+        let at = |share: u64| {
+            let rank = (pages * share).div_ceil(100);
+            let mut seen = 0;
+            let bucket = all.iter().position(|c| {
+                seen += c;
+                seen >= rank
+            });
+            bucket_seconds(bucket.unwrap_or(TIME_BUCKETS - 1))
+        };
+        (pages > 0).then(|| (at(50), at(95)))
+    }
+
+    /// The latest failures' reasons, most common first, and how many failures
+    /// that covers.
+    pub fn failure_reasons(&self, n: usize) -> (Vec<(String, usize)>, usize) {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for f in &self.failures {
+            *counts.entry(failure_reason(f)).or_default() += 1;
+        }
+        let mut reasons: Vec<_> = counts.into_iter().collect();
+        reasons.sort_by_key(|r| std::cmp::Reverse(r.1));
+        reasons.truncate(n);
+        (reasons, self.failures.len())
+    }
+
+    /// Failures from the hour starting at `first` up to the one at `end`.
+    pub fn failures_in_hours(&self, first: i64, end: i64) -> usize {
+        self.failure_times
+            .iter()
+            .filter(|t| (first..end).contains(&t.timestamp()))
+            .count()
+    }
+
+    /// Failures in the hours from `first` that the index covers: the hours
+    /// their rate is taken over. Unknown if the failure log wasn't read, or the
+    /// index reaches none of those hours.
+    pub fn failures_in_covered_hours(&self, first: i64) -> Option<usize> {
+        self.failures_read_at?;
+        let (from, to) = self.hours_covered().filter(|(_, to)| *to >= first)?;
+        Some(self.failures_in_hours(from.max(first), to + crate::throughput::HOUR))
     }
 
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
@@ -1459,5 +1570,115 @@ mod tests {
         f.poll(Utc::now());
         assert!(f.plan.is_none());
         assert!(f.plan_error.as_deref().unwrap().contains("sha256"));
+    }
+
+    #[test]
+    fn download_times_give_percentiles_to_within_a_bucket() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        let hour = 3_600_000;
+        for ms in (1..=100).map(|n| n * 100) {
+            f.hourly_times
+                .entry(hour)
+                .or_insert_with(|| Box::new([0; TIME_BUCKETS]))[time_bucket(ms)] += 1;
+        }
+        let (p50, p95) = f.download_seconds(hour, 24).unwrap();
+        assert!((5.0..=5.0 * 1.2).contains(&p50), "{p50}");
+        assert!((9.5..=9.5 * 1.2).contains(&p95), "{p95}");
+        assert_eq!(f.download_seconds(hour + 3600, 24), None);
+        assert_eq!(f.download_seconds(hour - 7200, 1), None);
+        assert!(time_bucket(0) == 0 && time_bucket(u64::MAX) == TIME_BUCKETS - 1);
+    }
+
+    #[test]
+    fn a_failure_reason_has_no_urls_or_page_ids_and_groups() {
+        let line = |kind: &str, error: &str| FailureLine {
+            doc_id: "sn1_1900-01-01_ed-1_seq-1".into(),
+            kind: kind.into(),
+            error: error.into(),
+            at: Utc::now(),
+        };
+        assert_eq!(
+            failure_reason(&line(
+                "transient",
+                "https://tile.loc.gov/x/1.jp2: the answer's body could not be read (error decoding)"
+            )),
+            "transient: the answer's body could not be read"
+        );
+        assert_eq!(
+            failure_reason(&line(
+                "loc_item_error",
+                "https://www.loc.gov/item/x/ returned HTTP 503 at once; asked again"
+            )),
+            "loc_item_error: returned HTTP 503 at once"
+        );
+        assert_eq!(
+            failure_reason(&line(
+                "permanent",
+                "loc.gov lists no image for sn1/1900-01-01/ed-1/seq-2"
+            )),
+            "permanent: loc.gov lists no image for"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.failures
+            .push_back(line("transient", "giving up on https://a/b HTTP 520"));
+        f.failures
+            .push_back(line("transient", "giving up on https://c/d HTTP 520"));
+        f.failures.push_back(line("permanent", "gone"));
+        let (reasons, from) = f.failure_reasons(1);
+        assert_eq!(
+            reasons,
+            [("transient: giving up on HTTP 520".to_owned(), 2)]
+        );
+        assert_eq!(from, 3);
+    }
+
+    #[test]
+    fn failures_are_known_only_once_their_log_is_read_and_count_by_the_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        let now = Utc::now();
+        f.poll(now);
+        assert_eq!(f.failures_read_at, None);
+        let hour = now.timestamp().div_euclid(3600) * 3600;
+        let at = |t: i64| {
+            DateTime::from_timestamp(t, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
+        let lines: String = [hour - 90_000, hour - 86_400, hour - 1, hour + 1]
+            .iter()
+            .map(|t| {
+                format!(
+                    "{{\"doc_id\":\"d\",\"kind\":\"transient\",\"error\":\"e\",\"at\":\"{}\"}}\n",
+                    at(*t)
+                )
+            })
+            .collect();
+        std::fs::write(dir.path().join("failures-full.jsonl"), lines).unwrap();
+        f.poll(now);
+        assert_eq!(f.failures_read_at, Some(now));
+        // The current hour isn't in the full hours; the hour 25 ago is kept
+        // only as far as they reach.
+        assert_eq!(f.failures_in_hours(hour - 86_400, hour), 2);
+        // An index last read two days ago covers none of those hours.
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
+        // This line has no download time: it's a page, not a sample of 0 ms.
+        std::fs::write(
+            dir.path().join("index-full.jsonl"),
+            format!(
+                "{{\"doc_id\":\"d\",\"fetched_at\":\"{}\",\"bytes\":1}}\n",
+                at(hour - 172_800)
+            ),
+        )
+        .unwrap();
+        f.poll(now);
+        assert_eq!(f.hourly.values().map(|t| t.0).sum::<u64>(), 1);
+        assert_eq!(f.download_seconds(hour - 172_800, 48), None);
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), Some(2));
+        f.index_read_at = Some(now - Duration::days(2));
+        assert_eq!(f.failures_in_covered_hours(hour - 86_400), None);
     }
 }

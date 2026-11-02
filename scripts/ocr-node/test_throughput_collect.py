@@ -118,6 +118,51 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(series["ticks_ok"][2], 0)
         self.assertIn("300 runnable", limits["usnm_ocr"])
 
+    def test_a_failed_tick_counts_under_the_kind_of_its_error(self):
+        w = window()
+        at = THIS_HOUR + 10
+        errors = ("bridge/batch-inventory failed; inspect the execution privately before retrying",
+                  "bridge/batch-inventory failed; inspect the execution privately before retrying",
+                  "terminal BOINC failure: sn123/1900-01-01/ed-1/seq-1 (job a1), sn123/2",
+                  "can't read /tank/ocr/scans/x.json",
+                  "ssh to 192.0.2.7 failed",
+                  "tank/ocr/scans/x failed",
+                  None)
+        collector.collect_controller(w, [(at, "", json.dumps({
+            "event": "boinc_batch_failure", "at": at, "error": e})) for e in errors])
+        reasons = {name: values[2] for name, values in w.series.items() if name.startswith("reason.")}
+        self.assertEqual(reasons, {"reason.controller.bridge-batch-inventory-failed": 2,
+                                   "reason.controller.terminal-boinc-failure": 1,
+                                   "reason.controller.other": 4})
+
+    def test_a_kind_of_error_depends_only_on_its_text(self):
+        for error in ("a brand new error", "bridge/a b failed", "failed at 192.0.2.7", "x" * 500, None):
+            self.assertEqual(collector.reason_series(error), "reason.controller.other")
+        self.assertEqual(collector.reason_series("claimed a page already in this plan with a different message"),
+                         "reason.controller.claimed-a-page-already-in-this-plan-with-a-dif")
+        self.assertTrue(all(len(collector.reason_series(k)) <= 64 for k in collector.KNOWN_FAILURES))
+
+    def test_a_tick_across_two_hours_is_busy_in_both(self):
+        w = window()
+        ended = THIS_HOUR + 100
+        collector.collect_controller(w, [(ended, "", tick(ended - 500, seconds=400.0))])
+        self.assertEqual(w.series["tick_busy_seconds"][1], 300)
+        self.assertEqual(w.series["tick_busy_seconds"][2], 100)
+        self.assertEqual(w.series["tick_seconds"][2], 400)
+
+    def test_the_last_passing_tick_says_how_near_its_limits_it_was(self):
+        at = THIS_HOUR + 10
+        event = json.loads(tick(at))
+        event |= {"global_pending": 1939, "backpressure": True, "cohort": {
+            "app": "usnm_ocr", "runnable_pending": 225, "low_watermark": 220}}
+        limits = collector.collect_controller(window(), [(at, "", json.dumps(event))])
+        self.assertIn("225 runnable", limits["usnm_ocr.now"])
+        self.assertIn("1939 pending", limits["ocr_claim.now"])
+        self.assertIn("held back", limits["ocr_claim.now"])
+        limits = collector.collect_controller(window(), [(at, "", tick(at))])
+        self.assertNotIn("usnm_ocr.now", limits)
+        self.assertNotIn("ocr_claim.now", limits)
+
     def test_pending_pages_are_the_hours_last_reading_and_unknown_without_one(self):
         w = window()
         entries = [(THIS_HOUR + 10, "", tick(THIS_HOUR + 10, cohort_pending=225)),
@@ -207,6 +252,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(s["quality_load_seconds"][at], 12)
         self.assertEqual(s["qwen_load_pages"][at], 8)
         self.assertEqual(s["qwen_load_failed"][at], 1)
+        self.assertEqual(s["qwen_load_runs"][at], 2)
         self.assertEqual(s["qwen_load_seconds"][at], 55)
         self.assertEqual(s["quality_ship_pages"][0], 0)
 

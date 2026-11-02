@@ -486,6 +486,16 @@ async fn summaries_and_cubes_match_the_reference_backend() {
                 }
                 assert_eq!(sorted_cells(parts), want, "sharded cube: {ctx}");
 
+                // One request for both answers as the two calls do.
+                let (summary, cells) = qw
+                    .summary_with_cube(set, &q, &f, &spec)
+                    .await
+                    .expect(&ctx)
+                    .expect("the fixtures fit the engine's limits");
+                let alone = qw.summary(set, &q, &f, &spec).await.expect(&ctx);
+                assert_eq!(summary, alone, "combined summary: {ctx}");
+                assert_eq!(sorted_cells(cells), want, "combined cube: {ctx}");
+
                 // A cube of some places (`/v1/days`) is the full cube's cells
                 // for those places, one with no pages included.
                 let places = vec![

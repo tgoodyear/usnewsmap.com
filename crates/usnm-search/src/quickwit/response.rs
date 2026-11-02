@@ -5,7 +5,7 @@ use serde_json::Value;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
-use super::error::{cause, splits_named};
+use super::error::{aggregation_limit, failure_cause, splits_named};
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 use crate::{
     ja_snippets, rank, CubeCell, Hit, HitsPage, IndexSet, KeyCount, PlaceSummary, SearchError,
@@ -72,7 +72,8 @@ impl StoredHit {
 }
 
 /// Reject responses that report partial failures, without echoing their
-/// content: the error names how many, what they were about ([`cause`]) and
+/// content: the error names how many, what they were about
+/// ([`failure_cause`]) and
 /// up to 5 of the failed splits, whose ids are opaque.
 pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchError> {
     if resp.errors.is_empty() {
@@ -83,7 +84,7 @@ pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchEr
     for e in &resp.errors {
         // Quickwit 0.9's REST response gives each error as a string.
         let text = e.as_str().map_or_else(|| e.to_string(), str::to_owned);
-        *causes.entry(cause(&text, query)).or_default() += 1;
+        *causes.entry(failure_cause(&text, query)).or_default() += 1;
         texts.push(text);
     }
     let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{c}×{n}")).collect();
@@ -93,6 +94,10 @@ pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchEr
         causes.join(", "),
         splits_named(&texts.join(" "), query)
     );
+    // With any other failure among them, the search failed for that.
+    if texts.iter().all(|t| aggregation_limit(t).is_some()) {
+        return Err(SearchError::OverAggregationLimit(msg));
+    }
     Err(SearchError::Backend(msg))
 }
 
@@ -362,6 +367,28 @@ mod tests {
     use serde_json::json;
     use usnm_core::text_layout::TextLayout;
     use usnm_core::time::BucketUnit;
+
+    /// Partial failures count as a refusal for size only when each of them
+    /// is the engine's refusal.
+    #[test]
+    fn partial_failures_are_a_size_refusal_only_when_all_of_them_are() {
+        let refusal = "Aborting aggregation because bucket limit was exceeded.";
+        let check = |errors: Vec<&str>| {
+            let resp: SearchResponse =
+                serde_json::from_value(json!({ "num_hits": 1, "errors": errors })).unwrap();
+            check_complete(&resp, "text:gold").unwrap_err()
+        };
+        assert!(matches!(
+            check(vec![refusal, refusal]),
+            SearchError::OverAggregationLimit(_)
+        ));
+        for errors in [
+            vec![refusal, "storage error"],
+            vec!["could not read the bucket from storage"],
+        ] {
+            assert!(matches!(check(errors), SearchError::Backend(_)));
+        }
+    }
 
     #[test]
     fn decodes_hits_from_stored_fields_only() {

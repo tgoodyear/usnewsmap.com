@@ -5,13 +5,18 @@ use std::collections::BTreeMap;
 
 use axum::http::{header, StatusCode};
 use serde_json::Value;
+use usnm_core::params::Filters;
+use usnm_core::query::Node;
 use usnm_core::text::tokenize;
-use usnm_core::time::day_number;
-use usnm_search::memory::eval;
+use usnm_core::time::{day_number, BucketSpec};
+use usnm_search::memory::{eval, MemoryBackend};
+use usnm_search::{
+    Capabilities, CubeCell, HitsPage, HitsQuery, IndexSet, SearchBackend, SearchError, Summary,
+};
 
 use crate::common::{
-    data_dir, get, header_str, load_docs, oracle_count, parse, state_with, state_with_cells,
-    FIXTURE,
+    config, data_dir, fixture_backend, get, header_str, load_docs, oracle_count, parse, refdata,
+    state_with, state_with_cells, FIXTURE,
 };
 
 #[tokio::test]
@@ -356,4 +361,86 @@ async fn coarsens_before_querying_an_oversized_cube() {
     let (status, _, body) = get(&tiny, "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["type"], "/errors/query-too-broad");
+}
+
+/// The fixtures with no combined request: the planner goes call by call.
+struct CallByCall(MemoryBackend);
+
+#[async_trait::async_trait]
+impl SearchBackend for CallByCall {
+    fn capabilities(&self) -> Capabilities {
+        self.0.capabilities()
+    }
+    async fn summary(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+    ) -> Result<Summary, SearchError> {
+        self.0.summary(indexes, query, filters, spec).await
+    }
+    async fn cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+        shards: &[u8],
+    ) -> Result<Vec<CubeCell>, SearchError> {
+        self.0.cube(indexes, query, filters, spec, shards).await
+    }
+    async fn hits(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        page: &HitsQuery,
+    ) -> Result<HitsPage, SearchError> {
+        self.0.hits(indexes, query, filters, page).await
+    }
+    async fn health(&self) -> Result<(), SearchError> {
+        Ok(())
+    }
+}
+
+/// One request or several, a search answers the same, down to `cube.calls`,
+/// `coarsened` and the refusal of a search too broad: only `timing_ms` may
+/// differ, and the edge caches keep what they hold.
+#[tokio::test]
+async fn one_request_or_several_answer_the_same() {
+    let uris = [
+        "/v1/aggregate?q=gold",
+        "/v1/aggregate?q=zyzzyva",
+        "/v1/aggregate?q=%22cross+of+gold%22",
+        "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31",
+        "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31&bucket=day",
+        "/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&state=GA",
+    ];
+    let mut coarsened = false;
+    let mut refused = false;
+    for cells in [700_000, 240, 5] {
+        let combined = state_with_cells(cells).await;
+        let mut cfg = config();
+        cfg.max_cells = cells;
+        let separate = std::sync::Arc::new(usnm_api::AppState::new(
+            cfg,
+            std::sync::Arc::new(CallByCall(fixture_backend())),
+            refdata().await,
+        ));
+        for uri in uris {
+            let (status, _, mut one) = get(&combined, uri).await;
+            let (status2, _, mut several) = get(&separate, uri).await;
+            assert_eq!(status, status2, "{uri} at {cells}");
+            for body in [&mut one, &mut several] {
+                if let Some(o) = body.as_object_mut() {
+                    o.remove("timing_ms");
+                }
+            }
+            assert_eq!(one, several, "{uri} at {cells}");
+            coarsened |= one["coarsened"] == true;
+            refused |= status == StatusCode::UNPROCESSABLE_ENTITY;
+        }
+    }
+    assert!(coarsened && refused);
 }

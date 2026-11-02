@@ -1,0 +1,26 @@
+[package]
+name = "usnm-ocr-app"
+version = "0.1.0"
+description = "Native BOINC worker for usnm_ocr and usnm_gold: Tesseract with no container runtime (#1418)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "usnm_ocr"
+path = "src/main.rs"
+
+[dependencies]
+usnm-boinc = { path = "../usnm-boinc" }
+anyhow.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+usnm-ocr-contract = { workspace = true, default-features = true }
+usnm-ocr-worker = { path = "../usnm-ocr-worker" }
+
+[lints]
+workspace = true

@@ -13,7 +13,8 @@ GATE = """bool usnm_gold_is_infeasible(
     APP& app,
     BEST_APP_VERSION& bav
 ) {
-    if (!strcmp(app.name, "usnm_gold")) {
+    const bool native = !strcmp(app.name, "usnm_gold_native");
+    if (native || !strcmp(app.name, "usnm_gold")) {
         try {
             if (!bav.avp) throw std::runtime_error("anonymous Gold app has no registered payload");
             const PLATFORM* platform = ssp->lookup_platform_id(bav.avp->platformid);
@@ -31,7 +32,8 @@ GATE = """bool usnm_gold_is_infeasible(
                 },
                 [](const std::string& name) {
                     return std::string(config.download_dir) + "/" + name;
-                }
+                },
+                native
             );
         } catch (const std::exception& e) {
             log_messages.printf(MSG_NORMAL,
@@ -47,7 +49,7 @@ PATCHED = GATE + "\n" + ORIGINAL
 
 ASSIGNMENT_ORIGINAL = '    rtfpath = config.project_path("%s", wu.result_template_file);'
 ASSIGNMENT_PATCHED = """    APP* gold_app = ssp->lookup_app(wu.appid);
-    if (gold_app && !strcmp(gold_app->name, "usnm_gold")
+    if (gold_app && (!strcmp(gold_app->name, "usnm_gold") || !strcmp(gold_app->name, "usnm_gold_native"))
         && usnm_gold_is_infeasible(wu, *gold_app, *bavp)) {
         return ERR_NOT_FOUND;
     }
