@@ -36,6 +36,10 @@ pub struct Options {
     pub gpu_timeout_secs: u32,
     pub cpu_timeout_secs: u32,
     pub max_tokens_per_1000px2: u32,
+    /// The request version every staged job reads with. A host whose app
+    /// version can't read it ends the job with a unit error, so stage a
+    /// version only once every dispatchable app version reads it.
+    pub prompt_version: u32,
     pub max_pages: usize,
     /// Pack staged pages into multi-page bundle workunits of up to this many pages
     /// (1 to [`MAX_BUNDLE_PAGES`]).
@@ -194,7 +198,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             language: quality.language.clone(),
             max_tokens_per_1000px2: opts.max_tokens_per_1000px2,
             pages: vec![],
-            prompt_version: PROMPT_VERSION,
+            prompt_version: opts.prompt_version,
         };
         job.id = job.identity()?;
         job.validate_source_candidate()
@@ -986,6 +990,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn stages_the_request_version_it_is_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let unit = crate::quality::units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        crate::quality::work::tests::unit(&unit);
+        std::fs::write(unit.join("sample.json"), b"{}").unwrap();
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD,
+            max_pages: 20,
+            bundle_size: 1,
+        };
+        run(&opts).await.unwrap();
+        let out = units(&opts.root).join("sn83045462_1890-05-03_ed-1_seq-1");
+        let job: Job = serde_json::from_slice(&std::fs::read(out.join(JOB_FILE)).unwrap()).unwrap();
+        job.validate().unwrap();
+        assert_eq!(job.prompt_version, opts.prompt_version);
+    }
+
+    #[tokio::test]
     async fn stages_every_quality_unit_once() {
         let tmp = tempfile::tempdir().unwrap();
         let qroot = tmp.path().join("quality");
@@ -999,6 +1028,7 @@ pub(crate) mod tests {
             gpu_timeout_secs: 1800,
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
             max_pages: 20,
             bundle_size: 1,
         };
@@ -1093,6 +1123,7 @@ pub(crate) mod tests {
                 gpu_timeout_secs: 14400,
                 cpu_timeout_secs: 7200,
                 max_tokens_per_1000px2: 4,
+                prompt_version: PROMPT_VERSION,
                 max_pages: 1,
                 bundle_size,
             };
@@ -1202,6 +1233,7 @@ pub(crate) mod tests {
             gpu_timeout_secs: 14_400,
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
             max_pages: 20,
             bundle_size: 2,
         };

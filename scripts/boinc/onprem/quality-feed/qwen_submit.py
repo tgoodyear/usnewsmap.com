@@ -311,6 +311,8 @@ def main():
     isolated_stage = Path(__file__).with_name("usnm-boinc-stage")
     ap.add_argument("--stage-binary", default=str(isolated_stage) if isolated_stage.is_file() else "usnm-boinc")
     ap.add_argument("--max-pages", type=int, default=100)
+    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
+                    help="Request version to stage; every dispatchable app version must read it")
     ap.add_argument("--max-ready", type=int, default=1000,
                     help="Fresh native original replicas, not host-ineligible retry replicas")
     ap.add_argument("--max-unresolved", type=int, default=2000)
@@ -352,7 +354,8 @@ def main():
     stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(a.max_pages),
-             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1"]
+             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
+             "--prompt-version", str(a.prompt_version)]
     subprocess.run(stage, check=True)
     subprocess.run(["usnm-boinc", "qwen", "submit", "--root", str(root), "--project", str(a.project),
                     "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(a.max_pages)],

@@ -65,6 +65,9 @@ pub enum QwenCommands {
         /// Output tokens allowed per 1,000 square pixels of crop.
         #[arg(long, default_value_t = 4)]
         max_tokens_per_1000px2: u32,
+        /// The request version to stage. Every dispatchable app version must read it.
+        #[arg(long, default_value_t = usnm_ocr_contract::qwen::PROMPT_VERSION)]
+        prompt_version: u32,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
         /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 32),
@@ -227,6 +230,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             gpu_timeout_secs,
             cpu_timeout_secs,
             max_tokens_per_1000px2,
+            prompt_version,
             max_pages,
             bundle_size,
         } => {
@@ -242,6 +246,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 gpu_timeout_secs,
                 cpu_timeout_secs,
                 max_tokens_per_1000px2,
+                prompt_version,
                 max_pages,
                 bundle_size,
             })
