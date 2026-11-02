@@ -1,6 +1,6 @@
 # Why Qwen replicas come back inconclusive
 
-**Status:** measured, not shipped. The loop guard and `crop-consensus-v2` are in the code and off · **Date:** November 2026 · **Measured on:** all retained `usnm_qwen` 8B results on 1 November 2026, 1,142 replicas, 515 jobs, 751 pairs; replica accounting from a BOINC database read earlier that day, before AMD's general admission · **Code:** `crates/usnm-boinc/src/qwen/{consensus,replay}.rs`, `crates/usnm-qwen-app/src/server.rs`, `scripts/boinc/qwen-auto-cohort.py` · **Issues:** #1420, #885, #1434, #1435
+**Status:** measured, not shipped. The loop guard and `crop-consensus-v2` are in the code and off · **Date:** November 2026 · **Measured on:** all retained `usnm_qwen` 8B results on 1 November 2026, 1,262 replicas, 572 jobs, 824 pairs; replica accounting from a BOINC database read earlier that day, before AMD's general admission · **Code:** `crates/usnm-boinc/src/qwen/{consensus,replay}.rs`, `crates/usnm-qwen-app/src/server.rs`, `scripts/boinc/qwen-auto-cohort.py` · **Issues:** #1420, #885, #1434, #1435
 
 ## The question
 
@@ -8,9 +8,9 @@ Over seven days, `usnm_qwen` had 162 valid results against 422 inconclusive. Is 
 
 ## What we found
 
-**Yiddish is the failure, on every vendor.** Under the rule in force, 16% of Yiddish pairs agree (91 of 558) and 87% of pairs in other languages agree (168 of 193). Of the crops read, 31% of Yiddish readings loop, against 6% elsewhere. The rate is the same on Apple, Intel and NVIDIA.
+**Yiddish is the failure, on every vendor.** Under the rule in force, 16% of Yiddish pairs agree (96 of 606) and 89% of pairs in other languages agree (193 of 218). Of the crops read, 31% of Yiddish readings loop, against 6% elsewhere. The rate is the same on Apple, Intel and NVIDIA.
 
-**Loops are in nearly every failure, but cutting them isn't enough.** 463 of the 492 failing pairs have a looped crop. Cutting loops from both sides fixes only 21, because the text before the loop differs too. 81 failing pairs have a crop that really disagrees. The strict rule is also too lax: it passes 104 pairs containing loops, since two loops of the same words have a high Dice. On WU 21131, c07 scores Dice 1.0 over 882 tokens of repetition.
+**Loops are in nearly every failure, but cutting them isn't enough.** 505 of the 535 failing pairs have a looped crop. Cutting loops from both sides fixes only 25, because the text before the loop differs too. 82 failing pairs have a crop that really disagrees. The strict rule is also too lax: it passes 110 pairs containing loops, since two loops of the same words have a high Dice. On WU 21131, c07 scores Dice 1.0 over 882 tokens of repetition.
 
 **One crop can fail a 12-crop page.** A failing pair usually fails on one to four crops. WU 21128's AMD and Apple readings differ on c07, where AMD repeats a word and Apple repeats `[?]`. Their other crops agree.
 
@@ -18,10 +18,10 @@ Over seven days, `usnm_qwen` had 162 valid results against 422 inconclusive. Is 
 
 | Crop pairs at floor 0.5                  | Word-bag Dice | Character similarity |
 | ---------------------------------------- | ------------: | -------------------: |
-| Yiddish true pairs falling short (2,419) |         14.5% |                 3.0% |
-| Yiddish shuffled pairs passing (2,000)   |          0.1% |                 0.1% |
-| Other true pairs falling short (1,925)   |         0.31% |                0.47% |
-| Other shuffled pairs passing (2,000)     |            0% |                   0% |
+| Yiddish true pairs falling short (2,590) |         14.2% |                 2.8% |
+| Yiddish shuffled pairs passing (2,000)   |         0.15% |                0.15% |
+| Other true pairs falling short (2,106)   |         0.28% |                0.47% |
+| Other shuffled pairs passing (2,000)     |         0.05% |                   0% |
 
 **Extra replicas rarely help, and most of the cost is elsewhere.** Of 386 units with two or more returns, 204 ended valid: 185 on two replicas and 19 on three. 99 units reached a third replica and 19 resolved; 80 are waiting for a fourth. That is 871 replicas for 204 valid units, 4.3 against the 2 a unit needs. A larger cost is starvation: 905 units had one returned result and an unsent peer once the NVIDIA and Intel windows closed.
 
@@ -29,14 +29,14 @@ Over seven days, `usnm_qwen` had 162 valid results against 422 inconclusive. Is 
 
 | Pair           | Yiddish pairs |         Disagree |
 | -------------- | ------------: | ---------------: |
-| AMD + Apple    |           129 | 1.6% (10 of 628) |
-| AMD + NVIDIA   |            12 |   1.8% (1 of 56) |
-| AMD + Intel    |            13 |   5.2% (3 of 58) |
+| AMD + Apple    |           164 | 1.4% (11 of 760) |
+| AMD + NVIDIA   |            18 |   1.4% (1 of 72) |
+| AMD + Intel    |            20 |   3.7% (3 of 81) |
 | Apple + NVIDIA |           100 |  1.3% (6 of 456) |
 | Apple + Intel  |           110 | 7.0% (33 of 471) |
 | Intel + NVIDIA |           194 | 6.6% (52 of 783) |
 
-The Intel figures come from one host with an Iris Xe GPU, so this may be that host's driver or build and not Intel in general. On WU 21128 c09 it wrote fully pointed Hebrew where AMD and Apple wrote none. AMD agrees on all 57 compared crops of 7 Serbian and Spanish pairs and has read no German, so outside Yiddish its sample is small.
+The Intel figures come from one host with an Iris Xe GPU, so this may be that host's driver or build and not Intel in general. On WU 21128 c09 it wrote fully pointed Hebrew where AMD and Apple wrote none. On the 16 to 19 pairs per vendor pair where AMD and two others read the same pages, AMD + Apple disagrees on 2 of 70 crops, AMD + NVIDIA 1 of 72 and Apple + NVIDIA 2 of 65, against 3 of 71, 4 of 65 and 5 of 64 for the Intel pairs. Outside Yiddish, AMD disagrees on 1 of 238 compared crops across 32 Serbian and Spanish pairs, and it has read no German.
 
 ## The rule
 
@@ -49,28 +49,28 @@ The Intel figures come from one host with an Iris Xe GPU, so this may be that ho
 
 A pair agrees when no crop disagrees and `agree` crops are more than half of the crops with text and hold at least 100 characters, or when no crop has text at all, as under the strict rule. The 0.5 floor is the number already in force, not a fitted one. A pair vouches only for its `agree` crops, so the rule claims less than the strict rule does. The 100-character limit came from this data: two issues of one Yiddish paper matched on their mastheads alone.
 
-| Measure, 751 pairs                         | Strict | `crop-consensus-v2` |
+| Measure, 824 pairs                         | Strict | `crop-consensus-v2` |
 | ------------------------------------------ | -----: | ------------------: |
-| Yiddish pairs agreeing, of 558             |     91 |                 241 |
-| Other pairs agreeing, of 193               |    168 |                 180 |
-| Units resolved, of 515                     |    259 |                 333 |
-| Units resolved by their first two replicas |    240 |                 316 |
-| Extra replicas not needed                  |      0 |                  45 |
+| Yiddish pairs agreeing, of 606             |     96 |                 252 |
+| Other pairs agreeing, of 218               |    193 |                 200 |
+| Units resolved, of 572                     |    289 |                 366 |
+| Units resolved by their first two replicas |    270 |                 350 |
+| Extra replicas not needed                  |      0 |                  44 |
 
 Pairs that must fail:
 
 | Control                        | Pairs | Strict passes | Rule passes |
 | ------------------------------ | ----: | ------------: | ----------: |
 | Different pages, same language | 2,000 |             0 |           0 |
-| Crops rotated within a page    |   751 |            21 |          13 |
-| Every crop looped              |   751 |             0 |           0 |
-| Half the crops looped          |   751 |             0 |           0 |
-| One crop replaced              |   706 |             0 |           0 |
-| Every crop unread              |   751 |             2 |           2 |
+| Crops rotated within a page    |   824 |            27 |          13 |
+| Every crop looped              |   824 |             0 |           0 |
+| Half the crops looped          |   824 |             0 |           0 |
+| One crop replaced              |   769 |             0 |           0 |
+| Every crop unread              |   824 |             2 |           2 |
 
 An earlier sample drew one different-page pair that both rules passed. An exhaustive scan of different-job pairs found matches above the 100-character limit on three pairs of jobs, each the same page staged twice. The rotated passes inspected are pages whose crops read alike or blank. The two unread passes are pages with no text on either side.
 
-A third replica gives an independent check. On crops a rescued pair vouched for, it confirms 97.3% (930 of 956), against 98.7% (77 of 78) for strict pairs. Strict's sample is small because units that pass rarely get a third replica.
+A third replica gives an independent check. On crops a rescued pair vouched for, it confirms 97.2% (894 of 920), against 100% (77 of 77) for strict pairs. Strict's sample is small because units that pass rarely get a third replica.
 
 Leaving Hebrew points out narrows the Intel gap and doesn't close it. On a run of 691 pairs with and without it, Apple + Intel went from 9.7% to 7.3%, Intel + NVIDIA from 9.5% to 6.6% and Apple + NVIDIA from 2.6% to 1.3%, so Intel pairs stay at about five times Apple + NVIDIA. Agreeing pairs went from 368 to 394, Yiddish true pairs falling short from 4.9% to 3.0% and third-replica confirmation from 96.3% to 97.1%, and every control was unchanged.
 

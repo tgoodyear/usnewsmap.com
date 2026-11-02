@@ -59,11 +59,12 @@ fn strict(a: &Crops<'_>, b: &Crops<'_>) -> bool {
         text: "",
         looped: false,
     };
-    a.keys().chain(b.keys()).all(|id| {
-        let (x, y) = (*a.get(id).unwrap_or(&blank), *b.get(id).unwrap_or(&blank));
-        x.text.trim().is_empty() == y.text.trim().is_empty()
-            && dice(x.text, y.text) >= qwen::PROBE_MIN_DICE
-    })
+    !(a.is_empty() && b.is_empty())
+        && a.keys().chain(b.keys()).all(|id| {
+            let (x, y) = (*a.get(id).unwrap_or(&blank), *b.get(id).unwrap_or(&blank));
+            x.text.trim().is_empty() == y.text.trim().is_empty()
+                && dice(x.text, y.text) >= qwen::PROBE_MIN_DICE
+        })
 }
 
 /// Rule variants measured side by side. Only [`Params::IN_RULE`] can go live.

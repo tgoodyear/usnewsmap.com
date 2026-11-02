@@ -86,17 +86,19 @@ pub struct Side<'a> {
     pub looped: bool,
 }
 
+/// A reading as the rule compares it: whitespace collapsed, Hebrew points out.
+fn comparable(text: &str) -> String {
+    without_hebrew_points(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `1 - edits / longer length`, over characters with whitespace collapsed
 /// and Hebrew points left out, for every reader alike: 1.0 for two equal
 /// texts, including two empty ones. The readings themselves stay as read.
 pub fn similarity(a: &str, b: &str) -> f64 {
-    let squeeze = |s: &str| {
-        without_hebrew_points(s)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let (a, b) = (squeeze(a), squeeze(b));
+    let (a, b) = (comparable(a), comparable(b));
     let longer = a.chars().count().max(b.chars().count());
     if longer == 0 {
         return 1.0;
@@ -183,7 +185,8 @@ pub fn judge_crops(
     let (agree, looped) = (count(CropState::Agree), count(CropState::Looped));
     let with_text = agree + looped;
     let chars = |side: &BTreeMap<&str, Side<'_>>, id: &str| {
-        side.get(id).map_or(0, |s| s.text.chars().count())
+        side.get(id)
+            .map_or(0, |s| comparable(s.text).chars().count())
     };
     let agreed_chars: usize = verdicts
         .iter()
@@ -463,6 +466,13 @@ mod tests {
             ),
             (CropState::Disagree, Some(0.0))
         );
+    }
+
+    #[test]
+    fn padding_does_not_count_as_agreed_text() {
+        let text = format!("{}{}", "\u{5d0}\u{5b0} ".repeat(20), " ".repeat(100));
+        let crops = [("c01", text.as_str(), false)];
+        assert_eq!(verdict(&crops, &crops).unwrap_err(), "39 characters agree");
     }
 
     #[test]
