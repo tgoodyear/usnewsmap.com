@@ -65,6 +65,9 @@ pub enum QwenCommands {
         /// Output tokens allowed per 1,000 square pixels of crop.
         #[arg(long, default_value_t = 4)]
         max_tokens_per_1000px2: u32,
+        /// The request version to stage. Every dispatchable app version must read it.
+        #[arg(long, default_value_t = usnm_ocr_contract::qwen::PROMPT_VERSION)]
+        prompt_version: u32,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
         /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 32),
@@ -153,6 +156,27 @@ pub enum QwenCommands {
         /// Keep each bundle page's verdict and both readings of it here.
         #[arg(long)]
         pages: Option<PathBuf>,
+        /// The rule that decides the pair. `strict-v1` is the rule in force.
+        #[arg(long, value_enum, default_value_t = super::validate::Rule::StrictV1)]
+        rule: super::validate::Rule,
+        /// Under `crop-consensus-v2`, keep each pair's crop states here.
+        #[arg(long)]
+        crop_states: Option<PathBuf>,
+    },
+    /// Measure validator rules against retained results, offline, with negative controls.
+    Replay {
+        /// The directory `check --keep` writes to.
+        #[arg(long)]
+        seen: PathBuf,
+        #[arg(long, default_value = "qwen3-vl-8b-q4km")]
+        model: String,
+        #[arg(long, default_value_t = 1420)]
+        seed: u64,
+        /// Random cross-page pairs and random crop pairs per control.
+        #[arg(long, default_value_t = 2000)]
+        controls: usize,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
@@ -206,6 +230,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             gpu_timeout_secs,
             cpu_timeout_secs,
             max_tokens_per_1000px2,
+            prompt_version,
             max_pages,
             bundle_size,
         } => {
@@ -221,6 +246,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 gpu_timeout_secs,
                 cpu_timeout_secs,
                 max_tokens_per_1000px2,
+                prompt_version,
                 max_pages,
                 bundle_size,
             })
@@ -293,7 +319,26 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             min_dice,
             log,
             pages,
-        } => x::validate::compare(&files, &files2, min_dice, log.as_deref(), pages.as_deref())?,
+            rule,
+            crop_states,
+        } => x::validate::compare_with(
+            &files,
+            &files2,
+            x::validate::Compare {
+                min_dice,
+                rule,
+                log: log.as_deref(),
+                pages: pages.as_deref(),
+                crop_states: crop_states.as_deref(),
+            },
+        )?,
+        QwenCommands::Replay {
+            seen,
+            model,
+            seed,
+            controls,
+            out,
+        } => x::replay::run(&seen, &model, seed, controls, &out)?,
         QwenCommands::PageLedger { root, pages } => {
             for p in x::ledger::run(&root, &pages)? {
                 println!("{}", serde_json::to_string(&p)?);

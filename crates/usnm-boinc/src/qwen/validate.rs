@@ -58,6 +58,27 @@ pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How `compare` judges a pair. Every rule writes the same pair log; the
+/// bundle-page verdicts stay on the strict rule's per-crop Dice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Rule {
+    /// Every crop at the Dice floor: the rule in force.
+    StrictV1,
+    /// Crop by crop; see [`super::consensus`]. Not in force until the
+    /// validator wrapper passes it.
+    CropConsensusV2,
+}
+
+pub struct Compare<'a> {
+    pub min_dice: f64,
+    pub rule: Rule,
+    pub log: Option<&'a Path>,
+    pub pages: Option<&'a Path>,
+    /// Under `crop-consensus-v2`, where each pair's crop states are kept.
+    pub crop_states: Option<&'a Path>,
+}
+
+/// The strict rule, as the validator wrapper runs it.
 pub fn compare(
     a: &[PathBuf],
     b: &[PathBuf],
@@ -65,9 +86,35 @@ pub fn compare(
     log: Option<&Path>,
     pages: Option<&Path>,
 ) -> anyhow::Result<()> {
+    compare_with(
+        a,
+        b,
+        Compare {
+            min_dice,
+            rule: Rule::StrictV1,
+            log,
+            pages,
+            crop_states: None,
+        },
+    )
+}
+
+pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::Result<()> {
+    let Compare {
+        min_dice,
+        rule,
+        log,
+        pages,
+        crop_states,
+    } = opts;
     let (la, lb) = (load(a)?, load(b)?);
-    let (crops, verdict) =
-        qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
+    let (crops, strict) = qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
+    let consensus = (rule == Rule::CropConsensusV2).then(|| {
+        super::consensus::judge(&la, &lb, super::consensus::Params::IN_RULE, strict.clone())
+    });
+    let verdict = consensus
+        .as_ref()
+        .map_or_else(|| strict.clone(), |(_, v)| v.clone());
     let page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
     let names = pages.filter(|_| !page_verdicts.is_empty()).and_then(|dir| {
         match (
@@ -96,7 +143,7 @@ pub fn compare(
         }
     }
     if let Some(log) = log {
-        let line = serde_json::json!({
+        let mut line = serde_json::json!({
             "a": {"result": crate::quality::validate::result_name(&a[1])?, "device": la.result.device, "model": la.result.model, "gpu": la.result.host.gpu, "plan_class": la.result.host.plan_class},
             "b": {"result": crate::quality::validate::result_name(&b[1])?, "device": lb.result.device, "model": lb.result.model, "gpu": lb.result.host.gpu, "plan_class": lb.result.host.plan_class},
             "agree": verdict.is_ok(),
@@ -108,6 +155,11 @@ pub fn compare(
             "pages": page_verdicts.iter().map(|p| serde_json::json!({"doc_id": p.doc_id, "agree": p.agree, "reason": p.reason})).collect::<Vec<_>>(),
             "reason": verdict.as_ref().err(),
         });
+        if let Some((states, _)) = &consensus {
+            line["rule"] = "crop-consensus-v2".into();
+            line["strict_reason"] = serde_json::json!(strict.as_ref().err());
+            line["crop_states"] = serde_json::to_value(states)?;
+        }
         if let Some(parent) = log.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -115,7 +167,14 @@ pub fn compare(
             .create(true)
             .append(true)
             .open(log)?;
-        writeln!(f, "{line}")?;
+        // One write, so two validators appending at once cannot interleave a line.
+        f.write_all(format!("{line}\n").as_bytes())?;
+    }
+    if let (Some((states, _)), Some(dir)) = (&consensus, crop_states) {
+        // Like a page record: one that cannot be written leaves the verdict as it is.
+        if let Err(e) = super::consensus::record(dir, a, b, &la, &lb, states, verdict.is_ok()) {
+            eprintln!("crop states not written: {e:#}");
+        }
     }
     verdict.map_err(|e| anyhow::anyhow!(e))
 }
@@ -311,6 +370,8 @@ pub(crate) mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0]["crops"][0]["dice"], 0.75);
         assert_eq!(lines[1]["agree"], false);
+        // The strict rule's log line keeps the shape every reader of it knows.
+        assert!(lines[0].get("rule").is_none() && lines[0].get("crop_states").is_none());
         std::fs::write(&a[0], "tampered").unwrap();
         assert!(check(&a, None).is_err());
     }
