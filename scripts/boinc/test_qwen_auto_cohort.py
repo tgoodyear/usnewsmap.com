@@ -53,6 +53,10 @@ class AutomaticCohort(unittest.TestCase):
 $GLOBALS['fixture']=json_decode(file_get_contents(__DIR__.'/../../database.json'));
 class BoincWorkunit {
  static function lookup_id($id) {foreach($GLOBALS['fixture'] as $r)if($r->unit->id==$id)return $r->unit;return null;}
+ static function enum_fields($fields,$where){preg_match('/id IN \\(([^)]*)\\)/',$where,$m);
+  $ids=array_map('intval',explode(',',$m[1]));$o=[];
+  foreach($GLOBALS['fixture'] as $r)if(in_array((int)$r->unit->id,$ids)&&($r->unit->priority??0)>0)$o[]=(object)['id'=>$r->unit->id];
+  return $o;}
 }
 class BoincApp {static function lookup_id($id){return (object)['name'=>'usnm_qwen'];}}
 class BoincResult {static function enum($where){if(getenv('FIXTURE_DB_DELAY'))sleep((int)getenv('FIXTURE_DB_DELAY'));
@@ -123,6 +127,31 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         rows[0]["results"][0]["hostid"] = 1
         self.assertFalse(R.fresh(rows[0]))
         self.assertEqual(R.choose(rows, 100, None, 0), [])
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_raised_priority_work_past_the_first_page_is_scanned(self):
+        late = self.input(2000)
+        late["unit"]["priority"] = 10
+        self.rows.append(late)
+        audit = json.loads(json.dumps(self.audit))
+        for number in range(200, 1300):
+            audit["filler-%d" % number] = {"workunit_id": number}
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.assertEqual(R.raised_workunits(self.project, [100, 101, 2000]), [2000])
+        seen = []
+
+        def snapshot(project, ids, hosts):
+            seen.extend(ids)
+            return self.database
+
+        with patch.object(R, "read_database", side_effect=snapshot):
+            try:
+                R.run(self.args)
+            except Exception:
+                pass  # the filler units have no inputs; only the scanned page matters here
+        self.assertIn(2000, seen)
+        self.assertLessEqual(len(seen), 1010)
 
     def test_raised_priority_units_are_chosen_first_as_one_run(self):
         rows = [self.input(i) for i in range(100, 115)]

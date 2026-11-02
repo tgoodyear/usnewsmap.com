@@ -280,6 +280,24 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
             "accuracy_established": False}
 
 
+def raised_workunits(project, ids, limit=10):
+    """The lowest-id candidates with a raised workunit priority, at most `limit`."""
+    if not ids:
+        return []
+    code = """
+require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true); $out=[];
+foreach(array_chunk(array_map('intval',$ids),5000) as $chunk)
+ foreach(BoincWorkunit::enum_fields('id',"appid=6 AND priority>0 AND id IN (".implode(',',$chunk).")") as $w)
+  $out[]=intval($w->id);
+echo json_encode($out);
+"""
+    proc = subprocess.run(["php", "-r", code, json.dumps(ids)], cwd=project / "html/inc",
+                          text=True, capture_output=True, check=True, timeout=15)
+    found = json.loads(proc.stdout)
+    require(isinstance(found, list) and set(found) <= set(ids), "Raised-priority lookup out of range")
+    return sorted(found)[:limit]
+
+
 def read_database(project, ids, hosts=(9, 10)):
     require(ids and len(ids) <= 1010, "Bounded snapshot requires 1..1010 workunits")
     code = """
@@ -412,7 +430,9 @@ def run(args):
                                 if workunit >= args.minimum_workunit and workunit not in state["admitted"]
                                 and workunit != reserved)
             later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
-            ids = (later or candidates)[:1000]
+            # Raised-priority units join the page wherever they sit, so choose() can take them first.
+            raised = raised_workunits(project, candidates)
+            ids = sorted(set((later or candidates)[:1000 - len(raised)]) | set(raised))
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
             wanted = sorted(set(ids + current_ids))
             if not wanted:
