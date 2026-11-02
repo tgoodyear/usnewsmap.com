@@ -1,0 +1,28 @@
+[
+  { "title": "US News Map: historic American newspaper search", "url": "/" },
+  { "title": "Privacy and data handling · US News Map", "url": "/privacy" },
+  { "title": "Dataset details and index status · US News Map", "url": "/datasets" },
+  { "title": "OCR engine and model credits · US News Map", "url": "/credits" },
+  { "title": "Mexican-American War · US News Map", "url": "/search/mexican-war" },
+  {
+    "title": "Mexican-American War · US News Map",
+    "url": "/search/mexican-war?from=1846-01-01&to=1849-12-31&bucket=month"
+  },
+  { "title": "Mexican-American War · US News Map", "url": "/search/mexican-war?t=1847-01-01&z=4" },
+  { "title": "Newspaper coverage of mexican war · US News Map", "url": "/search/mexican-war?state=GA" },
+  { "title": "Newspaper coverage of mexican war · US News Map", "url": "/search/mexican-war?from=1846-01-01" },
+  { "title": "Records of Congress: mexican war · US News Map", "url": "/search/mexican-war?source=congress" },
+  { "title": "Whig Party · US News Map", "url": "/search/Whig%20OR%20Whigs" },
+  { "title": "Newspaper coverage of old glory · US News Map", "url": "/search/old-glory" },
+  {
+    "title": "Newspaper coverage of \"gold diggings\" OR… · US News Map",
+    "url": "/search/%22gold%20diggings%22%20OR%20%22gold%20mines%22%20OR%20%22gold%20region%22"
+  },
+  { "title": "Newspaper coverage of ꮳꮃꭹ · US News Map", "url": "/search/%EA%AE%B3%EA%AE%83%EA%AD%B9" },
+  { "title": "Newspaper coverage of well-known · US News Map", "url": "/search/well-known?mode=all" },
+  {
+    "title": "Newspaper coverage of xxxxxxxxxxxxxxxxxxxxxxx… · US News Map",
+    "url": "/search/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  { "title": "Newspaper coverage of a b · US News Map", "url": "/search/a%0Ab" }
+]

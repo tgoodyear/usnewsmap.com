@@ -87,9 +87,9 @@ export function pageFor(pathname: string): Page {
 
 /** Each page's document title. None of them holds search text. */
 export const TITLES: Record<Page, string> = {
-  search: "US News Map",
-  datasets: "Dataset details · US News Map",
-  privacy: "Privacy · US News Map",
-  credits: "OCR credits · US News Map",
+  search: "US News Map: historic American newspaper search",
+  datasets: "Dataset details and index status · US News Map",
+  privacy: "Privacy and data handling · US News Map",
+  credits: "OCR engine and model credits · US News Map",
   "not-found": "Page not found · US News Map",
 };

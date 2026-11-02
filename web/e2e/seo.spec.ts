@@ -22,7 +22,7 @@ test.describe("home page head and structure", () => {
   });
 
   test("title and meta description", async ({ page }) => {
-    await expect(page).toHaveTitle("US News Map");
+    await expect(page).toHaveTitle("US News Map: historic American newspaper search");
     expect(await content(page, 'meta[name="description"]')).toBeTruthy();
   });
 
@@ -343,7 +343,7 @@ test("the privacy page renders, with links to it from the other pages", async ({
   await page.goto("/privacy");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Privacy");
   await expect(page.locator("h1")).toHaveCount(1);
-  await expect(page).toHaveTitle("Privacy · US News Map");
+  await expect(page).toHaveTitle("Privacy and data handling · US News Map");
   for (const path of ["/", "/datasets", "/does-not-exist"]) {
     await page.goto(path);
     await expect(page.getByRole("link", { name: "Privacy" }), path).toHaveAttribute("href", "/privacy");
@@ -407,7 +407,7 @@ test.describe("what the API tells crawlers", () => {
     expect(res.status()).toBe(200);
     expect(res.headers()["x-robots-tag"]).toBeUndefined();
     const html = await res.text();
-    expect(html).toContain("<title>Privacy · US News Map</title>");
+    expect(html).toContain("<title>Privacy and data handling · US News Map</title>");
     expect(html).toContain(`<link rel="canonical" href="${SITE}/privacy" />`);
     expect(html).toContain(`<meta property="og:url" content="${SITE}/privacy" />`);
   });

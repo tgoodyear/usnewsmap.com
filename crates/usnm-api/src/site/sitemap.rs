@@ -352,11 +352,11 @@ async fn generate(
     generation.check_freshness(state.sitemap.committed.load_full().as_deref())?;
     let mut pages = manifest.pages.clone();
     let policy = search_policy(&snap);
-    let shell = b"<title>US News Map</title><link rel=\"canonical\" href=\"https://usnewsmap.com/\" /><meta property=\"og:title\" content=\"US News Map\" /><meta property=\"og:url\" content=\"https://usnewsmap.com/\" />";
+    let shell = b"<title>US News Map</title><link rel=\"canonical\" href=\"https://usnewsmap.com/\" /><meta name=\"description\" content=\"\" /><meta property=\"og:title\" content=\"US News Map\" /><meta property=\"og:url\" content=\"https://usnewsmap.com/\" />";
     for (path, content) in &mut pages {
         *content = fingerprint(format!(
             "{content}\0{}",
-            fingerprint(super::shell_for(path, shell.to_vec()))
+            fingerprint(super::shell_for(path, "", shell.to_vec()))
         ));
         if path == "/datasets" {
             *content = fingerprint(format!("{content}\0{policy}"));
@@ -412,9 +412,11 @@ async fn generate(
         if !super::CURATED_SEARCHES.contains(&path) {
             generation.promoted.insert(path.clone());
         }
+        // The head counts too: a new title or description is a changed page.
+        let head = fingerprint(super::shell_for(&path, "", shell.to_vec()));
         pages.insert(
             path.clone(),
-            fingerprint(format!("{}\0{policy}", preview.html)),
+            fingerprint(format!("{}\0{policy}\0{head}", preview.html)),
         );
         generation.content_provenance.insert(
             path.clone(),

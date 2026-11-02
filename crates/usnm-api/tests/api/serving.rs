@@ -836,7 +836,7 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     let (status, headers, body) = get_site(&s, uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-cache");
-    assert!(body.contains("<title>cross of gold · US News Map</title>"));
+    assert!(body.contains("<title>Cross of Gold, 1896 · US News Map</title>"));
     assert!(body
         .contains(r#"<link rel="canonical" href="https://usnewsmap.com/search/cross-of-gold" />"#));
     assert!(body.contains("matching newspaper pages"));
