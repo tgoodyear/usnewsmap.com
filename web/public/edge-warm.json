@@ -169,8 +169,6 @@
   "q=%28Navajo*+OR+Navaho*%29+AND+treaty",
   "q=%28Navajo*+OR+Navaho*%29+AND+treaty&from=1868-01-01&to=1869-12-31&bucket=month",
   "q=Aguinaldo&mode=phrase&from=1898-01-01&to=1903-12-31&bucket=month",
-  "q=Albany+AND+union",
-  "q=Albany+AND+union&from=1754-01-01&to=1754-12-31&bucket=month",
   "q=Amelia+Earhart&mode=phrase&from=1932-05-01&to=1932-07-31&bucket=month",
   "q=Andersonville&mode=phrase&from=1864-01-01&to=1866-06-30&bucket=month",
   "q=Anna+May+Wong&mode=phrase&from=1961-01-01&to=1961-12-31&bucket=month",
