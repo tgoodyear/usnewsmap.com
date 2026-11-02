@@ -288,6 +288,13 @@ fn the_last_runs_buffer_count_stands_in_only_when_recent_and_under_the_cap() {
     });
     std::fs::write(&other, serde_json::to_vec(&st).unwrap()).unwrap();
     assert_eq!(previous_buffer_bytes(&p, 1000), None);
+    // One written in the same second might be later.
+    let same = now_rfc3339();
+    for f in [&p, &other] {
+        let st = serde_json::json!({ "updated_at": same, "buffer_bytes": 400 });
+        std::fs::write(f, serde_json::to_vec(&st).unwrap()).unwrap();
+    }
+    assert_eq!(previous_buffer_bytes(&p, 1000), None);
     // One written earlier doesn't matter.
     write(Utc::now(), 400);
     let st = serde_json::json!({

@@ -842,7 +842,12 @@ impl Run {
                     Set::Buffer => {
                         c.run_buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst);
                         c.buffer_written.fetch_add(side.bytes, Ordering::SeqCst);
-                        c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
+                        // Saturating: a failed count (`u64::MAX`, full) stays full.
+                        c.buffer_bytes
+                            .try_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
+                                Some(b.saturating_add(side.bytes))
+                            })
+                            .unwrap_or_default()
                     }
                 };
                 // A page from LoC's bucket or a mirror says nothing about
@@ -1228,7 +1233,8 @@ fn previous_buffer_bytes(status: &Path, cap: u64) -> Option<u64> {
         let name = p.file_name()?.to_str()?;
         if p != status && name.starts_with("status-") && name.ends_with(".json") {
             match read(&p) {
-                Some((other, _)) if other <= at => {}
+                // Timestamps are whole seconds: a tie could be later.
+                Some((other, _)) if other < at => {}
                 _ => return None,
             }
         }

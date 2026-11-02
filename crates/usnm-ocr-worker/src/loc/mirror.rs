@@ -261,6 +261,9 @@ pub(super) struct Gate {
     /// No request before this: the gap after the last one, or a hold.
     next: Mutex<Instant>,
     held: Mutex<Option<Instant>>,
+    /// With lanes, when the last request actually started: a caller woken
+    /// late can't start within `gap` of it.
+    last_start: Mutex<Option<Instant>>,
 }
 
 impl Gate {
@@ -277,6 +280,7 @@ impl Gate {
             one: Semaphore::new(lanes),
             next: Mutex::new(Instant::now()),
             held: Mutex::new(None),
+            last_start: Mutex::new(None),
         }
     }
 
@@ -320,6 +324,22 @@ impl Gate {
             at
         };
         tokio::time::sleep_until(at).await;
+        // Callers woken late together still start a gap apart.
+        if self.lanes > 1 {
+            loop {
+                let earliest = {
+                    let mut last = self.last_start.lock().expect("gate lock");
+                    let now = Instant::now();
+                    let earliest = last.map_or(now, |t| t + self.gap);
+                    if earliest <= now {
+                        *last = Some(now);
+                        break;
+                    }
+                    earliest
+                };
+                tokio::time::sleep_until(earliest).await;
+            }
+        }
         // A hold set while this caller slept (by a request that just
         // ended) still holds.
         if self.held_until().is_some() {
