@@ -1,0 +1,6 @@
+default seconds 723 peak_mib 6906 fail 0
+768 seconds 749 peak_mib 6896 fail 0
+1024 seconds 879 peak_mib 6896 fail 0
+1536 seconds 1019 peak_mib 6896 fail 0
+2048 seconds 1265 peak_mib 6932 fail 0
+3072 seconds 1788 peak_mib 7190 fail 0

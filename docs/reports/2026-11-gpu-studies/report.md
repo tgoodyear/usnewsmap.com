@@ -204,6 +204,65 @@ Pages per hour for Surya compares the first 18 pages on each rented card. The 20
 
 Qwen at 467 crops and Surya on whole pages are different work: a Surya page costs about ten times a page of Qwen crops. The 4090 is about 1.5 times as fast on Qwen and 1.3 times on Surya, at about 1.9 times the price, so the 3090 is cheaper per page on both. No Study 4 rental failed, so the table holds all its paid time. The 2060 SUPER has no rental cost, and its electricity wasn't measured. Qwen wasn't measured on it, because pulling the image would block the BOINC client.
 
+# Study 5: loop guard, 8B training and the deployed path
+
+Study 2's test set was to be scored once. Reusing Reichsanzeiger and Overproof here is a departure, so those results are labelled second use. Two sets no study had used give the clean confirmation: 200 BLN600 English excerpts and 300 GT4HistOCR `dta19` Fraktur lines from 30 books, frozen before any reading. BLN600 is cut from London newspapers, and `dta19` is from books, so it says less about newspaper layout.
+
+## Loop guard
+
+Candidates were chosen on Study 2's 378 validation crops on Qwen 2B. Rule: lowest pooled CER among those keeping omission counts within 2 of no guard, ties going to the simplest.
+
+| Candidate | Pooled CER | 95% limits | Median crop | Major hallucinations | Under-length | Word-overlap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `none` | 28.1% | 6.7 to 67.3 | 4.3% | 15 | 1 | 10 |
+| `stop` | 7.9% | 6.4 to 9.9 | 4.4% | 14 | 1 | 9 |
+| `rp105` | 16.0% | 6.7 to 37.1 | 4.5% | 15 | 1 | 8 |
+| `rp110` | 16.1% | 6.9 to 36.8 | 4.5% | 15 | 1 | 7 |
+| `stop-retry` | 8.1% | 6.6 to 10.3 | 4.4% | 14 | 1 | 8 |
+
+`stop` was selected: when `tail_repetition` fires, generation stops and the text before the repeated run is kept, with one period of it. Repetition penalty barely helps, and a retry adds nothing.
+
+The guard scores on the test sets were computed by applying the same cut to finished readings, which needs no GPU, instead of rereading. On validation the cut gave 7.7% and the live guard 7.9%. 37 of 378 texts differ between those two runs, which were on different cards.
+
+**Qwen 2B, BF16.** Second use, Reichsanzeiger 700 and Overproof 300:
+
+| Source | Baseline | Baseline, guard | Adapter | Adapter, guard |
+| --- | ---: | ---: | ---: | ---: |
+| Reichsanzeiger | 62.0% | 17.1% | 17.3% | 10.2% |
+| Overproof | 8.2% | 2.3% | 5.3% | 2.9% |
+
+On Reichsanzeiger the guard alone gives -45.0 points (limits -83.6 to -14.5), which is 101% of the adapter's -44.7. So Study 2's headline gain was almost all fewer loops. With both guarded, the adapter's own gain is -6.9 points (-12.9 to -2.0) on Reichsanzeiger, and on Overproof it is +0.6 (0 to 1.3), so it may do slight harm to English.
+
+The clean sets, new to all readers:
+
+| Source | Baseline | Baseline, guard | Adapter | Adapter, guard | Guarded difference | 95% limits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dta19` German, 300 lines, 30 books | 22.5% | 7.4% | 21.5% | 6.4% | -1.0 | -1.4 to -0.7 |
+| BLN600 English, 200 excerpts | 3.2% | 3.2% | 3.1% | 3.1% | -0.2 | -1.4 to 0.8 |
+
+The adapter has a real, small gain on unseen Fraktur and none shown on English. That's well short of the 10% relative gate on English and meets it on `dta19`.
+
+**Qwen 8B.** Second use of Study 1's measured set, 1,060 crops: unguarded 49.6%, with guard 11.1% (8.3 to 13.8). Against `frak2021` PSM 3 the difference goes from +31.6 points to -6.8 (-10.1 to -3.9). The guard fired on 47 of the 1,187 pilot crops, 46 of them at the token cap.
+
+**What the guard costs.** It cuts the repeated tail and little else. Second use, 1,000 crops: under-length failures rise from 1 to 4 for the baseline, and 16 stay 16 for the adapter. Word-overlap failures don't change. Major hallucinations fall from 90 to 87 and stay 56, so most of what that count flags isn't loops. On 8B, under-length failures rise from 3 to 5 of 1,060.
+
+## Deployed path
+
+The adapter was merged into its base and converted with llama.cpp commit `091b6a7fc`, the pinned server image's, to Q8_0 (SHA-256 `57ef4592`), then read in the `usnm_qwen` 2B image with request version 2, next to the stock GGUF. Nothing was signed, published or sent to BOINC. All with guard:
+
+| Source | Stock GGUF | Adapter GGUF | Difference | 95% limits |
+| --- | ---: | ---: | ---: | ---: |
+| Reichsanzeiger, second use | 15.5% | 10.1% | -5.4 | -12.1 to -1.2 |
+| Overproof, second use | 2.2% | 2.4% | +0.2 | -0.6 to 0.8 |
+| `dta19` | 7.0% | 6.3% | -0.7 | -1.1 to -0.3 |
+| BLN600 | 2.4% | 2.2% | -0.1 | -1.1 to 0.5 |
+
+Export and quantization lost nothing measurable. The same adapter, GGUF against BF16: Reichsanzeiger -0.1 points (-0.4 to 0.3), `dta19` -0.1 (-0.2 to 0.1), Overproof -0.6 (-1.3 to -0.1), BLN600 -0.8 (-1.7 to 0). The GGUF path was better than BF16 where a difference shows, which isn't an export gain: the runtimes also differ in image handling. Peak VRAM was 3.5 GB on 2B Q8_0.
+
+@@S58B@@
+
+The adapters stay `untrusted-requires-held-out-evaluation`.
+
 # Study 6: a fair Surya retest
 
 Study 3's Surya rows measure our configuration. This retest ran the same inputs the way Surya is meant to run, on a 12 GB RTX 3060. The crops and pages were already seen, so this is a second use, with no training.
@@ -238,6 +297,27 @@ Layout ran on the GPU here, with a CUDA torch in the image. Surya's own order in
 ## Native weights against the GGUF
 
 50 crops by the frozen hash order, line mode, native weights (revision `3b3d4cdf`, OpenRAIL) on vLLM 0.20.1 with Surya's server settings scaled to a 12 GB card (`max-num-seqs` 16, `max-num-batched-tokens` 4096), 9.9 GB peak VRAM. Pooled CER is 61.4% (37.6 to 95.4) for native and 18.9% (10.0 to 30.7) for the GGUF, 42.5 points worse (19.6 to 76.9). A few readings run far past their reference, such as 552 characters on a 57-character crop. This wasn't investigated further, and it may come from our server settings, so it isn't a verdict on the native model.
+
+# Study 7: image-token sweep
+
+Only default and 1,024 minimum image tokens had been compared (#529), and 1,024 came from llama.cpp's warning. This sweep ran the stock Qwen 8B Q4_K_M GGUF at six values, with the `stop` guard applied to every reading. It ran on a rented RTX 3060 in the `usnm_qwen` image's CUDA build 11610, because the native Vulkan build of the installed app found no device there. So the build differs from the 1.14 to 1.17 Vulkan builds, and agreement between two vendors wasn't measured. The Yiddish crops typed in #529 couldn't be found, so Yiddish has no word recall here.
+
+Crops: the 39 of #529 (34 Yiddish, 3 Serbian, 2 English, no transcriptions), and 112 with human transcriptions (French 24, Finnish 18, Swedish 10, German Austrian newspapers 60). No gold-set crop has a transcription yet, and no Study 5 test set was used. Context size stayed 4,096 up to 1,536, then rose to fit: 4,352 at 2,048 and 5,376 at 3,072.
+
+| Minimum image tokens | CER, 112 crops | 95% limits | Against 1,024 | 95% limits | Yiddish loops, of 34 | Yiddish at token cap | Yiddish text kept | Seconds a crop, 151 | Peak VRAM |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Default | 3.0% | 2.4 to 3.7 | +0.3 | 0.1 to 0.6 | 15 | 16 | 77% | 4.8 | 6.9 GB |
+| 768 | 2.7% | 2.2 to 3.2 | 0.0 | -0.1 to 0.2 | 7 | 8 | 100% | 5.0 | 6.9 GB |
+| 1,024 | 2.7% | 2.2 to 3.2 | | | 9 | 11 | 100% | 5.8 | 6.9 GB |
+| 1,536 | 2.8% | 2.2 to 3.4 | +0.1 | -0.1 to 0.4 | 6 | 8 | 106% | 6.7 | 6.9 GB |
+| 2,048 | 2.8% | 2.2 to 3.5 | +0.1 | -0.1 to 0.4 | 7 | 10 | 111% | 8.4 | 6.9 GB |
+| 3,072 | 3.0% | 2.4 to 3.6 | +0.3 | 0.1 to 0.5 | 8 | 9 | 98% | 11.8 | 7.2 GB |
+
+Text kept is characters after the guard, against the same crops at 1,024. No value ran out of memory on the 12 GB card. Loops on the transcribed crops were zero at every value, so these CERs say nothing about loops. The 5 English and Serbian crops didn't loop at any value.
+
+The default is worse than 1,024, which confirms #529. Above that, nothing beats 1,024. Under the protocol's rule, 768 is the best value by a hair, with a difference of 0.0 points (limits -0.1 to 0.2) against 1,024, 7 Yiddish loops against 9, and 14% less GPU time. That doesn't meet the bar for a new request version: the limits include zero, and on 34 Yiddish crops the gap between 6 and 9 loops can't be told from noise. There's also no measured accuracy on Yiddish here. 3,072 costs twice the GPU time and is worse. Keep 1,024.
+
+The Study 2 and Study 5 adapters trained at 1,024 to 2,048 image tokens (`min_pixels` 1,048,576, `max_pixels` 2,097,152, 32 pixels a token), and are served in BF16 with the same range. Through llama.cpp, request version 2 sets the minimum at 1,024 with no such maximum, so a crop whose native size exceeds 2,048 tokens is read at a resolution the adapter never trained on. No test here shows harm from that.
 
 # Spend
 

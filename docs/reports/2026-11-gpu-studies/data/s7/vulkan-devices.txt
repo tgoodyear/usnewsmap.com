@@ -1,0 +1,5 @@
+load_backend: loaded RPC backend from /work/in/rt/libggml-rpc.so
+ggml_vulkan: No devices found.
+load_backend: loaded Vulkan backend from /work/in/rt/libggml-vulkan.so
+load_backend: loaded CPU backend from /work/in/rt/libggml-cpu-haswell.so
+Available devices:
