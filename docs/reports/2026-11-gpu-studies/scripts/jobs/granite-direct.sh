@@ -4,7 +4,11 @@
 set -u
 D=/tmp/gpu-studies/s3granite; O=$D/out; I=$D/in; mkdir -p $O
 export HF_HOME=$D/hf UV_CACHE_DIR=$D/uvcache UV_PYTHON_INSTALL_DIR=$D/uvpy TOKENIZERS_PARALLELISM=false HOME=$D
-curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$D/uvbin UV_NO_MODIFY_PATH=1 sh > $O/uv.log 2>&1
+# uv 0.13.6, the version uv.log records. The installer carries the sha256 of the release tarball it fetches.
+UV_INSTALLER_SHA256=f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7
+curl -fsSL -o $D/uv-install.sh https://astral.sh/uv/0.13.6/install.sh
+echo "$UV_INSTALLER_SHA256  $D/uv-install.sh" | sha256sum -c --quiet - || { echo "uv installer does not match the pinned sha256" >> $O/progress.txt; exit 6; }
+env UV_INSTALL_DIR=$D/uvbin UV_NO_MODIFY_PATH=1 sh $D/uv-install.sh > $O/uv.log 2>&1
 export PATH=$D/uvbin:$PATH
 uv venv -q --python 3.12 $D/v >> $O/uv.log 2>&1
 uv pip install -q --python $D/v/bin/python 'torch==2.8.0' --index-url https://download.pytorch.org/whl/cu128 >> $O/uv.log 2>&1
