@@ -331,6 +331,10 @@ impl Gate {
                     let mut last = self.last_start.lock().expect("gate lock");
                     let now = Instant::now();
                     let earliest = last.map_or(now, |t| t + self.gap);
+                    // Past the deadline: the caller goes to LoC instead.
+                    if earliest > deadline || now > deadline {
+                        return None;
+                    }
                     if earliest <= now {
                         *last = Some(now);
                         break;
