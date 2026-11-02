@@ -12,11 +12,14 @@ the model lock and language routing. It publishes native ALTO and Parquet to
 `ocr-out`; `ocr-sync` and release decisions are unchanged. Other apps:
 
 - `usnm_assess`: [JP2 versus IIIF JPEG comparison](../notes/2026-10-16-boinc-assessment.md) (#456).
+  Retired on 2 November 2026; it never sent work.
 - `usnm_gold`: [score a host's engine on public ground truth](gold-check.md#gold-check).
 - `usnm_surya`: [Surya 2 on CPUs, NVIDIA GPUs, and Intel GPUs](../boinc-surya.md) (#516, #842).
   Retired on 2 November 2026; it sends no work.
 - `usnm_ndlocr`: [Japanese NDLOCR-Lite/default-route CPU work](../boinc-ndlocr-lite.md),
   two-reading character-similarity validation and collection into `ocr-ja`.
+- `usnm_iris` (Iris Xe 4B pilot, #703) and `usnm_qwen_train` (LoRA training, #583): retired on
+  2 November 2026; they send no work. `usnm_qwen`'s `intel_vulkan_8b` class replaced the Iris pilot.
 - `usnm_quality` and `usnm_qwen`: [per-page quality scoring without ground
   truth and Qwen3-VL deterministic word-crop transcription](../boinc-quality.md) (#522).
 

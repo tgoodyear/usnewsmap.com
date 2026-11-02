@@ -188,7 +188,9 @@ The workflow runs the cross-platform golden determinism test on every target and
 
 ## App versions and plan classes
 
-Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
+Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`. Not all of them have a
+live version: since 2 November 2026 the live `usnm_qwen` versions are GPU only (`nvidia_vulkan_8b`,
+`nvidia_vulkan_6gb_8b`, `amd_vulkan_8b`, `intel_vulkan_8b` and `apple_gpu_8b`), with no CPU version.
 
 | App            | Kind        | Plan class              | Platforms                                                                                                         | Runtime / resource requirements                                                                                                                                                                                                                                         |
 | -------------- | ----------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

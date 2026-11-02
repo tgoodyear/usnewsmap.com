@@ -188,6 +188,31 @@ check that no controller plan, timer or feed still stages work for the app.
 [retirement notes](../boinc-surya.md#retirement-2-november-2026) list the steps and the
 state before and after.
 
+`usnm_assess`, `usnm_iris` and `usnm_qwen_train` were retired the same way later on
+2 November 2026 (#529), when two app names were also corrected:
+
+- Before: no result in progress. Every `usnm_iris` and `usnm_qwen_train` version was
+  already deprecated, and `usnm_assess` had none and never had a workunit. Iris's last
+  workunit was from 18 October, training's from 15 October. No timer, feed or controller
+  plan staged any of them. `usnm_qwen`'s `intel_vulkan_8b` class replaced the Iris pilot.
+- `usnm_qwen_train`'s two unsent results were cancelled with `bin/cancel_jobs --name`.
+- `deprecated=1` on the three apps (`project.xml` says the same), then `reread_db`.
+- New names for `usnm_quality` (tasks are bundles of about 200 pages that measure the scan
+  and compare texts) and `usnm_qwen` (GPU versions only, one page per task). `bin/xadd`
+  updates a changed `user_friendly_name`, so the branch's `project.xml` was copied into the
+  project and `bin/xadd` run, as the `register-apps` step does.
+- The six validator and assimilator daemons of the three apps keep running with nothing to
+  do. They come from `config.xml`, rendered at container start (`render_config` in
+  `contrib-compute/images/server/lib.sh`), and changing the live copy would change the
+  `config.xml` SHA-256 the Qwen auto-cohort controller pins. Drop them from `render_config`
+  in a later server image, and update that pin, to take them off the status page.
+
+The state before is saved under `/project/ops/app-tidy-20261102/` with the script that made
+the change. Rollback, in the server container as `boincadm`: run
+`php /project/ops/app-tidy-20261102/app_tidy.php --project /project/usnmocr --journal /project/ops/app-tidy-20261102 --project-xml /project/ops/app-tidy-20261102/project.xml.new --rollback`.
+It restores the app names and `deprecated` flags, the two workunits' `error_mask` and their
+results' state, and the previous `project.xml`, then touches `reread_db`.
+
 ## Moving the project share
 
 The share left Azure on 21 October 2026 ([boinc-onprem.md](../boinc-onprem.md)). This section records the staged move of the Azure Files share and applies to `"server": "azure"`.
