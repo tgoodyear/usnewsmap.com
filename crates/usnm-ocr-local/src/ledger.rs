@@ -15,6 +15,7 @@
 //! outstanding page, with the batch and reason the ledger has for it.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -510,23 +511,32 @@ impl Ledger {
     }
 }
 
-/// Read the whole ledger.
+/// Read the whole ledger. With `USNM_LEDGER_CACHE` set to a directory, its files are kept there
+/// ([`load_cached`]): the BOINC hand-off job sets it, because it loads the ledger once per job.
 pub async fn load(curated: &dyn ObjectStore) -> anyhow::Result<Ledger> {
+    let cache = std::env::var_os("USNM_LEDGER_CACHE").map(PathBuf::from);
+    load_cached(curated, cache.as_deref()).await
+}
+
+/// [`load`], keeping each file's bytes under `cache` when one is given, so a later load fetches
+/// only the files that appeared since. The ledger's files are create-only, so a file's name fixes
+/// its bytes, and the files are listed every time, so a load sees what [`load`] would.
+pub async fn load_cached(
+    curated: &dyn ObjectStore,
+    cache: Option<&Path>,
+) -> anyhow::Result<Ledger> {
     let mut ledger = Ledger::default();
     for path in curated.list(&format!("{ROOT}/queued")).await? {
         if !path.ends_with(".parquet") {
             continue;
         }
-        let bytes = curated
-            .get(&path)
-            .await?
-            .with_context(|| format!("{path} vanished"))?;
+        let bytes = ledger_file(curated, &path, cache).await?;
         let run = path
             .rsplit('/')
             .next()
             .and_then(|name| name.strip_suffix(".parquet"))
             .unwrap_or_default();
-        for q in decode_queued(Bytes::from(bytes)).with_context(|| format!("reading {path}"))? {
+        for q in decode_queued(bytes).with_context(|| format!("reading {path}"))? {
             ledger.add_queued_from_run(q, run);
         }
     }
@@ -534,15 +544,44 @@ pub async fn load(curated: &dyn ObjectStore) -> anyhow::Result<Ledger> {
         if !path.ends_with(".parquet") {
             continue;
         }
-        let bytes = curated
-            .get(&path)
-            .await?
-            .with_context(|| format!("{path} vanished"))?;
-        for o in decode_outcomes(Bytes::from(bytes)).with_context(|| format!("reading {path}"))? {
+        let bytes = ledger_file(curated, &path, cache).await?;
+        for o in decode_outcomes(bytes).with_context(|| format!("reading {path}"))? {
             ledger.add_outcome(o);
         }
     }
     Ok(ledger)
+}
+
+/// One ledger file's bytes, from `cache` if it holds them. A partly written copy can't be read:
+/// it gets its name by a rename.
+async fn ledger_file(
+    curated: &dyn ObjectStore,
+    path: &str,
+    cache: Option<&Path>,
+) -> anyhow::Result<Bytes> {
+    let local = match cache {
+        Some(dir) => {
+            let name = path.replace('/', "_");
+            match std::fs::read(dir.join(&name)) {
+                Ok(bytes) => return Ok(Bytes::from(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).with_context(|| format!("reading cached {path}")),
+            }
+            Some(dir.join(name))
+        }
+        None => None,
+    };
+    let bytes = curated
+        .get(path)
+        .await?
+        .with_context(|| format!("{path} vanished"))?;
+    if let Some(local) = local {
+        let partial = local.with_extension(format!("{}.partial", std::process::id()));
+        std::fs::write(&partial, &bytes)
+            .and_then(|()| std::fs::rename(&partial, &local))
+            .with_context(|| format!("caching {path}"))?;
+    }
+    Ok(Bytes::from(bytes))
 }
 
 /// Write queued rows as one create-only file; `None` for no rows.

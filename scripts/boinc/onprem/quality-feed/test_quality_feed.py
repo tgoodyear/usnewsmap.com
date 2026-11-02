@@ -231,5 +231,22 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(damage[0][loader.DAMAGE_COLS.index("damage_rate")], 0.5)
 
 
+class ReceiveOwnerTest(unittest.TestCase):
+    def test_a_file_already_the_owners_is_not_chowned(self):
+        # Each chown on the share is a synchronous write; a chunk's walk meets thousands of files.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "page.json")
+            path.write_text("{}")
+            info = os.lstat(path)
+            with mock.patch.object(receive.os, "lchown") as chown:
+                with mock.patch.object(receive, "OWNER", info.st_uid), \
+                        mock.patch.object(receive.os, "lstat", return_value=mock.Mock(st_uid=info.st_uid, st_gid=info.st_uid)):
+                    receive.own(str(path))
+                chown.assert_not_called()
+                with mock.patch.object(receive, "OWNER", info.st_uid + 1):
+                    receive.own(str(path))
+                chown.assert_called_once_with(str(path), info.st_uid + 1, info.st_uid + 1)
+
+
 if __name__ == "__main__":
     unittest.main()

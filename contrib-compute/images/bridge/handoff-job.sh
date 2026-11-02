@@ -68,6 +68,14 @@ for v in HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL; do
 done
 [[ $HANDOFF_URL =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
   fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+# The steps load the ledger once per job or batch, and it is hundreds of small files, so they keep
+# the files for this execution's later loads (usnm_ocr_local::ledger::load). The files are
+# create-only and every load lists them, so a load sees what it would see without this. The
+# directory goes with the container.
+if [ -z "${USNM_LEDGER_CACHE:-}" ]; then
+  USNM_LEDGER_CACHE=$(mktemp -d)
+  export USNM_LEDGER_CACHE
+fi
 # collect for a tick's jobs in one execution (#932): JOB_IDS. Each job runs this script's
 # single-job collect again, with its own work directory; a failed one doesn't stop the rest,
 # and the run fails at the end so the controller sees it.
