@@ -857,23 +857,26 @@ class SourceTest(unittest.TestCase):
             filters, pages = self.budget_tick(root, 30, yiddish, [other])
             self.assertEqual(filters, [("yid", None, 30)])
             self.assertEqual(pages, [yiddish[0]["doc_id"]])
-            # With the budget spent the request carries on, unfiltered.
+            # With the budget spent the request carries on, without Yiddish.
             filters, pages = self.budget_tick(root, 1, [], [other])
-            self.assertEqual(filters, [(None, None, 100)])
+            self.assertEqual(filters, [(None, "yid", 100)])
             self.assertEqual(pages, [DOC])
 
-    def test_a_source_request_that_mixes_languages_splits_across_ticks(self):
-        pages = [{"doc_id": f"sn{n}_1900-01-02_ed-1_seq-1", "batch": "xx_test", "batch_version": 1,
-                  "bytes": 12, "sha256": "a" * 64, "lang": lang, "damage_rate": .8} for n, lang in enumerate(("yid", "srp"), 1)]
+    def test_a_source_request_never_spends_past_the_budget(self):
+        page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1,
+                "bytes": 12, "sha256": "a" * 64, "lang": "yid", "damage_rate": .8}
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "requests").mkdir()
-            spec = source.specification(pages[0]["doc_id"], 2, "test")
+            (root / "yiddish-budget.json").write_text(json.dumps(["spent"]))
+            spec = source.specification(page["doc_id"], 1, "test")
             source.save(root / "requests" / (source.digest(spec) + ".json"),
-                        {"request_id": source.digest(spec), "spec": spec, "pages": pages[:1],
-                         "pages_sha256": source.digest(pages[:1])})
-            _, chosen = self.budget_tick(root, 0, pages[:1], pages[1:])
-            self.assertEqual(chosen, [pages[1]["doc_id"]])
+                        {"request_id": source.digest(spec), "spec": spec, "pages": [page],
+                         "pages_sha256": source.digest([page])})
+            filters, chosen = self.budget_tick(root, 1, [page], [])
+            self.assertEqual(filters, [(None, "yid", 100), (None, "yid", 100)])
+            self.assertEqual(chosen, [])
+            self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), ["spent"])
 
     def test_no_yiddish_left_falls_through_to_the_normal_order(self):
         others = [{"doc_id": f"sn2_1900-01-02_ed-1_seq-{n}", "lang": "srp", "damage_rate": .8}

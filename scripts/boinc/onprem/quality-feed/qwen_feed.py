@@ -135,6 +135,8 @@ def _tick(a):
     # Yiddish reads at another request version, so it comes as a chunk of its own, ahead of any
     # source request and only up to the budget. Every other page keeps the normal order without it.
     left = 0 if a.yiddish_budget is None else min(count, a.yiddish_budget - len(spent))
+    # The budgeted pass is the only way in for Yiddish, whatever a source request names.
+    filters = () if a.yiddish_budget is None else ("--exclude-language", YIDDISH)
     pages = []
     if left > 0:
         command(ct + ["tee", work + "/index.jsonl"], index)
@@ -145,16 +147,7 @@ def _tick(a):
         command(ct + ["tee", work + "/index.jsonl"], selected_index)
         phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
               source_request=request_id)
-        if a.yiddish_budget is None or request_id is not None:
-            raw, pages = select(count)
-        else:
-            raw, pages = select(count, "--exclude-language", YIDDISH)
-        if a.yiddish_budget is not None:
-            # A source request can mix languages: take the rest first, Yiddish next tick.
-            others = [p for p in pages if p["lang"] != YIDDISH]
-            if others and len(others) != len(pages):
-                pages = others
-                raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
+        raw, pages = select(count, *filters)
         if pages or request_id is None:
             break
         phase("source_request_no_eligible_pages", source_request=request_id)

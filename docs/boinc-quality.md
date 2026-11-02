@@ -1005,7 +1005,6 @@ directory) and archival before any input-retention cleanup. This automation does
 delete scientific inputs/results, qualify GPUs, reopen broken plan classes, or replace
 whole-page searchable OCR with sampled crop readings.
 
-
 ### Request versions on the feed
 
 The outbox, `done.txt` and source requests stay under `CAMPAIGN`. The shipper chooses where each chunk goes, from `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env`:
