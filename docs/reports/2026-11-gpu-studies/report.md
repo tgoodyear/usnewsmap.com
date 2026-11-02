@@ -1,6 +1,6 @@
 ---
 title: "GPU studies, November 2026"
-subtitle: "German Fraktur bake-off, a LoRA adapter on held-out text, an engine comparison with Japanese, and pages per dollar"
+subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pages per dollar, a loop guard, a Surya retest and an image-token sweep"
 date: "November 2026"
 ---
 
@@ -12,7 +12,9 @@ All limits are 95% bootstrap limits, resampling source pages. A number from the 
 
 Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, a difference of 8.2 points with limits of -4.6 to 25.4, so no difference is called. On the German measured set the protocol's pooled CER is 49.6% for Qwen 8B against 17.9% for `frak2021` PSM 3, a difference that is called, against Qwen. Repetition loops are the visible cause: leaving out the 9 looped crops of 1,060 (post-hoc) brings Qwen to 10.9%. Loops were rarer on some sets than others: 3.9% of pilot crops and 15 of 64 Japanese crops. A loop guard is the first change to make.
 
-A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%, and readings at the token cap there fell from 15 to 2. How much of the gain comes from looping less is Study 5's question. It showed no gain on English, and it omits more. It stays untrusted.
+A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%. Study 5 found that a loop guard alone gives all of that: with the guard on both, the 2B adapter's own gain is -6.9 points on Reichsanzeiger (second use) and -1.0 on unseen Fraktur books, with none on English. An 8B adapter gains -4.5 on Reichsanzeiger and little or nothing on the clean sets. Both survive export to the GGUF the BOINC app runs, with little or no loss. They stay untrusted.
+
+The guard is `stop`: end the reading when the contract's `tail_repetition` fires and keep the text before the repeat. It costs little real text. Study 7 found no image-token setting better than 1,024.
 
 Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 was faster than a 3090 and dearer per page. Study 3's Surya scores measured our configuration: in Study 6, line recognition took Surya from 109.2% to 23.0% pooled CER, still behind Tesseract's 9.0% on those crops, and `whole` mode kept column order better but read less than half the text.
 
@@ -259,7 +261,32 @@ The adapter was merged into its base and converted with llama.cpp commit `091b6a
 
 Export and quantization lost nothing measurable. The same adapter, GGUF against BF16: Reichsanzeiger -0.1 points (-0.4 to 0.3), `dta19` -0.1 (-0.2 to 0.1), Overproof -0.6 (-1.3 to -0.1), BLN600 -0.8 (-1.7 to 0). The GGUF path was better than BF16 where a difference shows, which isn't an export gain: the runtimes also differ in image handling. Peak VRAM was 3.5 GB on 2B Q8_0.
 
-@@S58B@@
+**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision `0c351dd0`), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed it anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
+
+Validation, with guard, 378 crops: baseline 5.3% (3.8 to 7.5); 250 steps 3.5%; 500 steps 2.6%; 1,000 steps 2.5%; 2,000 steps 2.1% (1.6 to 2.8). The 2,000-step adapter was selected.
+
+Test, once, with guard, BF16:
+
+| Source | Baseline | Adapter | Difference | 95% limits |
+| --- | ---: | ---: | ---: | ---: |
+| Reichsanzeiger, second use | 12.4% | 7.9% | -4.5 | -6.1 to -2.9 |
+| Overproof, second use | 2.0% | 1.4% | -0.6 | -1.6 to 0.2 |
+| `dta19` | 5.4% | 5.2% | -0.2 | -0.3 to 0.0 |
+| BLN600 | 3.7% | 3.0% | -0.7 | -2.2 to 0.4 |
+
+Major hallucinations fall from 102 to 45 of 1,500, under-length failures go from 11 to 12, and word-overlap failures from 23 to 15. The 8B adapter clears the 10% relative gate on Reichsanzeiger only. On the clean sets its gain is small (`dta19`) or not shown (BLN600).
+
+**8B deployed path.** Merged and converted to Q4_K_M (SHA-256 `990f3d6a`), read in the `usnm_qwen` 8B image next to the stock GGUF, with guard:
+
+| Source | Stock GGUF | Adapter GGUF | Difference | 95% limits |
+| --- | ---: | ---: | ---: | ---: |
+| Reichsanzeiger, second use | 12.2% | 8.4% | -3.7 | -5.7 to -2.0 |
+| Overproof, second use | 1.8% | 1.6% | -0.1 | -1.0 to 0.6 |
+| `dta19` | 5.5% | 5.3% | -0.2 | -0.4 to -0.1 |
+| BLN600 | 2.2% | 2.5% | +0.3 | 0.2 to 0.4 |
+
+Against BF16, the same adapter lost a little in Q4_K_M on Reichsanzeiger, +0.5 points (-0.1 to 1.1), and Overproof, +0.2 (0.1 to 0.3), with `dta19` and BLN600 within noise. On the deployed path the 8B adapter is slightly worse than stock on BLN600, +0.3 (0.2 to 0.4), so it isn't neutral on English. Peak VRAM was 7.2 GB for 8B Q4_K_M and 18.8 GB for 8B BF16 inference.
+
 
 The adapters stay `untrusted-requires-held-out-evaluation`.
 
@@ -321,7 +348,7 @@ The Study 2 and Study 5 adapters trained at 1,024 to 2,048 image tokens (`min_pi
 
 # Spend
 
-Credit went from $49.88 to $44.28, so $5.60 of the $40 limit. Per-study figures are hourly price by instance time from the ledger, which comes to $5.67. That is over the $5.60 paid because the ledger counts from instance creation, including loading time, and hasn't been checked against Vast's billing records; bandwidth and storage aren't split out.
+Credit went from $49.88 to $37.97, so $11.91 of the $40 limit. The ledger's estimate, hourly price times time from instance creation to destruction, comes to $11.40. That estimate differs from what was paid because it counts loading time and leaves out bandwidth and storage, and it hasn't been checked against Vast's billing records.
 
 | Study | Cap | Instances | Paid hours | Estimated $ |
 | --- | ---: | ---: | ---: | ---: |
@@ -329,20 +356,31 @@ Credit went from $49.88 to $44.28, so $5.60 of the $40 limit. Per-study figures 
 | 2: LoRA | 14 | 3 | 4.12 | 0.81 |
 | 3: comparison | 10 | 10 | 8.61 | 1.71 |
 | 4: pages per dollar | 8 | 4 | 7.19 | 1.98 |
+| 5: guard, 8B, deployed path | | 30 | 28.52 | 5.36 |
+| 6: Surya retest | | 3 | 4.10 | 0.24 |
+| 7: image tokens | | 1 | 1.90 | 0.13 |
+| All | 40 | 69 | 60.70 | 11.40 |
 
-19 of the 35 instances ended without a clean job exit: 11 with no SSH, 6 interrupted by us, 1 failed push and 1 job exit 7. Sampling of GPU use began after Study 1 and LoRA training. Of the 15.7 job hours sampled since, 13.5 were busy, 86%. Paid time in total was 26.2 hours. Before sampling, about 2.8 paid hours went on Tesseract, which never used the GPU.
+Study 5's figure includes the lost 8B run, about 4 hours and $0.85, and the 8B deployed reads, which stopped once when four parallel rentals together tripped one rental's spend cap. The cap compares account credit, so it counts other rentals' spend; it should track its own instance.
+
+Of 69 instances, 37 ended with a clean job exit. The others: 20 with no SSH within 10 minutes, 6 interrupted by us, 2 failed pushes, and 4 setup failures (job exits 7, 9 and others). GPU use was sampled from midway through Study 1 onward: of 44.0 job hours sampled, 38.8 were busy, 88%. Before sampling, about 2.8 paid hours went on Tesseract, which never used the GPU.
 
 | Job | Card | Peak VRAM | Cost |
 | --- | --- | ---: | ---: |
-| LoRA training | RTX 3090 | 21.7 GB reserved, 8.8 GB allocated | $0.35 |
-| Qwen 8B | 3090, 4090 | 6.9 GB | $3.40 per 1,000 pages on the 3090 |
+| 2B LoRA training | RTX 3090 | 21.7 GB reserved, 8.8 GB allocated | $0.35 |
+| 8B LoRA training | RTX 4090 | 24 GB reserved, 22.5 GB allocated | about $0.53 for 76 minutes |
+| 8B BF16 inference | 3090, 4090 | 18.8 GB | |
+| 2B BF16 inference | RTX 3060 | about 5 GB | |
+| Qwen 8B Q4_K_M | 3090, 4090, 3060 | 6.9 to 7.2 GB | $3.40 per 1,000 pages on the 3090 |
+| Qwen 2B Q8_0 | RTX 3060 | 3.5 GB | |
 | CHURRO | 3090 | 9.2 GB | about $0.41 per 1,000 crops |
 | GOT-OCR | 3090 | 4.5 GB | about $0.44 per 1,000 crops |
-| Surya | 3090, 4090, 2060 SUPER | about 2.2 GB | $36 per 1,000 pages on the 3090 |
+| Surya GGUF | 3090, 4090, 3060, 2060 SUPER | 2.1 to 2.2 GB | $36 per 1,000 tiled pages on the 3090 |
+| Surya native on vLLM | RTX 3060 | 9.9 GB | |
 | Granite | 3090, then 2060 SUPER | 1.4 GB on the 3090, 3.9 GB shared | about $1.10 per 1,000 crops on the 3090 |
-| Tesseract, NDLOCR-Lite, American Stories | Local CPU, after first Tesseract rental | none | no rental cost |
+| Tesseract, NDLOCR-Lite, American Stories | Local CPU, after the first Tesseract rental | none | no rental cost |
 
-Most of these could have used a cheaper card. A 12 GB RTX 3060 was on offer at about $0.06 to $0.07 an hour, against about $0.19 for a 3090, but no job here ran long enough on one to measure its cost per page.
+From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an hour. Readers ran on different cards, which affects speed comparisons and not accuracy.
 
 # Departures from the protocol
 
@@ -357,6 +395,13 @@ Most of these could have used a cheaper card. A 12 GB RTX 3060 was on offer at a
 - Study 4 stopped Surya at 18 and 20 pages of 40, and Qwen on the 2060 SUPER wasn't measured.
 - Order. Study 3's local tail overlapped Study 4's rentals.
 - Japanese crops came from public scans held on a workstation, a one-off copy of about 42 MB.
+- Study 5 applied the guard by cutting finished readings, not by rereading, except on validation, where the live guard was run and compared.
+- Study 5's 8B baseline and adapter test reads were split across machines to save time; each crop was scored once.
+- Study 5's 8B training ran on a 4090 after the 3090 run's files were lost.
+- Study 5's BLN600 images were converted from TIFF to PNG, pixel for pixel, for llama.cpp; the request had labelled them JPEG.
+- Study 6 ran the native weights with Surya's vLLM settings scaled to a 12 GB card.
+- Study 7 ran the image's CUDA build, not the native Vulkan build, and raised context above 4,096 for 2,048 and 3,072 image tokens. The typed Yiddish crops of #529 weren't found.
+- Study 6 started alongside Study 5 rather than after it.
 
 # Findings about the rental
 
@@ -372,5 +417,9 @@ Most of these could have used a cheaper card. A 12 GB RTX 3060 was on offer at a
 - Whether looping explains part of #1420's inconclusive Qwen results.
 - A person who reads Japanese hasn't checked any Japanese result (#135).
 - Nobody has read the invented-text crops. The ids are in the data.
-- The LoRA adapter has no GGUF export and no BOINC inference comparison.
+- The adapters are exported and read in the `usnm_qwen` images, but nothing was signed, published or sent to BOINC, and no volunteer has run them.
+- The guard isn't in `usnm-boinc` yet. The same rule can run either as a stop during generation or as a cut on finished readings, using the existing `repetition_loop_at_token_budget` label.
+- Podman temp files from a cancelled pull remain on the BOINC client container; removing them was refused by the permission check here.
+- Surya's native weights scored worse than the GGUF on 50 crops, with server settings that may be the cause.
+- Yiddish has no transcribed crops, so Study 7 can't say whether any image-token value reads it better.
 - MinerU and dots.ocr remain unrun.

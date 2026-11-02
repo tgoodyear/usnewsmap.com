@@ -3,7 +3,7 @@
 set -uo pipefail
 W=${GPU_STUDY_ROOT:?}; cd "$W"
 TRAIN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:960ba48cb33e6c164764246bba2c9aded7d791b48a6aed49f39c3a95acff3ee1
-STEP=""; ADAPTER=""
+STEP=""; ADAPTER=""; PART=${PART:-}; START=${START:-}
 while [ $# -gt 0 ]; do case "$1" in --step) STEP=$2; shift 2;; --adapter) ADAPTER=$2; shift 2;; *) exit 2;; esac; done
 case "$STEP" in
   guard-val) P=push/s5-val; rm -rf "$P"; mkdir -p "$P"; ln -s "$PWD/lora/images" "$P/images"
@@ -72,6 +72,19 @@ for u,c in zip(s,m): print(u['job'][:16]+'.'+u['crop']+'\\t'+c['file']+'\\t'+str
     wc -l "$P/list.tsv"; pct exec 214 -- tar -C /var/lib/boinc-client/projects/boinc.usnewsmap.com -chf - --transform 's/^usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b_//' $(pct exec 214 -- ls /var/lib/boinc-client/projects/boinc.usnewsmap.com | grep '^usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b_') | tar -C "$P/rt" -xf -
     pct exec 214 -- sh -c 'ls -l /var/lib/boinc-client/projects/boinc.usnewsmap.com/usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b' >"s7/native-app.txt"; cp "$P/rt"/usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b "$P/rt/llama-server" 2>/dev/null; chmod +x "$P/rt/"* 2>/dev/null
     scripts/rent.sh --study s7 --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 6 --cap-dollars 2 --disk 30 --push-dir "$P" --job scripts/jobs/s7.sh --out results/s7;;
+  test8b) P=push/s5-t83; rm -rf "$P"; cp -r push/s5-t82 "$P"; echo adapter >"$P/part.txt"; cp scripts/jobs/lora8b-2.sh /tmp/lora8b-2b.sh
+    scripts/rent.sh --study s5t83 --image "$TRAIN" --gpu "RTX 4090" --max-dph 0.55 --max-hours 6 --cap-dollars 4 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-2.sh --out results/s5-t83;;
+  test8c) P=push/s5-t84; rm -rf "$P"; cp -r push/s5-t82 "$P"; echo baseline >"$P/part.txt"; tail -n +1001 push/s5-t82/all.jsonl >"$P/all.jsonl"
+    scripts/rent.sh --study s5t84 --image "$TRAIN" --gpu "RTX 4090" --max-dph 0.55 --max-hours 3 --cap-dollars 3 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-2.sh --out results/s5-t84;;
+  test8tail) P=push/s5-t8t-$PART; rm -rf "$P"; cp -r push/s5-t82 "$P"; echo "$PART" >"$P/part.txt"; tail -n +$START push/s5-t82/all.jsonl >"$P/all.jsonl"
+    scripts/rent.sh --study s5t8$PART --image "$TRAIN" --gpu "RTX 4090" --max-dph 0.55 --max-hours 3 --cap-dollars 3 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-2.sh --out results/s5-t8t-$PART;;
+  deploy8s) P=push/s5-d8s; rm -rf "$P"; mkdir -p "$P"; cp -rL push/s5-d8/images "$P/"; cp scripts/jobs/qwen.sh "$P/"; cut -f1 results/s5-d8/stock8b.b64 | LC_ALL=C sort -u >/tmp/d8done
+    awk -F'\t' 'NR==FNR{d[$1]=1;next} !($1 in d)' /tmp/d8done push/s5-d8/list.tsv >"$P/list.tsv"; wc -l "$P/list.tsv"
+    printf 'stock8b\tQwen3VL-8B-Instruct-Q4_K_M.gguf\tmmproj-Qwen3VL-8B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
+    scripts/rent.sh --study s5d8s --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 3 --cap-dollars 5 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d8s;;
+  deploy8l) P=push/s5-d8l; rm -rf "$P"; mkdir -p "$P"; cp -rs "$PWD/push/s5-d8/images" "$P/"; cp scripts/jobs/qwen.sh push/s5-d8/list.tsv "$P/"; ln -s "$PWD/results/s5-x8/qwen8b-lora-Q4_K_M.gguf" "$P/"
+    printf 'lora8b\t/work/in/qwen8b-lora-Q4_K_M.gguf\tmmproj-Qwen3VL-8B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
+    scripts/rent.sh --study s5d8l --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e --gpu "RTX 4090" --max-dph 0.55 --max-hours 3 --cap-dollars 5 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d8l;;
   train8) P=push/s5-t8; rm -rf "$P"; mkdir -p "$P"; ln -s "$PWD/lora/images" "$P/images"
     cp lora/train.jsonl lora/validation.jsonl scripts/jobs/lora_train.py scripts/jobs/lora_infer.py analysis/s5/guard.txt "$P/"
     scripts/rent.sh --study s5t8 --image "$TRAIN" --gpu "${TRAIN_GPU:-RTX 3090}" --max-dph "${TRAIN_DPH:-0.30}" --max-hours 14 --cap-dollars 6 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-1.sh --out results/s5-t8;;

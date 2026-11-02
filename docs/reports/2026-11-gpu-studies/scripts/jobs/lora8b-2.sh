@@ -6,5 +6,5 @@ unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE HF_DATASETS_OFFLINE; export HF_HOME=/w
 PY=$(command -v python)
 $PY -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3-VL-8B-Instruct', revision='$REV', local_dir='/work/base8', allow_patterns=['*.json','*.safetensors','*.txt','*.jinja'])" > $O/download.log 2>&1 || exit 6
 sha256sum "$I/$SEL" > $O/adapter.sha256
-$PY $I/lora_infer.py --base /work/base8 --guard "$G" --list $I/all.jsonl --root $I --out $O/test-baseline.jsonl $PX
-$PY $I/lora_infer.py --base /work/base8 --guard "$G" --list $I/all.jsonl --root $I --adapter "$I/$SEL" --rank 8 --out $O/test-adapter.jsonl $PX
+[ "$(cat $I/part.txt 2>/dev/null)" = adapter ] || $PY $I/lora_infer.py --base /work/base8 --guard "$G" --list $I/all.jsonl --root $I --out $O/test-baseline.jsonl $PX
+[ "$(cat $I/part.txt 2>/dev/null)" = baseline ] || $PY $I/lora_infer.py --base /work/base8 --guard "$G" --list $I/all.jsonl --root $I --adapter "$I/$SEL" --rank 8 --out $O/test-adapter.jsonl $PX
