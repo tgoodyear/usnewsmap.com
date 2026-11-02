@@ -413,7 +413,9 @@ Work that ran as Azure jobs, and where it runs now:
 
 ## Cloudflare
 
-`boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone has Bot Fight Mode off. A configuration rule skips Browser Integrity Check for requests from the on-prem public IP to `boinc.usnewsmap.com`, because Browser Integrity Check answers `Python-urllib` with 403. An IP Access allow rule covers the same IP. Both rules name that IP, so update them if it changes. [ADR-0024](design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
+`boinc.usnewsmap.com` is a proxied CNAME to the tunnel. Volunteer clients and the controller are scripts, so the zone has Bot Fight Mode off. A configuration rule skips Browser Integrity Check for requests from the on-prem public IP to `boinc.usnewsmap.com`, because Browser Integrity Check answers `Python-urllib` with 403. An IP Access allow rule covers the same IP. Both rules name that IP, so update them if it changes.
+
+A custom rule blocks anything on `/usnmocr_cgi/cgi` and `/usnmocr_cgi/file_upload_handler` that is not a `POST` with a user agent starting `BOINC client`. Stock clients send only that, and in the 2.3 days before the rule (31 October to 2 November 2026) every one of 20,271 requests to those paths did. The user agent is easy to fake, so this filters noise rather than adding security: the account key and the signed upload certificate still decide what is accepted. The IP Access allow rule exempts the on-prem IP, so test the rule with Cloudflare's request tracer, not from home. LAN clients reach the server through Caddy and never pass through Cloudflare. [ADR-0024](design/adr/0024-cloudflare-tunnel-and-r2-credentials.md) records the ADR-0009 exception for the Cloudflare credentials.
 
 ## LAN access (#1357)
 
