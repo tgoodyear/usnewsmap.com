@@ -116,6 +116,21 @@ fetch_secrets() {
   chmod 750 "$SECRETS" "$SECRETS/keys"
 }
 
+# lock_code_trees: www-data runs the public PHP and is in group boincadm for upload/, the logs and
+# the page cache, so group write must not reach the code. The project root and html/ are included
+# because write access to a parent lets a directory be renamed aside and replaced. boincadm owns
+# these trees and root deploys them, so neither loses access. upload_private stays group-readable:
+# the scheduler reads it as www-data to send assigned jobs.
+lock_code_trees() {
+  local tree
+  chmod g-w "$PROJ" "$PROJ/html" || log "could not lock $PROJ"
+  for tree in apps bin cgi-bin py html/inc html/languages html/ops html/project html/user; do
+    if [ -e "$PROJ/$tree" ]; then
+      chmod -R g-w "$PROJ/$tree" || log "could not lock $tree"
+    fi
+  done
+}
+
 # render_config: fills config.xml.template from the environment and the fetched runtime
 # password into tmpfs, and links it into the project tree. The code-signing PRIVATE key is not
 # fetched, rendered or linked anywhere.
