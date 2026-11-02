@@ -48,12 +48,22 @@ else:
         raw = proc.decode(ids[0, b["input_ids"].shape[1]:], skip_special_tokens=False)
         return re.sub(r"<[^>]+>", " ", re.sub(r"<loc_\d+>", "", raw)).strip()
 
+root = a.root.resolve()
+def input_path(rel):
+    """Resolve a list entry; raises ValueError unless it names a path under --root."""
+    p = Path(rel)
+    if not rel or p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"path outside --root: {rel!r}")
+    r = (root / p).resolve()
+    r.relative_to(root)
+    return r
+
 t0 = time.time(); errors = 0
 with a.out.open("w", buffering=1, encoding="utf-8") as out:
     for i, row in enumerate(rows):
         s = time.time()
         try:
-            text = read(i, a.root / row["image"]); status = "ok"
+            text = read(i, input_path(row["image"])); status = "ok"
         except Exception as e:  # recorded and scored as missing; the run goes on
             text = None; status = f"error: {str(e)[:200]}"; errors += 1
             if errors >= 20 and errors == i + 1:

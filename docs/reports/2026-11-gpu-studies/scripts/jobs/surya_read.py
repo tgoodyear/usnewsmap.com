@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read a list with Surya in the usnm_surya image, one model load for the whole list. Output is JSONL."""
 import argparse, json, sys, time
+from pathlib import Path
 sys.path[:0] = ["/opt/surya", "/work"]
 import run as surya_run  # the image's run.py: tile rule and block text
 from PIL import Image
@@ -19,12 +20,21 @@ manager = SuryaInferenceManager(lazy=False)
 rec = RecognitionPredictor(manager)
 load = time.time() - t0
 rows = [l.rstrip("\n").split("\t") for l in open(a.list, encoding="utf-8") if l.strip()]
+INPUT_ROOT = Path("/work/in").resolve()
+def input_path(rel):
+    """Resolve a list entry; raises ValueError unless it names a path under /work/in."""
+    p = Path(rel)
+    if not rel or p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"path outside /work/in: {rel!r}")
+    r = (INPUT_ROOT / p).resolve()
+    r.relative_to(INPUT_ROOT)
+    return r
 with open(a.out, "w", encoding="utf-8", buffering=1) as out, open("/work/out/progress.txt", "a", buffering=1) as prog:
     prog.write(f"surya model load {load:.0f}s\n")
     for i, (cid, rel) in enumerate(rows):
         s = time.time(); status = "ok"; lines = []
         try:
-            im = Image.open("/work/in/" + rel); im.load(); im = im.convert("RGB")
+            im = Image.open(input_path(rel)); im.load(); im = im.convert("RGB")
             if a.mode == "tiled":
                 for x0, y0, x1, y1, core in surya_run.tiles(*im.size):
                     for b in rec([im.crop((x0, y0, x1, y1))], full_page=True)[0].blocks:
