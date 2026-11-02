@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.parse
 import uuid
@@ -497,7 +498,8 @@ class SchedulerTests(unittest.TestCase):
         """A Transport with --rest-journals whose storage GETs answer from `pages`, a function of
         (path and query) to bytes."""
         transport = batch.Transport(self.config, directory, rest_journals=True)
-        transport.run = mock.Mock(return_value="secret-token\n")
+        transport.run = mock.Mock(return_value=json.dumps(
+            {"token": "secret-token", "expires": int(time.time()) + 3600}))
         seen = []
 
         class Response(io.BytesIO):
@@ -571,6 +573,16 @@ class SchedulerTests(unittest.TestCase):
             transport.storage_get("/anything")
         self.assertEqual(urlopen.call_count, 3)
         self.assertNotIn("secret-token", str(failure.exception))
+
+    def test_a_token_near_its_expiry_is_replaced(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        transport, _, _ = self.rest_transport(directory, lambda target: b"")
+        self.assertEqual(transport.storage_token(), "secret-token")
+        transport.storage_token()
+        transport.run.assert_called_once()
+        transport._storage_token = ("old", int(time.time()) + 60)
+        self.assertEqual(transport.storage_token(), "secret-token")
+        self.assertEqual(transport.run.call_count, 2)
 
     def test_small_journal_delta_after_restart_preserves_only_verified_files(self):
         for corruption in ("none", "bytes", "directory-symlink"):

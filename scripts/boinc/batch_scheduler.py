@@ -742,11 +742,12 @@ class Transport:
 
     def storage_token(self):
         """A token for the storage REST API, from the identity az logged in with."""
-        if self._storage_token is None or self._storage_token[1] < time.monotonic():
-            token = self.run(["az", "account", "get-access-token", "--resource", "https://storage.azure.com/",
-                              "--query", "accessToken", "-o", "tsv"], "storage token").strip()
-            # A tick is much shorter than a token's life; a long one takes a new token anyway.
-            self._storage_token = (token, time.monotonic() + 1800)
+        # az hands back its cached token, which may be near its end: go by the token's own expiry.
+        if self._storage_token is None or self._storage_token[1] < time.time() + 600:
+            token = json.loads(self.run(["az", "account", "get-access-token", "--resource",
+                                         "https://storage.azure.com/", "--query",
+                                         "{token:accessToken,expires:expires_on}", "-o", "json"], "storage token"))
+            self._storage_token = (token["token"], int(token["expires"]))
         return self._storage_token[0]
 
     def storage_get(self, query):
