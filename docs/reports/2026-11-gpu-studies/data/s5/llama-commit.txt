@@ -1,0 +1,1 @@
+091b6a7fc561b78da90a0ed2d524ec995458c657 Enable OpenSSL in FP32/FP16 SYCL builds to restore HF HTTPS downloads (#30330)

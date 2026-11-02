@@ -1,0 +1,17 @@
+[package]
+name = "gpu-study"
+version = "0.1.0"
+edition = "2021"
+description = "Crop cutting, scoring and checks for the November 2026 GPU studies. Report tool, not part of the workspace."
+
+[workspace]
+
+[dependencies]
+usnm-ocr-survey = { path = "../../../../crates/usnm-ocr-survey" }
+usnm-ocr-contract = { path = "../../../../crates/usnm-ocr-contract" }
+usnm-core = { path = "../../../../crates/usnm-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+serde_json = "1"
+sha2 = "0.11"
