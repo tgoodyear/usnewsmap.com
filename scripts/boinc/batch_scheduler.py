@@ -2,6 +2,7 @@
 """One bounded BOINC OCR tick; offline validation unless explicitly --apply."""
 
 import argparse
+import concurrent.futures
 import contextlib
 import copy
 import fcntl
@@ -562,6 +563,10 @@ class ClaimFailed(RuntimeError):
 # Most base batches one batched export execution takes (--batch-export): each is about half a
 # minute of the hand-off job's 30-minute timeout.
 EXPORT_BATCHES = 20
+# --rest-journals: requests at once, and the most changed journals a tick fetches one by one
+# before it takes one az download-batch of all of them (at this rate, a minute's work).
+JOURNAL_REQUESTS = 16
+JOURNAL_DELTA_REST = 2000
 
 ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("collect",),
                   "export": ("export",)}
@@ -570,7 +575,7 @@ ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("col
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
-                 onprem_handoff=(), timings=None):
+                 onprem_handoff=(), timings=None, rest_journals=False):
         self.config = config
         self.directory = directory
         self.status_url = status_url
@@ -584,6 +589,10 @@ class Transport:
         # One hand-off execution for all of a tick's export batches (HANDOFF_BATCHES), instead of
         # one per base batch: queued pages come from many batches.
         self.batch_export = batch_export
+        # List and fetch journals over the storage REST API, not one az process per list or file
+        # (--rest-journals): a list of the dispatch prefix costs az half a minute of CPU.
+        self.rest_journals = rest_journals
+        self._storage_token = None
         # The hand-off steps that run on the on-prem BOINC host through step_command
         # (usnm-boinc-step --target handoff, #967 phase 3) instead of the Azure hand-off job:
         # "claim" (with its release), "collect" and/or "export". Off by default.
@@ -731,9 +740,91 @@ class Transport:
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
+    def storage_token(self):
+        """A token for the storage REST API, from the identity az logged in with."""
+        if self._storage_token is None or self._storage_token[1] < time.monotonic():
+            token = self.run(["az", "account", "get-access-token", "--resource", "https://storage.azure.com/",
+                              "--query", "accessToken", "-o", "tsv"], "storage token").strip()
+            # A tick is much shorter than a token's life; a long one takes a new token anyway.
+            self._storage_token = (token, time.monotonic() + 1800)
+        return self._storage_token[0]
+
+    def storage_get(self, query):
+        """GET a path and query of the hand-off container, retrying transient failures. The token
+        goes in a header and never into an error."""
+        url = f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff{query}"
+        headers = {"Authorization": f"Bearer {self.storage_token()}", "x-ms-version": "2023-11-03"}
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
+                    return response.read()
+            except OSError as error:  # URLError and HTTPError are OSErrors
+                if attempt == 2:
+                    raise RuntimeError(f"hand-off storage read failed: {type(error).__name__}") from None
+                time.sleep(1 + attempt)
+        raise AssertionError("unreachable")
+
+    def list_journal_prefix(self, digit):
+        """The name and ETag of every blob of the job ids that start with `digit`."""
+        entries, marker = [], ""
+        while True:
+            query = urllib.parse.urlencode({"restype": "container", "comp": "list", "maxresults": 5000,
+                                            "prefix": f"dispatch/jobs/{digit}", "marker": marker})
+            root = ET.fromstring(self.storage_get(f"?{query}"))
+            for blob in root.iterfind("./Blobs/Blob"):
+                entries.append({"name": blob.findtext("Name"), "etag": blob.findtext("Properties/Etag")})
+            marker = root.findtext("NextMarker") or ""
+            if not marker:
+                return entries
+
+    def journal_listing(self):
+        if not self.rest_journals:
+            return json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*", "--query",
+                                      "[].{name:name,etag:properties.etag}", "-o", "json"))
+        # A job id starts with a hex digit, so one list per digit fetches the prefix in parallel.
+        self.storage_token()  # before the threads, so they share one
+        start, cpu = self.timings.clock(), self.timings.cpu()
+        passed = False
+        try:
+            with concurrent.futures.ThreadPoolExecutor(JOURNAL_REQUESTS) as pool:
+                listed = list(pool.map(self.list_journal_prefix, "0123456789abcdef"))
+            passed = True
+        finally:
+            self.timings.command("storage rest list", self.timings.clock() - start,
+                                 self.timings.cpu() - cpu, passed)
+        return [entry for entries in listed for entry in entries]
+
+    def download_journals(self, cache, names):
+        """Fetch these journals into the cache, each one replaced whole."""
+        if not self.rest_journals:
+            for name in names:
+                path = cache / name
+                path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                self.az("download", "--name", name, "--file", str(path),
+                        "--overwrite", "true", "-o", "none")
+            return
+
+        def fetch(name):
+            data = self.storage_get("/" + urllib.parse.quote(name))
+            path = cache / name
+            path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            partial = path.with_name(path.name + ".partial")
+            partial.write_bytes(data)
+            partial.replace(path)
+
+        self.storage_token()
+        start, cpu = self.timings.clock(), self.timings.cpu()
+        passed = False
+        try:
+            with concurrent.futures.ThreadPoolExecutor(JOURNAL_REQUESTS) as pool:
+                list(pool.map(fetch, names))
+            passed = True
+        finally:
+            self.timings.command("storage rest download", self.timings.clock() - start,
+                                 self.timings.cpu() - cpu, passed)
+
     def journal_inventory(self):
-        listing = json.loads(self.az("list", "--prefix", "dispatch/jobs/", "--num-results", "*",
-                                     "--query", "[].{name:name,etag:properties.etag}", "-o", "json"))
+        listing = self.journal_listing()
         require(isinstance(listing, list), "invalid dispatch inventory")
         snapshot = {}
         for entry in listing:
@@ -806,7 +897,7 @@ class Transport:
                         "invalid journal cache content inventory")
                 changed = [name for name in names if previous.get(name) != snapshot[name]]
                 # Bound CLI startups; broad changes keep the single batch download.
-                if len(changed) <= 32:
+                if len(changed) <= (JOURNAL_DELTA_REST if self.rest_journals else 32):
                     self.read_journal_cache(cache, previous, stored["files"])
                     delta = changed
         if not reusable:
@@ -822,11 +913,7 @@ class Transport:
                     path = cache / name
                     path.unlink()
                     path.parent.rmdir()
-                for name in delta:
-                    path = cache / name
-                    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                    self.az("download", "--name", name, "--file", str(path),
-                            "--overwrite", "true", "-o", "none")
+                self.download_journals(cache, delta)
             else:
                 if cache.exists():
                     shutil.rmtree(cache)
@@ -1938,6 +2025,8 @@ def main(argv=None):
     parser.add_argument("--batch-export", action="store_true",
                         help="export a tick's pages from all their batches in one hand-off execution "
                              "(needs a hand-off image whose export takes HANDOFF_BATCHES)")
+    parser.add_argument("--rest-journals", action="store_true",
+                        help="list and fetch journals over the storage REST API with az's token")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -2015,7 +2104,7 @@ def main(argv=None):
                 status_url=args.server_status_url, status_file=args.server_status_file,
                 batch_submit=args.batch_submit, batch_spool_out=args.batch_spool_out,
                 batch_collect=args.batch_collect, batch_export=args.batch_export,
-                onprem_handoff=tuple(args.onprem_handoff),
+                onprem_handoff=tuple(args.onprem_handoff), rest_journals=args.rest_journals,
                 timings=timings,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}

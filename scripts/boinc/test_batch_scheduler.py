@@ -8,8 +8,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import uuid
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 
@@ -490,6 +492,85 @@ class SchedulerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ETags changed during download"):
                 restarted.records()
         self.assertFalse((directory / "journal-snapshot.json").exists())
+
+    def rest_transport(self, directory, pages):
+        """A Transport with --rest-journals whose storage GETs answer from `pages`, a function of
+        (path and query) to bytes."""
+        transport = batch.Transport(self.config, directory, rest_journals=True)
+        transport.run = mock.Mock(return_value="secret-token\n")
+        seen = []
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        def urlopen(request, timeout):
+            self.assertEqual(request.get_header("Authorization"), "Bearer secret-token")
+            target = request.full_url.split("/boinc-handoff", 1)[1]
+            seen.append(target)
+            return Response(pages(target))
+
+        return transport, urlopen, seen
+
+    def test_rest_journals_list_each_digit_and_follow_markers(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        first = "dispatch/jobs/a" + "1" * 63 + "/record.json"
+        second = "dispatch/jobs/a" + "2" * 63 + "/record.json"
+
+        def pages(target):
+            query = urllib.parse.parse_qs(target[1:], keep_blank_values=True)
+            if query["prefix"] != ["dispatch/jobs/a"]:
+                return b"<EnumerationResults><Blobs/><NextMarker/></EnumerationResults>"
+            if not query["marker"][0]:
+                return (f"<EnumerationResults><Blobs><Blob><Name>{first}</Name><Properties><Etag>one</Etag>"
+                        "</Properties></Blob></Blobs><NextMarker>more</NextMarker></EnumerationResults>").encode()
+            return (f"<EnumerationResults><Blobs><Blob><Name>{second}</Name><Properties><Etag>two</Etag>"
+                    "</Properties></Blob></Blobs><NextMarker/></EnumerationResults>").encode()
+
+        transport, urlopen, seen = self.rest_transport(directory, pages)
+        with mock.patch.object(batch.urllib.request, "urlopen", urlopen):
+            self.assertEqual(transport.journal_inventory(), {first: "one", second: "two"})
+        self.assertEqual(len(seen), 17)  # one list a digit, and a's second page
+        transport.run.assert_called_once()  # one token
+
+    def test_rest_journals_fetch_a_large_delta_without_a_batch_download(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        rows = [record("page-" + str(number), number) for number in range(1, 41)]
+        names = [f'dispatch/jobs/{row["job"]["id"]}/record.json' for row in rows]
+        cache = directory / "journal-cache"
+        checksums = {}
+        for name, row in zip(names, rows):
+            path = cache / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(row))
+            checksums[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        batch.save(directory / "journal-snapshot.json", {
+            "schema_version": 1, "account": self.config["account"], "container": "boinc-handoff",
+            "entries": {name: "old" for name in names}, "files": checksums})
+        by_path = {"/" + name: json.dumps({**row, "stage": "published"}).encode()
+                   for name, row in zip(names, rows)}
+        transport, urlopen, seen = self.rest_transport(directory, by_path.__getitem__)
+        with mock.patch.object(transport, "journal_inventory", return_value={name: "new" for name in names}), \
+                mock.patch.object(batch.urllib.request, "urlopen", urlopen):
+            records = transport.records()
+        self.assertEqual(sorted(seen), sorted(by_path))
+        self.assertEqual({record_["stage"] for record_ in records}, {"published"})
+        self.assertEqual(json.loads((cache / names[0]).read_text())["stage"], "published")
+        self.assertFalse(any(path.name.endswith(".partial") for path in cache.rglob("*")))
+
+    def test_a_failed_rest_read_retries_then_names_no_token(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path(__file__).parent)))
+        transport, _, _ = self.rest_transport(directory, lambda target: b"")
+        urlopen = mock.Mock(side_effect=OSError("boom"))
+        with mock.patch.object(batch.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(batch.time, "sleep"), \
+                self.assertRaises(RuntimeError) as failure:
+            transport.storage_get("/anything")
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertNotIn("secret-token", str(failure.exception))
 
     def test_small_journal_delta_after_restart_preserves_only_verified_files(self):
         for corruption in ("none", "bytes", "directory-symlink"):
