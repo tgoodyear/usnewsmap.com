@@ -160,13 +160,16 @@ def assignable_units(rows, window, host):
 def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
     if remaining <= 0:
         return []
+    # Highest workunit priority first, as the feeder orders (a calibration batch is raised to 10),
+    # then by id; the run stays a contiguous id range of one priority.
     candidates = sorted((row for row in rows if int(row["unit"]["id"]) >= floor
                          and int(row["unit"]["id"]) != reserved and fresh(row)),
-                        key=lambda row: int(row["unit"]["id"]))
+                        key=lambda row: (-int(row["unit"].get("priority") or 0), int(row["unit"]["id"])))
     result = []
     for row in candidates:
         current = int(row["unit"]["id"])
-        if result and current != int(result[-1]["unit"]["id"]) + 1:
+        if result and (current != int(result[-1]["unit"]["id"]) + 1
+                       or int(row["unit"].get("priority") or 0) != int(result[-1]["unit"].get("priority") or 0)):
             break
         # The window is a workunit id range: an inadmissible unit ends the run rather than
         # being opened inside it, and one before the run is passed over.
@@ -277,6 +280,31 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
             "accuracy_established": False}
 
 
+def raised_workunits(project, ids, hosts=(9, 10), limit=10, shortlist=100):
+    """Up to `limit` pristine fresh pairs among the candidates with a raised workunit priority,
+    highest priority first and then by id. Units that are not fresh() never take a place."""
+    if not ids:
+        return []
+    code = """
+require_once 'boinc_db.inc'; $ids=json_decode($argv[1],true); $out=[];
+foreach(array_chunk(array_map('intval',$ids),5000) as $chunk)
+ foreach(BoincWorkunit::enum_fields('id,priority',"appid=6 AND priority>0 AND canonical_resultid=0 AND "
+   ."id IN (".implode(',',$chunk).") AND id IN (SELECT workunitid FROM result WHERE appid=6 AND server_state=2)") as $w)
+  $out[]=[intval($w->id),intval($w->priority)];
+echo json_encode($out);
+"""
+    proc = subprocess.run(["php", "-r", code, json.dumps(ids)], cwd=project / "html/inc",
+                          text=True, capture_output=True, check=True, timeout=15)
+    found = json.loads(proc.stdout)
+    require(isinstance(found, list) and {unit for unit, _ in found} <= set(ids),
+            "Raised-priority lookup out of range")
+    ranked = sorted(found, key=lambda row: (-row[1], row[0]))[:shortlist]
+    if not ranked:
+        return []
+    rows = {int(row["unit"]["id"]): row for row in read_database(project, [unit for unit, _ in ranked], hosts)["rows"]}
+    return [unit for unit, _ in ranked if unit in rows and fresh(rows[unit])][:limit]
+
+
 def read_database(project, ids, hosts=(9, 10)):
     require(ids and len(ids) <= 1010, "Bounded snapshot requires 1..1010 workunits")
     code = """
@@ -290,7 +318,7 @@ $out=['rows'=>[],'app'=>BoincApp::lookup_id(6),'versions'=>BoincAppVersion::enum
  ."(SELECT id FROM workunit WHERE appid=6 AND batch=8 AND rsc_disk_bound=19327352832)")];
 $assigned=[];foreach(BoincDb::get()->enum_fields('assignment','StdClass','workunitid',"workunitid IN ($clause)",'') as $a)
  $assigned[$a->workunitid]=($assigned[$a->workunitid]??0)+1;
-foreach(BoincWorkunit::enum_fields('id,name,appid,batch,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
+foreach(BoincWorkunit::enum_fields('id,name,appid,batch,priority,min_quorum,target_nresults,rsc_disk_bound,canonical_resultid,error_mask,'
  .'transitioner_flags,need_validate,app_version_num,hr_class,xml_doc', "id IN ($clause)") as $w) {
  $out['rows'][]=['unit'=>$w,'results'=>$group[$w->id]??[],'assignments'=>$assigned[$w->id]??0];
 } echo json_encode($out);
@@ -409,7 +437,11 @@ def run(args):
                                 if workunit >= args.minimum_workunit and workunit not in state["admitted"]
                                 and workunit != reserved)
             later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
-            ids = (later or candidates)[:1000]
+            # Raised-priority units join the page wherever they sit, so choose() can take them first.
+            # The cursor still follows the ordinary page alone, so no ordinary unit is skipped.
+            raised = raised_workunits(project, candidates, (args.intel_host, args.nvidia_host))
+            page = [unit for unit in (later or candidates) if unit not in raised][:1000 - len(raised)]
+            ids = sorted(set(page) | set(raised))
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
             wanted = sorted(set(ids + current_ids))
             if not wanted:
@@ -453,8 +485,8 @@ def run(args):
             available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
             scanned = set(ids)
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
-            if not fresh_count and ids:
-                state["scan_after"] = ids[-1]
+            if not sum(fresh(row) for row in rows if int(row["unit"]["id"]) in set(page)) and page:
+                state["scan_after"] = page[-1]
                 if args.apply:
                     persist(state_path, state)
             output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs_in_scan": fresh_count,
@@ -511,10 +543,10 @@ def run(args):
             if skipped:
                 output |= {"out_of_cohort_skipped": skipped, "out_of_cohort_remembered": remembered}
             if not selected:
-                if skipped and ids:
+                if skipped and page:
                     # Every fresh unit in this page is out of cohort and never becomes admissible:
                     # move past it so later in-cohort work is reached.
-                    state["scan_after"] = ids[-1]
+                    state["scan_after"] = page[-1]
                     if args.apply:
                         persist(state_path, state)
                 return output | {"status": "no-fresh-verified-pairs"}
