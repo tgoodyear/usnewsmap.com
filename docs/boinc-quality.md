@@ -642,9 +642,11 @@ no LoC request:
    (LoC's would be a LoC request; CT211's fetcher is the only LoC client), and takes LoC's text,
    American Stories and `ocr-local` from the curated copy, mounted read-only at `/srv/curated`
    (home-infra `scripts/lab/batch-ct-quality.sh --mounts`). It writes chunks of 200 pages to
-   its outbox and waits while five are unshipped.
-2. **Shipper, pve-laptop itself** (`quality-ship.sh`, `usnm-quality-ship.timer`, every 15
-   minutes). Over the host trust pve-laptop → pve (home-infra `scripts/host-ssh-trust.sh`) it
+   its outbox and waits while `MAX_PENDING` (8) are unshipped. After a round that made chunks or
+   found the outbox full it checks every 15 seconds for room, so the outbox refills as the
+   shipper takes chunks; only a round with nothing to feed sleeps the full `--every-secs`.
+2. **Shipper, pve-laptop itself** (`quality-ship.sh`, `usnm-quality-ship.timer`, 3 minutes
+   after the last run ends; a run ships every `READY` chunk up to `MAX_CHUNKS`, 30). Over the host trust pve-laptop → pve (home-infra `scripts/host-ssh-trust.sh`) it
    copies a chunk into CT230's `/project/quality/<campaign>/incoming/`, runs
    `quality_receive.py` there (every file against `SHA256SUMS`, and every page's scan present,
    so `quality stage` never falls back to tile.loc.gov from the server), then runs
@@ -657,6 +659,34 @@ no LoC request:
    30 minutes; if the lock stays held, the run exits 75 and the chunk stays `READY`. It skips
    the `quality-submit` bridge step, whose walk of the NFS download tree held the lock for up
    to 8 minutes: submit sets each file's mode and the export fixes its owner.
+
+   The next chunk is copied and received while the current one stages, outside both locks,
+   and that receive ends before the current chunk's submit takes the step lock, so the lock is
+   held no longer than before. `--after-submit` keeps the scans of any page the chunk received
+   ahead also holds. On 2 November 2026 (#529) a 200-page chunk took 30 to 45 minutes end to
+   end: receive 11 to 16, stage 14 to 24, submit 1 to 4. Nearly all of it was synchronous
+   writes on the NFS share, `tank/boinc-bulk` on pve-big's HDD mirror: an fsynced 64 KB write
+   took 925 ms, a plain one 618 ms and a chown 278 ms. With `sync=disabled` on that dataset
+   they take 7, 4 and 1 ms, and a chunk takes about 3 minutes: receive about 1 (hidden behind
+   the stage), stage about 2 (0.4 s a page, then packing), submit and freeing under a minute.
+
+   **`tank/boinc-bulk` runs with `sync=disabled`** (set 2 November 2026, approved by the
+   maintainer; it was `sync=standard`, the default). A power cut or crash of pve-big can lose
+   the last few seconds of writes that the share had already acknowledged. ZFS still commits
+   whole transaction groups in order, so what survives is a consistent earlier state. Nothing
+   half-written is submitted: receiving copies and checks the whole chunk against
+   `SHA256SUMS` on every try; staging checks each page unit it staged before, and each bundle
+   not yet `submitted` or `submitting`, against the hashes in its `quality.json`, and stages or
+   packs again whatever doesn't match or has no `quality.json`; `quality submit` checks every
+   input against those hashes before `create_work`. A unit already `submitting` stays for the
+   existing uncertain-submit check. Revert with `zfs set sync=standard tank/boinc-bulk` on
+   pve-big. Only this dataset changed.
+
+   Packing reads only the run's own pages and the bundles named after them (a bundle is
+   `bundle-<n>-<first page>`), not the whole `pages/` tree: at 39,000 pages that listing took
+   four minutes cold over NFS. A page found staged already that none of those bundles holds
+   makes it read every bundle once, as before.
+
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
    On the preparation host, `usnm-quality-results.timer` runs two minutes after
    the previous pass finishes, with up to 15 seconds of jitter:

@@ -29,8 +29,14 @@
 #  5. quality_receive.py --after-submit frees the server's copies it no longer needs (the
 #     received scans and texts, the per-page units' images), then the chunk leaves the
 #     outbox, so the feeder makes the next one.
+# Without --qwen-engine-plan the next chunk is copied and received (2 and 3) while this one
+# stages, outside both locks, and that receive ends before this chunk's submit takes the step
+# lock, so the lock is held no longer than before. A run goes on while chunks are READY, so
+# the timer's interval only matters once the outbox is empty.
 # A step that fails leaves the chunk in the outbox for the next run; staging and submitting
-# skip what is already done. quality-stage has its own lock on the host and never waits for
+# skip what is already done, and staging checks what it staged before against its hashes, so
+# a chunk a crash left half-received or half-staged is received and staged again, never
+# submitted half-written. Receiving always copies and checks the whole chunk again. quality-stage has its own lock on the host and never waits for
 # the controller. Submitting takes the lock the controller's steps take: it waits up to 30
 # minutes, then the run exits 75 with the chunk still READY and the timer tries again. It runs
 # in the server container because the quality-submit bridge step then walks the whole download
@@ -144,11 +150,90 @@ run_step() {
   exit 75
 }
 
-shipped=0
-for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
-  [ -f "$dir/READY" ] || continue
-  [ "$shipped" -lt "$MAX_CHUNKS" ] || break
+# Copies chunk DIR into CT230's incoming/ for TARGET and runs quality_receive.py there, which
+# prints the sample's path, its languages and its page count.
+receive() {
+  local dir=$1 target=$2 chunk inc
   chunk=$(basename "$dir")
+  inc="$SHARE/quality/$target/incoming"
+  in_ct mkdir -p "$inc"
+  tar -C "$(dirname "$dir")" -cf - "$chunk" | in_ct tar -x --no-same-owner -C "$inc"
+  "${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$target" --chunk "$chunk" \
+    < "$HERE/quality_receive.py"
+}
+# The oldest READY chunk after chunk $1 (after none when empty), or nothing.
+next_ready() {
+  local d n
+  for d in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
+    [ -f "$d/READY" ] || continue
+    n=$(basename "$d")
+    [[ $n > ${1:-} ]] || continue
+    echo "$n"
+    return 0
+  done
+}
+# Whether usnm_quality has room for chunk $1: unsent results and CT230's free space. Sets
+# UNSENT. Native Qwen has its own checks below.
+room_for() {
+  UNSENT=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
+    python3 -c '
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.stdin).getroot()
+apps = [app for app in root.findall("./database_file_states/tasks_by_app/app")
+        if app.findtext("name") == "usnm_quality"]
+if len(apps) != 1:
+    raise SystemExit("Expected exactly one usnm_quality application in server status")
+count = apps[0].findtext("unsent", "")
+if not count.isascii() or not count.isdecimal():
+    raise SystemExit("Invalid usnm_quality unsent count in server status")
+print(count)
+')
+  [[ $UNSENT =~ ^[0-9]+$ ]] || die "couldn't read usnm_quality's unsent count"
+  if [ "$UNSENT" -gt "$MAX_UNSENT" ]; then
+    log "usnm_quality has $UNSENT results unsent (over $MAX_UNSENT); $1 waits"
+    return 1
+  fi
+  free_space_for "$1"
+}
+free_space_for() {
+  local free
+  free=$(in_ct df --output=avail -B1G "$SHARE" "$SHARE/quality" "$SHARE/usnmocr/download" |
+    tail -n +2 | sort -n | head -1 | tr -d ' G')
+  [[ $free =~ ^[0-9]+$ ]] || die "couldn't read CT $CT's free space"
+  if [ "$free" -lt "$MIN_FREE" ]; then
+    log "CT $CT has $free GB free (under $MIN_FREE); $1 waits"
+    return 1
+  fi
+}
+# The next chunk's receive, run in the background while the current chunk stages.
+AHEAD="" AHEAD_PID="" AHEAD_OUT="$OUTBOX/.receive-$CAMPAIGN-$$"
+receive_ahead() {
+  AHEAD=$1
+  receive "$OUTBOX/$CAMPAIGN/$1" "$CAMPAIGN" > "$AHEAD_OUT" 2> "$AHEAD_OUT.err" &
+  AHEAD_PID=$!
+}
+# Waits for the receive ahead. On failure it is forgotten: its chunk stays READY, and is
+# received again in its turn.
+receive_ahead_done() {
+  local rc=0
+  [ -n "$AHEAD_PID" ] || return 0
+  wait "$AHEAD_PID" || rc=$?
+  AHEAD_PID=""
+  if [ -s "$AHEAD_OUT.err" ]; then cat "$AHEAD_OUT.err" >&2; fi
+  rm -f "$AHEAD_OUT.err"
+  if [ "$rc" -ne 0 ]; then
+    log "$AHEAD: receiving ahead failed ($rc); it is received again in its turn"
+    AHEAD=""
+  fi
+}
+trap 'receive_ahead_done; rm -f "$AHEAD_OUT" "$AHEAD_OUT.err"' EXIT
+
+shipped=0 last=""
+while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
+  chunk=$(next_ready "$last")
+  [ -n "$chunk" ] || break
+  last=$chunk dir="$OUTBOX/$CAMPAIGN/$chunk"
   pages=$(cat "$dir/READY")
   target=$CAMPAIGN version=1
   if [ -n "$QWEN_PLAN" ]; then
@@ -165,34 +250,11 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
       fi
     fi
   fi
-  unsent=native-fresh-pair-gated
+  UNSENT=native-fresh-pair-gated
   if [ -z "$QWEN_PLAN" ]; then
-    unsent=$(curl -fsS --max-time 30 -A usnewsmap-quality-ship/1 "$STATUS_URL" |
-      python3 -c '
-import sys
-import xml.etree.ElementTree as ET
-root = ET.parse(sys.stdin).getroot()
-apps = [app for app in root.findall("./database_file_states/tasks_by_app/app")
-        if app.findtext("name") == "usnm_quality"]
-if len(apps) != 1:
-    raise SystemExit("Expected exactly one usnm_quality application in server status")
-count = apps[0].findtext("unsent", "")
-if not count.isascii() or not count.isdecimal():
-    raise SystemExit("Invalid usnm_quality unsent count in server status")
-print(count)
-')
-    [[ $unsent =~ ^[0-9]+$ ]] || die "couldn't read usnm_quality's unsent count"
-    if [ "$unsent" -gt "$MAX_UNSENT" ]; then
-      log "usnm_quality has $unsent results unsent (over $MAX_UNSENT); $chunk waits"
-      break
-    fi
-  fi
-  free=$(in_ct df --output=avail -B1G "$SHARE" "$SHARE/quality" "$SHARE/usnmocr/download" |
-    tail -n +2 | sort -n | head -1 | tr -d ' G')
-  [[ $free =~ ^[0-9]+$ ]] || die "couldn't read CT $CT's free space"
-  if [ "$free" -lt "$MIN_FREE" ]; then
-    log "CT $CT has $free GB free (under $MIN_FREE); $chunk waits"
-    break
+    room_for "$chunk" || break
+  else
+    free_space_for "$chunk" || break
   fi
   if [ -n "$QWEN_PLAN" ]; then
     pool=$("${SSH[@]}" lvs --reportformat json --units b --nosuffix -o lv_size,data_percent pve/data |
@@ -212,21 +274,31 @@ print(count)
       exit "$rc"
     fi
   fi
-  log "$chunk: $pages pages for $target at request version $version, server unsent $unsent"
+  log "$chunk: $pages pages for $target at request version $version, server unsent $UNSENT"
   if $WHAT_IF; then
     log "would copy $dir to CT $CT on $SERVER, stage it and submit it"
     shipped=$((shipped + 1))
     continue
   fi
-  inc="$SHARE/quality/$target/incoming"
-  in_ct mkdir -p "$inc"
-  tar -C "$OUTBOX/$CAMPAIGN" -cf - "$chunk" | in_ct tar -x --no-same-owner -C "$inc"
-  out=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$target" --chunk "$chunk" \
-    < "$HERE/quality_receive.py")
+  receive_ahead_done
+  if [ -n "$AHEAD" ] && [ "$AHEAD" = "$chunk" ]; then
+    out=$(cat "$AHEAD_OUT")
+    AHEAD=""
+  else
+    out=$(receive "$dir" "$target")
+  fi
   IFS=$'\t' read -r sample langs n <<< "$out"
   [[ $sample =~ ^/project/quality/$target/incoming/$chunk/sample.jsonl$ && $langs =~ ^[a-z,]+$ && $n =~ ^[0-9]+$ ]] ||
     die "$chunk: unexpected receive output: $out"
   log "$chunk: received $n pages ($langs); staging"
+  # Receive the next chunk while this one stages: CPU path only, and only with room for it.
+  if [ -z "$QWEN_PLAN" ] && [ $((shipped + 1)) -lt "$MAX_CHUNKS" ]; then
+    ahead=$(next_ready "$chunk")
+    if [ -n "$ahead" ] && free_space_for "$ahead"; then
+      log "$ahead: receiving while $chunk stages"
+      receive_ahead "$ahead"
+    fi
+  fi
   run_step --step quality-stage \
     --var "QUALITY_CAMPAIGN=$target" --var "QUALITY_SAMPLE=$sample" --var "QUALITY_GROUP=$target" \
     --var "QUALITY_SCANS_DIR=/project/quality/$target/scans" --var "QUALITY_READERS=$READERS" \
@@ -250,6 +322,9 @@ print(count)
       exit "$rc"
     fi
   fi
+  # The receive ahead ends before the step lock is taken, so it never lengthens a hold, and
+  # before this chunk frees its copies, so a page both chunks hold keeps its scan.
+  receive_ahead_done
   log "$chunk: submission waiting for the step lock"
   # The status page caches its counts for a minute; the controller's next tick reads the queue
   # these units joined, as after the bridge step.

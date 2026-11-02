@@ -517,6 +517,22 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("handoff-image is not sha256", done.stderr)
 
+    def test_stage_image_applies_to_quality_stage_only(self):
+        image = "sha256:" + "c" * 64
+        stage = Path(self.conf.name, "stage-image")
+        stage.write_text(image + "\n")
+        done = self.run_step("--env", "prod", "--step", "quality-stage", "--wait-mins", "30", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"would run {image} as", done.stdout)
+        for step in ("quality-submit", "submit"):
+            done = self.run_step("--env", "prod", "--step", step, "--wait-mins", "30", "--what-if")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn(image, done.stdout)
+        stage.write_text("localhost/not-an-image-id\n")
+        done = self.run_step("--env", "prod", "--step", "quality-stage", "--wait-mins", "30", "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("stage-image is not sha256", done.stderr)
+
     @unittest.skipUnless(shutil.which("flock"), "native flock is required")
     def test_quality_stage_has_its_own_lock_and_other_steps_keep_the_shared_one(self):
         import fcntl

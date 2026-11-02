@@ -71,7 +71,10 @@ elif "python3" in args and "-" in args:
         print("freed 0 bytes")
     else:
         campaign = args[args.index("--campaign") + 1]
-        print(f"/project/quality/{campaign}/incoming/c00001/sample.jsonl\\trus\\t1")
+        chunk = args[args.index("--chunk") + 1]
+        if os.environ.get("SHIP_TEST_RECEIVE_FAIL") == chunk:
+            sys.exit(1)
+        print(f"/project/quality/{campaign}/incoming/{chunk}/sample.jsonl\\trus\\t1")
 """)
 
     def stub(self, name, body):
@@ -180,6 +183,89 @@ elif "python3" in args and "-" in args:
         self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
         calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
         self.assertFalse(any("--after-submit" in c for c in calls))
+
+    def run_chunks(self, names, extra=()):
+        for name in names:
+            chunk = self.root / "outbox/test" / name
+            chunk.mkdir(parents=True, exist_ok=True)
+            (chunk / "READY").write_text("1\n")
+            (chunk / "langs.txt").write_text("eng\n")
+        return subprocess.run(
+            ["bash", str(HERE / "quality-ship.sh"), "--campaign", "test",
+             "--engine-image", "sha256:" + "a" * 64, "--outbox", str(self.root / "outbox"), *extra],
+            env=self.env, capture_output=True, text=True, timeout=30)
+
+    def steps(self):
+        """What each remote call did, in order: receive, stage, submit or free, with its chunk."""
+        out = []
+        for c in (json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()):
+            if "--after-submit" in c:
+                out.append(("free", c[c.index("--chunk") + 1]))
+            elif "python3" in c and "--chunk" in c:
+                out.append(("receive", c[c.index("--chunk") + 1]))
+            elif "quality-stage" in c:
+                sample = next(v for v in c if v.startswith("QUALITY_SAMPLE="))
+                out.append(("stage", sample.split("/")[-2]))
+            elif "--max-units" in c:
+                out.append(("submit", None))
+        return out
+
+    def test_the_next_chunk_is_received_while_this_one_stages_and_before_it_submits(self):
+        result = self.run_chunks(["c00001", "c00002", "c00003"], ["--max-chunks", "3"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("shipped 3 chunk(s)", result.stderr)
+        steps = self.steps()
+        # Each chunk is received exactly once, before its stage, and the receive ahead is done
+        # before the current chunk's submit takes the step lock.
+        for n in ("c00001", "c00002", "c00003"):
+            self.assertEqual(steps.count(("receive", n)), 1, steps)
+            self.assertLess(steps.index(("receive", n)), steps.index(("stage", n)))
+        submits = [i for i, s in enumerate(steps) if s[0] == "submit"]
+        self.assertEqual(len(submits), 3)
+        self.assertLess(steps.index(("receive", "c00002")), submits[0])
+        self.assertLess(steps.index(("receive", "c00003")), submits[1])
+        self.assertLess(submits[0], steps.index(("free", "c00001")))
+        self.assertEqual(list((self.root / "outbox/test").glob("c*")), [])
+        self.assertEqual(list((self.root / "outbox").glob(".receive-*")), [])
+
+    def test_max_chunks_bounds_the_receive_ahead(self):
+        result = self.run_chunks(["c00001", "c00002"], ["--max-chunks", "1"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(("receive", "c00002"), self.steps())
+        self.assertTrue((self.root / "outbox/test/c00002/READY").exists())
+
+    def test_a_failed_receive_ahead_is_received_again_in_its_turn(self):
+        self.env["SHIP_TEST_RECEIVE_FAIL"] = "c00002"
+        result = self.run_chunks(["c00001", "c00002"], ["--max-chunks", "3"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("c00002: receiving ahead failed", result.stderr)
+        steps = self.steps()
+        self.assertIn(("free", "c00001"), steps)
+        self.assertEqual(steps.count(("receive", "c00002")), 2)
+        self.assertNotIn(("stage", "c00002"), steps)
+        self.assertFalse((self.root / "outbox/test/c00001").exists())
+        self.assertTrue((self.root / "outbox/test/c00002/READY").exists())
+
+    def test_a_stage_that_fails_waits_for_the_receive_ahead(self):
+        self.env["SHIP_TEST_LOCKED_STEP"] = "quality-stage"
+        self.env["SHIP_TEST_LOCKED_MESSAGE"] = "error: the step's container ended with status 1"
+        result = self.run_chunks(["c00001", "c00002"], ["--max-chunks", "3"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(("receive", "c00002"), self.steps())
+        self.assertEqual(list((self.root / "outbox").glob(".receive-*")), [])
+        for n in ("c00001", "c00002"):
+            self.assertTrue((self.root / "outbox/test" / n / "READY").exists())
+
+    def test_native_chunks_are_never_received_ahead(self):
+        for name in ("c00001", "c00002"):
+            chunk = self.root / "outbox/test" / name
+            chunk.mkdir(parents=True, exist_ok=True)
+            (chunk / "READY").write_text("1\n")
+            (chunk / "langs.txt").write_text("rus\n")
+        result = self.run_ship(["--max-chunks", "2"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        steps = self.steps()
+        self.assertLess(steps.index(("free", "c00001")), steps.index(("receive", "c00002")))
 
     def test_submit_runs_in_the_server_under_the_step_lock_with_bounded_units(self):
         result = self.run_ship([], native=False)

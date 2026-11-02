@@ -20,7 +20,8 @@
 # quality-stage is the exception to that lock (#1415): it takes a lock of its own, so one stage
 # runs at a time while the other steps go on. It uses no database, secrets or project files and
 # writes only its campaign's tree, where a unit counts once its quality.json is in place and
-# later steps wait for that or for `submitted`. It takes half an hour per 200 pages.
+# later steps wait for that or for `submitted`. It takes about two minutes per 200 pages (#529).
+# $CONF/stage-image may name another image for it, as sha256:<image id>, like handoff-image.
 #
 # The hand-off steps are the other exception: they take a lock of their own, because they touch
 # Azure storage, Cosmos and the queues only, and the controller, their one caller, runs one at a
@@ -225,6 +226,11 @@ IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/ser
 if [ "$TARGET" = handoff ] && [ -f "$CONF/handoff-image" ]; then
   IMAGE=$(sed -n 's/^\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$CONF/handoff-image")
   [ -n "$IMAGE" ] || die "$CONF/handoff-image is not sha256:<image id>"
+fi
+# So may quality-stage, which writes only its campaign's tree: $CONF/stage-image, for a staging fix.
+if [ "$TARGET:$STEP" = bridge:quality-stage ] && [ -f "$CONF/stage-image" ]; then
+  IMAGE=$(sed -n 's/^\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$CONF/stage-image")
+  [ -n "$IMAGE" ] || die "$CONF/stage-image is not sha256:<image id>"
 fi
 BASE=()
 LINES=()
