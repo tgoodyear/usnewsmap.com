@@ -16,7 +16,7 @@
         <name>usnm_assess</name>
         <user_friendly_name>usnewsmap JP2 against IIIF JPEG OCR check (one page per task)</user_friendly_name>
         <min_version>0</min_version>
-        <deprecated>0</deprecated>
+        <deprecated>1</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
         <weight>1</weight>
         <beta>0</beta>
@@ -44,7 +44,7 @@
     </app>
     <app>
         <name>usnm_quality</name>
-        <user_friendly_name>usnewsmap OCR quality estimate (compares the texts of one page per task)</user_friendly_name>
+        <user_friendly_name>usnewsmap OCR quality estimate (measures scans and texts, about 200 pages per task)</user_friendly_name>
         <min_version>0</min_version>
         <deprecated>0</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
@@ -54,7 +54,7 @@
     </app>
     <app>
         <name>usnm_qwen</name>
-        <user_friendly_name>usnewsmap OCR readings with Qwen3-VL (CPU and NVIDIA GPU, one page per task)</user_friendly_name>
+        <user_friendly_name>usnewsmap Qwen3-VL OCR readings (NVIDIA, AMD, Intel or Apple GPU, one page per task)</user_friendly_name>
         <min_version>0</min_version>
         <deprecated>0</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
@@ -67,7 +67,7 @@
         <name>usnm_qwen_train</name>
         <user_friendly_name>usnewsmap experimental transcription LoRA training (NVIDIA GPU)</user_friendly_name>
         <min_version>0</min_version>
-        <deprecated>0</deprecated>
+        <deprecated>1</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
         <weight>1</weight>
         <beta>0</beta>
@@ -83,7 +83,7 @@
     <app>
         <name>usnm_iris</name>
         <user_friendly_name>usnewsmap experimental Iris Xe Qwen3-VL-4B OCR pilot</user_friendly_name>
-        <min_version>0</min_version><deprecated>0</deprecated>
+        <min_version>0</min_version><deprecated>1</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
         <weight>1</weight><beta>0</beta><target_nresults>1</target_nresults>
     </app>

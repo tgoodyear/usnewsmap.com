@@ -123,7 +123,9 @@ validation remain mandatory, and high backend agreement is not accuracy.
 
 `usnm_iris` ([#703](https://github.com/tgoodyear/usnewsmap.com/issues/703),
 [docs/notes/2026-10-16-boinc-iris-pilot.md](notes/2026-10-16-boinc-iris-pilot.md)) is a separate experiment with a different model
-(4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum.
+(4B INT4 on OpenVINO). Its readings are not comparable with the 8B quorum. It was retired on
+2 November 2026 (last workunit 18 October) and sends no work; `usnm_qwen`'s `intel_vulkan_8b` class
+replaced it.
 
 ## How a host is chosen and checked
 
