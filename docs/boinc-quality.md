@@ -686,6 +686,7 @@ no LoC request:
    `bundle-<n>-<first page>`), not the whole `pages/` tree: at 39,000 pages that listing took
    four minutes cold over NFS. A page found staged already that none of those bundles holds
    makes it read every bundle once, as before.
+
 3. **Results** go to `usnm_quality` ([scripts/onprem/quality/README.md](../scripts/onprem/quality/README.md)).
    On the preparation host, `usnm-quality-results.timer` runs two minutes after
    the previous pass finishes, with up to 15 seconds of jitter:
