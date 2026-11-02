@@ -6,6 +6,9 @@
 //! invent  the invented-text check of protocol.md
 //! columns geometric column order from ALTO
 //! order   rank correlation of a reader's word order against a geometric column order
+//! yid-*   the Yiddish test set and newspaper agreement (see `yiddish.rs`)
+mod yiddish;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -125,6 +128,119 @@ enum Cmd {
         hyps: Vec<String>,
         #[arg(long)]
         out: PathBuf,
+    },
+    /// `usnm_qwen` bundle units of ALTO line crops from the Jochre corpus's test pages
+    YidUnits {
+        /// Directory of <id>.png and <id>_alto4.xml
+        #[arg(long)]
+        pages: PathBuf,
+        /// Page ids, one per line
+        #[arg(long)]
+        list: PathBuf,
+        /// Engine JSON (image, llama, models, weights) of the native app being run
+        #[arg(long)]
+        engine: PathBuf,
+        #[arg(long)]
+        prompt_version: u32,
+        #[arg(long, default_value = "jochre-test")]
+        group: String,
+        /// Crops per unit; small enough that every crop's generation record fits in diag.txt
+        #[arg(long, default_value_t = 56)]
+        max_crops: usize,
+        #[arg(long, default_value_t = 14_400)]
+        timeout_secs: u32,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Newspaper silver-set units: one selected production crop per page, rebundled for a request version
+    YidSilver {
+        /// JSONL rows {"doc","crop","title"}
+        #[arg(long)]
+        selection: PathBuf,
+        /// Directory of <doc>/qwen.json and <doc>/page.jpg from the production units
+        #[arg(long)]
+        src: PathBuf,
+        #[arg(long)]
+        engine: PathBuf,
+        #[arg(long)]
+        prompt_version: u32,
+        #[arg(long, default_value_t = 25)]
+        pages_per_unit: usize,
+        #[arg(long, default_value_t = 14_400)]
+        timeout_secs: u32,
+        #[arg(long)]
+        out: PathBuf,
+        /// Also write each crop as <doc>_<crop>.png here
+        #[arg(long)]
+        crops: Option<PathBuf>,
+    },
+    /// The units' line crops as PNG files, for engines that read crops outside the app
+    YidCut {
+        #[arg(long)]
+        pages: PathBuf,
+        #[arg(long)]
+        refs: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Readings, generation records and timings out of finished units
+    YidCollect {
+        #[arg(long)]
+        units: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        summary: PathBuf,
+    },
+    /// Check the YIVO simplification against the corpus's own _simplified.txt files
+    YidYivo {
+        #[arg(long)]
+        pages: PathBuf,
+        #[arg(long)]
+        list: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Page and line CER against the gold, the paper's way and ours, with page-clustered limits
+    YidScore {
+        #[arg(long)]
+        pages: PathBuf,
+        #[arg(long)]
+        list: PathBuf,
+        /// refs.jsonl from yid-units
+        #[arg(long)]
+        refs: PathBuf,
+        /// NAME=FILE, rows {"page","text"}; repeatable
+        #[arg(long = "page-hyp")]
+        page_hyps: Vec<String>,
+        /// NAME=FILE, rows from yid-collect; repeatable
+        #[arg(long = "line-hyp")]
+        line_hyps: Vec<String>,
+        /// page<TAB>group, for a breakdown
+        #[arg(long)]
+        groups: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 2000)]
+        resamples: usize,
+        #[arg(long, default_value_t = 202611)]
+        seed: u64,
+    },
+    /// Agreement between readers on untranscribed crops, and distance from one reader taken as reference
+    YidAgree {
+        /// JSONL rows {"id","page"}
+        #[arg(long)]
+        items: PathBuf,
+        #[arg(long = "hyp")]
+        hyps: Vec<String>,
+        #[arg(long)]
+        reference: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 2000)]
+        resamples: usize,
+        #[arg(long, default_value_t = 202611)]
+        seed: u64,
     },
 }
 
@@ -736,5 +852,18 @@ fn main() -> Result<()> {
         Cmd::Agree { items, hyps, out, resamples, seed } => agree(&items, &hyps, &out, resamples, seed),
         Cmd::Invent { refs, hyps, out } => invent(&refs, &hyps, &out),
         Cmd::Order { reference, hyps, out } => order(&reference, &hyps, &out),
+        Cmd::YidUnits { pages, list, engine, prompt_version, group, max_crops, timeout_secs, out } => {
+            yiddish::units(&pages, &list, &engine, prompt_version, &group, max_crops, timeout_secs, &out)
+        }
+        Cmd::YidSilver { selection, src, engine, prompt_version, pages_per_unit, timeout_secs, out, crops } => {
+            yiddish::silver_units(&selection, &src, &engine, prompt_version, pages_per_unit, timeout_secs, &out, crops.as_deref())
+        }
+        Cmd::YidCut { pages, refs, out } => yiddish::cut_lines(&pages, &refs, &out),
+        Cmd::YidCollect { units, out, summary } => yiddish::collect(&units, &out, &summary),
+        Cmd::YidYivo { pages, list, out } => yiddish::yivo_check(&pages, &list, &out),
+        Cmd::YidScore { pages, list, refs, page_hyps, line_hyps, groups, out, resamples, seed } => {
+            yiddish::score(&pages, &list, &refs, &page_hyps, &line_hyps, groups.as_deref(), &out, resamples, seed)
+        }
+        Cmd::YidAgree { items, hyps, reference, out, resamples, seed } => yiddish::agree(&items, &hyps, &reference, &out, resamples, seed),
     }
 }
