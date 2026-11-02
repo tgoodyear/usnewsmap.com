@@ -1879,14 +1879,6 @@
     "view": { "bucket": "month", "from": "1962-01-01", "q": "Telstar", "to": "1963-12-31" }
   },
   {
-    "aggregate": "q=Albany+AND+union&from=1754-01-01&to=1754-12-31&bucket=month",
-    "blurb": "Franklin promoted colonial union as delegates met at Albany in 1754.",
-    "era": "1751-1828",
-    "id": "albany-union",
-    "title": "Albany Plan of Union",
-    "view": { "bucket": "month", "from": "1754-01-01", "q": "Albany AND union", "to": "1754-12-31" }
-  },
-  {
     "aggregate": "q=stamp+act&mode=phrase&from=1765-01-01&to=1766-12-31&bucket=month",
     "blurb": "The 1765 tax on printed materials provoked colonial resistance and was repealed in 1766.",
     "era": "1751-1828",
