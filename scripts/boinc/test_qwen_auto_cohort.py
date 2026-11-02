@@ -737,6 +737,7 @@ class BoincDb {static $q=0;static function get(){return new self();}
         self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [200, 201])
         self.assertEqual(set(receipt["producer_audit_sha256"]), {"guard-v3", "guard-v4"})
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_a_root_refuses_a_job_of_another_request_version_or_group(self):
         self.campaign_rows((200, "srp", "guard-v3", 1), (201, "srp", "guard-v4", 3))
         self.args.campaigns = [("guard-v3", 3)]
