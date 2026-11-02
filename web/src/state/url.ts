@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { SearchParams } from "../api/client";
 import type { BucketUnit, HitSort, Mode } from "../api/types";
+import { EXAMPLES } from "../examples";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { queryForPath, searchPath, TITLES } from "../route";
 
@@ -250,6 +251,52 @@ export function searchParams(v: ViewState): SearchParams {
   };
 }
 
+const TITLE_SUFFIX = " · US News Map";
+/** The longest title, in characters, suffix included. */
+const TITLE_LIMIT = 60;
+
+/** The view's fields that change which pages a search finds. */
+const FILTERS = ["source", "mode", "near", "from", "to", "state", "lang", "lccn", "series"] as const;
+
+/** The example searches by canonical path. */
+const EXAMPLE_BY_PATH = new Map(EXAMPLES.map((example) => [searchPath(example.view.q ?? ""), example]));
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** `text` in at most `limit` characters, cut at a space if its second half has one. */
+function shorten(text: string, limit: number): string {
+  const chars = [...text];
+  if (chars.length <= limit) return text;
+  const room = chars.slice(0, limit - 1);
+  let end = room.length - 1;
+  while (end >= 0 && !/\s/.test(room[end]!)) end--;
+  const kept = room.slice(0, end >= Math.floor(room.length / 2) ? end : room.length).join("");
+  return `${kept.trimEnd()}…`;
+}
+
+/**
+ * The document title of a view, as the API writes it into the page
+ * (crates/usnm-api/src/site/head.rs). fixtures/page-titles.json holds the two
+ * to the same results, so a page keeps its title when the app starts.
+ */
+export function searchTitle(view: ViewState): string {
+  if (!view.q) return TITLES.search;
+  const example = EXAMPLE_BY_PATH.get(searchPath(view.q, view.mode));
+  if (example) {
+    // An example's title fits a view with its filters, or none as in the sitemap.
+    const plain = FILTERS.every((key) => same(view[key], DEFAULTS[key]));
+    const matches = FILTERS.every((key) => same(view[key], example.view[key] ?? DEFAULTS[key]));
+    if (plain || matches) return `${example.title}${TITLE_SUFFIX}`;
+  }
+  const terms = view.q
+    .replace(/\p{Cc}/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!terms) return `Newspaper search${TITLE_SUFFIX}`;
+  const lead = view.source === "congress" ? "Records of Congress: " : "Newspaper coverage of ";
+  return `${lead}${shorten(terms, TITLE_LIMIT - lead.length - TITLE_SUFFIX.length)}${TITLE_SUFFIX}`;
+}
+
 function subscribe(cb: () => void): () => void {
   window.addEventListener("popstate", cb);
   return () => window.removeEventListener("popstate", cb);
@@ -264,13 +311,14 @@ const getUrl = () => window.location.pathname + window.location.search;
 export function useView(): [ViewState, (patch: Partial<ViewState>, push?: boolean) => void] {
   const url = useSyncExternalStore(subscribe, getUrl, getUrl);
   const view = parseViewUrl(url);
+  const title = searchTitle(view);
   useEffect(() => {
-    document.title = view.q ? `${view.q} · US News Map` : TITLES.search;
+    document.title = title;
     const canonical = `https://usnewsmap.com${searchPath(view.q, view.mode)}`;
     document.querySelector('link[rel="canonical"]')?.setAttribute("href", canonical);
     document.querySelector('meta[property="og:url"]')?.setAttribute("content", canonical);
-    document.querySelector('meta[property="og:title"]')?.setAttribute("content", document.title);
-  }, [view.q, view.mode]);
+    document.querySelector('meta[property="og:title"]')?.setAttribute("content", title);
+  }, [title, view.q, view.mode]);
   const set = useCallback((patch: Partial<ViewState>, push = false) => {
     const next = { ...parseViewUrl(getUrl()), ...patch };
     const url = viewUrl(next);

@@ -145,7 +145,7 @@ test("path searches survive reload and history when only the query changes", asy
   await page.getByRole("searchbox").fill("gold");
   await page.getByRole("searchbox").press("Enter");
   await expect(page).toHaveURL(/\/search\/gold(?:\?|$)/);
-  await expect(page).toHaveTitle("gold · US News Map");
+  await expect(page).toHaveTitle("Newspaper coverage of gold · US News Map");
   await page.goBack();
   await expect(page.getByRole("searchbox")).toHaveValue("cross of gold");
   await expect(page.locator(".summary")).toContainText("6 places");
@@ -363,7 +363,7 @@ test("the dataset details show the published version without the pipeline state"
   await page.getByRole("link", { name: "Dataset details" }).click();
   await expect(page).toHaveURL(/\/datasets$/);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Dataset details");
-  await expect(page).toHaveTitle("Dataset details · US News Map");
+  await expect(page).toHaveTitle("Dataset details and index status · US News Map");
   // What's in the index comes first, from the fixtures' numbers.
   await expect(page.getByRole("heading", { level: 2 })).toHaveText([
     "What's in the index",
@@ -921,7 +921,7 @@ test("OCR credits cover every engine in the serving inventory", async ({ page, r
   const status = await statusResponse.json();
   const sources = status.published.sources;
   await page.goto("/credits");
-  await expect(page).toHaveTitle("OCR credits · US News Map");
+  await expect(page).toHaveTitle("OCR engine and model credits · US News Map");
   await expect(page.getByText(`Serving version: ${status.published.index_version}.`)).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
   for (const engine of [

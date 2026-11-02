@@ -40,7 +40,7 @@ describe("view URL", () => {
     expect(window.location.pathname).toBe("/search/silver");
     expect(window.location.search).toBe("?lang=ger");
     expect(result.current[0].q).toBe("silver");
-    expect(document.title).toBe("silver · US News Map");
+    expect(document.title).toBe("Newspaper coverage of silver · US News Map");
     act(() => {
       window.history.replaceState(null, "", "/search/gold?lang=ger");
       window.dispatchEvent(new PopStateEvent("popstate"));

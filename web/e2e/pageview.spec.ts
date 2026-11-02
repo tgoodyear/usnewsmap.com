@@ -43,7 +43,7 @@ test("the production site reports each page by name, never the search", async ({
   await expect.poll(() => reports.length).toBe(1);
   expect(JSON.parse(reports[0]!.body)).toEqual({
     route: "search",
-    title: "US News Map",
+    title: "US News Map: historic American newspaper search",
     referrer_origin: "https://www.google.com",
     utm_source: "newsletter",
   });
@@ -58,7 +58,7 @@ test("the production site reports each page by name, never the search", async ({
   await expect.poll(() => reports.length).toBe(2);
   expect(JSON.parse(reports[1]!.body)).toEqual({
     route: "privacy",
-    title: "Privacy · US News Map",
+    title: "Privacy and data handling · US News Map",
     referrer_origin: "internal",
   });
 });

@@ -8,8 +8,9 @@
 //!   The app's own pages (`/`, `/datasets`, `/privacy`, `/credits`) are 200; any other
 //!   such path gets the same shell with a 404, and the app shows a not-found
 //!   page. Missing files are a plain 404, which no cache may keep
-//!   (`no-store`): it can be a gap in a deploy. `/privacy` gets its own
-//!   title, canonical link and `og:url` in the shell, since it is indexed.
+//!   (`no-store`): it can be a gap in a deploy. Each page gets its own title,
+//!   description, canonical link and `og:url` in the shell, since it is
+//!   indexed (`head`).
 //! - `/status`, the dataset details page's old path, is redirected (301) to
 //!   `/datasets` with its query, so existing links keep working.
 //! - Hashed assets are cached for a year; `index.html` is revalidated on
@@ -36,6 +37,7 @@ use tower_http::services::ServeDir;
 use crate::error::ApiError;
 use crate::AppState;
 
+mod head;
 pub(crate) mod sitemap;
 pub(crate) mod social;
 
@@ -317,64 +319,32 @@ fn datasets_redirect(uri: &Uri) -> Option<String> {
 }
 
 /// Indexable pages name themselves in the head, even without JavaScript.
-fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
-    let query = search_query(path);
-    let (title, canonical) = if path.trim_end_matches('/') == "/privacy" {
-        ("Privacy · US News Map".to_owned(), "/privacy".to_owned())
-    } else if path.trim_end_matches('/') == "/datasets" {
-        (
-            "Dataset details · US News Map".to_owned(),
-            "/datasets".to_owned(),
-        )
-    } else if path.trim_end_matches('/') == "/credits" {
-        (
-            "OCR credits · US News Map".to_owned(),
-            "/credits".to_owned(),
-        )
-    } else if let Some(q) = &query {
-        (format!("{q} · US News Map"), search_path(q))
-    } else {
+fn shell_for(path: &str, query: &str, index: Vec<u8>) -> Vec<u8> {
+    let search = search_query(path);
+    let Some(head) = head::for_page(path, query) else {
         return index;
     };
-    let escape = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&#39;")
+    let canonical = match &search {
+        Some(q) => search_path(q),
+        None => path.trim_end_matches('/').to_owned(),
     };
-    let title = escape(&title);
     let canonical = format!("https://usnewsmap.com{canonical}");
-    let Ok(html) = String::from_utf8(index) else {
+    let Ok(mut html) = String::from_utf8(index) else {
         return Vec::new();
     };
-    let mut html = html
-        .replacen(
-            "<title>US News Map</title>",
-            &format!("<title>{title}</title>"),
-            1,
-        )
-        .replacen(
-            r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
-            &format!(r#"<link rel="canonical" href="{canonical}" />"#),
-            1,
-        )
-        .replacen(
-            r#"<meta property="og:url" content="https://usnewsmap.com/" />"#,
-            &format!(r#"<meta property="og:url" content="{canonical}" />"#),
-            1,
-        )
-        .replacen(
-            r#"<meta property="og:title" content="US News Map" />"#,
-            &format!(r#"<meta property="og:title" content="{title}" />"#),
-            1,
-        );
-    if let Some(q) = query {
+    head::apply(&mut html, &head);
+    head::set_meta(&mut html, "property", "og:url", &canonical);
+    let mut html = html.replacen(
+        r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
+        &format!(r#"<link rel="canonical" href="{canonical}" />"#),
+        1,
+    );
+    if let Some(q) = search {
         html = html.replacen(
             r#"<main class="empty">"#,
             &format!(
                 r#"<main class="empty"><h1>Newspaper results for {}</h1>"#,
-                escape(&q)
+                escape_html(&q)
             ),
             1,
         );
@@ -735,7 +705,10 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
         StatusCode::NOT_FOUND
     };
     let mut body = match tokio::fs::read(&index).await {
-        Ok(body) => social::shell(req.uri(), shell_for(path, body)),
+        Ok(body) => social::shell(
+            req.uri(),
+            shell_for(path, req.uri().query().unwrap_or_default(), body),
+        ),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             return (StatusCode::NOT_FOUND, "not found").into_response();
@@ -1065,8 +1038,8 @@ mod tests {
     #[test]
     fn the_datasets_page_names_itself_in_the_head() {
         let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
-        let html = String::from_utf8(shell_for("/datasets/", index.to_vec())).unwrap();
-        assert!(html.contains("<title>Dataset details · US News Map</title>"));
+        let html = String::from_utf8(shell_for("/datasets/", "", index.to_vec())).unwrap();
+        assert!(html.contains("<title>Dataset details and index status · US News Map</title>"));
         assert!(html.contains(r#"href="https://usnewsmap.com/datasets""#));
         assert!(html.contains(r#"content="https://usnewsmap.com/datasets""#));
     }
@@ -1074,8 +1047,8 @@ mod tests {
     #[test]
     fn the_credits_page_names_itself_in_the_head() {
         let index = br#"<title>US News Map</title><link rel="canonical" href="https://usnewsmap.com/" /><meta property="og:url" content="https://usnewsmap.com/" />"#;
-        let html = String::from_utf8(shell_for("/credits/", index.to_vec())).unwrap();
-        assert!(html.contains("<title>OCR credits · US News Map</title>"));
+        let html = String::from_utf8(shell_for("/credits/", "", index.to_vec())).unwrap();
+        assert!(html.contains("<title>OCR engine and model credits · US News Map</title>"));
         assert!(html.contains(r#"href="https://usnewsmap.com/credits""#));
         assert!(html.contains(r#"content="https://usnewsmap.com/credits""#));
     }
@@ -1086,10 +1059,10 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
         )
         .unwrap();
-        let home = String::from_utf8(shell_for("/", index.clone().into_bytes())).unwrap();
+        let home = String::from_utf8(shell_for("/", "", index.clone().into_bytes())).unwrap();
         assert_eq!(home, index);
-        let privacy = String::from_utf8(shell_for("/privacy/", index.into_bytes())).unwrap();
-        assert!(privacy.contains("<title>Privacy · US News Map</title>"));
+        let privacy = String::from_utf8(shell_for("/privacy/", "", index.into_bytes())).unwrap();
+        assert!(privacy.contains("<title>Privacy and data handling · US News Map</title>"));
         assert!(
             privacy.contains(r#"<link rel="canonical" href="https://usnewsmap.com/privacy" />"#)
         );
@@ -1235,8 +1208,10 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
         )
         .unwrap();
-        let html = String::from_utf8(shell_for(&search_path("<b> & \"gold\""), index)).unwrap();
-        assert!(html.contains("<title>&lt;b&gt; &amp; &quot;gold&quot; · US News Map</title>"));
+        let html = String::from_utf8(shell_for(&search_path("<b> & \"gold\""), "", index)).unwrap();
+        assert!(html.contains(
+            "<title>Newspaper coverage of &lt;b&gt; &amp; &quot;gold&quot; · US News Map</title>"
+        ));
         assert!(html.contains("https://usnewsmap.com/search/%3Cb%3E%20%26%20%22gold%22"));
         assert!(html.contains("<h1>Newspaper results for &lt;b&gt; &amp; &quot;gold&quot;</h1>"));
     }

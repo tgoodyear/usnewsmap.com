@@ -218,6 +218,11 @@ impl Card {
     }
 }
 
+/// What a page's card says about its view, such as its dates and filters.
+pub(super) fn details(path: &str, query: &str) -> Option<String> {
+    Card::new(path, query).map(|card| card.details)
+}
+
 pub(super) fn shell(uri: &Uri, index: Vec<u8>) -> Vec<u8> {
     let Some(card) = Card::new(uri.path(), uri.query().unwrap_or_default()) else {
         return index;
@@ -229,28 +234,28 @@ pub(super) fn shell(uri: &Uri, index: Vec<u8>) -> Vec<u8> {
             return error.into_bytes();
         }
     };
-    let title = escape(&format!("{} · US News Map", card.title));
-    // Replace whole tags so quotes or tag-shaped text in a query cannot
-    // become markup, or be touched by a subsequent replacement.
-    for (attribute, name, value) in [
-        ("property", "og:title", title.clone()),
-        ("name", "twitter:title", title.clone()),
-        ("property", "og:description", escape(&card.description())),
-        ("name", "twitter:description", escape(&card.description())),
+    // The alt text describes the card's own image, whatever the page says.
+    let mut tags = vec![
         ("property", "og:url", escape(&card.url)),
         ("property", "og:image", escape(&card.image)),
         ("name", "twitter:image", escape(&card.image)),
         ("property", "og:image:alt", escape(&card.description())),
         ("name", "twitter:image:alt", escape(&card.description())),
-    ] {
-        let marker = format!("{attribute}=\"{name}\"");
-        let tag = html.match_indices("<meta").find_map(|(start, _)| {
-            let end = start + html[start..].find('>')?;
-            html[start..=end].contains(&marker).then_some(start..=end)
-        });
-        if let Some(tag) = tag {
-            html.replace_range(tag, &format!("<meta {marker} content=\"{value}\" />"));
-        }
+    ];
+    // A page with its own title and description has them from `shell_for`.
+    if super::head::for_page(uri.path(), uri.query().unwrap_or_default()).is_none() {
+        let title = escape(&format!("{} · US News Map", card.title));
+        let description = escape(&card.description());
+        tags.extend([
+            ("property", "og:title", title.clone()),
+            ("name", "twitter:title", title),
+            ("name", "description", description.clone()),
+            ("property", "og:description", description.clone()),
+            ("name", "twitter:description", description),
+        ]);
+    }
+    for (attribute, name, value) in tags {
+        super::head::set_meta(&mut html, attribute, name, &value);
     }
     html.into_bytes()
 }

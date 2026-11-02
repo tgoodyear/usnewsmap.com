@@ -8,7 +8,7 @@ describe("PrivacyPage", () => {
   it("has one plain heading, a date, the contact page and no email address", () => {
     const { container } = render(<PrivacyPage />);
     expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Privacy"]);
-    expect(document.title).toBe("Privacy · US News Map");
+    expect(document.title).toBe("Privacy and data handling · US News Map");
     expect(container.textContent).toMatch(/Last updated \d{1,2} \w+ \d{4}\./);
     expect(screen.getByRole("link", { name: /goodyeartechnical\.com\/contact/ })).toHaveProperty(
       "href",
