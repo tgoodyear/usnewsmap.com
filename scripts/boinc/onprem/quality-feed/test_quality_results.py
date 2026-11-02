@@ -241,6 +241,16 @@ class NativeCampaignsTest(unittest.TestCase):
             self.main(run, "--native-campaign", "first", "--native-campaign", "second")
         self.assertEqual(seen, ["first", "second"])
 
+    def test_a_held_step_lock_defers_a_root_without_failing_the_run(self):
+        def run(args):
+            if args.campaign == "first":
+                raise subprocess.CalledProcessError(75, ["collect"])
+            return {"campaign": args.campaign}
+
+        output = self.main(run, "--native-campaign", "first", "--native-campaign", "second")
+        self.assertIn('"status": "deferred"', output)
+        self.assertIn('{"campaign": "second"}', output)
+
     def test_one_way_of_naming_campaigns(self):
         for extra in ([], ["--campaign", "a", "--native-campaign", "b"]):
             with self.subTest(extra=extra), self.assertRaises(SystemExit), \

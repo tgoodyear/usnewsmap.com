@@ -152,8 +152,11 @@ def run_native(args):
         try:
             print(json.dumps(run(one)), flush=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
-            print(json.dumps({"campaign": name, "status": "failed", "error": str(error)[:300]}), flush=True)
-            failed.append(name)
+            # 75 is the step lock staying held: the next tick reads this root.
+            status = "deferred" if getattr(error, "returncode", None) == 75 else "failed"
+            print(json.dumps({"campaign": name, "status": status, "error": str(error)[:300]}), flush=True)
+            if status == "failed":
+                failed.append(name)
     if failed:
         raise SystemExit("native campaigns failed: " + ", ".join(failed))
 
