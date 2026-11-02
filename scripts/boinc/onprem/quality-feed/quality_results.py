@@ -133,9 +133,38 @@ def run(args):
             "snapshot": f"{root}/out/pages.parquet", "qwen_campaign": args.qwen_campaign}
 
 
+def native_campaign(value):
+    name, _, collector = value.partition("=")
+    if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", name)
+            or (collector and not re.fullmatch(r"/[A-Za-z0-9._/-]+", collector))):
+        raise argparse.ArgumentTypeError("expected NAME or NAME=/absolute/collector")
+    return name, collector
+
+
+def run_native(args):
+    """One pass over each root. A root that fails, or is still warming its cache, doesn't stop
+    the next, and the run reports it at the end."""
+    failed = []
+    for name, collector in args.native_campaign:
+        one = argparse.Namespace(**vars(args))
+        one.campaign = one.qwen_campaign = name
+        one.collector = collector or args.collector
+        try:
+            print(json.dumps(run(one)), flush=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
+            print(json.dumps({"campaign": name, "status": "failed", "error": str(error)[:300]}), flush=True)
+            failed.append(name)
+    if failed:
+        raise SystemExit("native campaigns failed: " + ", ".join(failed))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--campaign", required=True)
+    parser.add_argument("--campaign", help="one QUALITY campaign; needs --qwen-campaign to join readings")
+    parser.add_argument("--native-campaign", type=native_campaign, action="append", default=[],
+                        metavar="NAME[=COLLECTOR]",
+                        help="repeatable in place of --campaign: a root whose QUALITY and native Qwen "
+                             "results share its name, with its own collector if named")
     parser.add_argument("--engine-image", required=True)
     parser.add_argument("--qwen-campaign", help="join this native Qwen campaign's canonical batch-8 readings")
     parser.add_argument("--incremental", action="store_true",
@@ -150,7 +179,9 @@ def main(argv=None):
     parser.add_argument("--ctid", type=int, default=215)
     parser.add_argument("--lock", type=Path, default=Path("/run/usnm-quality-results.lock"))
     args = parser.parse_args(argv)
-    if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign)
+    if bool(args.campaign) == bool(args.native_campaign):
+        parser.error("give --campaign or --native-campaign")
+    if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign or args.native_campaign[0][0])
             or not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image)
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
             or min(args.ctid, args.server_ct, args.max_dirty_units) < 1
@@ -160,7 +191,10 @@ def main(argv=None):
         parser.error("invalid native Qwen campaign")
     with args.lock.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        print(json.dumps(run(args)), flush=True)
+        if args.native_campaign:
+            run_native(args)
+        else:
+            print(json.dumps(run(args)), flush=True)
 
 
 if __name__ == "__main__":

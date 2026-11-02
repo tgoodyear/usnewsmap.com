@@ -10,6 +10,11 @@
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
 #     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
 #     [--step-window-minutes 15] (native publication only; 0, the default, is no window)
+#     [--prompt-version 1] [--qwen-root NAME] (native only: the campaign root and the request
+#     version chunks are staged into; the default root is --campaign, the outbox stays there)
+#     [--qwen-yiddish-root NAME --yiddish-prompt-version 4] (a chunk of only Yiddish pages goes
+#     here. With --prompt-version 3 or 4, a chunk that holds Yiddish and has no root to go to
+#     stays READY, as does one that mixes Yiddish with anything else)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
@@ -42,6 +47,7 @@ READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
+PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -62,6 +68,10 @@ while [ $# -gt 0 ]; do
     --qwen-max-ready)
       [ $# -ge 2 ] || die "--qwen-max-ready: a positive integer"
       QWEN_MAX_READY=$2; shift 2 ;;
+    --prompt-version) PROMPT=${2:-}; shift 2 ;;
+    --qwen-root) QWEN_ROOT=${2:-}; shift 2 ;;
+    --qwen-yiddish-root) YIDDISH_ROOT=${2:-}; shift 2 ;;
+    --yiddish-prompt-version) YIDDISH_PROMPT=${2:-}; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -78,6 +88,14 @@ STEP_WINDOW=$((10#$STEP_WINDOW))
 if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
   [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
     die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
+fi
+[[ $PROMPT =~ ^[1-4]$ && $YIDDISH_PROMPT =~ ^[1-4]$ ]] || die "--prompt-version and --yiddish-prompt-version: 1 to 4"
+QWEN_ROOT=${QWEN_ROOT:-$CAMPAIGN}
+for root in "$QWEN_ROOT" "$YIDDISH_ROOT"; do
+  [[ -z $root || $root =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--qwen-root, --qwen-yiddish-root: 1-41 of [a-z0-9-]"
+done
+if [ -z "$QWEN_PLAN" ] && { [ "$PROMPT" != 1 ] || [ "$QWEN_ROOT" != "$CAMPAIGN" ] || [ -n "$YIDDISH_ROOT" ]; }; then
+  die "--prompt-version and the root flags need --qwen-engine-plan"
 fi
 if [ -n "$QWEN_PLAN" ]; then
   # Migration-safe: old inline and new independent ship units cannot copy/clean one chunk concurrently.
@@ -132,8 +150,20 @@ for dir in "$OUTBOX/$CAMPAIGN"/c[0-9][0-9][0-9][0-9][0-9]; do
   [ "$shipped" -lt "$MAX_CHUNKS" ] || break
   chunk=$(basename "$dir")
   pages=$(cat "$dir/READY")
+  target=$CAMPAIGN version=1
   if [ -n "$QWEN_PLAN" ]; then
     [[ $pages =~ ^[1-9][0-9]*$ && $pages -le 490 ]] || die "$chunk: invalid bounded READY page count"
+    target=$QWEN_ROOT version=$PROMPT
+    # The guarded roots read Yiddish at version 4 and everything else at version 3.
+    if [ "$PROMPT" -ge 3 ]; then
+      route=$(sort -u "$dir/langs.txt" | paste -sd, -)
+      if [ "$route" = yid ] && [ -n "$YIDDISH_ROOT" ]; then
+        target=$YIDDISH_ROOT version=$YIDDISH_PROMPT
+      elif [[ ,$route, == *,yid,* || -z $route ]]; then
+        log "$chunk: languages '$route' have no root at this request version; READY retained"
+        continue
+      fi
+    fi
   fi
   unsent=native-fresh-pair-gated
   if [ -z "$QWEN_PLAN" ]; then
@@ -173,8 +203,8 @@ print(count)
       break
     fi
     if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
-      --preflight --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-      --max-pages "$pages" --max-ready "$QWEN_MAX_READY"; then
+      --preflight --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --max-pages "$pages" --max-ready "$QWEN_MAX_READY" --prompt-version "$version"; then
       :
     else
       rc=$?
@@ -182,24 +212,24 @@ print(count)
       exit "$rc"
     fi
   fi
-  log "$chunk: $pages pages, server unsent $unsent"
+  log "$chunk: $pages pages for $target at request version $version, server unsent $unsent"
   if $WHAT_IF; then
     log "would copy $dir to CT $CT on $SERVER, stage it and submit it"
     shipped=$((shipped + 1))
     continue
   fi
-  inc="$SHARE/quality/$CAMPAIGN/incoming"
+  inc="$SHARE/quality/$target/incoming"
   in_ct mkdir -p "$inc"
   tar -C "$OUTBOX/$CAMPAIGN" -cf - "$chunk" | in_ct tar -x --no-same-owner -C "$inc"
-  out=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$CAMPAIGN" --chunk "$chunk" \
+  out=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$target" --chunk "$chunk" \
     < "$HERE/quality_receive.py")
   IFS=$'\t' read -r sample langs n <<< "$out"
-  [[ $sample =~ ^/project/quality/$CAMPAIGN/incoming/$chunk/sample.jsonl$ && $langs =~ ^[a-z,]+$ && $n =~ ^[0-9]+$ ]] ||
+  [[ $sample =~ ^/project/quality/$target/incoming/$chunk/sample.jsonl$ && $langs =~ ^[a-z,]+$ && $n =~ ^[0-9]+$ ]] ||
     die "$chunk: unexpected receive output: $out"
   log "$chunk: received $n pages ($langs); staging"
   run_step --step quality-stage \
-    --var "QUALITY_CAMPAIGN=$CAMPAIGN" --var "QUALITY_SAMPLE=$sample" --var "QUALITY_GROUP=$CAMPAIGN" \
-    --var "QUALITY_SCANS_DIR=/project/quality/$CAMPAIGN/scans" --var "QUALITY_READERS=$READERS" \
+    --var "QUALITY_CAMPAIGN=$target" --var "QUALITY_SAMPLE=$sample" --var "QUALITY_GROUP=$target" \
+    --var "QUALITY_SCANS_DIR=/project/quality/$target/scans" --var "QUALITY_READERS=$READERS" \
     --var "QUALITY_ENGINE_IMAGE=$ENGINE" --var "QUALITY_LANGS=$langs" \
     --var "QUALITY_BUNDLE_SIZE=$BUNDLE" --var "QUALITY_MAX=$((n + 10))" --wait-mins 45
   log "$chunk: staged; submitting"
@@ -211,8 +241,8 @@ print(count)
     if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock sh -c \
       'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
-      --campaign "$CAMPAIGN" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY"; then
+      --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version"; then
       :
     else
       rc=$?
@@ -226,7 +256,7 @@ print(count)
   if in_ct flock -w 1800 -E 75 /run/usnm-boinc-step.lock podman exec usnm-boinc-server \
     timeout --signal=TERM --kill-after=30s 30m sh -c \
     'usnm-boinc quality submit "$@" && rm -f /project/usnmocr/html/cache/f2/server_status.php_job_status' sh \
-    --root "/project/quality/$CAMPAIGN" --project /project/usnmocr \
+    --root "/project/quality/$target" --project /project/usnmocr \
     --max-units "$(((n + BUNDLE - 1) / BUNDLE + 5))"; then
     :
   else
@@ -234,7 +264,7 @@ print(count)
     [ "$rc" -ne 75 ] || log "$chunk: the lock stayed held for 30 minutes; READY retained"
     exit "$rc"
   fi
-  freed=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$CAMPAIGN" --chunk "$chunk" --after-submit \
+  freed=$("${SSH[@]}" pct exec "$CT" -- python3 - --campaign "$target" --chunk "$chunk" --after-submit \
     < "$HERE/quality_receive.py")
   rm -rf "$dir"
   log "$chunk: submitted, $freed on the server, and removed from the outbox"

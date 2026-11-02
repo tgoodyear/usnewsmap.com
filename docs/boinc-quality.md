@@ -125,7 +125,7 @@ One page per workunit. Inputs: `page.jpg` and `qwen.json` (`usnm_ocr_contract::q
 
 Outputs: `readings.json` (`qwen::Readings`: `v`, `job_id`, `outcome`, `device`, `model`, `prompt_version`, `readings: [{id, text, tokens, ms}]`, `diag`), `result.json` (`qwen::ResultManifest`: the outcome, device, model, times, crops read, host, and the checksums of the other two) and `diag.txt`. Outcomes: `ok` (every crop read), `timeout` (the crops read so far are in the readings), `failed`, `no_gpu` (the GPU version ran without a visible GPU) and `unit_error`.
 
-`prompt_version` fixes the whole request a reading is made with, so two readings of a job always used the same one. Version 1 sends the prompt with llama.cpp's default image encoding: a crop at its native resolution, one token per 32x32 pixels, about 200-400 tokens for a newspaper crop. Version 2 sends the same prompt and starts `llama-server` with `--image-min-tokens 1024`, the minimum llama.cpp gives for Qwen-VL; the crop is upscaled to it. On the #529 benchmark (39 crops, one GPU, equal token budgets) version 2 took the words of the six image-checked Yiddish crops from 23% to 59%, cut the loops on crops whose 1.14 reading looped from 14 of 14 to 5 of 14, and left the English, Serbian and repeated-print crops as they were. Version 3 is version 1's encoding and version 4 is version 2's, each with the loop guard: Study 5's `stop` rule. The request streams, generation stops when `tail_repetition` fires, checked every eight tokens from the twelfth, and the reading keeps the text before the repeated run plus one period. Closing the connection is what stops llama-server. A reading that repeats at its natural end is cut the same way, so a printed repeat loses its copies too; its generation record keeps the raw text's digest and length and says `repetition_loop_guard_cut`. A stopped reply never reaches its usage event, so its `tokens` is the count of text events, recorded as `loop_guard.stream_deltas` with `completion_tokens_reported` empty. Staging stays at version 1 until every dispatchable app version reads the version staged. `qwen stage --prompt-version` and `qwen_submit.py --prompt-version` choose it, default 1. Versions 3 and 4 need app version 1.17, and the published versions refuse them. The refill reads `qwen-nonenglish-v1` unless `CAMPAIGN_ARGS` in its env names other roots: `--campaign NAME:VERSION`, repeated, each root staged at one request version.
+`prompt_version` fixes the whole request a reading is made with, so two readings of a job always used the same one. Version 1 sends the prompt with llama.cpp's default image encoding: a crop at its native resolution, one token per 32x32 pixels, about 200-400 tokens for a newspaper crop. Version 2 sends the same prompt and starts `llama-server` with `--image-min-tokens 1024`, the minimum llama.cpp gives for Qwen-VL; the crop is upscaled to it. On the #529 benchmark (39 crops, one GPU, equal token budgets) version 2 took the words of the six image-checked Yiddish crops from 23% to 59%, cut the loops on crops whose 1.14 reading looped from 14 of 14 to 5 of 14, and left the English, Serbian and repeated-print crops as they were. Version 3 is version 1's encoding and version 4 is version 2's, each with the loop guard: Study 5's `stop` rule. The request streams, generation stops when `tail_repetition` fires, checked every eight tokens from the twelfth, and the reading keeps the text before the repeated run plus one period. Closing the connection is what stops llama-server. A reading that repeats at its natural end is cut the same way, so a printed repeat loses its copies too; its generation record keeps the raw text's digest and length and says `repetition_loop_guard_cut`. A stopped reply never reaches its usage event, so its `tokens` is the count of text events, recorded as `loop_guard.stream_deltas` with `completion_tokens_reported` empty. `qwen stage --prompt-version` and `qwen_submit.py --prompt-version` choose the version, default 1. Versions 3 and 4 need app version 1.17, and older versions refuse them. `qwen_submit.py` defers a chunk (exit 75, READY kept) while any dispatchable app version can't read the version asked for, and refuses to add a second version to a root. The feed stages version 3, and version 4 for Yiddish; see [Request versions on the feed](#request-versions-on-the-feed). The refill reads `qwen-nonenglish-v1` unless `CAMPAIGN_ARGS` in its env names other roots: `--campaign NAME:VERSION`, repeated, each root staged at one request version. A named root needs an `audit.json`, which can start as `{}`.
 
 Under versions 1 and 2, readings are kept as read. `diag.txt` has each crop's generation record (`generation_v1/<crop>`, schema 2, or 3 with a `loop_guard` section under the guard), with `tail_periodic_repetition` when the raw output ends in a run repeated at least three times over at least 30 characters, and `repetition_loop_at_token_budget` when that run also used up the token budget. Printed text can repeat (a shelf of book spines); a model that loops runs out of tokens. The readings' `diag` says `loop_guard` (`stop` or `none`), names the looped crops, cut ones included, in `repetition_loop_crops` (a count if the names do not fit) and, always complete, `repetition_loop_crop_bits` (hex; bit `i % 8` of byte `i / 8` is the job's crop `i`), and the request's `image_min_tokens`.
 
@@ -594,7 +594,7 @@ Prod's bridge steps run on the on-prem host since 21 October 2026. Run each `scr
 
    Crop source text has a separate, unchanged 8192-byte UTF-8 limit. If any selected crop exceeds it, staging retains the complete candidate as `rejected-qwen.json`, the original `loc.xml`, `quality.json`, `page.jpg` and available `sample.json`, then writes the existing `too_large` terminal marker. Its reason names every oversized crop, box, byte count, text hash and source hashes. No `qwen.json` is published, no text is truncated, and other pages continue within `--max-pages`. Repeats preserve that evidence; feed inventory remembers rejected documents without counting them as submitted work. Other schema errors still fail closed.
 
-   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. Submission and collectors continue using their existing binary. Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
+   For an isolated reviewed staging-binary rollout, `qwen_submit.py` uses a sibling `usnm-boinc-stage` executable when installed, otherwise the existing `usnm-boinc`; `--stage-binary` can select an explicit executable. Submission and collectors continue using their existing binary, except that requests at versions 3 and 4 submit with the staging binary, because the server image's `qwen submit` refuses them until it is rebuilt from #1437 or later. Install only an approved hash-bound artifact at an idle boundary under the normal project lock. Shared shipper helpers, service units and timers need no changes.
 
 4. **Submit both apps' workunits (`bridge-job.sh`, `BRIDGE_STEP=quality-submit` and `BRIDGE_STEP=qwen-submit`).** Hands the staged units to `create_work` with two results per workunit (`QUALITY_MAX` default 500, `QWEN_MAX` default 20) and invalidates `$PROJ/html/cache/f2/server_status.php_job_status` so `https://boinc.usnewsmap.com/server_status.php` reflects the new queue immediately (live uncached counts are also always available at `https://boinc.usnewsmap.com/server_status.php?counts=1`):
 
@@ -784,13 +784,15 @@ no LoC request:
 
    Native Qwen requires a separate scheduled join, not just the image-pass campaign:
    install and enable `usnm-qwen-results.{service,timer}` on the preparation host.
-   It continues using the complete-snapshot `quality_results.py` driver with
-   `--campaign qwen-nonenglish-v1
---qwen-campaign qwen-nonenglish-v1`, joining QUALITY canonical outputs from batch 0
-   with `/project/qwen/<campaign>` and native batch-8 canonical readings from
-   `/project/usnmocr/results/8`. Override `NATIVE_QWEN_CAMPAIGN` (and, if needed, the
+   It continues using the complete-snapshot `quality_results.py` driver with one
+   `--native-campaign NAME[=COLLECTOR]` per root, joining QUALITY canonical outputs from
+   batch 0 with `/project/qwen/<campaign>` and native batch-8 canonical readings from
+   `/project/usnmocr/results/8`. Set `NATIVE_QWEN_ARGS` (and, if needed, the
    QUALITY scorer's `ENGINE_IMAGE`) in `/etc/usnm/quality-results-qwen.env`, never by
-   modifying feeder settings. Each pass archives fresh `pages.parquet`, `crops.parquet`
+   modifying feeder settings. A collector older than #1437 can't read version 3 or 4
+   jobs, so those roots name a newer one, and `qwen-nonenglish-v1` keeps its own so its
+   cached rows stay as they are. A root must exist before it is listed. A root that
+   fails doesn't stop the next; the service fails at the end and names it. Each pass archives fresh `pages.parquet`, `crops.parquet`
    and summary on the server, then certificate-loads page/reader scores. Readings
    pending quorum remain pending and join on a later pass; they are not reported as
    loaded Qwen science. The two collectors share the host pass lock and server bridge
@@ -1002,6 +1004,24 @@ still need the normal `quality-collect` join (`QWEN_SPOOL` is the native batch-8
 directory) and archival before any input-retention cleanup. This automation does not
 delete scientific inputs/results, qualify GPUs, reopen broken plan classes, or replace
 whole-page searchable OCR with sampled crop readings.
+
+
+### Request versions on the feed
+
+The outbox, `done.txt` and source requests stay under `CAMPAIGN`. The shipper chooses where each chunk goes, from `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env`:
+
+```
+QWEN_SHIP_ARGS="--prompt-version 3 --qwen-root NAME --qwen-yiddish-root NAME --yiddish-prompt-version 4"
+QWEN_FEED_ARGS="--yiddish-budget 40"
+```
+
+- Chunks with no Yiddish go to `--qwen-root` at `--prompt-version`.
+- Chunks of only Yiddish go to `--qwen-yiddish-root` at version 4.
+- At version 3 or 4, a chunk that mixes Yiddish with another language stays READY, as does Yiddish with no root to go to. `qwen_submit.py` refuses both a second time.
+
+`--yiddish-budget N` caps the Yiddish pages the feed will ever prepare, recorded in `yiddish-budget.json` in its state directory. The normal order then leaves Yiddish out, so the budget can't turn into a reread: pages already read at version 1 stay excluded as they always were, and raising the budget is a decision made in the env file. Without the flag Yiddish keeps its place in the normal order. Language filters on `quality_feed.py select` are `--language` and `--exclude-language`.
+
+A new root needs the refill and the collector told about it: add the root to `CAMPAIGN_ARGS` in the refill's env, and to `NATIVE_QWEN_ARGS` once its quality root exists. The version 1 root stays out of the refill, so its backlog goes only to the classes open to it.
 
 ### OCR's prefetch manifests (#1055)
 

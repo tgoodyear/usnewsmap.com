@@ -7,11 +7,12 @@ ConditionPathExists=/etc/usnm/qwen-feed.env
 [Service]
 Type=oneshot
 Environment=QWEN_MAX_READY=1000
+# QWEN_SHIP_ARGS: --prompt-version, --qwen-root, --qwen-yiddish-root (word-split on purpose).
 EnvironmentFile=/etc/usnm/qwen-feed.env
 ExecStart=/opt/usnm-quality-feed/qwen-throughput/quality-ship.sh --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} \
   --server-host ${SERVER_HOST} --max-chunks 1 --step-window-minutes 15 --min-free-gb 50 \
   --qwen-engine-plan ${QWEN_ENGINE_PLAN} --qwen-models ${QWEN_MODELS} \
-  --qwen-max-ready ${QWEN_MAX_READY}
+  --qwen-max-ready ${QWEN_MAX_READY} $QWEN_SHIP_ARGS
 SuccessExitStatus=75
 Nice=19
 IOSchedulingClass=idle

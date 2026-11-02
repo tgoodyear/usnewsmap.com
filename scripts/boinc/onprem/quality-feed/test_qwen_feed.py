@@ -130,7 +130,8 @@ class SourceRequestTest(unittest.TestCase):
                     state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230,
                     server_host="server", archive_host="archive", scan_server="http://scan",
                     archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
-                    max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64)
+                    max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64,
+                    yiddish_budget=None)
                 index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
                 attempts = []
                 selected = b""
@@ -481,7 +482,7 @@ class SourceTest(unittest.TestCase):
                         mock.patch.object(sys, "argv", argv), \
                         mock.patch.object(submit, "inventory", return_value={
                             "ready": 0, "fresh_pairs": 0, "unresolved_native": 0,
-                            "free_bytes": 100 * 1024**3}), \
+                            "free_bytes": 100 * 1024**3, "app_versions": [], "min_version": 0}), \
                         mock.patch.object(submit.subprocess, "run") as run, \
                         mock.patch.object(submit, "assert_submitted"), \
                         mock.patch.object(submit, "audit", return_value={}):
@@ -630,7 +631,8 @@ class SourceTest(unittest.TestCase):
                                       archive_host="archive.example", archives="/archives",
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
-                                      max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64)
+                                      max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64,
+                                      yiddish_budget=None)
             page = {"doc_id": DOC, "damage_rate": 0.9}
             inv = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
                    "documents": [], "free_bytes": 100 * 1024**3}
@@ -669,7 +671,7 @@ class SourceTest(unittest.TestCase):
             argv = ["qwen_submit.py", "--share", str(root), "--project", str(root),
                     "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root)]
             base = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
-                    "free_bytes": 100 * 1024**3}
+                    "free_bytes": 100 * 1024**3, "app_versions": [], "min_version": 0}
             for change, error in (({}, None), ({"fresh_pairs": 401}, "fresh_original_watermark"),
                                   ({"unresolved_native": 1901}, "unresolved_native_ceiling"),
                                   ({"free_bytes": 51 * 1024**3}, "reserved_input_free_space")):
@@ -692,17 +694,241 @@ class SourceTest(unittest.TestCase):
                         submit.main()
                         self.assertEqual(run.call_count, 2)
 
+    GUARDED = [{"plan_class": "nvidia_vulkan_8b", "platformid": 1, "version_num": 114},
+               {"plan_class": "nvidia_vulkan_8b", "platformid": 1, "version_num": 117},
+               {"plan_class": "amd_vulkan_8b", "platformid": 5, "version_num": 117}]
+
+    def test_a_dispatchable_app_that_cannot_read_the_request_defers_before_any_transfer(self):
+        behind = [*self.GUARDED, {"plan_class": "apple_gpu_8b", "platformid": 2, "version_num": 116}]
+        for versions, minimum, version, unreadable in (
+                (self.GUARDED, 0, 3, []),  # an older row the feeder doesn't load
+                (self.GUARDED, 114, 3, [["nvidia_vulkan_8b", 1, 114]]),  # min_version loads it
+                (self.GUARDED, 115, 2, []),
+                (behind, 0, 3, [["apple_gpu_8b", 2, 116]]),
+                (behind, 0, 4, [["apple_gpu_8b", 2, 116]]),
+                (behind, 0, 1, [])):
+            with self.subTest(minimum=minimum, version=version, n=len(versions)):
+                with tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    plan = root / "plan.json"
+                    plan.write_text("{}")
+                    state = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "free_bytes": 10**12,
+                             "app_versions": versions, "min_version": minimum}
+                    argv = ["qwen_submit.py", "--share", str(root), "--project", str(root), "--preflight",
+                            "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(root),
+                            "--prompt-version", str(version)]
+                    output = io.StringIO()
+                    with mock.patch.object(sys, "argv", argv), \
+                            mock.patch.object(submit, "inventory", return_value=state), \
+                            contextlib.redirect_stdout(output):
+                        if unreadable:
+                            with self.assertRaises(SystemExit) as caught:
+                                submit.main()
+                            self.assertEqual(caught.exception.code, 75)
+                        else:
+                            submit.main()
+                    decision = json.loads(output.getvalue())
+                    self.assertEqual(decision["unreadable_app_versions"], unreadable)
+                    self.assertEqual(decision["status"], "deferred" if unreadable else "admitted")
+
+    def test_a_root_keeps_one_request_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            share = Path(folder)
+            unit = share / "qwen/qwen-test/units" / DOC
+            unit.mkdir(parents=True)
+            (unit / "qwen.json").write_text(json.dumps({"id": "a" * 64, "doc_id": DOC, "prompt_version": 1}))
+            plan = share / "plan.json"
+            plan.write_text("{}")
+            state = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "free_bytes": 10**12,
+                     "app_versions": [], "min_version": 0}
+            argv = ["qwen_submit.py", "--share", str(share), "--project", str(share), "--preflight",
+                    "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(share),
+                    "--prompt-version", "3"]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(submit, "inventory", return_value=state), \
+                    self.assertRaisesRegex(RuntimeError, "holds request version 1"):
+                submit.main()
+
+    def test_guarded_roots_keep_yiddish_at_version_4_and_only_yiddish(self):
+        for language, version, allowed in (("yid", 4, True), ("srp", 3, True), ("yid", 3, False),
+                                           ("srp", 4, False), ("yid", 1, True), ("yid", 2, True)):
+            with self.subTest(language=language, version=version):
+                job = {"language": language, "doc_id": DOC}
+                if allowed:
+                    submit.assert_request_cohort(job, version)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "does not belong"):
+                        submit.assert_request_cohort(job, version)
+
+    def test_guarded_requests_submit_with_the_binary_that_stages_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"engine": {"image": "image", "llama": "llama", "weights": "weights"}}))
+            argv = ["qwen_submit.py", "--share", str(root), "--project", str(root), "--campaign", "qwen-test",
+                    "--engine-plan", str(plan), "--models", str(root), "--stage-binary", "/guard/usnm-boinc",
+                    "--prompt-version", "3"]
+            state = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "free_bytes": 10**12,
+                     "app_versions": [], "min_version": 0}
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(submit, "inventory", return_value=state), \
+                    mock.patch.object(submit.subprocess, "run") as run, \
+                    mock.patch.object(submit, "assert_submitted"), \
+                    mock.patch.object(submit, "audit", return_value={}):
+                submit.main()
+            stage, publish = (call.args[0] for call in run.call_args_list)
+            self.assertEqual(stage[:3], ["/guard/usnm-boinc", "qwen", "stage"])
+            self.assertEqual(stage[stage.index("--prompt-version") + 1], "3")
+            self.assertEqual(publish[:3], ["/guard/usnm-boinc", "qwen", "submit"])
+
+    def budget_tick(self, root, budget, yiddish, others):
+        """One feed tick with a stub corpus; returns the filters each select used and the
+        pages it sent to `run`."""
+        args = types.SimpleNamespace(
+            state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
+            archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
+            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100,
+            reserve_mib=64, yiddish_budget=budget)
+        filters, prepared = [], []
+        selected = b""
+
+        def command(argv, data=None):
+            nonlocal selected
+            if "select" in argv:
+                wanted = argv[argv.index("--language") + 1] if "--language" in argv else None
+                refused = argv[argv.index("--exclude-language") + 1] if "--exclude-language" in argv else None
+                filters.append((wanted, refused, int(argv[argv.index("--count") + 1])))
+                pool = [p for p in yiddish + others
+                        if (wanted is None or p["lang"] == wanted) and p["lang"] != refused]
+                selected = "".join(json.dumps(p) + "\n" for p in pool[:filters[-1][2]]).encode()
+            if "cat" in argv:
+                return selected
+            if "tee" in argv and argv[-1].endswith("/pages.jsonl"):
+                prepared.extend(json.loads(line) for line in data.splitlines())
+            return b"[]" if "-c" in argv else b""
+
+        def remote(host, argv, data=None):
+            if "--inventory" in argv:
+                return json.dumps({"fresh_pairs": 0, "unresolved_native": 0, "documents": [],
+                                   "free_bytes": 10**12, "ready": 0}).encode()
+            if "lvs" in argv:
+                return json.dumps({"report": [{"lv": [{"lv_size": 10**12, "data_percent": 0}]}]}).encode()
+            if data == b"":
+                return json.dumps({"available_archives": ["xx_test_ver01.tar.bz2"]}).encode()
+            return json.dumps({"cached": [json.loads(line)["doc_id"] for line in data.splitlines()],
+                               "missing": [], "pending": []}).encode()
+
+        row = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64}
+        with mock.patch.object(driver, "remote", side_effect=remote), \
+                mock.patch.object(driver, "command", side_effect=command), \
+                mock.patch.object(driver.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10**12)), \
+                mock.patch.object(driver.urllib.request, "urlopen",
+                                  return_value=contextlib.closing(io.BytesIO(json.dumps(row).encode() + b"\n"))), \
+                contextlib.redirect_stdout(io.StringIO()):
+            driver.tick(args)
+        return filters, [p["doc_id"] for p in prepared]
+
+    def test_yiddish_budget_makes_small_chunks_of_its_own_and_never_more(self):
+        yiddish = [{"doc_id": f"sn1_1900-01-02_ed-1_seq-{n}", "lang": "yid", "damage_rate": .9}
+                   for n in range(1, 40)]
+        others = [{"doc_id": f"sn2_1900-01-02_ed-1_seq-{n}", "lang": "srp", "damage_rate": .8}
+                  for n in range(1, 40)]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            filters, pages = self.budget_tick(root, 30, yiddish, others)
+            self.assertEqual(filters, [("yid", None, 30)])
+            self.assertEqual(pages, [p["doc_id"] for p in yiddish[:30]])
+            # The budget survives a restart: the next ticks take everything else, without Yiddish.
+            filters, pages = self.budget_tick(root, 30, yiddish[30:], others)
+            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_the_budget_goes_ahead_of_a_source_request(self):
+        yiddish = [{"doc_id": "sn1_1900-01-02_ed-1_seq-1", "lang": "yid", "damage_rate": .9}]
+        other = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64,
+                 "lang": "srp", "damage_rate": .8}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            spec = source.specification(DOC, 1, "test")
+            source.save(root / "requests" / (source.digest(spec) + ".json"),
+                        {"request_id": source.digest(spec), "spec": spec, "pages": [other],
+                         "pages_sha256": source.digest([other])})
+            filters, pages = self.budget_tick(root, 30, yiddish, [other])
+            self.assertEqual(filters, [("yid", None, 30)])
+            self.assertEqual(pages, [yiddish[0]["doc_id"]])
+            # With the budget spent the request carries on, unfiltered.
+            filters, pages = self.budget_tick(root, 1, [], [other])
+            self.assertEqual(filters, [(None, None, 100)])
+            self.assertEqual(pages, [DOC])
+
+    def test_a_source_request_that_mixes_languages_splits_across_ticks(self):
+        pages = [{"doc_id": f"sn{n}_1900-01-02_ed-1_seq-1", "batch": "xx_test", "batch_version": 1,
+                  "bytes": 12, "sha256": "a" * 64, "lang": lang, "damage_rate": .8} for n, lang in enumerate(("yid", "srp"), 1)]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            spec = source.specification(pages[0]["doc_id"], 2, "test")
+            source.save(root / "requests" / (source.digest(spec) + ".json"),
+                        {"request_id": source.digest(spec), "spec": spec, "pages": pages[:1],
+                         "pages_sha256": source.digest(pages[:1])})
+            _, chosen = self.budget_tick(root, 0, pages[:1], pages[1:])
+            self.assertEqual(chosen, [pages[1]["doc_id"]])
+
+    def test_no_yiddish_left_falls_through_to_the_normal_order(self):
+        others = [{"doc_id": f"sn2_1900-01-02_ed-1_seq-{n}", "lang": "srp", "damage_rate": .8}
+                  for n in range(1, 4)]
+        with tempfile.TemporaryDirectory() as folder:
+            filters, pages = self.budget_tick(Path(folder), 30, [], others)
+            self.assertEqual(filters, [("yid", None, 30), (None, "yid", 100)])
+            self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_without_a_budget_yiddish_keeps_its_place_in_the_normal_order(self):
+        pages = [{"doc_id": f"sn{n}_1900-01-02_ed-1_seq-1", "lang": lang, "damage_rate": .8}
+                 for n, lang in enumerate(("yid", "srp"), 1)]
+        with tempfile.TemporaryDirectory() as folder:
+            filters, chosen = self.budget_tick(Path(folder), None, pages[:1], pages[1:])
+            self.assertEqual(filters, [(None, None, 100)])
+            self.assertEqual(chosen, [p["doc_id"] for p in pages])
+
+    def test_select_filters_by_language(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            index = root / "index.jsonl"
+            docs = [f"sn{n}_1900-01-02_ed-1_seq-3" for n in range(1, 4)]
+            index.write_text("".join(json.dumps({"doc_id": d, "batch": "xx_test", "bytes": 1,
+                                                "sha256": "a", "format": "jp2"}) + "\n" for d in docs))
+            curated = root / "curated/audit/damage/v2"
+            curated.mkdir(parents=True)
+            (curated / "xx_test_ver01.parquet").touch()
+            rows = [{"doc_id": d, "lang": lang, "damage_rate": .5}
+                    for d, lang in zip(docs, ("yid", "srp", "eng"))]
+            pq = mock.Mock()
+            pq.read_table.return_value.to_pylist.return_value = rows
+            pa = types.ModuleType("pyarrow")
+            pa.parquet = pq
+            for filters, expected in (({"language": "yid"}, [docs[0]]), ({"exclude_language": "yid"}, [docs[1]]),
+                                      ({}, docs[:2])):
+                a = types.SimpleNamespace(index=str(index), staged="", curated=str(root / "curated"),
+                                          non_english=True, order="damage", count=0,
+                                          out=str(root / "out.jsonl"), scan_server=None, **filters)
+                with self.subTest(filters=filters), \
+                        mock.patch.dict("sys.modules", {"pyarrow": pa, "pyarrow.parquet": pq}):
+                    quality.cmd_select(a)
+                    chosen = [json.loads(line)["doc_id"] for line in Path(a.out).read_text().splitlines()]
+                    self.assertEqual(chosen, expected)
+
     def test_preflight_and_locked_recheck_preserve_partial_jobs_and_hash_bound_audit(self):
         with tempfile.TemporaryDirectory() as folder:
             share = Path(folder)
             root = share / "qwen/qwen-test"
             unit = root / "units" / DOC
             unit.mkdir(parents=True)
-            raw = json.dumps({"id": "a" * 64, "doc_id": DOC}).encode()
+            raw = json.dumps({"id": "a" * 64, "doc_id": DOC, "prompt_version": 1}).encode()
             (unit / "qwen.json").write_bytes(raw)
             submitted = root / "units" / "sn2_1900-01-02_ed-1_seq-3"
             submitted.mkdir()
-            job = {"id": "b" * 64, "doc_id": submitted.name}
+            job = {"id": "b" * 64, "doc_id": submitted.name, "prompt_version": 1}
             old_raw = json.dumps(job).encode()
             (submitted / "qwen.json").write_bytes(old_raw)
             (submitted / "submitted").write_text("already published\n")
@@ -716,7 +942,7 @@ class SourceTest(unittest.TestCase):
                     "--campaign", "qwen-test", "--engine-plan", str(plan), "--models", str(share),
                     "--max-pages", "1", "--max-ready", "200"]
             state = {"ready": 5000, "fresh_pairs": 99, "unresolved_native": 100,
-                     "free_bytes": 100 * 1024**3}
+                     "free_bytes": 100 * 1024**3, "app_versions": [], "min_version": 0}
             output = io.StringIO()
             with mock.patch.object(submit.subprocess, "run") as run, \
                     mock.patch.object(submit, "inventory", return_value=state), \

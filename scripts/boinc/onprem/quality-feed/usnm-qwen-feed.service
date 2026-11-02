@@ -8,10 +8,11 @@ ConditionPathExists=/etc/usnm/qwen-feed.env
 Type=oneshot
 EnvironmentFile=/etc/usnm/qwen-feed.env
 Environment=QWEN_MAX_READY=1000
+# QWEN_FEED_ARGS: --yiddish-budget N (word-split on purpose).
 ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/qwen-throughput/qwen_feed.py \
   --campaign ${CAMPAIGN} --state /var/lib/usnm-qwen-feed \
   --server-host ${SERVER_HOST} --archive-host ${ARCHIVE_HOST} --scan-server ${SCAN_SERVER} \
-  --max-ready ${QWEN_MAX_READY}
+  --max-ready ${QWEN_MAX_READY} $QWEN_FEED_ARGS
 Nice=19
 IOSchedulingClass=idle
 TimeoutStartSec=3h

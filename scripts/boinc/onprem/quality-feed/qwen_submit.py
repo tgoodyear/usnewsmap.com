@@ -16,6 +16,12 @@ import subprocess
 import sys
 import time
 
+# The first app version that reads each request version (qwen-auto-cohort.py keeps the same table).
+REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
+# Requests with the loop guard. The server image's own `qwen submit` predates them.
+GUARDED_VERSIONS = (3, 4)
+YIDDISH = "yid"
+
 
 def jobs(root):
     for path in sorted(root.glob("**/qwen.json")):
@@ -50,8 +56,13 @@ $fresh = $db->count("workunit", $native." AND min_quorum=2 AND target_nresults=2
     ." AND r.server_state=2 AND r.hostid=0 AND r.outcome=0 AND r.validate_state=0"
     ." AND r.sent_time=0 AND r.received_time=0)=2"
     ." AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.workunitid=workunit.id)");
+$versions = [];
+foreach (BoincAppVersion::enum("appid=".intval($app->id)." AND deprecated=0") as $v)
+    $versions[] = ["plan_class"=>$v->plan_class, "platformid"=>intval($v->platformid),
+                   "version_num"=>intval($v->version_num)];
 echo json_encode(["ready"=>count($ready), "dispatched"=>count($running),
-    "fresh_pairs"=>intval($fresh), "unresolved_native"=>intval($unresolved)]);
+    "fresh_pairs"=>intval($fresh), "unresolved_native"=>intval($unresolved),
+    "app_versions"=>$versions, "min_version"=>intval($app->min_version)]);
 """ % json.dumps(str(project / "html/inc"))
     counts = json.loads(subprocess.check_output(["php", "-r", php], text=True))
     free = min(shutil.disk_usage(path).free
@@ -200,6 +211,28 @@ def assert_processed(root, sample):
         raise RuntimeError(f"Chunk still has an unprocessed native source: {doc}; retain READY")
 
 
+def unreadable_versions(state, prompt_version):
+    """Dispatchable app versions that can't read the request. With app.min_version 0 the feeder
+    loads only the newest per platform and plan class, otherwise everything from min_version up."""
+    newest = {}
+    for row in state["app_versions"]:
+        key = (row["plan_class"], row["platformid"])
+        newest[key] = max(newest.get(key, 0), row["version_num"])
+    minimum = state["min_version"]
+    return sorted((row["plan_class"], row["platformid"], row["version_num"])
+                  for row in state["app_versions"]
+                  if (row["version_num"] >= minimum if minimum
+                      else row["version_num"] == newest[(row["plan_class"], row["platformid"])])
+                  and row["version_num"] < REQUEST_MIN_APP[prompt_version])
+
+
+def assert_request_cohort(job, prompt_version):
+    """Yiddish is read at version 4 and only Yiddish is: a guarded root never mixes them."""
+    if prompt_version in GUARDED_VERSIONS and (job["language"] == YIDDISH) != (prompt_version == 4):
+        raise RuntimeError(f"Language {job['language']} does not belong at request version {prompt_version}: "
+                           f"{job['doc_id']}")
+
+
 def admission(a, state, root):
     if list(root.glob("units/*/submitting")):
         raise RuntimeError("Uncertain Qwen submission: reconcile existing markers against BOINC, never replay")
@@ -212,6 +245,10 @@ def admission(a, state, root):
         if job["id"] in seen:
             raise RuntimeError(f"Duplicate staged Qwen identity: {job['id']}; reconcile, never replay")
         seen.add(job["id"])
+        # The refill admits a root at one request version, so a root holds one.
+        if job["prompt_version"] != a.prompt_version:
+            raise RuntimeError(f"Root {a.campaign} holds request version {job['prompt_version']}, "
+                               f"not {a.prompt_version}; a version gets its own root")
         previous = verified.get(job["id"])
         if previous is not None and previous["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest():
             raise RuntimeError(f"Previously audited Qwen job changed: {path}; reconcile, never replay")
@@ -219,7 +256,10 @@ def admission(a, state, root):
     if set(verified) - seen:
         raise RuntimeError("Previously audited Qwen job missing or identity changed; reconcile, never replay")
     reason = None
-    if 2 * (state["fresh_pairs"] + a.max_pages) > a.max_ready:
+    unreadable = unreadable_versions(state, a.prompt_version)
+    if unreadable:
+        reason = "dispatchable_app_cannot_read_request"
+    elif 2 * (state["fresh_pairs"] + a.max_pages) > a.max_ready:
         reason = "fresh_original_watermark"
     elif state["unresolved_native"] + a.max_pages > a.max_unresolved:
         reason = "unresolved_native_ceiling"
@@ -233,7 +273,8 @@ def admission(a, state, root):
         "unresolved_native": state["unresolved_native"], "max_unresolved": a.max_unresolved,
         "free_bytes": state["free_bytes"], "reserve_mib_per_page": a.reserve_mib,
         "min_free_gb": a.min_free_gb, "pending_staged_units": pending,
-        "audit_total": len(verified),
+        "audit_total": len(verified), "prompt_version": a.prompt_version,
+        "unreadable_app_versions": unreadable,
         "audit_sha256": hashlib.sha256(raw).hexdigest() if raw is not None else None,
         "ready_retained": True, "publication_attempted": False,
     }
@@ -350,6 +391,7 @@ def main():
         job = json.loads(path.read_text())
         if job["language"] in ("eng", "", "und") or job["doc_id"] in elsewhere:
             raise RuntimeError(f"Refusing English, unclassified or duplicate page: {path}")
+        assert_request_cohort(job, a.prompt_version)
     engine = json.loads(a.engine_plan.read_text())["engine"]
     stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
@@ -357,7 +399,8 @@ def main():
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
              "--prompt-version", str(a.prompt_version)]
     subprocess.run(stage, check=True)
-    subprocess.run(["usnm-boinc", "qwen", "submit", "--root", str(root), "--project", str(a.project),
+    submit_binary = a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc"
+    subprocess.run([submit_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
                     "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(a.max_pages)],
                    check=True)
     assert_submitted(root)

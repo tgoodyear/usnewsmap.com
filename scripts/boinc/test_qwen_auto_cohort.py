@@ -748,6 +748,20 @@ class BoincDb {static $q=0;static function get(){return new self();}
         with self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
             R.bind_inputs(self.project, self.database["rows"][1], key, self.audit[key], "guard-v3", 3)
 
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_root_with_an_empty_audit_adds_nothing_and_stops_nothing(self):
+        # The next root goes into the env before its first chunk, so the refill needs no edit then.
+        self.campaign_rows((200, "srp", "guard-v3", 3))
+        root = self.root / "qwen/guard-v4"
+        root.mkdir(parents=True)
+        (root / "audit.json").write_text("{}")
+        self.args.campaigns = [("guard-v3", 3), ("guard-v4", 4)]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "refilled-finite-window")
+        self.assertEqual(receipt["target"], [200, 200])
+        self.assertEqual(set(receipt["producer_audit_sha256"]), {"guard-v3", "guard-v4"})
+
     def test_campaign_arguments(self):
         self.assertEqual(R.parse_campaigns([], 1), [("qwen-nonenglish-v1", 1)])
         self.assertEqual(R.parse_campaigns(["guard-v3", "guard-v4:4"], 3), [("guard-v3", 3), ("guard-v4", 4)])
