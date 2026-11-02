@@ -146,9 +146,17 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.raised_fixture([(n, 10, False) for n in range(300, 310)]
                             + [(400, 1, True), (500, 10, True), (501, 10, True), (600, 5, True)])
         candidates = list(range(300, 310)) + [400, 500, 501, 600]
-        self.assertEqual(R.raised_workunits(self.project, candidates), [500, 501, 600, 400])
-        self.assertEqual(R.raised_workunits(self.project, candidates, limit=2), [500, 501])
-        self.assertEqual(R.raised_workunits(self.project, []), [])
+        snapshot = lambda project, ids, hosts: {"rows": [r for r in self.rows if int(r["unit"]["id"]) in ids]}
+        with patch.object(R, "read_database", side_effect=snapshot):
+            self.assertEqual(R.raised_workunits(self.project, candidates), [500, 501, 600, 400])
+            self.assertEqual(R.raised_workunits(self.project, candidates, limit=2), [500, 501])
+            self.assertEqual(R.raised_workunits(self.project, []), [])
+            # A partly dispatched pair is not fresh, so it never takes a place on the shortlist.
+            for row in self.rows:
+                if int(row["unit"]["id"]) in (500, 501):
+                    row["results"][0].update(server_state=4, hostid=5, sent_time=1)
+            (self.project / "database.json").write_text(json.dumps(self.rows))
+            self.assertEqual(R.raised_workunits(self.project, candidates, limit=2), [600, 400])
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_raised_work_past_the_first_page_is_scanned_and_the_cursor_stays_ordinary(self):
@@ -172,12 +180,12 @@ class BoincDb {static function get(){return new self();}function count($table,$w
                 R.run(self.args)
             except ValueError:
                 pass  # the filler units have no inputs; the scan and the cursor are what matter
-        self.assertIn(2000, seen[0])
-        self.assertLessEqual(len(seen[0]), 1010)
+        self.assertIn(2000, seen[-1])
+        self.assertLessEqual(len(seen[-1]), 1010)
         state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
         # The ordinary page ends before 2000, so the cursor never jumps past unscanned work.
         self.assertLess(state.get("scan_after", 0), 2000)
-        self.assertEqual(state.get("scan_after"), max(u for u in seen[0] if u != 2000))
+        self.assertEqual(state.get("scan_after"), max(u for u in seen[-1] if u != 2000))
 
     def test_raised_priority_units_are_chosen_first_as_one_run(self):
         rows = [self.input(i) for i in range(100, 115)]

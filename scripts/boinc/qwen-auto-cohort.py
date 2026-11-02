@@ -280,9 +280,9 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
             "accuracy_established": False}
 
 
-def raised_workunits(project, ids, limit=10):
-    """Up to `limit` candidates with a raised workunit priority and an unsent replica, not yet
-    validated, highest priority first and then by id."""
+def raised_workunits(project, ids, hosts=(9, 10), limit=10, shortlist=100):
+    """Up to `limit` pristine fresh pairs among the candidates with a raised workunit priority,
+    highest priority first and then by id. Units that are not fresh() never take a place."""
     if not ids:
         return []
     code = """
@@ -298,7 +298,11 @@ echo json_encode($out);
     found = json.loads(proc.stdout)
     require(isinstance(found, list) and {unit for unit, _ in found} <= set(ids),
             "Raised-priority lookup out of range")
-    return [unit for unit, _ in sorted(found, key=lambda row: (-row[1], row[0]))][:limit]
+    ranked = sorted(found, key=lambda row: (-row[1], row[0]))[:shortlist]
+    if not ranked:
+        return []
+    rows = {int(row["unit"]["id"]): row for row in read_database(project, [unit for unit, _ in ranked], hosts)["rows"]}
+    return [unit for unit, _ in ranked if unit in rows and fresh(rows[unit])][:limit]
 
 
 def read_database(project, ids, hosts=(9, 10)):
@@ -435,8 +439,7 @@ def run(args):
             later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
             # Raised-priority units join the page wherever they sit, so choose() can take them first.
             # The cursor still follows the ordinary page alone, so no ordinary unit is skipped.
-            passed_over = {int(unit) for unit in state.get("out_of_cohort", {})}
-            raised = raised_workunits(project, [unit for unit in candidates if unit not in passed_over])
+            raised = raised_workunits(project, candidates, (args.intel_host, args.nvidia_host))
             page = [unit for unit in (later or candidates) if unit not in raised][:1000 - len(raised)]
             ids = sorted(set(page) | set(raised))
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
