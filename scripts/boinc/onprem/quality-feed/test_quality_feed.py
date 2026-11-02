@@ -142,6 +142,24 @@ class FeedTest(unittest.TestCase):
             self.assertFalse(inc.exists())
             self.assertTrue(ahead.exists())
 
+    def test_after_submit_with_a_cut_short_neighbour_keeps_its_copies_and_finishes(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp = Path(d, "quality", "v1-test")
+            doc = "sn1_1900-01-01_ed-1_seq-1"
+            inc = camp / "incoming" / "c00001"
+            ahead = camp / "incoming" / "c00002"
+            inc.mkdir(parents=True)
+            ahead.mkdir(parents=True)
+            (inc / "sample.jsonl").write_text(json.dumps({"doc_id": doc}) + "\n")
+            (ahead / "sample.jsonl").write_text('{"doc_i')
+            for rel in (f"scans/{doc}.jpg", "units/bundle-00001/quality.json", "units/bundle-00001/submitted"):
+                (camp / rel).parent.mkdir(parents=True, exist_ok=True)
+                (camp / rel).write_text("x")
+            with contextlib.redirect_stdout(io.StringIO()):
+                receive.main(["--campaign", "v1-test", "--chunk", "c00001", "--share", d, "--after-submit"])
+            self.assertTrue((camp / f"scans/{doc}.jpg").exists())
+            self.assertFalse(inc.exists())
+
 
 class FollowTest(unittest.TestCase):
     def test_a_busy_feeder_waits_only_until_the_shipper_takes_a_chunk(self):

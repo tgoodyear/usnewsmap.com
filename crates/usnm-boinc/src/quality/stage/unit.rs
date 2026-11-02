@@ -42,10 +42,13 @@ pub(super) fn first_doc(name: &str) -> Option<&str> {
 /// matches the hash the job records (the share lost or cut short a write it
 /// had acknowledged, as it can with synchronous writes off). Its pages then
 /// count as unbundled, so the run packs them again. A submitted or submitting
-/// bundle is never touched: BOINC may already hold it.
+/// bundle is never touched: BOINC may already hold it. Without `clean`
+/// nothing is removed or checked, only read: the run packs only its own pages,
+/// so it must not discard a bundle of someone else's.
 pub(super) fn bundled(
     units_dir: &Path,
     names: &[&str],
+    clean: bool,
 ) -> anyhow::Result<(BTreeSet<String>, usize)> {
     let mut docs = BTreeSet::new();
     let mut removed = 0usize;
@@ -56,7 +59,7 @@ pub(super) fn bundled(
         }
         let sent = p.join("submitted").exists() || p.join("submitting").exists();
         if !p.join(JOB_FILE).exists() {
-            if !sent {
+            if clean && !sent {
                 eprintln!("{}: no quality.json; packing it again", p.display());
                 std::fs::remove_dir_all(&p)?;
                 removed += 1;
@@ -66,8 +69,8 @@ pub(super) fn bundled(
         let job = read(&p.join(JOB_FILE), MAX_JOB_JSON)
             .ok()
             .and_then(|b| serde_json::from_slice::<Job>(&b).ok());
-        if !sent {
-            if let Some(why) = damage(&p, job.as_ref(), true) {
+        if clean && !sent {
+            if let Some(why) = damage(&p, job.as_ref()) {
                 eprintln!("{}: {why}; packing it again", p.display());
                 std::fs::remove_dir_all(&p)?;
                 removed += 1;
@@ -86,11 +89,10 @@ pub(super) fn bundled(
 }
 
 /// Why a staged unit's inputs can't be trusted, or `None` when they all
-/// match the hashes in its `quality.json`. A page unit whose page, ALTO and
-/// texts are all gone has been freed after its bundle was submitted
-/// (`quality_receive.py --after-submit`); that is `None` too unless
-/// `bundle` is set, as a bundle is never freed.
-pub(super) fn damage(dir: &Path, job: Option<&Job>, bundle: bool) -> Option<String> {
+/// match the hashes in its `quality.json`. A missing input is damage too: a
+/// page unit freed after its bundle was submitted is never checked, as its
+/// bundle claims it first.
+pub(super) fn damage(dir: &Path, job: Option<&Job>) -> Option<String> {
     let Some(job) = job else {
         return Some("quality.json does not parse".into());
     };
@@ -103,13 +105,6 @@ pub(super) fn damage(dir: &Path, job: Option<&Job>, bundle: bool) -> Option<Stri
             MAX_BUNDLE_TEXTS.max(MAX_TEXTS),
         ),
     ];
-    let present = files
-        .iter()
-        .filter(|(f, _, _)| dir.join(f).exists())
-        .count();
-    if present == 0 && !bundle {
-        return None;
-    }
     for (file, input, max) in files.iter().chain(std::iter::once(&(
         PLACES_FILE,
         &job.inputs.places,

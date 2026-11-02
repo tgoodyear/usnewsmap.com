@@ -60,12 +60,18 @@ def after_submit(camp, inc):
     docs = sample_docs(os.path.join(inc, "sample.jsonl"))
     # The shipper receives the next chunk while this one stages and submits: a page that chunk
     # holds too keeps its scan and texts, so its stage never has to ask LoC.
+    # One that can't be read (a receive cut short) keeps all of this chunk's copies: they are
+    # freed with a later chunk's, or never, which costs disk, not correctness.
     keep = set()
     incoming = os.path.dirname(inc)
     for other in os.listdir(incoming):
         sample = os.path.join(incoming, other, "sample.jsonl")
-        if other != os.path.basename(inc) and CHUNK_RE.match(other) and os.path.isfile(sample):
+        if other == os.path.basename(inc) or not CHUNK_RE.match(other) or not os.path.exists(sample):
+            continue
+        try:
             keep.update(sample_docs(sample))
+        except (OSError, ValueError, KeyError, TypeError):
+            keep.update(docs)
     freed = 0
     for d in docs:
         if not DOC_RE.match(d):
