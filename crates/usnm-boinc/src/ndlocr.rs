@@ -164,7 +164,7 @@ pub async fn stage(
     let _lock = Lock::take(root)?;
     crate::assess::check_no_hold(root)?;
     let sources = crate::scans::Sources::new(
-        crate::scans::loc_client(crate::scans::MIN_GAP, cache)?,
+        crate::scans::loc_client(crate::scans::DEFAULT_GAP, cache)?,
         crate::scans::archive(archive)?,
         boinc::MAX_SCAN,
     );

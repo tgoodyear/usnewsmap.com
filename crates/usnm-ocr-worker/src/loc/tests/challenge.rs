@@ -442,6 +442,12 @@ async fn push_backs_slow_the_global_pacer_and_503s_do_not() {
         let _ = loc.get(&url, Server::Storage, MAX_IMAGE_BYTES, None).await;
         let st = global::GlobalPacer::new(file).state().unwrap();
         assert_eq!(st.slowed.is_some(), slows, "{st:?}");
+        // The slow rate lasts a day from the push-back, then lifts itself.
+        if let Some(sl) = &st.slowed {
+            let day = u64::try_from(global::SLOW_FOR.as_millis()).unwrap();
+            let left = sl.until_ms.unwrap() - global::epoch_ms_in(Duration::ZERO);
+            assert!(left > day - 60_000 && left <= day, "{left}");
+        }
         assert!(st.sent >= 1, "every request passes the global pacer");
     }
 }

@@ -33,10 +33,15 @@ pub struct Policy {
     pub label: String,
     pub hosts: Vec<String>,
     pub requests_per_minute: u32,
-    /// The rate after a push-back, for every process, until an operator resets
-    /// it: never lifted automatically. None: a push-back sets nothing lasting.
+    /// The rate after a push-back, for every process, for `slow_for_secs` from
+    /// the last push-back, or until an operator resets it. None: a push-back
+    /// sets nothing lasting.
     #[serde(default)]
     pub slow_requests_per_minute: Option<u32>,
+    /// How long the slow rate lasts after the last push-back before it lifts
+    /// itself. None: only an operator's reset lifts it.
+    #[serde(default)]
+    pub slow_for_secs: Option<u64>,
     /// Transfers at once.
     #[serde(default = "one")]
     pub concurrency: u32,
@@ -116,6 +121,12 @@ impl Policy {
         if self.requests_per_minute == 0 || self.slow_requests_per_minute == Some(0) {
             bail!("policy {n}: a rate of zero");
         }
+        if self.slow_for_secs == Some(0) {
+            bail!("policy {n}: a slow rate that lasts no time");
+        }
+        if self.slow_for_secs.is_some() && self.slow_requests_per_minute.is_none() {
+            bail!("policy {n}: slow_for_secs without a slow rate");
+        }
         if self.concurrency == 0 || self.attempts == 0 {
             bail!("policy {n}: concurrency and attempts start at 1");
         }
@@ -150,6 +161,11 @@ impl Policy {
         gap(self
             .slow_requests_per_minute
             .unwrap_or(self.requests_per_minute))
+    }
+
+    /// How long a push-back keeps the slow rate; None: until reset.
+    pub fn slow_for(&self) -> Option<Duration> {
+        self.slow_for_secs.map(Duration::from_secs)
     }
 
     pub fn min_gap(&self) -> Duration {

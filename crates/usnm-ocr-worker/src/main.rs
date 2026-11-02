@@ -437,8 +437,8 @@ enum Command {
         )]
         batch_cache: PathBuf,
         /// The host's global LoC budget (#962): a state file every LoC client
-        /// on the host shares, 45 requests a minute in all, 10 once LoC pushes
-        /// back. Without it, only this process's own gaps apply.
+        /// on the host shares, 30 requests a minute in all, 12 for 24 hours
+        /// after LoC pushes back. Without it, only this process's own gaps apply.
         #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
         loc_global_pacer: Option<PathBuf>,
         /// Copies of LoC's JP2s to ask before LoC, comma-separated: the

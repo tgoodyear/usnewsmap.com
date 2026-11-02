@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use super::engine::{instant_of, ByteCap, Probes};
 use super::*;
 use crate::bulk::{self, Mirror, Options};
-use crate::loc::global::{GlobalPacer, NORMAL_GAP, SLOW_GAP};
+use crate::loc::global::{GlobalPacer, NORMAL_GAP, SLOW_FOR, SLOW_GAP};
 use crate::standin::{Scripted, StandIn};
 
 fn sha(b: &[u8]) -> String {
@@ -185,10 +185,12 @@ fn only_parts(dir: &Path) -> Vec<String> {
 fn locs_policy_keeps_its_limits() {
     let all = Policies::builtin();
     let loc = all.iter().find(|p| p.name == LOC).unwrap();
-    assert_eq!(loc.requests_per_minute, 45);
-    assert_eq!(loc.slow_requests_per_minute, Some(10));
+    assert_eq!(loc.requests_per_minute, 30);
+    assert_eq!(loc.slow_requests_per_minute, Some(12));
     assert_eq!(loc.normal_gap(), NORMAL_GAP);
     assert_eq!(loc.slow_gap(), SLOW_GAP);
+    // The scan fetcher's handle (GlobalPacer::new) and the fetcher's agree.
+    assert_eq!(loc.slow_for(), Some(SLOW_FOR));
     assert_eq!(loc.concurrency, 1);
     assert_eq!(loc.min_gap_secs, 60);
     assert_eq!(loc.push_back.statuses, [403, 429]);
@@ -263,6 +265,22 @@ fn policies_are_checked_when_loaded() {
     assert!(bad(r#"["A.example"]"#, 1));
     assert!(bad(r#"["a.*.example"]"#, 1));
     assert!(!bad(r#"["a.example"]"#, 1));
+    // A slow rate's time limit needs a slow rate, and some time.
+    let slow = |extra: &str| {
+        let t = format!(
+            "hosts = [\"a.example\"]\nlabel = \"x\"\nrequests_per_minute = 2\n{extra}\n\
+             [push_back]\ndefault_hold_secs = 1\nhtml = true\nmax_hold_secs = 1\nstatuses = []\n"
+        );
+        Policy::parse("x", &t)
+    };
+    assert!(slow("slow_for_secs = 60").is_err());
+    assert!(slow("slow_requests_per_minute = 1\nslow_for_secs = 0").is_err());
+    let p = slow("slow_requests_per_minute = 1\nslow_for_secs = 60").unwrap();
+    assert_eq!(p.slow_for(), Some(std::time::Duration::from_secs(60)));
+    assert_eq!(
+        slow("slow_requests_per_minute = 1").unwrap().slow_for(),
+        None
+    );
 }
 
 // ---- LoC's behaviour ----

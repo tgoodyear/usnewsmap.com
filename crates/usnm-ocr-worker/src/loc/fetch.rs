@@ -97,9 +97,9 @@ pub(super) fn challenge(resp: &reqwest::Response) -> Option<String> {
 
 impl LocClient {
     /// LoC pushed back with a 429, a 403 or a challenge page: hold the
-    /// host's whole budget for `d`, and drop it to the slow rate for good
-    /// (the maintainer's rule of 24 October 2026: 45 a minute, 10 if LoC
-    /// objects). A 503 or an unreadable body holds only its server.
+    /// host's whole budget for `d`, and drop it to the slow rate for 24 hours
+    /// (the maintainer's rule of 2 November 2026: 30 a minute, 12 for a day
+    /// after LoC objects). A 503 or an unreadable body holds only its server.
     pub(super) fn push_back(&self, status: StatusCode, challenged: bool, d: Duration) {
         if let Some(g) = &self.global {
             if challenged

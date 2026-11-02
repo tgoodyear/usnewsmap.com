@@ -28,10 +28,11 @@ pub trait Budget: Send + Sync + std::fmt::Debug {
     async fn still_good(&self, generation: u64) -> bool;
     /// Hold every user of the budget for at least `d` from now.
     async fn hold(&self, d: Duration);
-    /// The host pushed back: the slow rate, for everyone, until [`Budget::reset`].
+    /// The host pushed back: the slow rate, for everyone, for the policy's
+    /// `slow_for_secs` or until [`Budget::reset`].
     async fn slow_down(&self, why: &str);
     async fn state(&self) -> std::io::Result<State>;
-    /// Back to the normal rate. Only ever an operator's decision.
+    /// Back to the normal rate now (an operator's decision).
     async fn reset(&self) -> std::io::Result<()>;
     /// How long to wait before trying again when the budget can't be reached.
     fn retry_gap(&self) -> Duration;
@@ -154,6 +155,7 @@ impl Budgets for FileBudgets {
             }
         };
         let mut g = GlobalPacer::with_gaps(file, policy.normal_gap(), policy.slow_gap())
+            .slow_for(policy.slow_for())
             .labelled(&policy.label);
         if let Some(s) = stamp {
             g = g.with_stamp(s);

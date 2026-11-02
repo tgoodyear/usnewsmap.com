@@ -260,12 +260,25 @@ impl Gate {
         *self.closed.borrow()
     }
 
-    /// An error once this budget has been slowed (a push-back to any process):
-    /// nothing goes to the host until an operator resets it.
+    /// An error while this budget is slowed (a push-back to any process):
+    /// nothing goes to the host until the slow rate's time is up or an
+    /// operator resets it.
     pub(super) async fn not_slowed(&self) -> anyhow::Result<()> {
         if let Some(slowed) = self.budget.state().await?.slowed {
+            let until = slowed
+                .until_ms
+                .and_then(|ms| chrono::DateTime::from_timestamp_millis(i64::try_from(ms).ok()?))
+                .map_or_else(
+                    || "`loc-pacer --reset`".to_owned(),
+                    |t| {
+                        format!(
+                            "{} or `loc-pacer --reset`",
+                            t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                        )
+                    },
+                );
             bail!(
-                "the global {} pacer has been slowed since {} ({}); this waits for `loc-pacer --reset`",
+                "the global {} pacer has been slowed since {} ({}); this waits for {until}",
                 self.policy.label,
                 slowed.at,
                 slowed.why

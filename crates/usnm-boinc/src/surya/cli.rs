@@ -120,7 +120,7 @@ pub enum SuryaCommands {
         /// Crops to stage, at most.
         #[arg(long, default_value_t = 50)]
         max_crops: usize,
-        /// Seconds between two requests to tile.loc.gov (5 or more).
+        /// Seconds between two requests to tile.loc.gov (2 or more).
         #[arg(long, default_value_t = 5)]
         gap_secs: u64,
         /// Read <dir>/<page_id>.jpg instead of fetching the page.

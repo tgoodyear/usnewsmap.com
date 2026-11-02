@@ -45,7 +45,7 @@ pub use texts_export::{texts_export, TextsExportOptions, TextsExportSummary};
 use unit::{bundle_names, bundled, damage, first_doc, pack_bundles};
 pub use unit::{local_unit, write_bundle, write_unit, LocalUnit, WriteUnit};
 
-pub const MIN_GAP: Duration = Duration::from_secs(5);
+pub const MIN_GAP: Duration = crate::scans::MIN_GAP;
 /// Our ALTO in the unit directory (server side only).
 pub const OURS_ALTO_FILE: &str = "ours.xml";
 /// The sample row the page came from, when staged from a sample.
@@ -138,7 +138,7 @@ pub fn pages_of(opts: &Options) -> anyhow::Result<Vec<(PageSpec, Option<SampleRo
 
 /// Stages up to `max_pages` units; stops at the first LoC refusal.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
-    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 5");
+    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 2");
     let src = crate::scans::Sources::new(
         crate::scans::loc_client(opts.gap, opts.batch_cache.clone())?,
         crate::scans::archive(opts.scan_archive.as_deref())?,
