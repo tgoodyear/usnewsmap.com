@@ -191,6 +191,30 @@ def validate_page(path, status, data):
         assert ET.fromstring(data).tag == "project_config"
 
 
+def as_web(test):
+    return subprocess.run(["su", "-s", "/bin/sh", "www-data", "-c", test]).returncode == 0
+
+
+def code_trees_locked():
+    locked = ("", "html", "apps", "bin", "cgi-bin", "py", "html/inc", "html/ops", "html/project",
+              "html/user", "html/inc/util.inc", "cgi-bin/file_upload_handler")
+    for name in locked:
+        assert not as_web(f"test -w {PROJECT / name}"), f"www-data can write {name or 'the project root'}"
+    for name in ("upload", "html/cache"):
+        assert as_web(f"test -w {PROJECT / name}"), f"www-data lost write access to {name}"
+    # The scheduler reads this as www-data to send assigned jobs, so it must stay readable.
+    assert as_web(f"test -r {PROJECT / 'keys/upload_private'}"), "the scheduler lost the upload key"
+    request = urllib.request.Request(
+        "http://127.0.0.1/usnmocr_cgi/file_upload_handler",
+        data=b"<data_server_request>\n<core_client_major_version>8</core_client_major_version>\n"
+             b"<file_upload>\n<file_info>\n<name>unsigned</name>\n<max_nbytes>1</max_nbytes>\n"
+             b"</file_info>\n<nbytes>1</nbytes>\n<offset>0</offset>\n<data>\nx")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        reply = response.read()
+    assert b"missing signature" in reply, f"upload handler reply: {reply[:200]!r}"
+    emit("code-trees-locked", locked=len(locked), unsigned_upload="rejected")
+
+
 def scheduler_rpc(case=None):
     request = urllib.request.Request("http://127.0.0.1/usnmocr_cgi/cgi",
                                     data=b"<scheduler_request><core_client_major_version>8</core_client_major_version>"
@@ -416,6 +440,7 @@ def main():
         run("bash", "-c", "set -- --ensure-project; . /usr/local/lib/usnm-boinc/entrypoint.sh; project_tree")
         start_services()
         web()
+        code_trees_locked()
         connections()
         stop_services()
         negatives()

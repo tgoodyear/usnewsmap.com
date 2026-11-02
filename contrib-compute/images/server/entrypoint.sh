@@ -103,6 +103,7 @@ SQL
 #   minimum, 2026-10-14) never reached the share;
 # - bin/feeder was copied once by make_project, so a scheduler patch it links (the Intel GPU
 #   resource type, #736) never reached it. The daemons start after this, from the new copy.
+# - copied files arrive group-writable, so the code trees are locked again last.
 project_tree() {
   local i inc="$PROJ/html/project/project.inc" cache_inc="$PROJ/html/project/cache_parameters.inc"
   python3 "$TEMPLATES/refresh-scheduler.py" --source "$BOINC_SRC/sched/cgi" --target "$PROJ/cgi-bin/cgi"
@@ -129,6 +130,7 @@ project_tree() {
   if ! grep -Fq 'require_once(__DIR__ . "/usnm_footer.inc");' "$inc"; then
     sed -i '/^<?php$/a require_once(__DIR__ . "/usnm_footer.inc");' "$inc"
   fi
+  lock_code_trees
 }
 
 serve() {
