@@ -39,6 +39,7 @@ COHORT_LANGUAGES = ("yid", "srp")
 REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # Classes this controller does not open: with no workunit bounds they take any unsent replica.
 UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b")
+DEFAULT_CAMPAIGN = "qwen-nonenglish-v1"
 
 
 def sha(payload):
@@ -177,12 +178,12 @@ def choose(rows, floor, reserved, remaining, admissible=lambda row: True):
     return result
 
 
-def producer_paths(project, doc):
+def producer_paths(project, doc, campaign):
     base = project.parent
-    unit = base / "qwen/qwen-nonenglish-v1/units" / doc
+    unit = base / "qwen" / campaign / "units" / doc
     return [unit / "qwen.json", unit / "page.jpg", unit / "submitted", unit / "sample.json",
-            base / "quality/qwen-nonenglish-v1/pages" / doc / "quality.json",
-            base / "quality/qwen-nonenglish-v1/texts" / (doc + ".loc-provenance.json")]
+            base / "quality" / campaign / "pages" / doc / "quality.json",
+            base / "quality" / campaign / "texts" / (doc + ".loc-provenance.json")]
 
 
 def input_paths(project, row):
@@ -200,7 +201,7 @@ def input_paths(project, row):
     return files
 
 
-def exclusion_key(project, row, job_id, audit, prompt_version):
+def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
     # Everything a cached out-of-cohort decision rests on, without reading page bytes: the
     # audit record, the WU binding, the job bytes and the identity of every file bind_inputs
     # reads. Any change misses the cache, so the unit is bound again from scratch and
@@ -213,15 +214,15 @@ def exclusion_key(project, row, job_id, audit, prompt_version):
         if not isinstance(doc, str) or not re.fullmatch("[a-zA-Z0-9][a-zA-Z0-9_.-]*", doc):
             return None
         stats = [[str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
-                 for path in list(paths.values()) + producer_paths(project, doc) for info in [path.stat()]]
+                 for path in list(paths.values()) + producer_paths(project, doc, campaign) for info in [path.stat()]]
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
         return None
     return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats,
-                          prompt_version],
+                          campaign, prompt_version],
                           sort_keys=True).encode())
 
 
-def bind_inputs(project, row, job_id, audit, prompt_version=1):
+def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1):
     wu = row["unit"]
     require(re.fullmatch("[a-f0-9]{64}", job_id) is not None, "Bad native audit identity")
     require(wu["name"] == "usnm_qwen_" + job_id and int(audit["workunit_id"]) == int(wu["id"])
@@ -239,14 +240,14 @@ def bind_inputs(project, row, job_id, audit, prompt_version=1):
             and job["engine"]["models"] == MODELS, "Unreviewed engine/models")
     require(type(job["v"]) is int and job["v"] == 1 and type(job["prompt_version"]) is int
             and job["prompt_version"] == prompt_version and job["max_tokens_per_1000px2"] == 4
-            and job["group"] == "qwen-nonenglish-v1", "Unreviewed prompt/budget/cohort")
+            and job["group"] == campaign, "Unreviewed prompt/budget/cohort")
     crops = job["crops"]
     require(1 <= len(crops) <= 12 and len({crop["id"] for crop in crops}) == len(crops)
             and all(isinstance(crop["id"], str) and crop["id"] and
                     len(crop["loc_text"].encode("utf-8")) <= 8192 for crop in crops), "Bad crop contract")
     base = project.parent
-    unit = base / "qwen/qwen-nonenglish-v1/units" / doc
-    quality_path, provenance_path = producer_paths(project, doc)[-2:]
+    unit = base / "qwen" / campaign / "units" / doc
+    quality_path, provenance_path = producer_paths(project, doc, campaign)[-2:]
     require((unit / "qwen.json").read_bytes() == files["job"]
             and (unit / "page.jpg").read_bytes() == files["page"]
             and (unit / "submitted").read_text().strip() == wu["name"], "Producer input/submission mismatch")
@@ -390,14 +391,16 @@ def run(args):
                  str(args.helper.resolve()), str(project / "config.xml")],
                 check=True, timeout=10, capture_output=True,
             )
-            audit_path = project.parent / "qwen/qwen-nonenglish-v1/audit.json"
-            audit_raw = audit_path.read_bytes()
-            require(len(audit_raw) <= 16 * 1024 * 1024, "Producer audit exceeds bounded parser size")
-            audit = json.loads(audit_raw)
-            for key, value in audit.items():
-                workunit = int(value["workunit_id"])
-                require(workunit not in by_wu, "Duplicate native producer workunit binding")
-                by_wu[workunit] = (key, value)
+            audit_hashes = {}
+            for campaign, prompt_version in args.campaigns:
+                audit_path = project.parent / "qwen" / campaign / "audit.json"
+                audit_raw = audit_path.read_bytes()
+                require(len(audit_raw) <= 16 * 1024 * 1024, "Producer audit exceeds bounded parser size")
+                audit_hashes[campaign] = sha(audit_raw)
+                for key, value in json.loads(audit_raw).items():
+                    workunit = int(value["workunit_id"])
+                    require(workunit not in by_wu, "Duplicate native producer workunit binding")
+                    by_wu[workunit] = (key, value, campaign, prompt_version)
             candidates = sorted(workunit for workunit in by_wu
                                 if workunit >= args.minimum_workunit and workunit not in state["admitted"]
                                 and workunit != reserved)
@@ -426,7 +429,9 @@ def run(args):
                 allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
                     and dispatchable == [(1, args.app_version_num, expected)]
             minimum = int(database["app"].get("min_version") or 0)
-            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum, args.prompt_version)
+            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum,
+                                                    max((version for _, version in args.campaigns),
+                                                        key=REQUEST_MIN_APP.__getitem__))
             output["open_classes_that_cannot_read_request"] = unreadable
             release = int(time.time()) >= args.enabled_until or not all(allowed.values()) or bool(unreadable)
         if release:
@@ -450,7 +455,7 @@ def run(args):
                     persist(state_path, state)
             output |= {"currently_eligible_unsent_replicas": available, "fresh_pairs_in_scan": fresh_count,
                        "audited_candidates_total": len(candidates), "scanned_candidates": len(ids),
-                       "producer_audit_sha256": sha(audit_raw), "native_gpu_inflight": inflight,
+                       "producer_audit_sha256": audit_hashes, "native_gpu_inflight": inflight,
                        "per_host_buffer_limit": args.max_inflight_per_host}
             # A host holding a replica of every remaining window unit can never take the rest: if it
             # has no native work left while the peer holds the window, it starves behind the peer.
@@ -474,13 +479,13 @@ def run(args):
                 # Only a language outside the reviewed cohort is passed over; every other
                 # binding failure still stops the tick.
                 unit = int(row["unit"]["id"])
-                key = exclusion_key(project, row, *by_wu[unit], args.prompt_version)
+                key = exclusion_key(project, row, *by_wu[unit])
                 if key is not None and known.get(str(unit)) == key:
                     skipped.append(unit)
                     remembered.append(unit)
                     return False
                 try:
-                    bind_inputs(project, row, *by_wu[unit], args.prompt_version)
+                    bind_inputs(project, row, *by_wu[unit])
                 except OutOfCohort:
                     skipped.append(unit)
                     if key is not None:
@@ -513,7 +518,7 @@ def run(args):
                 # The left-behind replicas stay ordinary unsent work for every other eligible class;
                 # nothing is cancelled, reassigned or edited.
                 output |= {"rotated_past_window": window, "left_unsent_replicas": available}
-            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+            proof = [bind_inputs(project, row, *by_wu[int(row["unit"]["id"])])
                      for row in selected]
             target = [int(selected[0]["unit"]["id"]), int(selected[-1]["unit"]["id"])]
             command = ["--workunit", str(target[0]), "--workunit-end", str(target[1]), "--fresh-pair",
@@ -537,7 +542,7 @@ def run(args):
             }
             persist(state_path, state)
             if selected:
-                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])], args.prompt_version)
+                require([bind_inputs(project, row, *by_wu[int(row["unit"]["id"])])
                          for row in selected] == proof,
                         "Input/source provenance changed before apply")
                 require(int(time.time()) < args.enabled_until, "Admission deadline passed before publication")
@@ -559,6 +564,17 @@ def run(args):
             persist(state_path, state)
             receipt["applied"] = applied
         return receipt
+
+
+def parse_campaigns(values, prompt_version):
+    campaigns = []
+    for value in values or [DEFAULT_CAMPAIGN]:
+        name, _, version = value.partition(":")
+        require(re.fullmatch("[a-z0-9][a-z0-9-]{0,40}", name) is not None, "Invalid campaign name")
+        require(version == "" or version in map(str, REQUEST_MIN_APP), "Unknown campaign request version")
+        campaigns.append((name, int(version) if version else prompt_version))
+    require(len({name for name, _ in campaigns}) == len(campaigns), "Duplicate campaign")
+    return campaigns
 
 
 def main(argv=None):
@@ -584,11 +600,15 @@ def main(argv=None):
     # Request version 2 (--image-min-tokens 1024) is read only by app versions 1.15 and later,
     # and versions 3 and 4 (the loop guard) only by 1.17 and later.
     parser.add_argument("--prompt-version", type=int, choices=sorted(REQUEST_MIN_APP), default=1)
+    # Repeatable NAME or NAME:VERSION: a producer root whose audited jobs may be admitted, each
+    # root staged at one request version (--prompt-version unless named).
+    parser.add_argument("--campaign", action="append", default=[], metavar="NAME[:VERSION]")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
+    args.campaigns = parse_campaigns(args.campaign, args.prompt_version)
     require(args.app_version_num >= 114 and args.nvidia_app_version > 0 and args.intel_app_version > 0
             and args.nvidia_app_version != args.intel_app_version, "Expected reviewed app versions")
-    require(args.app_version_num >= REQUEST_MIN_APP[args.prompt_version],
+    require(all(args.app_version_num >= REQUEST_MIN_APP[version] for _, version in args.campaigns),
             "This request version needs app versions that read it")
     require(re.fullmatch("[a-f0-9]{32}", args.controller) is not None, "Expected controller identity")
     require(all(re.fullmatch("[a-f0-9]{64}", value) for value in
