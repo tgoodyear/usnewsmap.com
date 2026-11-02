@@ -15,11 +15,14 @@
 //! host's fetcher has already spent its LoC budget on the page. Only its
 //! JPEGs are taken; a JP2 master is refused.
 //!
-//! LoC politeness: one request at a time, at least `gap` (5 s or more)
-//! between any two, the storage service and the image server sharing one
-//! pacer; no retries. A 403, 429 or 5xx, a network failure, or an HTML page
-//! where a file was expected (a bot challenge) is an error the caller turns
-//! into a hold.
+//! LoC politeness: one request at a time, at least `gap` (2 s or more, which
+//! is 30 a minute, the host's whole LoC budget) between any two, the storage
+//! service and the image server sharing one pacer; no retries. With
+//! `USNM_LOC_GLOBAL_PACER` set, every request also takes a slot in the host's
+//! shared budget (the scan fetcher's state file, #962), so a stage running
+//! beside the fetcher never adds to its rate. A 403, 429 or 5xx, a network
+//! failure, or an HTML page where a file was expected (a bot challenge) is an
+//! error the caller turns into a hold.
 use bytes::Bytes;
 use std::{
     collections::BTreeMap,
@@ -35,13 +38,34 @@ use usnm_ocr_worker::{
     prefetch::{matches_sidecar, sidecar_path, Sidecar},
 };
 
-pub const MIN_GAP: Duration = Duration::from_secs(5);
+/// The shortest gap a stage may take: 30 requests a minute, the host's whole
+/// LoC budget (the maintainer's decision of 2 November 2026; 5 s before).
+pub const MIN_GAP: Duration = Duration::from_secs(2);
+
+/// The host's shared LoC budget, from `USNM_LOC_GLOBAL_PACER`: the scan
+/// fetcher's state file, so every LoC request on the host counts against one
+/// rate. Unset or empty: this process's own gap only.
+pub const GLOBAL_PACER_ENV: &str = "USNM_LOC_GLOBAL_PACER";
 
 /// The LoC client the staging steps share: tile.loc.gov only, paced at
-/// `gap`, one attempt, an HTML answer held as a block.
+/// `gap`, one attempt, an HTML answer held as a block, inside the host's
+/// shared budget when [`GLOBAL_PACER_ENV`] names it.
 pub fn loc_client(gap: Duration, batch_cache: Option<PathBuf>) -> anyhow::Result<LocClient> {
-    anyhow::ensure!(gap >= MIN_GAP, "--gap-secs must be at least 5");
+    let global = std::env::var_os(GLOBAL_PACER_ENV)
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    loc_client_with(gap, batch_cache, global)
+}
+
+/// [`loc_client`] with the shared budget's state file given.
+pub fn loc_client_with(
+    gap: Duration,
+    batch_cache: Option<PathBuf>,
+    global_pacer: Option<PathBuf>,
+) -> anyhow::Result<LocClient> {
+    anyhow::ensure!(gap >= MIN_GAP, "--gap-secs must be at least 2");
     LocClient::new(LocConfig {
+        global_pacer,
         api_gap: gap,
         tile_gap: gap,
         storage_gap: gap,
@@ -392,6 +416,44 @@ mod tests {
     const OTHER: &str = "/storage-services/service/ndnp/yy/batch_yy_other_ver02/";
 
     #[test]
+    fn the_floor_is_two_seconds() {
+        assert!(loc_client_with(Duration::from_secs(2), None, None).is_ok());
+        let e = loc_client_with(Duration::from_millis(1999), None, None).unwrap_err();
+        assert!(e.to_string().contains("at least 2"), "{e}");
+    }
+
+    /// A stage with the shared budget takes a slot in it for every request,
+    /// and a push-back slows the whole host's budget.
+    #[tokio::test]
+    async fn the_shared_budget_counts_a_stages_requests() {
+        let s = StandIn::start().await;
+        let jp2 = issue(&s, BATCH);
+        let base = tile(&s, &jp2, b"tile jpeg");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pacer.json");
+        let g = usnm_ocr_worker::loc::global::GlobalPacer::new(file.clone());
+        let mut src = sources(&s, None);
+        src.loc = LocClient::new(LocConfig {
+            global_pacer: Some(file.clone()),
+            ..test_config(&s)
+        })
+        .unwrap();
+        // The shared budget's own gap (2 s) spaces the two requests.
+        let got = src.jpeg_of(&key(), "xx_test", &base).await.unwrap();
+        assert!(got.is_some());
+        assert_eq!(g.state().unwrap().sent, 1);
+        let path = image_url(&base, ImageSize::Full)
+            .strip_prefix(&s.root)
+            .unwrap()
+            .to_owned();
+        s.script(&path, Scripted::Status(429));
+        assert!(src.jpeg_of(&key(), "xx_test", &base).await.is_err());
+        let st = g.state().unwrap();
+        assert_eq!(st.sent, 2);
+        assert!(st.slowed.is_some_and(|x| x.until_ms.is_some()));
+    }
+
+    #[test]
     fn alto_url_is_derived_from_a_checked_iiif_base() {
         let iiif_root = "https://tile.loc.gov/image-services/iiif/";
         let storage_root = "https://tile.loc.gov/storage-services/service/ndnp/";
@@ -466,7 +528,18 @@ mod tests {
     }
 
     fn sources(s: &StandIn, archive: Option<Archive>) -> Sources {
-        let loc = LocClient::new(LocConfig {
+        let loc = LocClient::new(test_config(s)).unwrap();
+        Sources {
+            loc,
+            archive,
+            iiif_root: s.iiif_root(),
+            storage_root: s.storage_root(),
+            max: 1 << 20,
+        }
+    }
+
+    fn test_config(s: &StandIn) -> LocConfig {
+        LocConfig {
             api_gap: Duration::from_millis(50),
             tile_gap: Duration::from_millis(50),
             storage_gap: Duration::from_millis(50),
@@ -479,14 +552,6 @@ mod tests {
             item_probes: false,
             html_is_block: true,
             ..LocConfig::default()
-        })
-        .unwrap();
-        Sources {
-            loc,
-            archive,
-            iiif_root: s.iiif_root(),
-            storage_root: s.storage_root(),
-            max: 1 << 20,
         }
     }
 

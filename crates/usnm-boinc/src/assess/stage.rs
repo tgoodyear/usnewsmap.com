@@ -63,7 +63,7 @@ fn stop(e: FetchError) -> anyhow::Error {
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
-    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 5");
+    ensure!(opts.gap >= MIN_GAP, "--gap-secs must be at least 2");
     ensure!(
         opts.engine_image
             .strip_prefix("sha256:")

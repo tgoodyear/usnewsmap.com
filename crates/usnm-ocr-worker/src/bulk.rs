@@ -301,8 +301,8 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         },
     )?);
     if opts.mirror.is_none() {
-        // After a push-back the budget is at the slow rate for every process; the bulk
-        // archives can wait for an operator's reset rather than add to it.
+        // After a push-back the budget is at the slow rate for every process for a day;
+        // the bulk archives wait for it to lift (or an operator's reset) rather than add to it.
         engine.check_not_slowed(&opts.list_url).await?;
     }
     let list_path = opts.out.join("datasets.json");
