@@ -90,12 +90,30 @@ if [ -n "$PUSH" ]; then pushed=0; for t in 1 2 3 4; do
 ssh_in 'cat > /work/job.sh' <"$JOB" || { OUTCOME=push-failed; exit 6; }
 log "pushed in $(( $(date +%s)-T_READY ))s"
 ssh_i "setsid nohup bash -c 'timeout $(( DL-$(date +%s)-300 )) bash /work/job.sh > /work/out/job.log 2>&1; echo \$? > /work/job.exit' >/dev/null 2>&1 < /dev/null &"
+# Copy finished files back; a file is kept only when its size matches the host's. Called during the job too,
+# so a host that drops off doesn't take the work with it.
+sync_out() {
+  local list n s have ok=0
+  list=$(ssh_i 'cd /work/out && find . -maxdepth 1 -type f -printf "%f %s\n"' 2>/dev/null) || return 1
+  [ -n "$list" ] || return 1
+  while read -r n s; do
+    echo "$n" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$' || continue
+    case "$s" in ''|*[!0-9]*) continue;; esac
+    [ "$s" -le $(( MAX_FILE_MB*1024*1024 )) ] || { log "skip $n: $s bytes"; continue; }
+    have=$(stat -c %s "$OUT/$n" 2>/dev/null || echo -1); [ "$have" = "$s" ] && continue
+    ssh_i "cat /work/out/$n" 2>/dev/null | head -c "$s" >"$OUT/.$n.part"
+    if [ "$(stat -c %s "$OUT/.$n.part")" = "$s" ]; then mv "$OUT/.$n.part" "$OUT/$n"; else rm -f "$OUT/.$n.part"; ok=1; fi
+  done <<<"$list"
+  return $ok
+}
 OUTCOME=running
+SYNC_EVERY=${SYNC_EVERY:-10}
 # Rent only for GPU work: sample the card each poll, confirm use within 10 minutes of the start, destroy after
 # 15 idle minutes. The samples give the GPU hours against hours paid in gpu-hours.csv.
 T_START=$(date +%s); LAST_BUSY=$T_START; POLLS=0; BUSY=0; CONFIRMED=0; IDLE_MIN=${IDLE_MIN:-15}; GPU_LOG=$OUT/gpu-samples.tsv
 while :; do
   now=$(date +%s)
+  [ $(( (POLLS+1) % SYNC_EVERY )) = 0 ] && sync_out
   g=$(ssh_i 'nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits' 2>/dev/null | tr -d ' ' | grep -E '^[0-9]+,[0-9]+$' | head -1)
   POLLS=$((POLLS+1)); u=${g%%,*}; m=${g##*,}; printf '%s\t%s\t%s\n' "$now" "${u:-}" "${m:-}" >>"$GPU_LOG"
   if [ -n "$u" ] && [ "$u" -ge 5 ] && [ "$m" -ge 500 ]; then BUSY=$((BUSY+1)); LAST_BUSY=$now
@@ -109,11 +127,8 @@ while :; do
   sleep 60
 done
 T_JOB=$(date +%s)
-names=$(ssh_i 'cd /work/out && find . -maxdepth 1 -type f -printf "%f %s\n"' | grep -E '^[A-Za-z0-9][A-Za-z0-9._-]{0,120} [0-9]+$' | head -500)
-while read -r n s; do [ -n "${n:-}" ] || continue
-  [ "$s" -le $(( MAX_FILE_MB*1024*1024 )) ] || { log "skip $n: $s bytes"; continue; }
-  ssh_i "cat /work/out/$n" | head -c "$s" >"$OUT/$n" || log "fetch failed $n"
-done <<<"$names"
+sync_out || { for t in 1 2 3 4 5 6 7 8 9 10; do log "fetch incomplete, retry $t"; sleep 60; sync_out && break; done; }
+sync_out || { OUTCOME=fetch-incomplete; log "FETCH INCOMPLETE: files were lost with this instance"; }
 [ "$OUTCOME" = running ] && OUTCOME="job-exit-$e"
 [ -f "${LEDGER%/*}/gpu-hours.csv" ] || echo "study,instance,gpu,job_start,job_end,polls,busy_polls" >"${LEDGER%/*}/gpu-hours.csv"
 echo "$STUDY,$ID,$GPU,$T_START,$T_JOB,$POLLS,$BUSY" >>"${LEDGER%/*}/gpu-hours.csv"

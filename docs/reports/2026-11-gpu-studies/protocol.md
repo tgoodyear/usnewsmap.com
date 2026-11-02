@@ -138,6 +138,26 @@ Added on the maintainer's approval, before any Study 6 run. Study 3's Surya rows
 
 The card is the cheapest that fits, or the local 2060 SUPER at low priority. Any change to Surya's settings beyond these is recorded.
 
+## Amendment, 2 November 2026: Study 7, image-token sweep
+
+Added on the maintainer's approval, before any Study 7 run. Only default and 1,024 minimum image tokens have been compared (the #529 benchmark), and 1,024 came from llama.cpp's warning. This sweep tests values around it.
+
+**Values.** Default, 768, 1,024, 1,536, 2,048 and 3,072. A value that runs out of VRAM ends the sweep upward, and the failure is recorded. Context size stays at production's 4,096, or the image tokens plus 2,304 where that's larger, and the change is recorded for those values.
+
+**Reader.** The pinned Qwen3-VL 8B Q4_K_M GGUF and vision projector of `usnm_qwen`, stock, no adapter. Same prompt, `max_tokens` as staged for the #529 crops and 2,048 for the rest, temperature 0, seed 42. The `stop` guard applies at every value. The build is the native Vulkan `llama-server` of the installed `usnm_qwen` release if it runs on the rented card, and otherwise the CUDA build in the image, which is recorded.
+
+**Crops, fixed here.**
+
+- The 39 crops of the #529 benchmark: selection `3f9aef1b37a9b5d3c0ee`, crop manifest `2ea44c8ba176931f9411` (first 20 hex digits). Yiddish 34, Serbian 3, English 2, no transcriptions.
+- `multilingual/all-52`: French 24, Finnish 18, Swedish 10, human transcriptions.
+- 60 Austrian newspaper crops, German, the first by `sha256("gpu-studies-202611:s7:"+crop_id)` order, human transcriptions.
+
+No gold-set crop has a human transcription yet. None of Study 5's test sets is used. The Austrian crops trained the Study 2 adapter, which doesn't matter for this stock reader. The six typed Yiddish crops of #529 are used only if their text can be found, and they're labelled as read from the image by an agent, not a person.
+
+**Measures, per value and language.** CER where a transcription exists; loop and guard-stop rate; text kept against the same crop at 1,024; GPU seconds per crop; peak VRAM. Agreement between two vendors only if a second vendor is cheap to rent. Yiddish gets loops and text kept, as it has no transcription here.
+
+**Decision rule.** The best value is the one with the lowest pooled CER over the transcribed crops, among values whose loop rate on the #529 crops doesn't exceed 1,024's. It justifies a new request version only if its paired CER difference against 1,024 has limits excluding zero and its loop rate on the Yiddish crops is lower. Too few crops to decide is a valid result.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.

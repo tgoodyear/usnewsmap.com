@@ -44,7 +44,35 @@ case "$STEP" in
     cp scripts/jobs/qwen.sh results/s5-x2/qwen2b-lora-Q8_0.gguf "$P/"
     printf 'stock2b\tQwen3-VL-2B-Instruct-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\nlora2b\t/work/in/qwen2b-lora-Q8_0.gguf\tmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
     scripts/rent.sh --study s5d2b --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:9a5a78347ee3efa4df3eb03531dc8e356c5c45af67affe862fae4b1993a15d5e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 4 --cap-dollars 1 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d2b;;
+  new2b-rest) P=push/s5-new; jq -r .id results/s5-new/new-adapter.jsonl >/tmp/nd; jq -c --rawfile d /tmp/nd '($d|split("\n")) as $x|select(.id as $i|$x|index($i)|not)' "$P/new.jsonl" >/tmp/nr; mv /tmp/nr "$P/new.jsonl"
+    sed 's/^python .*new-baseline.*$//' scripts/jobs/lora-new.sh >/tmp/lora-rest.sh
+    scripts/rent.sh --study s5new2 --image "$TRAIN" --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 4 --cap-dollars 1 --disk 30 --push-dir "$P" --job /tmp/lora-rest.sh --out results/s5-new2;;
+  export8) P=push/s5-x8; rm -rf "$P"; mkdir -p "$P"; cp scripts/jobs/merge_lora.py "results/s5-t8/$ADAPTER" "$P/"
+    printf 'NAME=qwen8b-lora\nADAPTER=%s\nQUANT=Q4_K_M\nBASEREPO=Qwen/Qwen3-VL-8B-Instruct\nBASEREV=%s\n' "$ADAPTER" "$(cat results/s5-t8/base-revision.txt)" >"$P/export.env"
+    IDLE_MIN=60 scripts/rent.sh --study s5x8 --image "$TRAIN" --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 3 --cap-dollars 2 --disk 80 --push-dir "$P" --job scripts/jobs/export-gguf.sh --max-file-mb 9000 --out results/s5-x8;;
+  deploy8) P=push/s5-d8; rm -rf "$P"; mkdir -p "$P/images/bln"; ln -s "$PWD/lora/images/bench" "$P/images/bench"; ln -s "$PWD/s5sets/images/dta" "$P/images/dta"; ln -s ${GPU_STUDY_DEV:-/tank/usnm-dev/gpu-studies}/data/blnpng/png/* "$P/images/bln/"
+    { jq -r '[.id,.image]|@tsv' lora/test.jsonl; jq -r '[.id,("images/bln/"+(.file|sub("images/";"")|sub("\\.[a-z]+$";".png")))]|@tsv' s5sets/bln.jsonl; jq -r '[.id,.file]|@tsv' s5sets/dta.jsonl; } >"$P/list.tsv"
+    cp scripts/jobs/qwen.sh results/s5-x8/qwen8b-lora-Q4_K_M.gguf "$P/"
+    printf 'stock8b\tQwen3VL-8B-Instruct-Q4_K_M.gguf\tmmproj-Qwen3VL-8B-Instruct-Q8_0.gguf\nlora8b\t/work/in/qwen8b-lora-Q4_K_M.gguf\tmmproj-Qwen3VL-8B-Instruct-Q8_0.gguf\n' >"$P/models.tsv"
+    scripts/rent.sh --study s5d8 --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 6 --cap-dollars 2 --disk 30 --push-dir "$P" --job scripts/jobs/deploy.sh --out results/s5-d8;;
+  new2b-dta) P=push/s5-new3; rm -rf "$P"; mkdir -p "$P/images"; ln -s "$PWD/s5sets/images/dta" "$P/images/dta"; jq -c 'select(.id|startswith("dta19"))' push/s5-new/new.jsonl >"$P/new.jsonl"
+    cp scripts/jobs/lora_infer.py results/s2-1/adapter-r8-s1000.safetensors "$P/"; sed 's/^python .*new-baseline.*$//' scripts/jobs/lora-new.sh >/tmp/lora-rest3.sh
+    scripts/rent.sh --study s5new3 --image "$TRAIN" --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 2 --cap-dollars 1 --disk 30 --push-dir "$P" --job /tmp/lora-rest3.sh --out results/s5-new3;;
+  sweep) P=push/s7; rm -rf "$P"; mkdir -p "$P/c" "$P/rt"; S=s7; D=${GPU_STUDY_DEV:-/tank/usnm-dev/gpu-studies}/data/conv/austrian
+    python3 -c "
+import json
+s=json.load(open('s7/selection.json')); m=json.load(open('s7/crops/manifest.json'))
+for u,c in zip(s,m): print(u['job'][:16]+'.'+u['crop']+'\\t'+c['file']+'\\t'+str(u['max_tokens'])+'\\t'+u['lang']+'\\t'+u['stratum'])
+" >s7/n529.tsv
+    cut -f1,2,3 s7/n529.tsv | awk -F'\t' '{print $1"\tc/"substr($2,7)"\t"$3}' >"$P/list.tsv"; ln -s "$PWD"/s7/crops/*.png "$P/c/"
+    jq -r '[.id,.image]|@tsv' refs/ml-52.jsonl | while IFS=$'\t' read -r i r; do ln -s "$PWD/bench-v1.1.0/usnm-ocr-bench-v1.1.0/$r" "$P/c/"; printf '%s\tc/%s\t2048\n' "$i" "${r#images/}"; done >>"$P/list.tsv"
+    jq -r .crop_id "$D/crops.jsonl" | while read -r c; do printf '%s %s\n' "$(printf 'gpu-studies-202611:s7:%s' "$c" | sha256sum | cut -d' ' -f1)" "$c"; done | LC_ALL=C sort | head -60 | cut -d' ' -f2 >s7/austrian.ids
+    jq -c --rawfile l s7/austrian.ids '($l|split("\n")) as $x|select(.crop_id as $i|$x|index($i))|{id:.crop_id,ref:.transcription,page:.title,source:"austrian",lang:"deu",file:(.image|sub("images/";""))}' "$D/crops.jsonl" >s7/austrian.jsonl
+    jq -r '.file' s7/austrian.jsonl | while read -r f; do ln -s "$D/images/$f" "$P/c/"; done; jq -r '[.id,("c/"+.file),"2048"]|@tsv' s7/austrian.jsonl >>"$P/list.tsv"
+    wc -l "$P/list.tsv"; pct exec 214 -- tar -C /var/lib/boinc-client/projects/boinc.usnewsmap.com -chf - --transform 's/^usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b_//' $(pct exec 214 -- ls /var/lib/boinc-client/projects/boinc.usnewsmap.com | grep '^usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b_') | tar -C "$P/rt" -xf -
+    pct exec 214 -- sh -c 'ls -l /var/lib/boinc-client/projects/boinc.usnewsmap.com/usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b' >"s7/native-app.txt"; cp "$P/rt"/usnm_qwen_1.15_x86_64-pc-linux-gnu_nvidia_vulkan_8b "$P/rt/llama-server" 2>/dev/null; chmod +x "$P/rt/"* 2>/dev/null
+    scripts/rent.sh --study s7 --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 6 --cap-dollars 2 --disk 30 --push-dir "$P" --job scripts/jobs/s7.sh --out results/s7;;
   train8) P=push/s5-t8; rm -rf "$P"; mkdir -p "$P"; ln -s "$PWD/lora/images" "$P/images"
-    cp lora/train.jsonl lora/validation.jsonl scripts/jobs/lora_train.py scripts/jobs/lora_infer.py "$P/"
-    scripts/rent.sh --study s5t8 --image "$TRAIN" --gpu "RTX 3090" --max-hours 14 --cap-dollars 6 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-1.sh --out results/s5-t8;;
+    cp lora/train.jsonl lora/validation.jsonl scripts/jobs/lora_train.py scripts/jobs/lora_infer.py analysis/s5/guard.txt "$P/"
+    scripts/rent.sh --study s5t8 --image "$TRAIN" --gpu "${TRAIN_GPU:-RTX 3090}" --max-dph "${TRAIN_DPH:-0.30}" --max-hours 14 --cap-dollars 6 --disk 70 --push-dir "$P" --job scripts/jobs/lora8b-1.sh --out results/s5-t8;;
   *) exit 2;; esac

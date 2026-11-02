@@ -5,8 +5,10 @@ W=${GPU_STUDY_ROOT:?}; cd "$W"; T=${TOOL:?}; A=analysis/s5; mkdir -p "$A"
 { cat lora/test-refs.jsonl; jq -c 'del(.file)' s5sets/bln.jsonl s5sets/dta.jsonl; } >"$A/all-refs.jsonl"
 jq -c 'select(.source=="bln600" or .source=="dta19")' "$A/all-refs.jsonl" >"$A/new-refs.jsonl"
 if [ -s results/s5-new/new-baseline.jsonl ] && [ -s results/s5-new/new-adapter.jsonl ]; then
-  for r in baseline adapter; do $T guard-cut --input results/s5-new/new-$r.jsonl --out "$A/new-$r-stop.jsonl"; done
-  H=(--hyp baseline=results/s5-new/new-baseline.jsonl --hyp baseline-stop=$A/new-baseline-stop.jsonl --hyp adapter=results/s5-new/new-adapter.jsonl --hyp adapter-stop=$A/new-adapter-stop.jsonl)
+  cat results/s5-new/new-adapter.jsonl results/s5-new2/new-adapter.jsonl results/s5-new3/new-adapter.jsonl >"$A/new-adapter.jsonl"
+  cp results/s5-new/new-baseline.jsonl "$A/new-baseline.jsonl"
+  for r in baseline adapter; do $T guard-cut --input "$A/new-$r.jsonl" --out "$A/new-$r-stop.jsonl"; done
+  H=(--hyp baseline=$A/new-baseline.jsonl --hyp baseline-stop=$A/new-baseline-stop.jsonl --hyp adapter=$A/new-adapter.jsonl --hyp adapter-stop=$A/new-adapter-stop.jsonl)
   $T score --refs "$A/new-refs.jsonl" "${H[@]}" --baseline baseline --out "$A/new.jsonl"
   $T score --refs "$A/new-refs.jsonl" --hyp baseline-stop=$A/new-baseline-stop.jsonl --hyp adapter-stop=$A/new-adapter-stop.jsonl --baseline baseline-stop --out "$A/new-guarded-diff.jsonl"
   $T invent --refs "$A/new-refs.jsonl" "${H[@]}" --out "$A/new-invent.jsonl"
