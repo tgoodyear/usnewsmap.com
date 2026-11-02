@@ -112,6 +112,7 @@ impl LocClient {
     async fn locate(&self, url: &str) -> Result<Option<String>, FetchError> {
         let mut last = "held".to_owned();
         for attempt in 1..=self.cfg.attempts.max(1) {
+            let _slot = self.in_flight().await;
             self.storage.wait().await;
             let resp = match self.http_here.get(url).send().await {
                 Ok(r) => r,

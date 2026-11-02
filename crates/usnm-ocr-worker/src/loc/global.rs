@@ -1,8 +1,8 @@
 //! The global LoC pacer (#962): one budget for every LoC request on the
 //! host, whichever process sends it.
 //!
-//! The maintainer set LoC's whole budget at 30 requests a minute (2 November
-//! 2026; it was 45 from 24 October): OCR's scans, the quality pass's and the
+//! The maintainer set LoC's whole budget at 20 requests a minute (2 November
+//! 2026, after LoC sent challenge pages at about 30; 45 from 24 October): OCR's scans, the quality pass's and the
 //! bulk OCR archives together. LoC publishes 150 a minute for its storage
 //! services and 150 for its image services, each with a one-hour block past
 //! it, and may block below those when it is under load.
@@ -30,8 +30,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// 30 requests a minute.
-pub const NORMAL_GAP: Duration = Duration::from_millis(2000);
+/// 20 requests a minute.
+pub const NORMAL_GAP: Duration = Duration::from_millis(3000);
 /// 12 requests a minute.
 pub const SLOW_GAP: Duration = Duration::from_millis(5000);
 /// How long the slow rate lasts after LoC's last push-back.
@@ -453,8 +453,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_gaps_are_30_and_12_a_minute_and_the_slow_rate_lasts_a_day() {
-        assert_eq!(60_000 / NORMAL_GAP.as_millis(), 30);
+    fn the_default_gaps_are_20_and_12_a_minute_and_the_slow_rate_lasts_a_day() {
+        assert_eq!(60_000 / NORMAL_GAP.as_millis(), 20);
         assert_eq!(60_000 / SLOW_GAP.as_millis(), 12);
         assert_eq!(SLOW_FOR, Duration::from_secs(86_400));
     }

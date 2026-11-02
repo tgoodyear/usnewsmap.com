@@ -437,7 +437,7 @@ enum Command {
         )]
         batch_cache: PathBuf,
         /// The host's global LoC budget (#962): a state file every LoC client
-        /// on the host shares, 30 requests a minute in all, 12 for 24 hours
+        /// on the host shares, 20 requests a minute in all, 12 for 24 hours
         /// after LoC pushes back. Without it, only this process's own gaps apply.
         #[arg(long, env = "USNM_LOC_GLOBAL_PACER")]
         loc_global_pacer: Option<PathBuf>,
@@ -476,6 +476,11 @@ enum Command {
             default_value_t = 1
         )]
         loc_bucket_concurrency: usize,
+        /// Requests to LoC's own servers in flight at once, whatever
+        /// `--concurrency` is (1 to 16; LoC's bucket isn't counted).
+        #[arg(long, env = "USNM_PREFETCH_LOC_IN_FLIGHT", default_value_t = 4,
+              value_parser = clap::value_parser!(u16).range(1..=16))]
+        loc_in_flight: u16,
         /// Only pages of these awardees' batches, comma-separated (the
         /// batch name's first part, e.g. `nbu`); all by default.
         #[arg(long, env = "USNM_PREFETCH_AWARDEES", value_delimiter = ',')]
@@ -1211,6 +1216,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             loc_bucket,
             loc_bucket_gap_ms,
             loc_bucket_concurrency,
+            loc_in_flight,
             awardees,
             no_loc_prefixes,
         } => {
@@ -1240,6 +1246,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 storage_own_budget,
                 batch_cache: Some(batch_cache),
                 html_is_block: true,
+                max_in_flight: usize::from(loc_in_flight),
                 ..LocConfig::default()
             })?);
             let opts = prefetch::Options {

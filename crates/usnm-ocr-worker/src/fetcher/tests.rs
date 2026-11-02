@@ -185,7 +185,7 @@ fn only_parts(dir: &Path) -> Vec<String> {
 fn locs_policy_keeps_its_limits() {
     let all = Policies::builtin();
     let loc = all.iter().find(|p| p.name == LOC).unwrap();
-    assert_eq!(loc.requests_per_minute, 30);
+    assert_eq!(loc.requests_per_minute, 20);
     assert_eq!(loc.slow_requests_per_minute, Some(12));
     assert_eq!(loc.normal_gap(), NORMAL_GAP);
     assert_eq!(loc.slow_gap(), SLOW_GAP);

@@ -98,7 +98,7 @@ pub(super) fn challenge(resp: &reqwest::Response) -> Option<String> {
 impl LocClient {
     /// LoC pushed back with a 429, a 403 or a challenge page: hold the
     /// host's whole budget for `d`, and drop it to the slow rate for 24 hours
-    /// (the maintainer's rule of 2 November 2026: 30 a minute, 12 for a day
+    /// (the maintainer's rule of 2 November 2026: 20 a minute, 12 for a day
     /// after LoC objects). A 503 or an unreadable body holds only its server.
     pub(super) fn push_back(&self, status: StatusCode, challenged: bool, d: Duration) {
         if let Some(g) = &self.global {
@@ -229,6 +229,7 @@ impl LocClient {
 
     /// One paced request for the known-good item, outside the caches.
     pub(super) async fn probe(&self, server: Server, url: &str) -> Result<(), ProbeFailure> {
+        let _slot = self.in_flight().await;
         self.pacer(server).wait().await;
         match self.charged(self.http.get(url).send().await, url) {
             Ok(resp) if self.cfg.html_is_block && html_page(&resp).is_some() => {
@@ -354,6 +355,9 @@ impl LocClient {
             // Whether the answer just before this one was a fast, bare
             // 503; any other answer in between clears it.
             let prev_bare = std::mem::take(&mut bare_before);
+            // Given back before an item error's probe (which takes its own)
+            // and before a retry's wait.
+            let mut slot = Some(self.in_flight().await);
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
@@ -400,6 +404,7 @@ impl LocClient {
                     }
                 }
                 Ok(resp) => {
+                    slot.take();
                     let status = resp.status();
                     if missing_ok && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
                         return Ok(None);
@@ -500,6 +505,7 @@ impl LocClient {
                 }
                 Err(e) => last = e.without_url().to_string(),
             }
+            slot.take();
             if attempt < self.cfg.attempts {
                 tracing::warn!(target: "usnm_ocr_worker::loc", url, attempt, error = %last, wait_secs = wait.as_secs(), "retrying");
                 tokio::time::sleep(wait).await;
