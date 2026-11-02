@@ -194,8 +194,9 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
         .iter()
         .map(String::as_str)
         .partition(|n| first_doc(n).is_some_and(|d| run_set.contains(d)));
-    let (mut bundled_docs, removed) = bundled(&units_dir, &mine, Some(&run_set))?;
-    let existing_bundles = names.len() - removed;
+    let found = bundled(&units_dir, &mine, Some(&run_set))?;
+    let mut bundled_docs = found.docs;
+    let existing_bundles = names.len() - found.removed;
     // A root staged one page a unit before keeps those units under units/<doc_id>: a page
     // with one is BOINC's already, never packed again.
     if bundle_size > 1 {
@@ -224,8 +225,7 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
         // A page staged before, even part way, may sit in a bundle another run made: read
         // those before staging or packing it again.
         if bundle_size > 1 && unit.exists() && !read_others && !bundled_docs.contains(&p.doc_id) {
-            let (more, _) = bundled(&units_dir, &others, None)?;
-            bundled_docs.extend(more);
+            bundled_docs.extend(bundled(&units_dir, &others, None)?.docs);
             read_others = true;
         }
         if bundled_docs.contains(&p.doc_id) {
@@ -280,6 +280,12 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
         }
     }
     if bundle_size > 1 {
+        // A removed bundle's pages are packed again even past the page limit: they are staged.
+        for d in found.repack {
+            if !run_docs.contains(&d) {
+                run_docs.push(d);
+            }
+        }
         summary.bundles = pack_bundles(
             &page_dir,
             &units_dir,
@@ -1366,5 +1372,50 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!((s.staged, s.already, s.bundles), (0, 1, 0));
+    }
+
+    /// A damaged bundle's pages are packed again even when the page limit
+    /// stops the run before them.
+    #[tokio::test]
+    async fn a_removed_bundle_is_packed_again_past_the_page_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = bundle_options(tmp.path(), &[DOC1, DOC2], 2);
+        assert_eq!(run(&opts).await.unwrap().bundles, 1);
+        let bundle = units(&opts.root).join(format!("bundle-00001-{DOC1}"));
+        std::fs::write(bundle.join(PAGE_FILE), b"cut").unwrap();
+        // DOC3 first, then the damaged bundle's pages, and room for only one page.
+        let sample = tmp.path().join("limited.jsonl");
+        let old = std::fs::read_to_string(opts.sample.as_ref().unwrap()).unwrap();
+        let doc3 = old.lines().next().unwrap().replace(DOC1, DOC3);
+        std::fs::write(&sample, format!("{doc3}\n{old}")).unwrap();
+        let scans = opts.scans_dir.clone().unwrap();
+        for ext in ["jpg", "xml"] {
+            std::fs::copy(
+                scans.join(format!("{DOC1}.{ext}")),
+                scans.join(format!("{DOC3}.{ext}")),
+            )
+            .unwrap();
+        }
+        std::fs::copy(
+            opts.texts_dir.join(format!("{DOC1}.json")),
+            opts.texts_dir.join(format!("{DOC3}.json")),
+        )
+        .unwrap();
+        let s = run(&Options {
+            sample: Some(sample),
+            max_pages: 1,
+            ..opts.clone()
+        })
+        .await
+        .unwrap();
+        assert_eq!(s.staged, 1);
+        let mut packed: Vec<String> = bundle_names(&units(&opts.root))
+            .unwrap()
+            .iter()
+            .flat_map(|n| bundle_job(&units(&opts.root).join(n)).pages)
+            .map(|p| p.doc_id)
+            .collect();
+        packed.sort();
+        assert_eq!(packed, [DOC1, DOC2, DOC3]);
     }
 }

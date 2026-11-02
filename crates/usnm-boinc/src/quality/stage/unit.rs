@@ -49,9 +49,10 @@ pub(super) fn bundled(
     units_dir: &Path,
     names: &[&str],
     run: Option<&BTreeSet<&str>>,
-) -> anyhow::Result<(BTreeSet<String>, usize)> {
+) -> anyhow::Result<Bundled> {
     let mut docs = BTreeSet::new();
     let mut removed = 0usize;
+    let mut repack = Vec::new();
     for name in names {
         let p = units_dir.join(name);
         if !p.is_dir() {
@@ -80,6 +81,7 @@ pub(super) fn bundled(
                     eprintln!("{}: {why}; packing it again", p.display());
                     std::fs::remove_dir_all(&p)?;
                     removed += 1;
+                    repack.extend(members);
                     continue;
                 }
                 eprintln!(
@@ -90,7 +92,22 @@ pub(super) fn bundled(
         }
         docs.extend(members);
     }
-    Ok((docs, removed))
+    Ok(Bundled {
+        docs,
+        removed,
+        repack,
+    })
+}
+
+/// What [`bundled`] found.
+pub(super) struct Bundled {
+    /// The pages the bundles hold.
+    pub docs: BTreeSet<String>,
+    /// How many bundles it removed.
+    pub removed: usize,
+    /// The pages of the removed bundles, which the run must pack again even
+    /// if its page limit stops it before them.
+    pub repack: Vec<String>,
 }
 
 /// Why a staged unit's inputs can't be trusted, or `None` when they all
