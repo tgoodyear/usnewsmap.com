@@ -42,6 +42,11 @@ use usnm_ocr_worker::{
 /// LoC budget (the maintainer's decision of 2 November 2026; 5 s before).
 pub const MIN_GAP: Duration = Duration::from_secs(2);
 
+/// The gap a stage takes when it isn't given one: 12 requests a minute, so a
+/// stage alone, outside the shared budget, stays where it was before the floor
+/// came down.
+pub const DEFAULT_GAP: Duration = Duration::from_secs(5);
+
 /// The host's shared LoC budget, from `USNM_LOC_GLOBAL_PACER`: the scan
 /// fetcher's state file, so every LoC request on the host counts against one
 /// rate. Unset or empty: this process's own gap only.
@@ -414,6 +419,12 @@ mod tests {
 
     const BATCH: &str = "/storage-services/service/ndnp/xx/batch_xx_test_ver01/";
     const OTHER: &str = "/storage-services/service/ndnp/yy/batch_yy_other_ver02/";
+
+    #[test]
+    fn the_default_stays_at_five_seconds() {
+        assert_eq!(DEFAULT_GAP, Duration::from_secs(5));
+        assert!(DEFAULT_GAP >= MIN_GAP);
+    }
 
     #[test]
     fn the_floor_is_two_seconds() {
