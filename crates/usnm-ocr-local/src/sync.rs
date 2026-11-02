@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use usnm_ocr_contract::message::DeadLetter;
 use usnm_overlay::OverlayRow;
-use usnm_state::state::{RunBatch, State};
+use usnm_state::state::{LockHeld, RunBatch, State};
 use usnm_store::queue::{Queue, Received, BULK, DEADLETTER, PRIORITY};
 use usnm_store::{ObjectInfo, ObjectStore};
 
@@ -46,6 +46,10 @@ use crate::ocr_damage::{self, StoredScore};
 /// How long the lock lasts without renewal, and how often it is renewed.
 const LOCK_TTL: chrono::Duration = chrono::Duration::minutes(15);
 const LOCK_RENEW: Duration = Duration::from_secs(5 * 60);
+/// How long a run waits for a held lock in all, and how long past the
+/// holder's lease it waits before trying again.
+const LOCK_WAIT_MAX: Duration = Duration::from_secs(30 * 60);
+const LOCK_WAIT_MARGIN: Duration = Duration::from_secs(5);
 /// How long a received dead letter stays hidden while it is written.
 const DEAD_LETTER_HIDE: Duration = Duration::from_secs(600);
 /// How far back import records are read to finish a stopped run's deletes.
@@ -197,10 +201,45 @@ pub(super) struct Lease {
 }
 
 impl Lease {
+    /// Take the lock, waiting out a holder (a BOINC hand-off, or the last
+    /// Take the lock, or fail at once if another holder has it.
     pub(super) async fn take(state: &State, owner: &str) -> anyhow::Result<Self> {
+        state.lock(super::LOCK, owner, LOCK_TTL).await?;
+        Self::held(state, owner)
+    }
+
+    /// [`Lease::take`], but waits out a holder (a BOINC hand-off, or the last
+    /// run) until its lease runs out. The wait stops at `deadline`, and
+    /// after `LOCK_WAIT_MAX` in all.
+    pub(super) async fn take_waiting(
+        state: &State,
+        owner: &str,
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<Self> {
+        let started = Instant::now();
+        loop {
+            let e = match state.lock(super::LOCK, owner, LOCK_TTL).await {
+                Ok(()) => break,
+                Err(e) => e,
+            };
+            let Some(held) = e.downcast_ref::<LockHeld>() else {
+                return Err(e);
+            };
+            let wait = (held.until - Utc::now()).to_std().unwrap_or_default() + LOCK_WAIT_MARGIN;
+            let past_deadline = deadline.is_some_and(|d| Instant::now() + wait >= d);
+            if past_deadline || started.elapsed() + wait > LOCK_WAIT_MAX {
+                return Err(e.context("waited for the ocr-sync lock, which is still held"));
+            }
+            tracing::info!(holder = %held.holder, wait_secs = wait.as_secs(), "ocr-sync lock is held; waiting");
+            tokio::time::sleep(wait).await;
+        }
+        Self::held(state, owner)
+    }
+
+    /// The lease for a lock this owner now holds.
+    fn held(state: &State, owner: &str) -> anyhow::Result<Self> {
         let ttl = LOCK_TTL.to_std()?;
         let until = Arc::new(Mutex::new(Instant::now() + ttl));
-        state.lock(super::LOCK, owner, LOCK_TTL).await?;
         let lost = Arc::new(AtomicBool::new(false));
         let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
         let renewed_until = until.clone();
@@ -272,7 +311,7 @@ pub async fn run(
     stores: &Stores,
     opts: &Options,
 ) -> anyhow::Result<Status> {
-    let lease = Lease::take(state, owner).await?;
+    let lease = Lease::take_waiting(state, owner, opts.deadline).await?;
     let result = run_locked(state, stores, opts, &lease).await;
     drop(lease);
     let unlocked = state.unlock(super::LOCK, owner).await;
@@ -1433,6 +1472,38 @@ mod lease_tests {
         *lease.until.lock().unwrap() = Instant::now();
         assert!(lease.check().unwrap_err().to_string().contains("expired"));
         assert!(lease.lost.load(Ordering::SeqCst));
+    }
+
+    fn state() -> State {
+        State::new(Arc::new(usnm_state::docs::MemoryDocs::default()))
+    }
+
+    #[tokio::test]
+    async fn a_held_lock_is_waited_for_until_its_lease_runs_out() {
+        let state = state();
+        state
+            .lock(crate::LOCK, "other", chrono::Duration::milliseconds(300))
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let lease = Lease::take_waiting(&state, "me", None).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        lease.check().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_lock_past_the_deadline_fails_at_once() {
+        let state = state();
+        state
+            .lock(crate::LOCK, "other", chrono::Duration::hours(1))
+            .await
+            .unwrap();
+        let deadline = Some(Instant::now() + Duration::from_secs(1));
+        let err = Lease::take_waiting(&state, "me", deadline)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("still held"), "{err:#}");
     }
 
     #[test]
