@@ -20,6 +20,9 @@ for v in STUDY IMAGE JOB OUT; do [ -n "${!v}" ] || { echo "--${v,,} required" >&
 mkdir -p "$OUT"; KH=$(mktemp); ID=""; IP=""; PORT=""; DPH=""; GEO=""; OFFER=""; GOTNAME=""
 V() { "$HERE/vast.sh" "$@"; }
 log() { echo "$(date -Is) [$STUDY] $*"; }
+# The instance listing is host-reported. Only a dotted-quad IPv4 address and a TCP port are used.
+valid_ip() { local o; [[ $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1; for o in ${1//./ }; do [ $((10#$o)) -le 255 ] || return 1; done; }
+valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && [ $((10#$1)) -ge 1 ] && [ $((10#$1)) -le 65535 ]; }
 ssh_i() { env -u SSH_AUTH_SOCK ssh -F /dev/null -n -p "$PORT" -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KH" -o ForwardAgent=no -o ForwardX11=no \
   -o PermitLocalCommand=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "root@$IP" "$@"; }
@@ -64,13 +67,16 @@ while [ $hosts -lt "$MAX_HOSTS" ]; do
   while [ "$(date +%s)" -lt "$end" ]; do
     j=$(V --action list | jq -c --argjson i "$ID" 'select(.id==$i)')
     IP=$(echo "$j"|jq -r '.public_ipaddr//empty'|tr -d ' \n'); PORT=$(echo "$j"|jq -r '.ports["22/tcp"][0].HostPort//empty')
+    # A bad address counts as no address yet: keep waiting, then move on to another host.
+    if [ -n "$IP" ] && [ -n "$PORT" ] && ! { valid_ip "$IP" && valid_port "$PORT"; }; then log "invalid ssh address in the listing, ignored"; IP=""; PORT=""; fi
     if [ -n "$IP" ] && [ -n "$PORT" ]; then
       res=$(ssh_i 'echo ok' 2>&1)
       if echo "$res" | grep -qx ok; then ok=1; break; fi
       # Login reached the forced tmux. A terminal session gets past it, once, and turns it off for $HOME.
+      # The values reach script's shell through the environment, so they are never parsed as shell code.
       if echo "$res" | grep -q 'no sessions'; then
         { sleep 4; printf 'touch "$HOME/.no_auto_tmux" /root/.no_auto_tmux; exit\n'; sleep 3; } |
-          timeout 20 script -qfc "env -u SSH_AUTH_SOCK ssh -F /dev/null -tt -p $PORT -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KH root@$IP" /dev/null >/dev/null 2>&1
+          RENT_PORT=$PORT RENT_KEY=$KEY RENT_KH=$KH RENT_IP=$IP timeout 20 script -qfc 'env -u SSH_AUTH_SOCK ssh -F /dev/null -tt -p "$RENT_PORT" -i "$RENT_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RENT_KH" "root@$RENT_IP"' /dev/null >/dev/null 2>&1
         ssh_i 'echo ok' 2>/dev/null | grep -qx ok && { ok=1; break; }
       fi
     fi
