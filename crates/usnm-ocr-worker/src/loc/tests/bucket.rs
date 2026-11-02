@@ -60,6 +60,7 @@ fn bucket_cfg(root: &str) -> BucketConfig {
         block_hold: Duration::from_secs(600),
         max_wait: Duration::from_secs(5),
         timeout: Duration::from_secs(120),
+        lanes: 1,
     }
 }
 

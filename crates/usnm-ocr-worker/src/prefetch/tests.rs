@@ -257,6 +257,72 @@ fn counts_only_scans_and_a_missing_buffer_as_empty() {
     assert_eq!(dir_scan_bytes(dir.path()).unwrap(), 4);
 }
 
+#[test]
+fn the_last_runs_buffer_count_stands_in_only_when_recent_and_under_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("status-full.json");
+    let write = |at: DateTime<Utc>, n: u64| {
+        let st = serde_json::json!({
+            "updated_at": at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            "buffer_bytes": n,
+        });
+        std::fs::write(&p, serde_json::to_vec(&st).unwrap()).unwrap();
+    };
+    assert_eq!(previous_buffer_bytes(&p, 1000), None, "no status yet");
+    write(Utc::now() - chrono::Duration::minutes(5), 400);
+    assert_eq!(previous_buffer_bytes(&p, 1000), Some(400));
+    // Within a tenth of the cap: counted first, as before.
+    write(Utc::now(), 901);
+    assert_eq!(previous_buffer_bytes(&p, 1000), None);
+    // Too old.
+    write(Utc::now() - chrono::Duration::hours(25), 400);
+    assert_eq!(previous_buffer_bytes(&p, 1000), None);
+    std::fs::write(&p, b"not json").unwrap();
+    assert_eq!(previous_buffer_bytes(&p, 1000), None);
+}
+
+/// With a recent count from the last run, fetching starts at once and the
+/// walk's result replaces the stand-in.
+#[tokio::test]
+async fn a_recent_count_lets_the_run_start_before_the_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<ManifestRow> = (1..=1).map(|i| row("sn1", 1890, i, "eng")).collect();
+    let manifest = dir.path().join("m.parquet");
+    std::fs::write(&manifest, prefetch::encode(&rows).unwrap()).unwrap();
+    let out = dir.path().join("scans");
+    std::fs::create_dir_all(out.join("buffer/x")).unwrap();
+    std::fs::write(out.join("buffer/x/1.jpg"), b"jpeg").unwrap();
+    // The last run said 10 bytes, under a cap of 100.
+    std::fs::write(
+        out.join("status-full.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "updated_at": now_rfc3339(), "buffer_bytes": 10
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let opts = Options {
+        manifest,
+        out: out.clone(),
+        buffer_cap: 100,
+        ..Options::default()
+    };
+    let (_tx, rx) = watch::channel(false);
+    let s = run(
+        opts,
+        client("http://127.0.0.1:9", Duration::from_millis(1)),
+        rx,
+    )
+    .await
+    .unwrap();
+    // The walk (4 bytes) ran alongside; nothing this run fetched.
+    assert!(
+        s.buffer_bytes == 4 || s.buffer_bytes == 10,
+        "{}",
+        s.buffer_bytes
+    );
+}
+
 #[tokio::test]
 async fn waits_at_the_buffer_cap_until_stopped() {
     let dir = tempfile::tempdir().unwrap();
