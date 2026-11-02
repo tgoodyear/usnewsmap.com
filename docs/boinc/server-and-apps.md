@@ -176,6 +176,18 @@ Deploy the updated bridge image containing both this CLI and wrapper together.
 A `published` bridge entry means its native output pair is in `ocr-out`, not that
 it has replaced searchable text. Continue with the existing `ocr-sync` and release.
 
+## Retiring an app
+
+To stop an app's work without losing anything, deprecate it rather than delete it.
+Save its `app` and `app_version` rows first. Set `deprecated=1` on the app and on its
+versions, then touch `reread_db` in the project directory so the feeder reloads its
+tables. Results already sent can still be reported, workunits and signed versions stay,
+and rollback is the saved `deprecated` values plus another `reread_db`. Before you start,
+check that no controller plan, timer or feed still stages work for the app.
+`usnm_surya` was retired this way on 2 November 2026; its
+[retirement notes](../boinc-surya.md#retirement-2-november-2026) list the steps and the
+state before and after.
+
 ## Moving the project share
 
 The share left Azure on 21 October 2026 ([boinc-onprem.md](../boinc-onprem.md)). This section records the staged move of the Azure Files share and applies to `"server": "azure"`.

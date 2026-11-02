@@ -751,6 +751,10 @@ or scan push, takes nothing off the OCR queues, and uses no hand-off job, invent
 or journal. Stage the quality campaign's pages first (`quality-stage`); the plan
 cuts the crops from them.
 
+`usnm_surya` was retired on 2 November 2026
+([boinc-surya.md](boinc-surya.md#retirement-2-november-2026)), and no controller
+runs this plan. The plan kind stays so a wave can be rerun.
+
 ```json
 {
   "schema_version": 1,
