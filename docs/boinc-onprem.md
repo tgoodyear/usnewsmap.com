@@ -381,8 +381,9 @@ controller then sends the steps here with `--onprem-handoff claim --onprem-hando
 for a day, a separate Bicep change retires the job's claim and collect use.
 
 The hand-off steps take `/run/usnm-boinc-handoff.lock`, not the step lock: they touch only Azure
-storage, Cosmos and the queues, and the controller runs one at a time. A collect of 100 jobs
-doesn't keep publishing or submits waiting, and a publish doesn't fail a claim.
+storage, Cosmos and the queues, and the controller runs one at a time. `spool-out` and
+`batch-inventory` take it too: they only read the project and the database. A collect of 100 jobs
+doesn't keep publishing or submits waiting, and a publish doesn't fail a claim or a spool-out.
 
 To ship a hand-off fix without a new server image, build the changed `usnm-boinc` or
 `handoff-job.sh` over the running image, built on bookworm from the running image's source plus the

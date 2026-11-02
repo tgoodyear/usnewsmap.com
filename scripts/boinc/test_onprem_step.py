@@ -487,6 +487,11 @@ class OnpremStep(unittest.TestCase):
             done, captured = self.run_for_real(*claim, flock_script=script)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("HANDOFF_STEP=claim", captured)
+            for step in ("spool-out", "batch-inventory"):
+                done, captured = self.run_for_real("--env", "prod", "--step", step, "--wait-mins", "1",
+                                                   flock_script=script)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(f"BRIDGE_STEP={step}", captured)
         Path(self.conf.name, "envfile").unlink()
         with (directory / "usnm-boinc-handoff.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

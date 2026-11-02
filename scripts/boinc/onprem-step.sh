@@ -24,8 +24,10 @@
 #
 # The hand-off steps are the other exception: they take a lock of their own, because they touch
 # Azure storage, Cosmos and the queues only, and the controller, their one caller, runs one at a
-# time. So a long collect doesn't keep submits and publishing waiting, and a publish doesn't fail
-# a claim after the lock wait.
+# time, and so do spool-out and batch-inventory, the controller's two bridge steps that only read
+# the project and the database and write only the hand-off container. So a long collect doesn't
+# keep submits and publishing waiting, and an hour's native publication, which holds the step lock
+# for 10 minutes, doesn't fail a tick after the lock wait.
 #
 # --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
 # contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
@@ -351,7 +353,7 @@ step_timeout=$((WAIT_MINS * 60))
 lock_file=usnm-boinc-step.lock
 case $TARGET:$STEP in
   bridge:quality-stage) lock_file=usnm-boinc-stage.lock ;;
-  handoff:*) lock_file=usnm-boinc-handoff.lock ;;
+  handoff:* | bridge:spool-out | bridge:batch-inventory) lock_file=usnm-boinc-handoff.lock ;;
 esac
 exec 9> "$RUN_DIR/$lock_file"
 lock_started=$SECONDS
