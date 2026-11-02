@@ -306,9 +306,11 @@ impl Gate {
             .ok()?
             .ok()?;
         let at = {
+            // `held` before `next`, the order `hold` takes them in.
+            let held = self.held.lock().expect("gate lock");
             let mut next = self.next.lock().expect("gate lock");
             let at = (*next).max(Instant::now());
-            if self.held_until().is_some() || at > deadline {
+            if held.is_some_and(|h| h > Instant::now()) || at > deadline {
                 return None;
             }
             // With lanes, this start is reserved: the next starts a gap later.

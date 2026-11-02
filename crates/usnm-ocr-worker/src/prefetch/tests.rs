@@ -279,6 +279,22 @@ fn the_last_runs_buffer_count_stands_in_only_when_recent_and_under_the_cap() {
     assert_eq!(previous_buffer_bytes(&p, 1000), None);
     std::fs::write(&p, b"not json").unwrap();
     assert_eq!(previous_buffer_bytes(&p, 1000), None);
+    // Another resolution's run wrote its status later: it may have filled
+    // the shared buffer since, so this count doesn't stand in.
+    write(Utc::now() - chrono::Duration::minutes(5), 400);
+    let other = dir.path().join("status-1024.json");
+    let st = serde_json::json!({
+        "updated_at": now_rfc3339(), "buffer_bytes": 900
+    });
+    std::fs::write(&other, serde_json::to_vec(&st).unwrap()).unwrap();
+    assert_eq!(previous_buffer_bytes(&p, 1000), None);
+    // One written earlier doesn't matter.
+    write(Utc::now(), 400);
+    let st = serde_json::json!({
+        "updated_at": (Utc::now() - chrono::Duration::hours(1)).to_rfc3339(), "buffer_bytes": 900
+    });
+    std::fs::write(&other, serde_json::to_vec(&st).unwrap()).unwrap();
+    assert_eq!(previous_buffer_bytes(&p, 1000), Some(400));
 }
 
 /// With a recent count from the last run, fetching starts at once and the

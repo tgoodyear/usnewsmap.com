@@ -374,6 +374,9 @@ struct Counts {
     /// This run's buffer pages found on disk or fetched (for the status and
     /// `--max-total-bytes`; consumed scans aren't taken off).
     run_buffer_bytes: AtomicU64,
+    /// This run's buffer pages fetched (written), only: what a walk running
+    /// alongside may have missed.
+    buffer_written: AtomicU64,
     failed_item_error: AtomicU64,
     deferred_needs_loc: AtomicU64,
 }
@@ -619,9 +622,9 @@ impl Run {
     /// so the fetcher waits rather than overfill the pool.
     async fn count_buffer(&self) {
         let dir = self.opts.out.join(Set::Buffer.dir());
-        // Pages this run adds while the walk runs may or may not be in it:
+        // Pages this run writes while the walk runs may or may not be in it:
         // they're added on top, so the count can be high but never low.
-        let before = self.counts.run_buffer_bytes.load(Ordering::SeqCst);
+        let before = self.counts.buffer_written.load(Ordering::SeqCst);
         let n = match tokio::task::spawn_blocking(move || dir_scan_bytes(&dir)).await {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => {
@@ -633,14 +636,20 @@ impl Run {
                 u64::MAX
             }
         };
-        let during = self
-            .counts
-            .run_buffer_bytes
-            .load(Ordering::SeqCst)
-            .saturating_sub(before);
-        self.counts
+        // A page is counted in `buffer_written` before `buffer_bytes`. Read
+        // inside the compare-and-swap, a page written meanwhile is either in
+        // `during` (and its later add only counts it twice, high) or makes the
+        // swap fail and be tried again: never lost.
+        let c = &self.counts;
+        let _ = c
             .buffer_bytes
-            .store(n.saturating_add(during), Ordering::SeqCst);
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |_| {
+                let during = c
+                    .buffer_written
+                    .load(Ordering::SeqCst)
+                    .saturating_sub(before);
+                Some(n.saturating_add(during))
+            });
     }
 
     /// Wait while the buffer is at its cap, counting it again every
@@ -832,6 +841,7 @@ impl Run {
                     Set::Keep => c.keep_bytes.fetch_add(side.bytes, Ordering::SeqCst),
                     Set::Buffer => {
                         c.run_buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst);
+                        c.buffer_written.fetch_add(side.bytes, Ordering::SeqCst);
                         c.buffer_bytes.fetch_add(side.bytes, Ordering::SeqCst)
                     }
                 };
@@ -1201,12 +1211,28 @@ pub async fn run(
 const BUFFER_COUNT_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// The buffer's size the last run wrote to `status`, if it was written in
-/// the last [`BUFFER_COUNT_MAX_AGE`] and leaves at least a tenth of `cap`
-/// free; otherwise the run counts before it starts, as it always did.
+/// the last [`BUFFER_COUNT_MAX_AGE`], leaves at least a tenth of `cap` free,
+/// and no other run's status beside it (`status-<tag>.json` of another
+/// resolution, which shares the buffer) was written later; otherwise the run
+/// counts before it starts, as it always did.
 fn previous_buffer_bytes(status: &Path, cap: u64) -> Option<u64> {
-    let st: serde_json::Value = serde_json::from_slice(&std::fs::read(status).ok()?).ok()?;
-    let at = DateTime::parse_from_rfc3339(st.get("updated_at")?.as_str()?).ok()?;
-    let n = st.get("buffer_bytes")?.as_u64()?;
+    fn read(p: &Path) -> Option<(DateTime<chrono::FixedOffset>, u64)> {
+        let st: serde_json::Value = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+        let at = DateTime::parse_from_rfc3339(st.get("updated_at")?.as_str()?).ok()?;
+        Some((at, st.get("buffer_bytes")?.as_u64()?))
+    }
+    let (at, n) = read(status)?;
+    let dir = status.parent()?;
+    for e in std::fs::read_dir(dir).ok()? {
+        let p = e.ok()?.path();
+        let name = p.file_name()?.to_str()?;
+        if p != status && name.starts_with("status-") && name.ends_with(".json") {
+            match read(&p) {
+                Some((other, _)) if other <= at => {}
+                _ => return None,
+            }
+        }
+    }
     let age = Utc::now().signed_duration_since(at).to_std().ok()?;
     (age <= BUFFER_COUNT_MAX_AGE && n <= cap - cap / 10).then_some(n)
 }
