@@ -66,14 +66,14 @@ class BoincDb {static function get(){return new self();}function count($table,$w
             controller="a" * 32, minimum_workunit=100, max_admissions=500, max_inflight_per_host=10,
             enabled_until=10000000000,
             intel_host=9, nvidia_host=10, app_version_num=114, nvidia_app_version=66, intel_app_version=67,
-            prompt_version=1, rotate_after_seconds=1800, apply=True,
+            prompt_version=1, campaigns=[("qwen-nonenglish-v1", 1)], rotate_after_seconds=1800, apply=True,
         )
 
-    def input(self, number, language="yid"):
+    def input(self, number, language="yid", campaign="qwen-nonenglish-v1", prompt_version=1):
         doc, job_id = "ordinary-page-" + str(number), f"{number:064x}"
         page = b"immutable JPEG fixture bytes-" + str(number).encode()
-        job = {"doc_id": doc, "id": job_id, "v": 1, "prompt_version": 1,
-               "max_tokens_per_1000px2": 4, "group": "qwen-nonenglish-v1", "language": language,
+        job = {"doc_id": doc, "id": job_id, "v": 1, "prompt_version": prompt_version,
+               "max_tokens_per_1000px2": 4, "group": campaign, "language": language,
                "engine": dict(R.ENGINE, models=R.MODELS),
                "input": {"bytes": len(page), "sha256": R.sha(page)},
                "crops": [{"id": "c01", "loc_text": "א" * 4096}]}
@@ -83,19 +83,19 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         job_name, page_name = str(number) + "_qwen_json", str(number) + "_page_jpg"
         (download / job_name).write_bytes(raw)
         (download / page_name).write_bytes(page)
-        unit = self.root / "qwen/qwen-nonenglish-v1/units" / doc
+        unit = self.root / "qwen" / campaign / "units" / doc
         unit.mkdir(parents=True, exist_ok=True)
         for name, value in (("qwen.json", raw), ("page.jpg", page),
                             ("submitted", ("usnm_qwen_" + job_id).encode()),
                             ("sample.json", json.dumps({"doc_id": doc, "lang": language,
                                                        "damage_rate": 0.9, "damage": "high"}).encode())):
             (unit / name).write_bytes(value)
-        quality = self.root / "quality/qwen-nonenglish-v1/pages" / doc
+        quality = self.root / "quality" / campaign / "pages" / doc
         quality.mkdir(parents=True, exist_ok=True)
         (quality / "quality.json").write_text(json.dumps(
             {"doc_id": doc, "language": language, "inputs": {
                 "page": job["input"], "alto": {"sha256": "c" * 64}}}))
-        texts = self.root / "quality/qwen-nonenglish-v1/texts"
+        texts = self.root / "quality" / campaign / "texts"
         texts.mkdir(exist_ok=True)
         (texts / (doc + ".loc-provenance.json")).write_text(json.dumps({
             "doc_id": doc, "archive": "ordinary-source.tar.bz2", "member": doc + "/ocr.xml",
@@ -223,7 +223,7 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         # Any change to the audit record or a bound file misses the cache, so the unit is bound
         # again from scratch and a non-language failure still stops the tick.
         drain(self.rows[3])
-        with patch.object(self.args, "prompt_version", 2), \
+        with patch.object(self.args, "campaigns", [("qwen-nonenglish-v1", 2)]), \
                 self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
             tick()
         spa, deu = (row["unit"]["name"].removeprefix("usnm_qwen_") for row in self.rows[:2])
@@ -710,6 +710,58 @@ class BoincDb {static $q=0;static function get(){return new self();}
         # A closed class takes nothing, whatever its version.
         self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [amd], 0, 2), [])
 
+    def campaign_rows(self, *specs):
+        rows, audits = [], {}
+        for number, language, campaign, version in specs:
+            before = set(self.audit)
+            rows.append(self.input(number, language, campaign, version))
+            audits.setdefault(campaign, {}).update(
+                {key: self.audit[key] for key in set(self.audit) - before})
+        for campaign, audit in audits.items():
+            (self.root / "qwen" / campaign / "audit.json").write_text(json.dumps(audit))
+        self.database["rows"] = rows
+        (self.project / "database.json").write_text(json.dumps(rows))
+        self.database["versions"] = [
+            {"id": 73, "version_num": 117, "platformid": 1, "plan_class": "nvidia_vulkan_8b"},
+            {"id": 74, "version_num": 117, "platformid": 1, "plan_class": "intel_vulkan_8b"}]
+        self.args.app_version_num, self.args.nvidia_app_version, self.args.intel_app_version = 117, 73, 74
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_campaign_roots_are_admitted_at_their_own_request_versions(self):
+        self.campaign_rows((200, "srp", "guard-v3", 3), (201, "yid", "guard-v4", 4))
+        self.args.campaigns = [("guard-v3", 3), ("guard-v4", 4)]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
+            receipt = R.run(self.args)
+        self.assertEqual(receipt["status"], "refilled-finite-window")
+        self.assertEqual(receipt["target"], [200, 201])
+        self.assertEqual(R.policy_window(self.policy.read_bytes())[0], [200, 201])
+        self.assertEqual(set(receipt["producer_audit_sha256"]), {"guard-v3", "guard-v4"})
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_root_refuses_a_job_of_another_request_version_or_group(self):
+        self.campaign_rows((200, "srp", "guard-v3", 1), (201, "srp", "guard-v4", 3))
+        self.args.campaigns = [("guard-v3", 3)]
+        with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)), \
+                self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            R.run(self.args)
+        key = self.database["rows"][1]["unit"]["name"].removeprefix("usnm_qwen_")
+        with self.assertRaisesRegex(ValueError, "Unreviewed prompt/budget/cohort"):
+            R.bind_inputs(self.project, self.database["rows"][1], key, self.audit[key], "guard-v3", 3)
+
+    def test_campaign_arguments(self):
+        self.assertEqual(R.parse_campaigns([], 1), [("qwen-nonenglish-v1", 1)])
+        self.assertEqual(R.parse_campaigns(["guard-v3", "guard-v4:4"], 3), [("guard-v3", 3), ("guard-v4", 4)])
+        for values, error in ((["../up"], "Invalid campaign name"), (["guard:5"], "Unknown campaign request"),
+                              (["guard:3", "guard:4"], "Duplicate campaign")):
+            with self.assertRaisesRegex(ValueError, error):
+                R.parse_campaigns(values, 1)
+        base = ["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
+                "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "100",
+                "--enabled-until", str(int(time.time()) + 60), "--app-version-num", "116",
+                "--nvidia-app-version", "1", "--intel-app-version", "2"]
+        with self.assertRaisesRegex(ValueError, "needs app versions that read it"):
+            R.main(base + ["--campaign", "guard:4"])
+
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_open_class_that_cannot_read_the_request_closes_admission(self):
         with patch.object(R, "read_database", return_value=self.database):
@@ -730,7 +782,7 @@ class BoincDb {static $q=0;static function get(){return new self();}
         self.args.app_version_num, self.args.nvidia_app_version, self.args.intel_app_version = 115, 70, 71
         with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
             with self.assertRaisesRegex(Exception, "Unreviewed prompt/budget/cohort"):
-                R.run(SimpleNamespace(**vars(self.args) | {"prompt_version": 2}))
+                R.run(SimpleNamespace(**vars(self.args) | {"campaigns": [("qwen-nonenglish-v1", 2)]}))
         with patch.object(R, "read_database", return_value=copy.deepcopy(self.database)):
             self.assertEqual(R.run(self.args)["status"], "refilled-finite-window")
         base = ["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
