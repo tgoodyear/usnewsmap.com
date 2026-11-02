@@ -7,8 +7,11 @@ apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq git unzip libgl1 libg
 git clone -q https://github.com/dell-research-harvard/AmericanStories.git $A/AmericanStories 2>> $O/setup.log
 c=$(git -C $A/AmericanStories rev-parse HEAD); echo "head $c" >> $O/setup.log
 git -C $A/AmericanStories checkout -q f307e5c 2>> $O/setup.log
+# The Dropbox link is mutable. This is the sha256 in scripts/ocr-survey/models.lock and of the archive the local batch read.
+MODELS_SHA256=53d46ba7173c06e907d222b1bebbd22689df15b7064b51f7a79cc962a18c9933
 curl -fsSL -o $A/models.zip 'https://www.dropbox.com/sh/sfaf1nmuji9yhu6/AAAj1UGrPmCWFJUiTSP41ihpa?dl=1'
 sha256sum $A/models.zip | tee -a $O/setup.log
+echo "$MODELS_SHA256  $A/models.zip" | sha256sum -c --quiet - >> $O/setup.log 2>&1 || { echo "models.zip does not match the pinned sha256" >> $O/setup.log; exit 6; }
 unzip -q -o $A/models.zip -d $A/models 2>> $O/setup.log
 ls $A/models | head -30 >> $O/setup.log
 cd $A/AmericanStories; python -m pip -q install -r requirements.txt 2>&1 | tail -3 >> $O/setup.log
