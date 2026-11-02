@@ -38,17 +38,17 @@ pub(super) fn first_doc(name: &str) -> Option<&str> {
 /// The pages the bundles `names` under `units_dir` hold, after clearing
 /// what a crash left behind, and how many of them were removed. A bundle that
 /// is neither `submitted` nor `submitting` is removed when its `quality.json`
-/// is missing (packing stopped part way) or when any of its inputs no longer
-/// matches the hash the job records (the share lost or cut short a write it
-/// had acknowledged, as it can with synchronous writes off). Its pages then
-/// count as unbundled, so the run packs them again. A submitted or submitting
-/// bundle is never touched: BOINC may already hold it. Without `clean`
-/// nothing is removed or checked, only read: the run packs only its own pages,
-/// so it must not discard a bundle of someone else's.
+/// is missing (packing stopped part way; nothing can submit it) or when any of
+/// its inputs no longer matches the hash the job records (the share lost or
+/// cut short a write it had acknowledged, as it can with synchronous writes
+/// off), and every page it holds is one of `run`'s, which packs them again.
+/// One holding another page is left for submit's own check to refuse, so no
+/// page loses its only bundle. A submitted or submitting bundle is never
+/// touched: BOINC may already hold it. Without `run` nothing is removed.
 pub(super) fn bundled(
     units_dir: &Path,
     names: &[&str],
-    clean: bool,
+    run: Option<&BTreeSet<&str>>,
 ) -> anyhow::Result<(BTreeSet<String>, usize)> {
     let mut docs = BTreeSet::new();
     let mut removed = 0usize;
@@ -59,7 +59,7 @@ pub(super) fn bundled(
         }
         let sent = p.join("submitted").exists() || p.join("submitting").exists();
         if !p.join(JOB_FILE).exists() {
-            if clean && !sent {
+            if run.is_some() && !sent {
                 eprintln!("{}: no quality.json; packing it again", p.display());
                 std::fs::remove_dir_all(&p)?;
                 removed += 1;
@@ -69,21 +69,26 @@ pub(super) fn bundled(
         let job = read(&p.join(JOB_FILE), MAX_JOB_JSON)
             .ok()
             .and_then(|b| serde_json::from_slice::<Job>(&b).ok());
-        if clean && !sent {
+        let members: Vec<String> = match &job {
+            Some(job) if job.pages.is_empty() => vec![job.doc_id.clone()],
+            Some(job) => job.pages.iter().map(|bp| bp.doc_id.clone()).collect(),
+            None => vec![],
+        };
+        if let Some(run) = run.filter(|_| !sent) {
             if let Some(why) = damage(&p, job.as_ref()) {
-                eprintln!("{}: {why}; packing it again", p.display());
-                std::fs::remove_dir_all(&p)?;
-                removed += 1;
-                continue;
+                if job.is_some() && members.iter().all(|d| run.contains(d.as_str())) {
+                    eprintln!("{}: {why}; packing it again", p.display());
+                    std::fs::remove_dir_all(&p)?;
+                    removed += 1;
+                    continue;
+                }
+                eprintln!(
+                    "{}: {why}; it holds pages this run doesn't, so it stays",
+                    p.display()
+                );
             }
         }
-        if let Some(job) = job {
-            if job.pages.is_empty() {
-                docs.insert(job.doc_id);
-            } else {
-                docs.extend(job.pages.into_iter().map(|bp| bp.doc_id));
-            }
-        }
+        docs.extend(members);
     }
     Ok((docs, removed))
 }

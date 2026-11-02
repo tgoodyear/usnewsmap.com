@@ -194,7 +194,7 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
         .iter()
         .map(String::as_str)
         .partition(|n| first_doc(n).is_some_and(|d| run_set.contains(d)));
-    let (mut bundled_docs, removed) = bundled(&units_dir, &mine, true)?;
+    let (mut bundled_docs, removed) = bundled(&units_dir, &mine, Some(&run_set))?;
     let existing_bundles = names.len() - removed;
     // A root staged one page a unit before keeps those units under units/<doc_id>: a page
     // with one is BOINC's already, never packed again.
@@ -221,12 +221,18 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
             summary.already += 1;
             continue;
         }
+        // A page staged before, even part way, may sit in a bundle another run made: read
+        // those before staging or packing it again.
+        if bundle_size > 1 && unit.exists() && !read_others && !bundled_docs.contains(&p.doc_id) {
+            let (more, _) = bundled(&units_dir, &others, None)?;
+            bundled_docs.extend(more);
+            read_others = true;
+        }
+        if bundled_docs.contains(&p.doc_id) {
+            summary.already += 1;
+            continue;
+        }
         if unit.join(JOB_FILE).exists() {
-            if bundle_size > 1 && !read_others && !bundled_docs.contains(&p.doc_id) {
-                let (more, _) = bundled(&units_dir, &others, false)?;
-                bundled_docs.extend(more);
-                read_others = true;
-            }
             match unstaged_damage(&unit, &bundled_docs, &p.doc_id)? {
                 None => {
                     summary.already += 1;
@@ -1287,7 +1293,7 @@ pub(crate) mod tests {
             ..opts.clone()
         };
         let s = run(&bundled).await.unwrap();
-        assert_eq!((s.staged, s.bundles), (2, 1));
+        assert_eq!((s.staged, s.already, s.bundles), (1, 1, 1));
         let job = bundle_job(&units(&opts.root).join(format!("bundle-00001-{DOC2}")));
         assert_eq!(job.pages.len(), 1);
 
@@ -1299,5 +1305,66 @@ pub(crate) mod tests {
         let s = run(&bundled).await.unwrap();
         assert_eq!((s.restaged, s.bundles), (1, 1));
         bundle_job(&units(&opts.root).join(format!("bundle-00001-{DOC2}")));
+    }
+
+    /// A damaged bundle that also holds a page outside this run stays: removing
+    /// it would leave that page with no bundle, as only this run's pages are
+    /// packed again.
+    #[tokio::test]
+    async fn a_damaged_bundle_with_pages_outside_the_run_stays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = bundle_options(tmp.path(), &[DOC1, DOC2, DOC3], 2);
+        let only = |docs: &[&str], name: &str| {
+            let path = tmp.path().join(name);
+            let lines = std::fs::read_to_string(opts.sample.as_ref().unwrap())
+                .unwrap()
+                .lines()
+                .filter(|l| docs.iter().any(|d| l.contains(&format!("\"{d}\""))))
+                .map(|l| format!("{l}\n"))
+                .collect::<String>();
+            std::fs::write(&path, lines).unwrap();
+            path
+        };
+        let first = Options {
+            sample: Some(only(&[DOC1, DOC2], "first.jsonl")),
+            ..opts.clone()
+        };
+        assert_eq!(run(&first).await.unwrap().bundles, 1);
+        let bundle = units(&opts.root).join(format!("bundle-00001-{DOC1}"));
+        std::fs::write(bundle.join(PAGE_FILE), b"cut").unwrap();
+        let second = Options {
+            sample: Some(only(&[DOC1, DOC3], "second.jsonl")),
+            ..opts.clone()
+        };
+        let s = run(&second).await.unwrap();
+        assert_eq!((s.staged, s.already, s.bundles), (1, 1, 1));
+        assert_eq!(std::fs::read(bundle.join(PAGE_FILE)).unwrap(), b"cut");
+        let job = bundle_job(&units(&opts.root).join(format!("bundle-00002-{DOC3}")));
+        assert_eq!(job.pages.len(), 1);
+    }
+
+    /// A page whose own quality.json is gone but that a bundle of another run
+    /// holds is not staged or packed again.
+    #[tokio::test]
+    async fn a_page_unit_without_its_job_in_another_bundle_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = bundle_options(tmp.path(), &[DOC1, DOC2], 2);
+        assert_eq!(run(&opts).await.unwrap().bundles, 1);
+        std::fs::remove_file(opts.root.join("pages").join(DOC2).join(JOB_FILE)).unwrap();
+        let path = tmp.path().join("doc2.jsonl");
+        let line = std::fs::read_to_string(opts.sample.as_ref().unwrap())
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains(&format!("\"{DOC2}\"")))
+            .map(|l| format!("{l}\n"))
+            .collect::<String>();
+        std::fs::write(&path, line).unwrap();
+        let s = run(&Options {
+            sample: Some(path),
+            ..opts.clone()
+        })
+        .await
+        .unwrap();
+        assert_eq!((s.staged, s.already, s.bundles), (0, 1, 0));
     }
 }

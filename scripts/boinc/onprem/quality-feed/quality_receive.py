@@ -49,15 +49,41 @@ def sample_docs(path):
         return [json.loads(line)["doc_id"] for line in f]
 
 
+def bundle_docs(path):
+    with open(os.path.join(path, "quality.json")) as f:
+        job = json.load(f)
+    return [p["doc_id"] for p in job.get("pages") or []] or [job["doc_id"]]
+
+
 def after_submit(camp, inc):
     units = os.path.join(camp, "units")
-    # A directory without quality.json is no bundle yet: packing stopped part way, and the next
-    # stage removes it. Submit takes only bundles with one.
-    bundles = [d for d in os.listdir(units) if os.path.isfile(os.path.join(units, d, "quality.json"))] \
-        if os.path.isdir(units) else []
-    if not bundles or any(not os.path.exists(os.path.join(units, b, "submitted")) for b in bundles):
-        fail("a bundle has no submitted marker; nothing freed")
     docs = sample_docs(os.path.join(inc, "sample.jsonl"))
+    # Every page of the chunk must be in a submitted unit, or have LoC's `missing` marker, before
+    # anything is freed: a bundle whose quality.json the share lost after staging is skipped by
+    # submit, and freeing its pages then would lose them. A run names its bundles after its first
+    # page (bundle-<n>-<doc_id>), so the chunk's own are found without reading every bundle; a
+    # directory without quality.json is no bundle (a crash stopped packing; staging removes it).
+    names = os.listdir(units) if os.path.isdir(units) else []
+    wanted = set(docs)
+    own = [n for n in names if n.startswith("bundle-") and n.split("-", 2)[-1] in wanted]
+    covered = set()
+    for group in (own, [n for n in names if n not in own]):
+        for n in group:
+            b = os.path.join(units, n)
+            if not os.path.isfile(os.path.join(b, "quality.json")):
+                continue
+            members = bundle_docs(b)
+            if not os.path.exists(os.path.join(b, "submitted")):
+                if wanted.intersection(members):
+                    fail(f"{n} has no submitted marker; nothing freed")
+                continue
+            covered.update(members)
+        left = [d for d in docs if d not in covered
+                and not any(os.path.exists(os.path.join(camp, t, d, "missing")) for t in ("pages", "units"))]
+        if not left:
+            break
+    else:
+        fail(f"{len(left)} pages are in no submitted unit (first {left[0]}); nothing freed")
     # The shipper receives the next chunk while this one stages and submits: a page that chunk
     # holds too keeps its scan and texts, so its stage never has to ask LoC.
     # One that can't be read (a receive cut short) keeps all of this chunk's copies: they are

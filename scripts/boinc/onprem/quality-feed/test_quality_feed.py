@@ -103,19 +103,21 @@ class FeedTest(unittest.TestCase):
             inc.mkdir(parents=True)
             (inc / "sample.jsonl").write_text(json.dumps({"doc_id": doc}) + "\n")
             for rel in (f"scans/{doc}.jpg", f"texts/{doc}.json", f"pages/{doc}/page.jpg", f"pages/{doc}/quality.json",
-                        "units/bundle-00001/page.jpg", "units/bundle-00001/quality.json"):
+                        f"units/bundle-00001-{doc}/page.jpg"):
                 (camp / rel).parent.mkdir(parents=True, exist_ok=True)
                 (camp / rel).write_text("x")
+            (camp / f"units/bundle-00001-{doc}/quality.json").write_text(
+                json.dumps({"doc_id": doc, "pages": [{"doc_id": doc}]}))
             args = ["--campaign", "v1-test", "--chunk", "c00001", "--share", d, "--after-submit"]
             with self.assertRaises(SystemExit):
                 receive.main(args)
-            (camp / "units/bundle-00001/submitted").write_text("wu\n")
+            (camp / f"units/bundle-00001-{doc}/submitted").write_text("wu\n")
             with contextlib.redirect_stdout(io.StringIO()):
                 receive.main(args)
             self.assertFalse((camp / f"scans/{doc}.jpg").exists())
             self.assertFalse((camp / f"pages/{doc}/page.jpg").exists())
             self.assertTrue((camp / f"pages/{doc}/quality.json").exists())
-            self.assertTrue((camp / "units/bundle-00001/page.jpg").exists())
+            self.assertTrue((camp / f"units/bundle-00001-{doc}/page.jpg").exists())
             self.assertFalse(inc.exists())
 
     def test_after_submit_skips_a_partial_bundle_and_keeps_the_next_chunks_pages(self):
@@ -128,11 +130,13 @@ class FeedTest(unittest.TestCase):
                 chunk.mkdir(parents=True)
                 (chunk / "sample.jsonl").write_text("".join(json.dumps({"doc_id": x}) + "\n" for x in docs))
             for rel in (f"scans/{doc}.jpg", f"scans/{shared}.jpg", f"texts/{shared}.json",
-                        "units/bundle-00001/quality.json", "units/bundle-00001/submitted",
+                        f"units/bundle-00001-{doc}/submitted",
                         # A crash stopped packing before quality.json: the next stage packs again.
-                        "units/bundle-00002/page.jpg"):
+                        f"units/bundle-00002-{doc}/page.jpg"):
                 (camp / rel).parent.mkdir(parents=True, exist_ok=True)
                 (camp / rel).write_text("x")
+            (camp / f"units/bundle-00001-{doc}/quality.json").write_text(
+                json.dumps({"doc_id": doc, "pages": [{"doc_id": doc}, {"doc_id": shared}]}))
             with contextlib.redirect_stdout(io.StringIO()):
                 receive.main(["--campaign", "v1-test", "--chunk", "c00001", "--share", d, "--after-submit"])
             self.assertFalse((camp / f"scans/{doc}.jpg").exists())
@@ -141,6 +145,29 @@ class FeedTest(unittest.TestCase):
             self.assertTrue((camp / f"texts/{shared}.json").exists())
             self.assertFalse(inc.exists())
             self.assertTrue(ahead.exists())
+
+    def test_after_submit_frees_nothing_while_a_page_is_in_no_submitted_unit(self):
+        with tempfile.TemporaryDirectory() as d:
+            camp = Path(d, "quality", "v1-test")
+            doc, older, gone = "sn1_1900-01-01_ed-1_seq-1", "sn1_1899-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2"
+            inc = camp / "incoming" / "c00002"
+            inc.mkdir(parents=True)
+            (inc / "sample.jsonl").write_text("".join(json.dumps({"doc_id": x}) + "\n" for x in (doc, gone)))
+            # An older chunk's bundle is submitted; this chunk's lost its quality.json after staging.
+            old = camp / f"units/bundle-00001-{older}"
+            old.mkdir(parents=True)
+            (old / "quality.json").write_text(json.dumps({"doc_id": older, "pages": [{"doc_id": older}]}))
+            (old / "submitted").write_text("wu\n")
+            (camp / f"units/bundle-00002-{doc}").mkdir(parents=True)
+            (camp / f"scans/{doc}.jpg").parent.mkdir(parents=True)
+            (camp / f"scans/{doc}.jpg").write_text("x")
+            (camp / f"pages/{gone}").mkdir(parents=True)
+            (camp / f"pages/{gone}/missing").write_text("LoC has no such page\n")
+            with self.assertRaises(SystemExit) as e:
+                receive.main(["--campaign", "v1-test", "--chunk", "c00002", "--share", d, "--after-submit"])
+            self.assertIn("in no submitted unit", str(e.exception))
+            self.assertTrue((camp / f"scans/{doc}.jpg").exists())
+            self.assertTrue(inc.exists())
 
     def test_after_submit_with_a_cut_short_neighbour_keeps_its_copies_and_finishes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -152,9 +179,10 @@ class FeedTest(unittest.TestCase):
             ahead.mkdir(parents=True)
             (inc / "sample.jsonl").write_text(json.dumps({"doc_id": doc}) + "\n")
             (ahead / "sample.jsonl").write_text('{"doc_i')
-            for rel in (f"scans/{doc}.jpg", "units/bundle-00001/quality.json", "units/bundle-00001/submitted"):
+            for rel in (f"scans/{doc}.jpg", f"units/bundle-00001-{doc}/submitted"):
                 (camp / rel).parent.mkdir(parents=True, exist_ok=True)
                 (camp / rel).write_text("x")
+            (camp / f"units/bundle-00001-{doc}/quality.json").write_text(json.dumps({"doc_id": doc, "pages": []}))
             with contextlib.redirect_stdout(io.StringIO()):
                 receive.main(["--campaign", "v1-test", "--chunk", "c00001", "--share", d, "--after-submit"])
             self.assertTrue((camp / f"scans/{doc}.jpg").exists())
