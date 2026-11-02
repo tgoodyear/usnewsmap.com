@@ -123,12 +123,20 @@ fetch_secrets() {
 # the scheduler reads it as www-data to send assigned jobs.
 lock_code_trees() {
   local tree
+  # An SMB share's mount options fix the modes, so chmod can't lock anything there.
+  case "$(stat -f -c %T "$PROJ" 2>/dev/null)" in
+    smb2 | cifs) log "error: $PROJ is on an SMB share, so www-data can still write the code"; return 0 ;;
+  esac
   chmod g-w "$PROJ" "$PROJ/html" || log "could not lock $PROJ"
   for tree in apps bin cgi-bin py html/inc html/languages html/ops html/project html/user; do
     if [ -e "$PROJ/$tree" ]; then
       chmod -R g-w "$PROJ/$tree" || log "could not lock $tree"
     fi
   done
+  # Logged, not fatal: stopping the server here would turn a hardening gap into an outage.
+  if su -s /bin/sh www-data -c "test -w '$PROJ' || test -w '$PROJ/bin' || test -w '$PROJ/cgi-bin'"; then
+    log "error: www-data can still write the BOINC code trees"
+  fi
 }
 
 # render_config: fills config.xml.template from the environment and the fetched runtime
