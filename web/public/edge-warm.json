@@ -223,6 +223,8 @@
   "q=Krieg&mode=phrase&from=1870-01-01&to=1871-12-31&bucket=week&lang=ger",
   "q=Kulturkampf+OR+Culturkampf",
   "q=Kulturkampf+OR+Culturkampf&from=1871-01-01&to=1887-12-31&bucket=month&lang=ger",
+  "q=Lafayette",
+  "q=Lafayette&from=1824-06-01&to=1825-12-31&bucket=month",
   "q=Leaves+of+Grass&mode=phrase&from=1855-01-01&to=1857-12-31&bucket=month",
   "q=Lindbergh+baby&mode=phrase&from=1932-01-01&to=1936-12-31&bucket=month",
   "q=Lusitania&mode=phrase&from=1915-01-01&to=1916-12-31&bucket=week",

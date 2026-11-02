@@ -1879,6 +1879,14 @@
     "view": { "bucket": "month", "from": "1962-01-01", "q": "Telstar", "to": "1963-12-31" }
   },
   {
+    "aggregate": "q=Lafayette&from=1824-06-01&to=1825-12-31&bucket=month",
+    "blurb": "Lafayette returned in 1824 and toured all 24 states over the next year.",
+    "era": "1751-1828",
+    "id": "lafayette-tour",
+    "title": "Lafayette's American tour",
+    "view": { "bucket": "month", "from": "1824-06-01", "q": "Lafayette", "to": "1825-12-31" }
+  },
+  {
     "aggregate": "q=stamp+act&mode=phrase&from=1765-01-01&to=1766-12-31&bucket=month",
     "blurb": "The 1765 tax on printed materials provoked colonial resistance and was repealed in 1766.",
     "era": "1751-1828",
