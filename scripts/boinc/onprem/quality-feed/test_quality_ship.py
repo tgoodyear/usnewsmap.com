@@ -70,7 +70,8 @@ elif "python3" in args and "-" in args:
     if "--after-submit" in args:
         print("freed 0 bytes")
     else:
-        print("/project/quality/test/incoming/c00001/sample.jsonl\\trus\\t1")
+        campaign = args[args.index("--campaign") + 1]
+        print(f"/project/quality/{campaign}/incoming/c00001/sample.jsonl\\trus\\t1")
 """)
 
     def stub(self, name, body):
@@ -78,10 +79,11 @@ elif "python3" in args and "-" in args:
         path.write_text(body)
         path.chmod(0o755)
 
-    def run_ship(self, extra, native=True):
+    def run_ship(self, extra, native=True, langs="rus\n"):
         chunk = self.root / "outbox/test/c00001"
         chunk.mkdir(parents=True, exist_ok=True)
         (chunk / "READY").write_text("1\n")
+        (chunk / "langs.txt").write_text(langs)
         return subprocess.run(
             ["bash", str(HERE / "quality-ship.sh"), "--campaign", "test",
              "--engine-image", "sha256:" + "a" * 64, "--outbox", str(self.root / "outbox"),
@@ -104,6 +106,58 @@ elif "python3" in args and "-" in args:
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(probe.returncode, 0, probe.stderr)
                 self.assertEqual(probe.stdout, "locked argv survives")
+
+    GUARDED = ["--prompt-version", "3", "--qwen-root", "guard-v3", "--qwen-yiddish-root", "guard-v4"]
+
+    def native_calls(self):
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        return [c for c in calls if "/project/ops/qwen-feed/qwen_submit.py" in c]
+
+    def test_by_default_chunks_keep_their_campaign_and_request_version_1(self):
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in self.native_calls():
+            self.assertEqual(call[call.index("--campaign") + 1], "test")
+            self.assertEqual(call[call.index("--prompt-version") + 1], "1")
+
+    def test_a_chunk_goes_to_the_root_and_version_of_its_language(self):
+        for langs, root, version in (("srp\n", "guard-v3", "3"), ("srp\nspa\n", "guard-v3", "3"),
+                                     ("yid\n", "guard-v4", "4")):
+            with self.subTest(langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship(self.GUARDED, langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = self.native_calls()
+                self.assertEqual(len(native), 2)
+                for call in native:
+                    self.assertEqual(call[call.index("--campaign") + 1], root)
+                    self.assertEqual(call[call.index("--prompt-version") + 1], version)
+                text = (self.root / "calls.jsonl").read_text()
+                self.assertIn(f"QUALITY_CAMPAIGN={root}", text)
+                self.assertIn(f"QUALITY_GROUP={root}", text)
+                self.assertIn(f"/project/quality/{root}", text)
+                self.assertNotIn("QUALITY_CAMPAIGN=test", text)
+                # The chunk leaves the outbox it came from.
+                self.assertFalse((self.root / "outbox/test/c00001").exists())
+
+    def test_yiddish_never_ships_at_request_version_3(self):
+        for extra, langs in ((["--prompt-version", "3", "--qwen-root", "guard-v3"], "yid\n"),
+                             (self.GUARDED, "srp\nyid\n"), (self.GUARDED, "")):
+            with self.subTest(langs=langs):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship(extra, langs=langs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("READY retained", result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
+                self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+
+    def test_request_versions_and_roots_are_native_only_and_checked(self):
+        for extra, native in ((["--prompt-version", "3"], False), (["--qwen-root", "x"], False),
+                              (["--prompt-version", "5"], True), (["--qwen-root", "Bad_Name"], True)):
+            with self.subTest(extra=extra):
+                result = self.run_ship(extra, native=native)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse((self.root / "calls.jsonl").exists())
 
     def test_stage_and_submit_do_not_wait_for_the_step_window(self):
         # The stage has its own lock on the host, and only native publication reads the clock.

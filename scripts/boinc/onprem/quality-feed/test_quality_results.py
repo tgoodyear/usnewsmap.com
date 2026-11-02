@@ -1,4 +1,5 @@
 """Canonical collection pipeline: ordering, fail-closed phases and fresh snapshot transfer."""
+import contextlib
 import importlib.util
 import fcntl
 import json
@@ -204,6 +205,59 @@ class ResultsTest(unittest.TestCase):
             load = run.call_args_list[2].args[0][-1]
             self.assertIn("--campaign qwen-nonenglish-v1", load)
             self.assertIn("/results/qwen-nonenglish-v1/snapshots/", load)
+
+
+class NativeCampaignsTest(unittest.TestCase):
+    ENGINE = "sha256:" + "a" * 64
+
+    def main(self, run, *extra):
+        with mock.patch.object(results, "run", side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            results.main(["--engine-image", self.ENGINE, "--lock", os.devnull, *extra])
+        return output.getvalue()
+
+    def test_each_root_is_read_with_its_own_collector_and_named_joins_itself(self):
+        seen = []
+
+        def run(args):
+            seen.append((args.campaign, args.qwen_campaign, args.collector))
+            return {}
+
+        self.main(run, "--collector", "/old/usnm-boinc", "--native-campaign", "qwen-nonenglish-v1",
+                  "--native-campaign", "guard-v3=/guard/usnm-boinc")
+        self.assertEqual(seen, [("qwen-nonenglish-v1", "qwen-nonenglish-v1", "/old/usnm-boinc"),
+                                ("guard-v3", "guard-v3", "/guard/usnm-boinc")])
+
+    def test_a_root_that_fails_does_not_stop_the_others_and_is_reported(self):
+        seen = []
+
+        def run(args):
+            seen.append(args.campaign)
+            if args.campaign == "first":
+                raise subprocess.CalledProcessError(1, ["collect"])
+            return {}
+
+        with self.assertRaisesRegex(SystemExit, "native campaigns failed: first"):
+            self.main(run, "--native-campaign", "first", "--native-campaign", "second")
+        self.assertEqual(seen, ["first", "second"])
+
+    def test_a_held_step_lock_defers_a_root_without_failing_the_run(self):
+        def run(args):
+            if args.campaign == "first":
+                raise subprocess.CalledProcessError(75, ["collect"])
+            return {"campaign": args.campaign}
+
+        output = self.main(run, "--native-campaign", "first", "--native-campaign", "second")
+        self.assertIn('"status": "deferred"', output)
+        self.assertIn('{"campaign": "second"}', output)
+
+    def test_one_way_of_naming_campaigns(self):
+        for extra in ([], ["--campaign", "a", "--native-campaign", "b"]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.main(lambda args: {}, *extra)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.main(lambda args: {}, "--native-campaign", "a=relative/path")
 
 
 class PullTest(unittest.TestCase):

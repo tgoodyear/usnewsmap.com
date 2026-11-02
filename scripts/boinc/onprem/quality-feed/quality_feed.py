@@ -180,6 +180,10 @@ def cmd_select(a):
             d = dmg.get(r["doc_id"], {})
             if getattr(a, "non_english", False) and (not d.get("lang") or lang_of(d["lang"]) == "eng"):
                 continue
+            language = lang_of(d.get("lang"))
+            if ((getattr(a, "language", None) and language != a.language)
+                    or language == getattr(a, "exclude_language", None)):
+                continue
             out.append({
                 "batch": batch,
                 "batch_version": bv,
@@ -189,7 +193,7 @@ def cmd_select(a):
                 "doc_id": r["doc_id"],
                 "edition": int(m["ed"]),
                 "fetched_at": r.get("fetched_at", ""),
-                "lang": lang_of(d.get("lang")),
+                "lang": language,
                 "lccn": m["lccn"],
                 "scan": scan_path(r),
                 "seq": int(m["seq"]),
@@ -662,6 +666,8 @@ def main(argv=None):
     s.add_argument("--out", required=True)
     s.add_argument("--order", choices=["damage", "fetched"], default="damage")
     s.add_argument("--non-english", action="store_true", help="only pages explicitly scored as non-English")
+    s.add_argument("--language", help="only pages in this language")
+    s.add_argument("--exclude-language", help="leave out pages in this language")
     s.add_argument("--scan-server", help="check actual scan availability before taking --count pages")
     s.add_argument("--damage-dsn-file", help="query indexed quality.page_summary instead of rereading corpus Parquet")
     r = sub.add_parser("run")
