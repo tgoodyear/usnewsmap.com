@@ -275,6 +275,30 @@ class BoincDb {static function get(){return new self();}function count($table,$w
                 self.assertRaisesRegex(ValueError, "Input escaped download tree"):
             R.run(self.args)
 
+    def test_a_cohort_language_admits_german_and_rebinds_units_passed_over(self):
+        row = self.input(200, "deu")
+        key = row["unit"]["name"].removeprefix("usnm_qwen_")
+        with self.assertRaises(R.OutOfCohort):
+            R.bind_inputs(self.project, row, key, self.audit[key])
+        before = R.exclusion_key(self.project, row, key, self.audit[key], "qwen-nonenglish-v1", 1)
+        self.addCleanup(setattr, R, "EXTRA_LANGUAGES", R.EXTRA_LANGUAGES)
+        R.EXTRA_LANGUAGES = ("deu",)
+        self.assertEqual(R.bind_inputs(self.project, row, key, self.audit[key])["doc_id"],
+                         json.loads((self.project / "download/200_qwen_json").read_bytes())["doc_id"])
+        self.assertNotEqual(R.exclusion_key(self.project, row, key, self.audit[key], "qwen-nonenglish-v1", 1),
+                            before)
+        # Only the language named joins.
+        spanish = self.input(201, "spa")
+        spanish_key = spanish["unit"]["name"].removeprefix("usnm_qwen_")
+        with self.assertRaises(R.OutOfCohort):
+            R.bind_inputs(self.project, spanish, spanish_key, self.audit[spanish_key])
+
+    def test_cohort_language_takes_a_three_letter_code(self):
+        with patch.object(R, "run", return_value={}), self.assertRaisesRegex(ValueError, "ISO 639-3"):
+            R.main(["--project", "p", "--helper", "h", "--helper-sha256", "a" * 64, "--config-sha256", "a" * 64,
+                    "--initial-policy-sha256", "a" * 64, "--controller", "a" * 32, "--minimum-workunit", "2",
+                    "--enabled-until", "1", "--cohort-language", "German"])
+
     def test_source_hash_archive_binding_damage_and_multibyte_contract(self):
         for language in ("yid", "srp"):
             row = self.input(200, language)

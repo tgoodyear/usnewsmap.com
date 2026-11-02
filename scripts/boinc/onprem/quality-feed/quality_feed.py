@@ -132,6 +132,9 @@ def read_lines(path):
 
 def cmd_select(a):
     staged = read_lines(a.staged)
+    excluded = getattr(a, "exclude_language", None) or []
+    if isinstance(excluded, str):
+        excluded = [excluded]
     cand = {}
     with open(a.index) as f:
         for line in f:
@@ -182,7 +185,7 @@ def cmd_select(a):
                 continue
             language = lang_of(d.get("lang"))
             if ((getattr(a, "language", None) and language != a.language)
-                    or language == getattr(a, "exclude_language", None)):
+                    or language in excluded):
                 continue
             out.append({
                 "batch": batch,
@@ -682,7 +685,8 @@ def main(argv=None):
     s.add_argument("--order", choices=["damage", "fetched"], default="damage")
     s.add_argument("--non-english", action="store_true", help="only pages explicitly scored as non-English")
     s.add_argument("--language", help="only pages in this language")
-    s.add_argument("--exclude-language", help="leave out pages in this language")
+    s.add_argument("--exclude-language", action="append",
+                   help="leave out pages in this language; may repeat")
     s.add_argument("--scan-server", help="check actual scan availability before taking --count pages")
     s.add_argument("--damage-dsn-file", help="query indexed quality.page_summary instead of rereading corpus Parquet")
     r = sub.add_parser("run")

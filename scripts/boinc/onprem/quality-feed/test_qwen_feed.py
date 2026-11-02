@@ -131,7 +131,7 @@ class SourceRequestTest(unittest.TestCase):
                     server_host="server", archive_host="archive", scan_server="http://scan",
                     archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
                     max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64,
-                    yiddish_budget=None)
+                    yiddish_budget=None, german_budget=None, german_pages=None)
                 index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
                 attempts = []
                 selected = b""
@@ -632,7 +632,7 @@ class SourceTest(unittest.TestCase):
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
                                       max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64,
-                                      yiddish_budget=None)
+                                      yiddish_budget=None, german_budget=None, german_pages=None)
             page = {"doc_id": DOC, "damage_rate": 0.9}
             inv = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
                    "documents": [], "free_bytes": 100 * 1024**3}
@@ -781,25 +781,31 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(stage[stage.index("--prompt-version") + 1], "3")
             self.assertEqual(publish[:3], ["/guard/usnm-boinc", "qwen", "submit"])
 
-    def budget_tick(self, root, budget, yiddish, others):
+    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None):
         """One feed tick with a stub corpus; returns the filters each select used and the
-        pages it sent to `run`."""
+        pages it sent to `run`. A filter's refused languages are one string when one is refused."""
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
             min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100,
-            reserve_mib=64, yiddish_budget=budget)
+            reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages)
         filters, prepared = [], []
         selected = b""
+        index = b""
 
         def command(argv, data=None):
-            nonlocal selected
+            nonlocal selected, index
+            if "tee" in argv and argv[-1].endswith("/index.jsonl"):
+                index = data
             if "select" in argv:
                 wanted = argv[argv.index("--language") + 1] if "--language" in argv else None
-                refused = argv[argv.index("--exclude-language") + 1] if "--exclude-language" in argv else None
-                filters.append((wanted, refused, int(argv[argv.index("--count") + 1])))
+                refused = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--exclude-language"]
+                filters.append((wanted, refused[0] if len(refused) == 1 else tuple(refused) or None,
+                                int(argv[argv.index("--count") + 1])))
+                indexed = {json.loads(line)["doc_id"] for line in index.splitlines()}
                 pool = [p for p in yiddish + others
-                        if (wanted is None or p["lang"] == wanted) and p["lang"] != refused]
+                        if (wanted is None or p["lang"] == wanted) and p["lang"] not in refused
+                        and (german_pages is None or wanted != "deu" or p["doc_id"] in indexed)]
                 selected = "".join(json.dumps(p) + "\n" for p in pool[:filters[-1][2]]).encode()
             if "cat" in argv:
                 return selected
@@ -818,12 +824,14 @@ class SourceTest(unittest.TestCase):
             return json.dumps({"cached": [json.loads(line)["doc_id"] for line in data.splitlines()],
                                "missing": [], "pending": []}).encode()
 
-        row = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64}
+        rows = [{"doc_id": doc, "batch": "xx_test", "batch_version": 1, "bytes": 12, "sha256": "a" * 64}
+                for doc in [DOC] + [p["doc_id"] for p in yiddish + others if p["doc_id"] != DOC]]
+        listing = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
         with mock.patch.object(driver, "remote", side_effect=remote), \
                 mock.patch.object(driver, "command", side_effect=command), \
                 mock.patch.object(driver.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10**12)), \
                 mock.patch.object(driver.urllib.request, "urlopen",
-                                  return_value=contextlib.closing(io.BytesIO(json.dumps(row).encode() + b"\n"))), \
+                                  return_value=contextlib.closing(io.BytesIO(listing))), \
                 contextlib.redirect_stdout(io.StringIO()):
             driver.tick(args)
         return filters, [p["doc_id"] for p in prepared]
@@ -886,6 +894,36 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(filters, [("yid", None, 30), (None, "yid", 100)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
 
+    def test_german_budget_comes_after_a_spent_yiddish_budget_and_never_more(self):
+        german = [{"doc_id": f"sn3_1900-01-02_ed-1_seq-{n}", "lang": "deu", "damage_rate": .9}
+                  for n in range(1, 9)]
+        others = [{"doc_id": f"sn2_1900-01-02_ed-1_seq-{n}", "lang": "srp", "damage_rate": .8}
+                  for n in range(1, 4)]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "yiddish-budget.json").write_text(json.dumps(["spent"]))
+            filters, pages = self.budget_tick(root, 1, [], german + others, german_budget=5)
+            self.assertEqual(filters, [("deu", None, 5)])
+            self.assertEqual(pages, [p["doc_id"] for p in german[:5]])
+            self.assertEqual(json.loads((root / "german-budget.json").read_text()),
+                             sorted(p["doc_id"] for p in german[:5]))
+            self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), ["spent"])
+            # Spent: the normal order carries on without Yiddish or German.
+            filters, pages = self.budget_tick(root, 1, [], german[5:] + others, german_budget=5)
+            self.assertEqual(filters, [(None, ("yid", "deu"), 100)])
+            self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_german_pages_limit_the_german_budget_to_a_list(self):
+        german = [{"doc_id": f"sn3_1900-01-02_ed-1_seq-{n}", "lang": "deu", "damage_rate": .9}
+                  for n in range(1, 9)]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            listed = root / "german-pages.txt"
+            listed.write_text("".join(p["doc_id"] + "\n" for p in german[4:6]))
+            filters, pages = self.budget_tick(root, None, [], german, german_budget=50, german_pages=listed)
+            self.assertEqual(filters, [("deu", None, 50)])
+            self.assertEqual(pages, [p["doc_id"] for p in german[4:6]])
+
     def test_without_a_budget_yiddish_keeps_its_place_in_the_normal_order(self):
         pages = [{"doc_id": f"sn{n}_1900-01-02_ed-1_seq-1", "lang": lang, "damage_rate": .8}
                  for n, lang in enumerate(("yid", "srp"), 1)]
@@ -910,7 +948,8 @@ class SourceTest(unittest.TestCase):
             pq.read_table.return_value.to_pylist.return_value = rows
             pa = types.ModuleType("pyarrow")
             pa.parquet = pq
-            for filters, expected in (({"language": "yid"}, [docs[0]]), ({"exclude_language": "yid"}, [docs[1]]),
+            for filters, expected in (({"language": "yid"}, [docs[0]]), ({"exclude_language": ["yid"]}, [docs[1]]),
+                                      ({"exclude_language": ["yid", "srp"]}, []),
                                       ({}, docs[:2])):
                 a = types.SimpleNamespace(index=str(index), staged="", curated=str(root / "curated"),
                                           non_english=True, order="damage", count=0,

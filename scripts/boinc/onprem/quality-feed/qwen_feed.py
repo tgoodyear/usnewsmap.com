@@ -17,6 +17,7 @@ import time
 import urllib.request
 
 YIDDISH = "yid"
+GERMAN = "deu"
 
 
 def command(args, data=None):
@@ -48,8 +49,21 @@ def available_source_index(lines, inventory):
 
 
 def budget_spent(path):
-    """Yiddish pages already prepared under --yiddish-budget, across restarts."""
+    """Pages already prepared under a language budget, across restarts."""
     return json.loads(path.read_text()) if path.exists() else []
+
+
+def budgets(a):
+    """(language, name, budget) for each language the feed prepares only under a budget."""
+    return [(language, name, budget) for language, name, budget in (
+        (YIDDISH, "yiddish", a.yiddish_budget), (GERMAN, "german", a.german_budget))
+        if budget is not None]
+
+
+def listed_pages(index, path):
+    """The index rows for the pages a --german-pages file names, one doc_id a line."""
+    wanted = {line.strip() for line in path.read_text().splitlines() if line.strip()}
+    return b"".join(line + b"\n" for line in index.splitlines() if json.loads(line)["doc_id"] in wanted)
 
 
 def tick(a):
@@ -130,18 +144,26 @@ def _tick(a):
         selected = command(ct + ["cat", work + "/selected.jsonl"])
         return selected, [json.loads(line) for line in selected.splitlines() if line]
 
-    budget_path = a.state / "yiddish-budget.json"
-    spent = budget_spent(budget_path) if a.yiddish_budget is not None else []
-    # Yiddish reads at another request version, so it comes as a chunk of its own, ahead of any
-    # source request and only up to the budget. Every other page keeps the normal order without it.
-    left = 0 if a.yiddish_budget is None else min(count, a.yiddish_budget - len(spent))
-    # The budgeted pass is the only way in for Yiddish, whatever a source request names.
-    filters = () if a.yiddish_budget is None else ("--exclude-language", YIDDISH)
+    # A budgeted language comes as a chunk of its own, ahead of any source request and only up
+    # to its budget: Yiddish because it reads at another request version, German while it is
+    # being calibrated. Every other page keeps the normal order without them.
+    budgeted = budgets(a)
+    # The budgeted pass is the only way in for these languages, whatever a source request names.
+    filters = tuple(arg for language, _, _ in budgeted for arg in ("--exclude-language", language))
     pages = []
-    if left > 0:
-        command(ct + ["tee", work + "/index.jsonl"], index)
-        raw, pages = select(left, "--language", YIDDISH)
-        phase("yiddish_budget", spent=len(spent), budget=a.yiddish_budget, selected=len(pages))
+    for language, name, budget in budgeted:
+        spent = budget_spent(a.state / f"{name}-budget.json")
+        left = min(count, budget - len(spent))
+        if left <= 0:
+            continue
+        own = index
+        if language == GERMAN and a.german_pages is not None:
+            own = listed_pages(index, a.german_pages)
+        command(ct + ["tee", work + "/index.jsonl"], own)
+        raw, pages = select(left, "--language", language)
+        phase(name + "_budget", spent=len(spent), budget=budget, selected=len(pages))
+        if pages:
+            break
     while not pages:
         selected_index, request_id = priority_index(index, a.state, a.campaign, seen, excluded_requests)
         command(ct + ["tee", work + "/index.jsonl"], selected_index)
@@ -171,11 +193,13 @@ def _tick(a):
         usable = [p for p in pages if p["doc_id"] in cached]
         command(ct + ["tee", work + "/pages.jsonl"],
                 "".join(json.dumps(p) + "\n" for p in usable).encode())
-        if a.yiddish_budget is not None:
+        for language, name, _ in budgeted:
             # Written before the chunk exists, so a crash can't overrun the budget.
+            budget_path = a.state / f"{name}-budget.json"
+            spent = budget_spent(budget_path)
             tmp = budget_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(sorted(set(spent) | {p["doc_id"] for p in usable
-                                                           if p["lang"] == YIDDISH})))
+                                                           if p["lang"] == language})))
             tmp.replace(budget_path)
         if usable:
             command(python + [helper + "quality_feed.py", "run", "--campaign", a.campaign,
@@ -211,11 +235,19 @@ def main():
     ap.add_argument("--yiddish-budget", type=int,
                     help="Total Yiddish pages to prepare, as chunks of their own; the normal order leaves "
                          "Yiddish out. Without this flag Yiddish takes its place in the normal order")
+    ap.add_argument("--german-budget", type=int,
+                    help="Total German pages to prepare, as chunks of their own after any Yiddish "
+                         "budget; the normal order leaves German out")
+    ap.add_argument("--german-pages", type=Path,
+                    help="With --german-budget: a file of doc_ids, one a line; the German budget "
+                         "takes only these pages, worst damage first")
     a = ap.parse_args()
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or not 1 <= a.chunk_pages <= 490 or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
             or not 1 <= a.max_unresolved <= 10000 or a.reserve_mib < 64
-            or (a.yiddish_budget is not None and a.yiddish_budget < 0)):
+            or (a.yiddish_budget is not None and a.yiddish_budget < 0)
+            or (a.german_budget is not None and a.german_budget < 0)
+            or (a.german_pages is not None and (a.german_budget is None or not a.german_pages.is_file()))):
         ap.error("invalid campaign or non-positive/out-of-range limits")
     tick(a)
 

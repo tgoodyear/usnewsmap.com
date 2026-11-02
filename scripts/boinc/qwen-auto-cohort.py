@@ -35,6 +35,8 @@ class OutOfCohort(ValueError):
 
 
 COHORT_LANGUAGES = ("yid", "srp")
+# Languages admitted besides the reviewed cohort, from --cohort-language (German calibration).
+EXTRA_LANGUAGES = ()
 # The first app version that reads each request version.
 REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # Classes this controller does not open: with no workunit bounds they take any unsent replica.
@@ -217,9 +219,11 @@ def exclusion_key(project, row, job_id, audit, campaign, prompt_version):
                  for path in list(paths.values()) + producer_paths(project, doc, campaign) for info in [path.stat()]]
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
         return None
-    return sha(json.dumps([job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats,
-                          campaign, prompt_version],
-                          sort_keys=True).encode())
+    key = [job_id, audit, wu["name"], int(wu["id"]), wu["xml_doc"], sha(job), stats, campaign, prompt_version]
+    # A unit passed over for its language is bound again once another language is admitted.
+    if EXTRA_LANGUAGES:
+        key.append(sorted(EXTRA_LANGUAGES))
+    return sha(json.dumps(key, sort_keys=True).encode())
 
 
 def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_version=1):
@@ -264,7 +268,7 @@ def bind_inputs(project, row, job_id, audit, campaign=DEFAULT_CAMPAIGN, prompt_v
             and provenance["archive"] and provenance["member"] and int(provenance["archive_bytes"]) > 0,
             "Source-quality/archive-provenance binding mismatch")
     # Checked last: an out-of-cohort job is only passed over once every integrity check holds.
-    if job["language"] not in COHORT_LANGUAGES:
+    if job["language"] not in COHORT_LANGUAGES + EXTRA_LANGUAGES:
         raise OutOfCohort("Unreviewed prompt/budget/cohort: language " + repr(job["language"]))
     return {"workunit": int(wu["id"]), "job_id": job_id, "doc_id": doc, "crops": len(crops),
             "job_sha256": sha(files["job"]), "page_sha256": sha(files["page"]),
@@ -603,8 +607,15 @@ def main(argv=None):
     # Repeatable NAME or NAME:VERSION: a producer root whose audited jobs may be admitted, each
     # root staged at one request version (--prompt-version unless named).
     parser.add_argument("--campaign", action="append", default=[], metavar="NAME[:VERSION]")
+    # Repeatable: a language admitted besides the reviewed cohort. Only what the feed staged in
+    # the roots above is admitted, so the feed's budget for the language bounds it.
+    parser.add_argument("--cohort-language", action="append", default=[], metavar="LANG")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
+    require(all(re.fullmatch("[a-z]{3}", language) for language in args.cohort_language),
+            "--cohort-language takes an ISO 639-3 code")
+    global EXTRA_LANGUAGES
+    EXTRA_LANGUAGES = tuple(sorted(set(args.cohort_language) - set(COHORT_LANGUAGES)))
     args.campaigns = parse_campaigns(args.campaign, args.prompt_version)
     require(args.app_version_num >= 114 and args.nvidia_app_version > 0 and args.intel_app_version > 0
             and args.nvidia_app_version != args.intel_app_version, "Expected reviewed app versions")
