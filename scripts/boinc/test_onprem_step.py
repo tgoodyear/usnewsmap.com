@@ -473,6 +473,46 @@ class OnpremStep(unittest.TestCase):
             self.assertIn("BRIDGE_STEP=submit", captured)
 
     @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_handoff_steps_have_their_own_lock(self):
+        import fcntl
+        import shlex
+
+        self.write_handoff_env()
+        claim = ("--env", "prod", "--target", "handoff", "--step", "claim", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(*claim, flock_script=script)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("HANDOFF_STEP=claim", captured)
+        Path(self.conf.name, "envfile").unlink()
+        with (directory / "usnm-boinc-handoff.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(*claim, flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+
+    def test_handoff_image_applies_to_handoff_steps_only(self):
+        self.write_handoff_env()
+        image = "sha256:" + "b" * 64
+        handoff = Path(self.conf.name, "handoff-image")
+        handoff.write_text(image + "\n")
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
+                             "--var", "JOB_ID=" + "a" * 64, "--wait-mins", "30", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"would run {image}'s handoff-job.sh", done.stdout)
+        done = self.run_step("--env", "prod", "--step", "submit", "--wait-mins", "30", "--what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn(image, done.stdout)
+        handoff.write_text("localhost/not-an-image-id\n")
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "collect",
+                             "--var", "JOB_ID=" + "a" * 64, "--wait-mins", "30", "--what-if")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("handoff-image is not sha256", done.stderr)
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
     def test_quality_stage_has_its_own_lock_and_other_steps_keep_the_shared_one(self):
         import fcntl
         import shlex

@@ -22,12 +22,19 @@
 # writes only its campaign's tree, where a unit counts once its quality.json is in place and
 # later steps wait for that or for `submitted`. It takes half an hour per 200 pages.
 #
+# The hand-off steps are the other exception: they take a lock of their own, because they touch
+# Azure storage, Cosmos and the queues only, and the controller, their one caller, runs one at a
+# time. So a long collect doesn't keep submits and publishing waiting, and a publish doesn't fail
+# a claim after the lock wait.
+#
 # --target handoff --step claim|release|collect|export runs the hand-off job's command (#967 phase 3),
 # contrib-compute/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
 # in $CONF/handoff.env: HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL
 # QUEUE_URL, plus the Arc identity endpoints IDENTITY_ENDPOINT and IMDS_ENDPOINT (the host's
-# own Arc machine identity holds the job's grants, boinc-handoff-runner.bicep). It gets
+# own Arc machine identity holds the job's grants, boinc-handoff-runner.bicep). $CONF/handoff-image
+# may name another image for these steps, as sha256:<image id>, so a hand-off fix needn't wait for a
+# server image. It gets
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
 # directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
 #
@@ -212,6 +219,11 @@ if [ "$TARGET" = handoff ]; then
 fi
 IMAGE=$(sed -n 's/^SERVER_IMAGE=\([A-Za-z0-9._/:@-]\{1,200\}\)$/\1/p' "$CONF/server.env")
 [ -n "$IMAGE" ] || die "$CONF/server.env names no SERVER_IMAGE"
+# The hand-off steps may run a newer image of their own: they share nothing with the server.
+if [ "$TARGET" = handoff ] && [ -f "$CONF/handoff-image" ]; then
+  IMAGE=$(sed -n 's/^\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$CONF/handoff-image")
+  [ -n "$IMAGE" ] || die "$CONF/handoff-image is not sha256:<image id>"
+fi
 BASE=()
 LINES=()
 QUEUE_LOCATION=""
@@ -337,7 +349,10 @@ lock_wait=$((10#$lock_wait))
 step_timeout=$((WAIT_MINS * 60))
 [ "$lock_wait" -lt "$step_timeout" ] || die "lock wait must be shorter than --wait-mins"
 lock_file=usnm-boinc-step.lock
-[ "$TARGET:$STEP" != bridge:quality-stage ] || lock_file=usnm-boinc-stage.lock
+case $TARGET:$STEP in
+  bridge:quality-stage) lock_file=usnm-boinc-stage.lock ;;
+  handoff:*) lock_file=usnm-boinc-handoff.lock ;;
+esac
 exec 9> "$RUN_DIR/$lock_file"
 lock_started=$SECONDS
 if [ "$lock_wait" -eq 0 ]; then

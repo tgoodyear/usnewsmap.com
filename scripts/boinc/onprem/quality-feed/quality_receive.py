@@ -38,6 +38,12 @@ def fail(msg):
     sys.exit(f"error: {msg}")
 
 
+def own(path):
+    info = os.lstat(path)
+    if (info.st_uid, info.st_gid) != (OWNER, OWNER):
+        os.lchown(path, OWNER, OWNER)
+
+
 def after_submit(camp, inc):
     units = os.path.join(camp, "units")
     bundles = [d for d in os.listdir(units) if os.path.isdir(os.path.join(units, d))] if os.path.isdir(units) else []
@@ -118,9 +124,11 @@ def main(argv=None):
         if root == camp:
             # Staging's own trees: never walked, they only grow.
             dirs[:] = [d for d in dirs if d not in ("units", "pages")]
+        # On the share each chown is a synchronous write to disk, and texts/ holds thousands of
+        # files, so only what isn't the owner's yet: without this check, half an hour a chunk.
         for n in dirs + files:
-            os.lchown(os.path.join(root, n), OWNER, OWNER)
-    os.lchown(camp, OWNER, OWNER)
+            own(os.path.join(root, n))
+    own(camp)
     with open(os.path.join(inc, "langs.txt")) as f:
         langs = f.read().strip()
     if not re.match(r"^[a-z]{3}(,[a-z]{3})*$", langs):

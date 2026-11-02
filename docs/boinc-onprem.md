@@ -380,6 +380,21 @@ controller then sends the steps here with `--onprem-handoff claim --onprem-hando
 `texts-export` runs on the host with the local copy of curated (`scripts/boinc/texts-export-onprem.sh`, [boinc-quality.md](boinc-quality.md)). Once claim and collect have run cleanly here
 for a day, a separate Bicep change retires the job's claim and collect use.
 
+The hand-off steps take `/run/usnm-boinc-handoff.lock`, not the step lock: they touch only Azure
+storage, Cosmos and the queues, and the controller runs one at a time. A collect of 100 jobs
+doesn't keep publishing or submits waiting, and a publish doesn't fail a claim.
+
+To ship a hand-off fix without a new server image, build the changed `usnm-boinc` or
+`handoff-job.sh` over the running image, built on bookworm from the running image's source plus the
+fix, and put the new image's `sha256:<id>` in `/etc/usnm-boinc/handoff-image`. Only hand-off steps
+read that file. Delete it once `SERVER_IMAGE` carries the fix:
+
+```dockerfile
+FROM <SERVER_IMAGE>
+COPY usnm-boinc /usr/local/bin/usnm-boinc
+COPY handoff-job.sh /usr/local/lib/usnm-boinc/handoff-job.sh
+```
+
 ## Azure after the cutover
 
 With `"server": "onprem"`, `provision-boinc.sh` deploys only what the on-prem server still uses: the two identities (the main environment's Bicep reads `usnm-boinc-id-<env>`), the Key Vault the host reads, the VNet (its `aca` subnet is in the main environment's storage network rules) and the static site. The stack deletes the rest: the server app, its jobs and environment, MySQL, both project storage accounts, Log Analytics, the workbook and the private endpoints. The provision then checks that the on-prem server answers at the master URL. Prod moved on 2026-10-21.
