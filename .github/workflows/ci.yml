@@ -195,6 +195,7 @@ jobs:
       - name: The feeder allocation guard detects drift and fails unknown
         run: python3 -m unittest -v images/server/test_feeder_slot_guard.py
       - name: The BOINC feed status snapshot computes its alert facts
+        working-directory: .
         run: python3 -m unittest -v scripts/boinc/test_feed_status.py
       - name: The Arc token path sends its key only to a loopback endpoint
         run: python3 -m unittest -v images/server/test_lib_kv_token.py
