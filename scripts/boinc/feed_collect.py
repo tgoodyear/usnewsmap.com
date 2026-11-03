@@ -25,8 +25,14 @@ from feed_status import APP_NAMES, MAX_AGE, TICK_LIMIT_S, atomic_json
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 8000
+MAX_MATCH_EDGES = 100000
+MAX_PROFILE_CHECKS = 1000000
 TIMEOUT = 15
 NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
+
+
+class SupplyUnknown(ValueError):
+    """A bounded model cannot prove a feasible concurrent allocation."""
 
 
 def read_file(path, limit=MAX_BYTES):
@@ -182,14 +188,19 @@ def fresh(document, now, kind):
                 or not isinstance(document.get("gpu_capabilities", {}), dict)
                 or any(not isinstance(caps, dict) for caps in document.get("gpu_capabilities", {}).values())):
             raise ValueError("invalid GPU capabilities")
-        for field in ("idle_cpu", "memory_bytes", "disk_bytes"):
-            if type(document[field]) not in (int, float) or not math.isfinite(document[field]) or document[field] < 0:
+        for field in ("idle_cpu", "available_cpu", "memory_bytes", "disk_bytes"):
+            value = document.get(field, document["idle_cpu"]) if field == "available_cpu" else document[field]
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                 raise ValueError("invalid capacity")
         if not isinstance(document["idle_gpu"], dict) or len(document["idle_gpu"]) > 8:
             raise ValueError("invalid devices")
-        for value in document["idle_gpu"].values():
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 64:
-                raise ValueError("invalid GPU capacity")
+        for field in ("idle_gpu", "gpu_devices", "used_gpu"):
+            devices = document.get(field, {})
+            if not isinstance(devices, dict) or len(devices) > 8:
+                raise ValueError("invalid devices")
+            for value in devices.values():
+                if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 64:
+                    raise ValueError("invalid GPU capacity")
         for version in document["versions"]:
             if (version["app"] not in APP_NAMES or not isinstance(version["platform"], str)
                     or version["gpu"] is not None and not isinstance(version["gpu"], str)):
@@ -387,8 +398,8 @@ def client(data_dir, port):
                          "gpu": coproc.findtext("type") if coproc is not None else None,
                          "gpu_count": float(coproc.findtext("count", "1")) if coproc is not None else 0})
     # Count queued/download-pending work as occupied: it already feeds this device.
-    used_cpu, used_gpu = 0, {}
-    units = {(owner, w.findtext("name")): w.findtext("app_name") for owner, w in scoped if w.tag == "workunit"}
+    used_cpu, used_memory, used_gpu = 0, 0, {}
+    units = {(owner, w.findtext("name")): w for owner, w in scoped if w.tag == "workunit"}
     for owner, result in scoped:
         if result.tag != "result":
             continue
@@ -397,7 +408,8 @@ def client(data_dir, port):
             continue
         if flag(result, "suspended_via_gui"):
             raise ValueError("suspended queued task")
-        app = units.get((owner, result.findtext("wu_name")))
+        unit = units.get((owner, result.findtext("wu_name")))
+        app = unit.findtext("app_name") if unit is not None else None
         match = [v for v in versions if v["project"] == owner and v["app"] == app
                  and v["version_num"] == int(result.findtext("version_num", "0"))
                  and v["plan_class"] == result.findtext("plan_class", "")
@@ -406,15 +418,20 @@ def client(data_dir, port):
             # Unknown or other-project work must not inflate idle capacity.
             raise ValueError("unaccounted client task")
         v = match[0]
+        memory_bound = unit.findtext("rsc_memory_bound") if unit is not None else None
+        if memory_bound is None or not math.isfinite(float(memory_bound)) or float(memory_bound) < 0:
+            raise ValueError("occupied task memory unavailable")
+        used_memory += float(memory_bound)
         used_cpu += v["cpus"]
         if v["gpu"]:
             used_gpu[v["gpu"]] = used_gpu.get(v["gpu"], 0) + v["gpu_count"]
-    gpus, gpu_memory, capabilities = {}, {}, {}
+    gpus, gpu_devices, gpu_memory, capabilities = {}, {}, {}, {}
     for node in state.findall(".//coprocs/*"):
         vendor = {"coproc_cuda": "NVIDIA", "coproc_ati": "ATI",
                   "coproc_intel_gpu": "intel_gpu", "coproc_apple_gpu": "apple_gpu"}.get(node.tag)
         if vendor:
-            gpus[vendor] = max(0, float(node.findtext("count", "0")) - used_gpu.get(vendor, 0))
+            gpu_devices[vendor] = float(node.findtext("count", "0"))
+            gpus[vendor] = max(0, gpu_devices[vendor] - used_gpu.get(vendor, 0))
             gpu_memory[vendor] = max([float(n.text or 0) for tag in
                 ("available_ram", "totalGlobalMem", "global_mem_size")
                 for n in node.findall(".//" + tag)] or [0])
@@ -445,11 +462,14 @@ def client(data_dir, port):
     return {"host_id": host_id, "versions": monitored,
             "idle_cpu": 0 if "CPU" in blocked or flag(project, "no_cpu_pref") or flag(project, "no_cpu")
             else max(0, cpus - used_cpu),
+            "available_cpu": max(0, cpus - used_cpu),
             "cpus": cpus, "idle_gpu": gpus, "gpu_memory": gpu_memory, "gpu_capabilities": capabilities,
+            "gpu_devices": gpu_devices, "used_gpu": used_gpu,
             "client_version": sum(int(state.findtext(".//" + tag, "0")) * factor for tag, factor in (
                 ("core_client_major_version", 10000), ("core_client_minor_version", 100), ("core_client_release", 1))),
             "docker": container_runtime() if any(v["plan_class"].startswith("docker") for v in monitored) else False,
-            "memory_bytes": memory * fraction, "disk_bytes": max(0, min(float(free), float(allowance) - used))}
+            "memory_bytes": max(0, memory * fraction - used_memory),
+            "disk_bytes": max(0, min(float(free), float(allowance) - used))}
 
 
 def controller(unit):
@@ -604,6 +624,12 @@ def host_profile(host, version, database):
             raise ValueError("unmodeled GPU CPU demand")
         if numbers["min_gpu_ram_mb"] * 1e6 > host.get("gpu_memory", {}).get(gpu, 0):
             return None
+        if numbers["gpu_ram_used_mb"] and (
+                host.get("gpu_devices", {}).get(gpu) != 1
+                or host.get("used_gpu", {}).get(gpu, 0) != 0
+                or not math.isfinite(host.get("gpu_memory", {}).get(gpu, 0))
+                or host.get("gpu_memory", {}).get(gpu, 0) <= 0):
+            raise SupplyUnknown("gpu_memory_packing")
         for gate in ("min_cuda_version", "min_nvidia_compcap", "min_opencl_version"):
             if integers[gate] > host.get("gpu_capabilities", {}).get(gpu, {}).get(gate, 0):
                 return None
@@ -627,7 +653,7 @@ def eligible(unit, host, version, bounds):
             and bounds[0] <= unit["id"] <= bounds[1] and bounds[2] <= unit["batch"] <= bounds[3])
 
 
-def supply(database, hosts, resource, disk_usage=None):
+def supply(database, hosts, resource, resource_usage=None):
     """Maximum matching: a replica and a host/workunit pair can each be used once.
 
     Work offered to two classes is not two results, and two replicas of a unit
@@ -676,35 +702,61 @@ def supply(database, hosts, resource, disk_usage=None):
         prepared.append((host, profiles, capacities))
     # No stock-dependent branch can bypass the host/profile validation above.
     slots, candidates = [], {}
+    edges, profile_checks = 0, 0
     for host, profiles, capacities in prepared:
         for device, count in capacities.items():
             for n in range(count):
+                if len(slots) >= MAX_MATCH_EDGES:
+                    raise SupplyUnknown("candidate_slot_budget")
                 slot = (host["host_id"], device, n)
                 slots.append(slot)
-                candidates[slot] = [u["id"] for u in database["units"] if any(
-                    (v["gpu"] or "cpu") == device and eligible(u, host, v, bounds) for v, bounds in profiles)]
-                if sum(len(v) for v in candidates.values()) > 100000:
-                    raise ValueError("eligibility graph limit")
+                candidates[slot] = {}
+                for unit in database["units"]:
+                    demands = []
+                    for v, bounds in profiles:
+                        if (v["gpu"] or "cpu") != device:
+                            continue
+                        if profile_checks >= MAX_PROFILE_CHECKS:
+                            raise SupplyUnknown("candidate_scan_budget")
+                        profile_checks += 1
+                        if eligible(unit, host, v, bounds):
+                            plan = database["plans"].get(v["plan_class"], {})
+                            demands.append((v["cpus"], float(plan.get("gpu_ram_used_mb", 0)) * 1e6))
+                    if demands:
+                        if len(set(demands)) != 1:
+                            raise SupplyUnknown("ambiguous_resource_profile")
+                        if edges >= MAX_MATCH_EDGES:
+                            raise SupplyUnknown("candidate_edge_budget")
+                        edges += 1
+                        candidates[slot][unit["id"]] = demands[0]
     # Capacitated network flow, including host/unit nodes (one replica per host).
-    graph, pairs = {}, set()
-    bounds = {u["id"]: u["rsc_disk_bound"] for u in database["units"]}
+    graph = {}
+    units = {u["id"]: u for u in database["units"]}
     def edge(a, b, count):
         graph.setdefault(a, {})[b] = count
         graph.setdefault(b, {}).setdefault(a, 0)
     for host in hosts:
         host_slots = [slot for slot in slots if slot[0] == host["host_id"]]
-        weights = {bounds[uid] for slot in host_slots for uid in candidates[slot]}
         limit = len(host_slots)
-        if len(weights) == 1:
-            weight = next(iter(weights))
-            if weight:
-                limit = min(limit, math.floor(host["disk_bytes"] / weight))
+        for field, budget in (("rsc_disk_bound", "disk_bytes"), ("rsc_memory_bound", "memory_bytes")):
+            weights = {units[uid][field] for slot in host_slots for uid in candidates[slot]}
+            if len(weights) == 1 and (weight := next(iter(weights))):
+                limit = min(limit, math.floor(host[budget] / weight))
+        demands = {cost[0] for slot in host_slots for cost in candidates[slot].values()}
+        if len(demands) == 1:
+            limit = min(limit, math.floor(host.get("available_cpu", host["idle_cpu"]) / next(iter(demands))))
         edge("source", ("host", host["host_id"]), limit)
+        for device in {slot[1] for slot in host_slots}:
+            device_slots = [slot for slot in host_slots if slot[1] == device]
+            limit = len(device_slots)
+            demands = {cost[1] for slot in device_slots for cost in candidates[slot].values()}
+            if len(demands) == 1 and (demand := next(iter(demands))):
+                limit = min(limit, math.floor(host["gpu_memory"][device] / demand))
+            edge(("host", host["host_id"]), ("device", host["host_id"], device), limit)
     for slot in slots:
-        edge(("host", slot[0]), slot, 1)
+        edge(("device", slot[0], slot[1]), slot, 1)
         for uid in candidates[slot]:
             pair = ("pair", slot[0], uid)
-            pairs.add(pair)
             edge(slot, pair, 1)
             edge(pair, ("unit", uid), 1)
     for unit in database["units"]:
@@ -728,16 +780,28 @@ def supply(database, hosts, resource, disk_usage=None):
             graph[node][prev] += 1
             node = prev
         flow += 1
-    used = {h["host_id"]: 0 for h in hosts}
-    for pair in pairs:
-        if graph[("unit", pair[2])][pair]:
-            used[pair[1]] += bounds[pair[2]]
+    used = {h["host_id"]: {"cpu": 0, "memory": 0, "disk": 0, "gpu_memory": {}} for h in hosts}
+    for slot in slots:
+        usage = used[slot[0]]
+        for uid, (cpu, gpu_memory) in candidates[slot].items():
+            if graph[("pair", slot[0], uid)][slot]:
+                usage["cpu"] += cpu
+                usage["memory"] += units[uid]["rsc_memory_bound"]
+                usage["disk"] += units[uid]["rsc_disk_bound"]
+                usage["gpu_memory"][slot[1]] = usage["gpu_memory"].get(slot[1], 0) + gpu_memory
     # A weighted optimum needs a different solver. Never label an infeasible
     # maximum match healthy, or report a greedy lower bound as a real shortage.
-    if any(used[h["host_id"]] > h["disk_bytes"] for h in hosts):
+    if any(used[h["host_id"]]["disk"] > h["disk_bytes"] for h in hosts):
         raise ValueError("maximum match exceeds cumulative host disk budget")
-    if disk_usage is not None:
-        disk_usage.update(used)
+    for host in hosts:
+        usage = used[host["host_id"]]
+        if usage["cpu"] > host.get("available_cpu", host["idle_cpu"]) or usage["memory"] > host["memory_bytes"]:
+            raise SupplyUnknown("mixed_resource_packing")
+        if any(amount > host.get("gpu_memory", {}).get(device, 0)
+               for device, amount in usage["gpu_memory"].items()):
+            raise SupplyUnknown("mixed_gpu_memory_packing")
+    if resource_usage is not None:
+        resource_usage.update(used)
     return {"idle": len(slots), "eligible": flow}
 
 
@@ -766,18 +830,25 @@ def collect(config):
     hosts = [documents.get(f"client_{i}") for i in range(len(clients))]
     if database and all(hosts):
         facts["supply"] = {}
-        disk = {"cpu": {}, "gpu": {}}
+        usage = {"cpu": {}, "gpu": {}}
         for resource in ("cpu", "gpu"):
             try:
                 if len({h["host_id"] for h in hosts}) != len(hosts):
                     raise ValueError("duplicate host")
-                facts["supply"][resource] = supply(database, hosts, resource, disk[resource])
+                facts["supply"][resource] = supply(database, hosts, resource, usage[resource])
+            except SupplyUnknown as error:
+                facts.setdefault("supply_errors", {})[resource] = str(error)
+                facts["errors"].append(resource + "_" + str(error))
             except (ValueError, TypeError, KeyError, ZeroDivisionError):
                 facts["errors"].append(resource + "_eligibility")
-        if any(sum(used.get(h["host_id"], 0) for used in disk.values()) > h["disk_bytes"] for h in hosts):
-            for resource in tuple(facts["supply"]):
-                del facts["supply"][resource]
-                facts["errors"].append(resource + "_disk_budget")
+        for field, budget in (("disk", "disk_bytes"), ("cpu", "idle_cpu"), ("memory", "memory_bytes")):
+            if any(sum(u.get(h["host_id"], {}).get(field, 0) for u in usage.values()) >
+                   (h.get("available_cpu", h[budget]) if field == "cpu" else h[budget]) for h in hosts):
+                for resource in tuple(facts["supply"]):
+                    del facts["supply"][resource]
+                    reason = "shared_" + field + "_budget"
+                    facts.setdefault("supply_errors", {})[resource] = reason
+                    facts["errors"].append(resource + "_" + reason)
     # Allocation can take time too. Publish one completion timestamp, after a
     # final freshness check, rather than renewing earlier evidence's age.
     completed = int(time.time())

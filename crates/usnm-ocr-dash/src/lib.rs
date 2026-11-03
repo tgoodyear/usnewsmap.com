@@ -566,11 +566,46 @@ mod tests {
         let (_, html) = call(a.clone(), "198.51.100.14", "GET", "/", "").await;
         assert!(html.contains("BOINC feed / stale data"));
         assert!(html.contains("BOINC feed evidence is unavailable or invalid"));
-        let (_, json) = call(a, "198.51.100.14", "GET", "/api/view.json", "").await;
+        let (_, json) = call(a.clone(), "198.51.100.14", "GET", "/api/view.json", "").await;
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&json).unwrap()["feed"]["stale"],
             true
         );
+        let checks = [
+            "qwen_refill_window",
+            "usnm_ocr_no_work",
+            "usnm_qwen_no_work",
+            "cpu_shortage",
+            "gpu_shortage",
+            "controller_tick",
+            "collection",
+        ]
+        .map(|code| {
+            let mut check = serde_json::json!({
+                "code": code, "state": "healthy", "duration_s": 0, "threshold_s": 0
+            });
+            if code == "cpu_shortage" {
+                check["idle_slots"] = 2.into();
+                check["eligible_results"] = 2.into();
+            } else if code == "gpu_shortage" {
+                check["state"] = "unknown".into();
+                check["reason"] = "gpu_memory_packing".into();
+            }
+            check
+        });
+        std::fs::write(
+            dir.join("feed-health.json"),
+            serde_json::json!({
+                "schema_version": 1, "event": "boinc_feed_health",
+                "observed_at": Utc::now().timestamp(), "checks": checks
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (_, html) = call(a, "198.51.100.14", "GET", "/", "").await;
+        assert!(html.contains("2 modeled candidates / 2 own idle slots"));
+        assert!(html.contains("not guaranteed scheduler dispatch"));
+        assert!(html.contains("gpu_memory_packing"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

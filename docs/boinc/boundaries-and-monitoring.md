@@ -57,13 +57,15 @@ address, using its existing private push listener. These source records are
 never served by a GET or the public listener.
 
 CPU supply is the established `usnm_ocr` CPU lane; GPU supply is the established
-`usnm_qwen` GPU lane. Eligibility includes platform/installed dispatchable
+`usnm_qwen` GPU lane. **These are modeled candidates, never guaranteed scheduler
+dispatch.** The compatibility field `eligible_results` retains that name in
+JSON/metrics but means supply within this bounded model. Modeled checks include platform/installed dispatchable
 version, authoritative account/venue app selection and resource flags, live
 workunit/batch admission bounds, memory/disk/device constraints,
 and prior host participation. Shared stock is matched against all own slots:
 one unsent replica cannot fill two slots, nor can two replicas of a unit fill two
 slots on one host. Assigned and homogeneous-redundancy work is excluded from
-the ordinary feed. Unsupported account gates, unknown profiles, mixed CPU
+the ordinary feed. Detected unsupported plan/account gates, unknown profiles, mixed CPU
 resource profiles or differing `gpu_count` profiles for the same GPU type on one host,
 live `ngpus`/explicit CPU-demand mismatches with installed GPU profiles,
 non-preferred-app fallback requiring other apps' inventory,
@@ -75,14 +77,45 @@ and live profile. CPU demand comes from the live fixed `avg_ncpus`, or from
 `max_threads` capped by the observed host's effective CPU count; cached demand
 must agree. Missing host capacity, performance-derived GPU CPU demand, and
 unmodeled memory-scaling policies are unknown rather than inferred from cache.
-Selected work is also checked against cumulative per-host free disk, shared
-between CPU and GPU allocations. Uniform per-workunit disk bounds cap each
-host's allocation directly. If a mixed-weight maximum matching or combined
-CPU/GPU allocation exceeds a disk budget, eligibility is unknown: this bounded
-monitor does not claim to solve weighted matching or misreport a greedy lower
-bound as a proven shortage.
+Selected work is checked against cumulative per-host CPU, RAM and disk budgets,
+shared between CPU and GPU allocations. GPU work consumes its live CPU demand,
+not just a GPU slot; a CPU-app exclusion does not disable CPU support for permitted
+GPU work. Existing queued work reserves its CPU and workunit RAM
+bounds first; missing occupied-work RAM evidence is unknown. Uniform resource
+costs cap graph capacity directly. Positive `gpu_ram_used_mb` is enforced for
+fractional slots on a single observed, otherwise unoccupied GPU of that type.
+Multiple physical devices or already occupied GPU memory need per-device placement
+evidence this collector does not have, and produce `gpu_memory_packing` unknown.
+If a mixed-weight maximum match cannot fit, or independently maximal CPU/GPU
+matches overlap shared resources, affected supply checks become unknown with
+an explicit `reason`, not healthy or a greedy lower bound reported as a shortage.
+The stock alerts remain present and still fire after 30 minutes of a proven
+modeled shortage.
+
+The account/venue reader applies selected apps and CPU/GPU resource exclusions;
+it rejects non-preferred-app fallback needing wider inventory. It does **not**
+validate every account XML field. Additional account restrictions, custom
+scheduler hooks, per-user restrictions, host/application daily quotas and
+in-progress limits are unobserved, as are scheduler request budgets, work-fetch
+backoff/resource-share decisions, deadline/performance feasibility and reliability
+rules. Only installed profiles are modeled. Ownership is verified through the
+private source inventory, not inferred from attachment alone. These unobserved
+gates do not automatically become unknown: human acceptance of this monitoring
+boundary remains a merge/rollout prerequisite, requiring private, read-only
+effective-policy/quota evidence and existing scheduler rejection logs.
 This is not a replacement implementation of the BOINC scheduler or proof that
 a driver/container can successfully execute an assigned task.
+
+Candidate edges and slots are budgeted **before insertion**, at 100,000 each per resource;
+at most 1,000,000 profile/workunit comparisons are allowed, including rejected
+candidates. Exceeding either budget produces unknown. Other guards include
+32 clients, 256 versions/plans, eight GPU types and 1,024 slots per host/device.
+Database row/output limits and 2-second SQL hints do not bound rows examined or
+prove that a particular database enforces the hints. Verify query plans and
+collection cost privately. The supplied systemd units set 75-second source and
+90-second evaluator startup timeouts and 256-MiB memory limits; those are not
+limits on an existing container/database, nor universal direct-CLI deadlines.
+HTTP/RPC timeout checks and bounded reads do not replace the service watchdog.
 
 The evaluator fsyncs and atomically replaces `feed-health.json` and
 `feed-health.prom`, then flushes its Syslog JSON line before committing

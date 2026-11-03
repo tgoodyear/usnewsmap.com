@@ -109,6 +109,7 @@ class EligibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
             C.supply(db, [h], "gpu")
         db["versions"][-1]["platform"] = "linux"
+        h.update(cpus=2, idle_cpu=2)
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
 
     def test_cpu_demand_must_match_live_fixed_and_host_specific_multicore_policy(self):
@@ -195,6 +196,80 @@ class EligibilityTests(unittest.TestCase):
         h["disk_bytes"] = 1200
         self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 2})
         self.assertEqual(C.supply(db, [host(9), host(10)], "cpu"), {"idle": 2, "eligible": 2})
+
+    def test_gpu_cpu_demand_caps_uniform_allocation_and_rejects_mixed_overcommit(self):
+        db, h = database(), host(count=2)
+        db["units"].append(dict(db["units"][0], id=6))
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
+        h.update(cpus=2, idle_cpu=2)
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+        nvidia = dict(version(plan="nvidia", gpu="NVIDIA"), cpus=2)
+        h["versions"].append(nvidia)
+        h["idle_gpu"] = {"intel_gpu": 1, "NVIDIA": 1}
+        db["versions"].append(nvidia)
+        db["plans"]["nvidia"] = {"gpu_type": "nvidia", "avg_ncpus": "2"}
+        with self.assertRaisesRegex(C.SupplyUnknown, "mixed_resource_packing"):
+            C.supply(db, [h], "gpu")
+        h.update(cpus=3, idle_cpu=3)
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+        # A CPU-app exclusion must not remove CPU support for permitted GPU work.
+        h.update(idle_cpu=0, available_cpu=3)
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 0, "eligible": 0})
+
+        db, h = database(), host(count=2)
+        h.update(cpus=2, idle_cpu=2)
+        alternate = dict(version(plan="alternate"), cpus=2)
+        db["plans"]["alternate"] = {"avg_ncpus": "2"}
+        db["versions"].append(alternate)
+        h["versions"].append(alternate)
+        db["units"].append(dict(db["units"][0], id=6))
+        with self.assertRaisesRegex(C.SupplyUnknown, "ambiguous_resource_profile"):
+            C.supply(db, [h], "gpu")
+
+    def test_cumulative_ram_caps_uniform_allocation_and_rejects_mixed_packing(self):
+        db, h = database(), host()
+        h.update(cpus=2, idle_cpu=2)
+        db["units"] = [dict(db["units"][0], id=i, app="usnm_ocr", rsc_memory_bound=600) for i in (5, 6)]
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 1})
+        db["units"][1]["rsc_memory_bound"] = 500
+        with self.assertRaisesRegex(C.SupplyUnknown, "mixed_resource_packing"):
+            C.supply(db, [h], "cpu")
+        h["memory_bytes"] = 1100
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 2})
+
+    def test_fractional_gpu_memory_requires_provable_single_device_packing(self):
+        db, h = database(), host()
+        h.update(cpus=2, idle_cpu=2, gpu_devices={"intel_gpu": 1}, gpu_memory={"intel_gpu": 1000})
+        h["versions"][0]["gpu_count"] = .5
+        db["plans"]["intel"].update(ngpus=".5", gpu_ram_used_mb=".0006")
+        db["units"].append(dict(db["units"][0], id=6))
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
+        h["gpu_memory"]["intel_gpu"] = 1200
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+        for evidence in ({"gpu_devices": {"intel_gpu": 2}},
+                         {"used_gpu": {"intel_gpu": .5}},
+                         {"gpu_memory": {}}, {"gpu_devices": {}}):
+            with self.subTest(evidence=evidence), self.assertRaisesRegex(C.SupplyUnknown, "gpu_memory_packing"):
+                C.supply(db, [h | evidence], "gpu")
+
+    def test_candidate_budgets_stop_construction_before_scanning_remaining_stock(self):
+        db = database()
+        db["plans"]["intel"]["max_wu_id"] = "0"
+        db["units"] = [dict(db["units"][0], id=i) for i in range(2, 102)]
+        with patch.object(C, "MAX_MATCH_EDGES", 2), patch.object(C, "eligible", wraps=C.eligible) as eligible:
+            with self.assertRaisesRegex(C.SupplyUnknown, "candidate_edge_budget"):
+                C.supply(db, [host()], "gpu")
+            self.assertEqual(eligible.call_count, 3)
+        for unit in db["units"]:
+            unit["hosts"] = [9]
+        with patch.object(C, "MAX_PROFILE_CHECKS", 2), patch.object(C, "eligible", wraps=C.eligible) as eligible:
+            with self.assertRaisesRegex(C.SupplyUnknown, "candidate_scan_budget"):
+                C.supply(db, [host()], "gpu")
+            self.assertEqual(eligible.call_count, 2)
+        db["units"] = []
+        with patch.object(C, "MAX_MATCH_EDGES", 2), self.assertRaisesRegex(C.SupplyUnknown, "candidate_slot_budget"):
+            C.supply(db, [host(count=3)], "gpu")
 
     def test_shared_results_and_one_replica_per_host_are_not_double_counted(self):
         db = database()
@@ -386,6 +461,7 @@ class CollectionTests(unittest.TestCase):
 
     def test_disk_is_shared_between_cpu_and_gpu_allocations(self):
         docs = self.documents()
+        docs["/own"].update(cpus=2, idle_cpu=2)
         docs["/server"]["units"][0]["rsc_disk_bound"] = 600
         docs["/server"]["units"].append(dict(docs["/server"]["units"][0], id=6, app="usnm_ocr"))
         config = {name: "/" + name for name in ("server", "controller", "backlog")}
@@ -394,12 +470,39 @@ class CollectionTests(unittest.TestCase):
                 patch.object(C.time, "time", return_value=NOW):
             facts = C.collect(config)
             self.assertEqual(facts["supply"], {})
-            self.assertCountEqual(facts["errors"], ["cpu_disk_budget", "gpu_disk_budget"])
+            self.assertCountEqual(facts["errors"], ["cpu_shared_disk_budget", "gpu_shared_disk_budget"])
             docs["/own"]["disk_bytes"] = 1200
             facts = C.collect(config)
             self.assertEqual(facts["errors"], [])
-            self.assertEqual(facts["supply"], {"cpu": {"idle": 1, "eligible": 1},
+            self.assertEqual(facts["supply"], {"cpu": {"idle": 2, "eligible": 1},
                                               "gpu": {"idle": 1, "eligible": 1}})
+
+    def test_shared_cpu_and_ram_overlap_are_unknown_then_recover_without_hiding_shortage(self):
+        docs = self.documents()
+        docs["/server"]["units"].append(dict(docs["/server"]["units"][0], id=6, app="usnm_ocr"))
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                patch.object(C.time, "time", return_value=NOW):
+            for reason, updates in (("shared_cpu_budget", {}),
+                                    ("shared_memory_budget", {"cpus": 2, "idle_cpu": 2, "memory_bytes": 15})):
+                docs["/own"].update(updates)
+                facts = C.collect(config)
+                self.assertEqual(facts["supply"], {})
+                document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+                for resource in ("cpu", "gpu"):
+                    check = next(c for c in document["checks"] if c["code"] == resource + "_shortage")
+                    self.assertEqual((check["state"], check["reason"]), ("unknown", reason))
+                    self.assertIsNone(check["eligible_results"])
+            docs["/own"]["memory_bytes"] = 20
+            facts = C.collect(config)
+            self.assertEqual(facts["errors"], [])
+            previous = {}
+            for elapsed in range(0, 1801, 60):
+                document, previous = F.evaluate(facts, previous, NOW + elapsed, 1000 + elapsed, "boot", "cfg")
+            checks = {c["code"]: c for c in document["checks"]}
+            self.assertEqual(checks["cpu_shortage"]["state"], "firing")
+            self.assertEqual(checks["gpu_shortage"]["state"], "healthy")
 
     def test_missing_gpu_profile_is_unknown_without_poisoning_cpu_evidence(self):
         docs = self.documents()
@@ -767,10 +870,21 @@ class CollectionTests(unittest.TestCase):
 <result><wu_name>finished</wu_name><version_num>117</version_num><plan_class>docker</plan_class><state>4</state></result>
 </client_state>""")
                 self.assertEqual(C.client(root, rpc.server_address[1])["idle_cpu"], 2)
+                answers["get_state"] = answers["get_state"].replace(
+                    "<state>4</state>", "<state>1</state>").replace(
+                    "<name>finished</name>", "<name>finished</name><rsc_memory_bound>100</rsc_memory_bound>")
+                result = C.client(root, rpc.server_address[1])
+                self.assertEqual((result["idle_cpu"], result["memory_bytes"]), (1, 400))
+                answers["get_state"] = answers["get_state"].replace(
+                    "<rsc_memory_bound>100</rsc_memory_bound>", "")
+                with self.assertRaisesRegex(ValueError, "occupied task memory unavailable"):
+                    C.client(root, rpc.server_address[1])
+                answers["get_state"] = answers["get_state"].replace("<state>1</state>", "<state>4</state>")
                 answers["get_state"] = answers["get_state"].replace("</project>",
                     "<no_rsc_pref>CPU</no_rsc_pref><no_rsc_config>intel_gpu</no_rsc_config></project>")
                 result = C.client(root, rpc.server_address[1])
                 self.assertEqual(result["idle_cpu"], 0)
+                self.assertEqual(result["available_cpu"], 2)
                 self.assertEqual(result["idle_gpu"]["intel_gpu"], 0)
             finally:
                 rpc.shutdown()

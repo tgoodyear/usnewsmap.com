@@ -96,6 +96,7 @@ pub struct Check {
     pub last_workunit_at: Option<u64>,
     pub idle_slots: Option<u64>,
     pub eligible_results: Option<u64>,
+    pub reason: Option<String>,
     pub seconds: Option<f64>,
 }
 

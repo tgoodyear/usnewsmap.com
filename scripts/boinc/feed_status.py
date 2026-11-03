@@ -92,7 +92,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id):
         supply = facts.get("supply", {}).get(resource)
         check(resource + "_shortage", None if supply is None else supply["eligible"] < supply["idle"],
               1800, idle_slots=None if supply is None else supply["idle"],
-              eligible_results=None if supply is None else supply["eligible"])
+              eligible_results=None if supply is None else supply["eligible"],
+              reason=facts.get("supply_errors", {}).get(resource))
     tick = facts.get("tick")
     failure_at = tick.get("last_failure_at", 0) if tick else 0
     new_failure = failure_at > previous.get("last_failure_at", 0)
