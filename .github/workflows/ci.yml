@@ -395,7 +395,7 @@ jobs:
       - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
         env:
           WRANGLER_SEND_METRICS: "false"
-      - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh
+      - run: shellcheck -x -S warning edge/fallback-worker/deploy.sh scripts/ci/check-edge-drift.sh
 
   quickwit-tests:
     name: quickwit (${{ matrix.suite }})
