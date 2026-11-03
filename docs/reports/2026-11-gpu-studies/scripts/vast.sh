@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Thin Vast.ai API helper. Named flags only. The API key is read from --key-file and never printed.
+# --key-file overrides VAST_KEY_FILE, which overrides GPU_STUDY_SECRETS/vast.key.
 # Actions: credit | list | search | create | attach-key | destroy
 set -euo pipefail
-ACTION=""; KEY_FILE="${VAST_KEY_FILE:-${GPU_STUDY_SECRETS}/vast.key}"
+ACTION=""; KEY_FILE="${VAST_KEY_FILE:-}"
+if [ -z "$KEY_FILE" ] && [ -n "${GPU_STUDY_SECRETS:-}" ]; then KEY_FILE="$GPU_STUDY_SECRETS/vast.key"; fi
 GPU="RTX 3090"; MIN_DISK=80; MIN_RAM_MB=23000; LIMIT=10; MAX_DPH=0.40
 ASK=""; IMAGE=""; DISK=80; LABEL=""; INSTANCE=""; PUBKEY=""
 while [ $# -gt 0 ]; do case "$1" in
@@ -16,6 +18,9 @@ API=https://console.vast.ai/api
 # The header goes to curl on a config file descriptor, so the key never appears in argv.
 call() { # METHOD PATH [JSON]
   local m=$1 p=$2 d=${3:-}
+  [ -n "$KEY_FILE" ] && [ -r "$KEY_FILE" ] && [ ! -d "$KEY_FILE" ] || {
+    echo "a readable API key file is required (--key-file, VAST_KEY_FILE, or GPU_STUDY_SECRETS)" >&2; return 2;
+  }
   if [ -n "$d" ]; then
     curl -fsS --max-time 60 -K <(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$KEY_FILE")") \
       -X "$m" -H 'Content-Type: application/json' -d "$d" "$API$p"
