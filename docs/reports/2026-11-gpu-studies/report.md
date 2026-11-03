@@ -1,12 +1,12 @@
 ---
 title: "GPU studies, November 2026"
-subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pages per dollar, a loop guard, a Surya retest and an image-token sweep"
+subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pages per dollar, a loop guard, a Surya retest, an image-token sweep and Yiddish"
 date: "November 2026"
 ---
 
-The samples, split, metrics and decision rules were fixed in [`protocol.md`](protocol.md) and committed before any study run. Seven setup rentals began earlier; none of them read a crop. The Japanese amendment was committed before any reader ran on these crops under this study, though 24 of them were read under #128. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and scores in [`data/`](data/).
+For Studies 1 to 7, the samples, split, metrics and decision rules were fixed in [`protocol.md`](protocol.md) before the corresponding runs. Seven setup rentals began earlier; none of them read a crop. The Japanese amendment was committed before any reader ran on these crops under this study, though 24 of them were read under #128. Study 8 was added later; its method and limitations are below. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the earlier scores in [`data/`](data/).
 
-All limits are 95% bootstrap limits, resampling source pages. A number from the protocol is the primary result. Anything marked post-hoc was chosen after seeing results.
+All limits are 95% bootstrap limits, resampling source pages. For Studies 1 to 7, a number from the protocol is the primary result. Anything marked post-hoc was chosen after seeing results.
 
 # Summary
 
@@ -19,6 +19,8 @@ The guard is `stop`: end the reading when the contract's `tail_repetition` fires
 Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 was faster than a 3090 and dearer per page. Study 3's Surya scores measured our configuration: in Study 6, line recognition took Surya from 109.2% to 23.0% pooled CER, still behind Tesseract's 9.0% on those crops, and `whole` mode kept column order better but read less than half the text.
 
 On Japanese, NDLOCR-Lite, CHURRO and Surya agree most with each other and with the machine references. That is agreement, not accuracy. No human transcription of these crops exists that we could verify.
+
+On 104 hand-corrected Yiddish book pages, mean page CER is 1.52% for Jochre 3, 8.72% for Tesseract `yid` and 30.15% for Qwen request version 4. Qwen was given the corpus's line segmentation and reading order; the page readers were not. The 100 damaged newspaper crops have no transcriptions, so their high disagreement is not a measure of accuracy. Don't launch a full Yiddish reread at version 4 on this evidence.
 
 # Study 1: German Fraktur (#926, #835)
 
@@ -346,6 +348,53 @@ The default is worse than 1,024, which confirms #529. Above that, nothing beats 
 
 The Study 2 and Study 5 adapters trained at 1,024 to 2,048 image tokens (`min_pixels` 1,048,576, `max_pixels` 2,097,152, 32 pixels a token), and are served in BF16 with the same range. Through llama.cpp, request version 2 sets the minimum at 1,024 with no such maximum, so a crop whose native size exceeds 2,048 tokens is read at a resolution the adapter never trained on. No test here shows harm from that.
 
+# Study 8: Yiddish test set (2 November 2026)
+
+The six typed Yiddish crops from #529 could not be found. This study tests the staged version 4 request against hand-corrected books, then measures agreement on untranscribed newspaper crops. It was added after the earlier studies, not as a preregistered amendment to their protocol.
+
+## Book accuracy
+
+The [Yiddish OCR Corpus](https://gitlab.com/jochre/corpora/jochre-yiddish-corpus), by Assaf Urieli and the Yiddish Book Center, is [CC BY-NC-SA 4.0](https://gitlab.com/jochre/corpora/jochre-yiddish-corpus/-/blob/bd69b412947e03cca18fdd5c72826207946d777f/LICENSE.md); see [Urieli et al.](https://arxiv.org/abs/2501.08442). We used its test split at commit `bd69b412947e03cca18fdd5c72826207946d777f`: 104 book pages from 60 books, annotated to glyph level and reviewed by a second annotator. No adapter was trained on the corpus in this study. Jochre's previously trained model is not independent of that corpus.
+
+Jochre 3 1.1.4 and Tesseract 5.5.0 `yid` read whole pages, the latter with `tessdata_best`, PSM 3 and 300 dpi. `yid+eng` is a second whole-page setting. Qwen3-VL 8B Q4_K_M ran through the installed `usnm_qwen` 1.17 app and llama-server b8799 on an RTX 2060 SUPER, outside BOINC. Version 1 uses the default image-token minimum without the loop guard; version 3 adds the guard; version 4 combines the guard with a 1,024-token minimum.
+
+Qwen and the Tesseract PSM 7 control read the corpus's 4,011 ALTO line boxes and had their readings joined in ALTO order. They therefore received segmentation and reading order that the whole-page readers had to find themselves; the line readers' page scores measure recognition under that advantage. No page or line results were missing, although Tesseract PSM 7 returned empty text for 139 lines.
+
+The book measure is the mean of page CERs, after Jochre's YIVO simplification on both sides and collapsed paragraph breaks. Our simplifier matched the corpus's simplified text on 103 of 104 pages, with one edit across 167,980 characters. Limits are 95% percentile bootstrap intervals over pages, 2,000 resamples with seed 202611; they do not resample books. CER can exceed 100% when insertions are numerous.
+
+| Reader | Input | Mean page CER | 95% limits |
+| --- | --- | ---: | ---: |
+| Jochre 3 | Whole page | 1.52% | 1.17 to 1.90 |
+| Tesseract `yid`, PSM 3 | Whole page | 8.72% | 7.14 to 10.47 |
+| Tesseract `yid+eng`, PSM 3 | Whole page | 16.94% | 15.14 to 18.91 |
+| Tesseract `yid`, PSM 7 | ALTO lines | 13.57% | 11.32 to 16.12 |
+| Qwen v1 | ALTO lines | 99.04% | 59.00 to 147.96 |
+| Qwen v3 | ALTO lines | 28.82% | 26.53 to 31.34 |
+| Qwen v4 | ALTO lines | 30.15% | 27.59 to 32.77 |
+
+The paired v4-minus-v3 difference is **+1.33 percentage points** (95% limits +0.35 to +2.23), so v4 was worse on these book pages. Version 1 hit the repetition-loop-at-budget flag on 162 of 4,011 lines; the guard stopped 162 at v3 and 202 at v4. These flags are mechanical, not a human assessment of each reading.
+
+## Newspaper agreement
+
+We selected 100 crops from Yiddish units in `qwen-nonenglish-v1`: 20 pages per LoC title across five titles, with one crop per page. Pages were ranked within title by `sha256("yid-silver-202611:" + doc_id)` and the crop by `sha256(doc_id + ":" + crop_id)`. The selection predates the readers. The candidate pages came from a damaged-OCR pool, so they aren't representative of all Yiddish newspapers.
+
+There is no human transcription for these crops. Distances below are pooled Levenshtein edits over the longer normalized reading, with YIVO simplification, Hebrew points removed and whitespace collapsed. The limits resample pages. **These numbers measure agreement, not accuracy:** no reader is established as correct.
+
+| Pair | Symmetric edit distance | 95% limits |
+| --- | ---: | ---: |
+| Jochre 3 and Tesseract `yid` | 69.7% | 63.4 to 75.6 |
+| Tesseract `yid` and Qwen v4 | 69.9% | 62.3 to 77.5 |
+| Jochre 3 and Qwen v4 | 74.1% | 68.1 to 79.4 |
+| Qwen v3 and v4 | 59.9% | 49.4 to 68.7 |
+
+The book result doesn't establish which reader is best on newspapers. A human-transcribed newspaper test set is needed before choosing one or launching a full version 4 reread.
+
+## Data and provenance
+
+The [aggregate-only Study 8 supplement](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-data-s8-supplement-20261102-b7f7371) includes the complete summary scores, line diagnostics, newspaper agreement and provenance, but no images, transcriptions, OCR text or per-page or per-crop results. Its [archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.tar.gz) has SHA-256 `eff92070058bf0d065e3febcde6f215dc4f2f955e4a1dca002189de1e44e5030`; verify it against the published [checksums](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/SHA256SUMS) before extracting at the repository root. The [member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.members.txt) identifies the files.
+
+The supplement is **not** the cumulative `report-data` set and does not change `ops/data-assets.json`. A cumulative release must wait for a rights review of the earlier study and archived textual outputs. The retained test-ID and newspaper-selection digests were recorded after scoring. We did not locate a per-file split hash manifest, so byte-level provenance of the page inputs is incomplete.
+
 # Spend
 
 Credit went from $49.88 to $37.97, so $11.91 of the $40 limit. The ledger's estimate, hourly price times time from instance creation to destruction, comes to $11.40. That estimate differs from what was paid because it counts loading time and leaves out bandwidth and storage, and it hasn't been checked against Vast's billing records.
@@ -359,6 +408,7 @@ Credit went from $49.88 to $37.97, so $11.91 of the $40 limit. The ledger's esti
 | 5: guard, 8B, deployed path | | 30 | 28.52 | 5.36 |
 | 6: Surya retest | | 3 | 4.10 | 0.24 |
 | 7: image tokens | | 1 | 1.90 | 0.13 |
+| 8: Yiddish, local | | 0 | 0 | 0.00 |
 | All | 40 | 69 | 60.70 | 11.40 |
 
 Study 5's figure includes the lost 8B run, about 4 hours and $0.85, and the 8B deployed reads, which stopped once when four parallel rentals together tripped one rental's spend cap. The cap compares account credit, so it counts other rentals' spend; it should track its own instance.
@@ -402,6 +452,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Study 6 ran the native weights with Surya's vLLM settings scaled to a 12 GB card.
 - Study 7 ran the image's CUDA build, not the native Vulkan build, and raised context above 4,096 for 2,048 and 3,072 image tokens. The typed Yiddish crops of #529 weren't found.
 - Study 6 started alongside Study 5 rather than after it.
+- Study 8 was added after the original protocol. Its line readers used corpus segmentation and order, unlike the page readers; its book results do not establish newspaper accuracy.
 
 # Findings about the rental
 
@@ -418,8 +469,8 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - A person who reads Japanese hasn't checked any Japanese result (#135).
 - Nobody has read the invented-text crops. The ids are in the data.
 - The adapters are exported and read in the `usnm_qwen` images, but nothing was signed, published or sent to BOINC, and no volunteer has run them.
-- The guard isn't in `usnm-boinc` yet. The same rule can run either as a stop during generation or as a cut on finished readings, using the existing `repetition_loop_at_token_budget` label.
+- The guard shipped in `usnm_qwen` 1.17; its effect on omissions in Yiddish newspapers needs a transcribed sample.
 - Podman temp files from a cancelled pull remain on the BOINC client container; a permission check blocked their removal, so they still need deleting.
 - Surya's native weights scored worse than the GGUF on 50 crops, with server settings that may be the cause.
-- Yiddish has no transcribed crops, so Study 7 can't say whether any image-token value reads it better.
+- Study 7's Yiddish crops have no transcriptions, so it can't say whether any image-token value reads them better. Study 8 adds book accuracy, not newspaper accuracy.
 - MinerU and dots.ocr remain unrun.
