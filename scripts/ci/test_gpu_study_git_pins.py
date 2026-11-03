@@ -174,7 +174,10 @@ class GPUStudyGitPinsTests(unittest.TestCase):
         )
         (inp / "merge_lora.py").write_text("# synthetic, never executed\n", encoding="utf-8")
         (inp / "fixture-adapter").write_bytes(b"synthetic adapter")
-        base_repo, base_rev = ("fixture/model", "a" * 40) if remote_base else ("", "")
+        base_repo, base_rev = (
+            ("Qwen/Qwen3-VL-8B-Instruct", "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b")
+            if remote_base else ("", "")
+        )
         (inp / "export.env").write_text(
             "NAME=fixture\nADAPTER=fixture-adapter\nQUANT=Q4_K_M\n"
             f"BASEREPO={base_repo}\nBASEREV={base_rev}\n",

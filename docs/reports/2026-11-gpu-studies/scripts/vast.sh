@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Thin Vast.ai API helper. Named flags only. The API key is read from --key-file and never printed.
-# --key-file overrides VAST_KEY_FILE, which overrides GPU_STUDY_SECRETS/vast.key.
+# --key-file overrides VAST_KEY_FILE, which overrides GPU_STUDY_SECRETS/vast.key; all must resolve under GPU_STUDY_SECRETS.
 # Actions: credit | list | search | create | attach-key | destroy
 set -euo pipefail
 ACTION=""; KEY_FILE="${VAST_KEY_FILE:-}"
@@ -15,17 +15,35 @@ while [ $# -gt 0 ]; do case "$1" in
   --label) LABEL=$2; shift 2;; --instance) INSTANCE=$2; shift 2;; --pubkey-file) PUBKEY=$2; shift 2;;
   *) echo "unknown flag: $1" >&2; exit 2;; esac; done
 API=https://console.vast.ai/api
-# The header goes to curl on a config file descriptor, so the key never appears in argv.
 call() { # METHOD PATH [JSON]
-  local m=$1 p=$2 d=${3:-}
-  [ -n "$KEY_FILE" ] && [ -r "$KEY_FILE" ] && [ ! -d "$KEY_FILE" ] || {
-    echo "a readable API key file is required (--key-file, VAST_KEY_FILE, or GPU_STUDY_SECRETS)" >&2; return 2;
+  local m=$1 p=$2 d=${3:-} secrets_root key_dir key_path api_key
+  [ -n "${GPU_STUDY_SECRETS:-}" ] && [ -n "$KEY_FILE" ] || {
+    echo "GPU_STUDY_SECRETS and a Vast.ai API key file are required" >&2; return 2;
+  }
+  secrets_root=$(cd -- "$GPU_STUDY_SECRETS" 2>/dev/null && pwd -P) || {
+    echo "GPU_STUDY_SECRETS must be a readable directory" >&2; return 2;
+  }
+  key_dir=$(cd -- "$(dirname -- "$KEY_FILE")" 2>/dev/null && pwd -P) || {
+    echo "Vast.ai API key path is not inside GPU_STUDY_SECRETS" >&2; return 2;
+  }
+  case "$key_dir" in "$secrets_root"|"$secrets_root"/*) ;; *)
+    echo "Vast.ai API key path is not inside GPU_STUDY_SECRETS" >&2; return 2;;
+  esac
+  key_path="$key_dir/$(basename -- "$KEY_FILE")"
+  [ -f "$key_path" ] && [ -r "$key_path" ] && [ ! -L "$key_path" ] || {
+    echo "Vast.ai API key must be a readable regular file, not a symlink" >&2; return 2;
+  }
+  api_key=$(<"$key_path")
+  api_key=${api_key%$'\r'}
+  [[ $api_key =~ ^[A-Za-z0-9._~+/=-]+$ ]] || {
+    echo "Vast.ai API key has an invalid format" >&2; return 2;
   }
   if [ -n "$d" ]; then
-    curl -fsS --max-time 60 -K <(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$KEY_FILE")") \
-      -X "$m" -H 'Content-Type: application/json' -d "$d" "$API$p"
+    printf 'header = "Authorization: %s"\n' "$api_key" |
+      curl -fsS --max-time 60 -K - -X "$m" -H 'Content-Type: application/json' -d "$d" "$API$p"
   else
-    curl -fsS --max-time 60 -K <(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$KEY_FILE")") -X "$m" "$API$p"
+    printf 'header = "Authorization: %s"\n' "$api_key" |
+      curl -fsS --max-time 60 -K - -X "$m" "$API$p"
   fi
 }
 case "$ACTION" in

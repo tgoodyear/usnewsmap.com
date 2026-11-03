@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stop each Study 4 Surya job once both hold the same 20 pages: the rate is stable and the rest would only cost money.
 # Rental endpoints must be a dotted-quad IPv4 address and a TCP port.
+# SSH host keys must be pinned in GPU_STUDY_SECRETS/known_hosts before this watcher can connect.
 cd "${GPU_STUDY_ROOT:?GPU_STUDY_ROOT is required}" || exit 2
 valid_ip() {
   local a b c d o
@@ -28,11 +29,15 @@ cnt() {
   IFS=$'\t' read -r IP PORT <<<"$endpoint"
   if ! valid_ip "$IP" || ! valid_port "$PORT"; then echo "invalid SSH endpoint for $1" >&2; return 2; fi
   [ -n "${GPU_STUDY_SECRETS:-}" ] || { echo "GPU_STUDY_SECRETS is required" >&2; return 2; }
+  local known_hosts="$GPU_STUDY_SECRETS/known_hosts"
+  [ -f "$known_hosts" ] && [ -r "$known_hosts" ] && [ ! -L "$known_hosts" ] || {
+    echo "trusted GPU rental host keys are required in GPU_STUDY_SECRETS/known_hosts" >&2; return 2;
+  }
   last=$(
     set -o pipefail
     env -u SSH_AUTH_SOCK ssh -F /dev/null -n -p "$PORT" -i "$GPU_STUDY_SECRETS/rental_ed25519" \
-      -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-      -o "UserKnownHostsFile=/tmp/kh-w$1" -o ConnectTimeout=15 "root@$IP" "$2" 2>/dev/null | tail -1
+      -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      -o "UserKnownHostsFile=$known_hosts" -o ConnectTimeout=15 "root@$IP" "$2" 2>/dev/null | tail -1
   )
   status=$?
   if [ "$status" -ne 0 ]; then echo "SSH output pipeline failed for $1 (status $status)" >&2; return "$status"; fi

@@ -363,6 +363,15 @@ class GPUStudyEndpointTests(unittest.TestCase):
         (root / "scripts").mkdir(parents=True)
         listing = case / "listing.jsonl"
         listing.write_text("".join(json.dumps(item) + "\n" for item in entries), encoding="utf-8")
+        secrets = case / "key directory with spaces"
+        secrets.mkdir()
+        known_hosts = []
+        for item in entries:
+            ip = item.get("public_ipaddr")
+            port = item.get("ports", {}).get("22/tcp", [{}])[0].get("HostPort")
+            if ip is not None and port is not None:
+                known_hosts.append(f"[{ip}]:{port} ssh-ed25519 synthetic-test-host-key")
+        (secrets / "known_hosts").write_text("\n".join(known_hosts) + "\n", encoding="utf-8")
         executable(
             root / "scripts/vast.sh",
             """\
@@ -394,14 +403,13 @@ class GPUStudyEndpointTests(unittest.TestCase):
         executable(self.bin / "date", "#!/bin/sh\necho 2026-11-02T00:00:00Z\n")
         executable(self.bin / "sleep", "#!/bin/sh\nexit 0\n")
         source = (STUDY / "s4-stop-at-20.sh").read_text(encoding="utf-8")
-        source = source.replace("/tmp/kh-w", str(case / "known hosts-"))
-        self.assertNotIn("/tmp/", source)
+        self.assertNotIn("StrictHostKeyChecking=accept-new", source)
         script = case / "s4-stop-at-20.sh"
         script.write_text(source, encoding="utf-8")
         env = self.env.copy()
         env.update(
             GPU_STUDY_ROOT=str(root),
-            GPU_STUDY_SECRETS=str(case / "key directory with spaces"),
+            GPU_STUDY_SECRETS=str(secrets),
             SSH_TRACE=str(case / "ssh-trace"),
             VAST_CALLS=str(case / "vast-calls"),
             VAST_LISTING=str(listing),
@@ -432,9 +440,8 @@ class GPUStudyEndpointTests(unittest.TestCase):
                                     ("00022", "00022", "65535")):
             self.assertEqual(args[args.index("-p") + 1], port)
             self.assertEqual(args[args.index("-i") + 1], env["GPU_STUDY_SECRETS"] + "/rental_ed25519")
-            self.assertIn("UserKnownHostsFile=" + str(case / "known hosts-s4surya3090")
-                          if host == "203.0.113.8"
-                          else "UserKnownHostsFile=" + str(case / "known hosts-s4surya4090"), args)
+            self.assertIn("StrictHostKeyChecking=yes", args)
+            self.assertIn("UserKnownHostsFile=" + env["GPU_STUDY_SECRETS"] + "/known_hosts", args)
             self.assertEqual(args[-2], "root@" + host)
         self.assertIn("S4-WATCH-DONE", (root / "s4watch.log").read_text(encoding="utf-8"))
 
@@ -500,6 +507,15 @@ class GPUStudyEndpointTests(unittest.TestCase):
         self.assertIn("GPU_STUDY_SECRETS", result.stderr)
         self.assertEqual(self.events(case / "ssh-trace"), [])
 
+    def test_watcher_requires_a_pinned_known_hosts_file(self):
+        entries = [self.rental("usnm-gpu-s4surya3090")]
+        script, _, case, env = self.watcher_fixture("missing-known-hosts", entries)
+        (Path(env["GPU_STUDY_SECRETS"]) / "known_hosts").unlink()
+        result = self.run_script(script, env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trusted GPU rental host keys", result.stderr)
+        self.assertEqual(self.events(case / "ssh-trace"), [])
+
     def test_watchdog_passes_secret_path_as_one_argument(self):
         runner = self.work / "runner"
         runner.mkdir()
@@ -556,6 +572,75 @@ class GPUStudyEndpointTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(env["SYSTEMCTL_TRACE"]).read_text()),
                          ["stop", "usnm-gpu-studies-watchdog.timer"])
 
+    def test_watchdog_requires_an_exact_numeric_allowlist_entry_before_destroy(self):
+        runner = self.work / "watchdog-allowlist"
+        runner.mkdir()
+        script = runner / "watchdog.sh"
+        shutil.copy2(STUDY / "watchdog.sh", script)
+        executable(
+            runner / "vast.sh",
+            """\
+            #!/usr/bin/env python3
+            import json, os, sys
+            action = sys.argv[2]
+            if action == "credit":
+                print("100")
+            elif action == "list":
+                print('{"id": 4242, "label": "usnm-gpu-s5-d1699999999"}')
+            elif action == "destroy":
+                with open(os.environ["DESTROY_TRACE"], "a", encoding="utf-8") as trace:
+                    trace.write(json.dumps(sys.argv[3:]) + "\\n")
+            else:
+                sys.exit(99)
+            """,
+        )
+        executable(
+            self.bin / "jq",
+            """\
+            #!/usr/bin/env python3
+            import os, sys
+            sys.stdin.read()
+            print(open(os.environ["WATCHDOG_ROWS"], encoding="utf-8").read(), end="")
+            """,
+        )
+        executable(
+            self.bin / "date",
+            """\
+            #!/bin/sh
+            case "$1" in
+              +%s) echo 1700000000;;
+              -Is) echo 2026-11-03T00:00:00Z;;
+              *) exit 99;;
+            esac
+            """,
+        )
+        rows = self.work / "watchdog-rows"
+        rows.write_text("4242 usnm-gpu-s5-d1699999999\nnot-an-id usnm-gpu-s5-d1699999999\n")
+        allowlist = self.work / "destroy-allowlist"
+        allowlist.write_text("another-id\n")
+        env = {
+            **self.env,
+            "DESTROY_TRACE": str(self.work / "destroy-trace"),
+            "GPU_STUDY_DESTROY_ALLOWLIST": str(allowlist),
+            "WATCHDOG_ROWS": str(rows),
+        }
+        result = self.run_script(
+            script, env, "--log", str(self.work / "watchdog-allowlist.log")
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(Path(env["DESTROY_TRACE"]).exists())
+        self.assertIn("skip destroy 4242", (self.work / "watchdog-allowlist.log").read_text())
+
+        allowlist.write_text("4242\n")
+        result = self.run_script(
+            script, env, "--log", str(self.work / "watchdog-allowlist.log")
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [json.loads(line) for line in Path(env["DESTROY_TRACE"]).read_text().splitlines()],
+            [["--instance", "4242"]],
+        )
+
     def vast_fixture(self):
         executable(
             self.bin / "curl",
@@ -563,7 +648,8 @@ class GPUStudyEndpointTests(unittest.TestCase):
             #!/usr/bin/env python3
             import os, pathlib, sys
             args = sys.argv[1:]
-            config = pathlib.Path(args[args.index("-K") + 1]).read_text(encoding="utf-8")
+            config_path = args[args.index("-K") + 1]
+            config = sys.stdin.read() if config_path == "-" else pathlib.Path(config_path).read_text(encoding="utf-8")
             if os.environ["EXPECTED_TEST_TOKEN"] not in config:
                 sys.exit(96)
             pathlib.Path(os.environ["CURL_TRACE"]).write_text("called\\n", encoding="utf-8")
@@ -571,6 +657,8 @@ class GPUStudyEndpointTests(unittest.TestCase):
             """,
         )
         env = self.env.copy()
+        env.pop("GPU_STUDY_SECRETS", None)
+        env.pop("VAST_KEY_FILE", None)
         env["CURL_TRACE"] = str(self.work / "curl-trace")
         return env
 
@@ -580,10 +668,13 @@ class GPUStudyEndpointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "1.25")
 
-    def test_vast_cli_key_works_without_related_environment_and_is_not_printed(self):
+    def test_vast_cli_key_must_be_inside_the_secret_directory_and_is_not_printed(self):
         env = self.vast_fixture()
         token = "synthetic-cli-key-only"
-        key = self.work / "synthetic key with spaces"
+        secrets = self.work / "synthetic secrets"
+        secrets.mkdir()
+        env["GPU_STUDY_SECRETS"] = str(secrets)
+        key = secrets / "synthetic key with spaces"
         key.write_text(token + "\n", encoding="utf-8")
         env["EXPECTED_TEST_TOKEN"] = token
         result = self.run_script(STUDY / "vast.sh", env, "--action", "credit", "--key-file", str(key))
@@ -598,14 +689,15 @@ class GPUStudyEndpointTests(unittest.TestCase):
         secrets_dir = self.work / "synthetic secrets"
         secrets_dir.mkdir()
         (secrets_dir / "vast.key").write_text("synthetic-study-key\n", encoding="utf-8")
-        env_key = self.work / "env.key"
+        env_key = secrets_dir / "env.key"
         env_key.write_text("synthetic-env-key\n", encoding="utf-8")
-        cli_key = self.work / "cli.key"
+        cli_key = secrets_dir / "cli.key"
         cli_key.write_text("synthetic-override-key\n", encoding="utf-8")
         tokens = ("synthetic-study-key", "synthetic-env-key", "synthetic-override-key")
         for source, variables, token, arguments in (
             ("study", {"GPU_STUDY_SECRETS": str(secrets_dir)}, tokens[0], ()),
-            ("environment-only", {"VAST_KEY_FILE": str(env_key)}, tokens[1], ()),
+            ("environment-only", {"GPU_STUDY_SECRETS": str(secrets_dir),
+                                  "VAST_KEY_FILE": str(env_key)}, tokens[1], ()),
             ("environment", {"GPU_STUDY_SECRETS": str(secrets_dir), "VAST_KEY_FILE": str(env_key)},
              tokens[1], ()),
             ("cli", {"GPU_STUDY_SECRETS": str(secrets_dir), "VAST_KEY_FILE": str(env_key)},
@@ -618,6 +710,38 @@ class GPUStudyEndpointTests(unittest.TestCase):
 
         Path(env["CURL_TRACE"]).unlink()
         env["EXPECTED_TEST_TOKEN"] = "unused-synthetic-token"
+        outside_key = self.work / "outside.key"
+        outside_key.write_text("synthetic-outside-key\n", encoding="utf-8")
+        for args in (("--key-file", str(outside_key)),):
+            with self.subTest(outside_path=args):
+                result = self.run_script(
+                    STUDY / "vast.sh",
+                    {**env, "GPU_STUDY_SECRETS": str(secrets_dir)},
+                    "--action", "credit", *args,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("inside GPU_STUDY_SECRETS", result.stderr)
+                self.assertFalse(Path(env["CURL_TRACE"]).exists())
+        symlink_key = secrets_dir / "outside-link"
+        symlink_key.symlink_to(outside_key)
+        result = self.run_script(
+            STUDY / "vast.sh",
+            {**env, "GPU_STUDY_SECRETS": str(secrets_dir)},
+            "--action", "credit", "--key-file", str(symlink_key),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr)
+        self.assertFalse(Path(env["CURL_TRACE"]).exists())
+        malformed_key = secrets_dir / "malformed.key"
+        malformed_key.write_text("synthetic key with spaces\n", encoding="utf-8")
+        result = self.run_script(
+            STUDY / "vast.sh",
+            {**env, "GPU_STUDY_SECRETS": str(secrets_dir)},
+            "--action", "credit", "--key-file", str(malformed_key),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid format", result.stderr)
+        self.assertFalse(Path(env["CURL_TRACE"]).exists())
         for args in ((), ("--key-file", ""), ("--key-file", str(self.work / "missing.key")),
                      ("--key-file", str(self.work))):
             with self.subTest(args=args):

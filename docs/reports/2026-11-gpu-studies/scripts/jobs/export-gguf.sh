@@ -23,6 +23,11 @@ if [ -n "$BASEREPO" ]; then
   [[ $BASEREPO =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ && $BASEREV =~ ^[0-9a-f]{40}$ ]] || {
     echo "invalid base repository or revision" >&2; exit 6;
   }
+  [[ $BASEREPO == Qwen/Qwen3-VL-8B-Instruct &&
+     $BASEREV == 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b ]] || {
+    # export.env came back from an untrusted rental; accept only the training script's pinned base.
+    echo "base repository and revision are not in the trusted study pin" >&2; exit 6;
+  }
 elif [ -n "$BASEREV" ]; then echo "base revision without repository" >&2; exit 6; fi
 LLAMA=091b6a7fc
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq cmake g++ git >/dev/null 2>&1

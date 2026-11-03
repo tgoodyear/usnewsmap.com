@@ -2,18 +2,29 @@
 # Node-side wall-clock watchdog, run by a systemd timer so it survives the driving session.
 # Instance labels are "usnm-gpu-<study>-d<unix deadline>". Past its deadline an instance is destroyed.
 # Below --credit-floor, or past --final-deadline, every study instance is destroyed. Other labels are left alone.
+# Destruction also requires an exact numeric ID in GPU_STUDY_DESTROY_ALLOWLIST.
 set -uo pipefail
 HERE=$(dirname "$(readlink -f "$0")"); FLOOR=9.89; FINAL=0; LOG=/var/log/usnm-gpu-studies-watchdog.log
+ALLOWLIST=${GPU_STUDY_DESTROY_ALLOWLIST:-}
 while [ $# -gt 0 ]; do case "$1" in
   --credit-floor) FLOOR=$2; shift 2;; --final-deadline) FINAL=$2; shift 2;; --log) LOG=$2; shift 2;;
   *) echo "unknown flag: $1" >&2; exit 2;; esac; done
 now=$(date +%s); credit=$("$HERE/vast.sh" --action credit 2>/dev/null || echo "")
 list=$("$HERE/vast.sh" --action list 2>/dev/null) || { echo "$(date -Is) list failed" >>"$LOG"; exit 1; }
 low=0; [ -n "$credit" ] && awk -v c="$credit" -v f="$FLOOR" 'BEGIN{exit !(c<f)}' && low=1
+destroy_allowed() {
+  [[ $1 =~ ^[1-9][0-9]*$ ]] && [ -n "$ALLOWLIST" ] &&
+    [ -f "$ALLOWLIST" ] && [ -r "$ALLOWLIST" ] && [ ! -L "$ALLOWLIST" ] &&
+    grep -Fxq -- "$1" "$ALLOWLIST"
+}
 echo "$list" | jq -r 'select(.label!=null)|select(.label|startswith("usnm-gpu-"))|"\(.id) \(.label)"' |
 while read -r id label; do
   deadline=${label##*-d}; case "$deadline" in ''|*[!0-9]*) deadline=0;; esac
   if [ "$now" -ge "$deadline" ] || [ "$low" = 1 ] || { [ "$FINAL" -gt 0 ] && [ "$now" -ge "$FINAL" ]; }; then
+    if ! destroy_allowed "$id"; then
+      echo "$(date -Is) skip destroy $id: not in the approved allowlist" >>"$LOG"
+      continue
+    fi
     "$HERE/vast.sh" --action destroy --instance "$id" && echo "$(date -Is) destroyed $id $label credit=$credit low=$low" >>"$LOG"
   fi
 done

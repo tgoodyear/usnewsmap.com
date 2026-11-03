@@ -371,6 +371,17 @@ with open(os.environ['TRACE'], 'a') as f:
         revision = "a" * 40
         config.write_text(settings("Qwen/Qwen3-VL-8B-Instruct", revision), encoding="utf-8")
         result = self.run_script("bash", str(script), env=env)
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertFalse(self.events())
+
+        revision = json.loads((HERE.parent / "data/s5/8b-train-report.json").read_text())["base_revision"]
+        config.write_text(settings("fixture/model", revision), encoding="utf-8")
+        result = self.run_script("bash", str(script), env=env)
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertFalse(self.events())
+
+        config.write_text(settings("Qwen/Qwen3-VL-8B-Instruct", revision), encoding="utf-8")
+        result = self.run_script("bash", str(script), env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([e["revision"] for e in self.events() if e["event"] == "download"], [revision])
 
