@@ -16,8 +16,8 @@ import time
 import unittest
 
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[3]
+REPO = Path(__file__).resolve().parents[2]
+HERE = REPO / "docs/reports/2026-11-gpu-studies/scripts"
 LOCK = REPO / "ocr/engines/tesseract/models.lock"
 SURVEY_LOCK = REPO / "scripts/ocr-survey/models.lock"
 WORK = Path.cwd() / f".gpu-study-review-tests-{os.getpid()}"
