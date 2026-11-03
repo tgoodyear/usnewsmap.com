@@ -198,8 +198,10 @@ class DecodeRepairTest(unittest.TestCase):
             self.files[url] = b"scan exists"
             self.files[url + ".json"] = json.dumps({
                 "doc_id": page["doc_id"], "batch": page["batch"], "batch_version": 1,
+                "loc_url": "https://tile.loc.gov/example.jp2", "iiif_base": "https://example.test/iiif",
+                "fetched_at": "2026-11-03T03:00:00Z", "download_ms": 100, "user_agent": "test",
                 "bytes": page["bytes"], "sha256": sha or page["sha256"],
-                "format": "jp2", "resolution": "full"}).encode()
+                "format": "jp2", "resolution": "full", "md5": "b" * 32}).encode()
 
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -291,7 +293,8 @@ class DecodeRepairTest(unittest.TestCase):
         self.assertFalse(any(method == "PUT" for method, _, _ in self.server.requests))
 
     def test_malformed_keep_sidecars_are_blocked_without_stopping_other_repairs(self):
-        bad_sidecars = (b"{", b"[]", {"batch_version": "bad"}, {"sha256": 42})
+        bad_sidecars = (b"{", b"[]", {"batch_version": "bad"}, {"sha256": 42},
+                        b"[" * 2000 + b"]" * 2000, "oversized")
         for seq, bad in enumerate(bad_sidecars, 1):
             page = self.page(seq)
             self.quarantine(page)
@@ -299,15 +302,61 @@ class DecodeRepairTest(unittest.TestCase):
             url = "http://scan/scans/" + page["scan"].replace("buffer/", "keep/", 1) + ".json"
             if isinstance(bad, dict):
                 bad = json.dumps({**json.loads(self.server.files[url]), **bad}).encode()
+            elif bad == "oversized":
+                valid = self.server.files[url]
+                bad = valid + b" " * (65537 - len(valid))
             self.server.files[url] = bad
-        safe = self.page(5)
+        safe = self.page(len(bad_sidecars) + 1)
         self.quarantine(safe)
         self.reconcile()
         statuses = {row["source"]["doc_id"]: row["refetch_state"] for row in quarantine.quarantined(self.state)}
-        self.assertEqual([statuses[self.page(seq)["doc_id"]] for seq in range(1, 5)],
-                         ["blocked_keep"] * 4)
+        self.assertEqual([statuses[self.page(seq)["doc_id"]] for seq in range(1, len(bad_sidecars) + 1)],
+                         ["blocked_keep"] * len(bad_sidecars))
         self.assertEqual(statuses[safe["doc_id"]], "queued")
         self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+
+    def test_invalid_queued_sidecars_do_not_release_outstanding_repair_slots(self):
+        pages = [self.page(seq) for seq in range(1, 11)]
+        for page in pages:
+            self.quarantine(page)
+        self.reconcile()
+        changes = (
+            {"batch_version": True}, {"batch_version": 1.9}, {"batch_version": "1"},
+            {"batch_version": None}, "missing_version", "missing_url", {"fetched_at": "invalid"},
+            "missing_md5", {"unexpected_field": "x"}, "duplicate_version",
+        )
+        for page, change in zip(pages, changes):
+            self.server.keep(page)
+            url = "http://scan/scans/" + page["scan"].replace("buffer/", "keep/", 1) + ".json"
+            side = json.loads(self.server.files[url])
+            if change == "missing_version":
+                del side["batch_version"]
+            elif change == "missing_url":
+                del side["loc_url"]
+            elif change == "missing_md5":
+                del side["md5"]
+            elif isinstance(change, dict):
+                side.update(change)
+            raw = json.dumps(side).encode()
+            if change == "duplicate_version":
+                raw = b'{"batch_version": false,' + raw[1:]
+            self.server.files[url] = raw
+        waiting = self.page(11)
+        self.quarantine(waiting)
+        self.reconcile()
+        statuses = {row["source"]["doc_id"]: row["refetch_state"] for row in quarantine.quarantined(self.state)}
+        self.assertEqual([statuses[page["doc_id"]] for page in pages], ["queued"] * 10)
+        self.assertEqual(statuses[waiting["doc_id"]], "pending")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 10)
+
+        self.server.keep(pages[0])
+        url = "http://scan/scans/" + pages[0]["scan"].replace("buffer/", "keep/", 1) + ".json"
+        self.server.files[url] += b" " * (65536 - len(self.server.files[url]))
+        self.reconcile()
+        statuses = {row["source"]["doc_id"]: row["refetch_state"] for row in quarantine.quarantined(self.state)}
+        self.assertEqual(statuses[pages[0]["doc_id"]], "observed_same")
+        self.assertEqual(statuses[waiting["doc_id"]], "queued")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 11)
 
     def test_partial_keep_write_after_queueing_is_rechecked_when_sidecar_arrives(self):
         page = self.page()
@@ -320,6 +369,20 @@ class DecodeRepairTest(unittest.TestCase):
         self.server.keep(page, "b" * 64)
         self.reconcile()
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_new")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+
+    def test_legacy_jpeg_sidecar_without_format_or_md5_is_observed(self):
+        page = self.page()
+        page["scan"] = page["scan"].replace(".jp2", ".jpg")
+        self.quarantine(page)
+        self.reconcile()
+        self.server.keep(page)
+        url = "http://scan/scans/" + page["scan"].replace("buffer/", "keep/", 1) + ".json"
+        side = json.loads(self.server.files[url])
+        del side["format"], side["md5"]
+        self.server.files[url] = json.dumps(side).encode()
+        self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_same")
         self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
 
     def test_what_if_never_reconciles_or_changes_quarantine(self):
@@ -347,7 +410,7 @@ class DecodeRepairTest(unittest.TestCase):
             with self.subTest(what_if=what_if), \
                     mock.patch.object(m, "queue_decode_repairs") as repair, \
                     mock.patch.object(m, "staged_pairs", return_value={}), \
-                    mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest, \
+                    mock.patch.object(m, "manifest_bytes", wraps=m.manifest_bytes) as manifest, \
                     mock.patch.object(m.urllib.request, "urlopen", side_effect=self.server), \
                     mock.patch("subprocess.run", return_value=types.SimpleNamespace(
                         returncode=0, stdout=candidates, stderr="")) as psql, \
@@ -361,7 +424,15 @@ class DecodeRepairTest(unittest.TestCase):
                 self.assertEqual([row["doc_id"] for row in manifest.call_args.args[0]], [healthy["doc_id"]])
                 repair.assert_not_called()
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "pending")
-        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+        puts = [r for r in self.server.requests if r[0] == "PUT"]
+        self.assertEqual(len(puts), 1)
+        self.assertIn("/manifests/queue-quality-qwen-", puts[0][1])
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pq.read_table(pa.BufferReader(puts[0][2]))
+        self.assertEqual(table.schema.metadata[b"usnm.format"], b"usnm-prefetch-manifest/1")
+        self.assertEqual([row["doc_id"] for row in table.to_pylist()], [healthy["doc_id"]])
 
     def test_nonenglish_acquisition_requires_readable_quarantine_root_even_when_repairs_are_off(self):
         args = types.SimpleNamespace(state=str(self.root / "quality"), scan_server="http://scan",

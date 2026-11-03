@@ -20,6 +20,16 @@ MAX_PENDING_REFETCHES = 10
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 CAMPAIGN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 DOC_RE = re.compile(r"(?P<lccn>[a-z0-9]{1,16})_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)")
+SIDECAR_LIMIT = 65536
+# Keep the allowed fields aligned with the fetcher's deny-unknown-fields Sidecar.
+SIDECAR_REQUIRED = {"doc_id", "batch", "batch_version", "loc_url", "iiif_base", "resolution",
+                    "fetched_at", "bytes", "sha256", "download_ms", "user_agent"}
+SIDECAR_OPTIONAL = {"format", "md5"}
+RFC3339_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})"
+)
+U64_MAX = (1 << 64) - 1
 
 
 def fingerprint(page):
@@ -249,13 +259,11 @@ def _update(state, identity, old, new, **values):
 
 
 def _get_optional(url, max_bytes):
+    """Read one extra byte so the caller can recognize an oversized response."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read(max_bytes + 1)
-            if len(data) > max_bytes:
-                raise ValueError("scan-server response exceeds the repair check's bound")
-            return data
+            return response.read(max_bytes + 1)
     except urllib.error.HTTPError as error:
         if error.code == 404:
             error.close()
@@ -275,6 +283,42 @@ def _scan_exists(url):
         raise
 
 
+def _unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate sidecar field")
+        result[key] = value
+    return result
+
+
+def _valid_sidecar(side, source, fmt):
+    """Conservatively recognize metadata the fetcher's Sidecar can use."""
+    if (not isinstance(side, dict) or not SIDECAR_REQUIRED <= side.keys()
+            or side.keys() - SIDECAR_REQUIRED - SIDECAR_OPTIONAL):
+        return False
+    version, size, duration = side["batch_version"], side["bytes"], side["download_ms"]
+    sha, md5, fetched = side["sha256"], side.get("md5"), side["fetched_at"]
+    if (side["doc_id"] != source["doc_id"] or side["batch"] != source["batch"]
+            or type(version) is not int or version != source["batch_version"]
+            or side["resolution"] != "full" or side.get("format", "jpeg") != fmt
+            or type(size) is not int or not 1 <= size <= U64_MAX
+            or type(duration) is not int or not 0 <= duration <= U64_MAX
+            or not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha)
+            or (fmt == "jp2" and md5 is None)
+            or (md5 is not None and (not isinstance(md5, str) or not re.fullmatch(r"[a-f0-9]{32}", md5)))
+            or not isinstance(fetched, str) or not RFC3339_RE.fullmatch(fetched)
+            or any(not isinstance(side[field], str) for field in ("loc_url", "iiif_base", "user_agent"))):
+        return False
+    try:
+        dt.datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        for field in ("loc_url", "iiif_base", "user_agent"):
+            side[field].encode("utf-8")
+    except (ValueError, UnicodeError):
+        return False
+    return True
+
+
 def _keep_state(server, source):
     """Observe both possible formats without changing a retained scan or its sidecar."""
     match = DOC_RE.fullmatch(source["doc_id"])
@@ -284,7 +328,10 @@ def _keep_state(server, source):
     occupied = False
     for ext, fmt in (("jp2", "jp2"), ("jpg", "jpeg")):
         url = f"{stem}.{ext}"
-        sidecar = _get_optional(url + ".json", 65536)
+        sidecar = _get_optional(url + ".json", SIDECAR_LIMIT)
+        if sidecar is not None and len(sidecar) > SIDECAR_LIMIT:
+            occupied = True
+            continue
         scan_exists = _scan_exists(url)
         if sidecar is None:
             occupied |= scan_exists
@@ -293,15 +340,9 @@ def _keep_state(server, source):
             occupied = True
             continue
         try:
-            side = json.loads(sidecar)
-            valid = (isinstance(side, dict)
-                     and side.get("doc_id") == source["doc_id"] and side.get("batch") == source["batch"]
-                     and int(side.get("batch_version") or 1) == source["batch_version"]
-                     and side.get("resolution") == "full" and side.get("format", "jpeg") == fmt
-                     and type(side.get("bytes")) is int and side["bytes"] > 0
-                     and isinstance(side.get("sha256"), str)
-                     and re.fullmatch(r"[a-f0-9]{64}", side["sha256"]))
-        except (TypeError, ValueError, OverflowError):
+            side = json.loads(sidecar.decode("utf-8"), object_pairs_hook=_unique_fields)
+            valid = _valid_sidecar(side, source, fmt)
+        except (TypeError, ValueError, RecursionError):
             valid = False
         if not valid:
             occupied = True

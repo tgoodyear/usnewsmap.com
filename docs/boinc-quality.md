@@ -970,6 +970,8 @@ failures. Three decoder failures of the same
 `(doc_id, batch, batch_version, bytes, sha256)` record quarantine it; the ordinary
 selector excludes that fingerprint, not every future version of the document. Other
 successfully prepared pages keep their READY chunks.
+The independent CPU `quality_feed.py follow` service is not opted into quarantine and
+continues retrying its undecodable scans; this change does not alter its work requests.
 
 The preparation CT stores this evidence, decoder versions, failure counts/timestamps
 and repair state in the campaign's
@@ -986,13 +988,29 @@ reviewed `usnm-ocr-worker` containing the decode-repair no-overwrite support on 
 scan-fetch host and a matching `usnm-ocr-dash` that can read repair manifests. Coordinate
 the fetcher's ordinary single-fetcher restart. An older worker rejects the new format and
 would stop the fetch queue; an older dashboard reports a queue error, making downstream
-queue observations unavailable. Do not queue these manifests until both are upgraded,
-or roll the dashboard back while repair manifests remain visible. The Qwen manifest
+queue observations unavailable. With repairs off and no repair manifests already visible,
+the producer still writes the existing `usnm-prefetch-manifest/1` format, so the existing
+fetcher and dashboard can remain in place. At an idle boundary, install the quarantine
+helper and matching manifest builder/service first, and verify that the effective
+`QWEN_QUEUE_DECODE_REPAIRS` is `off`. Then install the shared `quality_feed.py` before
+the matching `qwen_source.py` and `qwen_feed.py`; the new controller needs their
+interfaces. The Qwen manifest
 builder always reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`) and
 excludes quarantined documents from new ordinary non-English acquisition, even while
-repair queueing is off. A missing or unreadable root is an error. It cannot change
-manifests already queued, or independent OCR acquisition; review those paths before
-enabling repairs. Then an operator can opt in by setting
+repair queueing is off. A missing or unreadable root or helper is an error.
+
+If no repair manifests have been published, rollback at an idle boundary can restore
+the previous Qwen controller and source scripts while retaining the new shared feeder,
+helper and manifest exclusion. Preserve quarantine state, READY chunks and queued work;
+the old controller ignores quarantine and can retry bad scans. Do not restore the old
+manifest builder while quarantine records need protection: it can queue those documents
+through ordinary acquisition. If that rollback is necessary, pause that producer at an
+idle boundary and obtain a reviewed recovery plan. If repair manifests have been
+published, setting the flag back to `off` stops new ones but does not remove existing
+ones; keep both upgraded consumers until no repair manifest remains visible and the
+rollback has been reviewed. The new builder cannot change manifests already queued, or
+independent OCR acquisition; review those paths before enabling repairs. Then an operator
+can opt in by setting
 `QWEN_QUEUE_DECODE_REPAIRS=on` in the Qwen manifest timer's
 `/etc/usnm/quality-build.env` and installing the matching
 `usnm-qwen-manifest.service`. The independent non-English manifest timer reconciles
@@ -1014,6 +1032,9 @@ Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 `observed_new`, `blocked_keep` and `blocked_language`. A queued incomplete/conflicting
 keep target remains queued for rechecking and operator attention; the fetcher's
 `deferred_repair_occupied` count also records a target that became occupied. A
+sidecar that is oversized, malformed or incompatible with the fetcher's required
+metadata is occupied, not a completed repair, and retains an outstanding slot.
+Sidecar reads remain bounded; network errors still propagate. A
 manifest left queued without a resulting keep copy requires operator investigation;
 the reconciler does not enqueue another manifest, but the existing fetch queue can
 retry transient failures or retry a `needs-loc` deferral daily under its normal pacer.
