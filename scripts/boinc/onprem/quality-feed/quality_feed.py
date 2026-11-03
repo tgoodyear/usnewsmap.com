@@ -27,6 +27,8 @@ pages it can't use (no LoC text) in skipped.txt with the reason, so a restart go
 where it stopped. A scan/index mismatch is retried instead of used. With
 --quarantine-decode, three known decoder failures of the same verified scan fingerprint
 are recorded separately and excluded until its bytes change.
+follow supports the same flag, but leaves its quarantined scans for operator review
+instead of requesting automatic repairs.
 """
 import argparse
 import concurrent.futures
@@ -431,7 +433,7 @@ def cached_alto(cache, doc):
     return raw
 
 
-def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
+def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path, *, automatic_repair=True):
     """Prepare one chunk of pages and write it to the outbox; returns (pages written, the
     number left for a retry, the next chunk number)."""
     retry = 0
@@ -471,9 +473,12 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
                     error_type=e.original_type, error=str(e)[:200])
                 attempts = 0
                 if getattr(a, "quarantine_decode", False):
-                    attempts = scan_quarantine.record_failure(state, p, e, e.decoder)
+                    attempts = scan_quarantine.record_failure(state, p, e, e.decoder,
+                                                              automatic_repair=automatic_repair)
                 if attempts >= scan_quarantine.FAILURES_BEFORE_QUARANTINE:
-                    log("scan quarantined; repair pending", doc_id=p["doc_id"], sha256=p["sha256"],
+                    msg = ("scan quarantined; repair pending" if automatic_repair else
+                           "scan quarantined; operator review required")
+                    log(msg, doc_id=p["doc_id"], sha256=p["sha256"],
                         attempts=attempts, error_type=e.original_type, error=str(e)[:200])
                 else:
                     retry += 1
@@ -695,8 +700,19 @@ def cmd_follow(a):
             gone = delete_shipped(a, camp_dir, done_path, quality_docs - ocr_docs, deleted_path)
             if gone:
                 log("buffer scans deleted after shipping", pages=gone)
-        rows = [r for d, r in index_rows(a.scan_server).items()
-                if d not in staged and d not in done and absent.get(d) != r.get("fetched_at", "")]
+        quarantined = scan_quarantine.quarantined(state) if getattr(a, "quarantine_decode", False) else []
+        blocked_ids = {record["id"] for record in quarantined}
+        blocked_docs = {record["source"]["doc_id"] for record in quarantined}
+        rows, excluded = [], 0
+        for doc, row in index_rows(a.scan_server).items():
+            if doc in staged or doc in done or absent.get(doc) == row.get("fetched_at", ""):
+                continue
+            if doc in blocked_docs and scan_quarantine.source_id(row) in blocked_ids:
+                excluded += 1
+                continue
+            rows.append(row)
+        if excluded:
+            log("quarantined scans excluded", campaign=a.campaign, pages=excluded)
         rows.sort(key=lambda r: (r.get("fetched_at", ""), r["doc_id"]))
         room = max(0, a.max_pending - len(pending_chunks(camp_dir))) * a.chunk_pages
         todo = []
@@ -723,7 +739,7 @@ def cmd_follow(a):
                           + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
             for i in range(0, len(pages), a.chunk_pages):
                 _, _, seq = process_chunk(a, texts, pages[i : i + a.chunk_pages], camp_dir, state, seq,
-                                          done_path, skip_path)
+                                          done_path, skip_path, automatic_repair=False)
         if a.once:
             return
         wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=room == 0 or bool(todo))
@@ -790,6 +806,8 @@ def main(argv=None):
     w.add_argument("--workers", type=int, default=4)
     w.add_argument("--every-secs", type=int, default=600)
     w.add_argument("--once", action="store_true")
+    w.add_argument("--quarantine-decode", action="store_true",
+                   help="quarantine repeated verified decoder failures for operator review")
     a = ap.parse_args(argv)
     if a.cmd == "select":
         cmd_select(a)

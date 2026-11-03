@@ -121,8 +121,10 @@ def _page_details(page):
     return source, scan, lang, rate
 
 
-def record_failure(state, page, error, decoder):
-    """Count only a verified fingerprint's known decoder failures, across restarts."""
+def record_failure(state, page, error, decoder, *, automatic_repair=True):
+    """Count verified decoder failures and select guarded or manual recovery."""
+    if type(automatic_repair) is not bool:
+        raise ValueError("automatic repair policy must be a boolean")
     source, scan, lang, rate = _page_details(page)
     identity = source_id(source)
     encoded = json.dumps(source, sort_keys=True, separators=(",", ":"))
@@ -145,9 +147,9 @@ def record_failure(state, page, error, decoder):
             """, (identity, encoded, scan, lang, rate, now, now, error.original_type,
                   str(error)[:500], json.dumps(decoder, sort_keys=True)))
             connection.execute("""
-                UPDATE failures SET refetch_state = 'pending'
+                UPDATE failures SET refetch_state = ?
                 WHERE id = ? AND attempts >= ? AND refetch_state = 'observing'
-            """, (identity, FAILURES_BEFORE_QUARANTINE))
+            """, ("pending" if automatic_repair else "manual_review", identity, FAILURES_BEFORE_QUARANTINE))
             return connection.execute("SELECT attempts FROM failures WHERE id = ?", (identity,)).fetchone()[0]
     finally:
         connection.close()
@@ -199,7 +201,7 @@ def _record(row):
     source, _, _, _ = _page_details({**record["source"], "scan": record["scan"],
                                      "lang": record["lang"], "damage_rate": record["damage_rate"]})
     states = {"observing", "pending", "prepared", "queued", "observed_same", "observed_new",
-              "blocked_keep", "blocked_language"}
+              "blocked_keep", "blocked_language", "manual_review"}
     attempts, state = record["attempts"], record["refetch_state"]
     if (source != record["source"] or source_id(source) != record["id"]
             or type(attempts) is not int or attempts < 0 or state not in states

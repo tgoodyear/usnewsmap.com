@@ -970,8 +970,16 @@ failures. Three decoder failures of the same
 `(doc_id, batch, batch_version, bytes, sha256)` record quarantine it; the ordinary
 selector excludes that fingerprint, not every future version of the document. Other
 successfully prepared pages keep their READY chunks.
-The independent CPU `quality_feed.py follow` service is not opted into quarantine and
-continues retrying its undecodable scans; this change does not alter its work requests.
+The updated CPU `usnm-quality-follow.service` opts `quality_feed.py follow` into the
+same verification and three-failure threshold. It filters quarantined fingerprints
+before filling its bounded outbox, so an unchanged bad scan neither retries nor crowds
+out other pages. A changed fingerprint remains eligible; network, integrity and unknown
+decoder errors continue to retry. CPU quarantines are recorded as `manual_review`,
+not as automatic repair requests. They are also excluded from new ordinary non-English
+acquisition, but require an operator-reviewed recovery; the CPU record alone never
+queues a re-fetch, even if Qwen repairs are enabled. A separate campaign's eligible
+quarantine for the same document can still trigger its own Qwen repair. These changes
+do not alter BOINC work requests.
 
 The preparation CT stores this evidence, decoder versions, failure counts/timestamps
 and repair state in the campaign's
@@ -993,8 +1001,9 @@ the producer still writes the existing `usnm-prefetch-manifest/1` format, so the
 fetcher and dashboard can remain in place. At an idle boundary, install the quarantine
 helper and matching manifest builder/service first, and verify that the effective
 `QWEN_QUEUE_DECODE_REPAIRS` is `off`. Then install the shared `quality_feed.py` before
-the matching `qwen_source.py` and `qwen_feed.py`; the new controller needs their
-interfaces. The Qwen manifest
+the updated CPU follower service and the matching `qwen_source.py` and `qwen_feed.py`;
+the new service and controller need its interfaces. Restart the follower only at a safe
+boundary, preserving its outbox and state. The Qwen manifest
 builder always reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`) and
 excludes quarantined documents from new ordinary non-English acquisition, even while
 repair queueing is off. A missing or unreadable root or helper is an error.
@@ -1005,9 +1014,13 @@ helper and manifest exclusion. Preserve quarantine state, READY chunks and queue
 the old controller ignores quarantine and can retry bad scans. Do not restore the old
 manifest builder while quarantine records need protection: it can queue those documents
 through ordinary acquisition. If that rollback is necessary, pause that producer at an
-idle boundary and obtain a reviewed recovery plan. If repair manifests have been
-published, setting the flag back to `off` stops new ones but does not remove existing
-ones; keep both upgraded consumers until no repair manifest remains visible and the
+idle boundary and obtain a reviewed recovery plan. To roll back the CPU change without
+reverting the shared feeder, restore the previous follower unit at a safe boundary;
+it will retry the bad scans. An older shared feeder cannot parse the new unit's
+`--quarantine-decode` option, and an older helper cannot read `manual_review` records,
+so keep the updated helper and restore the old unit before any feeder rollback.
+If repair manifests have been published, setting the flag back to `off` stops new ones
+but does not remove existing ones; keep both upgraded consumers until no repair manifest remains visible and the
 rollback has been reviewed. The new builder cannot change manifests already queued, or
 independent OCR acquisition; review those paths before enabling repairs. Then an operator
 can opt in by setting
@@ -1029,9 +1042,9 @@ No buffer original, keep scan, sidecar or `.done` marker is deleted. Network fai
 remain errors, and a lost PUT response replays the same saved manifest bytes and name.
 
 Repair states include `pending`, `prepared`, `queued`, `observed_same`,
-`observed_new`, `blocked_keep` and `blocked_language`. A queued incomplete/conflicting
-keep target remains queued for rechecking and operator attention; the fetcher's
-`deferred_repair_occupied` count also records a target that became occupied. A
+`observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
+incomplete/conflicting keep target remains queued for rechecking and operator attention;
+the fetcher's `deferred_repair_occupied` count also records a target that became occupied. A
 sidecar that is oversized, malformed or incompatible with the fetcher's required
 metadata is occupied, not a completed repair, and retains an outstanding slot.
 Sidecar reads remain bounded; network errors still propagate. A

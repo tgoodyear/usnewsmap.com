@@ -237,6 +237,13 @@ class DecodeQuarantineTest(unittest.TestCase):
                                      max_pending=4, workers=1, once=True, alto_cache=None,
                                      quarantine_decode=True)
 
+    def follow_argv(self):
+        return ["follow", "--campaign", "cpu-test", "--curated", str(self.root / "curated"),
+                "--scan-server", "http://scan", "--outbox", str(self.root / "outbox"),
+                "--state", str(self.root / "state"), "--staged-dsn", "test",
+                "--chunk-pages", "1", "--max-pending", "1", "--workers", "1",
+                "--once", "--quarantine-decode"]
+
     def test_real_truncated_jpeg_and_jp2_fail_decode_including_jpeg_passthrough(self):
         from PIL import features
 
@@ -467,6 +474,88 @@ class DecodeQuarantineTest(unittest.TestCase):
             index.write_text(json.dumps(old) + "\n" + json.dumps(new) + "\n")
             feed.cmd_select(args)
         self.assertEqual(json.loads(out.read_text())["sha256"], new["sha256"])
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_follow_skips_a_quarantined_fingerprint_before_filling_its_outbox(self):
+        from PIL import features
+
+        if not features.check_codec("jpg_2000"):
+            self.skipTest("Pillow's JPEG2000 codec is required")
+        bad_raw, good_raw = self.image("JPEG2000")[:-2], self.image("JPEG2000", value=40)
+        bad, good = self.page(1, bad_raw, "jp2"), self.page(2, good_raw, "jp2")
+        rows = {page["doc_id"]: {**page, "format": "jp2", "fetched_at": f"2026-11-03T03:0{i}:00Z"}
+                for i, page in enumerate((bad, good))}
+        scans = {bad["scan"]: bad_raw, good["scan"]: good_raw}
+        calls = []
+
+        def fetch(request, timeout):
+            path = request.full_url.split("/scans/", 1)[1]
+            calls.append(path)
+            return io.BytesIO(scans[path])
+
+        state = self.root / "state/cpu-test"
+        camp = self.root / "outbox/cpu-test"
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            for _ in range(3):
+                feed.main(self.follow_argv())
+            self.assertEqual(calls, [bad["scan"]] * 3)
+            records = feed.scan_quarantine.quarantined(state)
+            self.assertEqual((records[0]["attempts"], records[0]["refetch_state"]), (3, "manual_review"))
+            feed.main(self.follow_argv())
+            self.assertEqual(calls, [bad["scan"]] * 3 + [good["scan"]])
+            self.assertEqual(scan_set.call_count, 4)
+            self.assertEqual(feed.read_lines(state / "done.txt"), {good["doc_id"]})
+            self.assertFalse((state / "skipped.txt").exists())
+            self.assertIn("quarantined scans excluded", output.getvalue())
+
+            (camp / "c00001/READY").unlink()
+            replacement = self.image("JPEG2000", value=200)
+            scans[bad["scan"]] = replacement
+            rows[bad["doc_id"]] = {**self.page(1, replacement, "jp2"), "format": "jp2",
+                                   "fetched_at": "2026-11-03T03:10:00Z"}
+            feed.main(self.follow_argv())
+            self.assertEqual(calls[-1], bad["scan"])
+            self.assertEqual(feed.read_lines(state / "done.txt"), {bad["doc_id"], good["doc_id"]})
+            self.assertTrue((camp / "c00002/READY").exists())
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_follow_keeps_transient_errors_retryable(self):
+        page = self.page(1, self.image())
+        rows = {page["doc_id"]: {**page, "format": "jpeg", "fetched_at": "2026-11-03T03:00:00Z"}}
+        state = self.root / "state/cpu-test"
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer"), \
+                mock.patch.object(feed, "prepare_page", side_effect=urllib.error.URLError("timeout")) as prepare, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            for _ in range(4):
+                feed.main(self.follow_argv())
+        self.assertEqual(prepare.call_count, 4)
+        self.assertIn("page failed; will retry", output.getvalue())
+        self.assertEqual(feed.scan_quarantine.quarantined(state), [])
+        self.assertEqual(feed.scan_quarantine.retryable_ids(state), {feed.scan_quarantine.source_id(page)})
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for the follower")
+    def test_follow_without_quarantine_option_preserves_retry_behavior(self):
+        raw = self.image()[:-2]
+        page = self.page(1, raw)
+        rows = {page["doc_id"]: {**page, "format": "jpeg", "fetched_at": "2026-11-03T03:00:00Z"}}
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed, "staged_from_db", return_value=set()), \
+                mock.patch.object(feed, "index_rows", return_value=rows), \
+                mock.patch.object(feed, "scan_set", return_value="buffer") as scan_set, \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(raw)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(4):
+                feed.main(self.follow_argv()[:-1])
+        self.assertEqual(scan_set.call_count, 4)
+        self.assertFalse((self.root / "state/cpu-test" / feed.scan_quarantine.DB_NAME).exists())
 
 
 class FollowTest(unittest.TestCase):

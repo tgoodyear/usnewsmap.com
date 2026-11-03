@@ -271,6 +271,24 @@ class DecodeRepairTest(unittest.TestCase):
         self.assertEqual(saved["manifest_body"], puts[1][2])
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
 
+    def test_cpu_manual_quarantine_is_excluded_but_never_automatically_repaired(self):
+        cpu, qwen = self.page(1), self.page(2)
+        cpu_state = self.root / "cpu-test"
+        error = self.DecoderError("broken data stream when reading image file")
+        for _ in range(3):
+            quarantine.record_failure(cpu_state, cpu, error, {"pillow": "test"}, automatic_repair=False)
+        self.quarantine(qwen)
+        self.assertEqual(quarantine.quarantined_documents(self.root), {cpu["doc_id"], qwen["doc_id"]})
+        self.reconcile()
+        self.assertEqual(quarantine.quarantined(cpu_state)[0]["refetch_state"], "manual_review")
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+        puts = [r for r in self.server.requests if r[0] == "PUT"]
+        self.assertEqual(len(puts), 1)
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.assertEqual(pq.read_table(pa.BufferReader(puts[0][2])).to_pylist()[0]["doc_id"], qwen["doc_id"])
+
     def test_existing_keep_and_english_sources_are_blocked_without_mutation(self):
         kept, occupied, english = self.page(1, "keep"), self.page(2), self.page(3, lang="eng")
         for page in (kept, occupied, english):
