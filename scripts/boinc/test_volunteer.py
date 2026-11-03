@@ -511,10 +511,21 @@ class PreflightTest(unittest.TestCase):
 
     def test_slow_runtime_commands_still_run_all_preflight_checks(self):
         runtime = Runtime()
+        elapsed = 0
+        probe_lifetime = 0
 
         def slow_command(args, capture_output, text, timeout):
-            if timeout < 45:
+            nonlocal elapsed, probe_lifetime
+            minimum = 240 if args[1] == "start" else 45
+            if timeout < minimum:
                 raise pre.subprocess.TimeoutExpired(args, timeout)
+            if args[1] == "create":
+                remaining = next(line for line in args[-1].splitlines() if line.startswith("remaining="))
+                probe_lifetime = int(remaining.split("=", 1)[1])
+            if args[1] in ("logs", "pause", "unpause"):
+                elapsed += 130
+                if elapsed >= probe_lifetime:
+                    return pre.subprocess.CompletedProcess(args, 1, "", "probe exited")
             return pre.subprocess.CompletedProcess(args, 0, runtime(args, timeout), "")
 
         with patch.object(pre.subprocess, "run", side_effect=slow_command):

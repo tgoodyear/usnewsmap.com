@@ -59,7 +59,8 @@ printf 'pids=%s\n' "$(cat /sys/fs/cgroup/pids.max)"
 if touch /usnm-preflight-write 2>/dev/null; then exit 21; fi
 test "$(wc -l < /proc/net/route)" -eq 1
 printf 'ready=yes\n'
-remaining=120
+# Managed startup is capped at 40 minutes; bound a probe left after an abrupt kill.
+remaining=3600
 while [ "$remaining" -gt 0 ]; do sleep 1; remaining=$((remaining - 1)); done
 """
 
@@ -515,7 +516,7 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
             ]
             try:
                 runner(create_cmd)
-                runner(["podman", "start", name], timeout=180)
+                runner(["podman", "start", name], timeout=300)
             except PreflightError as error:
                 if limits.use_gpu:
                     raise PreflightError(
