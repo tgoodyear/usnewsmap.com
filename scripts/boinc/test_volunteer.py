@@ -509,15 +509,16 @@ class PreflightTest(unittest.TestCase):
         with self.assertRaisesRegex(pre.PreflightError, "nvidia-ctk cdi generate"):
             pre.preflight(self.data, IMAGE, failing_gpu_runner, job_toml=qwen_gpu_path)
 
-    def test_slow_container_start_still_runs_all_preflight_checks(self):
+    def test_slow_runtime_commands_still_run_all_preflight_checks(self):
         runtime = Runtime()
 
-        def slow_start(args, timeout=30):
-            if args[:2] == ["podman", "start"] and timeout < 45:
-                raise pre.PreflightError("container start timed out")
-            return runtime(args, timeout=timeout)
+        def slow_command(args, capture_output, text, timeout):
+            if timeout < 45:
+                raise pre.subprocess.TimeoutExpired(args, timeout)
+            return pre.subprocess.CompletedProcess(args, 0, runtime(args, timeout), "")
 
-        pre.preflight(self.data, IMAGE, slow_start)
+        with patch.object(pre.subprocess, "run", side_effect=slow_command):
+            pre.preflight(self.data, IMAGE)
         self.assertTrue(any(call[1] == "pause" for call in runtime.calls))
         self.assertTrue(any(call[1] == "unpause" for call in runtime.calls))
         self.assertTrue(any(call[1] == "rm" for call in runtime.calls))

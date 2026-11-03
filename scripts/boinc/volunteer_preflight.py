@@ -299,7 +299,7 @@ def probe_script(workdir: str = WORKDIR) -> str:
     return PROBE.replace("/work", workdir)
 
 
-def run(args, timeout=30):
+def run(args, timeout=180):
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
