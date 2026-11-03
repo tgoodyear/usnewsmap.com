@@ -15,8 +15,11 @@ The source collectors read:
 - **server:** the existing BOINC database connection, in a consistent read-only
   transaction (2-second SQL statement limits; 8,000-row/8-MiB limits), the live
   `plan_class_spec.xml`, and the actual cohort service's `ENABLED_UNTIL` env file.
-  The local `--container` option executes only the bounded PHP query in the
-  already-running BOINC container; it does not restart or replace that container.
+  The local `--container` option runs bounded PHP config validation and database
+  queries in the already-running BOINC container, where container-only
+  `config.xml` symlink targets resolve. Only inventory is exported, never config
+  XML or credentials. The host still reads the policy and window env files.
+  This does not restart or replace the container.
 - **client:** authenticated **loopback-only** GUI RPC, reusing `client_account.RPC`,
   working CPU preferences, suspend/no-work flags, detected GPU counts, queued
   tasks, installed app versions and disk allowance. Only configured project-owned

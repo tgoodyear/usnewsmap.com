@@ -33,6 +33,40 @@ def fixture():
         shutil.rmtree(root)
 
 
+@contextlib.contextmanager
+def server_fixture():
+    if not shutil.which("php"):
+        raise unittest.SkipTest("PHP unavailable")
+    with fixture() as root:
+        (root / "html/inc").mkdir(parents=True)
+        (root / "config.xml").write_text(
+            "<boinc><config><db_passwd>fixture-only-secret</db_passwd>"
+            "<one_result_per_host_per_wu/></config></boinc>")
+        (root / "plan_class_spec.xml").write_text(
+            "<plan_classes><plan_class><name>intel</name><min_wu_id>2</min_wu_id>"
+            "<max_wu_id>10</max_wu_id></plan_class></plan_classes>")
+        (root / "window.env").write_text("ENABLED_UNTIL=1800086400\nMAX_ADMISSIONS=3\n")
+        (root / "html/inc/boinc_db.inc").write_text("""<?php
+class Result {
+    private $rows;
+    function __construct($rows) { $this->rows=$rows; }
+    function fetch_assoc() { return array_shift($this->rows); }
+}
+class BoincDb {
+    static function get($read) { if (!$read) throw new Exception(); return new BoincDb(); }
+    function do_query($sql) {
+        if (preg_match('/^(SET SESSION TRANSACTION READ ONLY|START TRANSACTION WITH CONSISTENT SNAPSHOT|ROLLBACK)$/',$sql)) return true;
+        if (!str_starts_with($sql,'SELECT /*+ MAX_EXECUTION_TIME(2000) */')) throw new Exception('not a bounded read');
+        if (str_contains($sql,'COALESCE(MAX')) return new Result([
+            ['name'=>'usnm_ocr','id'=>'1','min_version'=>'0','last_workunit'=>'1799999990'],
+            ['name'=>'usnm_qwen','id'=>'6','min_version'=>'117','last_workunit'=>'1799999995']]);
+        return new Result([]);
+    }
+}
+""")
+        yield root
+
+
 def version(app="usnm_qwen", plan="intel", gpu="intel_gpu"):
     return {"app": app, "version_num": 117, "plan_class": plan, "platform": "linux",
             "cpus": 1, "gpu": gpu, "gpu_count": 1 if gpu else 0}
@@ -220,37 +254,73 @@ class CollectionTests(unittest.TestCase):
             self.assertIsNone(C.backlog(str(view), requests, outbox, selected)["backlogs"]["usnm_qwen"])
 
     def test_php_server_process_reads_existing_database_contract_and_policy(self):
-        if not shutil.which("php"):
-            self.skipTest("PHP unavailable")
-        with fixture() as root:
-            (root / "html/inc").mkdir(parents=True)
-            (root / "config.xml").write_text("<boinc><config><one_result_per_host_per_wu/></config></boinc>")
-            (root / "plan_class_spec.xml").write_text(
-                "<plan_classes><plan_class><name>intel</name><min_wu_id>2</min_wu_id>"
-                "<max_wu_id>10</max_wu_id></plan_class></plan_classes>")
-            (root / "window.env").write_text("ENABLED_UNTIL=1800086400\nMAX_ADMISSIONS=3\n")
-            (root / "html/inc/boinc_db.inc").write_text("""<?php
-class Result {
-    private $rows;
-    function __construct($rows) { $this->rows=$rows; }
-    function fetch_assoc() { return array_shift($this->rows); }
-}
-class BoincDb {
-    static function get($read) { if (!$read) throw new Exception(); return new BoincDb(); }
-    function do_query($sql) {
-        if (preg_match('/^(SET SESSION TRANSACTION READ ONLY|START TRANSACTION WITH CONSISTENT SNAPSHOT|ROLLBACK)$/',$sql)) return true;
-        if (!str_starts_with($sql,'SELECT /*+ MAX_EXECUTION_TIME(2000) */')) throw new Exception('not a bounded read');
-        if (str_contains($sql,'COALESCE(MAX')) return new Result([
-            ['name'=>'usnm_ocr','id'=>'1','min_version'=>'0','last_workunit'=>'1799999990'],
-            ['name'=>'usnm_qwen','id'=>'6','min_version'=>'117','last_workunit'=>'1799999995']]);
-        return new Result([]);
-    }
-}
-""")
+        with server_fixture() as root:
             result = C.server(root, root / "window.env")
             self.assertEqual(result["last_workunits"]["usnm_qwen"], NOW - 5)
             self.assertEqual(result["enabled_until"], NOW + 86400)
             self.assertEqual(result["plans"]["intel"]["max_wu_id"], "10")
+
+    def test_container_config_resolves_when_host_config_symlink_is_broken(self):
+        with server_fixture() as root:
+            host_project = root / "host-mount"
+            host_project.mkdir()
+            shutil.copyfile(root / "plan_class_spec.xml", host_project / "plan_class_spec.xml")
+            (host_project / "config.xml").symlink_to(root / "unmounted-shm/config.xml")
+            (root / "shm").mkdir()
+            (root / "config.xml").rename(root / "shm/config.xml")
+            (root / "config.xml").symlink_to(root / "shm/config.xml")
+            real_run = C.run
+            outputs = []
+
+            def container_run(argv, cwd=None):
+                self.assertEqual(argv[:5], ["podman", "exec", "--workdir",
+                                           "/project/usnmocr/html/inc", "fixture-server"])
+                self.assertIsNone(cwd)
+                output = real_run(argv[5:], cwd=root / "html/inc")
+                outputs.append(output)
+                self.assertNotIn(b"fixture-only-secret", output)
+                self.assertNotIn(b"<boinc", output)
+                return output
+
+            self.assertTrue((host_project / "config.xml").is_symlink())
+            self.assertFalse((host_project / "config.xml").exists())
+            with patch.object(C, "run", side_effect=container_run):
+                result = C.server(host_project, root / "window.env", container="fixture-server")
+            self.assertEqual(len(outputs), 1)
+            self.assertEqual(result["last_workunits"]["usnm_qwen"], NOW - 5)
+            self.assertEqual(result["plans"]["intel"]["max_wu_id"], "10")
+            self.assertNotIn("fixture-only-secret", json.dumps(result))
+
+    def test_php_server_config_failure_replaces_success_without_exporting_secrets(self):
+        with server_fixture() as root:
+            output = root / "status.json"
+            args = ["server", "--project", str(root), "--window-env", str(root / "window.env"),
+                    "--output", str(output)]
+            configs = {
+                "missing": None,
+                "disabled": "<boinc><config><one_result_per_host_per_wu>0</one_result_per_host_per_wu></config></boinc>",
+                "absent": "<boinc><config/></boinc>",
+                "malformed": "<boinc><config>fixture-only-secret",
+                "oversized": " " * (C.MAX_BYTES + 1),
+            }
+            for name, config in configs.items():
+                with self.subTest(config=name):
+                    F.atomic_json(output, {"old": "success"})
+                    if config is None:
+                        (root / "config.xml").unlink()
+                    else:
+                        (root / "config.xml").write_text(config)
+                    self.assertEqual(C.main(args), 1)
+                    self.assertEqual(json.loads(output.read_text())["error"], "source unavailable")
+                    self.assertNotIn("fixture-only-secret", output.read_text())
+                    self.assertNotIn("old", json.loads(output.read_text()))
+
+    def test_php_server_rejects_config_changed_during_database_read(self):
+        with server_fixture() as root:
+            with (root / "html/inc/boinc_db.inc").open("a") as source:
+                source.write("file_put_contents('../../config.xml', '<boinc/>');\n")
+            with self.assertRaisesRegex(ValueError, "source command failed"):
+                C.server(root, root / "window.env")
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         operations = []

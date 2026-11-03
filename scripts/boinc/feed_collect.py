@@ -195,6 +195,23 @@ def window(path):
 # The BOINC connection and TLS settings remain in boinc_db.inc/config.xml.
 # No result text, project credentials, user names or host addresses are exported.
 PHP = r"""
+function feed_config() {
+    $raw = @file_get_contents('../../config.xml', false, null, 0, 8388609);
+    if ($raw === false || strlen($raw) > 8388608 || preg_match('/<!DOCTYPE|<!ENTITY/i', $raw)) {
+        throw new Exception('invalid scheduler config');
+    }
+    return $raw;
+}
+$feed_config_before = feed_config();
+libxml_use_internal_errors(true);
+$feed_config_xml = simplexml_load_string($feed_config_before, 'SimpleXMLElement', LIBXML_NONET);
+libxml_clear_errors();
+if ($feed_config_xml === false) throw new Exception('invalid scheduler config');
+$feed_flags = $feed_config_xml->xpath('.//one_result_per_host_per_wu');
+if (count($feed_flags) !== 1 || count($feed_flags[0]->children()) !== 0 ||
+    !in_array((string)$feed_flags[0], ['', '1'], true)) {
+    throw new Exception('requires one-result-per-host scheduling');
+}
 require_once 'boinc_db.inc';
 $db = BoincDb::get(true);
 function rows($sql) {
@@ -232,6 +249,7 @@ $units = rows("SELECT /*+ MAX_EXECUTION_TIME(2000) */ a.name AS app,w.id,w.batch
         AND w.canonical_resultid=0 AND w.error_mask=0
     GROUP BY w.id LIMIT 8001");
 $db->do_query('ROLLBACK');
+if ($feed_config_before !== feed_config()) throw new Exception('config changed during observation');
 echo json_encode(['apps'=>$apps,'versions'=>$versions,'units'=>$units,'preferences'=>$preferences], JSON_THROW_ON_ERROR);
 """
 
@@ -261,12 +279,8 @@ def host_preferences(rows, apps):
 
 
 def server(project, env_file, container=None, container_project="/project/usnmocr"):
-    # Config and policy must not change across the database read.
+    # PHP validates config in its own namespace; only inventory crosses the container boundary.
     before = read_file(project / "plan_class_spec.xml")
-    config = xml(read_file(project / "config.xml"))
-    flag = config.find(".//one_result_per_host_per_wu")
-    if flag is None or flag.text not in (None, "1"):
-        raise ValueError("requires one-result-per-host scheduling")
     command = ["php", "-r", PHP]
     if container:
         command = ["podman", "exec", "--workdir", container_project + "/html/inc", container, *command]
@@ -662,7 +676,7 @@ def main(argv=None):
     p = sub.add_parser("server")
     p.add_argument("--project", type=Path, required=True)
     p.add_argument("--window-env", type=Path, required=True)
-    p.add_argument("--container", help="Existing local BOINC container; PHP alone runs inside it")
+    p.add_argument("--container", help="Existing local BOINC container; PHP config and database reads run inside it")
     p.add_argument("--container-project", default="/project/usnmocr")
     p = sub.add_parser("client")
     p.add_argument("--data-dir", type=Path, required=True)
