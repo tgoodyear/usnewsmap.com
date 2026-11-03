@@ -190,6 +190,7 @@ class CollectionTests(unittest.TestCase):
             first = json.loads(C.run(args))
             self.assertEqual(next(c for c in first["checks"] if c["code"] == "collection")["state"], "firing")
             time.sleep(1.05)
+            args[2:4] = [f"--config={config_path}"]
             second = json.loads(C.run(args))
             self.assertEqual(next(c for c in second["checks"] if c["code"] == "collection")["state"], "healthy")
             self.assertGreater(next(c for c in second["checks"] if c["code"] == "usnm_ocr_no_work")["duration_s"], 0)

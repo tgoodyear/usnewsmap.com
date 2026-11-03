@@ -174,12 +174,14 @@ def snapshot(now, enabled_until, backlog_open, seconds_since_workunit,
 
 
 def main(argv=None):
-    args = sys.argv[1:] if argv is None else argv
-    if "--config" in args:
+    mode = argparse.ArgumentParser(add_help=False)
+    mode.add_argument("--config", type=Path)
+    selected, _ = mode.parse_known_args(argv)
+    if selected.config is not None:
         parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
         parser.add_argument("--config", type=Path, required=True)
         parser.add_argument("--state-dir", type=Path, required=True)
-        live = parser.parse_args(args)
+        live = parser.parse_args(argv)
         monitor(live.config, live.state_dir)
         return 0
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

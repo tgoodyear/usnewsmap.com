@@ -12,21 +12,21 @@ the prepare/ship owner. The new timers schedule **observations only**.
 
 The source collectors read:
 
-* **server:** the existing BOINC database connection, in a consistent read-only
+- **server:** the existing BOINC database connection, in a consistent read-only
   transaction (2-second SQL statement limits; 8,000-row/8-MiB limits), the live
   `plan_class_spec.xml`, and the actual cohort service's `ENABLED_UNTIL` env file.
   The local `--container` option executes only the bounded PHP query in the
   already-running BOINC container; it does not restart or replace that container.
-* **client:** authenticated **loopback-only** GUI RPC, reusing `client_account.RPC`,
+- **client:** authenticated **loopback-only** GUI RPC, reusing `client_account.RPC`,
   working CPU preferences, suspend/no-work flags, detected GPU counts, queued
   tasks, installed app versions and disk allowance. Only configured project-owned
   clients run this collector. Their host IDs come from their existing BOINC
   attachment, not another hard-coded fleet list. Never install it on volunteers.
-* **controller:** the existing oneshot OCR priority controller's bounded journal
+- **controller:** the existing oneshot OCR priority controller's bounded journal
   and `systemctl show` timestamps/result. Both completed and currently running
   ticks are checked. Do not point this adapter at a permanently running Temporal
   worker: service uptime is not tick duration.
-* **backlog:** the dashboard's existing read-only pgmq metrics (`ocr-priority`
+- **backlog:** the dashboard's existing read-only pgmq metrics (`ocr-priority`
   and `ocr-bulk`), immutable Qwen source requests and their inspector `.progress`
   receipts, the Qwen campaign's remaining `c*/READY` markers, and optionally the
   existing selector's `selected.jsonl`. A fresh selector output is needed to
