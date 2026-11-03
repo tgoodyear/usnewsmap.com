@@ -540,6 +540,24 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         self.assertIn(R.NVIDIA_GENERAL_MARKER, self.policy.read_text())
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_only_window_needs_an_open_peer_release_that_reads_the_request(self):
+        subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "nvidia_vulkan_8b",
+                        "--general", "--apply"], check=True, capture_output=True)
+        self.args.initial_policy_sha256 = R.sha(self.policy.read_bytes())
+        everything = self.database["versions"]
+        # No NVIDIA release left and AMD/Apple closed: nothing could run the second replica.
+        self.database["versions"] = [row for row in everything if row["plan_class"] == "intel_vulkan_8b"]
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["open_peer_readers"]),
+                         ("closed-expired-budget-or-release-change", []))
+        self.database["versions"] = everything
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["open_peer_readers"]),
+                         ("refilled-finite-window", [["nvidia_vulkan_8b", 1, 114]]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_only_stop_keeps_general_admission_and_only_intel_or_shared_take_ranges(self):
         before = self.policy.read_bytes()
         for extra, error in ((["--plan-class", "intel_vulkan_8b", "--keep-general", "--workunit", "100"], "usage:"),

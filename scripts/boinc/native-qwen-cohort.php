@@ -63,7 +63,8 @@ function native_qwen_general_admitted($xml) {
     return $open;
 }
 
-// $keep_general (with --stop only) closes every bounded window and leaves general admission.
+// $keep_general (with --stop only) closes this scope's bounded windows as --stop does and
+// leaves general admission; independent windows keep their own stops.
 function native_qwen_cohort_xml($xml, $plan_class, $workunit_id, $last_id = null, $keep_general = false) {
     // Unqualified profiles have independent one-workunit windows; shared refills leave them alone.
     $classes = in_array($plan_class, INDEPENDENT_QWEN_CLASSES, true) ? [$plan_class]

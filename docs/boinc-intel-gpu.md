@@ -71,7 +71,10 @@ Buffer headroom, window eligibility, starvation and the pinned-release check the
 the Intel host and Intel's release only; the NVIDIA host's unbounded queue never fills
 the buffer or holds a window. Like an open AMD or Apple class, a generally admitted
 NVIDIA release that cannot read the request version closes Intel's window and is named in
-`open_classes_that_cannot_read_request`. The flip keeps the controller's state: the
+`open_classes_that_cannot_read_request`. With one result per host, the Intel host's
+replicas reach quorum only through another class, so Intel's window also closes unless an
+open NVIDIA, AMD or Apple release can read the request (`open_peer_readers`). The flip keeps
+the controller's state: the
 open shared window becomes Intel's. A marker beside bounds fails the tick, and an
 AMD-first reservation needs NVIDIA bounded. The receipt reports
 `nvidia_general_admission`.

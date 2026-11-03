@@ -104,14 +104,19 @@ def dispatchable(versions, minimum):
                       else int(row["version_num"]) == newest[(row["plan_class"], int(row["platformid"]))]))
 
 
-def unreadable_by_open_classes(payload, versions, minimum, prompt_version):
-    """Open AMD/Apple versions that cannot read the request version. Such a host would take a
-    replica this controller admitted and return a unit error, so admission closes first."""
+def open_reader_versions(payload, versions, minimum):
+    """Dispatchable versions of the unbounded classes that are open: each takes any unsent replica."""
     classes = {node.findtext("name"): node for node in ET.fromstring(payload).findall("plan_class")}
     is_open = [name for name in UNBOUNDED_READERS
                if name in classes and classes[name].find("min_wu_id") is None]
-    return [list(row) for row in dispatchable(versions, minimum)
-            if row[0] in is_open and row[2] < REQUEST_MIN_APP[prompt_version]]
+    return [list(row) for row in dispatchable(versions, minimum) if row[0] in is_open]
+
+
+def unreadable_by_open_classes(payload, versions, minimum, prompt_version):
+    """Open AMD/Apple/NVIDIA-general versions that cannot read the request version. Such a host would
+    take a replica this controller admitted and return a unit error, so admission closes first."""
+    return [row for row in open_reader_versions(payload, versions, minimum)
+            if row[2] < REQUEST_MIN_APP[prompt_version]]
 
 
 def class_scope(payload, without_bounds=False):
@@ -484,11 +489,17 @@ def run(args):
                 allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
                     and dispatchable == [(1, args.app_version_num, expected)]
             minimum = int(database["app"].get("min_version") or 0)
-            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum,
-                                                    max((version for _, version in args.campaigns),
-                                                        key=REQUEST_MIN_APP.__getitem__))
+            request = max((version for _, version in args.campaigns), key=REQUEST_MIN_APP.__getitem__)
+            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum, request)
             output["open_classes_that_cannot_read_request"] = unreadable
             release = int(time.time()) >= args.enabled_until or not all(allowed.values()) or bool(unreadable)
+            if nvidia_general:
+                # One result per host: the Intel host's window reaches quorum only through a peer
+                # class that is open and can read the request.
+                peers = [row for row in open_reader_versions(policy, database["versions"], minimum)
+                         if row[2] >= REQUEST_MIN_APP[request]]
+                output["open_peer_readers"] = peers
+                release = release or not peers
         if release:
             command = ["--stop", "--keep-general"] if nvidia_general else ["--stop"]
             selected, proof = [], []
