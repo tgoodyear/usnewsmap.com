@@ -1254,15 +1254,45 @@ used and no services were modified. This verifies the **exact installed old
 worker's manifest compatibility boundary**, not image fetching or a full deployed
 upgrade. It confirms why repair publication must wait for the worker upgrade.
 
-**Still required before production enablement:** identify and test the exact
-historical/deployed dashboard revision and both consumers' actual upgrade/rollback
-artifacts and sequencing. The installed old-worker decoder check above is complete,
-but no historical dashboard binary or deployed queue supervisor has been exercised.
+An additional operator-run probe on 3 November 2026 exercised the exact deployed
+dashboard executable, commit `8475a5541d630e5b8ba2cb2993faaf4f99dc1908`, SHA256
+`5b8fbda50ea3d5d475928d71e010635121d17fef8c33fb52f4d8b95da510d00e`.
+It ran as a separate five-second process in a transient systemd unit with
+`PrivateNetwork=yes`, `ProtectSystem=strict`, only the disposable root writable,
+and `MemoryMax=256M`. Only its loopback API and HTML were queried. The synthetic
+ordinary and repair fixtures matched the hashes in `artifacts.json` above; no
+live paths, inherited production environment or cloud resources were used.
+
+Observed historical behavior:
+
+- With only the ordinary fixture, the queue reported **one manifest / one page**,
+  no `queue_error`, and activity **`queued`**.
+- After the repair fixture was added, the ordinary entry still reported **one
+  page**, without an entry error. The repair entry reported **zero pages** with
+  **`not a prefetch manifest`**.
+- `queue_error` explicitly reported **one unreadable manifest** and that its totals
+  were omitted; activity became **`unknown`**. This was visible degradation, not
+  silent successful queue processing.
+- HTML still returned **HTTP 200**, the process remained alive, and both manifest
+  files were preserved. The probe child was stopped in `finally` and the transient
+  unit was collected; the operator owns disposable scratch cleanup.
+
+This closes the exact historical dashboard **observation** gap, not repair-format
+compatibility. Upgrade the dashboard before publishing repair manifests. Rolling
+back to this version while repairs remain queued visibly degrades queue activity
+to `unknown`; a healthy process or HTTP 200 must not be mistaken for compatibility.
+
+**Still required before production enablement:** verify both consumers' reviewed
+replacement artifacts and actual coordinated upgrade/rollback sequencing. The
+exact old-worker decoder and old-dashboard observation checks above are complete,
+but the deployed queue supervisor has not been exercised.
 The end-to-end localhost rehearsal drives fetches through the
 production Rust entry point, not the deployed systemd/shell fetch-queue supervisor;
 its completion/cooling markers, retry schedule, host configuration and complete
-upgrade ordering still need a disposable deployment-level test. The dashboard path
-tested is its real queue/index reader, not the deployed HTTP/UI/access configuration.
+upgrade ordering still need a disposable deployment-level test. The upgraded
+dashboard path tested is its real queue/index reader; the historical binary's
+isolated loopback HTTP/HTML probe does not certify the upgraded deployment's
+HTTP/UI/access configuration.
 The post-publication crash boundary is reconstructed from copied real output, not
 a SIGKILL precisely between its two filesystem operations; power loss, filesystem
 durability and independently deployed acquisition paths are not certified. Nor
