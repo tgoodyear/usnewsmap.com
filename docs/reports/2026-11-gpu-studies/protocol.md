@@ -175,6 +175,21 @@ Added on the maintainer's request, before any Study 9 run. Xiaomi-OCR-0 is a 0.8
 
 There's no rental: the run uses the local card in a bounded window, with BOINC GPU work suspended and then restored.
 
+## Amendment, 3 November 2026: Study 9 step 2, the deployed path
+
+Added after Study 9's crop result passed its rule, before any step 2 reading. The question is what Xiaomi-OCR-0 loses in the runtime BOINC runs, and how fast it reads there.
+
+**Conversion.** The pinned weights of Study 9 are converted with `convert_hf_to_gguf.py` at llama.cpp commit `e1a9a6dcb`, the build that `usnm_qwen` 1.17 ships (version 8799): the text model at Q8_0, the vision projector at F16. No community GGUF is used.
+
+**Reading.** The 1.17 app's own `llama-server` and libraries, run directly with `--parallel 1` and temperature 0 as the app runs them, a 16,384-token context and the model's default image-token limits. The prompt, image handling and output cap are Study 9's region mode. Two arms, on the same 612 crops:
+
+- **GPU**, the Vulkan backend on the local RTX 2060 SUPER, all layers offloaded.
+- **CPU**, no offload, 4 threads, on the same host with the GPU idle.
+
+**Measures.** Pooled CER by source with limits, paired against Study 9's vLLM reading (the loss from export, quantization and runtime) and against Tesseract; the invented-text checks; loops, cap hits and Han characters; seconds per crop for each arm.
+
+**Rule.** The deployed path holds Study 9's result if its guarded pooled CER is still below Tesseract's with limits excluding zero. That would make Xiaomi-OCR-0 a candidate reader for `usnm_qwen`, still untrusted until a held-out set no study has used confirms it. Nothing is signed, published or sent to BOINC.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.
