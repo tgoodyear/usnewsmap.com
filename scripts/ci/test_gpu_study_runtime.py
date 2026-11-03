@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -59,7 +60,7 @@ class GPUStudyRuntimeTests(unittest.TestCase):
 
     def job_fixture(self, script_name, statuses, device=True, case=None):
         root = self.work / (case or script_name)
-        root.mkdir()
+        root.mkdir(parents=True)
         work, app, venv, bin_dir, home = (
             root / "work", root / "app", root / "venv" / "bin", root / "bin", root / "home"
         )
@@ -171,13 +172,15 @@ exit 1
 
         # Relocate the jobs' fixed container paths; all executable logic remains unchanged.
         source = (STUDY / "jobs" / script_name).read_text(encoding="utf-8")
-        for original, replacement in (
-            ("HOME=/tmp", 'HOME="$TEST_HOME"'),
-            ("/opt/venv/bin", str(venv)),
-            ("/app", str(app)),
-            ("/work", str(work)),
-        ):
-            source = source.replace(original, replacement)
+        replacements = {
+            "HOME=/tmp": 'HOME="$TEST_HOME"',
+            "/opt/venv/bin": str(venv),
+            "/app": str(app),
+            "/work": str(work),
+        }
+        source = re.sub(
+            "|".join(map(re.escape, replacements)), lambda match: replacements[match.group()], source
+        )
         script = root / script_name
         script.write_text(source, encoding="utf-8")
 
@@ -245,7 +248,9 @@ exit 1
         statuses = {"failed": 23, "passed": 0, "signalled": "SIGTERM"}
         for name in ("surya.sh", "surya6.sh"):
             with self.subTest(script=name):
-                script, inputs, outputs, env = self.job_fixture(name, statuses)
+                script, inputs, outputs, env = self.job_fixture(
+                    name, statuses, case=f"runner/work/repo/{name}"
+                )
                 env["FAIL_DATE_AT"] = "2"
                 result = self.run_command(["bash", str(script)], env)
                 self.assertEqual(result.returncode, 0, result.stderr)
