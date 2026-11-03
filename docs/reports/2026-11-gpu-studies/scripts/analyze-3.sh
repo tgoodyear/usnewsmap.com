@@ -1,19 +1,34 @@
 #!/usr/bin/env bash
 # Study 3 tables: every reader on the same human-referenced crops, by source. A missing output scores as empty.
 set -euo pipefail
+SCRIPTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 W=${GPU_STUDY_ROOT}; cd "$W"; T=${TOOL:-${GPU_STUDY_DEV}/target/release/gpu-study}; A=analysis/s3; mkdir -p "$A"; L=${GPU_STUDY_DEV}/local
 cat refs/op-100.jsonl refs/rz-100.jsonl refs/ml-52.jsonl refs/nzz-360.jsonl | jq -c 'del(.image)' >"$A/refs.jsonl"
 jq -r .id "$A/refs.jsonl" | LC_ALL=C sort >"$A/ids"
 only() { jq -c --rawfile l "$A/ids" '($l|split("\n")) as $x|select(.id as $i|$x|index($i))' "$1"; }
 scripts/decode.sh --kind qwen --in results/s3-qwen/readings.b64 --out "$A/qwen-all.jsonl"; only "$A/qwen-all.jsonl" >"$A/qwen.jsonl"
-{ for f in op-100-psm6 ml-52-psm6; do scripts/decode.sh --kind plain --in $L/out/$f.b64 --out "$A/t-$f.jsonl" >/dev/null; cat "$A/t-$f.jsonl"; done
+{ for f in op-100-psm6 ml-52-psm6; do scripts/decode.sh --kind plain --in "$L/out/$f.b64" --out "$A/t-$f.jsonl" >/dev/null; cat "$A/t-$f.jsonl"; done
   only analysis/s1/frak2021-psm6.jsonl; } >"$A/tesseract.jsonl"
 jq -c 'select(.text|type=="string")' results/s3-surya/surya-crops.jsonl >"$A/surya-all.jsonl"; only "$A/surya-all.jsonl" >"$A/surya.jsonl"
 # CHURRO answers in XML: keep the Page element's text, one tag boundary one line break. Parsed as text, never run.
 jq -c 'select(.text|type=="string")|{id,text:(.text|sub("(?s)^.*?<Page>";"")|sub("(?s)</Page>.*$";"")|gsub("<[^>]+>";"\n")|gsub("&amp;";"&")|gsub("&lt;";"<")|gsub("&gt;";">")|gsub("\\n\\s*\\n+";"\n"))}' results/s3-churro/churro.jsonl >"$A/churro-all.jsonl"; only "$A/churro-all.jsonl" >"$A/churro.jsonl"
-H=(--hyp qwen-8b=$A/qwen.jsonl --hyp tesseract=$A/tesseract.jsonl --hyp surya=$A/surya.jsonl --hyp churro=$A/churro.jsonl --hyp american-stories=$A/american-stories.jsonl)
-jq -c 'select(.text|type=="string")' results/s3-hf/got.jsonl >"$A/got.jsonl"; H+=(--hyp got=$A/got.jsonl)
-{ cat results/s3-granite-3090/granite.jsonl results/s3-granite-local/granite.jsonl 2>/dev/null || true; } | jq -c 'select(.text|type=="string")' >"$A/granite.jsonl"; H+=(--hyp granite=$A/granite.jsonl)
+scripts/decode.sh --kind american-stories --in "${AMERICAN_STORIES_B64:-$L/out/as.b64}" --out "$A/american-stories-all.jsonl"
+# The scorer takes the last reading per ID; verify those against the retained study before scoring.
+if ! jq -en --rawfile ids "$A/ids" --slurpfile actual "$A/american-stories-all.jsonl" --slurpfile retained "${AMERICAN_STORIES_REFERENCE:-$SCRIPTS/../data/s3/american-stories.jsonl}" '
+  def by_id:
+    reduce .[] as $row ({};
+      if ($row.id | type) != "string" or ($row.text | type) != "string"
+      then error("invalid American Stories row") else .[$row.id] = $row.text end);
+  ($ids | split("\n")) as $selected
+  | ($actual | map(select(.id as $id | $selected | index($id))) | by_id) == ($retained | by_id)
+' >/dev/null; then
+  echo "American Stories results do not match the retained study data; refusing to score" >&2
+  exit 1
+fi
+only "$A/american-stories-all.jsonl" >"$A/american-stories.jsonl"
+H=(--hyp "qwen-8b=$A/qwen.jsonl" --hyp "tesseract=$A/tesseract.jsonl" --hyp "surya=$A/surya.jsonl" --hyp "churro=$A/churro.jsonl" --hyp "american-stories=$A/american-stories.jsonl")
+jq -c 'select(.text|type=="string")' results/s3-hf/got.jsonl >"$A/got.jsonl"; H+=(--hyp "got=$A/got.jsonl")
+{ cat results/s3-granite-3090/granite.jsonl results/s3-granite-local/granite.jsonl 2>/dev/null || true; } | jq -c 'select(.text|type=="string")' >"$A/granite.jsonl"; H+=(--hyp "granite=$A/granite.jsonl")
 $T score --refs "$A/refs.jsonl" "${H[@]}" --baseline tesseract --out "$A/compare.jsonl"
 $T score --fold --refs "$A/refs.jsonl" "${H[@]}" --baseline tesseract --out "$A/compare-folded.jsonl"
 $T invent --refs "$A/refs.jsonl" "${H[@]}" --out "$A/invent.jsonl"

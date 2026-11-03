@@ -123,6 +123,8 @@ Status. The adapter stays `untrusted-requires-held-out-evaluation`. It wasn't ex
 
 612 crops. Pooled CER by source, with median crop CER in brackets. A reader with no output on a crop scores as empty. Limits and WER are in [`data/s3/compare.jsonl`](data/s3/compare.jsonl).
 
+For regeneration, `analyze-3.sh` decodes the American Stories `as.b64` in `${GPU_STUDY_DEV}/local/out/` (or `AMERICAN_STORIES_B64`). It joins the nonblank `bboxes[].raw_text` in order, as the survey runner does. A valid empty page is a present empty reading; an absent row is missing. Before scoring, the last decoded reading for each ID must match the [retained readings](data/s3/american-stories.jsonl), or `AMERICAN_STORIES_REFERENCE` if those readings are elsewhere. A missing input, malformed result, or mismatch stops regeneration rather than changing the historical scores. The raw batch was unavailable for this review, so that comparison has only been exercised on synthetic data.
+
 | Source (crops, pages) | Qwen 8B | CHURRO | Tesseract | Surya | GOT-OCR | Granite | American Stories |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Overproof English (100, 18) | 1.6 (0.4) | 1.9 (0.4) | 3.1 (2.0) | 48.5 (8.0) | 44.1 (2.5) | 55.3 (1.9) | 91.4 (96.8) |
