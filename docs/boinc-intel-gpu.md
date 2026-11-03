@@ -62,6 +62,20 @@ replicas are not cancelled, reassigned or edited; they stay ordinary unsent work
 for every other eligible class, and the receipt records them
 (`rotated_past_window`, `starved_hosts`, `left_unsent_replicas`).
 
+Once the operator gives `nvidia_vulkan_8b` general admission (the helper's
+`--general` and its marker, [app releases](../contrib-compute/docs/app-release.md)), the
+NVIDIA host takes any Qwen work on its own, and the controller owns Intel's window alone
+(#1445). It refills that window with `--plan-class intel_vulkan_8b`, and its release is
+`--stop --keep-general`, so neither ever bounds or closes NVIDIA's general admission.
+Buffer headroom, window eligibility, starvation and the pinned-release check then cover
+the Intel host and Intel's release only; the NVIDIA host's unbounded queue never fills
+the buffer or holds a window. Like an open AMD or Apple class, a generally admitted
+NVIDIA release that cannot read the request version closes Intel's window and is named in
+`open_classes_that_cannot_read_request`. The flip keeps the controller's state: the
+open shared window becomes Intel's. A marker beside bounds fails the tick, and an
+AMD-first reservation needs NVIDIA bounded. The receipt reports
+`nvidia_general_admission`.
+
 The controller reads the producer's durable
 `/project/qwen/qwen-nonenglish-v1/audit.json` directly, not a human handoff or a
 headline count of stale ready work. It binds each WU/job identity to the actual

@@ -209,7 +209,11 @@ php scripts/boinc/native-qwen-cohort.php --project /project/usnmocr --plan-class
 The marker comment `usnm-nvidia-general-admission-v1` records it, and
 `refresh-plan-policy.py` keeps it across restarts. A bounded window for another class leaves
 it as it is; a window that includes `nvidia_vulkan_8b` (its own, or `shared_8b`) replaces it
-with that window's bounds, and the operator stop above closes it.
+with that window's bounds, and the operator stop above closes it. `--stop --keep-general`
+closes every bounded window and leaves general admission as it is. `intel_vulkan_8b`, like
+`shared_8b`, takes a range of up to ten workunits (`--workunit-end`). With both, the
+automatic refill keeps an Intel-only window beside NVIDIA's general admission
+([Intel GPU](../../docs/boinc-intel-gpu.md#persistent-finite-nvidiaintel-refill)).
 
 The helper checks Qwen identity, model batch, disk bound, independent quorum and
 target of 2, and two unsent results. It journals the old plan, atomically opens
