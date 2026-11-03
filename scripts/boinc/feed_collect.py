@@ -5,8 +5,9 @@ Run source collectors beside their existing services. The evaluator reads their
 atomic files (or existing private HTTP mirrors), never invokes a remote shell.
 """
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
+import http.client
 import json
 import math
 import os
@@ -94,6 +95,8 @@ def read_source(location):
                 size += len(chunk)
                 if size > MAX_BYTES:
                     raise ValueError("source size limit")
+            if response.length not in (None, 0):
+                raise http.client.IncompleteRead(b"", response.length)
             return json.loads(b"".join(chunks))
     return json.loads(read_file(location))
 
@@ -593,7 +596,20 @@ def eligible(unit, host, version, database):
             and int(plan.get("min_batch", "0")) <= unit["batch"] <= int(plan.get("max_batch", str(2**63))))
 
 
-def supply(database, hosts, resource):
+def gpu_profile(version, database):
+    plan = database["plans"][version["plan_class"]]
+    count = float(plan.get("ngpus", "1"))
+    if not math.isfinite(count) or count < 0 or "gpu_utilization_tag" in plan:
+        raise ValueError("unmodeled live GPU resource profile")
+    # Stock BOINC defaults to one GPU; zero also means one without a utilization tag.
+    if (count or 1) != version["gpu_count"]:
+        raise ValueError("live GPU policy differs from installed resource profile")
+    cpus = float(plan.get("avg_ncpus", "0"))
+    if not math.isfinite(cpus) or cpus < 0 or cpus and cpus != version["cpus"]:
+        raise ValueError("live GPU CPU demand differs from installed resource profile")
+
+
+def supply(database, hosts, resource, disk_usage=None):
     """Maximum matching: a replica and a host/workunit pair can each be used once.
 
     Work offered to two classes is not two results, and two replicas of a unit
@@ -617,6 +633,9 @@ def supply(database, hosts, resource):
             continue
         if len({v["cpus"] for v in versions}) > 1 and resource == "cpu":
             raise ValueError("mixed CPU resource profiles require scheduler evidence")
+        if resource == "gpu":
+            for version in versions:
+                gpu_profile(version, database)
         if resource == "gpu" and any(
                 len({v["gpu_count"] for v in versions if v["gpu"] == device}) > 1
                 for device in {v["gpu"] for v in versions}):
@@ -640,14 +659,25 @@ def supply(database, hosts, resource):
                 if sum(len(v) for v in candidates.values()) > 100000:
                     raise ValueError("eligibility graph limit")
     # Capacitated network flow, including host/unit nodes (one replica per host).
-    graph = {}
+    graph, pairs = {}, set()
+    bounds = {u["id"]: u["rsc_disk_bound"] for u in database["units"]}
     def edge(a, b, count):
         graph.setdefault(a, {})[b] = count
         graph.setdefault(b, {}).setdefault(a, 0)
+    for host in hosts:
+        host_slots = [slot for slot in slots if slot[0] == host["host_id"]]
+        weights = {bounds[uid] for slot in host_slots for uid in candidates[slot]}
+        limit = len(host_slots)
+        if len(weights) == 1:
+            weight = next(iter(weights))
+            if weight:
+                limit = min(limit, math.floor(host["disk_bytes"] / weight))
+        edge("source", ("host", host["host_id"]), limit)
     for slot in slots:
-        edge("source", slot, 1)
+        edge(("host", slot[0]), slot, 1)
         for uid in candidates[slot]:
             pair = ("pair", slot[0], uid)
+            pairs.add(pair)
             edge(slot, pair, 1)
             edge(pair, ("unit", uid), 1)
     for unit in database["units"]:
@@ -671,6 +701,16 @@ def supply(database, hosts, resource):
             graph[node][prev] += 1
             node = prev
         flow += 1
+    used = {h["host_id"]: 0 for h in hosts}
+    for pair in pairs:
+        if graph[("unit", pair[2])][pair]:
+            used[pair[1]] += bounds[pair[2]]
+    # A weighted optimum needs a different solver. Never label an infeasible
+    # maximum match healthy, or report a greedy lower bound as a real shortage.
+    if any(used[h["host_id"]] > h["disk_bytes"] for h in hosts):
+        raise ValueError("maximum match exceeds cumulative host disk budget")
+    if disk_usage is not None:
+        disk_usage.update(used)
     return {"idle": len(slots), "eligible": flow}
 
 
@@ -684,32 +724,53 @@ def collect(config):
     facts, documents = {"sources": {}, "errors": []}, {}
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {name: executor.submit(read_source, url) for name, url in locations.items()}
+        wait(futures.values())
+        completed = int(time.time())
         for name, future in futures.items():
             try:
-                document = fresh(future.result(), int(time.time()), name.split("_")[0])
+                document = fresh(future.result(), completed, name.split("_")[0])
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
                 documents[name] = document
-            except (OSError, ValueError, KeyError, TypeError):
-                facts["sources"][name] = {"observed_at": None, "state": "unknown"}
+            except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
+                reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
+                facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
                 facts["errors"].append(name)
     database = documents.get("server")
-    if database:
-        facts.update(enabled_until=natural(database["enabled_until"]),
-                     last_workunits=database["last_workunits"])
-    if "controller" in documents:
-        facts["tick"] = documents["controller"]["tick"]
-    if "backlog" in documents:
-        facts["backlogs"] = documents["backlog"]["backlogs"]
     hosts = [documents.get(f"client_{i}") for i in range(len(clients))]
     if database and all(hosts):
         facts["supply"] = {}
+        disk = {"cpu": {}, "gpu": {}}
         for resource in ("cpu", "gpu"):
             try:
                 if len({h["host_id"] for h in hosts}) != len(hosts):
                     raise ValueError("duplicate host")
-                facts["supply"][resource] = supply(database, hosts, resource)
+                facts["supply"][resource] = supply(database, hosts, resource, disk[resource])
             except (ValueError, TypeError, KeyError, ZeroDivisionError):
                 facts["errors"].append(resource + "_eligibility")
+        if any(sum(used.get(h["host_id"], 0) for used in disk.values()) > h["disk_bytes"] for h in hosts):
+            for resource in tuple(facts["supply"]):
+                del facts["supply"][resource]
+                facts["errors"].append(resource + "_disk_budget")
+    # Allocation can take time too. Publish one completion timestamp, after a
+    # final freshness check, rather than renewing earlier evidence's age.
+    completed = int(time.time())
+    for name, document in list(documents.items()):
+        try:
+            fresh(document, completed, name.split("_")[0])
+        except ValueError:
+            del documents[name]
+            facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": "stale_at_completion"}
+            facts["errors"].append(name)
+    if "server" in documents:
+        facts.update(enabled_until=documents["server"]["enabled_until"],
+                     last_workunits=documents["server"]["last_workunits"])
+    if "controller" in documents:
+        facts["tick"] = documents["controller"]["tick"]
+    if "backlog" in documents:
+        facts["backlogs"] = documents["backlog"]["backlogs"]
+    if "server" not in documents or any(f"client_{i}" not in documents for i in range(len(clients))):
+        facts.pop("supply", None)
+    facts["observed_at"] = completed
     return facts
 
 
@@ -756,7 +817,7 @@ def main(argv=None):
             with urllib.request.build_opener(NoRedirect).open(request, timeout=TIMEOUT) as response:
                 if response.status != 204:
                     raise ValueError("source push rejected")
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             print("feed observation push unavailable", file=sys.stderr)
             return 1
     return int("error" in result)

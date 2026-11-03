@@ -48,7 +48,11 @@ The source collectors read:
 Sources are polled every minute, with a 180-second evidence budget, bounded HTTP
 reads without redirects, and no credentials, error transcripts, network names or
 page text in health output. Source errors replace their previous success. The
-dashboard accepts observations only from each configured source's allowlisted
+evaluator validates all replies against one shared completion timestamp and
+rechecks freshness after allocation; slow reads or matching cannot renew old
+evidence. Truncated/malformed HTTP responses mark only their source unknown,
+with the non-sensitive reason `http_protocol_error`.
+The dashboard accepts observations only from each configured source's allowlisted
 address, using its existing private push listener. These source records are
 never served by a GET or the public listener.
 
@@ -61,8 +65,15 @@ one unsent replica cannot fill two slots, nor can two replicas of a unit fill tw
 slots on one host. Assigned and homogeneous-redundancy work is excluded from
 the ordinary feed. Unsupported account gates, unknown profiles, mixed CPU
 resource profiles or differing `gpu_count` profiles for the same GPU type on one host,
+live `ngpus`/explicit CPU-demand mismatches with installed GPU profiles,
 non-preferred-app fallback requiring other apps' inventory,
 or oversized inventories produce unknown, not healthy.
+Selected work is also checked against cumulative per-host free disk, shared
+between CPU and GPU allocations. Uniform per-workunit disk bounds cap each
+host's allocation directly. If a mixed-weight maximum matching or combined
+CPU/GPU allocation exceeds a disk budget, eligibility is unknown: this bounded
+monitor does not claim to solve weighted matching or misreport a greedy lower
+bound as a proven shortage.
 This is not a replacement implementation of the BOINC scheduler or proof that
 a driver/container can successfully execute an assigned task.
 
@@ -79,8 +90,10 @@ with no newly observed workunit for an uninterrupted hour fires; a new workunit
 or closed backlog resets that timer. Shortage fires at exactly 30 minutes.
 Refill expiry/remaining ≤6h, controller failure, or runtime >15 minutes fire
 immediately. A failed tick followed by recovery between polls is retained by
-its journal timestamp. The alert rule also retains controller-failure evidence
-for ten minutes so a five-minute alert evaluation does not miss brief failures.
+its journal timestamp. The alert rule retains **all firing checks** for ten
+minutes so a five-minute alert evaluation does not miss a shortage or other
+failure that recovers between evaluations. Duration thresholds are already
+enforced by the evaluator; this retention does not shorten them.
 
 `feed-health.prom` exports the same seven checks as one-hot
 `boinc_feed_check{check,state}` gauges (`healthy`, `pending`, `firing`, `unknown`),
@@ -143,7 +156,14 @@ this exception on client, controller or backlog instances.
 sudo install -d -m 0755 /etc/systemd/system/usnm-boinc-feed-source@server.service.d
 sudo install -m 0644 scripts/boinc/onprem/usnm-boinc-feed-source@server.service.d/podman.conf \
   /etc/systemd/system/usnm-boinc-feed-source@server.service.d/podman.conf
+sudo systemctl daemon-reload
+sudo systemctl show usnm-boinc-feed-source@server.service \
+  -p DropInPaths -p ProtectSystem -p ReadWritePaths
 ```
+
+Before enabling this instance, verify that `DropInPaths` includes that exact
+server-only file, `ProtectSystem=strict` remains set, and the three tested paths
+appear in `ReadWritePaths`. Installing the template alone is insufficient.
 
 Configure `USNM_OCRDASH_FEED_PUSH` on the existing dashboard as a comma-separated
 `server=[address],controller=[address],backlog=[address],client-[name]=[address]`
@@ -176,6 +196,7 @@ values. Set `USNM_OCRDASH_FEED_HEALTH=/var/lib/usnm-boinc-feed-health/feed-healt
 sudo install -m 0644 scripts/boinc/onprem/usnm-boinc-feed-health.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
 # On each source host, substitute the configured source name:
+# The Podman source must use NAME=server to select the server-only drop-in.
 sudo systemctl start usnm-boinc-feed-source@NAME.service
 sudo systemctl enable --now usnm-boinc-feed-source@NAME.timer
 # On the evaluator only:

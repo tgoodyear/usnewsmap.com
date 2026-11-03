@@ -35,8 +35,8 @@ var queries = [
     FeedEvents
     | where Observed between (ago(10m) .. now())
     | mv-expand Check = Feed.checks
-    | where Check.code == 'controller_tick' and Check.state == 'firing'
-    | project Check = 'controller_tick'
+    | where Check.state == 'firing'
+    | project Check = tostring(Check.code)
 )
 | distinct Check
 '''

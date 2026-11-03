@@ -96,14 +96,47 @@ class EligibilityTests(unittest.TestCase):
         half = dict(version(plan="half"), gpu_count=.5)
         h["versions"].append(half)
         db["versions"].append(half)
-        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2"}
+        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2", "ngpus": ".5"}
         with self.assertRaisesRegex(ValueError, "mixed GPU resource profiles"):
             C.supply(db, [h], "gpu")
         half["gpu_count"] = 1
+        db["plans"]["half"]["ngpus"] = "1"
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
         half.update(gpu="NVIDIA", gpu_count=.5)
+        db["plans"]["half"]["ngpus"] = ".5"
         h["idle_gpu"]["NVIDIA"] = 1
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 3, "eligible": 1})
+
+    def test_live_gpu_profile_must_match_installed_usage_even_without_stock(self):
+        for field, value in (("ngpus", "2"), ("ngpus", "-1"), ("ngpus", "nan"),
+                             ("avg_ncpus", "2"), ("gpu_utilization_tag", "fraction")):
+            for empty in (False, True):
+                db = database()
+                db["plans"]["intel"][field] = value
+                if empty:
+                    db["units"] = []
+                with self.subTest(field=field, value=value, empty=empty), self.assertRaises(ValueError):
+                    C.supply(db, [host()], "gpu")
+        db, h = database(), host(count=2)
+        db["plans"]["intel"]["ngpus"] = "2"
+        h["versions"][0]["gpu_count"] = 2
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+        db["plans"]["intel"]["ngpus"] = "0"
+        h["versions"][0]["gpu_count"] = 1
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
+
+    def test_cumulative_disk_budget_is_checked_per_host_not_per_workunit(self):
+        db, h = database(), host()
+        h["idle_cpu"] = 2
+        db["units"] = [dict(db["units"][0], id=i, app="usnm_ocr", rsc_disk_bound=600) for i in (5, 6)]
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 1})
+        db["units"][1]["rsc_disk_bound"] = 500
+        with self.assertRaisesRegex(ValueError, "cumulative host disk budget"):
+            C.supply(db, [h], "cpu")
+        db["units"][1]["rsc_disk_bound"] = 600
+        h["disk_bytes"] = 1200
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 2})
+        self.assertEqual(C.supply(db, [host(9), host(10)], "cpu"), {"idle": 2, "eligible": 2})
 
     def test_shared_results_and_one_replica_per_host_are_not_double_counted(self):
         db = database()
@@ -213,10 +246,22 @@ class CollectionTests(unittest.TestCase):
     def test_actual_http_sources_stale_unavailable_and_own_inventory(self):
         docs = self.documents()
         requests = []
+        truncated = {}
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 requests.append(self.path)
                 self.send_response(200 if self.path in docs else 503)
+                if self.path in truncated:
+                    body = json.dumps(docs[self.path]).encode()
+                    if truncated[self.path] == "chunked":
+                        self.send_header("Transfer-Encoding", "chunked")
+                        body = b"20\r\n{\"truncated\":true}"
+                    else:
+                        self.send_header("Content-Length", str(len(body) + 1))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    self.close_connection = True
+                    return
                 self.end_headers()
                 self.wfile.write(json.dumps(docs.get(self.path, {})).encode())
             def log_message(self, *_):
@@ -232,6 +277,18 @@ class CollectionTests(unittest.TestCase):
                     facts = C.collect(config)
                     self.assertEqual(facts["supply"]["gpu"], {"idle": 1, "eligible": 1})
                     self.assertNotIn("/volunteer", requests)
+                    for encoding in ("chunked", "length"):
+                        with self.subTest(encoding=encoding):
+                            truncated["/controller"] = encoding
+                            broken = C.collect(config)
+                            self.assertEqual(broken["errors"], ["controller"])
+                            self.assertEqual(broken["sources"]["controller"]["reason"], "http_protocol_error")
+                            self.assertEqual(broken["supply"]["gpu"], {"idle": 1, "eligible": 1})
+                            document, _ = F.evaluate(broken, {}, NOW, 1000, "boot", "cfg")
+                            self.assertEqual(next(c for c in document["checks"]
+                                                  if c["code"] == "controller_tick")["state"], "unknown")
+                    truncated.clear()
+                    self.assertEqual(C.collect(config)["errors"], [])
                     docs["/own"]["observed_at"] = NOW - 181
                     self.assertNotIn("supply", C.collect(config))
                     docs["/own"]["observed_at"] = NOW + 1
@@ -241,6 +298,90 @@ class CollectionTests(unittest.TestCase):
             finally:
                 http.shutdown()
                 thread.join()
+
+    def test_disk_is_shared_between_cpu_and_gpu_allocations(self):
+        docs = self.documents()
+        docs["/server"]["units"][0]["rsc_disk_bound"] = 600
+        docs["/server"]["units"].append(dict(docs["/server"]["units"][0], id=6, app="usnm_ocr"))
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect(config)
+            self.assertEqual(facts["supply"], {})
+            self.assertCountEqual(facts["errors"], ["cpu_disk_budget", "gpu_disk_budget"])
+            docs["/own"]["disk_bytes"] = 1200
+            facts = C.collect(config)
+            self.assertEqual(facts["errors"], [])
+            self.assertEqual(facts["supply"], {"cpu": {"idle": 1, "eligible": 1},
+                                              "gpu": {"idle": 1, "eligible": 1}})
+
+    def test_late_source_forces_shared_completion_freshness(self):
+        for delay, expected in ((5, "fresh"), (15, "unknown")):
+            with self.subTest(delay=delay):
+                docs = self.documents()
+                docs["/server"]["observed_at"] = NOW - 175
+                config = {name: "/" + name for name in ("server", "controller", "backlog")}
+                config["clients"] = ["/own"]
+                clock = [NOW]
+                early_validation = threading.Event()
+                real_fresh = C.fresh
+
+                def read(path):
+                    if path == "/own":
+                        early_validation.wait(.1)
+                        clock[0] = NOW + delay
+                    return docs[path]
+
+                def validate(document, now, kind):
+                    if kind == "server":
+                        early_validation.set()
+                    return real_fresh(document, now, kind)
+
+                with patch.object(C, "read_source", side_effect=read), \
+                        patch.object(C, "fresh", side_effect=validate), \
+                        patch.object(C.time, "time", side_effect=lambda: clock[0]):
+                    facts = C.collect(config)
+                self.assertEqual(facts["observed_at"], NOW + delay)
+                self.assertEqual(facts["sources"]["server"]["state"], expected)
+                self.assertEqual("enabled_until" in facts, expected == "fresh")
+                self.assertEqual(facts["sources"]["controller"]["state"], "fresh")
+
+    def test_slow_allocation_cannot_renew_expired_source_evidence(self):
+        docs = self.documents()
+        docs["/server"]["observed_at"] = NOW - 175
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        clock = [NOW]
+        real_supply = C.supply
+
+        def allocate(*args):
+            result = real_supply(*args)
+            clock[0] = NOW + 15
+            return result
+
+        with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                patch.object(C, "supply", side_effect=allocate), \
+                patch.object(C.time, "time", side_effect=lambda: clock[0]):
+            facts = C.collect(config)
+        self.assertEqual(facts["observed_at"], NOW + 15)
+        self.assertEqual(facts["sources"]["server"]["reason"], "stale_at_completion")
+        self.assertNotIn("supply", facts)
+        self.assertNotIn("enabled_until", facts)
+        self.assertTrue(facts["tick"]["ok"])
+
+    def test_monitor_does_not_replace_completion_time_with_later_publication_time(self):
+        with fixture() as root:
+            config = root / "config.json"
+            config.write_text("{}")
+            facts = {"observed_at": NOW, "enabled_until": NOW + 21601}
+            with patch.object(C, "collect", return_value=facts), \
+                    patch.object(F.time, "time", return_value=NOW + 1000), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                document = F.monitor(config, root / "state")
+            self.assertEqual(document["observed_at"], NOW)
+            self.assertEqual(next(c for c in document["checks"]
+                                  if c["code"] == "qwen_refill_window")["state"], "healthy")
 
     def test_wrong_json_shapes_are_source_local_and_recover(self):
         with fixture() as root:
@@ -292,7 +433,7 @@ class CollectionTests(unittest.TestCase):
                         raise OSError("fixture publication failure")
                     return real_write(path, value)
 
-                with patch.object(C, "collect", return_value=facts), \
+                with patch.object(C, "collect", side_effect=lambda _: dict(facts, observed_at=int(F.time.time()))), \
                         patch.object(F.time, "time", return_value=NOW) as wall:
                     with contextlib.redirect_stdout(io.StringIO()):
                         F.monitor(config, state_dir)

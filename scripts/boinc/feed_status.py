@@ -140,7 +140,7 @@ def monitor(config_path, state_dir):
         except (OSError, ValueError):
             previous = {}
         facts = feed_collect.collect(config)
-        now = int(time.time())
+        now = facts["observed_at"]
         # On Linux this survives process restarts but changes across host restarts.
         if sys.platform == "darwin":
             boot = feed_collect.run(["sysctl", "-n", "kern.boottime"], limit=1024).decode().strip()

@@ -142,6 +142,21 @@ class DurationTest(unittest.TestCase):
         self.assertEqual(self.tick(60)["controller_tick"]["state"], "firing")
         self.assertEqual(self.tick(120)["controller_tick"]["state"], "healthy")
 
+    def test_alert_retains_firing_shortage_after_latest_observation_recovers(self):
+        for elapsed in range(0, 1801, 60):
+            checks = self.tick(elapsed)
+        self.assertEqual(checks["cpu_shortage"]["state"], "firing")
+        self.facts["supply"]["cpu"]["eligible"] = 4
+        self.assertEqual(self.tick(1860)["cpu_shortage"]["state"], "healthy")
+        # Contract for the retained-history branch; actual workspace query delivery
+        # remains a rollout gate, not a local Kusto execution claim.
+        query = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        retained = query.split("| union (", 1)[1].split("| distinct Check", 1)[0]
+        self.assertIn("Observed between (ago(10m) .. now())", retained)
+        self.assertIn("| where Check.state == 'firing'", retained)
+        self.assertIn("| project Check = tostring(Check.code)", retained)
+        self.assertNotIn("controller_tick", retained)
+
     def test_corrupt_duration_state_resets_instead_of_trusting_old_health(self):
         self.state = {"schema_version": 1, "time": "broken", "conditions": []}
         self.assertEqual(self.tick(0)["collection"]["state"], "firing")
