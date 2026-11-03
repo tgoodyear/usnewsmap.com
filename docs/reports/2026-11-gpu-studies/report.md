@@ -79,6 +79,8 @@ A rank-8 adapter on Qwen3-VL-2B, trained for 2,000 optimizer steps on 4,032 crop
 
 Training took 61 minutes on an RTX 3090, with 8.8 GB allocated at peak and about 21.7 GB reserved. All 4,032 examples encoded.
 
+For regeneration, `analyze-2.sh` requires `--phase validation` to score checkpoints for selection or `--phase test` to score the held-out split; it has no default phase.
+
 Validation. Used once, to pick a checkpoint.
 
 | Checkpoint | Pooled CER | 95% limits | Pooled WER |
@@ -272,7 +274,7 @@ The adapter was merged into its base and converted with llama.cpp commit `091b6a
 
 Export and quantization lost nothing measurable. The same adapter, GGUF against BF16: Reichsanzeiger -0.1 points (-0.4 to 0.3), `dta19` -0.1 (-0.2 to 0.1), Overproof -0.6 (-1.3 to -0.1), BLN600 -0.8 (-1.7 to 0). The GGUF path was better than BF16 where a difference shows, which isn't an export gain: the runtimes also differ in image handling. Peak VRAM was 3.5 GB on 2B Q8_0.
 
-**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision `0c351dd0`), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed the instance anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
+**Qwen 8B adapter.** The Study 2 recipe on Qwen3-VL-8B-Instruct (revision [`0c351dd01ed87e9c1b53cbc748cba10e6187ff3b`](data/s5/8b-train-report.json), pinned in the training script), on an RTX 4090: 2,000 steps in 76 minutes, 22.5 GB allocated at peak and 24 GB reserved, so a 3090 just fits it and a 12 GB card doesn't. The first run, on a 3090, finished training and validation, but its files were lost when the host refused SSH during the copy and the wrapper destroyed the instance anyway. It was rerun with the same seed and settings, and the wrapper now copies results back during the job.
 
 Validation, with guard, 378 crops: baseline 5.3% (3.8 to 7.5); 250 steps 3.5%; 500 steps 2.6%; 1,000 steps 2.5%; 2,000 steps 2.1% (1.6 to 2.8). The 2,000-step adapter was selected.
 

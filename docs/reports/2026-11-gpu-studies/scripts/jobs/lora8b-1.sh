@@ -5,11 +5,8 @@ O=/work/out; I=/work/in; PX=(--min-pixels 1048576 --max-pixels 2097152)
 unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE HF_DATASETS_OFFLINE; export HF_HOME=/work/hf
 PY=$(command -v python)
 rm -f "$O/base-revision.txt" || exit 6
-response=$(curl -fsS https://huggingface.co/api/models/Qwen/Qwen3-VL-8B-Instruct) || { echo "cannot fetch base revision" >&2; exit 6; }
-REV=$(printf '%s' "$response" | "$PY" -c 'import json, re, sys
-sha = json.load(sys.stdin).get("sha")
-if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha): sys.exit(1)
-print(sha)' 2>/dev/null) || { echo "invalid base revision" >&2; exit 6; }
+# The historical training base recorded in data/s5/8b-train-report.json.
+REV=0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
 [[ $REV =~ ^[0-9a-f]{40}$ ]] || { echo "invalid base revision" >&2; exit 6; }
 "$PY" -c 'import sys; from huggingface_hub import snapshot_download as d; print(d("Qwen/Qwen3-VL-8B-Instruct", revision=sys.argv[1], local_dir="/work/base8", allow_patterns=["*.json","*.safetensors","*.txt","*.jinja"]))' "$REV" > "$O/download.log" 2>&1 || exit 6
 printf '%s\n' "$REV" > "$O/base-revision.txt" || exit 6

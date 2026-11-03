@@ -113,10 +113,6 @@ sys.exit(9 if os.environ.get('FAIL_BASE64') == '1' else 0)
 import json, os, pathlib, sys, urllib.parse
 args = sys.argv[1:]
 url = args[-1]
-if url == 'https://huggingface.co/api/models/Qwen/Qwen3-VL-8B-Instruct':
-    if os.environ.get('API_FAIL') == '1': sys.exit(22)
-    print(pathlib.Path(os.environ['API_BODY']).read_text(), end='')
-    sys.exit(0)
 parsed = urllib.parse.urlsplit(url)
 if parsed.scheme != 'https' or parsed.netloc != 'fixture.invalid' or '-o' not in args:
     raise SystemExit('unexpected network request: ' + url)
@@ -294,45 +290,20 @@ with open(os.environ['TRACE'], 'a') as f:
         (inp / "guard.txt").write_text("stop\n", encoding="utf-8")
         (inp / "selected.txt").write_text("adapter.safetensors\n", encoding="utf-8")
         (inp / "adapter.safetensors").write_bytes(b"synthetic adapter")
-        api = base / "api.json"
         env = self.env.copy()
-        env.update(PYTHONPATH=str(modules), API_BODY=str(api))
+        env.update(PYTHONPATH=str(modules))
         replacement = f"O={shlex.quote(str(out))}; I={shlex.quote(str(inp))};"
         scripts = [
             copied_script(HERE / f"jobs/lora8b-{phase}.sh", base / f"phase-{phase}.sh",
                           [("O=/work/out; I=/work/in;", replacement)])
             for phase in (1, 2)
         ]
-        return scripts, inp, out, api, env
+        return scripts, inp, out, env
 
-    def test_hf_revision_is_validated_before_use_in_both_phases(self):
-        scripts, inp, out, api, env = self.lora_fixture("lora")
-        revision = "0123456789abcdef" * 2 + "01234567"
-        bad = ["x');open('INJECTED','w').write('x');#", revision + "\n", "a" * 39, "A" * 40, "g" * 40]
-        for value in bad:
-            with self.subTest(api_revision=repr(value)):
-                api.write_text(json.dumps({"sha": value}), encoding="utf-8")
-                (out / "base-revision.txt").write_text("stale", encoding="utf-8")
-                result = self.run_script("bash", str(scripts[0]), env=env)
-                self.assertEqual(result.returncode, 6, result.stderr)
-                self.assertFalse((out / "base-revision.txt").exists())
-                self.assertFalse(self.events())
-        self.assertFalse((self.work / "INJECTED").exists())
-
-        api.write_text(f'{{"sha":"{revision}","sha":"invalid"}}', encoding="utf-8")
-        result = self.run_script("bash", str(scripts[0]), env=env)
-        self.assertEqual(result.returncode, 6, result.stderr)
-        self.assertFalse((out / "base-revision.txt").exists())
-        self.assertFalse(self.events())
-
-        api.write_text(json.dumps({"sha": revision}), encoding="utf-8")
+    def test_hf_revision_is_recorded_and_second_phase_is_validated(self):
+        scripts, inp, out, env = self.lora_fixture("lora")
+        revision = json.loads((HERE.parent / "data/s5/8b-train-report.json").read_text())["base_revision"]
         (out / "base-revision.txt").write_text("stale", encoding="utf-8")
-        env["API_FAIL"] = "1"
-        result = self.run_script("bash", str(scripts[0]), env=env)
-        self.assertEqual(result.returncode, 6, result.stderr)
-        self.assertFalse((out / "base-revision.txt").exists())
-        self.assertFalse(self.events())
-        env.pop("API_FAIL")
         env["SNAPSHOT_FAIL"] = "1"
         result = self.run_script("bash", str(scripts[0]), env=env)
         self.assertEqual(result.returncode, 6, result.stderr)
@@ -348,7 +319,7 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertIn("--min-pixels", train["args"])
 
         self.trace.unlink()
-        for value in (bad[0], revision + "\n\n"):
+        for value in ("x');open('INJECTED','w').write('x');#", revision + "\n\n"):
             with self.subTest(saved_revision=repr(value)):
                 (inp / "base-revision.txt").write_text(value, encoding="utf-8")
                 result = self.run_script("bash", str(scripts[1]), env=env)
@@ -360,10 +331,9 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertEqual([e["revision"] for e in self.events() if e["event"] == "download"], [revision])
         self.assertFalse((self.work / "INJECTED").exists())
 
-    def test_hf_revision_is_parsed_without_jq(self):
-        scripts, _, _, api, env = self.lora_fixture("lora-no-jq")
-        revision = "a" * 40
-        api.write_text(f'{{"sha":"{revision}"}}', encoding="utf-8")
+    def test_hf_revision_is_pinned_without_jq(self):
+        scripts, _, _, env = self.lora_fixture("lora-no-jq")
+        revision = json.loads((HERE.parent / "data/s5/8b-train-report.json").read_text())["base_revision"]
         for name in ("python3", "seq", "rm", "cat"):
             (self.bin / name).symlink_to(shutil.which(name))
         env["PATH"] = str(self.bin)
@@ -372,7 +342,7 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertEqual([e["revision"] for e in self.events() if e["event"] == "download"], [revision])
 
     def test_export_treats_the_revision_and_settings_as_data(self):
-        _, inp, out, _, env = self.lora_fixture("export")
+        _, inp, out, env = self.lora_fixture("export")
         (self.bin / "python").unlink()
         executable(
             self.bin / "python",
