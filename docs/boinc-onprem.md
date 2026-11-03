@@ -208,6 +208,7 @@ and record all identities. Code tests or a merged PR do not prove this live gate
 | `usnm-boinc-step --target handoff` | The hand-off job's `claim`, `release`, `collect` and `export`, in place of the Azure hand-off job; `--target scans --step receive` takes the controller's scan push | The controller's `--onprem-handoff`; settings in `/etc/usnm-boinc/handoff.env` (#967)                                     |
 | `cloudflared`                      | A Cloudflare Tunnel with ingress `boinc.usnewsmap.com` → `http://localhost:80`                                                                                      | Public ingress with no inbound port                                                                                       |
 | `usnm-image-security-check.timer`  | A daily check of the server image against `bookworm-security`, and of the MySQL pin                                                                                 | A failed `usnm-image-security-check.service` is the alert ([Security updates](#security-updates), #969)                   |
+| `usnm-feeder-slot-guard.timer`     | A read-only check for a stale or unknown `--allapps` allocation every five minutes                                                                                  | A failed `usnm-feeder-slot-guard.service` is the local alert ([Feeder allocation guard](#feeder-allocation-guard-1462))   |
 | `caddy`                            | TLS for `boinc.usnewsmap.com` on the LAN, on 443, in front of `http://localhost:80`                                                                                 | [LAN access](#lan-access-1357)                                                                                            |
 | `usnm-boinc-lan-tls.timer`         | Daily pull of the LAN certificate from the TLS vault                                                                                                                | Fails closed: a bad certificate leaves the installed one                                                                  |
 | `usnm-boinc-lan-guard.service`     | nftables: port 80 answers loopback only                                                                                                                             | Apache stays reachable to cloudflared, not the LAN                                                                        |
@@ -227,6 +228,30 @@ verifies the server unchanged.
 
 **Credentials.** The admin and runtime passwords come from the BOINC Key Vault, the same ones the
 Azure server uses. They are kept in `/etc/usnm-boinc/secrets` (0600). The root password is local.
+
+## Feeder allocation guard (#1462)
+
+After a reviewed image containing the guard has been deployed and its instrumented
+feeder has started at a coordinated boundary, install the host check from that
+reviewed checkout:
+
+```sh
+install -m 0644 scripts/boinc/onprem/usnm-feeder-slot-guard.service scripts/boinc/onprem/usnm-feeder-slot-guard.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now usnm-feeder-slot-guard.timer
+systemctl start usnm-feeder-slot-guard.service
+```
+
+The oneshot runs the image's read-only check as `boincadm` in the running server
+container. `drift` exits 1 and `unknown` exits 2, so both fail the unit and appear
+in `systemctl --failed` and `journalctl -u usnm-feeder-slot-guard.service`.
+`maintenance` is distinct from a match and does not fail the unit. There is no
+external notification here; monitor failed units and missing timer runs separately.
+An unreachable container, old feeder, stale snapshot or failed verified-TLS query
+is unknown, not success. The image's independent five-minute JSON event is useful
+for diagnosis. See [Allocation drift detection](../contrib-compute/docs/app-release.md#allocation-drift-detection)
+for the scope, limitations and the required feeder-only recovery coordination.
+Neither check restarts a process or edits work.
 
 ## Security updates
 
