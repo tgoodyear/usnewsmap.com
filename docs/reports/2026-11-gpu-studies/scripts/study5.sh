@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study 5 rentals. --step guard-val|new2b|train8|surya6|export2b|deploy2b|surya6c|test8; run on the node with GPU_STUDY_ROOT set.
 set -uo pipefail
-W=${GPU_STUDY_ROOT:?}; cd "$W"
+W=${GPU_STUDY_ROOT:?}; cd "$W" || exit 1
 TRAIN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:960ba48cb33e6c164764246bba2c9aded7d791b48a6aed49f39c3a95acff3ee1
 STEP=""; ADAPTER=""; PART=${PART:-}; START=${START:-}
 while [ $# -gt 0 ]; do case "$1" in --step) STEP=$2; shift 2;; --adapter) ADAPTER=$2; shift 2;; *) exit 2;; esac; done
@@ -47,8 +47,13 @@ case "$STEP" in
   new2b-rest) P=push/s5-new; jq -r .id results/s5-new/new-adapter.jsonl >/tmp/nd; jq -c --rawfile d /tmp/nd '($d|split("\n")) as $x|select(.id as $i|$x|index($i)|not)' "$P/new.jsonl" >/tmp/nr; mv /tmp/nr "$P/new.jsonl"
     sed 's/^python .*new-baseline.*$//' scripts/jobs/lora-new.sh >/tmp/lora-rest.sh
     scripts/rent.sh --study s5new2 --image "$TRAIN" --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 4 --cap-dollars 1 --disk 30 --push-dir "$P" --job /tmp/lora-rest.sh --out results/s5-new2;;
-  export8) P=push/s5-x8; rm -rf "$P"; mkdir -p "$P"; cp scripts/jobs/merge_lora.py "results/s5-t8/$ADAPTER" "$P/"
-    printf 'NAME=qwen8b-lora\nADAPTER=%s\nQUANT=Q4_K_M\nBASEREPO=Qwen/Qwen3-VL-8B-Instruct\nBASEREV=%s\n' "$ADAPTER" "$(cat results/s5-t8/base-revision.txt)" >"$P/export.env"
+  export8) REV=$(cat results/s5-t8/base-revision.txt) || exit 6
+    if ! [[ $REV =~ ^[0-9a-f]{40}$ ]] ||
+      ! { printf '%s\n' "$REV" | cmp -s results/s5-t8/base-revision.txt - || printf '%s' "$REV" | cmp -s results/s5-t8/base-revision.txt -; }; then
+      echo "invalid base revision" >&2; exit 6
+    fi
+    P=push/s5-x8; rm -rf "$P"; mkdir -p "$P"; cp scripts/jobs/merge_lora.py "results/s5-t8/$ADAPTER" "$P/"
+    printf 'NAME=qwen8b-lora\nADAPTER=%s\nQUANT=Q4_K_M\nBASEREPO=Qwen/Qwen3-VL-8B-Instruct\nBASEREV=%s\n' "$ADAPTER" "$REV" >"$P/export.env"
     IDLE_MIN=60 scripts/rent.sh --study s5x8 --image "$TRAIN" --gpu "RTX 3060" --min-gpu-ram-mb 11000 --max-dph 0.12 --max-hours 3 --cap-dollars 2 --disk 80 --push-dir "$P" --job scripts/jobs/export-gguf.sh --max-file-mb 9000 --out results/s5-x8;;
   deploy8) P=push/s5-d8; rm -rf "$P"; mkdir -p "$P/images/bln"; ln -s "$PWD/lora/images/bench" "$P/images/bench"; ln -s "$PWD/s5sets/images/dta" "$P/images/dta"; ln -s ${GPU_STUDY_DEV:-/tank/usnm-dev/gpu-studies}/data/blnpng/png/* "$P/images/bln/"
     { jq -r '[.id,.image]|@tsv' lora/test.jsonl; jq -r '[.id,("images/bln/"+(.file|sub("images/";"")|sub("\\.[a-z]+$";".png")))]|@tsv' s5sets/bln.jsonl; jq -r '[.id,.file]|@tsv' s5sets/dta.jsonl; } >"$P/list.tsv"
