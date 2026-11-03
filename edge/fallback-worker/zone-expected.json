@@ -1,0 +1,35 @@
+{
+  "custom_domains": {
+    "healthcheck.usnewsmap.com": "usnm-fallback"
+  },
+  "routes": {
+    "api.usnewsmap.com/*": {
+      "request_limit_fail_open": true,
+      "script": "usnm-fallback"
+    },
+    "usnewsmap.com/*": {
+      "request_limit_fail_open": true,
+      "script": "usnm-fallback"
+    },
+    "www.usnewsmap.com/*": {
+      "request_limit_fail_open": true,
+      "script": "usnm-fallback"
+    }
+  },
+  "tracing": {
+    "enabled": false
+  },
+  "worker": "usnm-fallback",
+  "worker_observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    },
+    "redact_query_string": true,
+    "traces": {
+      "enabled": false
+    }
+  },
+  "zone": "usnewsmap.com"
+}

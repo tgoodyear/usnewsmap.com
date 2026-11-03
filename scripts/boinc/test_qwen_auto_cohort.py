@@ -534,6 +534,78 @@ class BoincDb {
         self.assertEqual(tick(age=7200)["status"], "current-window-still-eligible")
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_nvidia_general_admission_leaves_an_intel_only_window_that_survives_release(self):
+        self.rows[:] = [self.input(number) for number in range(100, 104)]
+        (self.root / "qwen/qwen-nonenglish-v1/audit.json").write_text(json.dumps(self.audit))
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        self.args.max_inflight_per_host = 2
+        def tick():
+            with patch.object(R, "read_database", return_value=self.database):
+                return R.run(self.args)
+        self.assertEqual(tick()["target"], [100, 101])
+        # The operator admits NVIDIA generally while the shared window is open: the refill keeps
+        # its state and owns Intel's window alone.
+        subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "nvidia_vulkan_8b",
+                        "--general", "--apply"], check=True, capture_output=True)
+        self.assertEqual(R.policy_window(self.policy.read_bytes()), ([100, 101], None, ("intel_vulkan_8b",)))
+        self.assertEqual(R.unreadable_by_open_classes(self.policy.read_bytes(), [
+            {"id": 72, "version_num": 115, "platformid": 1, "plan_class": "nvidia_vulkan_8b"}], 0, 3),
+            [["nvidia_vulkan_8b", 1, 115]])
+        # NVIDIA's own full queue neither fills the buffer nor holds the window.
+        self.database["gpu_inflight"] = [{"hostid": 10}] * 10
+        for row in self.rows[:2]:
+            row["results"][1].update(server_state=4, hostid=10, sent_time=1)
+        self.assertEqual(tick()["status"], "current-window-still-eligible")
+        for row in self.rows[:2]:
+            row["results"][0].update(server_state=5, hostid=9, sent_time=1, received_time=2, outcome=1)
+        (self.project / "database.json").write_text(json.dumps(self.rows))
+        receipt = tick()
+        self.assertEqual((receipt["status"], receipt["target"], receipt["preview"]["plan_class"]),
+                         ("refilled-finite-window", [102, 103], "intel_vulkan_8b"))
+        self.assertTrue(receipt["nvidia_general_admission"])
+        self.assertEqual(R.policy_window(self.policy.read_bytes()), ([102, 103], None, ("intel_vulkan_8b",)))
+        self.assertIsNone(ET.fromstring(self.policy.read_bytes()).find("plan_class[name='nvidia_vulkan_8b']/min_wu_id"))
+        self.args.enabled_until = 1
+        self.assertEqual(tick()["status"], "closed-expired-budget-or-release-change")
+        self.assertEqual(R.policy_window(self.policy.read_bytes()), ([2, 1], None, ("intel_vulkan_8b",)))
+        self.assertIn(R.NVIDIA_GENERAL_MARKER, self.policy.read_text())
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_intel_only_window_needs_an_open_peer_release_that_reads_the_request(self):
+        subprocess.run(["php", str(HELPER), "--project", str(self.project), "--plan-class", "nvidia_vulkan_8b",
+                        "--general", "--apply"], check=True, capture_output=True)
+        self.args.initial_policy_sha256 = R.sha(self.policy.read_bytes())
+        everything = self.database["versions"]
+        # No NVIDIA release left and AMD/Apple closed: nothing could run the second replica.
+        self.database["versions"] = [row for row in everything if row["plan_class"] == "intel_vulkan_8b"]
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["open_peer_readers"]),
+                         ("closed-expired-budget-or-release-change", []))
+        self.database["versions"] = everything
+        with patch.object(R, "read_database", return_value=self.database):
+            receipt = R.run(self.args)
+        self.assertEqual((receipt["status"], receipt["open_peer_readers"]),
+                         ("refilled-finite-window", [["nvidia_vulkan_8b", 1, 114]]))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_only_stop_keeps_general_admission_and_only_intel_or_shared_take_ranges(self):
+        before = self.policy.read_bytes()
+        for extra, error in ((["--plan-class", "intel_vulkan_8b", "--keep-general", "--workunit", "100"], "usage:"),
+                             (["--plan-class", "amd_vulkan_8b", "--stop", "--keep-general"], "usage:"),
+                             (["--plan-class", "nvidia_vulkan_8b", "--workunit", "100", "--workunit-end", "101"],
+                              "contiguous range")):
+            proc = subprocess.run(["php", str(HELPER), "--project", str(self.project), *extra, "--apply"],
+                                  capture_output=True, text=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(error, proc.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        root = ET.fromstring(before)
+        root.find("plan_class[name='nvidia_vulkan_8b']").append(ET.Comment(R.NVIDIA_GENERAL_MARKER))
+        with self.assertRaisesRegex(ValueError, "Invalid explicit NVIDIA general"):
+            R.policy_window(ET.tostring(root))
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_uncertain_publication_reconciles_exact_intent_without_double_admission(self):
         original_persist = R.persist
         def interrupt(path, value, **kw):
