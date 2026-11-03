@@ -1057,13 +1057,12 @@ An incomplete or conflicting pair is deferred without a fetch or index append. A
 malformed or unterminated index record encountered during recovery fails the run
 without changing that index; retain it for operator review rather than rewriting it.
 
-The worker's `decode_repair_restart_*` regressions exercise these synthetic crash
-boundaries for JP2 and JPEG, repeated replay, cross-format partial/conflicting files,
-batch mismatches, and preservation of original buffer bytes, consumption markers and
-manifest bytes. They do **not** rehearse the real producer/HTTP queue/dashboard path,
-process termination or power loss, concurrent independent acquisition, or a
-coordinated upgrade/rollback. Those operational gates remain required before enabling
-repairs; these tests do not promote any durable CPU or Qwen manual quarantine.
+The worker's `decode_repair_restart_*` regressions exercise synthetic publication/index
+crash boundaries for JP2 and JPEG, repeated replay, cross-format partial/conflicting
+files, batch mismatches, and preservation of original buffer bytes, consumption
+markers and manifest bytes. The disposable protocol rehearsal below additionally
+executes the producer/HTTP queue/fetcher/dashboard path and process termination.
+Neither test suite promotes any durable CPU or Qwen manual quarantine.
 
 Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 `observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
@@ -1096,6 +1095,95 @@ Matching size, SHA256 and (for batch JP2s) the advertised bag MD5 proves the ret
 bytes match those recorded checksums, **not** that the bytes are decodable or whether
 damage originated upstream. A re-fetch may return identical source bytes; resolving
 source versus decoder problems requires separate evidence rather than a retry loop.
+
+#### Disposable repair protocol rehearsal
+
+Run from the repository root, never against a production state directory. This uses
+the real `ocr_manifest.py build-quality` CLI and SQLite quarantine helper, the
+worker's `serve-scans` HTTP router and `prefetch::run`, and the dashboard's
+`Fetch::poll`/queue reader. The small Rust example exposes those production entry
+points only for the rehearsal; it requires an explicitly marked disposable root,
+binds IPv4 loopback, and refuses a non-loopback upstream. It is not a deployed worker
+or dashboard replacement. The Python fixture supplies synthetic bag/METS/image bytes,
+not LoC scans, and starts/stops all helper processes and servers.
+
+An outstanding ordinary manifest deliberately keeps the producer's unrelated
+PostgreSQL candidate selector from running; repair publication still passes through
+the actual CLI's opt-in gate. No production configuration, queue, retained scan or
+quarantine is accessed. Dependencies are the existing Rust toolchain, Python and
+PyArrow; no container daemon, SSH, external image download or rental is needed.
+
+```sh
+mkdir -p .rehearsal/tmp .rehearsal/runs
+export TMPDIR="$PWD/.rehearsal/tmp"
+export CARGO_TARGET_DIR="$PWD/.rehearsal/target" CARGO_BUILD_JOBS=2
+python3 -m venv .rehearsal/venv
+.rehearsal/venv/bin/pip --cache-dir "$PWD/.rehearsal/cache" install pyarrow
+cargo build -j 2 -p usnm-ocr-dash --example repair_rehearsal
+export USNM_REPAIR_HARNESS="$CARGO_TARGET_DIR/debug/examples/repair_rehearsal"
+export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
+.rehearsal/venv/bin/python -m unittest discover \
+  -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py -v
+```
+
+Executed locally on 3 November 2026: **4 tests passed in 96.893 seconds**, with
+these asserted results:
+
+* The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
+  item/IIIF fallback, dashboard queue/index consumption, and `observed_same` versus
+  `observed_new` reconciliation all completed. Existing CPU **and Qwen**
+  `manual_review` quarantines stayed manual; original buffer bytes and `.done`
+  markers were unchanged.
+* Ordinary and repair manifests coexisted, including an ordinary HTTP PUT and the
+  dashboard's OCR-first ordering. The ordinary-format Rust decoder rejected every
+  repair manifest while accepting the ordinary manifest.
+* A localhost proxy let the real PUT finish, then closed the connection without an
+  acknowledgement. A fresh producer process replayed the durable `prepared`
+  manifest with exactly the same name/bytes. Eleven requests admitted only ten
+  outstanding repairs. Valid sidecars with truncated or wrong scan bytes kept all
+  ten slots occupied, and the worker deferred them without an upstream request.
+* Separate fetch processes shared the real persisted global pacer: observed request
+  spacing was at least 2.85 seconds (3-second policy, timing tolerance), and a
+  synthetic 429 caused a retry at least 4.85 seconds later under the 5-second slow
+  policy. A second fetch process was refused by the existing single-fetcher lock.
+* An independent local writer occupying the keep path during a download won without
+  replacement or an index append. A fetcher was actually SIGKILLed while awaiting an
+  image, then restarted successfully; an abandoned `.part` file was preserved.
+  A separate copied fixture of the actual completed scan/sidecar, with the index
+  append absent, recovered exactly one matching entry across two process replays
+  without refetching or altering the original index.
+* Turning the producer off and restarting the HTTP server with upgraded consumers
+  retained every manifest, quarantine database and keep scan byte. The queue
+  remained readable. All disposable subprocesses and fixture directories were
+  cleaned up; build/dependency caches can be retained for repeat runs.
+
+Related focused validation:
+
+```sh
+.rehearsal/venv/bin/python -m unittest discover \
+  -s scripts/boinc/onprem/ocr-feed -p test_ocr_manifest.py -q # 32 passed
+cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 39 passed
+cargo test -j 2 -p usnm-ocr-dash --lib \
+  queue_reads_decode_repairs_but_rejects_mismatched_formats --quiet # 1 passed
+cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # passed
+cargo fmt --all -- --check # passed
+```
+
+**Still required before production enablement:** identify and test the exact
+currently deployed worker/dashboard revisions and their actual upgrade/rollback
+artifacts. The local ordinary decoder rejection is a protocol check, **not** a run
+of those historical deployed binaries. This rehearsal drives fetches through the
+production Rust entry point, not the deployed systemd/shell fetch-queue supervisor;
+its completion/cooling markers, retry schedule, host configuration and complete
+upgrade ordering still need a disposable deployment-level test. The dashboard path
+tested is its real queue/index reader, not the deployed HTTP/UI/access configuration.
+The post-publication crash boundary is reconstructed from copied real output, not
+a SIGKILL precisely between its two filesystem operations; power loss, filesystem
+durability and independently deployed acquisition paths are not certified. Nor
+does this test establish upstream image decodability, the production SQL ranking
+path, retained-data retirement or production access policy. Keep repairs disabled
+until those gates are reviewed; do not remove queued manifests or quarantine state
+to make a rollback appear complete.
 
 The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
 staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.
