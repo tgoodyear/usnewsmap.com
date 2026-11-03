@@ -159,6 +159,13 @@ A run writes `status-<res>.json`, `index-<res>.jsonl` and `failures-<res>.jsonl`
 
 `serve-scans --allow <node host names> [--allow-refresh-secs 300] [--scans /tank/ocr/scans] [--manifests /tank/ocr/manifests] [--listen 0.0.0.0:8380]` serves `GET /scans/...` and the sidecars, `DELETE /scans/buffer/...` (renaming the sidecar to `<scan>.done`; `keep/` gets 403) and `PUT /manifests/<version>/{manifest.parquet,summary.json}`, to the allowed hosts only, with a log line per request. It resolves the `--allow` names at startup (a name that doesn't resolve stops it) and again every `--allow-refresh-secs`; a name that stops resolving keeps its last addresses.
 
+Repair-only `queue-quality-zdecode-*/manifest.parquet` PUTs publish immutable bytes
+and sync the file/directory ancestry before returning 201 (new) or 200 (identical
+retry), with `x-usnm-repair-durable: 1`; conflicting bytes get 409. Their GET route
+supports recovery of a missing queued manifest from the producer's saved bytes.
+Upgrade the HTTP service before enabling repairs; ordinary PUT behavior is unchanged.
+See [repair ordering and rollback gates](../../docs/boinc-quality.md).
+
 `--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (5000, www.loc.gov's `Crawl-Delay`) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--scan-cache-url` names the scan server to ask before LoC (see Prefetching scans), `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin` or `--tesseract-image` (with `--podman-bin`, and `--podman-url` with `--scratch-dir`, `--engine-memory-mib` (1536), `--engine-cpus` (1) and `--engine-pids` (64)), `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600, or `USNM_OCR_PAGE_TIMEOUT_SECS`).
 
 These `run` flags can also come from the environment (the retired node unit read them from `/etc/usnm/ocr-worker.env`): `USNM_OCR_QUEUE_URL`, `USNM_OCR_OUT_URL`, `USNM_OCR_NODE_ID`, `USNM_OCR_CONCURRENCY`, `USNM_OCR_API_GAP_MS`, `USNM_OCR_TILE_GAP_MS`, `USNM_OCR_SCAN_CACHE_URL`, `USNM_OCR_VISIBILITY_SECS`, and for the engine `USNM_OCR_TESSERACT_IMAGE`, `USNM_OCR_PODMAN_URL`, `USNM_OCR_SCRATCH_DIR`, `USNM_OCR_ENGINE_MEMORY_MIB`, `USNM_OCR_ENGINE_CPUS` and `USNM_OCR_ENGINE_PIDS` A flag on the command line wins. `--shutdown-grace-secs` and `--once` are command-line only.

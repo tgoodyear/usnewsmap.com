@@ -28,6 +28,7 @@ pub mod prefetch;
 pub mod provenance;
 /// The fetched list relayed to the seeder (12 Step 11).
 pub mod publish;
+mod repair_io;
 mod run_metadata;
 /// The work message and dead letter, from `usnm-ocr-contract` (shared
 /// with the cloud jobs that fill and drain the queues).

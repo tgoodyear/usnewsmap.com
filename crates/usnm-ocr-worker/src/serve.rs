@@ -20,7 +20,8 @@
 //!   written; a buffer scan may since have been read and deleted.
 //! - `PUT /manifests/<version>/{manifest.parquet,summary.json}` writes a
 //!   prefetch manifest from a node (`pull-manifest.sh`), through a temporary
-//!   file and a rename.
+//!   file and a rename. Repair manifests instead use immutable, synced publication
+//!   and acknowledge durability explicitly; their GET route supports exact-byte recovery.
 //!
 //! Every request must come from a host on `--allow` (the nodes, by host
 //! name: no private address is written into the repository). The names are
@@ -31,6 +32,7 @@
 //! request is logged (method, path, status, peer); no page text exists here.
 
 use std::collections::BTreeMap;
+use std::io::{Read as _, Write as _};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -41,11 +43,14 @@ use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, Request, Sta
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::Router;
+
+use crate::{prefetch::DECODE_REPAIR_PREFIX, repair_io};
 
 /// The largest manifest accepted.
 const MAX_PUT_BYTES: usize = 512 * 1024 * 1024;
+const REPAIR_DURABLE_HEADER: &str = "x-usnm-repair-durable";
 
 #[derive(Debug, Clone)]
 pub struct ServeOptions {
@@ -315,6 +320,109 @@ async fn get_index(
     }
 }
 
+fn read_repair_manifest(path: &Path) -> anyhow::Result<Option<(std::fs::File, Vec<u8>)>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "repair manifest is not a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= MAX_PUT_BYTES as u64,
+        "repair manifest exceeds limit"
+    );
+    let mut file = std::fs::File::open(path)?;
+    let mut body = Vec::new();
+    (&mut file)
+        .take(MAX_PUT_BYTES as u64 + 1)
+        .read_to_end(&mut body)?;
+    anyhow::ensure!(body.len() <= MAX_PUT_BYTES, "repair manifest exceeds limit");
+    Ok(Some((file, body)))
+}
+
+fn existing_repair_manifest(path: &Path, body: &[u8]) -> anyhow::Result<Option<StatusCode>> {
+    let Some((file, existing)) = read_repair_manifest(path)? else {
+        return Ok(None);
+    };
+    if existing != body {
+        return Ok(Some(StatusCode::CONFLICT));
+    }
+    repair_io::sync_file(&file, path)?;
+    repair_io::sync_directories(path.parent().expect("manifest parent"))?;
+    Ok(Some(StatusCode::OK))
+}
+
+fn publish_repair_manifest(path: &Path, body: &[u8]) -> anyhow::Result<StatusCode> {
+    if let Some(status) = existing_repair_manifest(path, body)? {
+        return Ok(status);
+    }
+    let dir = path.parent().expect("manifest parent");
+    std::fs::create_dir_all(dir)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".repair-manifest-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut pending = builder.tempfile_in(dir)?;
+    pending.write_all(body)?;
+    repair_io::sync_file(pending.as_file(), pending.path())?;
+    match pending.persist_noclobber(path) {
+        Ok(file) => {
+            repair_io::sync_file(&file, path)?;
+            repair_io::sync_directories(dir)?;
+            Ok(StatusCode::CREATED)
+        }
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            error.file.close()?;
+            existing_repair_manifest(path, body)?
+                .ok_or_else(|| anyhow::anyhow!("repair manifest disappeared during publication"))
+        }
+        Err(error) => Err(error.error.into()),
+    }
+}
+
+async fn get_manifest(
+    State(opts): State<Arc<ServeOptions>>,
+    UrlPath((version, file)): UrlPath<(String, String)>,
+) -> Response {
+    if !version.starts_with(DECODE_REPAIR_PREFIX) || file != "manifest.parquet" {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    let Some(dir) = under_manifests(&opts.manifests, &version) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let read = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
+        let path = dir.join("manifest.parquet");
+        let Some((file, body)) = read_repair_manifest(&path)? else {
+            return Ok(None);
+        };
+        repair_io::sync_file(&file, &path)?;
+        repair_io::sync_directories(&dir)?;
+        Ok(Some(body))
+    })
+    .await;
+    match read {
+        Ok(Ok(Some(body))) => (
+            [
+                ("content-type", "application/octet-stream"),
+                (REPAIR_DURABLE_HEADER, "1"),
+            ],
+            body,
+        )
+            .into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        error => {
+            tracing::warn!(version, error = ?error, "can't verify repair manifest");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn put_manifest(
     State(opts): State<Arc<ServeOptions>>,
     UrlPath((version, file)): UrlPath<(String, String)>,
@@ -329,6 +437,21 @@ async fn put_manifest(
     let Some(dir) = under_manifests(&opts.manifests, &version) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    if version.starts_with(DECODE_REPAIR_PREFIX) && file == "manifest.parquet" {
+        let write =
+            tokio::task::spawn_blocking(move || publish_repair_manifest(&dir.join(file), &body))
+                .await;
+        return match write {
+            Ok(Ok(status)) if status.is_success() => {
+                (status, [(REPAIR_DURABLE_HEADER, "1")], ()).into_response()
+            }
+            Ok(Ok(status)) => status.into_response(),
+            error => {
+                tracing::warn!(version, error = ?error, "can't publish durable repair manifest");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        };
+    }
     let write = async {
         tokio::fs::create_dir_all(&dir).await?;
         let tmp = dir.join(format!(".{file}.part"));
@@ -352,7 +475,9 @@ pub fn router(opts: ServeOptions) -> Router {
         .route("/index/{name}", get(get_index))
         .route(
             "/manifests/{version}/{file}",
-            put(put_manifest).layer(DefaultBodyLimit::max(MAX_PUT_BYTES)),
+            get(get_manifest)
+                .put(put_manifest)
+                .layer(DefaultBodyLimit::max(MAX_PUT_BYTES)),
         )
         .layer(middleware::from_fn_with_state(
             Arc::clone(&opts),
@@ -399,6 +524,7 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn scan_paths_are_checked() {
@@ -460,6 +586,162 @@ mod tests {
             .unwrap()
         });
         (dir, root)
+    }
+
+    #[tokio::test]
+    async fn repair_manifest_ack_requires_durable_bytes_and_directory_entries() {
+        for failure in [
+            None,
+            Some("temporary"),
+            Some("published"),
+            Some("directory"),
+            Some("ancestor"),
+        ] {
+            let (dir, root) = server(&["127.0.0.1"]).await;
+            let manifest_dir = dir.path().join("manifests/queue-quality-zdecode-durable");
+            let path = manifest_dir.join("manifest.parquet");
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&events);
+            let target = path.clone();
+            let parent = manifest_dir.clone();
+            let hook = repair_io::sync_test::install(dir.path(), move |at, directory| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((at.to_owned(), directory, target.exists()));
+                let fail = match failure {
+                    Some("temporary") => !directory && at != target,
+                    Some("published") => !directory && at == target,
+                    Some("directory") => directory && at == parent,
+                    Some("ancestor") => directory && at == parent.parent().unwrap(),
+                    None => false,
+                    _ => unreachable!(),
+                };
+                if fail {
+                    return Err(std::io::Error::other("injected manifest sync failure"));
+                }
+                Ok(())
+            });
+            let http = reqwest::Client::new();
+            let url = format!("{root}/manifests/queue-quality-zdecode-durable/manifest.parquet");
+            let body = b"immutable repair bytes";
+            let response = http.put(&url).body(body.to_vec()).send().await.unwrap();
+            if failure.is_some() {
+                assert_eq!(response.status(), 500, "{failure:?}");
+                assert!(response.headers().get(REPAIR_DURABLE_HEADER).is_none());
+                if path.exists() {
+                    assert_eq!(std::fs::read(&path).unwrap(), body);
+                    let repeated = http.put(&url).body(body.to_vec()).send().await.unwrap();
+                    assert_eq!(
+                        repeated.status(),
+                        500,
+                        "an existing file is not a durable ack"
+                    );
+                }
+            } else {
+                assert_eq!(response.status(), 201);
+                assert_eq!(response.headers()[REPAIR_DURABLE_HEADER], "1");
+                let observed = events.lock().unwrap();
+                let final_file = observed
+                    .iter()
+                    .position(|(at, directory, _)| !directory && at == &path)
+                    .unwrap();
+                assert!(observed[..final_file]
+                    .iter()
+                    .any(|(at, directory, published)| !directory && at != &path && !published));
+                for ancestor in manifest_dir.ancestors() {
+                    assert!(observed[final_file + 1..]
+                        .iter()
+                        .any(|(at, directory, published)| *directory
+                            && at == ancestor
+                            && *published));
+                }
+            }
+            drop(hook);
+            let existed = path.exists();
+            let retry = http.put(&url).body(body.to_vec()).send().await.unwrap();
+            assert_eq!(retry.status(), if existed { 200 } else { 201 });
+            assert_eq!(retry.headers()[REPAIR_DURABLE_HEADER], "1");
+            assert_eq!(std::fs::read(&path).unwrap(), body);
+            assert_eq!(std::fs::read_dir(&manifest_dir).unwrap().count(), 1);
+            let read = http.get(&url).send().await.unwrap();
+            assert_eq!(read.status(), 200);
+            assert_eq!(read.headers()[REPAIR_DURABLE_HEADER], "1");
+            assert_eq!(read.bytes().await.unwrap().as_ref(), body);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_repair_manifest_retries_preserve_identity_and_queue_markers() {
+        let (dir, root) = server(&["127.0.0.1"]).await;
+        let http = reqwest::Client::new();
+        let url = format!("{root}/manifests/queue-quality-zdecode-race/manifest.parquet");
+        assert_eq!(http.get(&url).send().await.unwrap().status(), 404);
+        let (one, two) = tokio::join!(
+            http.put(&url).body("same repair").send(),
+            http.put(&url).body("same repair").send(),
+        );
+        let mut statuses = [
+            one.unwrap().status().as_u16(),
+            two.unwrap().status().as_u16(),
+        ];
+        statuses.sort();
+        assert_eq!(statuses, [200, 201]);
+        let manifest_dir = dir.path().join("manifests/queue-quality-zdecode-race");
+        let path = manifest_dir.join("manifest.parquet");
+        let original = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(manifest_dir.join("cooling"), b"preserve retry schedule").unwrap();
+        let changed = http
+            .put(&url)
+            .body("different repair")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(changed.status(), 409);
+        assert!(changed.headers().get(REPAIR_DURABLE_HEADER).is_none());
+        assert_eq!(
+            http.put(&url)
+                .body("same repair")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"same repair");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(manifest_dir.join("cooling")).unwrap(),
+            b"preserve retry schedule"
+        );
+        assert_eq!(std::fs::read_dir(&manifest_dir).unwrap().count(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ordinary = format!("{root}/manifests/ordinary-mode/manifest.parquet");
+            assert_eq!(
+                http.put(ordinary)
+                    .body("ordinary")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                201
+            );
+            let ordinary_mode =
+                std::fs::metadata(dir.path().join("manifests/ordinary-mode/manifest.parquet"))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                ordinary_mode & 0o777,
+                "repair publication must preserve the queue's umask-governed reader access"
+            );
+        }
     }
 
     #[tokio::test]
@@ -568,6 +850,21 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join("manifests/pages-v1/manifest.parquet")).unwrap(),
             b"rows"
+        );
+        let ordinary = url("/manifests/pages-v1/manifest.parquet");
+        assert_eq!(http.get(&ordinary).send().await.unwrap().status(), 405);
+        assert_eq!(
+            http.put(&ordinary)
+                .body("updated rows")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            201
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("manifests/pages-v1/manifest.parquet")).unwrap(),
+            b"updated rows"
         );
         let other = http
             .put(url("/manifests/pages-v1/other.bin"))

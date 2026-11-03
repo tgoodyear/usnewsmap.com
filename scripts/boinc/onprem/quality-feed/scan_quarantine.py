@@ -20,6 +20,7 @@ LOCK_NAME = ".decode-quarantine.lock"
 FAILURES_BEFORE_QUARANTINE = 3
 MAX_PENDING_REFETCHES = 10
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
+REPAIR_DURABLE_HEADER = "x-usnm-repair-durable"
 CAMPAIGN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 DOC_RE = re.compile(r"(?P<lccn>[a-z0-9]{1,16})_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)")
 SIDECAR_LIMIT = 65536
@@ -267,9 +268,27 @@ def retryable_ids(state):
         connection.close()
 
 
+def _sync_repair_state(state):
+    path = Path(state) / DB_NAME
+    with path.open("rb") as stream:
+        os.fsync(stream.fileno())
+    synced = set()
+    for root in (path.parent.absolute(), path.parent.resolve(strict=True)):
+        for directory in (root, *root.parents):
+            if directory in synced:
+                continue
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            synced.add(directory)
+
+
 def _update(state, identity, old, new, **values):
     connection = _database(state, create=True)
     try:
+        connection.execute("PRAGMA synchronous = FULL")
         with connection:
             assignments = ["refetch_state = ?"] + [f"{key} = ?" for key in values]
             args = [new, *values.values(), identity, old]
@@ -279,6 +298,7 @@ def _update(state, identity, old, new, **values):
                 raise RuntimeError("scan-quarantine refetch state changed concurrently")
     finally:
         connection.close()
+    _sync_repair_state(state)
 
 
 def _get_optional(url, max_bytes):
@@ -407,11 +427,17 @@ def _manifest_name(record):
     return "queue-quality-zdecode-" + digest
 
 
-def _put_manifest(server, record):
+def _manifest_body(record):
     body = record["manifest_body"]
     if (record["manifest_name"] != _manifest_name(record) or not isinstance(body, bytes)
             or hashlib.sha256(body).hexdigest() != record["manifest_sha256"]):
         raise ValueError("prepared repair manifest failed its identity or checksum")
+    return body
+
+
+def _put_manifest(server, record, *, state):
+    body = _manifest_body(record)
+    _sync_repair_state(state)
     url = f"{server.rstrip('/')}/manifests/{record['manifest_name']}/manifest.parquet"
     request = urllib.request.Request(url, data=body, method="PUT",
                                      headers={"User-Agent": USER_AGENT,
@@ -419,6 +445,20 @@ def _put_manifest(server, record):
     with urllib.request.urlopen(request, timeout=120) as response:
         if response.status not in (200, 201):
             raise RuntimeError(f"scan server refused repair manifest: HTTP {response.status}")
+        if response.headers.get(REPAIR_DURABLE_HEADER) != "1":
+            raise RuntimeError("scan server did not acknowledge durable repair publication; upgrade it first")
+
+
+def _ensure_queued_manifest(server, record, *, state):
+    body = _manifest_body(record)
+    _sync_repair_state(state)
+    url = f"{server.rstrip('/')}/manifests/{record['manifest_name']}/manifest.parquet"
+    existing = _get_optional(url, len(body))
+    if existing is None:
+        _put_manifest(server, record, state=state)
+        _log("queued repair manifest restored", state, record, manifest=record["manifest_name"])
+    elif existing != body:
+        raise RuntimeError("queued repair manifest differs from saved bytes; preserve it for operator review")
 
 
 def _entries(root):
@@ -457,12 +497,14 @@ def reconcile(root, server, make_manifest):
                 new = {"same": "observed_same", "new": "observed_new"}[observed]
                 _update(state, record["id"], "queued", new)
                 _log("repair keep scan observed", state, record, result=new)
-            elif observed == "occupied":
-                _log("repair keep scan incomplete or conflicting; will check again", state, record)
+            else:
+                _ensure_queued_manifest(server, record, state=state)
+                if observed == "occupied":
+                    _log("repair keep scan incomplete or conflicting; will check again", state, record)
         entries = list(_entries(root))
         for state, record in entries:
             if record["refetch_state"] == "prepared":
-                _put_manifest(server, record)
+                _put_manifest(server, record, state=state)
                 _update(state, record["id"], "prepared", "queued")
                 _log("repair manifest queued", state, record, manifest=record["manifest_name"])
         entries = list(_entries(root))
@@ -495,7 +537,7 @@ def reconcile(root, server, make_manifest):
             _update(state, record["id"], "pending", "prepared", manifest_name=name,
                     manifest_sha256=digest, manifest_body=body)
             prepared = {**record, "manifest_name": name, "manifest_sha256": digest, "manifest_body": body}
-            _put_manifest(server, prepared)
+            _put_manifest(server, prepared, state=state)
             _update(state, record["id"], "prepared", "queued")
             _log("repair manifest queued", state, record, manifest=name)
             in_flight += 1

@@ -159,8 +159,8 @@ class RepairRehearsal(unittest.TestCase):
         self.source = Source()
         self.addCleanup(self.source.close)
 
-    def start_scan_server(self):
-        self.serve = self.spawn("serve")
+    def start_scan_server(self, root=None):
+        self.serve = self.spawn("serve", root=root)
         selector = selectors.DefaultSelector()
         selector.register(self.serve.stdout, selectors.EVENT_READ)
         self.assertTrue(selector.select(30), "scan server did not start")
@@ -506,6 +506,51 @@ class RepairRehearsal(unittest.TestCase):
         print("PASS lost ACK: durable prepared bytes replay identically; cap=10; valid sidecars "
               "with truncated/wrong bytes retain queued slots; occupied status blocks legacy "
               "fetched markers without HTTP fetch")
+
+    def test_queued_manifest_loss_is_recovered_after_http_server_restart(self):
+        self.seed(1)
+        self.produce()
+        record = self.records()[self.page(1)["doc_id"]]
+        self.assertEqual(record["refetch_state"], "queued")
+        original = self.repair(1)
+        original_body = original.read_bytes()
+        quarantine_before = self.snapshot(self.quarantines)
+        manifests_before = self.snapshot(self.root / "manifests")
+        self.stop(self.serve)
+
+        # A separate surviving-files fixture models an old acknowledged directory
+        # entry lost at a crash boundary; never remove the original manifest.
+        recovery = self.root / "server-restart-without-manifest"
+        self.initialize(recovery)
+        shutil.copytree(self.root / "scans", recovery / "scans", dirs_exist_ok=True)
+        ordinary = recovery / self.ordinary.relative_to(self.root)
+        ordinary.parent.mkdir(parents=True)
+        shutil.copyfile(self.ordinary, ordinary)
+        restored = recovery / original.relative_to(self.root)
+        restored.parent.mkdir(parents=True)
+        cooling = restored.parent / "cooling"
+        cooling.write_bytes(b"preserve prior cooling marker")
+        cooling_at = cooling.stat().st_mtime_ns
+        self.start_scan_server(root=recovery)
+        self.produce()
+        self.assertEqual(restored.read_bytes(), original_body)
+        self.assertEqual(self.snapshot(self.quarantines), quarantine_before)
+        self.assertEqual(self.records()[self.page(1)["doc_id"]]["refetch_state"], "queued")
+        self.assertEqual(self.source.hits, [])
+        restored_at = restored.stat().st_mtime_ns
+        self.produce()
+        self.assertEqual(restored.stat().st_mtime_ns, restored_at)
+        self.assertEqual(cooling.read_bytes(), b"preserve prior cooling marker")
+        self.assertEqual(cooling.stat().st_mtime_ns, cooling_at)
+        self.assertEqual(self.snapshot(self.root / "manifests"), manifests_before)
+        result = self.fetch(restored, root=recovery)
+        self.assertEqual(result["fetched"], 1)
+        self.produce()
+        self.assertEqual(self.records()[self.page(1)["doc_id"]]["refetch_state"], "observed_same")
+        self.assertEqual(original.read_bytes(), original_body)
+        print("PASS acknowledged-manifest recovery: real server restart with copied surviving "
+              "state; queued producer restores identical bytes/name without new admission or "
+              "marker reset; repeat reconciliation is read-only; real fetch reconciles same")
 
     def test_ordinary_restart_preserves_crash_left_repair_ownership(self):
         self.seed(1)

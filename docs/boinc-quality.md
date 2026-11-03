@@ -996,7 +996,10 @@ pct exec 215 -- /opt/usnm-quality-feed/venv/bin/python -c \
 Re-fetching is **disabled by default**. Before enabling it, install and verify both a
 reviewed `usnm-ocr-worker` containing the decode-repair no-overwrite support on the
 scan-fetch host and a matching `usnm-ocr-dash` that can read repair manifests. Coordinate
-the fetcher's ordinary single-fetcher restart. An older worker rejects the new format and
+the fetcher's ordinary single-fetcher restart. Also upgrade/restart the separate
+`serve-scans` HTTP process before enabling the producer: repair publication requires
+its durable acknowledgement and repair-manifest GET support, not just an updated
+prefetch executable. An older worker rejects the new format and
 would stop the fetch queue; an older dashboard reports a queue error, making downstream
 queue observations unavailable. With repairs off and no repair manifests already visible,
 the producer still writes the existing `usnm-prefetch-manifest/1` format, so the existing
@@ -1026,7 +1029,8 @@ it will retry the bad scans. An older shared feeder cannot parse the new unit's
 `--quarantine-decode` option, and an older helper cannot read `manual_review` records,
 so keep the updated helper and restore the old unit before any feeder rollback.
 If repair manifests have been published, setting the flag back to `off` stops new ones
-but does not remove existing ones; keep both upgraded consumers until no repair manifest remains visible and the
+but does not remove existing ones; keep both upgraded consumers and the durable HTTP
+publication service until no repair manifest remains visible and the
 rollback has been reviewed. The new builder cannot change manifests already queued, or
 independent OCR acquisition; review those paths before enabling repairs. Then an operator
 can opt in by setting
@@ -1048,6 +1052,39 @@ fails the run without counting success. Any already-published files or appended 
 history remain for operator review rather than being removed or rewritten.
 No buffer original, keep scan, sidecar or `.done` marker is deleted. Network failures
 remain errors, and a lost PUT response replays the same saved manifest bytes and name.
+
+Repair manifest acknowledgement is itself part of the durability protocol:
+
+- The producer commits its exact `prepared` name/body/checksum with SQLite
+  `synchronous=FULL`, syncs the database and directory ancestry, and only then
+  sends PUT. Repair-state transitions and replays also preserve this ordering.
+- Only `queue-quality-zdecode-*/manifest.parquet` uses the new HTTP publication
+  path. It writes and syncs a unique temporary file, publishes without replacement,
+  syncs the final file and directory ancestry, then returns **201** with
+  **`x-usnm-repair-durable: 1`**. The producer requires this acknowledgement before
+  committing `queued`; an old server's plain 201 leaves the request `prepared`
+  and fails visibly instead of assuming durability.
+- An identical retry re-syncs the existing file and directory ancestry and returns
+  **200** with the same acknowledgement, without rewriting the manifest or queue
+  markers. Different bytes at the same name return **409**, never replacement.
+  Concurrent identical PUTs converge on the same immutable file.
+- While repairs are enabled, a still-queued request whose keep copy is absent or
+  incomplete checks its saved manifest with the repair-only GET route. Reads are
+  bounded; the server also syncs the file and directories before its successful
+  response. A **404** restores the exact saved name/body through durable PUT,
+  without another admission, slot release, new identity or marker reset. Matching
+  bytes require no PUT; conflicting bytes remain untouched and cause an error.
+  This repairs an acknowledged-but-lost entry from the older unsynced publisher
+  instead of permanently stranding its outstanding slot.
+
+Ordinary manifest PUT/replacement behavior and ordinary GET availability are
+unchanged. Restoration never removes `cooling`, `needs-loc` or `fetched` markers.
+An inconsistent marker or corrupt retained manifest still needs reviewed operator
+recovery; missing-file recovery is not permission to replace existing queue data.
+Repair HTTP publication, scan/index publication and replay reuse the same Rust
+file/directory durability barriers. Real HTTP tests inject sync failures before and
+after final-name publication, require errors rather than success acknowledgements,
+and verify exact-byte retries, conflicts and concurrent publication.
 
 Every updated prefetch run, ordinary or repair, holds the output-wide
 `<out>/.prefetch.lock` through scan publication, index append and completion. This
@@ -1169,8 +1206,9 @@ Reads use 64 KiB chunks and stop at the advertised size plus one byte; sidecars
 advertising more than the fetcher's 128 MiB image limit are occupied. Truncated or
 checksum-mismatched scans remain queued and are checked again. Sidecar reads remain
 bounded; network errors still propagate. A
-manifest left queued without a resulting keep copy requires operator investigation;
-the reconciler does not enqueue another manifest, but the existing fetch queue can
+manifest left queued without a resulting keep copy is checked for an exact saved
+queue entry; missing entries are restored as described above. The reconciler does
+not create a second repair identity, but the existing fetch queue can
 retry transient failures or retry a `needs-loc` deferral daily under its normal pacer.
 An observation verifies the sidecar against the retained bytes, not a new decode. The dashboard counts a
 document already in the fetch index as fetched even when that index entry is the
@@ -1226,7 +1264,7 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
   -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py -v
 ```
 
-An optional sixth scenario executes an operator-supplied, reviewed queue supervisor
+An optional seventh scenario executes an operator-supplied, reviewed queue supervisor
 script directly with Bash; it is **not copied into this repository**:
 
 ```sh
@@ -1247,7 +1285,7 @@ retained scans, original manifests, quarantine bytes and synthetic upstream
 contents must remain unchanged.
 
 Executed locally on 3 November 2026 with the named-option CLI and optional
-supervisor: **6 tests passed in 170.550 seconds** (five standard scenarios plus the
+supervisor: **7 tests passed in 174.562 seconds** (six standard scenarios plus the
 actual-supervisor scenario), with these asserted results:
 
 - The reviewed **updated**, not deployed, supervisor (SHA256
@@ -1293,6 +1331,13 @@ actual-supervisor scenario), with these asserted results:
   fence, scan, partial sidecar, empty index, manifests and queued quarantine bytes
   remained unchanged. This tests sequential ownership after the prior lock holder
   exits, not just concurrent lock exclusion.
+- A stopped/restarted real HTTP server used a copied surviving-files fixture with
+  an acknowledged repair manifest absent, while the original manifest remained
+  preserved. A fresh producer process restored the exact queued name/body without
+  changing its quarantine record, outstanding admission or cooling marker. Another
+  reconciliation left the manifest unchanged; real prefetch then completed it and
+  the producer observed the same fingerprint. This is a reconstructed crash boundary,
+  not a physical power-loss experiment.
 - Turning the producer off and restarting the HTTP server with upgraded consumers
   retained every manifest, quarantine database and keep scan byte. The queue
   remained readable. All disposable subprocesses and fixture directories were
@@ -1302,14 +1347,18 @@ Related focused validation:
 
 ```sh
 .rehearsal/venv/bin/python -m unittest discover \
-  -s scripts/boinc/onprem/ocr-feed -p test_ocr_manifest.py -q # 32 passed
+  -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py \
+  -k queued_manifest_loss -v # final rebuilt harness: 1 passed in 9.850 seconds
+.rehearsal/venv/bin/python -m unittest discover \
+  -s scripts/boinc/onprem/ocr-feed -p test_ocr_manifest.py -q # 36 passed
+cargo test -j 2 -p usnm-ocr-worker --lib serve:: --quiet # 9 passed
 cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 44 passed
 cargo test -j 2 -p usnm-ocr-dash --lib \
   queue_reads_decode_repairs_but_rejects_mismatched_formats --quiet # 1 passed
 cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # passed
 cargo clippy -j 2 -p usnm-ocr-worker --lib --tests -- -D warnings # passed
 cargo fmt --all -- --check # passed
-.rehearsal/venv/bin/python scripts/ci/no-positional-args.py # 990 files passed
+.rehearsal/venv/bin/python scripts/ci/no-positional-args.py # 991 files passed
 .rehearsal/venv/bin/python -m unittest discover \
   -s scripts/ci -p test_no_positional_args.py -q # 13 passed
 ```
@@ -1420,7 +1469,8 @@ The worker's compatibility counter and the matching supervisor cooling policy
 described above are therefore both required.
 
 **Still required before production enablement:** verify both consumers' reviewed
-replacement artifacts and actual coordinated upgrade/rollback sequencing. The
+replacement artifacts, the HTTP service's durable publication/GET contract, and
+actual coordinated upgrade/rollback sequencing. The
 exact old-worker decoder, old-dashboard observation and historical supervisor
 checks above are complete.
 The end-to-end localhost rehearsal drives fetches through the

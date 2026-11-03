@@ -172,6 +172,7 @@ class DecodeRepairTest(unittest.TestCase):
         def __init__(self, data=b"", status=200):
             super().__init__(data)
             self.status = status
+            self.headers = {quarantine.REPAIR_DURABLE_HEADER: "1"}
 
     class ScanServer:
         def __init__(self):
@@ -179,15 +180,20 @@ class DecodeRepairTest(unittest.TestCase):
             self.requests = []
             self.get_error = None
             self.fail_put_once = False
+            self.durable_ack = True
 
         def __call__(self, request, timeout):
             method, url = request.get_method(), request.full_url
             self.requests.append((method, url, request.data))
             if method == "PUT":
+                self.files[url] = request.data
                 if self.fail_put_once:
                     self.fail_put_once = False
                     raise urllib.error.URLError("response lost after publication")
-                return DecodeRepairTest.Response(status=201)
+                response = DecodeRepairTest.Response(status=201)
+                if not self.durable_ack:
+                    response.headers.clear()
+                return response
             if self.get_error:
                 raise self.get_error
             if url not in self.files:
@@ -274,6 +280,71 @@ class DecodeRepairTest(unittest.TestCase):
         self.assertEqual(puts[0][1:], puts[1][1:])
         self.assertEqual(saved["manifest_body"], puts[1][2])
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+
+    def test_repair_requires_durable_ack_and_preserves_prepared_replay(self):
+        self.quarantine(self.page())
+        self.server.durable_ack = False
+        with self.assertRaisesRegex(RuntimeError, "durable repair publication"):
+            self.reconcile()
+        saved = quarantine.quarantined(self.state)[0]
+        self.assertEqual(saved["refetch_state"], "prepared")
+        self.server.durable_ack = True
+        self.reconcile()
+        puts = [r for r in self.server.requests if r[0] == "PUT"]
+        self.assertEqual(puts[0][1:], puts[1][1:])
+        self.assertEqual(puts[1][2], saved["manifest_body"])
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+
+    def test_repair_state_sync_failure_prevents_http_publication(self):
+        self.quarantine(self.page())
+        with mock.patch.object(quarantine.os, "fsync", side_effect=OSError("injected state sync")), \
+                self.assertRaisesRegex(OSError, "injected state sync"):
+            self.reconcile()
+        saved = quarantine.quarantined(self.state)[0]
+        self.assertEqual(saved["refetch_state"], "prepared")
+        self.assertFalse(any(method == "PUT" for method, _, _ in self.server.requests))
+        self.reconcile()
+        put = next(r for r in self.server.requests if r[0] == "PUT")
+        self.assertEqual(put[2], saved["manifest_body"])
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+
+    def test_queued_manifest_loss_restores_exact_bytes_without_releasing_capacity(self):
+        for seq in range(1, 12):
+            self.quarantine(self.page(seq))
+        self.reconcile()
+        queued = next(r for r in quarantine.quarantined(self.state) if r["refetch_state"] == "queued")
+        url = f"http://scan/manifests/{queued['manifest_name']}/manifest.parquet"
+        lost = self.server.files.pop(url)
+        self.reconcile()
+        self.assertEqual(self.server.files[url], lost)
+        records = quarantine.quarantined(self.state)
+        self.assertEqual(sum(r["refetch_state"] == "queued" for r in records), 10)
+        self.assertEqual(sum(r["refetch_state"] == "pending" for r in records), 1)
+        puts = [r for r in self.server.requests if r[0] == "PUT"]
+        self.assertEqual(len(puts), 11)
+        self.assertEqual(len({r[1] for r in puts}), 10)
+        self.server.files[url] = b"conflicting queue body"
+        with self.assertRaisesRegex(RuntimeError, "differs from saved bytes"):
+            self.reconcile()
+        self.assertEqual(self.server.files[url], b"conflicting queue body")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 11)
+
+    def test_repair_state_directory_sync_failure_prevents_http_publication(self):
+        import stat
+
+        self.quarantine(self.page())
+        sync = quarantine.os.fsync
+
+        def synchronize(descriptor):
+            if stat.S_ISDIR(quarantine.os.fstat(descriptor).st_mode):
+                raise OSError("injected state directory sync")
+            sync(descriptor)
+
+        with mock.patch.object(quarantine.os, "fsync", side_effect=synchronize), \
+                self.assertRaisesRegex(OSError, "injected state directory sync"):
+            self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "prepared")
+        self.assertFalse(any(method == "PUT" for method, _, _ in self.server.requests))
 
     def test_cpu_manual_quarantine_is_excluded_but_never_automatically_repaired(self):
         cpu, qwen = self.page(1), self.page(2)

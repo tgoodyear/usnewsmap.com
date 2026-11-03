@@ -11,80 +11,14 @@ use usnm_ocr_contract::prefetch::ManifestRow;
 
 use crate::batch;
 use crate::loc::{ImageSize, ScanFormat};
+use crate::repair_io::{
+    sync_directories as sync_repair_directories, sync_file as sync_repair_file,
+};
 
 use super::{set_of, sha256};
 
-fn sync_repair_file(file: &std::fs::File, path: &Path) -> anyhow::Result<()> {
-    #[cfg(test)]
-    sync_test::before(path, path, false)?;
-    file.sync_all()
-        .with_context(|| format!("syncing repair file {}", path.display()))
-}
-
-/// Include ancestors that an earlier interrupted attempt may have created.
-fn sync_repair_directories(dir: &Path) -> anyhow::Result<()> {
-    let dir = if dir.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        dir
-    };
-    let absolute = std::path::absolute(dir)?;
-    let canonical = std::fs::canonicalize(dir)?;
-    let mut synced = std::collections::BTreeSet::new();
-    for path in absolute.ancestors().chain(canonical.ancestors()) {
-        if !synced.insert(path.to_owned()) {
-            continue;
-        }
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("opening repair directory {}", path.display()))?;
-        #[cfg(test)]
-        sync_test::before(dir, path, true)?;
-        file.sync_all()
-            .with_context(|| format!("syncing repair directory {}", path.display()))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-pub(super) mod sync_test {
-    use super::*;
-    use std::sync::Arc;
-
-    type Hook = Arc<dyn Fn(&Path, bool) -> std::io::Result<()> + Send + Sync>;
-    static HOOKS: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
-
-    pub(crate) struct Guard(PathBuf);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            HOOKS.lock().unwrap().retain(|(root, _)| root != &self.0);
-        }
-    }
-
-    pub(crate) fn install(
-        root: &Path,
-        hook: impl Fn(&Path, bool) -> std::io::Result<()> + Send + Sync + 'static,
-    ) -> Guard {
-        HOOKS
-            .lock()
-            .unwrap()
-            .push((root.to_owned(), Arc::new(hook)));
-        Guard(root.to_owned())
-    }
-
-    pub(super) fn before(scope: &Path, path: &Path, directory: bool) -> std::io::Result<()> {
-        let hook = HOOKS
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(root, _)| scope.starts_with(root))
-            .map(|(_, hook)| Arc::clone(hook));
-        if let Some(hook) = hook {
-            hook(path, directory)?;
-        }
-        Ok(())
-    }
-}
+pub(super) use crate::repair_io::sync_test;
 
 /// The tag of a size in file names: `full` or `pct50`.
 pub fn tag(size: ImageSize) -> String {
