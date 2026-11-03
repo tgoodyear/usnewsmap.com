@@ -1181,15 +1181,51 @@ qemu-x86_64: Could not open '/lib64/ld-linux-x86-64.so.2': No such file or direc
 ```
 
 This is a runtime dependency blocker, **not** evidence that the old consumer rejects
-repairs or accepts ordinary manifests. Completing that probe requires an existing
-compatible Linux/x86-64 loader and libraries; no image was pulled or replacement
-runtime built. The probe container was removed. Matching this candidate's digest
-to the currently deployed worker remains a separate verification step.
+repairs or accepts ordinary manifests. No image was pulled or replacement runtime
+built, and the probe container was removed. This retained candidate is **not** the
+currently deployed worker; the subsequent installed-binary probe below supersedes
+it for old-worker manifest compatibility.
+
+At **2026-11-03T15:05:33Z**, an operator-run probe exercised the actual installed
+`/usr/local/bin/usnm-ocr-worker`, which reported
+`usnm-ocr-worker 0.1.0 (commit 7e634564c77acb64936f6f61092f451bb7110adc)`.
+Its SHA256 was
+`eadcbe7cf707e7b178e168d514b124369e0b635b6b14a0fdb4f708f71cb5047b`.
+Both copied, single-row manifests exactly matched the local producer-generated
+fixtures in `.rehearsal/deployed-compat/artifacts.json`:
+
+| Manifest directory                    | Bytes | SHA256                                                             |
+| ------------------------------------- | ----- | ------------------------------------------------------------------ |
+| `queue-quality-compat-ordinary`       | 3614  | `b1b653a8484d3ffeb476e20f8b0a84a1c7842e401f4e007ccbf5c9e0189e0e03` |
+| `queue-quality-zdecode-compat-repair` | 3631  | `a01619c2afcc63a07304c2d8288f3c93bd53ffb31268cc42fbbdeb2a364ec26b` |
+
+Each actual CLI invocation used this command shape; the named manifest directories
+were preserved, and all HOME/output/cache paths were isolated scratch paths:
+
+```sh
+unshare --net env -i PATH="$PROBE_PATH" HOME="$SCRATCH" \
+  timeout --signal=TERM --kill-after=5s 20s \
+  /usr/local/bin/usnm-ocr-worker prefetch \
+  --manifest "$MANIFEST" --out "$OUT" --batch-cache "$BATCH_CACHE" --limit 0
+```
+
+The ordinary `usnm-prefetch-manifest/1` fixture exited **0** with `pages=0`,
+`state=done` and `bytes_fetched=0`. The repair fixture exited **1** with:
+
+```text
+reading the manifest: not a prefetch manifest (usnm.format is Some("usnm-prefetch-decode-repair/1"), not "usnm-prefetch-manifest/1")
+```
+
+The network namespace had no LoC access; no live queue, source or pacer paths were
+used and no services were modified. This verifies the **exact installed old
+worker's manifest compatibility boundary**, not image fetching or a full deployed
+upgrade. It confirms why repair publication must wait for the worker upgrade.
 
 **Still required before production enablement:** identify and test the exact
-currently deployed worker/dashboard revisions and their actual upgrade/rollback
-artifacts. The local ordinary decoder rejection is a protocol check, **not** a run
-of those historical deployed binaries. This rehearsal drives fetches through the
+historical/deployed dashboard revision and both consumers' actual upgrade/rollback
+artifacts and sequencing. The installed old-worker decoder check above is complete,
+but no historical dashboard binary or deployed queue supervisor has been exercised.
+The end-to-end localhost rehearsal drives fetches through the
 production Rust entry point, not the deployed systemd/shell fetch-queue supervisor;
 its completion/cooling markers, retry schedule, host configuration and complete
 upgrade ordering still need a disposable deployment-level test. The dashboard path
