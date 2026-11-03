@@ -1,5 +1,6 @@
 """Durable, source-fingerprint-specific decode failures and paced repair requests."""
 
+from contextlib import contextmanager
 import datetime as dt
 import fcntl
 import hashlib
@@ -15,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 DB_NAME = "decode-quarantine.sqlite3"
+LOCK_NAME = ".decode-quarantine.lock"
 FAILURES_BEFORE_QUARANTINE = 3
 MAX_PENDING_REFETCHES = 10
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
@@ -121,6 +123,21 @@ def _page_details(page):
     return source, scan, lang, rate
 
 
+@contextmanager
+def publication_lock(root, *, create=False):
+    root = Path(root)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    if not stat.S_ISDIR(root.stat().st_mode):
+        raise ValueError("scan-quarantine root is not a directory")
+    with (root / LOCK_NAME).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def record_failure(state, page, error, decoder, *, automatic_repair=True):
     """Count verified decoder failures and select guarded or manual recovery."""
     if type(automatic_repair) is not bool:
@@ -128,31 +145,32 @@ def record_failure(state, page, error, decoder, *, automatic_repair=True):
     source, scan, lang, rate = _page_details(page)
     identity = source_id(source)
     encoded = json.dumps(source, sort_keys=True, separators=(",", ":"))
-    connection = _database(state, create=True)
-    try:
-        with connection:
-            connection.execute("BEGIN IMMEDIATE")
-            previous = connection.execute("SELECT source FROM failures WHERE id = ?", (identity,)).fetchone()
-            if previous is not None and previous["source"] != encoded:
-                raise ValueError("scan-quarantine fingerprint collision")
-            now = _now()
-            connection.execute("""
-                INSERT INTO failures
-                  (id, source, scan, lang, damage_rate, attempts, first_at, last_at,
-                   error_type, error, decoder, refetch_state)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'observing')
-                ON CONFLICT(id) DO UPDATE SET
-                    attempts = failures.attempts + 1, last_at = excluded.last_at,
-                    error_type = excluded.error_type, error = excluded.error, decoder = excluded.decoder
-            """, (identity, encoded, scan, lang, rate, now, now, error.original_type,
-                  str(error)[:500], json.dumps(decoder, sort_keys=True)))
-            connection.execute("""
-                UPDATE failures SET refetch_state = ?
-                WHERE id = ? AND attempts >= ? AND refetch_state = 'observing'
-            """, ("pending" if automatic_repair else "manual_review", identity, FAILURES_BEFORE_QUARANTINE))
-            return connection.execute("SELECT attempts FROM failures WHERE id = ?", (identity,)).fetchone()[0]
-    finally:
-        connection.close()
+    with publication_lock(Path(state).parent, create=True):
+        connection = _database(state, create=True)
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                previous = connection.execute("SELECT source FROM failures WHERE id = ?", (identity,)).fetchone()
+                if previous is not None and previous["source"] != encoded:
+                    raise ValueError("scan-quarantine fingerprint collision")
+                now = _now()
+                connection.execute("""
+                    INSERT INTO failures
+                      (id, source, scan, lang, damage_rate, attempts, first_at, last_at,
+                       error_type, error, decoder, refetch_state)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'observing')
+                    ON CONFLICT(id) DO UPDATE SET
+                        attempts = failures.attempts + 1, last_at = excluded.last_at,
+                        error_type = excluded.error_type, error = excluded.error, decoder = excluded.decoder
+                """, (identity, encoded, scan, lang, rate, now, now, error.original_type,
+                      str(error)[:500], json.dumps(decoder, sort_keys=True)))
+                connection.execute("""
+                    UPDATE failures SET refetch_state = ?
+                    WHERE id = ? AND attempts >= ? AND refetch_state = 'observing'
+                """, ("pending" if automatic_repair else "manual_review", identity, FAILURES_BEFORE_QUARANTINE))
+                return connection.execute("SELECT attempts FROM failures WHERE id = ?", (identity,)).fetchone()[0]
+        finally:
+            connection.close()
 
 
 def record_retryable(state, page, error):

@@ -21,6 +21,7 @@ curated copy. A new manifest is made only when the last one's pages are mostly o
 server (90%) or it is a day old, so the fetcher's queue never piles up.
 """
 import argparse
+from contextlib import nullcontext
 import datetime as dt
 import glob
 import io
@@ -501,12 +502,14 @@ def cmd_build_quality(a):
     os.makedirs(a.state, exist_ok=True)
     quarantine_root = getattr(a, "quarantine_root", DEFAULT_QUARANTINE_ROOT)
     quarantined_docs = set()
+    quarantine = None
     if getattr(a, "non_english", False):
         if not quarantine_root:
             raise ValueError("non-English acquisition requires a scan-quarantine root")
+        quarantine = load_scan_quarantine()
         if getattr(a, "queue_decode_repairs", "off") == "on" and not a.what_if:
             queue_decode_repairs(quarantine_root, a.scan_server)
-        quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
+        quarantined_docs = quarantine.quarantined_documents(quarantine_root)
     batch_filter = ""
     if a.batches:
         # usnm_quality keeps a batch's name without its version (ak_goat, 1 for ak_goat_ver01).
@@ -560,7 +563,7 @@ def cmd_build_quality(a):
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
     candidates = list(csv.reader(io.StringIO(p.stdout)))
     if getattr(a, "non_english", False):
-        quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
+        quarantined_docs = quarantine.quarantined_documents(quarantine_root)
         picked = []
         for row in candidates:
             doc, batch = row[:2]
@@ -584,30 +587,32 @@ def cmd_build_quality(a):
         lang = rest[-1] if getattr(a, "non_english", False) else "eng"
         rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": lang},
                            {doc: {"lang": lang, "decision": decision, "damage_rate": float(rate)}}))
-    if getattr(a, "non_english", False):
-        quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
-        rows = [row for row in rows if row["doc_id"] not in quarantined_docs]
-    if not rows:
-        if getattr(a, "non_english", False):
-            log("no missing scans in this candidate slice; retained scans checkpointed", checked=len(candidates))
-        else:
-            log("no quality pages left in these strata", strata=a.strata)
-        return
-    body = manifest_bytes(rows)
-    name = "queue-quality-" + ("qwen-" if getattr(a, "non_english", False) else "")
-    name += dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
-    issues = len({issue_of(r["doc_id"]) for r in rows})
-    batches = len({r["batch"] for r in rows})
-    if a.what_if:
-        log("would queue a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches,
-            bytes=len(body))
-        return
-    url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
-    req = urllib.request.Request(url, data=body, method="PUT",
-                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/octet-stream"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        if r.status not in (200, 201):
-            sys.exit(f"the scan server answered {r.status} for {url}")
+    lock = quarantine.publication_lock(quarantine_root) if quarantine and not a.what_if else nullcontext()
+    with lock:
+        if quarantine:
+            quarantined_docs = quarantine.quarantined_documents(quarantine_root)
+            rows = [row for row in rows if row["doc_id"] not in quarantined_docs]
+        if not rows:
+            if getattr(a, "non_english", False):
+                log("no missing scans in this candidate slice; retained scans checkpointed", checked=len(candidates))
+            else:
+                log("no quality pages left in these strata", strata=a.strata)
+            return
+        body = manifest_bytes(rows)
+        name = "queue-quality-" + ("qwen-" if getattr(a, "non_english", False) else "")
+        name += dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
+        issues = len({issue_of(r["doc_id"]) for r in rows})
+        batches = len({r["batch"] for r in rows})
+        if a.what_if:
+            log("would queue a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches,
+                bytes=len(body))
+            return
+        url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
+        req = urllib.request.Request(url, data=body, method="PUT",
+                                     headers={"User-Agent": USER_AGENT, "Content-Type": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            if r.status not in (200, 201):
+                sys.exit(f"the scan server answered {r.status} for {url}")
     with open(docs_path, "a") as f:
         f.write("".join(f"{r['doc_id']}\n" for r in rows))
     with open(last_path + ".tmp", "w") as f:

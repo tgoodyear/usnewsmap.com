@@ -1009,6 +1009,10 @@ boundary, preserving its outbox and state. The Qwen manifest
 builder always reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`) and
 excludes quarantined documents from new ordinary non-English acquisition, even while
 repair queueing is off. A missing or unreadable root or helper is an error.
+Quarantine writers and the manifest builder must use the same root: they serialize
+quarantine transitions with the builder's final exclusion check and ordinary manifest PUT.
+Keep its `.decode-quarantine.lock` file in place while either service runs; replacing it
+would break that coordination. A failed PUT releases the lock and remains an error.
 
 If no repair manifests have been published, rollback at an idle boundary can restore
 the previous Qwen controller and source scripts while retaining the new shared feeder,
