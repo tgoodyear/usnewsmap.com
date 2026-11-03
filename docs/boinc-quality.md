@@ -1041,21 +1041,42 @@ for an automatic repair manifest. At most ten are outstanding across campaigns. 
 single-page `queue-quality-zdecode-*` manifests use the existing OCR-first quality
 queue, fetcher, source ordering, checksums and shared LoC pacer; they do not increase
 its rate. The fetcher rechecks for either occupied format and publishes with
-no-replace file operations, so a concurrent retained scan is not overwritten. If a
-target appears during publication, the repair is deferred; a partially published scan
-and its conflicting sidecar are left for operator review.
+no-replace file operations, never replacing an existing target. It verifies both
+formats again after publication and after indexing. A conflict observed before
+indexing is deferred without an append; a target change detected during indexing
+fails the run without counting success. Any already-published files or appended index
+history remain for operator review rather than being removed or rewritten.
 No buffer original, keep scan, sidecar or `.done` marker is deleted. Network failures
 remain errors, and a lost PUT response replays the same saved manifest bytes and name.
+
+Every updated prefetch run, ordinary or repair, holds the output-wide
+`<out>/.prefetch.lock` through scan publication, index append and completion. This
+lock is extension-neutral: no second prefetch run can publish either format to that
+output while it is held.
+`--lock-file` now adds a shared cross-output lock; it cannot bypass the mandatory
+output lock. Existing configurations naming that same lock or an inode alias still
+work. Keep these lock files in place while any writer is running.
+
+This coordinates **updated prefetch writers**, not arbitrary independent writers.
+Before enabling repairs, inventory every writer to the keep tree and index,
+including older prefetch binaries with custom locks, import/copy jobs and manual
+acquisition. Quiesce or exclude those writers, or upgrade them to honor the same
+output lock throughout their target checks, publication and indexing. An advisory
+lock cannot fence a writer that ignores it, and finite post-publication checks
+cannot make arbitrary external writes atomic with the index append. Repairs must
+remain disabled until that independent-writer exclusion/coordination gate is verified.
 
 On repair replay after a crash between scan/sidecar publication and index append, the
 fetcher verifies both possible formats and their batch identity before accepting the
 retained copy. It restores a missing sidecar entry to the append-only fetch index,
 syncs that append, and does not append it again on a second replay. Existing index
-history (including older entries without newer sidecar fields) is preserved. This
-replay streams the index to check for the exact entry; ordinary fetches are unchanged.
-An incomplete or conflicting pair is deferred without a fetch or index append. A
-malformed or unterminated index record encountered during recovery fails the run
-without changing that index; retain it for operator review rather than rewriting it.
+history (including older entries without newer sidecar fields) is preserved. Both
+newly fetched repairs and replays stream and validate the full index before appending
+and syncing their exact sidecar entry; ordinary fetches retain their existing append
+behavior. An incomplete or conflicting replay pair is deferred without a fetch or
+index append. A malformed or unterminated existing index fails even a newly fetched
+repair without changing that index or reporting it fetched; its published scan and
+sidecar remain intact for operator-reviewed recovery.
 
 The worker's `decode_repair_restart_*` regressions exercise synthetic publication/index
 crash boundaries for JP2 and JPEG, repeated replay, cross-format partial/conflicting
@@ -1063,6 +1084,10 @@ files, batch mismatches, and preservation of original buffer bytes, consumption
 markers and manifest bytes. The disposable protocol rehearsal below additionally
 executes the producer/HTTP queue/fetcher/dashboard path and process termination.
 Neither test suite promotes any durable CPU or Qwen manual quarantine.
+Additional publication regressions fetch a new repair against torn/malformed index
+history, inject an alternate-format scan/sidecar/pair after the no-replace file
+publications but before indexing, and verify that custom locks cannot bypass the
+output-wide lock for ordinary or repair manifests.
 
 Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 `observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
@@ -1130,7 +1155,7 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
 ```
 
 Executed locally on 3 November 2026 with the named-option CLI: **4 tests passed in
-95.969 seconds**, with
+95.786 seconds**, with
 these asserted results:
 
 - The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
@@ -1166,10 +1191,11 @@ Related focused validation:
 ```sh
 .rehearsal/venv/bin/python -m unittest discover \
   -s scripts/boinc/onprem/ocr-feed -p test_ocr_manifest.py -q # 32 passed
-cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 39 passed
+cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 42 passed
 cargo test -j 2 -p usnm-ocr-dash --lib \
   queue_reads_decode_repairs_but_rejects_mismatched_formats --quiet # 1 passed
 cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # passed
+cargo clippy -j 2 -p usnm-ocr-worker --lib --tests -- -D warnings # passed
 cargo fmt --all -- --check # passed
 .rehearsal/venv/bin/python scripts/ci/no-positional-args.py # 990 files passed
 .rehearsal/venv/bin/python -m unittest discover \

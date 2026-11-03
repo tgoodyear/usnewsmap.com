@@ -459,6 +459,143 @@ async fn decode_repair_restart_preserves_legacy_index_and_refuses_torn_records()
     }
 }
 
+#[tokio::test]
+async fn decode_repair_new_fetch_preserves_torn_index_and_never_reports_success() {
+    let hits = Arc::new(Mutex::new(BTreeMap::new()));
+    let root = titles_loc(&[], &[], hits.clone()).await;
+    for tail in [
+        "{\"doc_id\":\"interrupted\"",
+        "{\"doc_id\":\"unterminated\"}",
+        "invalid json\n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let row = row("sn1", 1890, 1, "rus");
+        let out = dir.path().join("scans");
+        std::fs::create_dir_all(&out).unwrap();
+        let index = out.join("index-full.jsonl");
+        let history = format!("{{\"doc_id\":\"legacy\",\"bytes\":1}}\n{tail}");
+        std::fs::write(&index, &history).unwrap();
+        let opts = Options {
+            manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+            out: out.clone(),
+            ..Options::default()
+        };
+        let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+        assert!(!scan.exists());
+        let (_tx, rx) = watch::channel(false);
+        let result = run(
+            opts.clone(),
+            client(&root, Duration::from_millis(1)),
+            rx.clone(),
+        )
+        .await;
+        assert!(result.is_err(), "{tail}");
+        let side_bytes = std::fs::read(sidecar_path(&scan)).unwrap();
+        let side: Sidecar = serde_json::from_slice(&side_bytes).unwrap();
+        let image = std::fs::read(&scan).unwrap();
+        assert!(matches_sidecar(&image, &side), "the new pair was published");
+        let fetched_hits = hits.lock().unwrap().clone();
+        for replay in [false, true] {
+            if replay {
+                assert!(run(
+                    opts.clone(),
+                    client(&root, Duration::from_millis(1)),
+                    rx.clone(),
+                )
+                .await
+                .is_err());
+            }
+            let status: Status =
+                serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap())
+                    .unwrap();
+            assert_eq!(status.state, "failed");
+            assert_eq!((status.fetched, status.already_there), (0, 0));
+            assert!(status.error.unwrap().contains("repair index"));
+            assert_eq!(std::fs::read_to_string(&index).unwrap(), history);
+            assert_eq!(std::fs::read(&scan).unwrap(), image);
+            assert_eq!(std::fs::read(sidecar_path(&scan)).unwrap(), side_bytes);
+            assert_eq!(*hits.lock().unwrap(), fetched_hits, "replay must not fetch");
+        }
+    }
+}
+
+#[tokio::test]
+async fn decode_repair_publication_rechecks_alternate_format_before_indexing() {
+    for (format, alternate) in [
+        (ScanFormat::Jpeg, ScanFormat::Jp2),
+        (ScanFormat::Jp2, ScanFormat::Jpeg),
+    ] {
+        for conflict in ["scan", "sidecar", "pair"] {
+            let dir = tempfile::tempdir().unwrap();
+            let row = row("sn1", 1890, 1, "rus");
+            let out = dir.path().join("scans");
+            std::fs::create_dir_all(&out).unwrap();
+            let held = lock(&out.join(".prefetch.lock")).unwrap();
+            let index = out.join("index-full.jsonl");
+            let history = "{\"doc_id\":\"legacy\",\"bytes\":1}\n";
+            std::fs::write(&index, history).unwrap();
+            let lines = Lines::open(&index).unwrap();
+            let scan = scan_path(&out, &row, ImageSize::Full, format);
+            let side = repair_sidecar(&row, b"repair", format);
+            assert!(!repair_occupied(&out, &row, ImageSize::Full).await.unwrap());
+            assert!(write_repair_atomic(
+                &scan,
+                b"repair".to_vec(),
+                serde_json::to_vec(&side).unwrap(),
+            )
+            .await
+            .unwrap());
+            // Inject an uncoordinated writer after both no-replace publications,
+            // but before the production repair indexing step.
+            let other = scan_path(&out, &row, ImageSize::Full, alternate);
+            let other_side = repair_sidecar(&row, b"independent writer", alternate);
+            if matches!(conflict, "scan" | "pair") {
+                std::fs::write(&other, b"independent writer").unwrap();
+            }
+            if matches!(conflict, "sidecar" | "pair") {
+                std::fs::write(
+                    sidecar_path(&other),
+                    serde_json::to_vec(&other_side).unwrap(),
+                )
+                .unwrap();
+            }
+            let retained: Vec<_> = [&scan, &sidecar_path(&scan), &other, &sidecar_path(&other)]
+                .into_iter()
+                .filter_map(|path| std::fs::read(path).ok().map(|bytes| (path.clone(), bytes)))
+                .collect();
+            assert!(!index_repair(&out, &row, ImageSize::Full, &side, &lines)
+                .await
+                .unwrap());
+            assert_eq!(std::fs::read_to_string(&index).unwrap(), history);
+            drop(held);
+            let (_tx, rx) = watch::channel(false);
+            let status = run(
+                Options {
+                    manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+                    out,
+                    ..Options::default()
+                },
+                client("http://127.0.0.1:9", Duration::from_millis(1)),
+                rx,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (
+                    status.fetched,
+                    status.already_there,
+                    status.deferred_repair_occupied
+                ),
+                (0, 0, 1),
+            );
+            assert_eq!(std::fs::read_to_string(&index).unwrap(), history);
+            for (path, bytes) in retained {
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+            }
+        }
+    }
+}
+
 #[test]
 fn decode_repair_index_replay_refuses_bad_tail_after_matching_sidecar() {
     let dir = tempfile::tempdir().unwrap();
@@ -1100,6 +1237,54 @@ async fn one_process_at_a_time_and_a_run_of_failures_stops_it() {
         serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
     assert_eq!(status.state, "failed");
     assert_eq!(status.failed_transient, 2);
+}
+
+#[tokio::test]
+async fn custom_lock_cannot_bypass_output_wide_publication_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("scans");
+    std::fs::create_dir_all(&out).unwrap();
+    let output_lock = out.join(".prefetch.lock");
+    let held = lock(&output_lock).unwrap();
+    let row = row("sn1", 1890, 1, "rus");
+    let ordinary = manifest(dir.path()).await;
+    let repair = decode_repair_manifest(dir.path(), std::slice::from_ref(&row));
+    let (_tx, rx) = watch::channel(false);
+    for manifest in [ordinary.clone(), repair] {
+        let error = run(
+            Options {
+                manifest,
+                out: out.clone(),
+                lock_file: Some(dir.path().join("independent.lock")),
+                ..Options::default()
+            },
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(".prefetch.lock"));
+    }
+    // An existing custom lock may be the output lock itself or an inode alias.
+    let alias = dir.path().join("shared.lock");
+    std::fs::hard_link(&output_lock, &alias).unwrap();
+    drop(held);
+    for custom in [output_lock, alias] {
+        let status = run(
+            Options {
+                manifest: ordinary.clone(),
+                out: out.clone(),
+                lock_file: Some(custom),
+                limit: Some(0),
+                ..Options::default()
+            },
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!((status.fetched, status.pages), (0, 0));
+    }
 }
 
 fn dated(lccn: &str, date: &str, seq: u16) -> ManifestRow {

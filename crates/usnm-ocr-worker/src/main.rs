@@ -388,8 +388,8 @@ enum Command {
         /// Pages in flight at once; they share the pacers.
         #[arg(long, env = "USNM_PREFETCH_CONCURRENCY", default_value_t = 4)]
         concurrency: usize,
-        /// The lock that keeps it to one fetching process (default
-        /// `<out>/.prefetch.lock`).
+        /// An additional shared lock for runs into different output directories.
+        /// Every run also holds `<out>/.prefetch.lock`.
         #[arg(long, env = "USNM_PREFETCH_LOCK")]
         lock_file: Option<PathBuf>,
         /// A status write and progress line every N pages.

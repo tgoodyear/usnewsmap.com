@@ -239,6 +239,27 @@ pub(super) async fn repair_there(
     Ok(found)
 }
 
+/// Validate both formats before indexing; the caller holds the output-wide lock.
+pub(super) async fn index_repair(
+    out: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+    side: &Sidecar,
+    index: &Lines,
+) -> anyhow::Result<bool> {
+    if repair_there(out, row, size).await?.as_ref() != Some(side) {
+        return Ok(false);
+    }
+    index.ensure_sidecar(side)?;
+    // An unsupported writer may ignore the lock. Preserve any appended history,
+    // but do not report success if it changed the target while we read the index.
+    anyhow::ensure!(
+        repair_there(out, row, size).await?.as_ref() == Some(side),
+        "repair target changed during indexing; preserve files and index for operator review"
+    );
+    Ok(true)
+}
+
 /// A repair may not replace even an incomplete or unverifiable retained copy.
 pub(super) async fn repair_occupied(
     out: &Path,
@@ -355,7 +376,7 @@ impl Lines {
         Ok(())
     }
 
-    /// Recover a crash between scan/sidecar publication and the index append.
+    /// Validate/sync a fresh repair append or recover one omitted by a crash.
     pub(super) fn ensure_sidecar(&self, side: &Sidecar) -> anyhow::Result<()> {
         let mut f = self.file.lock().expect("lines lock");
         let mut reader = std::io::BufReader::new(std::fs::File::open(&self.path)?);
@@ -382,7 +403,7 @@ impl Lines {
             f.sync_all()?;
             return Ok(());
         }
-        // Stream the existing history only on repair replay; never rewrite it.
+        // Stream the existing history only for repairs; never rewrite it.
         let mut line = serde_json::to_vec(side)?;
         line.push(b'\n');
         f.write_all(&line)?;
@@ -407,6 +428,20 @@ pub(super) fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
         )
     })?;
     Ok(f)
+}
+
+/// A custom cross-output lock supplements, never replaces, the output-wide lock.
+pub(super) fn lock_additional(
+    path: &Path,
+    held: &std::fs::File,
+) -> anyhow::Result<Option<std::fs::File>> {
+    let held = rustix::fs::fstat(held)?;
+    if let Ok(other) = rustix::fs::stat(path) {
+        if (held.st_dev, held.st_ino) == (other.st_dev, other.st_ino) {
+            return Ok(None);
+        }
+    }
+    lock(path).map(Some)
 }
 
 /// The last lines of an index file (read from its last 64 KB): the last

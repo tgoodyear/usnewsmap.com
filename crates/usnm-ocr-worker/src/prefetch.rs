@@ -114,8 +114,8 @@ mod select;
 
 use cooling::{Check, Cooling};
 use layout::{
-    last_fetched, lock, repair_occupied, repair_there, there, write_atomic, write_repair_atomic,
-    Lines,
+    index_repair, last_fetched, lock, lock_additional, repair_occupied, repair_there, there,
+    write_atomic, write_repair_atomic, Lines,
 };
 
 pub use cooling::ItemError;
@@ -168,9 +168,9 @@ pub struct Options {
     /// Stop starting pages once the scans of this run's pages that are
     /// on disk (already there or fetched) add up to this many bytes.
     pub max_total_bytes: Option<u64>,
-    /// The lock that keeps it to one fetching process; default
-    /// `<out>/.prefetch.lock`. Runs into different directories that must
-    /// not overlap (a sample beside the bulk fetch) share one.
+    /// An additional lock shared by runs into different directories that must
+    /// not overlap (a sample beside the bulk fetch). Every run also holds
+    /// `<out>/.prefetch.lock` through scan publication and index append.
     pub lock_file: Option<PathBuf>,
     /// Copies of LoC's JP2s to ask before LoC (the module notes); none by
     /// default.
@@ -762,7 +762,10 @@ impl Run {
         let c = &self.counts;
         let existing = if self.decode_repair {
             if let Some(side) = repair_there(&self.opts.out, &row, size).await? {
-                self.index[&tag(size)].ensure_sidecar(&side)?;
+                if !index_repair(&self.opts.out, &row, size, &side, &self.index[&tag(size)]).await?
+                {
+                    return Ok(self.defer_occupied_repair(&row));
+                }
                 Some(side.bytes)
             } else {
                 None
@@ -853,11 +856,14 @@ impl Run {
                     {
                         return Ok(self.defer_occupied_repair(&row));
                     }
+                    if !index_repair(&self.opts.out, &row, size, &side, &self.index[&t]).await? {
+                        return Ok(self.defer_occupied_repair(&row));
+                    }
                 } else {
                     write_atomic(&path, scan.bytes.to_vec()).await?;
                     write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
+                    self.index[&t].push(&side)?;
                 }
-                self.index[&t].push(&side)?;
                 c.fetched.fetch_add(1, Ordering::SeqCst);
                 c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
                 if scan.format == ScanFormat::Jp2 {
@@ -997,11 +1003,12 @@ pub async fn run(
     let mut stop_main = stop.clone();
     std::fs::create_dir_all(&opts.out)
         .with_context(|| format!("creating {}", opts.out.display()))?;
-    let lock_path = opts
+    let out_lock = lock(&opts.out.join(".prefetch.lock"))?;
+    let _additional_lock = opts
         .lock_file
-        .clone()
-        .unwrap_or_else(|| opts.out.join(".prefetch.lock"));
-    let _lock = lock(&lock_path)?;
+        .as_ref()
+        .map(|path| lock_additional(path, &out_lock))
+        .transpose()?;
     let bytes = tokio::fs::read(&opts.manifest)
         .await
         .with_context(|| format!("reading {}", opts.manifest.display()))?;
