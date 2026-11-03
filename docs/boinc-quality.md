@@ -965,7 +965,7 @@ and SHA256 before decoding. With Qwen's `--quarantine-decode`, only a known Pill
 unidentified/truncated/broken-stream error, with the expected codec available, counts
 toward quarantine. Missing codecs, format disagreements, network errors, scan/index
 mismatches and other errors remain visible, retryable failures and do not increment
-the decoder-failure count. A successful decode resets earlier, pre-quarantine
+the decoder-failure count. A successfully prepared page resets earlier, pre-quarantine
 failures. Three decoder failures of the same
 `(doc_id, batch, batch_version, bytes, sha256)` record quarantine it; the ordinary
 selector excludes that fingerprint, not every future version of the document. Other
@@ -981,22 +981,32 @@ pct exec 215 -- /opt/usnm-quality-feed/venv/bin/python -c \
   'import json,sys; from pathlib import Path; sys.path.insert(0,"/opt/usnm-quality-feed"); from scan_quarantine import quarantined; print(json.dumps([{k:v for k,v in r.items() if k != "manifest_body"} for r in quarantined(Path("/var/lib/usnm-quality-feed/qwen-nonenglish-v1"))], indent=2))'
 ```
 
-Re-fetching is **disabled by default**. Before enabling it, install and verify a
+Re-fetching is **disabled by default**. Before enabling it, install and verify both a
 reviewed `usnm-ocr-worker` containing the decode-repair no-overwrite support on the
-scan-fetch host, and coordinate its ordinary single-fetcher restart. An older worker
-rejects the new manifest format and would stop the fetch queue; do not queue these
-manifests until the upgraded worker is running. Then an operator can opt in by setting
-`QWEN_QUARANTINE_ROOT=/var/lib/usnm-quality-feed` in the Qwen manifest timer's
+scan-fetch host and a matching `usnm-ocr-dash` that can read repair manifests. Coordinate
+the fetcher's ordinary single-fetcher restart. An older worker rejects the new format and
+would stop the fetch queue; an older dashboard reports a queue error, making downstream
+queue observations unavailable. Do not queue these manifests until both are upgraded,
+or roll the dashboard back while repair manifests remain visible. The Qwen manifest
+builder always reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`) and
+excludes quarantined documents from new ordinary non-English acquisition, even while
+repair queueing is off. A missing or unreadable root is an error. It cannot change
+manifests already queued, or independent OCR acquisition; review those paths before
+enabling repairs. Then an operator can opt in by setting
+`QWEN_QUEUE_DECODE_REPAIRS=on` in the Qwen manifest timer's
 `/etc/usnm/quality-build.env` and installing the matching
 `usnm-qwen-manifest.service`. The independent non-English manifest timer reconciles
-the recorded requests; `build-quality --what-if` does not reconcile them.
+the recorded requests; `build-quality --what-if` excludes quarantines but does not
+reconcile them.
 
 Only a non-English **buffer** source with no occupied keep scan or sidecar is eligible
 for an automatic repair manifest. At most ten are outstanding across campaigns. The
 single-page `queue-quality-zdecode-*` manifests use the existing OCR-first quality
 queue, fetcher, source ordering, checksums and shared LoC pacer; they do not increase
 its rate. The fetcher rechecks for either occupied format and publishes with
-no-replace file operations, so a concurrent retained scan is not overwritten.
+no-replace file operations, so a concurrent retained scan is not overwritten. If a
+target appears during publication, the repair is deferred; a partially published scan
+and its conflicting sidecar are left for operator review.
 No buffer original, keep scan, sidecar or `.done` marker is deleted. Network failures
 remain errors, and a lost PUT response replays the same saved manifest bytes and name.
 
@@ -1005,14 +1015,19 @@ Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 keep target remains queued for rechecking and operator attention; the fetcher's
 `deferred_repair_occupied` count also records a target that became occupied. A
 manifest left queued without a resulting keep copy requires operator investigation;
-it is not repeatedly re-enqueued. An observation compares sidecar identity, not a
-new decode: identical advertised bytes remain quarantined, while a changed index
+the reconciler does not enqueue another manifest, but the existing fetch queue can
+retry transient failures or retry a `needs-loc` deferral daily under its normal pacer.
+An observation compares sidecar identity, not a new decode. The dashboard counts a
+document already in the fetch index as fetched even when that index entry is the
+original buffer scan; use the repair state rather than that count to monitor the
+re-fetch. Identical advertised bytes remain quarantined, while a changed index
 fingerprint becomes eligible only for normal hash verification and decoding. Keep
 sources and occupied keep paths require a reviewed operator recovery procedure; the
 feeder never automatically replaces them. Language-budget reservations are still
 made before preparation; an already-reserved failed fingerprint can be retried
 without spending another page. A changed fingerprint after quarantine, or a failure
-after decoding but before writing READY, can still require budget review.
+before a retry record is persisted or after decoding but before writing READY, can
+still require budget review.
 
 Matching size, SHA256 and (for batch JP2s) the advertised bag MD5 proves the retained
 bytes match those recorded checksums, **not** that the bytes are decodable or whether

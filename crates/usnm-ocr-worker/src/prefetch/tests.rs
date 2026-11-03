@@ -293,24 +293,50 @@ async fn decode_repair_rechecks_a_target_created_during_download() {
 #[tokio::test]
 async fn decode_repair_atomic_publish_refuses_a_late_existing_scan_or_sidecar() {
     let dir = tempfile::tempdir().unwrap();
-    for name in ["scan.jp2", "scan.jp2.json"] {
-        let path = dir.path().join(name);
-        std::fs::write(&path, b"retained").unwrap();
-        assert!(write_new_atomic(&path, b"replacement".to_vec())
-            .await
-            .is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"retained");
+    for (name, sidecar_only) in [("scan.jp2", false), ("sidecar.jp2", true)] {
+        let scan = dir.path().join(name);
+        let retained = if sidecar_only {
+            sidecar_path(&scan)
+        } else {
+            scan.clone()
+        };
+        std::fs::write(&retained, b"retained").unwrap();
+        assert!(
+            !write_repair_atomic(&scan, b"replacement".to_vec(), b"sidecar".to_vec())
+                .await
+                .unwrap()
+        );
+        assert_eq!(std::fs::read(&retained).unwrap(), b"retained");
+        if sidecar_only {
+            assert_eq!(std::fs::read(&scan).unwrap(), b"replacement");
+        } else {
+            assert!(!sidecar_path(&scan).exists());
+        }
     }
     let fresh = dir.path().join("fresh.jp2");
-    write_new_atomic(&fresh, b"new scan".to_vec())
-        .await
-        .unwrap();
-    assert_eq!(std::fs::read(fresh).unwrap(), b"new scan");
+    assert!(
+        write_repair_atomic(&fresh, b"new scan".to_vec(), b"new sidecar".to_vec())
+            .await
+            .unwrap()
+    );
+    assert_eq!(std::fs::read(&fresh).unwrap(), b"new scan");
+    assert_eq!(std::fs::read(sidecar_path(&fresh)).unwrap(), b"new sidecar");
     assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry
         .unwrap()
         .file_name()
         .to_string_lossy()
         .ends_with(".part")));
+    let stale = dir.path().join("stale.jp2");
+    let part = dir
+        .path()
+        .join(format!("stale.jp2.repair-{}.part", std::process::id()));
+    std::fs::write(&part, b"stale").unwrap();
+    assert!(
+        write_repair_atomic(&stale, b"new scan".to_vec(), b"new sidecar".to_vec())
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(part).unwrap(), b"stale");
 }
 
 #[tokio::test]

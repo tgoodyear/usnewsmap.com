@@ -236,10 +236,10 @@ pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<(
     .await?
 }
 
-/// Publish a synced file without replacing a path created after the occupancy check.
-pub(super) async fn write_new_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<()> {
+/// Publish without replacing a late target; return false when that target exists.
+pub(super) async fn write_new_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<bool> {
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
         let dir = path.parent().context("no parent directory")?;
         std::fs::create_dir_all(dir)?;
         let mut part = path.as_os_str().to_owned();
@@ -249,16 +249,46 @@ pub(super) async fn write_new_atomic(path: &Path, body: Vec<u8>) -> anyhow::Resu
             .write(true)
             .create_new(true)
             .open(&part)?;
-        let result = file.write_all(&body).and_then(|_| file.sync_all());
+        let written = file.write_all(&body).and_then(|_| file.sync_all());
         drop(file);
-        let result = result.and_then(|_| std::fs::hard_link(&part, &path));
+        let published = match written {
+            Ok(()) => match std::fs::hard_link(&part, &path) {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
         let cleanup = std::fs::remove_file(&part);
-        result
-            .with_context(|| format!("publishing repair without replacing {}", path.display()))?;
-        cleanup?;
-        Ok(())
+        match (published, cleanup) {
+            (Ok(published), Ok(())) => Ok(published),
+            (Err(error), Ok(())) => Err(error)
+                .with_context(|| format!("publishing repair without replacing {}", path.display())),
+            (Ok(_), Err(error)) => {
+                Err(error).with_context(|| format!("removing repair temporary {}", part.display()))
+            }
+            (Err(error), Err(cleanup_error)) => Err(error).with_context(|| {
+                format!(
+                    "publishing repair {}; removing {} also failed: {cleanup_error}",
+                    path.display(),
+                    part.display()
+                )
+            }),
+        }
     })
     .await?
+}
+
+/// Publish a repair and its sidecar, leaving any partial result for review.
+pub(super) async fn write_repair_atomic(
+    path: &Path,
+    body: Vec<u8>,
+    side: Vec<u8>,
+) -> anyhow::Result<bool> {
+    if !write_new_atomic(path, body).await? {
+        return Ok(false);
+    }
+    write_new_atomic(&sidecar_path(path), side).await
 }
 
 /// An append-only JSON Lines file, shared by the tasks.

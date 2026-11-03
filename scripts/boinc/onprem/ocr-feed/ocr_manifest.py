@@ -36,6 +36,7 @@ import xml.etree.ElementTree as ET
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 FORMAT = "usnm-prefetch-manifest/1"
 DECODE_REPAIR_FORMAT = "usnm-prefetch-decode-repair/1"
+DEFAULT_QUARANTINE_ROOT = "/var/lib/usnm-quality-feed"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
 MAX_TRIES = 3
@@ -458,7 +459,7 @@ def pick_issues(rows, queued, index, strata, max_pages):
     return out
 
 
-def queue_decode_repairs(root, server):
+def load_scan_quarantine():
     import importlib.util
     from pathlib import Path
 
@@ -469,14 +470,17 @@ def queue_decode_repairs(root, server):
     spec = importlib.util.spec_from_file_location("scan_quarantine", helper)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
 
+
+def queue_decode_repairs(root, server):
     def encode(record):
         source = record["source"]
         details = {"lang": record["lang"], "damage_rate": record["damage_rate"]}
         row = row_of({**source, "language": record["lang"]}, {source["doc_id"]: details})
         return manifest_bytes([row], manifest_format=DECODE_REPAIR_FORMAT)
 
-    module.reconcile(root, server, encode)
+    load_scan_quarantine().reconcile(root, server, encode)
 
 
 def cmd_build_quality(a):
@@ -495,8 +499,14 @@ def cmd_build_quality(a):
     import subprocess
 
     os.makedirs(a.state, exist_ok=True)
-    if getattr(a, "quarantine_root", None) and not a.what_if:
-        queue_decode_repairs(a.quarantine_root, a.scan_server)
+    quarantine_root = getattr(a, "quarantine_root", DEFAULT_QUARANTINE_ROOT)
+    quarantined_docs = set()
+    if getattr(a, "non_english", False):
+        if not quarantine_root:
+            raise ValueError("non-English acquisition requires a scan-quarantine root")
+        if getattr(a, "queue_decode_repairs", "off") == "on" and not a.what_if:
+            queue_decode_repairs(quarantine_root, a.scan_server)
+        quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
     batch_filter = ""
     if a.batches:
         # usnm_quality keeps a batch's name without its version (ak_goat, 1 for ak_goat_ver01).
@@ -531,7 +541,7 @@ def cmd_build_quality(a):
             with open(retained_path) as f:
                 retained = json.load(f)
         now = dt.datetime.now(dt.timezone.utc).timestamp()
-        excluded = queued | {
+        excluded = queued | quarantined_docs | {
             doc for (batch, doc), row in index.items()
             if (retained.get(doc, {}).get("batch") == batch
                 and retained[doc].get("fetched_at") == row.get("fetched_at")
@@ -550,9 +560,12 @@ def cmd_build_quality(a):
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
     candidates = list(csv.reader(io.StringIO(p.stdout)))
     if getattr(a, "non_english", False):
+        quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
         picked = []
         for row in candidates:
             doc, batch = row[:2]
+            if doc in quarantined_docs:
+                continue
             old = index.get((batch, doc))
             if old and available(a.scan_server, old, sets=("keep",)):
                 retained[doc] = {"batch": batch, "fetched_at": old.get("fetched_at"), "checked_at": now}
@@ -571,6 +584,9 @@ def cmd_build_quality(a):
         lang = rest[-1] if getattr(a, "non_english", False) else "eng"
         rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": lang},
                            {doc: {"lang": lang, "decision": decision, "damage_rate": float(rate)}}))
+    if getattr(a, "non_english", False):
+        quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
+        rows = [row for row in rows if row["doc_id"] not in quarantined_docs]
     if not rows:
         if getattr(a, "non_english", False):
             log("no missing scans in this candidate slice; retained scans checkpointed", checked=len(candidates))
@@ -624,14 +640,16 @@ def main(argv=None):
     q.add_argument("--what-if", action="store_true")
     q.add_argument("--non-english", action="store_true",
                    help="all non-English pages, descending page damage; keep their true language/scan retention")
-    q.add_argument("--quarantine-root",
-                   help="reconcile recorded decode failures through the existing non-English fetch queue")
+    q.add_argument("--quarantine-root", default=DEFAULT_QUARANTINE_ROOT,
+                   help="campaign root whose quarantined documents are excluded from non-English acquisition")
+    q.add_argument("--queue-decode-repairs", choices=("on", "off"), default="off",
+                   help="opt in to bounded decode repairs through the existing non-English fetch queue")
     a = ap.parse_args(argv)
     if a.cmd == "build-quality":
         if a.non_english and a.batches:
             sys.exit("--non-english covers the corpus; do not combine it with --batches")
-        if a.quarantine_root and not a.non_english:
-            sys.exit("--quarantine-root requires --non-english")
+        if a.queue_decode_repairs == "on" and not a.non_english:
+            sys.exit("--queue-decode-repairs on requires --non-english")
         if not 1 <= a.max_pages <= 20000 or not 1 <= a.strata <= 1000:
             sys.exit("--max-pages 1 to 20000, --strata 1 to 1000")
         cmd_build_quality(a)

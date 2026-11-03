@@ -163,13 +163,14 @@ def record_retryable(state, page, error):
                 VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, '{}', 'observing')
                 ON CONFLICT(id) DO UPDATE SET last_at = excluded.last_at,
                     error_type = excluded.error_type, error = excluded.error
+                WHERE failures.refetch_state = 'observing'
             """, (identity, encoded, scan, lang, rate, now, now, type(error).__name__, str(error)[:500]))
     finally:
         connection.close()
 
 
 def record_success(state, page):
-    """A successful decode breaks a run of failures, but cannot clear a quarantine."""
+    """A successful preparation clears earlier failures, but cannot clear a quarantine."""
     connection = _database(state, writable=True)
     if connection is None:
         return
@@ -291,12 +292,18 @@ def _keep_state(server, source):
         if not scan_exists:
             occupied = True
             continue
-        side = json.loads(sidecar)
-        if (side.get("doc_id") != source["doc_id"] or side.get("batch") != source["batch"]
-                or int(side.get("batch_version") or 1) != source["batch_version"]
-                or side.get("resolution") != "full" or side.get("format", "jpeg") != fmt
-                or type(side.get("bytes")) is not int or side["bytes"] < 1
-                or not re.fullmatch(r"[a-f0-9]{64}", side.get("sha256", ""))):
+        try:
+            side = json.loads(sidecar)
+            valid = (isinstance(side, dict)
+                     and side.get("doc_id") == source["doc_id"] and side.get("batch") == source["batch"]
+                     and int(side.get("batch_version") or 1) == source["batch_version"]
+                     and side.get("resolution") == "full" and side.get("format", "jpeg") == fmt
+                     and type(side.get("bytes")) is int and side["bytes"] > 0
+                     and isinstance(side.get("sha256"), str)
+                     and re.fullmatch(r"[a-f0-9]{64}", side["sha256"]))
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
             occupied = True
             continue
         found.append((side["bytes"], side["sha256"]))
@@ -334,6 +341,13 @@ def _entries(root):
             continue
         for record in quarantined(state):
             yield state, record
+
+
+def quarantined_documents(root):
+    root = Path(root)
+    if not stat.S_ISDIR(root.stat().st_mode):
+        raise ValueError("scan-quarantine root is not a directory")
+    return {record["source"]["doc_id"] for _, record in _entries(root)}
 
 
 def _log(message, state, record, **extra):

@@ -124,7 +124,8 @@ class NonEnglishTest(unittest.TestCase):
     def test_scored_nonenglish_pages_keep_language_and_page_damage_order(self):
         with tempfile.TemporaryDirectory() as folder:
             a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan", dsn="test",
-                                      strata=1, slack=20, max_pages=2, non_english=True, what_if=True)
+                                      strata=1, slack=20, max_pages=2, non_english=True, what_if=True,
+                                      quarantine_root=folder)
             # The SQL itself orders individual pages, not language medians or strata,
             # and deliberately does not exclude already image-scored/staged pages.
             rows = ("sn1_1900-01-02_ed-1_seq-3,xx_test,1,detected,0.8,sn1,1900,srp\n"
@@ -153,7 +154,7 @@ class NonEnglishTest(unittest.TestCase):
                 "name": "queue-quality-qwen-test", "at": dt.datetime.now(UTC).isoformat(),
                 "pairs": [["xx_test", doc]]}))
             a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan",
-                                      non_english=True)
+                                      non_english=True, quarantine_root=folder)
             with mock.patch.object(m, "staged_pairs", return_value={("xx_test", doc): {}}), \
                     mock.patch.object(m, "available", return_value=False), \
                     mock.patch("subprocess.run", side_effect=AssertionError("queued ahead of recovery")):
@@ -289,6 +290,25 @@ class DecodeRepairTest(unittest.TestCase):
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_new")
         self.assertFalse(any(method == "PUT" for method, _, _ in self.server.requests))
 
+    def test_malformed_keep_sidecars_are_blocked_without_stopping_other_repairs(self):
+        bad_sidecars = (b"{", b"[]", {"batch_version": "bad"}, {"sha256": 42})
+        for seq, bad in enumerate(bad_sidecars, 1):
+            page = self.page(seq)
+            self.quarantine(page)
+            self.server.keep(page)
+            url = "http://scan/scans/" + page["scan"].replace("buffer/", "keep/", 1) + ".json"
+            if isinstance(bad, dict):
+                bad = json.dumps({**json.loads(self.server.files[url]), **bad}).encode()
+            self.server.files[url] = bad
+        safe = self.page(5)
+        self.quarantine(safe)
+        self.reconcile()
+        statuses = {row["source"]["doc_id"]: row["refetch_state"] for row in quarantine.quarantined(self.state)}
+        self.assertEqual([statuses[self.page(seq)["doc_id"]] for seq in range(1, 5)],
+                         ["blocked_keep"] * 4)
+        self.assertEqual(statuses[safe["doc_id"]], "queued")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+
     def test_partial_keep_write_after_queueing_is_rechecked_when_sidecar_arrives(self):
         page = self.page()
         self.quarantine(page)
@@ -307,7 +327,7 @@ class DecodeRepairTest(unittest.TestCase):
         self.quarantine(page)
         args = types.SimpleNamespace(state=str(self.root / "quality"), dsn="x", scan_server="http://scan",
                                      max_pages=10, strata=1, batches=None, non_english=True,
-                                     what_if=True, quarantine_root=str(self.root))
+                                     what_if=True, quarantine_root=str(self.root), queue_decode_repairs="on")
         with mock.patch.object(m, "queue_decode_repairs") as repair, \
                 mock.patch("subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")), \
                 mock.patch.object(m, "staged_pairs", return_value={}), \
@@ -316,6 +336,50 @@ class DecodeRepairTest(unittest.TestCase):
         repair.assert_not_called()
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "pending")
         self.assertEqual(self.server.requests, [])
+
+    def test_quarantines_are_excluded_from_ordinary_acquisition_even_when_repairs_are_off(self):
+        blocked, healthy = self.page(), self.page(2)
+        self.quarantine(blocked)
+        self.server.files["http://scan/scans/" + blocked["scan"].replace("buffer/", "keep/", 1)] = b"orphan"
+        candidates = "".join(f"{page['doc_id']},xx_test,1,detected,0.8,sn1,1900,rus\n"
+                             for page in (blocked, healthy))
+        for what_if in (True, False):
+            with self.subTest(what_if=what_if), \
+                    mock.patch.object(m, "queue_decode_repairs") as repair, \
+                    mock.patch.object(m, "staged_pairs", return_value={}), \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest, \
+                    mock.patch.object(m.urllib.request, "urlopen", side_effect=self.server), \
+                    mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                        returncode=0, stdout=candidates, stderr="")) as psql, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                args = types.SimpleNamespace(state=str(self.root / f"quality-{what_if}"), dsn="x",
+                                             scan_server="http://scan", max_pages=10, strata=1,
+                                             batches=None, non_english=True, what_if=what_if,
+                                             quarantine_root=str(self.root), queue_decode_repairs="off")
+                m.cmd_build_quality(args)
+                self.assertIn(blocked["doc_id"] + "\n", psql.call_args.kwargs["input"])
+                self.assertEqual([row["doc_id"] for row in manifest.call_args.args[0]], [healthy["doc_id"]])
+                repair.assert_not_called()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "pending")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+
+    def test_nonenglish_acquisition_requires_readable_quarantine_root_even_when_repairs_are_off(self):
+        args = types.SimpleNamespace(state=str(self.root / "quality"), scan_server="http://scan",
+                                     non_english=True, quarantine_root=str(self.root / "missing"),
+                                     queue_decode_repairs="off")
+        with self.assertRaises(FileNotFoundError):
+            m.cmd_build_quality(args)
+
+    def test_repairs_run_only_when_explicitly_enabled(self):
+        args = types.SimpleNamespace(state=str(self.root / "quality"), dsn="x", scan_server="http://scan",
+                                     max_pages=10, strata=1, batches=None, non_english=True,
+                                     what_if=False, quarantine_root=str(self.root), queue_decode_repairs="on")
+        with mock.patch.object(m, "queue_decode_repairs") as repair, \
+                mock.patch("subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")), \
+                mock.patch.object(m, "staged_pairs", return_value={}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            m.cmd_build_quality(args)
+        repair.assert_called_once_with(str(self.root), "http://scan")
 
     def test_missing_quarantine_root_fails_visibly(self):
         with self.assertRaises(FileNotFoundError):

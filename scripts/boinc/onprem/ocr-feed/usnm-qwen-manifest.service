@@ -7,12 +7,13 @@ ConditionPathExists=/etc/usnm/quality-db/dsn
 [Service]
 Type=oneshot
 Environment=LC_ALL=C.UTF-8
-Environment=QWEN_QUARANTINE_ROOT=
+Environment=QWEN_QUARANTINE_ROOT=/var/lib/usnm-quality-feed
+Environment=QWEN_QUEUE_DECODE_REPAIRS=off
 EnvironmentFile=/etc/usnm/quality-build.env
 ExecStart=/usr/bin/flock -n /run/usnm-qwen-manifest.lock /bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build-quality \
   --non-english --state /var/lib/usnm-ocr-manifest/qwen-nonenglish \
   --dsn "$(cat /etc/usnm/quality-db/dsn)" --max-pages 1000 --scan-server "$SCAN_SERVER" \
-  --quarantine-root "$QWEN_QUARANTINE_ROOT"'
+  --quarantine-root "$QWEN_QUARANTINE_ROOT" --queue-decode-repairs "$QWEN_QUEUE_DECODE_REPAIRS"'
 Nice=19
 IOSchedulingClass=idle
 TimeoutStartSec=2h

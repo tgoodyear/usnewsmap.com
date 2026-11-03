@@ -388,6 +388,16 @@ class DecodeQuarantineTest(unittest.TestCase):
         self.assertEqual(sorted(attempts), list(range(1, 7)))
         self.assertEqual(feed.scan_quarantine.quarantined(self.state)[0]["attempts"], 6)
 
+    def test_late_transient_failure_preserves_quarantine_evidence(self):
+        page = self.page(1, self.image()[:-2])
+        error = feed.ScanDecodeError(OSError("image file is truncated"), "jpg")
+        for _ in range(3):
+            feed.scan_quarantine.record_failure(self.state, page, error, error.decoder)
+        before = feed.scan_quarantine.quarantined(self.state)[0]
+        feed.scan_quarantine.record_retryable(self.state, page, urllib.error.URLError("timeout"))
+        after = feed.scan_quarantine.quarantined(self.state)[0]
+        self.assertEqual(after, before)
+
     def test_unreadable_or_corrupt_quarantine_state_is_not_silently_ignored(self):
         with mock.patch.object(Path, "stat", side_effect=PermissionError("state inaccessible")), \
                 self.assertRaisesRegex(PermissionError, "state inaccessible"):

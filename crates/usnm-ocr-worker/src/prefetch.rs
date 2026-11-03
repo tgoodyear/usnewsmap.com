@@ -113,7 +113,9 @@ mod layout;
 mod select;
 
 use cooling::{Check, Cooling};
-use layout::{last_fetched, lock, repair_occupied, there, write_atomic, write_new_atomic, Lines};
+use layout::{
+    last_fetched, lock, repair_occupied, there, write_atomic, write_repair_atomic, Lines,
+};
 
 pub use cooling::ItemError;
 pub use estimate::{estimate, Estimate};
@@ -125,7 +127,8 @@ pub use select::{sample, select};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
-const DECODE_REPAIR_PREFIX: &str = "queue-quality-zdecode-";
+/// Directory prefix for decode-repair manifests in the normal quality queue.
+pub const DECODE_REPAIR_PREFIX: &str = "queue-quality-zdecode-";
 
 /// What to fetch.
 #[derive(Debug, Clone)]
@@ -555,7 +558,7 @@ impl Run {
             .fetch_add(1, Ordering::SeqCst);
         tracing::warn!(
             doc_id = row.doc_id,
-            "repair target occupied; retained scan left unchanged"
+            "repair target occupied; existing files left unchanged"
         );
         Outcome::Done
     }
@@ -830,9 +833,15 @@ impl Run {
                     md5: scan.md5.clone(),
                 };
                 if self.decode_repair {
-                    write_new_atomic(&path, scan.bytes.to_vec()).await?;
-                    write_new_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?)
-                        .await?;
+                    if !write_repair_atomic(
+                        &path,
+                        scan.bytes.to_vec(),
+                        serde_json::to_vec_pretty(&side)?,
+                    )
+                    .await?
+                    {
+                        return Ok(self.defer_occupied_repair(&row));
+                    }
                 } else {
                     write_atomic(&path, scan.bytes.to_vec()).await?;
                     write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
