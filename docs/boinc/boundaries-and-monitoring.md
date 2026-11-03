@@ -79,7 +79,12 @@ or oversized inventories produce unknown, not healthy.
 Policy/profile validation is a separate phase **before any stock enumeration**:
 empty stock or individually rejected workunits cannot bypass unsupported gates.
 Every unblocked GPU type with positive idle capacity needs a compatible installed
-and live profile. CPU demand comes from the live fixed `avg_ncpus`, or from
+and live profile. In the modeled non-regex policies, an absent/empty live
+`gpu_type` cannot inherit a GPU type from the installed cache: it leaves the scheduler on its
+[CPU-only resource branch](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L1148)
+even if `ngpus` is present. That mismatch produces
+`live_resource_type_mismatch` unknown before stock enumeration.
+CPU demand comes from the live fixed `avg_ncpus`, or from
 `max_threads` capped by the observed host's effective CPU count; cached demand
 must agree. Missing host capacity, performance-derived GPU CPU demand, and
 unmodeled memory-scaling policies are unknown rather than inferred from cache.
@@ -157,6 +162,18 @@ collection cost privately. The supplied systemd units set 75-second source and
 90-second evaluator startup timeouts and 256-MiB memory limits; those are not
 limits on an existing container/database, nor universal direct-CLI deadlines.
 HTTP/RPC timeout checks and bounded reads do not replace the service watchdog.
+The bounded command reader, also used for the monitor's container-runtime info
+probes, starts a private local process group and signals it
+on timeout, output overflow, failure **and success**, including when its leader
+has already exited. It uses `waitid(WNOWAIT)` to keep the leader unreaped until
+group cleanup, then reaps the direct child; this preserves the group's identity
+while signaling it. Real fork/socket fixtures verify descendant termination.
+This is not a universal process-tree or wall-clock guarantee: descendants that
+change groups/UIDs and uninterruptible processes are outside that assurance.
+Darwin can report `EPERM` for a zombie-only group; that case is tolerated only
+after observing the leader's exit. Killing a local Podman CLI/group does **not**
+prove that an exec process in an existing container or its database query was
+cancelled. Keep those remote-operation and service-watchdog boundaries explicit.
 
 The evaluator fsyncs and atomically replaces `feed-health.json` and
 `feed-health.prom`, then flushes its Syslog JSON line before committing

@@ -542,6 +542,17 @@ class ProvisioningHelper(Workspace):
 
 
 class ClientProbe(Workspace):
+    def test_runtime_accepts_bounded_monitor_reader_without_changing_fallback(self):
+        podman = b'{"host":{"arch":"amd64"},"store":{"graphRoot":"/fixture"}}'
+        with patch.object(C.platform, 'system', return_value='Linux'), \
+                patch.object(C.shutil, 'which', side_effect=lambda name: '/fixture/' + name), \
+                patch.object(C.subprocess, 'run') as legacy:
+            reader = MagicMock(side_effect=[TimeoutError('source timeout'), podman])
+            self.assertTrue(C.container_runtime(read_command=reader))
+            self.assertEqual([call.args[0][0] for call in reader.call_args_list],
+                             ['/fixture/docker', '/fixture/podman'])
+            legacy.assert_not_called()
+
     def state(self, **changes):
         values = dict(hostid=2, platform=RELEASE['platform'], cpus=4)
         values.update(changes)

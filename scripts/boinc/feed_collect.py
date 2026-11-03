@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import signal
 import subprocess
 import sys
 import time
@@ -50,7 +51,7 @@ def read_file(path, limit=MAX_BYTES):
 
 
 def run(argv, cwd=None, limit=MAX_BYTES):
-    """Bound time AND output, including a child that never closes stdout."""
+    """Bound reads and clean up the owned local process group before reaping."""
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                start_new_session=True)
     output = bytearray()
@@ -68,15 +69,30 @@ def run(argv, cwd=None, limit=MAX_BYTES):
                 output.extend(chunk)
                 if len(output) > limit:
                     raise ValueError("source size limit")
-        if process.wait(timeout=max(.01, deadline - time.monotonic())):
+        # Keep the leader waitable until group cleanup; reaping it first can hide
+        # surviving descendants and release its process-group identity for reuse.
+        while (status := os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)) is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("source timeout")
+            time.sleep(min(.01, left))
+        if status.si_code != os.CLD_EXITED or status.si_status:
             raise ValueError("source command failed")
         return bytes(output)
     finally:
-        if process.poll() is None:
-            import signal
+        try:
             os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
-        process.stdout.close()
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # Darwin reports EPERM for zombie-only groups. The leader stays
+            # waitable; no UID-changing/privileged descendants are supported.
+            if sys.platform != "darwin" or os.waitid(
+                    os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                raise
+        finally:
+            process.wait()
+            process.stdout.close()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -524,7 +540,8 @@ def client(data_dir, port):
             "gpu_devices": gpu_devices, "used_gpu": used_gpu,
             "client_version": sum(int(state.findtext(".//" + tag, "0")) * factor for tag, factor in (
                 ("core_client_major_version", 10000), ("core_client_minor_version", 100), ("core_client_release", 1))),
-            "docker": container_runtime() if any(v["plan_class"].startswith("docker") for v in monitored) else False,
+            "docker": container_runtime(read_command=run)
+            if any(v["plan_class"].startswith("docker") for v in monitored) else False,
             "memory_bytes": max(0, memory * fraction - used_memory),
             "disk_bytes": max(0, min(float(free), float(allowance) - used))}
 
@@ -684,7 +701,9 @@ def host_profile(host, version, database):
         gpu = version["gpu"]
         capabilities = host.get("gpu_capabilities", {}).get(gpu, {})
         expected = {"nvidia": "NVIDIA", "ati": "ATI", "amd": "ATI", "intel": "intel_gpu", "apple": "apple_gpu"}
-        if "gpu_type" in plan and expected.get(plan["gpu_type"]) != gpu:
+        if not plan.get("gpu_type"):
+            raise SupplyUnknown("live_resource_type_mismatch")
+        if expected.get(plan["gpu_type"]) != gpu:
             return None
         if "opencl" in plan:
             if capabilities.get("have_opencl") is not True:

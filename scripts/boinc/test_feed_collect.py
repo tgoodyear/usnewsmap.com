@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import socketserver
 import subprocess
@@ -83,7 +84,7 @@ def database():
             "host_preferences": {str(h): {"apps": list(C.APP_NAMES), "blocked": []} for h in (9, 10)},
             "versions": [version(), version("usnm_ocr", "docker", None)],
             "plans": {"intel": {"min_wu_id": "2", "max_wu_id": "10", "min_batch": "8", "max_batch": "8",
-                                "avg_ncpus": "1"},
+                                "avg_ncpus": "1", "gpu_type": "intel"},
                       "docker": {}},
             "units": [{"id": 5, "app": "usnm_qwen", "batch": 8, "app_version_num": 117,
                        "hr_class": 0, "assignments": 0, "hosts": [], "unsent": 2,
@@ -141,6 +142,27 @@ def queued_task(resources="", result_fields=""):
 
 
 class EligibilityTests(unittest.TestCase):
+    def test_cpu_only_live_policy_cannot_inherit_a_cached_gpu_resource_type(self):
+        with server_fixture() as root:
+            for selector in ("", "<gpu_type/>", "<gpu_type>nvidia</gpu_type>", "<gpu_type>intel</gpu_type>"):
+                (root / "plan_class_spec.xml").write_text(
+                    "<plan_classes><plan_class><name>intel</name><avg_ncpus>1</avg_ncpus>"
+                    f"<ngpus>1</ngpus>{selector}</plan_class></plan_classes>")
+                live = C.server(root, root / "window.env")["plans"]["intel"]
+                for empty in (True, False):
+                    with self.subTest(selector=selector, empty=empty):
+                        db = database()
+                        db["plans"]["intel"] = live
+                        if empty:
+                            db["units"] = []
+                        if selector == "<gpu_type>intel</gpu_type>":
+                            self.assertEqual(C.supply(db, [host()], "gpu"),
+                                             {"idle": 1, "eligible": 0 if empty else 1})
+                        else:
+                            reason = "eligibility unavailable" if "nvidia" in selector else "live_resource_type_mismatch"
+                            with self.assertRaisesRegex(ValueError, reason):
+                                C.supply(db, [host()], "gpu")
+
     def test_opencl_requires_rpc_support_and_compatible_memory_evidence(self):
         with client_rpc_fixture() as (root, port, answers, _):
             original = answers["get_state"]
@@ -242,7 +264,8 @@ class EligibilityTests(unittest.TestCase):
         half = dict(version(plan="half"), gpu_count=.5)
         h["versions"].append(half)
         db["versions"].append(half)
-        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2", "ngpus": ".5", "avg_ncpus": "1"}
+        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2", "ngpus": ".5",
+                               "avg_ncpus": "1", "gpu_type": "intel"}
         with self.assertRaisesRegex(ValueError, "mixed GPU resource profiles"):
             C.supply(db, [h], "gpu")
         half["gpu_count"] = 1
@@ -250,6 +273,7 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
         half.update(gpu="NVIDIA", gpu_count=.5)
         db["plans"]["half"]["ngpus"] = ".5"
+        db["plans"]["half"]["gpu_type"] = "nvidia"
         h["idle_gpu"]["NVIDIA"] = 1
         h.update(cpus=3, idle_cpu=3)
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 3, "eligible": 1})
@@ -309,7 +333,7 @@ class EligibilityTests(unittest.TestCase):
         db, h = database(), host(count=2)
         h.update(cpus=4, idle_cpu=4)
         alternate = dict(version(plan="alternate"), cpus=2)
-        db["plans"]["alternate"] = {"avg_ncpus": "2"}
+        db["plans"]["alternate"] = {"avg_ncpus": "2", "gpu_type": "intel"}
         db["versions"].append(alternate)
         h["versions"].append(alternate)
         db["units"].append(dict(db["units"][0], id=6))
@@ -876,6 +900,60 @@ class CollectionTests(unittest.TestCase):
             C.run([sys.executable, "-c", "raise SystemExit(2)"])
         with patch.object(C, "TIMEOUT", .05), self.assertRaises(TimeoutError):
             C.run([sys.executable, "-c", "import time; time.sleep(2)"])
+        with patch.object(C, "TIMEOUT", .05), self.assertRaises(TimeoutError):
+            C.run([sys.executable, "-c", "import os,time; os.close(1); time.sleep(2)"])
+
+    def test_exited_process_leader_does_not_leave_its_child_running(self):
+        for mode, error in (("timeout", TimeoutError), ("overflow", ValueError),
+                            ("failure", ValueError), ("success", None)):
+            with self.subTest(mode=mode), fixture() as root, socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(2)
+                code = f"""
+import os
+from pathlib import Path
+import socket
+import time
+leader = os.getpid()
+child = os.fork()
+if child:
+    Path("child.pid").write_text(str(child))
+    os._exit(2 if {mode!r} == "failure" else 0)
+while os.getppid() == leader:
+    time.sleep(.01)
+with socket.create_connection({listener.getsockname()!r}, timeout=2) as connection:
+    connection.sendall(b"ready")
+    if {mode!r} == "overflow":
+        os.write(1, b"x" * 2000)
+    elif {mode!r} != "timeout":
+        os.close(1)
+    time.sleep(30)
+"""
+                stopped = False
+                try:
+                    with patch.object(C, "TIMEOUT", 2):
+                        if error:
+                            with self.assertRaises(error):
+                                C.run([sys.executable, "-c", code], cwd=root, limit=100)
+                        else:
+                            self.assertEqual(C.run([sys.executable, "-c", code], cwd=root, limit=100), b"")
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(2)
+                        with connection.makefile("rb") as stream:
+                            self.assertEqual(stream.read(5), b"ready")
+                            try:
+                                self.assertEqual(stream.read(1), b"")
+                            except TimeoutError:
+                                self.fail("collector left its exited leader's child running")
+                            stopped = True
+                finally:
+                    if not stopped and (root / "child.pid").exists():
+                        try:
+                            os.kill(int((root / "child.pid").read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
     def test_atomic_output_replaces_success_with_explicit_unknown(self):
         with fixture() as root:
