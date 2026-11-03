@@ -417,15 +417,21 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 }
 
 pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::Result<Summary> {
+    run_selected_with_lock(opts, weights_lock_text, None).await
+}
+
+pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Result<Summary> {
+    run_selected_with_lock(opts, EMBEDDED_WEIGHTS_LOCK, members).await
+}
+
+async fn run_selected_with_lock(
+    opts: &Options,
+    weights_lock_text: &str,
+    members: Option<&Path>,
+) -> anyhow::Result<Summary> {
     let project = opts.project.canonicalize()?;
     let dir = units(&opts.root);
-    let mut names: Vec<_> = std::fs::read_dir(&dir)
-        .with_context(|| format!("reading {dir:?}"))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().join(JOB_FILE).exists())
-        .map(|e| e.path())
-        .collect();
-    names.sort();
+    let names = crate::selection::units(&dir, JOB_FILE, members)?;
     let mut summary = Summary::default();
     let mut models_staged = false;
     for unit in names {
@@ -512,6 +518,7 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
             unit.display()
         );
         std::fs::rename(unit.join("submitting"), unit.join("submitted"))?;
+        std::fs::File::open(&unit)?.sync_all()?;
         summary.submitted += 1;
     }
     Ok(summary)
@@ -521,6 +528,70 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
 mod tests {
     use super::*;
     use usnm_ocr_contract::boinc::sha256;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_submission_never_drains_unrelated_pending_units() {
+        let tmp = tempfile::tempdir().unwrap();
+        let quality = tmp.path().join("quality");
+        crate::quality::work::tests::unit(&quality);
+        let root = tmp.path().join("qwen");
+        let a = "sn1_1900-01-01_ed-1_seq-1";
+        let b = "sn1_1900-01-01_ed-1_seq-2";
+        for doc in [a, b] {
+            let unit = units(&root).join(doc);
+            let mut job = super::super::stage::local_unit(
+                &quality.join("page.jpg"),
+                &quality.join("loc.xml"),
+                &unit,
+                super::super::stage::tests::engine(),
+                1,
+                4,
+                600,
+                4,
+            )
+            .unwrap();
+            job.doc_id = doc.into();
+            job.id = job.identity().unwrap();
+            atomic(&unit.join(JOB_FILE), &serde_json::to_vec(&job).unwrap()).unwrap();
+        }
+        let project = tmp.path().join("project");
+        crate::bundle::submit::tests::executable(
+            &project.join("bin/dir_hier_path"),
+            "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
+        );
+        crate::bundle::submit::tests::executable(
+            &project.join("bin/create_work"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> args\n",
+        );
+        let members = tmp.path().join("members.json");
+        atomic(&members, &serde_json::to_vec(&[b]).unwrap()).unwrap();
+        let opts = Options {
+            root: root.clone(),
+            project: project.clone(),
+            max_units: 1,
+            target: Target::Container,
+            model_dir: None,
+        };
+        assert_eq!(
+            run_selected(&opts, Some(&members)).await.unwrap().submitted,
+            1
+        );
+        assert_eq!(
+            run_selected(&opts, Some(&members)).await.unwrap().submitted,
+            0
+        );
+        assert!(units(&root).join(b).join("submitted").is_file());
+        assert!(!units(&root).join(a).join("submitting").exists());
+        assert!(!units(&root).join(a).join("submitted").exists());
+        assert_eq!(
+            std::fs::read_to_string(project.join("args"))
+                .unwrap()
+                .matches("--wu_name")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn two_inputs_in_template_order() {

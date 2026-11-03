@@ -858,6 +858,13 @@ jobs:
       - name: Engine pins written in more than one place agree
         if: needs.changes.outputs.infra == 'true'
         run: scripts/ci/check-engine-pins.py
+      - name: Qwen transactions retain frozen inputs and the real host bridge lock
+        if: needs.changes.outputs.infra == 'true'
+        run: |
+          command -v flock
+          mkdir -p "$PWD/target/qwen-test-scratch"
+          TMPDIR="$PWD/target/qwen-test-scratch" PYTHONDONTWRITEBYTECODE=1 \
+            python3 -m unittest -v scripts/boinc/onprem/quality-feed/test_qwen_feed.py
       - name: The OCR gold set's tests pass (#296)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |

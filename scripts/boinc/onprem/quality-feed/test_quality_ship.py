@@ -110,6 +110,16 @@ elif "python3" in args and "-" in args:
                 self.assertEqual(probe.returncode, 0, probe.stderr)
                 self.assertEqual(probe.stdout, "locked argv survives")
 
+    def test_legacy_shipper_cannot_bypass_a_frozen_subset_parent(self):
+        journal = self.root / "outbox/.qwen-transactions/test/c00001"
+        journal.mkdir(parents=True)
+        (journal / "parent.json").write_text("{}")
+        result = self.run_ship([], native=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("resume with --qwen-subsets", result.stderr)
+        self.assertFalse((self.root / "calls.jsonl").exists())
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+
     GUARDED = ["--prompt-version", "3", "--qwen-root", "guard-v3", "--qwen-yiddish-root", "guard-v4"]
 
     def native_calls(self):

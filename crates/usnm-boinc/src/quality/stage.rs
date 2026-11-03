@@ -1151,6 +1151,73 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_bundle_serialization_matches_retained_shipment_verification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = bundle_options(tmp.path(), &[DOC1, DOC2], 200);
+        opts.root = tmp.path().join("quality/v1-wave5");
+        let staged = run(&opts).await.unwrap();
+        assert_eq!((staged.staged, staged.bundles), (2, 1));
+        for doc in [DOC1, DOC2] {
+            let job: Job = serde_json::from_slice(
+                &std::fs::read(opts.root.join("pages").join(doc).join(JOB_FILE)).unwrap(),
+            )
+            .unwrap();
+            atomic(
+                &opts
+                    .root
+                    .join("texts")
+                    .join(format!("{doc}.image-provenance.json")),
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema": 1,
+                    "source": {"doc_id": doc, "batch": "dlc_abc", "batch_version": 1,
+                               "bytes": 12, "sha256": "a".repeat(64)},
+                    "jpeg": {"bytes": job.inputs.page.bytes, "sha256": job.inputs.page.sha256}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let native = crate::qwen::stage::run(&crate::qwen::stage::Options {
+            quality_root: opts.root.clone(),
+            root: tmp.path().join("qwen/v1-wave5"),
+            engine: crate::qwen::stage::tests::engine(),
+            gpu_timeout_secs: 14400,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: 3,
+            max_pages: 2,
+            bundle_size: 1,
+        })
+        .await
+        .unwrap();
+        assert_eq!(native.staged, 2);
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let result = std::process::Command::new("python3")
+            .current_dir(repository)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .env("USNM_QUALITY_BUNDLE_FIXTURE", tmp.path())
+            .env(
+                "USNM_QUALITY_STAGE_BINARY",
+                std::env::current_exe().unwrap(),
+            )
+            .args([
+                "-m",
+                "unittest",
+                "-v",
+                "scripts.boinc.onprem.quality-feed.test_qwen_feed.RustQualityBundleContractTest",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "actual Rust staging → Python retained verification:\n{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     /// A run packs only its own pages: a page another run staged and never
     /// packed stays where it is, and the campaign's page tree isn't listed.
     #[tokio::test]
