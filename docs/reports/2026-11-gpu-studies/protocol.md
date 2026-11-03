@@ -158,6 +158,23 @@ No gold-set crop has a human transcription yet. None of Study 5's test sets is u
 
 **Decision rule.** The best value is the one with the lowest pooled CER over the transcribed crops, among values whose loop rate on the #529 crops doesn't exceed 1,024's. It justifies a new request version only if its paired CER difference against 1,024 has limits excluding zero and its loop rate on the Yiddish crops is lower. Too few crops to decide is a valid result.
 
+## Amendment, 3 November 2026: Study 9, Xiaomi-OCR-0
+
+Added on the maintainer's request, before any Study 9 run. Xiaomi-OCR-0 is a 0.8B reader built on Qwen3.5-0.8B, Apache-2.0, released 30 September 2026. Its card's document-parsing scores come from a two-stage pipeline: layout first, then one prompt per region. No study here has read with it, so Study 3's crops and pages are a first use for this reader. Its training data isn't published, so exposure to Chronicling America or the public sets can't be ruled out.
+
+**Reader.** `xiaomi-research/Xiaomi-OCR-0` at revision `bbd8cf8d21f256b3644b44cb860f3a7cecb93c30` (weights SHA-256 `d4551e9f6127ac9e`), served by vLLM 0.29.0 (`vllm/vllm-openai:v0.29.0`) with a 16,384-token context on the local RTX 2060 SUPER. The card runs FP16 on CUDA, and this card has no BF16, so the weights run in FP16. Requests follow upstream: temperature 0, top_p 0.8, no penalties, thinking off, images sent as PNG. A crop over 2,048 px on its long edge is fitted to 2,048 and the count is recorded. If vLLM doesn't run on this card, Transformers 5.17 in FP16 is used instead and the change is recorded. Requests go through saturate 0.3.0.
+
+- **(a) Latin-script crops.** Study 3's 612 crops, with upstream's region prompt `Extract the text in the image.` placed before the image as in upstream's region stage, and at most 2,048 output tokens, as Qwen had in Study 3. Scored as in Study 3, by source, with the same limits and the invented-text checks. The `stop` guard is applied to the finished readings with `guard-cut`, as in Study 5, and both views are reported.
+- **(b) Japanese crops.** Study 3's 64 crops, same prompt, scored by Study 3's Japanese agreement measures. Agreement, not accuracy.
+- **(c) Pages.** Study 3's 20 reading-order pages in the model's whole-page mode, as the `uv-scripts/ocr` saturate recipe runs it: the card's document prompt, image first, fitted to 2,048 px, at most 12,000 output tokens. Scored by Study 3's reading-order measure, with counts of readings that hit the cap, that loop, and that contain Han characters. The recipe reports loops and inserted Chinese on small-print newspapers.
+- **(d) Speed.** Crops per second and pages per hour over each set, peak GPU memory, and the window saturate settles at. One kill and resume of the crop run checks saturate's resume claim: no id may be read twice.
+
+**Primary.** The paired pooled CER difference over the 612 crops between Xiaomi-OCR-0 with the guard and Tesseract, with limits from resampling source pages. Secondary: the same against Qwen 8B with the guard applied the same way, and against CHURRO.
+
+**Decision rule.** Xiaomi-OCR-0 earns a deployed-path study, a GGUF in the `usnm_qwen` runtime as Study 5 did for the adapters, only if its guarded pooled CER on the 612 crops is below Tesseract's with limits excluding zero. Otherwise it stops here. The page results are descriptive and decide nothing.
+
+There's no rental: the run uses the local card in a bounded window, with BOINC GPU work suspended and then restored.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.
