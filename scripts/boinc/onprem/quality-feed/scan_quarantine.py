@@ -1,6 +1,7 @@
-"""Durable, source-fingerprint-specific decode failures for operator review."""
+"""Durable, source-fingerprint-specific decode failures and paced repair requests."""
 
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import math
@@ -9,12 +10,26 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import urllib.error
 import urllib.parse
+import urllib.request
 
 DB_NAME = "decode-quarantine.sqlite3"
 FAILURES_BEFORE_QUARANTINE = 3
+MAX_PENDING_REFETCHES = 10
+USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 CAMPAIGN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 DOC_RE = re.compile(r"(?P<lccn>[a-z0-9]{1,16})_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)")
+SIDECAR_LIMIT = 65536
+# Keep the allowed fields aligned with the fetcher's deny-unknown-fields Sidecar.
+SIDECAR_REQUIRED = {"doc_id", "batch", "batch_version", "loc_url", "iiif_base", "resolution",
+                    "fetched_at", "bytes", "sha256", "download_ms", "user_agent"}
+SIDECAR_OPTIONAL = {"format", "md5"}
+RFC3339_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})"
+)
+U64_MAX = (1 << 64) - 1
 
 
 def fingerprint(page):
@@ -61,8 +76,6 @@ def _database(state, create=False, writable=False):
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if version == 0:
-                    # Reserved manifest columns allow a future, separately reviewed recovery to
-                    # read these quarantine records without changing the existing database.
                     connection.execute("""
                         CREATE TABLE failures (
                             id TEXT PRIMARY KEY, source TEXT NOT NULL, scan TEXT NOT NULL,
@@ -108,8 +121,10 @@ def _page_details(page):
     return source, scan, lang, rate
 
 
-def record_failure(state, page, error, decoder):
-    """Count verified decoder failures and quarantine repeated failures for review."""
+def record_failure(state, page, error, decoder, *, automatic_repair=True):
+    """Count verified decoder failures and select guarded or manual recovery."""
+    if type(automatic_repair) is not bool:
+        raise ValueError("automatic repair policy must be a boolean")
     source, scan, lang, rate = _page_details(page)
     identity = source_id(source)
     encoded = json.dumps(source, sort_keys=True, separators=(",", ":"))
@@ -132,9 +147,9 @@ def record_failure(state, page, error, decoder):
             """, (identity, encoded, scan, lang, rate, now, now, error.original_type,
                   str(error)[:500], json.dumps(decoder, sort_keys=True)))
             connection.execute("""
-                UPDATE failures SET refetch_state = 'manual_review'
+                UPDATE failures SET refetch_state = ?
                 WHERE id = ? AND attempts >= ? AND refetch_state = 'observing'
-            """, (identity, FAILURES_BEFORE_QUARANTINE))
+            """, ("pending" if automatic_repair else "manual_review", identity, FAILURES_BEFORE_QUARANTINE))
             return connection.execute("SELECT attempts FROM failures WHERE id = ?", (identity,)).fetchone()[0]
     finally:
         connection.close()
@@ -185,15 +200,21 @@ def _record(row):
     record["decoder"] = json.loads(record["decoder"])
     source, _, _, _ = _page_details({**record["source"], "scan": record["scan"],
                                      "lang": record["lang"], "damage_rate": record["damage_rate"]})
-    states = {"observing", "manual_review"}
+    states = {"observing", "pending", "prepared", "queued", "observed_same", "observed_new",
+              "blocked_keep", "blocked_language", "manual_review"}
     attempts, state = record["attempts"], record["refetch_state"]
     if (source != record["source"] or source_id(source) != record["id"]
             or type(attempts) is not int or attempts < 0 or state not in states
             or not isinstance(record["decoder"], dict)
             or (state == "observing") != (attempts < FAILURES_BEFORE_QUARANTINE)):
         raise ValueError("invalid scan-quarantine record")
-    if any(record[field] is not None for field in ("manifest_name", "manifest_sha256", "manifest_body")):
-        raise ValueError("unexpected recovery data in scan-quarantine record")
+    name, digest, body = record["manifest_name"], record["manifest_sha256"], record["manifest_body"]
+    if any(value is not None for value in (name, digest, body)):
+        if (name != _manifest_name(record) or not isinstance(body, bytes)
+                or hashlib.sha256(body).hexdigest() != digest):
+            raise ValueError("invalid recorded repair manifest")
+    elif state in ("prepared", "queued"):
+        raise ValueError("missing recorded repair manifest")
     return record
 
 
@@ -225,6 +246,138 @@ def retryable_ids(state):
         connection.close()
 
 
+def _update(state, identity, old, new, **values):
+    connection = _database(state, create=True)
+    try:
+        with connection:
+            assignments = ["refetch_state = ?"] + [f"{key} = ?" for key in values]
+            args = [new, *values.values(), identity, old]
+            changed = connection.execute(
+                f"UPDATE failures SET {', '.join(assignments)} WHERE id = ? AND refetch_state = ?", args).rowcount
+            if changed != 1:
+                raise RuntimeError("scan-quarantine refetch state changed concurrently")
+    finally:
+        connection.close()
+
+
+def _get_optional(url, max_bytes):
+    """Read one extra byte so the caller can recognize an oversized response."""
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read(max_bytes + 1)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            error.close()
+            return None
+        raise
+
+
+def _scan_exists(url):
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=30):
+            return True
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            error.close()
+            return False
+        raise
+
+
+def _unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate sidecar field")
+        result[key] = value
+    return result
+
+
+def _valid_sidecar(side, source, fmt):
+    """Conservatively recognize metadata the fetcher's Sidecar can use."""
+    if (not isinstance(side, dict) or not SIDECAR_REQUIRED <= side.keys()
+            or side.keys() - SIDECAR_REQUIRED - SIDECAR_OPTIONAL):
+        return False
+    version, size, duration = side["batch_version"], side["bytes"], side["download_ms"]
+    sha, md5, fetched = side["sha256"], side.get("md5"), side["fetched_at"]
+    if (side["doc_id"] != source["doc_id"] or side["batch"] != source["batch"]
+            or type(version) is not int or version != source["batch_version"]
+            or side["resolution"] != "full" or side.get("format", "jpeg") != fmt
+            or type(size) is not int or not 1 <= size <= U64_MAX
+            or type(duration) is not int or not 0 <= duration <= U64_MAX
+            or not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha)
+            or (fmt == "jp2" and md5 is None)
+            or (md5 is not None and (not isinstance(md5, str) or not re.fullmatch(r"[a-f0-9]{32}", md5)))
+            or not isinstance(fetched, str) or not RFC3339_RE.fullmatch(fetched)
+            or any(not isinstance(side[field], str) for field in ("loc_url", "iiif_base", "user_agent"))):
+        return False
+    try:
+        dt.datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        for field in ("loc_url", "iiif_base", "user_agent"):
+            side[field].encode("utf-8")
+    except (ValueError, UnicodeError):
+        return False
+    return True
+
+
+def _keep_state(server, source):
+    """Observe both possible formats without changing a retained scan or its sidecar."""
+    match = DOC_RE.fullmatch(source["doc_id"])
+    stem = (f"{server.rstrip('/')}/scans/keep/{source['batch']}/{match['lccn']}/"
+            f"{match['date']}/{int(match['ed'])}/{int(match['seq'])}")
+    found = []
+    occupied = False
+    for ext, fmt in (("jp2", "jp2"), ("jpg", "jpeg")):
+        url = f"{stem}.{ext}"
+        sidecar = _get_optional(url + ".json", SIDECAR_LIMIT)
+        if sidecar is not None and len(sidecar) > SIDECAR_LIMIT:
+            occupied = True
+            continue
+        scan_exists = _scan_exists(url)
+        if sidecar is None:
+            occupied |= scan_exists
+            continue
+        if not scan_exists:
+            occupied = True
+            continue
+        try:
+            side = json.loads(sidecar.decode("utf-8"), object_pairs_hook=_unique_fields)
+            valid = _valid_sidecar(side, source, fmt)
+        except (TypeError, ValueError, RecursionError):
+            valid = False
+        if not valid:
+            occupied = True
+            continue
+        found.append((side["bytes"], side["sha256"]))
+    if occupied or len(set(found)) > 1:
+        return "occupied"
+    if not found:
+        return "absent"
+    return "same" if found[0] == (source["bytes"], source["sha256"]) else "new"
+
+
+def _manifest_name(record):
+    value = {"source": record["source"], "lang": record["lang"], "damage_rate": record["damage_rate"]}
+    digest = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                       allow_nan=False).encode()).hexdigest()
+    return "queue-quality-zdecode-" + digest
+
+
+def _put_manifest(server, record):
+    body = record["manifest_body"]
+    if (record["manifest_name"] != _manifest_name(record) or not isinstance(body, bytes)
+            or hashlib.sha256(body).hexdigest() != record["manifest_sha256"]):
+        raise ValueError("prepared repair manifest failed its identity or checksum")
+    url = f"{server.rstrip('/')}/manifests/{record['manifest_name']}/manifest.parquet"
+    request = urllib.request.Request(url, data=body, method="PUT",
+                                     headers={"User-Agent": USER_AGENT,
+                                              "Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        if response.status not in (200, 201):
+            raise RuntimeError(f"scan server refused repair manifest: HTTP {response.status}")
+
+
 def _entries(root):
     for state in sorted(root.iterdir()):
         if not CAMPAIGN_RE.fullmatch(state.name) or not stat.S_ISDIR(state.lstat().st_mode):
@@ -238,3 +391,68 @@ def quarantined_documents(root):
     if not stat.S_ISDIR(root.stat().st_mode):
         raise ValueError("scan-quarantine root is not a directory")
     return {record["source"]["doc_id"] for _, record in _entries(root)}
+
+
+def _log(message, state, record, **extra):
+    print(json.dumps({"msg": message, "campaign": state.name, "doc_id": record["source"]["doc_id"],
+                      "source_sha256": record["source"]["sha256"], **extra}, sort_keys=True), flush=True)
+
+
+def reconcile(root, server, make_manifest):
+    """Queue bounded non-English buffer repairs through the existing scan-fetch queue."""
+    root = Path(root)
+    if not stat.S_ISDIR(root.stat().st_mode):
+        raise ValueError("scan-quarantine root is not a directory")
+    with (root / ".decode-refetch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        entries = list(_entries(root))
+        for state, record in entries:
+            if record["refetch_state"] != "queued":
+                continue
+            observed = _keep_state(server, record["source"])
+            if observed in ("same", "new"):
+                new = {"same": "observed_same", "new": "observed_new"}[observed]
+                _update(state, record["id"], "queued", new)
+                _log("repair keep scan observed", state, record, result=new)
+            elif observed == "occupied":
+                _log("repair keep scan incomplete or conflicting; will check again", state, record)
+        entries = list(_entries(root))
+        for state, record in entries:
+            if record["refetch_state"] == "prepared":
+                _put_manifest(server, record)
+                _update(state, record["id"], "prepared", "queued")
+                _log("repair manifest queued", state, record, manifest=record["manifest_name"])
+        entries = list(_entries(root))
+        in_flight = sum(record["refetch_state"] in ("prepared", "queued") for _, record in entries)
+        for state, record in entries:
+            if record["refetch_state"] != "pending":
+                continue
+            if record["lang"] == "eng":
+                _update(state, record["id"], "pending", "blocked_language")
+                _log("repair needs operator review", state, record, reason="English buffer source")
+                continue
+            if not record["scan"].startswith("buffer/"):
+                _update(state, record["id"], "pending", "blocked_keep")
+                _log("repair needs operator review", state, record, reason="source is a retained keep scan")
+                continue
+            if in_flight >= MAX_PENDING_REFETCHES:
+                _log("repair waiting for outstanding manifests", state, record, in_flight=in_flight)
+                break
+            observed = _keep_state(server, record["source"])
+            if observed != "absent":
+                new = "observed_new" if observed == "new" else "blocked_keep"
+                _update(state, record["id"], "pending", new)
+                _log("repair needs no new manifest" if observed == "new" else "repair needs operator review",
+                     state, record, result=new)
+                continue
+            body = make_manifest(record)
+            if not isinstance(body, bytes) or not body:
+                raise ValueError("repair manifest encoder returned no bytes")
+            name, digest = _manifest_name(record), hashlib.sha256(body).hexdigest()
+            _update(state, record["id"], "pending", "prepared", manifest_name=name,
+                    manifest_sha256=digest, manifest_body=body)
+            prepared = {**record, "manifest_name": name, "manifest_sha256": digest, "manifest_body": body}
+            _put_manifest(server, prepared)
+            _update(state, record["id"], "prepared", "queued")
+            _log("repair manifest queued", state, record, manifest=name)
+            in_flight += 1

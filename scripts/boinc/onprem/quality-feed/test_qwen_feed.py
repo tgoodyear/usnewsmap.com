@@ -407,14 +407,14 @@ class SourceRequestTest(unittest.TestCase):
             for sha, done, expected in ((page["sha256"], {DOC: "another copy"}, "preparation_quarantined"),
                                         ("b" * 64, {}, "awaiting_preparation")):
                 prepared = {"done.txt": done, "skipped.txt": {},
-                            "quarantine": [{"source": {**page, "sha256": sha}, "refetch_state": "manual_review"}]}
+                            "quarantine": [{"source": {**page, "sha256": sha}, "refetch_state": "observed_new"}]}
                 with mock.patch("qwen_feed.remote", side_effect=[
                         json.dumps(native).encode(), b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
                         mock.patch("qwen_feed.command", return_value=json.dumps(prepared).encode()):
                     result = source.inspect(args, record)
                 self.assertEqual(result["source_dispositions"], {expected: 1})
                 self.assertEqual(result["state"], "needs_science_review" if done else "preparing_and_publishing")
-                self.assertEqual(result["quarantined_refetch_states"], {"manual_review": 1} if done else {})
+                self.assertEqual(result["quarantined_refetch_states"], {"observed_new": 1} if done else {})
 
 
 class ArchiveTest(unittest.TestCase):

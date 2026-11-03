@@ -198,6 +198,25 @@ pub(super) async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Opt
     None
 }
 
+/// A repair may not replace even an incomplete or unverifiable retained copy.
+pub(super) async fn repair_occupied(
+    out: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+) -> std::io::Result<bool> {
+    for f in formats(size) {
+        let scan = scan_path(out, row, size, *f);
+        for path in [sidecar_path(&scan), scan] {
+            match tokio::fs::symlink_metadata(path).await {
+                Ok(_) => return Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Write `body` to `path` through a synced `.part` file and a rename.
 pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<()> {
     let path = path.to_owned();
@@ -215,6 +234,61 @@ pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<(
         Ok(())
     })
     .await?
+}
+
+/// Publish without replacing a late target; return false when that target exists.
+pub(super) async fn write_new_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<bool> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let dir = path.parent().context("no parent directory")?;
+        std::fs::create_dir_all(dir)?;
+        let mut part = path.as_os_str().to_owned();
+        part.push(format!(".repair-{}.part", std::process::id()));
+        let part = PathBuf::from(part);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)?;
+        let written = file.write_all(&body).and_then(|_| file.sync_all());
+        drop(file);
+        let published = match written {
+            Ok(()) => match std::fs::hard_link(&part, &path) {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        let cleanup = std::fs::remove_file(&part);
+        match (published, cleanup) {
+            (Ok(published), Ok(())) => Ok(published),
+            (Err(error), Ok(())) => Err(error)
+                .with_context(|| format!("publishing repair without replacing {}", path.display())),
+            (Ok(_), Err(error)) => {
+                Err(error).with_context(|| format!("removing repair temporary {}", part.display()))
+            }
+            (Err(error), Err(cleanup_error)) => Err(error).with_context(|| {
+                format!(
+                    "publishing repair {}; removing {} also failed: {cleanup_error}",
+                    path.display(),
+                    part.display()
+                )
+            }),
+        }
+    })
+    .await?
+}
+
+/// Publish a repair and its sidecar, leaving any partial result for review.
+pub(super) async fn write_repair_atomic(
+    path: &Path,
+    body: Vec<u8>,
+    side: Vec<u8>,
+) -> anyhow::Result<bool> {
+    if !write_new_atomic(path, body).await? {
+        return Ok(false);
+    }
+    write_new_atomic(&sidecar_path(path), side).await
 }
 
 /// An append-only JSON Lines file, shared by the tasks.
