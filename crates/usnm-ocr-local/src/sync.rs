@@ -201,11 +201,11 @@ pub(super) struct Lease {
 }
 
 impl Lease {
-    /// Take the lock, waiting out a holder (a BOINC hand-off, or the last
     /// Take the lock, or fail at once if another holder has it.
     pub(super) async fn take(state: &State, owner: &str) -> anyhow::Result<Self> {
+        let started = Instant::now();
         state.lock(super::LOCK, owner, LOCK_TTL).await?;
-        Self::held(state, owner)
+        Self::held(state, owner, started)
     }
 
     /// [`Lease::take`], but waits out a holder (a BOINC hand-off, or the last
@@ -218,8 +218,9 @@ impl Lease {
     ) -> anyhow::Result<Self> {
         let started = Instant::now();
         loop {
+            let attempt_started = Instant::now();
             let e = match state.lock(super::LOCK, owner, LOCK_TTL).await {
-                Ok(()) => break,
+                Ok(()) => return Self::held(state, owner, attempt_started),
                 Err(e) => e,
             };
             let Some(held) = e.downcast_ref::<LockHeld>() else {
@@ -233,13 +234,12 @@ impl Lease {
             tracing::info!(holder = %held.holder, wait_secs = wait.as_secs(), "ocr-sync lock is held; waiting");
             tokio::time::sleep(wait).await;
         }
-        Self::held(state, owner)
     }
 
     /// The lease for a lock this owner now holds.
-    fn held(state: &State, owner: &str) -> anyhow::Result<Self> {
+    fn held(state: &State, owner: &str, started: Instant) -> anyhow::Result<Self> {
         let ttl = LOCK_TTL.to_std()?;
-        let until = Arc::new(Mutex::new(Instant::now() + ttl));
+        let until = Arc::new(Mutex::new(started + ttl));
         let lost = Arc::new(AtomicBool::new(false));
         let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
         let renewed_until = until.clone();
@@ -1460,6 +1460,64 @@ async fn check_one(
 #[cfg(test)]
 mod lease_tests {
     use super::*;
+    use usnm_state::docs::{DocStore, MemoryDocs, Versioned};
+
+    #[derive(Default)]
+    struct SlowDocs {
+        inner: MemoryDocs,
+        last_get: Mutex<Option<Instant>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DocStore for SlowDocs {
+        async fn get(
+            &self,
+            container: &str,
+            pk: &str,
+            id: &str,
+        ) -> anyhow::Result<Option<Versioned>> {
+            *self.last_get.lock().unwrap() = Some(Instant::now());
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            self.inner.get(container, pk, id).await
+        }
+
+        async fn create(
+            &self,
+            container: &str,
+            pk: &str,
+            doc: &serde_json::Value,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.create(container, pk, doc).await
+        }
+
+        async fn replace(
+            &self,
+            container: &str,
+            pk: &str,
+            doc: &serde_json::Value,
+            etag: &str,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.replace(container, pk, doc, etag).await
+        }
+
+        async fn upsert(
+            &self,
+            container: &str,
+            pk: &str,
+            doc: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            self.inner.upsert(container, pk, doc).await
+        }
+
+        async fn list(
+            &self,
+            container: &str,
+            field: &str,
+            values: &[&str],
+        ) -> anyhow::Result<Vec<Versioned>> {
+            self.inner.list(container, field, values).await
+        }
+    }
 
     #[tokio::test]
     async fn stalled_renewal_cannot_keep_an_expired_lease_valid() {
@@ -1475,12 +1533,30 @@ mod lease_tests {
     }
 
     fn state() -> State {
-        State::new(Arc::new(usnm_state::docs::MemoryDocs::default()))
+        State::new(Arc::new(MemoryDocs::default()))
+    }
+
+    #[tokio::test]
+    async fn a_slow_acquisition_does_not_extend_the_lease() {
+        for waiting in [false, true] {
+            let docs = Arc::new(SlowDocs::default());
+            let state = State::new(docs.clone());
+            let lease = if waiting {
+                Lease::take_waiting(&state, "me", None).await.unwrap()
+            } else {
+                Lease::take(&state, "me").await.unwrap()
+            };
+            let get_started = docs.last_get.lock().unwrap().unwrap();
+            let until = *lease.until.lock().unwrap();
+            assert!(until <= get_started + LOCK_TTL.to_std().unwrap());
+            lease.check().unwrap();
+        }
     }
 
     #[tokio::test]
     async fn a_held_lock_is_waited_for_until_its_lease_runs_out() {
-        let state = state();
+        let docs = Arc::new(SlowDocs::default());
+        let state = State::new(docs.clone());
         state
             .lock(crate::LOCK, "other", chrono::Duration::milliseconds(300))
             .await
@@ -1488,6 +1564,10 @@ mod lease_tests {
         let started = Instant::now();
         let lease = Lease::take_waiting(&state, "me", None).await.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(300));
+        let get_started = docs.last_get.lock().unwrap().unwrap();
+        let until = *lease.until.lock().unwrap();
+        assert!(until <= get_started + LOCK_TTL.to_std().unwrap());
+        assert!(until + Duration::from_secs(4) >= get_started + LOCK_TTL.to_std().unwrap());
         lease.check().unwrap();
     }
 

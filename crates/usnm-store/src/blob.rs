@@ -297,6 +297,44 @@ impl BlobStore {
         }
         Ok(Some(body))
     }
+
+    async fn get_if_match_once(
+        &self,
+        path: &str,
+        etag: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut resp = self
+            .request(Method::GET, path)
+            .await?
+            .header(IF_MATCH, quoted(etag))
+            .send()
+            .await
+            .map_err(|e| transport("get", path, e))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => return Ok(None),
+            s if !s.is_success() => {
+                return Err(StoreError::Http {
+                    op: "get",
+                    path: path.into(),
+                    status: s.as_u16(),
+                })
+            }
+            _ => {}
+        }
+        let max = max_bytes.min(MAX_OBJECT_BYTES);
+        if resp.content_length().is_some_and(|n| n > max) {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
+            if (body.len() + chunk.len()) as u64 > max {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
+    }
 }
 
 #[async_trait]
@@ -478,36 +516,10 @@ impl ObjectStore for BlobStore {
         etag: &str,
         max_bytes: u64,
     ) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut resp = self
-            .request(Method::GET, path)
-            .await?
-            .header(IF_MATCH, quoted(etag))
-            .send()
-            .await
-            .map_err(|e| transport("get", path, e))?;
-        match resp.status() {
-            StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => return Ok(None),
-            s if !s.is_success() => {
-                return Err(StoreError::Http {
-                    op: "get",
-                    path: path.into(),
-                    status: s.as_u16(),
-                })
-            }
-            _ => {}
-        }
-        let max = max_bytes.min(MAX_OBJECT_BYTES);
-        if resp.content_length().is_some_and(|n| n > max) {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
-            if (body.len() + chunk.len()) as u64 > max {
-                return Err(StoreError::TooLarge(path.into()));
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(Some(body))
+        retrying("get", path, self.tuning.get, retryable, |_| {
+            self.get_if_match_once(path, etag, max_bytes)
+        })
+        .await
     }
 
     async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
@@ -813,6 +825,88 @@ mod tests {
         assert_eq!(n.load(Ordering::SeqCst), 4);
         // The text says what went wrong, not only "error decoding response body".
         assert!(err.to_string().contains("get `pages/a.parquet`: "), "{err}");
+    }
+
+    #[tokio::test]
+    async fn conditional_get_retries_transient_failures_and_stops_on_a_changed_object() {
+        use std::sync::atomic::Ordering;
+        const CHANGED: &str =
+            "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+        let (url, n) = scripted(vec![CUT_SHORT, BUSY, WHOLE]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert_eq!(
+            store
+                .get_if_match("pages/a.parquet", "e1", 11)
+                .await
+                .unwrap(),
+            Some(b"hello world".to_vec())
+        );
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+
+        let (url, n) = scripted(vec![BUSY, CHANGED]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert_eq!(
+            store
+                .get_if_match("pages/a.parquet", "e1", 11)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+
+        let (url, n) = scripted(vec![DENIED]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.get = FAST;
+        assert!(matches!(
+            store.get_if_match("pages/a.parquet", "e1", 11).await,
+            Err(StoreError::Http { status: 403, .. })
+        ));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn conditional_get_preserves_the_etag_on_every_attempt() {
+        use axum::http::{HeaderMap, StatusCode as S};
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let app = axum::Router::new().route(
+            "/c/pages/a.parquet",
+            axum::routing::get(move |headers: HeaderMap| {
+                let etag = headers
+                    .get("if-match")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_owned();
+                let mut requests = log.lock().unwrap();
+                requests.push(etag);
+                let first = requests.len() == 1;
+                async move {
+                    if first {
+                        S::SERVICE_UNAVAILABLE.into_response()
+                    } else {
+                        (S::OK, "hello").into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut store = BlobStore::new(&format!("http://{addr}/c"), cred()).unwrap();
+        store.tuning.get = FAST;
+        assert_eq!(
+            store
+                .get_if_match("pages/a.parquet", "e1", 5)
+                .await
+                .unwrap(),
+            Some(b"hello".to_vec())
+        );
+        assert_eq!(*seen.lock().unwrap(), ["\"e1\"", "\"e1\""]);
     }
 
     #[tokio::test]
