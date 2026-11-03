@@ -78,6 +78,8 @@ base_inputs=(HEAD:contrib-compute/images/base/Containerfile HEAD:scripts/boinc/p
   HEAD:scripts/boinc/patch-server-intel-proc-type.py
   HEAD:scripts/boinc/patch-server-stage-work.py
   HEAD:scripts/boinc/test_stage_work.py
+  HEAD:scripts/boinc/patch-server-feeder-guard.py HEAD:scripts/boinc/usnm-feeder-guard.h
+  HEAD:scripts/boinc/test_feeder_guard.py
   HEAD:scripts/boinc/patch-server-gold-routing.py HEAD:scripts/boinc/gold-engine-routing.h
   HEAD:scripts/boinc/patch-server-db-tls.py HEAD:contrib-compute/images/base/mysql-tls.cnf)
 base_key=$(git rev-parse "${base_inputs[@]}" | git hash-object --stdin | cut -c1-16)

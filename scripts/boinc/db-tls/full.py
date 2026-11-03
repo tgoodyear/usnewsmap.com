@@ -171,6 +171,74 @@ def start_services():
                                          "batch_collect_assimilator"])
 
 
+def feeder_allocation_guard():
+    host = socket.gethostname().split(".")[0]
+    directory = ROOT / f"pid_{host}"
+    link = PROJECT / f"pid_{host}"
+    pid_file = directory / "feeder.pid"
+    feeder = next(process for process in PROCESSES if Path(process.args[0]).name == "feeder")
+    if link.exists() or link.is_symlink() or pid_file.exists():
+        raise RuntimeError("feeder guard fixture PID path is already in use")
+
+    def wait_for(status, reason):
+        deadline = time.monotonic() + 25
+        while True:
+            result = subprocess.run(
+                ["python3", str(TEMPLATES / "feeder-slot-guard.py"), "--project", str(PROJECT)],
+                capture_output=True, text=True, timeout=30, user="boincadm", group="boincadm")
+            try:
+                report = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                report = {}
+            if (report.get("status"), report.get("reason"), result.returncode) == (
+                    status, reason, {"match": 0, "drift": 1, "unknown": 2}[status]):
+                return report
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"feeder guard did not report {status}/{reason}: {report}")
+            time.sleep(0.5)
+
+    def wait_for_reload():
+        trigger = PROJECT / "reread_db"
+        deadline = time.monotonic() + 25
+        while trigger.exists() and time.monotonic() < deadline:
+            time.sleep(0.5)
+        assert not trigger.exists(), "feeder did not finish its app scan"
+
+    config = Path("/dev/shm/boinc/config.xml")
+    original_config = config.read_text()
+    app_id = int(fixture.sql("SELECT id FROM full_fixture.app WHERE name='usnm_ocr'"))
+    original_weight = fixture.sql(f"SELECT weight FROM full_fixture.app WHERE id={app_id}")
+    link.symlink_to(directory)
+    try:
+        pid_file.write_text(str(feeder.pid) + "\n")
+        try:
+            wait_for("match", "allocation_matches_registry")
+            assert "tls-db.test" in original_config
+            config.write_text(original_config.replace("tls-db.test", "wrong-db.test"))
+            try:
+                wait_for("unknown", "database_unavailable")
+            finally:
+                config.write_text(original_config)
+            wait_for("match", "allocation_matches_registry")
+            fixture.sql(f"UPDATE full_fixture.app SET weight=weight+1 WHERE id={app_id}")
+            report = wait_for("drift", "registry_changed")
+            assert report["weight_changed_app_ids"] == [app_id]
+            (PROJECT / "reread_db").touch()
+            wait_for("drift", "reload_changed_app_order_or_weights")
+        finally:
+            config.write_text(original_config)
+            fixture.sql(f"UPDATE full_fixture.app SET weight={float(original_weight)} WHERE id={app_id}")
+            wait_for_reload()
+            (PROJECT / "reread_db").touch()
+            wait_for_reload()
+        wait_for("drift", "reload_changed_app_order_or_weights")
+        emit("actual-feeder-allocation-guard", match="verified", wrong_host="unknown",
+             changed_weight="drift", reread="latched_after_reversion")
+    finally:
+        pid_file.unlink(missing_ok=True)
+        link.unlink(missing_ok=True)
+
+
 def web():
     for path in ("get_project_config.php", "server_status.php", "index.php"):
         with urllib.request.urlopen(f"http://127.0.0.1/{path}", timeout=10) as response:
@@ -412,11 +480,17 @@ def rehearse_code_migration():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", required=True, choices=("init", "restart"))
+    parser.add_argument("--check-feeder-guard", action="store_true")
     args = parser.parse_args()
     os.environ.update(KEY_VAULT_NAME="unused-local", DB_HOST="tls-db.test", DB_NAME="full_fixture",
                       DB_RUNTIME_USER="runtime", MASTER_HOST="localhost", PROJECT_DIR="/fixture/share",
                       PROJECT="usnmocr")
     setup()
+    if args.check_feeder_guard:
+        pid_dir = ROOT / f"pid_{socket.gethostname().split('.')[0]}"
+        pid_dir.mkdir(exist_ok=True)
+        shutil.chown(pid_dir, user="boincadm", group="boincadm")
+        os.environ["USNM_PID_ROOT"] = str(ROOT)
     emit("runtime", server_image=os.environ["ACCEPTANCE_SERVER_IMAGE"],
          require_secure_transport=fixture.sql("SELECT @@require_secure_transport"),
          database_version=fixture.sql("SELECT VERSION()"))
@@ -439,6 +513,8 @@ def main():
         (PROJECT / ".usnm-initialised").touch()
         run("bash", "-c", "set -- --ensure-project; . /usr/local/lib/usnm-boinc/entrypoint.sh; project_tree")
         start_services()
+        if args.check_feeder_guard:
+            feeder_allocation_guard()
         web()
         code_trees_locked()
         connections()

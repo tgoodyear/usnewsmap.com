@@ -179,11 +179,16 @@ it has replaced searchable text. Continue with the existing `ocr-sync` and relea
 ## Retiring an app
 
 To stop an app's work without losing anything, deprecate it rather than delete it.
-Save its `app` and `app_version` rows first. Set `deprecated=1` on the app and on its
-versions, then touch `reread_db` in the project directory so the feeder reloads its
-tables. Results already sent can still be reported, workunits and signed versions stay,
-and rollback is the saved `deprecated` values plus another `reread_db`. Before you start,
-check that no controller plan, timer or feed still stages work for the app.
+Save its `app` and `app_version` rows first, and coordinate a feeder-only refresh:
+the `--allapps` slot map is fixed at feeder startup, so touching `reread_db` alone
+does **not** reallocate slots after an app is deprecated or restored. Set
+`deprecated=1` on the app and its versions, then touch `reread_db` and refresh
+the feeder at the coordinated boundary described in
+[Feeder visibility](../../contrib-compute/docs/app-release.md#feeder-visibility).
+Results already sent can still be reported, and workunits and signed versions stay.
+Rollback restores the saved `deprecated` values and needs the same reload and
+coordinated feeder refresh. Before you start, check that no controller plan, timer
+or feed still stages work for the app.
 `usnm_surya` was retired this way on 2 November 2026; its
 [retirement notes](../boinc-surya.md#retirement-2-november-2026) list the steps and the
 state before and after.
@@ -211,7 +216,8 @@ The state before is saved under `/project/ops/app-tidy-20261102/` with the scrip
 the change. Rollback, in the server container as `boincadm`: run
 `php /project/ops/app-tidy-20261102/app_tidy.php --project /project/usnmocr --journal /project/ops/app-tidy-20261102 --project-xml /project/ops/app-tidy-20261102/project.xml.new --rollback`.
 It restores the app names and `deprecated` flags, the two workunits' `error_mask` and their
-results' state, and the previous `project.xml`, then touches `reread_db`.
+results' state, and the previous `project.xml`, then touches `reread_db`. That trigger
+does not itself refresh the slot map; coordinate the feeder-only boundary after a rollback.
 
 ## Moving the project share
 
