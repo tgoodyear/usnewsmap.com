@@ -40,7 +40,10 @@ EXTRA_LANGUAGES = ()
 # The first app version that reads each request version.
 REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
 # Classes this controller does not open: with no workunit bounds they take any unsent replica.
-UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b")
+# nvidia_vulkan_8b is one only while generally admitted; bounded, it has min_wu_id.
+UNBOUNDED_READERS = ("amd_vulkan_8b", "apple_gpu_8b", "nvidia_vulkan_8b")
+# The helper's explicit marker: NVIDIA takes any Qwen work and this controller refills Intel alone.
+NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 DEFAULT_CAMPAIGN = "qwen-nonenglish-v1"
 
 
@@ -49,19 +52,28 @@ def sha(payload):
 
 
 def policy_window(payload):
+    """(window, reserved AMD workunit, owned classes). Once the operator admits nvidia_vulkan_8b
+    generally (the helper's marker, no bounds), only intel_vulkan_8b's window is owned here."""
     root = ET.fromstring(payload, parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
     nodes = root.findall("plan_class")
     classes = {node.findtext("name"): node for node in nodes}
     require(root.tag == "plan_classes" and len(classes) == len(nodes), "Invalid/duplicate plan classes")
+    nvidia = classes["nvidia_vulkan_8b"]
+    general = [child for child in nvidia if child.tag is ET.Comment
+               and (child.text or "").strip() == NVIDIA_GENERAL_MARKER]
+    if general:
+        require(len(general) == 1 and nvidia.find("min_wu_id") is None and nvidia.find("max_wu_id") is None,
+                "Invalid explicit NVIDIA general admission")
+    owned = ("intel_vulkan_8b",) if general else CLASSES
     ranges = []
-    for name in CLASSES:
+    for name in owned:
         node = classes[name]
         fields = [node.findall(tag) for tag in ("min_wu_id", "max_wu_id")]
         require(all(len(value) == 1 for value in fields), "General admission is not owned by this controller")
         low, high = (int(value[0].text) for value in fields)
         require((low, high) == (2, 1) or 2 <= low <= high and high - low < 10, "Not a finite pilot")
         ranges.append([low, high])
-    require(ranges[0] == ranges[1], "Different NVIDIA/Intel windows: another operator owns admission")
+    require(all(value == ranges[0] for value in ranges), "Different NVIDIA/Intel windows: another operator owns admission")
     for name in ("nvidia_cuda_2b", "nvidia_cuda_8b", "docker_nvidia_cuda_8b"):
         node = classes[name]
         require(node.findtext("min_wu_id") == "2" and node.findtext("max_wu_id") == "1",
@@ -74,8 +86,10 @@ def policy_window(payload):
         match = re.fullmatch(r"usnm-amd-first-reservation-v1:[a-f0-9]{32}:([1-9][0-9]*):[1-9][0-9]*",
                              (markers[0].text or "").strip())
         require(match is not None, "Malformed AMD reservation")
+        # The helper refuses an AMD-first lease beside any unbounded native class.
+        require(owned == CLASSES, "AMD-first reservation requires bounded NVIDIA admission")
         reserved = int(match[1])
-    return ranges[0], reserved
+    return ranges[0], reserved, owned
 
 
 def dispatchable(versions, minimum):
@@ -90,14 +104,19 @@ def dispatchable(versions, minimum):
                       else int(row["version_num"]) == newest[(row["plan_class"], int(row["platformid"]))]))
 
 
-def unreadable_by_open_classes(payload, versions, minimum, prompt_version):
-    """Open AMD/Apple versions that cannot read the request version. Such a host would take a
-    replica this controller admitted and return a unit error, so admission closes first."""
+def open_reader_versions(payload, versions, minimum):
+    """Dispatchable versions of the unbounded classes that are open: each takes any unsent replica."""
     classes = {node.findtext("name"): node for node in ET.fromstring(payload).findall("plan_class")}
     is_open = [name for name in UNBOUNDED_READERS
                if name in classes and classes[name].find("min_wu_id") is None]
-    return [list(row) for row in dispatchable(versions, minimum)
-            if row[0] in is_open and row[2] < REQUEST_MIN_APP[prompt_version]]
+    return [list(row) for row in dispatchable(versions, minimum) if row[0] in is_open]
+
+
+def unreadable_by_open_classes(payload, versions, minimum, prompt_version):
+    """Open AMD/Apple/NVIDIA-general versions that cannot read the request version. Such a host would
+    take a replica this controller admitted and return a unit error, so admission closes first."""
+    return [row for row in open_reader_versions(payload, versions, minimum)
+            if row[2] < REQUEST_MIN_APP[prompt_version]]
 
 
 def class_scope(payload, without_bounds=False):
@@ -116,9 +135,9 @@ def class_scope(payload, without_bounds=False):
     return fingerprints
 
 
-def target_scope(payload, target):
+def target_scope(payload, target, owned=CLASSES):
     root = ET.fromstring(payload)
-    for name in CLASSES:
+    for name in owned:
         node = root.find(f"plan_class[name='{name}']")
         node.find("min_wu_id").text, node.find("max_wu_id").text = map(str, target)
     return class_scope(ET.tostring(root))
@@ -360,7 +379,10 @@ def run(args):
     policy_path = project / "plan_class_spec.xml"
     require(not policy_path.is_symlink(), "Symlinked policy")
     policy = policy_path.read_bytes()
-    window, reserved = policy_window(policy)
+    window, reserved, owned = policy_window(policy)
+    nvidia_general = owned != CLASSES
+    # A generally admitted NVIDIA host fills its own queue: only Intel's window is refilled here.
+    hosts = (args.intel_host,) if nvidia_general else (args.intel_host, args.nvidia_host)
     root = project / "ops-issue-559/qwen-auto-cohort"
     require(not root.is_symlink() and not root.parent.is_symlink(), "Symlinked state directory")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -411,6 +433,7 @@ def run(args):
                 # scope-aware ownership checks rather than the whole-policy SHA.
                 persist(state_path, state)
         output = {"at": int(time.time()), "window": window, "reserved_amd": reserved,
+                  "nvidia_general_admission": nvidia_general,
                   "admitted_unique": len(state["admitted"]), "limit": args.max_admissions,
                   "apply": args.apply, "accuracy_established": False}
         expired = int(time.time()) >= args.enabled_until
@@ -439,21 +462,22 @@ def run(args):
             later = [workunit for workunit in candidates if workunit > state.get("scan_after", 0)]
             # Raised-priority units join the page wherever they sit, so choose() can take them first.
             # The cursor still follows the ordinary page alone, so no ordinary unit is skipped.
-            raised = raised_workunits(project, candidates, (args.intel_host, args.nvidia_host))
+            raised = raised_workunits(project, candidates, hosts)
             page = [unit for unit in (later or candidates) if unit not in raised][:1000 - len(raised)]
             ids = sorted(set(page) | set(raised))
             current_ids = list(range(window[0], window[1] + 1)) if window != [2, 1] else []
             wanted = sorted(set(ids + current_ids))
             if not wanted:
                 return output | {"status": "no-audited-fresh-inputs", "fresh_pairs_in_scan": 0}
-            database = read_database(project, wanted, (args.intel_host, args.nvidia_host))
+            database = read_database(project, wanted, hosts)
             rows = database["rows"]
             require(database["app"]["name"] == "usnm_qwen"
                     and int(database["app"]["homogeneous_redundancy"]) == 0, "Qwen app/HR changed")
             allowed = {}
-            for plan, expected in (("intel_vulkan_8b", args.intel_app_version),
-                                   ("nvidia_vulkan_8b", args.nvidia_app_version)):
-                # shared_8b opens these classes on every platform: any non-Linux release closes admission.
+            pinned = {"intel_vulkan_8b": args.intel_app_version, "nvidia_vulkan_8b": args.nvidia_app_version}
+            for plan in owned:
+                expected = pinned[plan]
+                # A window opens its classes on every platform: any non-Linux release closes admission.
                 # The feeder loads only the newest version per platform/plan class unless app.min_version
                 # is set, in which case every version >= min_version is dispatchable.
                 versions = [row for row in database["versions"] if row["plan_class"] == plan]
@@ -465,24 +489,30 @@ def run(args):
                 allowed[plan] = all(int(row["platformid"]) == 1 for row in versions) \
                     and dispatchable == [(1, args.app_version_num, expected)]
             minimum = int(database["app"].get("min_version") or 0)
-            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum,
-                                                    max((version for _, version in args.campaigns),
-                                                        key=REQUEST_MIN_APP.__getitem__))
+            request = max((version for _, version in args.campaigns), key=REQUEST_MIN_APP.__getitem__)
+            unreadable = unreadable_by_open_classes(policy, database["versions"], minimum, request)
             output["open_classes_that_cannot_read_request"] = unreadable
             release = int(time.time()) >= args.enabled_until or not all(allowed.values()) or bool(unreadable)
+            if nvidia_general:
+                # One result per host: the Intel host's window reaches quorum only through a peer
+                # class that is open and can read the request.
+                peers = [row for row in open_reader_versions(policy, database["versions"], minimum)
+                         if row[2] >= REQUEST_MIN_APP[request]]
+                output["open_peer_readers"] = peers
+                release = release or not peers
         if release:
-            command = ["--stop"]
+            command = ["--stop", "--keep-general"] if nvidia_general else ["--stop"]
             selected, proof = [], []
             status = "closed-expired-budget-or-release-change"
             target = [2, 1]
         else:
             inflight = {host: sum(int(row["hostid"]) == host for row in database["gpu_inflight"])
-                        for host in (args.intel_host, args.nvidia_host)}
+                        for host in hosts}
             # Old-window replicas stay dispatchable until the new policy is published, so each host's
             # headroom also reserves every one it could still receive.
             capacity = max(0, min(args.max_inflight_per_host - inflight[host]
                                   - assignable_units(rows, window, host) for host in inflight))
-            available = available_in_window(rows, window, (args.intel_host, args.nvidia_host))
+            available = available_in_window(rows, window, hosts)
             scanned = set(ids)
             fresh_count = sum(fresh(row) for row in rows if int(row["unit"]["id"]) in scanned)
             if not sum(fresh(row) for row in rows if int(row["unit"]["id"]) in set(page)) and page:
@@ -495,7 +525,7 @@ def run(args):
                        "per_host_buffer_limit": args.max_inflight_per_host}
             # A host holding a replica of every remaining window unit can never take the rest: if it
             # has no native work left while the peer holds the window, it starves behind the peer.
-            starved = [host for host in (args.intel_host, args.nvidia_host) if not inflight[host]
+            starved = [host for host in hosts if not inflight[host]
                        and not assignable_units(rows, window, host)]
             held = int(time.time()) - int(state["window_since"])
             if available and not (starved and held >= args.rotate_after_seconds):
@@ -562,9 +592,12 @@ def run(args):
             status = "refilled-finite-window"
         if target == window:
             return output | {"status": status, "changed": False}
-        command = ["php", str(args.helper), "--project", str(project), "--plan-class", "shared_8b",
+        command = ["php", str(args.helper), "--project", str(project),
+                   "--plan-class", "intel_vulkan_8b" if nvidia_general else "shared_8b",
                    "--expected-policy-sha256", sha(policy), *command]
         preview = json.loads(subprocess.check_output(command, timeout=15))
+        require(not nvidia_general or "nvidia_vulkan_8b" in preview["general_admission"],
+                "Helper would end NVIDIA general admission")
         receipt = output | {"status": status, "target": target, "inputs": proof, "preview": preview}
         if args.apply:
             # Intent survives interruption. A mismatching state/window on the next tick stops
@@ -573,7 +606,7 @@ def run(args):
             persist(receipt_path, receipt, exclusive=True)
             state["pending"] = {
                 "target": target, "before_sha256": sha(policy), "after_sha256": preview["after_sha256"],
-                "before_scope": class_scope(policy), "after_scope": target_scope(policy, target),
+                "before_scope": class_scope(policy), "after_scope": target_scope(policy, target, owned),
                 "selected": [int(row["unit"]["id"]) for row in selected], "intent": str(receipt_path),
             }
             persist(state_path, state)
