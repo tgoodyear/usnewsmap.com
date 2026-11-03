@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "study": "November 2026 GPU studies, Study 8: Yiddish",
+  "study_date": "2026-11-02",
+  "scope": "Aggregate metrics and provenance only; no page images, transcriptions, OCR outputs, or per-page or per-crop scores.",
+  "license": {
+    "aggregate_data": "CC-BY-NC-SA-4.0",
+    "corpus": "CC-BY-NC-SA-4.0",
+    "corpus_attribution": "The Yiddish OCR Corpus, Assaf Urieli and the Yiddish Book Center",
+    "corpus_license_url": "https://gitlab.com/jochre/corpora/jochre-yiddish-corpus/-/blob/bd69b412947e03cca18fdd5c72826207946d777f/LICENSE.md",
+    "note": "The corpus images and text are not included. Obtain them from the corpus and observe their applicable rights and license."
+  },
+  "source": {
+    "repository": "https://github.com/tgoodyear/usnewsmap.com",
+    "scorer_commit": "0cd6046e80f032ee591787cf56c004310cf262c8",
+    "scorer": "docs/reports/2026-11-gpu-studies/tools/src/yiddish.rs",
+    "runner": "docs/reports/2026-11-gpu-studies/scripts/yiddish/study8.sh",
+    "dependency_commit": "cf07f9508eda251081b5148db069cbe551536965"
+  },
+  "book_sample": {
+    "corpus_url": "https://gitlab.com/jochre/corpora/jochre-yiddish-corpus",
+    "corpus_commit": "bd69b412947e03cca18fdd5c72826207946d777f",
+    "citation": "Urieli, Clooney, Sigiel and Leyfer, Jochre 3 and the Yiddish OCR corpus, https://arxiv.org/abs/2501.08442",
+    "split": "test",
+    "pages": 104,
+    "books": 60,
+    "alto_lines": 4011,
+    "test_id_list_sha256": "eaf42228f74c470c469e7c72be63714298a477e2cef080224b7a718323adf56e",
+    "sample_digest_note": "SHA-256 of the retained newline-delimited test-ids.txt, recorded after scoring; no claim is made that the digest itself was published before the runs.",
+    "reader_input_note": "Jochre and Tesseract page modes read whole pages. Qwen and the Tesseract line mode used corpus line boxes and reading order.",
+    "training_note": "This study did not train an adapter on the corpus. Jochre 3 uses its previously trained models."
+  },
+  "newspaper_sample": {
+    "source": "qwen-nonenglish-v1 Yiddish units selected from a damaged-OCR pool",
+    "titles": 5,
+    "pages_per_title": 20,
+    "pages": 100,
+    "crops": 100,
+    "selection_sha256": "07c46f1fbc70d8b51d3fdd863193e1ecb1350f47bedd7ace37b0a92996818d91",
+    "selection_digest_note": "SHA-256 of the retained selection.jsonl, recorded after scoring.",
+    "sampling": "Rank pages within each title by sha256('yid-silver-202611:' + doc_id), select 20, and choose one crop per page by sha256(doc_id + ':' + crop_id).",
+    "reference": "No human transcription; all newspaper distances measure agreement, not accuracy."
+  },
+  "readers": {
+    "jochre3": "Jochre 3 1.1.4 and layout server 1.0.5, whole pages or newspaper crops",
+    "tesseract": "Tesseract 5.5.0 with tessdata_best, yid and yid+eng whole-page PSM 3 at 300 dpi; yid line PSM 7 is a separate control",
+    "qwen": "Qwen3-VL-8B-Instruct Q4_K_M via usnm_qwen 1.17, llama-server b8799 on Vulkan and an RTX 2060 SUPER, one read per crop",
+    "qwen_versions": {
+      "1": "default image token minimum, no loop guard",
+      "3": "default image token minimum with loop guard",
+      "4": "1024 minimum image tokens with loop guard"
+    }
+  },
+  "scoring": {
+    "book_primary": "Mean of per-page Levenshtein edits divided by reference characters after Jochre YIVO simplification and collapsed paragraph breaks.",
+    "book_raw": "Pooled CER using the gold-set normalization with Hebrew points removed; this is a secondary metric.",
+    "normalizer_check": {
+      "pages": 104,
+      "exact_pages": 103,
+      "edits_against_corpus_simplified": 1,
+      "characters": 167980
+    },
+    "newspaper_symmetric": "Sum of Levenshtein edits divided by the sum of the longer normalized reading lengths, with YIVO simplification, Hebrew points removed and whitespace collapsed.",
+    "bootstrap": {
+      "resamples": 2000,
+      "seed": 202611,
+      "unit": "page",
+      "interval": "95% percentile"
+    },
+    "timing_note": "Tesseract line records did not supply request timing; zero time in its line-summary row does not mean instantaneous inference."
+  },
+  "aggregate_files": {
+    "book-summary.jsonl": {
+      "records": 49,
+      "sha256": "85ce89ba4f0d360191c15807726cd9fb81fcf2f159e20d934b08ee480490a6ab"
+    },
+    "book-lines.jsonl": {
+      "records": 4,
+      "sha256": "e1e0956357fcac79fd9c992a97b3b5feba437a838a9bc2a8b6ac7b85fdbb3b59"
+    },
+    "newspaper-agreement.jsonl": {
+      "records": 20,
+      "sha256": "2422168b0092d99785fadf4f4f8f74e720549d4d8c02fecc918189ee4641c87b"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{"a":"jochre3","b":"tesseract-yid","hi":0.755746916733562,"items":100,"kind":"pair","lo":0.6342304520578754,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.6967549421857516}
+{"a":"jochre3","b":"qwen-v1","hi":0.8815195985007306,"items":100,"kind":"pair","lo":0.7962284547474626,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.8456714784731283}
+{"a":"jochre3","b":"qwen-v3","hi":0.8686583378598588,"items":100,"kind":"pair","lo":0.7678351783517835,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.823818608746698}
+{"a":"jochre3","b":"qwen-v4","hi":0.7941906057453789,"items":100,"kind":"pair","lo":0.6811552137000217,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.741336046117328}
+{"a":"jochre3","b":"loc","hi":0.9540522914566906,"items":100,"kind":"pair","lo":0.9065583416312121,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.9335782638414217}
+{"cer_vs_reference":0.8525787311729803,"hi":0.9508771929824561,"items":100,"kind":"vs_reference","lo":0.7712623097582811,"note":"distance from the reference reader, not accuracy","reader":"tesseract-yid","reference":"jochre3"}
+{"a":"tesseract-yid","b":"qwen-v1","hi":0.8719398711524696,"items":100,"kind":"pair","lo":0.7670740474478792,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.8297978745571994}
+{"a":"tesseract-yid","b":"qwen-v3","hi":0.8341951051361599,"items":100,"kind":"pair","lo":0.713110667996012,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.7789786132886826}
+{"a":"tesseract-yid","b":"qwen-v4","hi":0.7747588924608524,"items":100,"kind":"pair","lo":0.6227438061903782,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.6988953866146849}
+{"a":"tesseract-yid","b":"loc","hi":0.950259972664121,"items":100,"kind":"pair","lo":0.8992687773726148,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.927012033797047}
+{"cer_vs_reference":1.8342309447740757,"hi":2.4606136936111747,"items":100,"kind":"vs_reference","lo":1.3301417441096404,"note":"distance from the reference reader, not accuracy","reader":"qwen-v1","reference":"jochre3"}
+{"a":"qwen-v1","b":"qwen-v3","hi":0.7818788373496114,"items":100,"kind":"pair","lo":0.5199269850927898,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.6762557890986819}
+{"a":"qwen-v1","b":"qwen-v4","hi":0.8242222004122093,"items":100,"kind":"pair","lo":0.6516469857054071,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.7533209239360352}
+{"a":"qwen-v1","b":"loc","hi":0.9462581751903077,"items":100,"kind":"pair","lo":0.90075165476235,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.9263547314501392}
+{"cer_vs_reference":1.0248288452761296,"hi":1.125643666323378,"items":100,"kind":"vs_reference","lo":0.95096978273537,"note":"distance from the reference reader, not accuracy","reader":"qwen-v3","reference":"jochre3"}
+{"a":"qwen-v3","b":"qwen-v4","hi":0.6870494498545593,"items":100,"kind":"pair","lo":0.49353574926542604,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.5988339136772208}
+{"a":"qwen-v3","b":"loc","hi":0.9625796059598204,"items":100,"kind":"pair","lo":0.9256452273658337,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.947179961622807}
+{"cer_vs_reference":0.9978092195344591,"hi":1.1429214292142922,"items":100,"kind":"vs_reference","lo":0.8863123154420706,"note":"distance from the reference reader, not accuracy","reader":"qwen-v4","reference":"jochre3"}
+{"a":"qwen-v4","b":"loc","hi":0.945203838981746,"items":100,"kind":"pair","lo":0.8902931623219789,"note":"agreement, not accuracy","pages":100,"symmetric_edit_rate":0.9223768462392213}
+{"cer_vs_reference":4.98703788224555,"hi":7.707890845543756,"items":100,"kind":"vs_reference","lo":3.417839564804421,"note":"distance from the reference reader, not accuracy","reader":"loc","reference":"jochre3"}
