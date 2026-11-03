@@ -1104,7 +1104,10 @@ worker's `serve-scans` HTTP router and `prefetch::run`, and the dashboard's
 `Fetch::poll`/queue reader. The small Rust example exposes those production entry
 points only for the rehearsal; it requires an explicitly marked disposable root,
 binds IPv4 loopback, and refuses a non-loopback upstream. It is not a deployed worker
-or dashboard replacement. The Python fixture supplies synthetic bag/METS/image bytes,
+or dashboard replacement. Its clap interface takes named options, for example
+`repair_rehearsal --root <disposable-root> fetch --manifest <manifest> --source http://127.0.0.1:<port>`;
+`serve` and `dashboard` need only `--root`, and `ordinary-decode` also needs
+`--manifest`. The Python fixture supplies synthetic bag/METS/image bytes,
 not LoC scans, and starts/stops all helper processes and servers.
 
 An outstanding ordinary manifest deliberately keeps the producer's unrelated
@@ -1126,7 +1129,8 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
   -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py -v
 ```
 
-Executed locally on 3 November 2026: **4 tests passed in 96.893 seconds**, with
+Executed locally on 3 November 2026 with the named-option CLI: **4 tests passed in
+95.969 seconds**, with
 these asserted results:
 
 - The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
@@ -1167,6 +1171,9 @@ cargo test -j 2 -p usnm-ocr-dash --lib \
   queue_reads_decode_repairs_but_rejects_mismatched_formats --quiet # 1 passed
 cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # passed
 cargo fmt --all -- --check # passed
+.rehearsal/venv/bin/python scripts/ci/no-positional-args.py # 990 files passed
+.rehearsal/venv/bin/python -m unittest discover \
+  -s scripts/ci -p test_no_positional_args.py -q # 13 passed
 ```
 
 An additional offline historical-artifact probe verified the candidate labelled

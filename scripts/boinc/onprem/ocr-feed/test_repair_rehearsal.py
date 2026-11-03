@@ -189,14 +189,21 @@ class RepairRehearsal(unittest.TestCase):
             if stream:
                 stream.close()
 
-    def spawn(self, action, *args, root=None):
-        process = subprocess.Popen([self.binary, action, str(root or self.root), *map(str, args)],
+    def command(self, action, *, root=None, manifest=None, source=None):
+        args = [self.binary, "--root", str(root or self.root), action]
+        for flag, value in (("--manifest", manifest), ("--source", source)):
+            if value is not None:
+                args.extend((flag, str(value)))
+        return args
+
+    def spawn(self, action, *, root=None, manifest=None, source=None):
+        process = subprocess.Popen(self.command(action, root=root, manifest=manifest, source=source),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.stop, process)
         return process
 
-    def driver(self, action, *args, root=None, ok=True):
-        result = subprocess.run([self.binary, action, str(root or self.root), *map(str, args)],
+    def driver(self, action, *, root=None, manifest=None, source=None, ok=True):
+        result = subprocess.run(self.command(action, root=root, manifest=manifest, source=source),
                                 capture_output=True, text=True, timeout=120)
         if ok:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -249,7 +256,7 @@ class RepairRehearsal(unittest.TestCase):
         return path
 
     def fetch(self, path, *, root=None):
-        return json.loads(self.driver("fetch", path, self.source.url, root=root).stdout)
+        return json.loads(self.driver("fetch", manifest=path, source=self.source.url, root=root).stdout)
 
     def dashboard(self):
         value = json.loads(self.driver("dashboard").stdout)
@@ -277,9 +284,9 @@ class RepairRehearsal(unittest.TestCase):
         self.produce()
         repairs = [self.repair(seq) for seq in (1, 2)]
         for path in repairs:
-            rejected = self.driver("ordinary-decode", path, ok=False)
+            rejected = self.driver("ordinary-decode", manifest=path, ok=False)
             self.assertIn("not a prefetch manifest", rejected.stderr)
-        self.assertEqual(self.driver("ordinary-decode", self.ordinary).stdout.strip(), "1")
+        self.assertEqual(self.driver("ordinary-decode", manifest=self.ordinary).stdout.strip(), "1")
         self.assertEqual(len(self.dashboard()["queue"]), 3)
         self.assertEqual({q["kind"] for q in self.dashboard()["queue"]}, {"quality"})
         first = self.fetch(repairs[0])
@@ -390,10 +397,10 @@ class RepairRehearsal(unittest.TestCase):
         self.seed(2)
         self.produce()
         self.source.wait_path = Source.image_path(1)
-        running = self.spawn("fetch", self.repair(1), self.source.url)
+        running = self.spawn("fetch", manifest=self.repair(1), source=self.source.url)
         self.assertTrue(self.source.started.wait(60), "fetch did not reach synthetic image")
         self.assertIsNone(running.poll())
-        blocked = self.driver("fetch", self.repair(2), self.source.url, ok=False)
+        blocked = self.driver("fetch", manifest=self.repair(2), source=self.source.url, ok=False)
         self.assertIn("one fetching process at a time", blocked.stderr)
         path = self.retained(1)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -408,7 +415,7 @@ class RepairRehearsal(unittest.TestCase):
         self.source.started.clear()
         self.source.release.clear()
         self.source.wait_path = Source.image_path(2)
-        killed = self.spawn("fetch", self.repair(2), self.source.url)
+        killed = self.spawn("fetch", manifest=self.repair(2), source=self.source.url)
         self.assertTrue(self.source.started.wait(60))
         abandoned = Path(str(self.retained(2)) + ".repair-abandoned.part")
         abandoned.write_bytes(b"preserve prior crash evidence")

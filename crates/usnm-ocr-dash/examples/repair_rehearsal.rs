@@ -5,23 +5,48 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
 use chrono::Utc;
+use clap::{Parser, Subcommand};
 use usnm_ocr_dash::fetch::Fetch;
 use usnm_ocr_worker::loc::{LocClient, LocConfig};
 use usnm_ocr_worker::{prefetch, serve};
 
+#[derive(Parser)]
+#[command(about = "Rehearse repair protocol entry points with disposable localhost resources")]
+struct Cli {
+    /// Explicitly marked disposable rehearsal root.
+    #[arg(long)]
+    root: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Serve,
+    Fetch {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        source: String,
+    },
+    Dashboard,
+    OrdinaryDecode {
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    let action = args.next().context("missing action")?;
-    let root = PathBuf::from(args.next().context("missing rehearsal root")?).canonicalize()?;
+    let Cli { root, command } = Cli::parse();
+    let root = root.canonicalize()?;
     anyhow::ensure!(
         root.join(".repair-rehearsal").is_file(),
         "requires an explicitly initialized disposable rehearsal root"
     );
-    match action.as_str() {
-        "serve" => {
+    match command {
+        Command::Serve => {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let opts = serve::ServeOptions {
                 scans: root.join("scans"),
@@ -35,11 +60,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        "fetch" => {
-            let manifest =
-                PathBuf::from(args.next().context("missing manifest")?).canonicalize()?;
+        Command::Fetch { manifest, source } => {
+            let manifest = manifest.canonicalize()?;
             anyhow::ensure!(manifest.starts_with(&root), "manifest outside rehearsal");
-            let source = args.next().context("missing local source")?;
             let url = reqwest::Url::parse(&source)?;
             anyhow::ensure!(
                 url.scheme() == "http" && url.host_str() == Some("127.0.0.1"),
@@ -70,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 serde_json::to_string(&prefetch::run(opts, client, rx).await?)?
             );
         }
-        "dashboard" => {
+        Command::Dashboard => {
             let mut fetch = Fetch::new(root.join("scans"), None)
                 .with_manifests(Some(root.join("manifests")))
                 .with_files(None, Some(root.join("pacer.json")));
@@ -88,15 +111,14 @@ async fn main() -> anyhow::Result<()> {
                 })
             );
         }
-        "ordinary-decode" => {
+        Command::OrdinaryDecode { manifest } => {
             // This is the ordinary-format contract, NOT an assertion about a deployed binary.
-            let path = PathBuf::from(args.next().context("missing manifest")?).canonicalize()?;
+            let path = manifest.canonicalize()?;
             anyhow::ensure!(path.starts_with(&root), "manifest outside rehearsal");
             let rows =
                 usnm_ocr_contract::prefetch::decode(bytes::Bytes::from(std::fs::read(path)?))?;
             println!("{}", rows.len());
         }
-        _ => bail!("unknown rehearsal action"),
     }
     Ok(())
 }
