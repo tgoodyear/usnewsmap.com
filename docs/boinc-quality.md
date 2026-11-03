@@ -993,6 +993,10 @@ manifest builder reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-fe
 and excludes quarantined documents from new ordinary non-English acquisition. A missing
 or unreadable root or helper is an error. Already queued manifests and independent OCR
 acquisition are not rewritten or blocked; recovery needs a separately reviewed plan.
+Quarantine writers and the manifest builder must use the same root: they serialize
+quarantine transitions with the builder's final exclusion check and ordinary manifest PUT.
+Keep its `.decode-quarantine.lock` file in place while either service runs; replacing it
+would break that coordination. A failed PUT releases the lock and remains an error.
 
 At an idle boundary, install the quarantine helper and matching manifest builder/service
 first, then the shared `quality_feed.py` before the updated CPU follower service and
