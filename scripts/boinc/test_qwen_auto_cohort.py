@@ -64,7 +64,15 @@ class BoincApp {static function lookup_id($id){return (object)['name'=>'usnm_qwe
 class BoincResult {static function enum($where){if(getenv('FIXTURE_DB_DELAY'))sleep((int)getenv('FIXTURE_DB_DELAY'));
  preg_match('/workunitid=(\\d+)/',$where,$m);
  foreach($GLOBALS['fixture'] as $r)if($r->unit->id==$m[1])return $r->results;return [];}}
-class BoincDb {static function get(){return new self();}function count($table,$where){return 0;}}
+class BoincDb {
+ static function get(){return new self();}function count($table,$where){return 0;}
+ function do_query($sql){
+  file_put_contents(__DIR__.'/../../guard-queries.jsonl',json_encode($sql)."\\n",FILE_APPEND);
+  if(getenv('FIXTURE_LOCK_FAILURE')&&str_starts_with($sql,'LOCK TABLES'))
+   throw new RuntimeException('fixture database lock refused');
+  return true;
+ }
+}
 """)
         self.args = SimpleNamespace(
             project=self.project, helper=HELPER, helper_sha256=R.sha(HELPER.read_bytes()),
@@ -427,9 +435,32 @@ class BoincDb {static function get(){return new self();}function count($table,$w
         state = json.loads((self.project / "ops-issue-559/qwen-auto-cohort/state.json").read_bytes())
         self.assertEqual(state["admitted"], [100, 101])
         self.assertNotIn("pending", state)
+        queries = [json.loads(line) for line in (self.project / "guard-queries.jsonl").read_text().splitlines()]
+        self.assertEqual(queries, [
+            "SET SESSION lock_wait_timeout=5",
+            "LOCK TABLES DBNAME.app READ, DBNAME.workunit READ, DBNAME.result READ, DBNAME.assignment READ",
+            "UNLOCK TABLES",
+        ])
         # A second ordinary tick must not overwrite/advance a still-eligible window.
         with patch.object(R, "read_database", return_value=self.database):
             self.assertEqual(R.run(self.args)["status"], "current-window-still-eligible")
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_refused_database_guard_cannot_publish_or_create_a_journal(self):
+        before = self.policy.read_bytes()
+        command = ["php", str(HELPER), "--project", str(self.project), "--plan-class", "shared_8b",
+                   "--fresh-pair", "--workunit", "100", "--apply"]
+        result = subprocess.run(command, env=os.environ | {"FIXTURE_LOCK_FAILURE": "1"},
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("database lock refused", result.stderr)
+        self.assertEqual(self.policy.read_bytes(), before)
+        self.assertFalse((self.project / "ops-issue-559").exists())
+        (self.project / "guard-queries.jsonl").unlink()
+        preview = subprocess.run(command[:-1], capture_output=True, text=True, timeout=10)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertFalse((self.project / "guard-queries.jsonl").exists())
+        self.assertEqual(self.policy.read_bytes(), before)
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_drained_window_advances_with_cumulative_budget_then_closes(self):

@@ -269,9 +269,21 @@ function native_qwen_fresh_pair_validate($workunit, $results, $assignments) {
     }
 }
 
+function native_qwen_fresh_pair_lock($db) {
+    // The policy flock does not exclude BOINC's SQL writers. READ table locks
+    // protect the final snapshot through rename for both InnoDB and MyISAM.
+    if (!$db->do_query("SET SESSION lock_wait_timeout=5")
+        || !$db->do_query("LOCK TABLES DBNAME.app READ, DBNAME.workunit READ, DBNAME.result READ, DBNAME.assignment READ")) {
+        throw new RuntimeException("Cannot lock fresh-pair database state");
+    }
+    return function() use ($db) {
+        if (!$db->do_query("UNLOCK TABLES")) throw new RuntimeException("Cannot release fresh-pair database lock");
+    };
+}
+
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
         $ordinary_canary = false, $tiebreaker = false, $expected_sha256 = null, $revalidate = null,
-        $admit_until = null) {
+        $admit_until = null, $publication_guard = null) {
     if ($tiebreaker && (!in_array($plan_class, TIEBREAKER_QWEN_CLASSES, true) || $general || $ordinary_canary
             || $workunit_id <= 1 || ($last_id !== null && $last_id !== $workunit_id))) {
         throw new RuntimeException("Tiebreaker is one intel_vulkan_8b, nvidia_vulkan_8b, or shared_8b workunit");
@@ -290,6 +302,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
     $lock = fopen($lock_path, "c");
     if (!$lock || !flock($lock, LOCK_EX)) throw new RuntimeException("Cannot lock cohort policy");
     $staged = null;
+    $unlock_database = null;
     try {
         $original = file_get_contents($path);
         if ($original === false) throw new RuntimeException("Cannot read plan XML");
@@ -297,6 +310,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             || hash("sha256", $original) !== $expected_sha256)) {
             throw new RuntimeException("Policy changed since reviewed preview");
         }
+        if ($publication_guard !== null) $unlock_database = $publication_guard();
         if ($revalidate !== null) $revalidate();
         // Lock waits/DB revalidation can cross an automatic admission deadline; closing stays allowed.
         $admission_expired = function() use ($admit_until, $workunit_id) {
@@ -318,6 +332,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             "before_sha256" => hash("sha256", $original),
             "after_sha256" => hash("sha256", $updated),
         ];
+        if ($unlock_database !== null) $proof["fresh_pair_guard"] = "mysql-read-lock-v1";
         if ($apply && $original !== $updated) {
             $journal = "$project/ops-issue-559/native-cohort";
             if (is_link("$project/ops-issue-559") || is_link($journal)) {
@@ -343,6 +358,8 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             fclose($stream);
             if (!chmod($staged, fileperms($path) & 0777)) throw new RuntimeException("Cannot preserve plan permissions");
             if (hash_file("sha256", $path) !== $proof["before_sha256"]) throw new RuntimeException("Concurrent plan change");
+            // Detect a lost DB session after filesystem I/O before exposing its policy.
+            if ($revalidate !== null) $revalidate();
             $admission_expired();
             if (!rename($staged, $path)) throw new RuntimeException("Cannot replace cohort policy");
             $staged = null;
@@ -351,9 +368,16 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
         }
         return $proof;
     } finally {
-        if ($staged !== null) unlink($staged);
-        flock($lock, LOCK_UN);
-        fclose($lock);
+        try {
+            if ($staged !== null) unlink($staged);
+        } finally {
+            try {
+                if ($unlock_database !== null) $unlock_database();
+            } finally {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
     }
 }
 
@@ -367,6 +391,7 @@ function native_qwen_cohort_main() {
     $ordinary_canary = array_key_exists("ordinary-canary", $options);
     $tiebreaker = array_key_exists("tiebreaker", $options);
     $fresh_pair = array_key_exists("fresh-pair", $options);
+    $apply = array_key_exists("apply", $options);
     $expected_sha256 = $options["expected-policy-sha256"] ?? null;
     $admit_until = $options["admit-until"] ?? null;
     if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")
@@ -429,9 +454,10 @@ function native_qwen_cohort_main() {
         $revalidate();
     }
     echo json_encode(native_qwen_cohort_write(
-        $project, $plan_class, $id, array_key_exists("apply", $options), $last_id, $general, $ordinary_canary,
+        $project, $plan_class, $id, $apply, $last_id, $general, $ordinary_canary,
         $tiebreaker, $expected_sha256, $fresh_pair ? $revalidate : null,
-        $admit_until === null ? null : intval($admit_until)
+        $admit_until === null ? null : intval($admit_until),
+        $fresh_pair && $apply ? fn() => native_qwen_fresh_pair_lock(BoincDb::get()) : null
     ), JSON_PRETTY_PRINT)."\n";
 }
 

@@ -43,6 +43,34 @@ complete non-deprecated version set the feeder would dispatch: with the app's
 platform/plan class, so older reviewed Linux rows stay superseded; a nonzero
 `min_version` that would make an older Linux row dispatchable also closes it.
 
+For `--fresh-pair --apply`, the helper takes MySQL `READ` locks on `app`,
+`workunit`, `result` and `assignment` after acquiring its policy-file lock.
+It rechecks the candidate under those database locks and holds them through
+journaling, atomic policy replacement and readback. The pinned BOINC scheduler
+updates the workunit and calls `mark_as_sent` before adding the result to its reply;
+these SQL writes cannot cross that publication interval. This works with both
+InnoDB and MyISAM and does not rely on an advisory lock the scheduler never takes.
+A final database recheck after staging the policy detects a lost session before
+rename. The receipt records `fresh_pair_guard: mysql-read-lock-v1`.
+
+These are table-wide locks: other apps' writes can briefly wait too. Acquisition
+times out after five seconds, and the existing 20-second process-group timeout
+still bounds the owned operation. Failures release the database and policy locks;
+preview and stop do not take database locks. No scientific row is modified.
+Deployment needs `SELECT` and `LOCK TABLES` privileges on these tables and the
+normal coordinated helper-SHA update at an idle boundary. Do not combine a refill
+with database restart/failover or filesystem maintenance; this is not a distributed
+transaction across MySQL and the policy filesystem.
+
+The repeatable `scripts/boinc/test_qwen_publication_db.py` fixture uses actual
+concurrent MySQL connections and the real PHP entry point, with disposable BOINC
+table shapes and a thin database adapter. Set `USNM_QWEN_MYSQL_PORT` to a
+**disposable localhost** MySQL port with an empty-password root account, as in CI.
+It covers both storage engines, result/workunit/assignment writers, publication
+failure, killed publishers, lost database sessions, a writer winning before final
+revalidation, and lock-acquisition timeout.
+It does not run a full scheduler RPC or mutate a live project.
+
 Refill also reads actual native-8B **in-progress tasks across all windows** for
 both pilot hosts. New window size is reduced to the smaller remaining headroom
 of a ten-task-per-host buffer; a full buffer waits for actual completions.

@@ -212,6 +212,11 @@ jobs:
         run: python3 -m unittest -v contrib-compute/images/server/test_batch_inventory.py
         env:
           USNM_WORK_VOLUME_MYSQL_PORT: '3307'
+      - name: Fresh Qwen publication excludes concurrent database writers
+        working-directory: .
+        run: python3 -m unittest -v scripts/boinc/test_qwen_publication_db.py
+        env:
+          USNM_QWEN_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: Install scheduler gate test headers
         run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
