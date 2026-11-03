@@ -41,6 +41,12 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def source_id(page):
+    source = {key: page[key] for key in ("doc_id", "batch", "bytes", "sha256")}
+    source["batch_version"] = int(page.get("batch_version") or 1)
+    return digest(source)
+
+
 def matches(row, spec):
     if spec["kind"] == "page":
         return row["doc_id"] == spec["source"]
@@ -82,7 +88,7 @@ def read(path):
     return record
 
 
-def priority_index(index, state, campaign, seen, excluded_requests=()):
+def priority_index(index, state, campaign, seen, excluded_requests=(), quarantined_ids=()):
     """Prioritize frozen request members while retaining normal idle replenishment."""
     rows = [json.loads(line) for line in index.splitlines()]
     indexed = {row["doc_id"]: row for row in rows}
@@ -93,7 +99,7 @@ def priority_index(index, state, campaign, seen, excluded_requests=()):
         wanted = []
         for page in record["pages"]:
             doc = page["doc_id"]
-            if doc in seen or doc not in indexed:
+            if doc in seen or doc not in indexed or source_id(page) in quarantined_ids:
                 continue
             row = indexed[doc]
             if (page["sha256"] != row["sha256"] or page["bytes"] != int(row["bytes"])
@@ -132,7 +138,8 @@ def register(args, spec):
                           "--curated", "/srv/curated", "--count", str(spec["max_pages"]),
                           "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
                           "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
-                          "--scan-server", args.scan_server])
+                          "--scan-server", args.scan_server,
+                          "--quarantine-state", "/var/lib/usnm-quality-feed/" + spec["campaign"]])
         pages = [json.loads(line) for line in feed.command(ct + ["cat", work + "/selected.jsonl"]).splitlines()]
         if not pages:
             raise ValueError("source has no eligible scored non-English real-image pages")
@@ -155,11 +162,19 @@ def inspect(args, record):
         raise ValueError("native source status does not cover the exact request membership")
     ct = ["pct", "exec", str(args.prep_ct), "--", "/opt/usnm-quality-feed/venv/bin/python"]
     prepared = json.loads(feed.command(ct + ["-c", (
-        "from pathlib import Path; import json; "
+        "from pathlib import Path; import json, sys; "
+        "sys.path.insert(0, '/opt/usnm-quality-feed'); from scan_quarantine import quarantined; "
         f"p=Path('/var/lib/usnm-quality-feed/{args.campaign}'); "
-        "print(json.dumps({n:dict(line.split('\\t',1) for line in (p/n).read_text().splitlines() "
-        "if '\\t' in line) if (p/n).exists() else {} for n in ('done.txt','skipped.txt')}))"
+        "q=[{'source':r['source'], 'refetch_state':r['refetch_state']} for r in quarantined(p)]; "
+        "print(json.dumps({**{n:dict(line.split('\\t',1) for line in (p/n).read_text().splitlines() "
+        "if '\\t' in line) if (p/n).exists() else {} for n in ('done.txt','skipped.txt')}, "
+        "'quarantine':q}))"
     )]))
+    fields = ("doc_id", "batch", "batch_version", "bytes", "sha256")
+    quarantined = {tuple(row["source"][key] for key in fields): row["refetch_state"]
+                   for row in prepared.get("quarantine", [])}
+    requested = {page["doc_id"]: page for page in pages}
+    quarantine_states = Counter()
     inventory = json.loads(feed.remote(args.archive_host, [
         "python3", "/opt/usnm-quality-feed/archive_alto.py",
         "--pages", "-", "--archives", "/tank/locbulk/ocr", "--out", "/tank/locstats/qwen-alto"], b""))
@@ -171,7 +186,12 @@ def inspect(args, record):
     for doc, value in native["pages"].items():
         status = value["status"]
         if status == "pending":
-            if doc in prepared["skipped.txt"]:
+            key = tuple(requested[doc].get(field) for field in fields)
+            if key in quarantined:
+                status = "preparation_quarantined"
+                quarantine_states[quarantined[key]] += 1
+                waiting.append(doc)
+            elif doc in prepared["skipped.txt"]:
                 status = "preparation_rejected"
             elif doc in prepared["done.txt"]:
                 status = "awaiting_publication"
@@ -182,7 +202,7 @@ def inspect(args, record):
     unfinished_sources = sum(counts[k] for k in ("pending_audit", "awaiting_preparation", "awaiting_publication"))
     unresolved_jobs = native["published_workunits"] - native["agreed_workunits"]
     if (native["error_workunits"] or native["history_unavailable_workunits"]
-            or native["source_conflict_pages"]):
+            or native["source_conflict_pages"] or counts["preparation_quarantined"]):
         state = "needs_science_review"
     elif unfinished_sources:
         state = "preparing_and_publishing"
@@ -212,6 +232,7 @@ def inspect(args, record):
             and value["status"] not in ("source_conflict", "source_provenance_unavailable")
             for value in native["pages"].values()),
         "waiting_source_pages": len(waiting),
+        "quarantined_refetch_states": dict(quarantine_states),
         "waiting_original_archive_pages": sum(
             p["doc_id"] in waiting_set
             and f"{p['batch']}_ver{int(p['batch_version']):02d}.tar.bz2" not in retained for p in pages),

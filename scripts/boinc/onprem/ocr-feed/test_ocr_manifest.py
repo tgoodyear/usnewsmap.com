@@ -1,6 +1,9 @@
-"""Tests for the OCR prefetch manifest builder (#1055): the parts with no network or pyarrow."""
+"""Tests for the OCR prefetch manifest builder (#1055)."""
+import contextlib
 import datetime as dt
 import importlib.util
+import io
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -117,7 +120,8 @@ class NonEnglishTest(unittest.TestCase):
     def test_scored_nonenglish_pages_keep_language_and_page_damage_order(self):
         with tempfile.TemporaryDirectory() as folder:
             a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan", dsn="test",
-                                      strata=1, slack=20, max_pages=2, non_english=True, what_if=True)
+                                      strata=1, slack=20, max_pages=2, non_english=True, what_if=True,
+                                      quarantine_root=folder)
             # The SQL itself orders individual pages, not language medians or strata,
             # and deliberately does not exclude already image-scored/staged pages.
             rows = ("sn1_1900-01-02_ed-1_seq-3,xx_test,1,detected,0.8,sn1,1900,srp\n"
@@ -146,11 +150,213 @@ class NonEnglishTest(unittest.TestCase):
                 "name": "queue-quality-qwen-test", "at": dt.datetime.now(UTC).isoformat(),
                 "pairs": [["xx_test", doc]]}))
             a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan",
-                                      non_english=True)
+                                      non_english=True, quarantine_root=folder)
             with mock.patch.object(m, "staged_pairs", return_value={("xx_test", doc): {}}), \
                     mock.patch.object(m, "available", return_value=False), \
                     mock.patch("subprocess.run", side_effect=AssertionError("queued ahead of recovery")):
                 m.cmd_build_quality(a)
+
+
+class QuarantineExclusionTest(unittest.TestCase):
+    class DecoderError(Exception):
+        original_type = "OSError"
+
+    @staticmethod
+    def page(seq):
+        return {"doc_id": f"sn1_1900-01-02_ed-1_seq-{seq}", "batch": "xx_test", "batch_version": 1,
+                "bytes": 12, "sha256": "a" * 64, "lang": "rus", "damage_rate": 0.8,
+                "scan": f"buffer/xx_test/sn1/1900-01-02/1/{seq}.jp2"}
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for manifest compatibility")
+    def test_quarantines_are_excluded_and_only_an_ordinary_manifest_is_published(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            quarantine = m.load_scan_quarantine()
+            blocked = [self.page(1), self.page(2)]
+            for campaign, page in zip(("cpu-test", "qwen-test"), blocked):
+                for _ in range(3):
+                    quarantine.record_failure(root / campaign, page, self.DecoderError("broken stream"),
+                                              {"pillow": "test", "codec": "jpg_2000"})
+                record = quarantine.quarantined(root / campaign)[0]
+                self.assertEqual(record["refetch_state"], "manual_review")
+                self.assertIsNone(record["manifest_body"])
+
+            healthy = self.page(3)
+            candidates = "".join(f"{page['doc_id']},xx_test,1,detected,0.8,sn1,1900,rus\n"
+                                 for page in [*blocked, healthy])
+            requests = []
+
+            def urlopen(request, timeout):
+                requests.append(request)
+                response = io.BytesIO()
+                response.status = 201
+                return response
+
+            for what_if in (True, False):
+                args = types.SimpleNamespace(state=str(root / f"builder-{what_if}"), dsn="test",
+                                             scan_server="http://scan", max_pages=10, strata=1,
+                                             batches=None, non_english=True, what_if=what_if,
+                                             quarantine_root=folder)
+                with self.subTest(what_if=what_if), \
+                        mock.patch.object(m, "staged_pairs", return_value={}), \
+                        mock.patch.object(m.urllib.request, "urlopen", side_effect=urlopen), \
+                        mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                            returncode=0, stdout=candidates, stderr="")) as psql, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    m.cmd_build_quality(args)
+                    for page in blocked:
+                        self.assertIn(page["doc_id"] + "\n", psql.call_args.kwargs["input"])
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].get_method(), "PUT")
+            self.assertIn("/manifests/queue-quality-qwen-", requests[0].full_url)
+            table = pq.read_table(pa.BufferReader(requests[0].data))
+            self.assertEqual(table.schema.metadata[b"usnm.format"], b"usnm-prefetch-manifest/1")
+            self.assertEqual([row["doc_id"] for row in table.to_pylist()], [healthy["doc_id"]])
+
+    def test_quarantine_appearing_during_selection_is_excluded_before_publication(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            blocked, healthy = self.page(1), self.page(2)
+            quarantine = m.load_scan_quarantine()
+            error = self.DecoderError("broken stream")
+            for _ in range(2):
+                quarantine.record_failure(root / "qwen-test", blocked, error, {"pillow": "test"})
+            candidates = "".join(f"{page['doc_id']},xx_test,1,detected,0.8,sn1,1900,rus\n"
+                                 for page in (blocked, healthy))
+            read_quarantines, reads = quarantine.quarantined_documents, []
+
+            def observe(path):
+                result = read_quarantines(path)
+                reads.append(result)
+                if len(reads) == 2:
+                    quarantine.record_failure(root / "qwen-test", blocked, error, {"pillow": "test"})
+                return result
+
+            response = io.BytesIO()
+            response.status = 201
+            args = types.SimpleNamespace(state=str(root / "builder"), dsn="test", scan_server="http://scan",
+                                         max_pages=10, strata=1, batches=None, non_english=True,
+                                         what_if=False, quarantine_root=folder)
+            with mock.patch.object(m, "load_scan_quarantine", return_value=quarantine), \
+                    mock.patch.object(quarantine, "quarantined_documents", side_effect=observe), \
+                    mock.patch.object(m, "staged_pairs", return_value={}), \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest, \
+                    mock.patch.object(m.urllib.request, "urlopen", return_value=response) as publish, \
+                    mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                        returncode=0, stdout=candidates, stderr="")), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                m.cmd_build_quality(args)
+            self.assertEqual([row["doc_id"] for row in manifest.call_args.args[0]], [healthy["doc_id"]])
+            self.assertEqual(publish.call_count, 1)
+            self.assertEqual(reads, [set(), set(), {blocked["doc_id"]}])
+
+    def test_quarantine_transition_waits_for_inflight_manifest_publication(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            page = self.page(1)
+            quarantine = m.load_scan_quarantine()
+            error = self.DecoderError("broken stream")
+            for _ in range(2):
+                quarantine.record_failure(root / "cpu-test", page, error, {"pillow": "test"})
+            candidates = f"{page['doc_id']},xx_test,1,detected,0.8,sn1,1900,rus\n"
+            args = types.SimpleNamespace(state=str(root / "builder"), dsn="test", scan_server="http://scan",
+                                         max_pages=10, strata=1, batches=None, non_english=True,
+                                         what_if=False, quarantine_root=folder)
+            put_entered, release_put, writer_started, writer_done = (threading.Event() for _ in range(4))
+            errors, requests = [], []
+
+            def urlopen(request, timeout):
+                requests.append(request)
+                put_entered.set()
+                if not release_put.wait(5):
+                    raise TimeoutError("test did not release manifest PUT")
+                response = io.BytesIO()
+                response.status = 201
+                return response
+
+            def build():
+                try:
+                    m.cmd_build_quality(args)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            def record():
+                writer_started.set()
+                try:
+                    quarantine.record_failure(root / "cpu-test", page, error, {"pillow": "test"})
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    writer_done.set()
+
+            builder = threading.Thread(target=build, daemon=True)
+            writer = threading.Thread(target=record, daemon=True)
+            with mock.patch.object(m, "staged_pairs", return_value={}), \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"parquet"), \
+                    mock.patch.object(m.urllib.request, "urlopen", side_effect=urlopen), \
+                    mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                        returncode=0, stdout=candidates, stderr="")), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                builder.start()
+                try:
+                    self.assertTrue(put_entered.wait(5), "builder did not reach manifest PUT")
+                    writer.start()
+                    self.assertTrue(writer_started.wait(5))
+                    self.assertFalse(writer_done.wait(0.3), "quarantine committed during manifest publication")
+                finally:
+                    release_put.set()
+                    builder.join(5)
+                    if writer_started.is_set():
+                        writer.join(5)
+            self.assertFalse(builder.is_alive())
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(quarantine.quarantined(root / "cpu-test")[0]["refetch_state"], "manual_review")
+
+    def test_failed_manifest_publication_releases_quarantine_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            page = self.page(1)
+            quarantine = m.load_scan_quarantine()
+            error = self.DecoderError("broken stream")
+            for _ in range(2):
+                quarantine.record_failure(root / "cpu-test", page, error, {"pillow": "test"})
+            candidates = f"{page['doc_id']},xx_test,1,detected,0.8,sn1,1900,rus\n"
+            args = types.SimpleNamespace(state=str(root / "builder"), dsn="test", scan_server="http://scan",
+                                         max_pages=10, strata=1, batches=None, non_english=True,
+                                         what_if=False, quarantine_root=folder)
+            with mock.patch.object(m, "staged_pairs", return_value={}), \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"parquet"), \
+                    mock.patch.object(m.urllib.request, "urlopen", side_effect=OSError("network down")), \
+                    mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                        returncode=0, stdout=candidates, stderr="")), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaisesRegex(OSError, "network down"):
+                m.cmd_build_quality(args)
+            writer = threading.Thread(target=quarantine.record_failure,
+                                      args=(root / "cpu-test", page, error, {"pillow": "test"}), daemon=True)
+            writer.start()
+            writer.join(5)
+            self.assertFalse(writer.is_alive(), "failed publication kept the quarantine lock")
+            self.assertEqual(quarantine.quarantined(root / "cpu-test")[0]["refetch_state"], "manual_review")
+
+    def test_nonenglish_acquisition_requires_readable_quarantine_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = types.SimpleNamespace(state=folder, scan_server="http://scan", non_english=True,
+                                         quarantine_root=str(Path(folder) / "missing"))
+            with self.assertRaises(FileNotFoundError):
+                m.cmd_build_quality(args)
+
+    def test_repair_queue_option_is_rejected(self):
+        with contextlib.redirect_stderr(io.StringIO()) as output, self.assertRaises(SystemExit) as error:
+            m.main(["build-quality", "--state", "unused", "--dsn", "unused", "--non-english",
+                    "--queue-decode-repairs", "on"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("--queue-decode-repairs", output.getvalue())
 
 
 if __name__ == "__main__":

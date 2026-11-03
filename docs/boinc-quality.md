@@ -919,8 +919,9 @@ copying/cleaning the same chunk concurrently; normal project mutexes still seria
 server staging/submission. This does not replace the ordinary quality feeder.
 Install `qwen_feed.py`, `quality-ship.sh` and `quality_receive.py` into a Qwen-owned
 `/opt/usnm-quality-feed/qwen-throughput/` directory, leaving other campaigns'
-installed shared helpers unchanged. Install the updated `quality_feed.py` and `ocr_manifest.py` in
-the preparation CT's `/opt/usnm-quality-feed/`. Install `archive_alto.py` on the archive
+installed shared helpers unchanged. Install `scan_quarantine.py` in the preparation CT's
+`/opt/usnm-quality-feed/` **before** the matching `quality_feed.py` and `ocr_manifest.py`.
+Install `archive_alto.py` on the archive
 host at `/opt/usnm-quality-feed/`, and both `qwen_submit.py` and `qwen_provenance.py` inside the server container at
 `/project/ops/qwen-feed/`. The existing pinned preparation venv suffices; no new
 packages or LoC clients are needed. Both SSH destinations must have verified host keys
@@ -954,6 +955,68 @@ least one archive), returning unvisited pages as `pending`, not `missing`. Cache
 XML and provenance are verified on subsequent ticks, so large first-time selections
 make incremental progress rather than repeatedly exceeding the SSH timeout. Pending
 pages remain eligible immediately; only confirmed missing sources get the daily deferral.
+
+#### Undecodable source scans
+
+Preparation forwards the feeder's captured stdout to the journal even when the child
+exits unsuccessfully or times out; its stderr remains inherited. READY counts report
+pages actually written, not merely selected. A scan must match its indexed byte count
+and SHA256 before decoding. With Qwen's `--quarantine-decode`, only a known Pillow
+unidentified/truncated/broken-stream error, with the expected codec available, counts
+toward quarantine. Missing codecs, format disagreements, network errors, scan/index
+mismatches and other errors remain visible, retryable failures and do not increment
+the decoder-failure count. A successfully prepared page resets earlier, pre-quarantine
+failures. Three decoder failures of the same
+`(doc_id, batch, batch_version, bytes, sha256)` record quarantine it; the ordinary
+selector excludes that fingerprint, not every future version of the document. Other
+successfully prepared pages keep their READY chunks.
+The updated CPU `usnm-quality-follow.service` opts `quality_feed.py follow` into the
+same verification and three-failure threshold. It filters quarantined fingerprints
+before filling its bounded outbox, so an unchanged bad scan neither retries nor crowds
+out other pages. A changed fingerprint remains eligible; network, integrity and unknown
+decoder errors continue to retry. CPU and Qwen quarantines are recorded as
+`manual_review` and never queue a re-fetch. These changes do not alter BOINC work requests.
+
+The preparation CT stores this evidence, decoder versions, failure counts/timestamps
+and review state in the campaign's
+`/var/lib/usnm-quality-feed/<campaign>/decode-quarantine.sqlite3`, separate from
+`skipped.txt`. For example, inspect quarantined records without changing them:
+
+```sh
+pct exec 215 -- /opt/usnm-quality-feed/venv/bin/python -c \
+  'import json,sys; from pathlib import Path; sys.path.insert(0,"/opt/usnm-quality-feed"); from scan_quarantine import quarantined; print(json.dumps([{k:v for k,v in r.items() if k != "manifest_body"} for r in quarantined(Path("/var/lib/usnm-quality-feed/qwen-nonenglish-v1"))], indent=2))'
+```
+
+This change adds no repair/re-fetch producer or new queue format. The existing fetcher and
+dashboard continue to consume ordinary `usnm-prefetch-manifest/1` manifests. The Qwen
+manifest builder reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`)
+and excludes quarantined documents from new ordinary non-English acquisition. A missing
+or unreadable root or helper is an error. Already queued manifests and independent OCR
+acquisition are not rewritten or blocked; recovery needs a separately reviewed plan.
+Quarantine writers and the manifest builder must use the same root: they serialize
+quarantine transitions with the builder's final exclusion check and ordinary manifest PUT.
+Keep its `.decode-quarantine.lock` file in place while either service runs; replacing it
+would break that coordination. A failed PUT releases the lock and remains an error.
+
+At an idle boundary, install the quarantine helper and matching manifest builder/service
+first, then the shared `quality_feed.py` before the updated CPU follower service and
+matching `qwen_source.py` and `qwen_feed.py`. Restart the follower only at a safe
+boundary, preserving its outbox and state. To roll back, preserve quarantine state,
+READY chunks and queued work. Restore the previous CPU follower unit before an older
+shared feeder, which cannot parse `--quarantine-decode`; it will resume retrying bad
+scans. Keep the new helper and manifest exclusion while quarantines need protection.
+If the old manifest builder must be restored, pause that producer at an idle boundary
+and obtain a reviewed recovery plan. An old Qwen controller ignores quarantine.
+
+Language-budget reservations are still made before preparation; an already-reserved
+failed fingerprint can be retried without spending another page. A changed fingerprint
+after quarantine, or a failure before a retry record is persisted or after decoding but
+before writing READY, can still require budget review.
+
+Matching size, SHA256 and (for batch JP2s) the advertised bag MD5 proves the retained
+bytes match those recorded checksums, **not** that the bytes are decodable or whether
+damage originated upstream. A re-fetch may return identical source bytes; resolving
+source versus decoder problems requires separate evidence rather than a retry loop.
 
 The shipper stages native 8B work **before** freeing source inputs, reusing normal Rust
 staging/submission, 12 crops/page, shared models, quorum two and distinct-host validation.

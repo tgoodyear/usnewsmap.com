@@ -21,6 +21,7 @@ curated copy. A new manifest is made only when the last one's pages are mostly o
 server (90%) or it is a day old, so the fetcher's queue never piles up.
 """
 import argparse
+from contextlib import nullcontext
 import datetime as dt
 import glob
 import io
@@ -35,6 +36,7 @@ import xml.etree.ElementTree as ET
 
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 FORMAT = "usnm-prefetch-manifest/1"
+DEFAULT_QUARANTINE_ROOT = "/var/lib/usnm-quality-feed"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
 MAX_TRIES = 3
@@ -457,6 +459,20 @@ def pick_issues(rows, queued, index, strata, max_pages):
     return out
 
 
+def load_scan_quarantine():
+    import importlib.util
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    helper = here / "scan_quarantine.py"
+    if not helper.is_file():
+        helper = here.parent / "quality-feed" / "scan_quarantine.py"
+    spec = importlib.util.spec_from_file_location("scan_quarantine", helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def cmd_build_quality(a):
     """The full image pass's next pages (usnm_quality's rank.sql query 2, by issue: worst
     first by damage and LoC's own doubt, round-robin over title and decade, the first
@@ -473,6 +489,14 @@ def cmd_build_quality(a):
     import subprocess
 
     os.makedirs(a.state, exist_ok=True)
+    quarantine_root = getattr(a, "quarantine_root", DEFAULT_QUARANTINE_ROOT)
+    quarantined_docs = set()
+    quarantine = None
+    if getattr(a, "non_english", False):
+        if not quarantine_root:
+            raise ValueError("non-English acquisition requires a scan-quarantine root")
+        quarantine = load_scan_quarantine()
+        quarantined_docs = quarantine.quarantined_documents(quarantine_root)
     batch_filter = ""
     if a.batches:
         # usnm_quality keeps a batch's name without its version (ak_goat, 1 for ak_goat_ver01).
@@ -507,7 +531,7 @@ def cmd_build_quality(a):
             with open(retained_path) as f:
                 retained = json.load(f)
         now = dt.datetime.now(dt.timezone.utc).timestamp()
-        excluded = queued | {
+        excluded = queued | quarantined_docs | {
             doc for (batch, doc), row in index.items()
             if (retained.get(doc, {}).get("batch") == batch
                 and retained[doc].get("fetched_at") == row.get("fetched_at")
@@ -526,9 +550,12 @@ def cmd_build_quality(a):
         sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
     candidates = list(csv.reader(io.StringIO(p.stdout)))
     if getattr(a, "non_english", False):
+        quarantined_docs = quarantine.quarantined_documents(quarantine_root)
         picked = []
         for row in candidates:
             doc, batch = row[:2]
+            if doc in quarantined_docs:
+                continue
             old = index.get((batch, doc))
             if old and available(a.scan_server, old, sets=("keep",)):
                 retained[doc] = {"batch": batch, "fetched_at": old.get("fetched_at"), "checked_at": now}
@@ -547,27 +574,32 @@ def cmd_build_quality(a):
         lang = rest[-1] if getattr(a, "non_english", False) else "eng"
         rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": lang},
                            {doc: {"lang": lang, "decision": decision, "damage_rate": float(rate)}}))
-    if not rows:
-        if getattr(a, "non_english", False):
-            log("no missing scans in this candidate slice; retained scans checkpointed", checked=len(candidates))
-        else:
-            log("no quality pages left in these strata", strata=a.strata)
-        return
-    body = manifest_bytes(rows)
-    name = "queue-quality-" + ("qwen-" if getattr(a, "non_english", False) else "")
-    name += dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
-    issues = len({issue_of(r["doc_id"]) for r in rows})
-    batches = len({r["batch"] for r in rows})
-    if a.what_if:
-        log("would queue a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches,
-            bytes=len(body))
-        return
-    url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
-    req = urllib.request.Request(url, data=body, method="PUT",
-                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/octet-stream"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        if r.status not in (200, 201):
-            sys.exit(f"the scan server answered {r.status} for {url}")
+    lock = quarantine.publication_lock(quarantine_root) if quarantine and not a.what_if else nullcontext()
+    with lock:
+        if quarantine:
+            quarantined_docs = quarantine.quarantined_documents(quarantine_root)
+            rows = [row for row in rows if row["doc_id"] not in quarantined_docs]
+        if not rows:
+            if getattr(a, "non_english", False):
+                log("no missing scans in this candidate slice; retained scans checkpointed", checked=len(candidates))
+            else:
+                log("no quality pages left in these strata", strata=a.strata)
+            return
+        body = manifest_bytes(rows)
+        name = "queue-quality-" + ("qwen-" if getattr(a, "non_english", False) else "")
+        name += dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
+        issues = len({issue_of(r["doc_id"]) for r in rows})
+        batches = len({r["batch"] for r in rows})
+        if a.what_if:
+            log("would queue a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches,
+                bytes=len(body))
+            return
+        url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
+        req = urllib.request.Request(url, data=body, method="PUT",
+                                     headers={"User-Agent": USER_AGENT, "Content-Type": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            if r.status not in (200, 201):
+                sys.exit(f"the scan server answered {r.status} for {url}")
     with open(docs_path, "a") as f:
         f.write("".join(f"{r['doc_id']}\n" for r in rows))
     with open(last_path + ".tmp", "w") as f:
@@ -600,6 +632,8 @@ def main(argv=None):
     q.add_argument("--what-if", action="store_true")
     q.add_argument("--non-english", action="store_true",
                    help="all non-English pages, descending page damage; keep their true language/scan retention")
+    q.add_argument("--quarantine-root", default=DEFAULT_QUARANTINE_ROOT,
+                   help="campaign root whose quarantined documents are excluded from non-English acquisition")
     a = ap.parse_args(argv)
     if a.cmd == "build-quality":
         if a.non_english and a.batches:
