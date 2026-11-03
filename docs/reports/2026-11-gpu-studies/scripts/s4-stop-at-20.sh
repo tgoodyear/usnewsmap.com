@@ -10,7 +10,7 @@ valid_ip() {
 }
 valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && [ "$((10#$1))" -ge 1 ] && [ "$((10#$1))" -le 65535 ]; }
 cnt() {
-  local listing j endpoint IP PORT
+  local listing j endpoint IP PORT last status
   listing=$(scripts/vast.sh --action list) || { echo "failed to list rentals" >&2; return 2; }
   j=$(printf '%s\n' "$listing" | grep -F -- "$1")
   [ -n "$j" ] || { echo -1; return; }
@@ -28,9 +28,15 @@ cnt() {
   IFS=$'\t' read -r IP PORT <<<"$endpoint"
   if ! valid_ip "$IP" || ! valid_port "$PORT"; then echo "invalid SSH endpoint for $1" >&2; return 2; fi
   [ -n "${GPU_STUDY_SECRETS:-}" ] || { echo "GPU_STUDY_SECRETS is required" >&2; return 2; }
-  env -u SSH_AUTH_SOCK ssh -F /dev/null -n -p "$PORT" -i "$GPU_STUDY_SECRETS/rental_ed25519" \
-    -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    -o "UserKnownHostsFile=/tmp/kh-w$1" -o ConnectTimeout=15 "root@$IP" "$2" 2>/dev/null | tail -1
+  last=$(
+    set -o pipefail
+    env -u SSH_AUTH_SOCK ssh -F /dev/null -n -p "$PORT" -i "$GPU_STUDY_SECRETS/rental_ed25519" \
+      -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o "UserKnownHostsFile=/tmp/kh-w$1" -o ConnectTimeout=15 "root@$IP" "$2" 2>/dev/null | tail -1
+  )
+  status=$?
+  if [ "$status" -ne 0 ]; then echo "SSH output pipeline failed for $1 (status $status)" >&2; return "$status"; fi
+  [ -z "$last" ] || printf '%s\n' "$last"
 }
 while :; do
   for k in s4surya3090 s4surya4090; do n=$(cnt "$k" 'wc -l < /work/out/surya-pages.jsonl') || exit $?; echo "$(date -Is) $k $n" >> s4watch.log
