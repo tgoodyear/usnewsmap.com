@@ -332,6 +332,11 @@ class GPUStudyTransportTests(unittest.TestCase):
             "label": "usnm-gpu-s4surya3090", "public_ipaddr": "203.0.113.8",
             "ports": {"22/tcp": [{"HostPort": "2222"}]},
         }) + "\n", encoding="utf-8")
+        secrets = case / "synthetic key directory"
+        secrets.mkdir()
+        (secrets / "known_hosts").write_text(
+            "[203.0.113.8]:2222 ssh-ed25519 synthetic-test-host-key\n", encoding="utf-8"
+        )
         executable(
             root / "scripts/vast.sh",
             """\
@@ -382,14 +387,13 @@ class GPUStudyTransportTests(unittest.TestCase):
         executable(self.bin / "date", "#!/bin/sh\necho 2026-11-03T00:00:00Z\n")
         executable(self.bin / "sleep", "#!/bin/sh\nexit 1\n")
         source = (STUDY / "s4-stop-at-20.sh").read_text(encoding="utf-8")
-        source = source.replace("/tmp/kh-w", str(case / "known-hosts-"))
-        self.assertNotIn("/tmp/", source)
+        self.assertNotIn("StrictHostKeyChecking=accept-new", source)
         script = case / "s4-stop-at-20.sh"
         script.write_text(source, encoding="utf-8")
         env = self.env.copy()
         env.update(
             GPU_STUDY_ROOT=str(root),
-            GPU_STUDY_SECRETS=str(case / "synthetic key directory"),
+            GPU_STUDY_SECRETS=str(secrets),
             SSH_TRACE=str(case / "ssh-trace"),
             TAIL_CALLS=str(case / "tail-calls"),
             VAST_CALLS=str(case / "vast-calls"),
