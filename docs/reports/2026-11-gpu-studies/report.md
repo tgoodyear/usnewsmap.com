@@ -457,6 +457,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 
 - Post-hoc views. The no-loop scores and folded scores weren't planned. They're labelled wherever used.
 - Tesseract ran from the pinned worker image under `chroot` on a plain base, because that image's container closes SSH on Vast. Study 1's crop arms ran on a rented host with an unused GPU. The remaining Tesseract arms ran on a local node at the same version and flags.
+- The earlier rental unpacker ignored OCI layer whiteouts, so the historical rental rootfs could have retained files removed by the pinned image; its exact filesystem fidelity is unverified. The updated unpacker checks each layer and applies its whiteouts before additions, requires an empty, exclusively used rootfs, and refuses symlink ancestors, filesystem name aliases, and unsupported extended or sparse metadata. Non-ASCII paths also fail closed on name-aliasing filesystems. The pinned image was not fetched or retested, and no historical run was repeated.
 - The updated earlier-study Tesseract wrappers require verified model pins. `jpn_vert` has no approved pin in the worker lock, so that Japanese run is unavailable until one is reviewed.
 - Surya used image digest `e326a2a5` locally and `bccf7cba` rented, with the same Surya version, llama.cpp build and weights digest.
 - CHURRO ran in a Python 3.12 environment with torch 2.8.0, at the pinned commit and model revision, since its package needs 3.12.

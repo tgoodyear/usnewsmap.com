@@ -474,6 +474,7 @@ with open(os.environ['TRACE'], 'a') as f:
             directory.mkdir(parents=True)
         shutil.copy2(HERE / "tesseract-models.sh", scripts.parent / "tesseract-models.sh")
         executable(scripts / "rootfs.sh", "#!/usr/bin/env bash\nexit 0\n")
+        shutil.copy2(HERE / "jobs/rootfs-layer.py", scripts / "rootfs-layer.py")
         marker = self.work / "rented"
         executable(root / "scripts/rent.sh", '#!/usr/bin/env bash\nprintf "rented\\n" > "$RENT_MARKER"\n')
         (images / "pub-reichsanzeiger-fixture.png").touch()
@@ -495,6 +496,8 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertEqual((staged / "survey-models.lock").read_bytes(), SURVEY_LOCK.read_bytes())
         self.assertEqual((staged / "tesseract-models.sh").read_bytes(),
                          (HERE / "tesseract-models.sh").read_bytes())
+        self.assertEqual((staged / "rootfs-layer.py").read_bytes(),
+                         (HERE / "jobs/rootfs-layer.py").read_bytes())
         marker.unlink()
         bad_lock = root / "bad.lock"
         bad_lock.write_bytes(LOCK.read_bytes() + b"# altered\n")

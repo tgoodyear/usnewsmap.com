@@ -18,7 +18,7 @@ case "$STEP" in
   qwen) build push/s1-qwen; cp push/smoke/params.env push/s1-qwen/
     scripts/rent.sh --study s1qwen --image "$QWEN" --max-hours 7 --cap-dollars 2.5 --disk 40 --push-dir push/s1-qwen --job scripts/jobs/qwen.sh --prefer-machine "$PREFER" --out results/s1-qwen;;
   tess) build push/s1-tess; ln -s "$PC"/pages/*.jpg push/s1-tess/pages/
-    cp scripts/jobs/rootfs.sh scripts/tesseract-models.sh push/s1-tess/ || exit 6
+    cp scripts/jobs/rootfs.sh scripts/jobs/rootfs-layer.py scripts/tesseract-models.sh push/s1-tess/ || exit 6
     cp "${TESSERACT_MODELS_LOCK:-repo/ocr/engines/tesseract/models.lock}" push/s1-tess/models.lock || exit 6
     # shellcheck source=/dev/null
     . scripts/tesseract-models.sh

@@ -28,7 +28,9 @@ while IFS=$'\t' read -r list name lang psm; do
 done <"$I/runs.tsv"
 for model in "${required[@]}"; do tesseract_model_pin "$LOCK" "$model" "$SURVEY_LOCK" >/dev/null || exit 6; done
 
-apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates jq >/dev/null 2>&1
+apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq curl ca-certificates jq python3 >/dev/null 2>&1 || {
+  echo "failed to install rootfs prerequisites" >&2; exit 6;
+}
 bash "$I/rootfs.sh" --repo tgoodyear/usnm-boinc-worker --digest sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa || exit 6
 # Verify the same files that the chroot will read.
 [ ! -L "$R/work" ] && [ ! -L "$R/work/tessdata" ] || { echo "symlinked Tesseract directory" >&2; exit 6; }
