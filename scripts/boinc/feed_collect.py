@@ -21,7 +21,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from feed_status import APP_NAMES, MAX_AGE, atomic_json
+from feed_status import APP_NAMES, MAX_AGE, TICK_LIMIT_S, atomic_json
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 8000
@@ -481,6 +481,8 @@ def controller(unit):
             continue
         if not math.isfinite(seconds) or seconds < 0:
             continue
+        if seconds > TICK_LIMIT_S:
+            last_failure = max(last_failure, finished)
         latest = {"ok": ok, "seconds": seconds, "finished_at": finished}
     status = dict(line.split("=", 1) for line in run([
         "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
@@ -551,62 +553,78 @@ def backlog(dashboard, requests, outbox, selection=None):
     return {"backlogs": result}
 
 
-def eligible(unit, host, version, database):
-    if (unit["app"] != version["app"] or host["host_id"] in unit["hosts"]
-            or unit["assignments"] or unit["hr_class"]
-            or unit["rsc_memory_bound"] > host["memory_bytes"]
-            or unit["rsc_disk_bound"] > host["disk_bytes"]
-            or unit["app_version_num"] != 0 and unit["app_version_num"] != version["version_num"]):
-        return False
+def host_profile(host, version, database):
+    """Validate policy and live resource demand independently of workunit inventory."""
+    plan = database["plans"][version["plan_class"]] if version["plan_class"] else {}
+    if plan.get("project_prefs_tag"):
+        raise ValueError("account-gated plan requires evidence")
+    known = {"name", "project_prefs_tag", "min_wu_id", "max_wu_id", "min_batch", "max_batch",
+             "docker", "gpu_type", "cuda", "opencl", "min_core_client_version",
+             "min_ncpus", "max_threads", "avg_ncpus", "min_gpu_ram_mb",
+             "gpu_ram_used_mb", "ngpus", "min_cuda_version", "min_nvidia_compcap", "min_opencl_version"}
+    if set(plan) - known:
+        raise ValueError("unsupported scheduler eligibility gate")
+    for flag in ("docker", "cuda", "opencl"):
+        if flag in plan and plan[flag].strip() not in ("", "1"):
+            raise ValueError("unsupported scheduler flag")
+    integers = {key: int(plan.get(key, "1" if key == "max_threads" else "0")) for key in (
+        "min_wu_id", "max_wu_id", "min_batch", "max_batch", "max_threads",
+        "min_core_client_version", "min_cuda_version", "min_nvidia_compcap", "min_opencl_version")}
+    numbers = {key: float(plan.get(key, "1" if key == "ngpus" else "0")) for key in (
+        "min_ncpus", "avg_ncpus", "min_gpu_ram_mb", "gpu_ram_used_mb", "ngpus")}
+    if (any(value < 0 for value in integers.values())
+            or any(not math.isfinite(value) or value < 0 for value in numbers.values())):
+        raise ValueError("unmodeled scheduler resource policy")
     available = [v for v in database["versions"] if v["app"] == version["app"]
                  and v["plan_class"] == version["plan_class"] and v["platform"] == version["platform"]]
     minimum = database["minimum_versions"][version["app"]]
     if not available or minimum and version["version_num"] not in [
             v["version_num"] for v in available if v["version_num"] >= minimum]:
-        return False
+        return None
     if not minimum and version["version_num"] != max(v["version_num"] for v in available):
-        return False
-    if not version["plan_class"]:
-        return True
-    plan = database["plans"][version["plan_class"]]
-    if plan.get("project_prefs_tag"):
-        raise ValueError("account-gated plan requires evidence")
-    known = {"name", "project_prefs_tag", "min_wu_id", "max_wu_id", "min_batch", "max_batch",
-             "docker", "gpu_type", "cuda", "opencl", "min_core_client_version",
-             "min_ncpus", "max_threads", "avg_ncpus", "mem_usage_base_mb", "min_gpu_ram_mb",
-             "gpu_ram_used_mb", "ngpus", "min_cuda_version", "min_nvidia_compcap", "min_opencl_version"}
-    if set(plan) - known:
-        raise ValueError("unsupported scheduler eligibility gate")
-    if (int(plan.get("min_core_client_version", "0")) > host.get("client_version", 0)
-            or float(plan.get("min_ncpus", "0")) > host.get("cpus", 0)
-            or float(plan.get("mem_usage_base_mb", "0")) * 1e6 > host["memory_bytes"]
+        return None
+    effective = host.get("cpus")
+    if numbers["min_ncpus"] or not version["gpu"] and not numbers["avg_ncpus"]:
+        if type(effective) not in (int, float) or not math.isfinite(effective) or effective <= 0:
+            raise ValueError("effective host CPU capacity unavailable")
+    if (integers["min_core_client_version"] > host.get("client_version", 0)
+            or numbers["min_ncpus"] and numbers["min_ncpus"] > effective
             or "docker" in plan and not host.get("docker")):
-        return False
+        return None
     if version["gpu"]:
         gpu = version["gpu"]
-        expected = {"nvidia": "NVIDIA", "ati": "ATI", "intel": "intel_gpu", "apple": "apple_gpu"}
+        expected = {"nvidia": "NVIDIA", "ati": "ATI", "amd": "ATI", "intel": "intel_gpu", "apple": "apple_gpu"}
         if "gpu_type" in plan and expected.get(plan["gpu_type"]) != gpu:
-            return False
-        if float(plan.get("min_gpu_ram_mb", "0")) * 1e6 > host.get("gpu_memory", {}).get(gpu, 0):
-            return False
+            return None
+        if (numbers["ngpus"] or 1) != version["gpu_count"]:
+            raise ValueError("live GPU policy differs from installed resource profile")
+        # Without an explicit CPU demand the GPU profile depends on host performance
+        # data this collector does not model; a cached value is not current evidence.
+        if not numbers["avg_ncpus"]:
+            raise ValueError("unmodeled GPU CPU demand")
+        if numbers["min_gpu_ram_mb"] * 1e6 > host.get("gpu_memory", {}).get(gpu, 0):
+            return None
         for gate in ("min_cuda_version", "min_nvidia_compcap", "min_opencl_version"):
-            if int(plan.get(gate, "0")) > host.get("gpu_capabilities", {}).get(gpu, {}).get(gate, 0):
-                return False
-    return (int(plan.get("min_wu_id", "0")) <= unit["id"] <= int(plan.get("max_wu_id", str(2**63)))
-            and int(plan.get("min_batch", "0")) <= unit["batch"] <= int(plan.get("max_batch", str(2**63))))
+            if integers[gate] > host.get("gpu_capabilities", {}).get(gpu, {}).get(gate, 0):
+                return None
+        demand = numbers["avg_ncpus"]
+    else:
+        if any(key in plan for key in ("gpu_type", "cuda", "opencl", "ngpus")):
+            raise ValueError("CPU profile has an unmodeled GPU policy")
+        demand = numbers["avg_ncpus"] or min(integers["max_threads"], effective)
+    if demand <= 0 or demand != version["cpus"]:
+        raise ValueError("live CPU demand differs from installed resource profile")
+    return (integers["min_wu_id"], integers["max_wu_id"] or 2**63,
+            integers["min_batch"], integers["max_batch"] or 2**63)
 
 
-def gpu_profile(version, database):
-    plan = database["plans"][version["plan_class"]]
-    count = float(plan.get("ngpus", "1"))
-    if not math.isfinite(count) or count < 0 or "gpu_utilization_tag" in plan:
-        raise ValueError("unmodeled live GPU resource profile")
-    # Stock BOINC defaults to one GPU; zero also means one without a utilization tag.
-    if (count or 1) != version["gpu_count"]:
-        raise ValueError("live GPU policy differs from installed resource profile")
-    cpus = float(plan.get("avg_ncpus", "0"))
-    if not math.isfinite(cpus) or cpus < 0 or cpus and cpus != version["cpus"]:
-        raise ValueError("live GPU CPU demand differs from installed resource profile")
+def eligible(unit, host, version, bounds):
+    return (unit["app"] == version["app"] and host["host_id"] not in unit["hosts"]
+            and not unit["assignments"] and not unit["hr_class"]
+            and unit["rsc_memory_bound"] <= host["memory_bytes"]
+            and unit["rsc_disk_bound"] <= host["disk_bytes"]
+            and (unit["app_version_num"] == 0 or unit["app_version_num"] == version["version_num"])
+            and bounds[0] <= unit["id"] <= bounds[1] and bounds[2] <= unit["batch"] <= bounds[3])
 
 
 def supply(database, hosts, resource, disk_usage=None):
@@ -615,7 +633,7 @@ def supply(database, hosts, resource, disk_usage=None):
     Work offered to two classes is not two results, and two replicas of a unit
     cannot fill two slots on the same host.
     """
-    slots, candidates = [], {}
+    prepared = []
     for host in hosts:
         prefs = database["host_preferences"][str(host["host_id"])]
         if prefs.get("fallback"):
@@ -627,15 +645,22 @@ def supply(database, hosts, resource, disk_usage=None):
             continue
         if resource == "cpu" and host["idle_cpu"] == 0:
             continue
-        versions = [v for v in host["versions"] if v["app"] == app
-                    and bool(v["gpu"]) == (resource == "gpu") and v["gpu"] not in prefs["blocked"]]
-        if resource == "gpu" and all(gpu in prefs["blocked"] or count == 0 for gpu, count in host["idle_gpu"].items()):
+        devices = {gpu for gpu, count in host["idle_gpu"].items()
+                   if count > 0 and gpu not in prefs["blocked"]} if resource == "gpu" else {"cpu"}
+        if not devices:
             continue
+        profiles = []
+        for version in host["versions"]:
+            if version["app"] != app or (version["gpu"] or "cpu") not in devices:
+                continue
+            bounds = host_profile(host, version, database)
+            if bounds is not None:
+                profiles.append((version, bounds))
+        if devices - {v["gpu"] or "cpu" for v, _ in profiles}:
+            raise ValueError("host application eligibility unavailable for idle device")
+        versions = [v for v, _ in profiles]
         if len({v["cpus"] for v in versions}) > 1 and resource == "cpu":
             raise ValueError("mixed CPU resource profiles require scheduler evidence")
-        if resource == "gpu":
-            for version in versions:
-                gpu_profile(version, database)
         if resource == "gpu" and any(
                 len({v["gpu_count"] for v in versions if v["gpu"] == device}) > 1
                 for device in {v["gpu"] for v in versions}):
@@ -646,16 +671,18 @@ def supply(database, hosts, resource, disk_usage=None):
             capacity = (host["idle_gpu"].get(device, 0) / v["gpu_count"] if v["gpu"]
                         else host["idle_cpu"] / v["cpus"])
             capacities[device] = max(capacities.get(device, 0), math.floor(capacity))
-        if not versions:
-            raise ValueError("host application eligibility unavailable")
+        if any(count > 1024 for count in capacities.values()):
+            raise ValueError("slot limit")
+        prepared.append((host, profiles, capacities))
+    # No stock-dependent branch can bypass the host/profile validation above.
+    slots, candidates = [], {}
+    for host, profiles, capacities in prepared:
         for device, count in capacities.items():
-            if count > 1024:
-                raise ValueError("slot limit")
             for n in range(count):
                 slot = (host["host_id"], device, n)
                 slots.append(slot)
                 candidates[slot] = [u["id"] for u in database["units"] if any(
-                    (v["gpu"] or "cpu") == device and eligible(u, host, v, database) for v in versions)]
+                    (v["gpu"] or "cpu") == device and eligible(u, host, v, bounds) for v, bounds in profiles)]
                 if sum(len(v) for v in candidates.values()) > 100000:
                     raise ValueError("eligibility graph limit")
     # Capacitated network flow, including host/unit nodes (one replica per host).

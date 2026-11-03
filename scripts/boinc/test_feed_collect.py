@@ -75,14 +75,15 @@ def version(app="usnm_qwen", plan="intel", gpu="intel_gpu"):
 
 def host(identity=9, count=1):
     return {"host_id": identity, "versions": [version(), version("usnm_ocr", "docker", None)],
-            "idle_cpu": 1, "idle_gpu": {"intel_gpu": count}, "memory_bytes": 1000, "disk_bytes": 1000}
+            "cpus": 1, "idle_cpu": 1, "idle_gpu": {"intel_gpu": count}, "memory_bytes": 1000, "disk_bytes": 1000}
 
 
 def database():
     return {"minimum_versions": {"usnm_ocr": 0, "usnm_qwen": 117},
             "host_preferences": {str(h): {"apps": list(C.APP_NAMES), "blocked": []} for h in (9, 10)},
             "versions": [version(), version("usnm_ocr", "docker", None)],
-            "plans": {"intel": {"min_wu_id": "2", "max_wu_id": "10", "min_batch": "8", "max_batch": "8"},
+            "plans": {"intel": {"min_wu_id": "2", "max_wu_id": "10", "min_batch": "8", "max_batch": "8",
+                                "avg_ncpus": "1"},
                       "docker": {}},
             "units": [{"id": 5, "app": "usnm_qwen", "batch": 8, "app_version_num": 117,
                        "hr_class": 0, "assignments": 0, "hosts": [], "unsent": 2,
@@ -90,13 +91,70 @@ def database():
 
 
 class EligibilityTests(unittest.TestCase):
+    def test_every_idle_gpu_type_needs_an_installed_and_live_profile(self):
+        db, h = database(), host()
+        db["units"].append(dict(db["units"][0], id=6))
+        h["idle_gpu"]["NVIDIA"] = 1
+        with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
+            C.supply(db, [h], "gpu")
+        db["host_preferences"]["9"]["blocked"] = ["NVIDIA"]
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+        db["host_preferences"]["9"]["blocked"] = []
+        nvidia = version(plan="nvidia", gpu="NVIDIA")
+        h["versions"].append(nvidia)
+        db["plans"]["nvidia"] = {"gpu_type": "nvidia", "avg_ncpus": "1"}
+        with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
+            C.supply(db, [h], "gpu")
+        db["versions"].append(dict(nvidia, platform="incompatible"))
+        with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
+            C.supply(db, [h], "gpu")
+        db["versions"][-1]["platform"] = "linux"
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+
+    def test_cpu_demand_must_match_live_fixed_and_host_specific_multicore_policy(self):
+        db, h = database(), host()
+        db["units"][0]["app"] = "usnm_ocr"
+        h.update(cpus=2, idle_cpu=2)
+        h["versions"][1]["cpus"] = 2
+        db["plans"]["docker"]["avg_ncpus"] = "1"
+        with self.assertRaisesRegex(ValueError, "live CPU demand"):
+            C.supply(db, [h], "cpu")
+        h["versions"][1]["cpus"] = 1
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 1})
+        db["plans"]["docker"] = {"max_threads": "4"}
+        h.update(cpus=6, idle_cpu=6)
+        with self.assertRaisesRegex(ValueError, "live CPU demand"):
+            C.supply(db, [h], "cpu")
+        h["versions"][1]["cpus"] = 4
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        h.update(cpus=2, idle_cpu=2)
+        with self.assertRaisesRegex(ValueError, "live CPU demand"):
+            C.supply(db, [h], "cpu")
+        h["versions"][1]["cpus"] = 2
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
+        del h["cpus"]
+        with self.assertRaisesRegex(ValueError, "CPU capacity unavailable"):
+            C.supply(db, [h], "cpu")
+
+    def test_policy_validation_cannot_be_bypassed_by_empty_or_rejected_stock(self):
+        for resource, plan_name in (("cpu", "docker"), ("gpu", "intel")):
+            for key, value in (("project_prefs_tag", "opt_in"), ("unmodeled_gate", "1"),
+                               ("max_threads", "invalid"), ("mem_usage_per_cpu_mb", "10")):
+                for empty in (True, False):
+                    with self.subTest(resource=resource, policy=key, empty=empty):
+                        db = database()
+                        db["plans"][plan_name][key] = value
+                        db["units"] = [] if empty else [dict(db["units"][0], hosts=[9])]
+                        with self.assertRaises(ValueError):
+                            C.supply(db, [host()], resource)
+
     def test_mixed_gpu_profiles_cannot_fill_fractional_slots_with_full_gpu_work(self):
         db, h = database(), host()
         db["units"].append(dict(db["units"][0], id=6))
         half = dict(version(plan="half"), gpu_count=.5)
         h["versions"].append(half)
         db["versions"].append(half)
-        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2", "ngpus": ".5"}
+        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2", "ngpus": ".5", "avg_ncpus": "1"}
         with self.assertRaisesRegex(ValueError, "mixed GPU resource profiles"):
             C.supply(db, [h], "gpu")
         half["gpu_count"] = 1
@@ -127,7 +185,7 @@ class EligibilityTests(unittest.TestCase):
 
     def test_cumulative_disk_budget_is_checked_per_host_not_per_workunit(self):
         db, h = database(), host()
-        h["idle_cpu"] = 2
+        h.update(cpus=2, idle_cpu=2)
         db["units"] = [dict(db["units"][0], id=i, app="usnm_ocr", rsc_disk_bound=600) for i in (5, 6)]
         self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 1})
         db["units"][1]["rsc_disk_bound"] = 500
@@ -156,6 +214,8 @@ class EligibilityTests(unittest.TestCase):
                 self.assertEqual(C.supply(db, [host()], "gpu")["eligible"], 0)
         db = database()
         db["plans"]["intel"]["min_wu_id"] = "2"
+        db["plans"]["intel"]["max_wu_id"] = "0"
+        self.assertEqual(C.supply(db, [host()], "gpu")["eligible"], 1)
         db["plans"]["intel"]["max_wu_id"] = "1"
         self.assertEqual(C.supply(db, [host()], "gpu")["eligible"], 0)
         db["plans"]["intel"]["project_prefs_tag"] = "opt_in"
@@ -228,6 +288,31 @@ class ControllerTests(unittest.TestCase):
                                             1000 + elapsed, "boot", "cfg")
             self.assertEqual(next(c for c in document["checks"]
                                   if c["code"] == "controller_tick")["state"], expected)
+
+    def test_completed_runtime_breach_survives_a_short_or_running_successor(self):
+        for seconds in (900, 901):
+            for running in (False, True):
+                with self.subTest(seconds=seconds, running=running):
+                    events = [(NOW - 10, {"event": "boinc_batch_tick", "schema_version": 1,
+                                         "timings": {"tick_seconds": seconds}})]
+                    status = {}
+                    if running:
+                        status = {"SubState": "running", "ExecMainStartTimestampMonotonic": 1000000000,
+                                  "ExecMainExitTimestampMonotonic": 0}
+                    else:
+                        events.append((NOW - 5, {"event": "boinc_batch_tick", "schema_version": 1,
+                                                "timings": {"tick_seconds": 1}}))
+                    with patch.object(C.time, "clock_gettime", return_value=1001):
+                        tick = self.observe(events, **status)
+                    self.assertEqual(tick["last_failure_at"], NOW - 10 if seconds > 900 else 0)
+                    previous = {}
+                    for elapsed in (0, 60):
+                        document, previous = F.evaluate({"tick": tick}, previous, NOW + elapsed,
+                                                        1000 + elapsed, "boot", "cfg")
+                        expected = "firing" if seconds > 900 and elapsed == 0 else "healthy"
+                        self.assertEqual(next(c for c in document["checks"]
+                                              if c["code"] == "controller_tick")["state"], expected)
+                        previous = json.loads(json.dumps(previous))
 
 
 class CollectionTests(unittest.TestCase):
@@ -315,6 +400,22 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(facts["errors"], [])
             self.assertEqual(facts["supply"], {"cpu": {"idle": 1, "eligible": 1},
                                               "gpu": {"idle": 1, "eligible": 1}})
+
+    def test_missing_gpu_profile_is_unknown_without_poisoning_cpu_evidence(self):
+        docs = self.documents()
+        docs["/own"]["idle_gpu"]["NVIDIA"] = 1
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        config["clients"] = ["/own"]
+        with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect(config)
+            self.assertEqual(facts["errors"], ["gpu_eligibility"])
+            self.assertIn("cpu", facts["supply"])
+            self.assertNotIn("gpu", facts["supply"])
+            docs["/server"]["host_preferences"]["9"]["blocked"] = ["NVIDIA"]
+            recovered = C.collect(config)
+            self.assertEqual(recovered["errors"], [])
+            self.assertEqual(recovered["supply"]["gpu"], {"idle": 1, "eligible": 1})
 
     def test_late_source_forces_shared_completion_freshness(self):
         for delay, expected in ((5, "fresh"), (15, "unknown")):

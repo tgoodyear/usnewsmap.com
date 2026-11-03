@@ -68,6 +68,13 @@ resource profiles or differing `gpu_count` profiles for the same GPU type on one
 live `ngpus`/explicit CPU-demand mismatches with installed GPU profiles,
 non-preferred-app fallback requiring other apps' inventory,
 or oversized inventories produce unknown, not healthy.
+Policy/profile validation is a separate phase **before any stock enumeration**:
+empty stock or individually rejected workunits cannot bypass unsupported gates.
+Every unblocked GPU type with positive idle capacity needs a compatible installed
+and live profile. CPU demand comes from the live fixed `avg_ncpus`, or from
+`max_threads` capped by the observed host's effective CPU count; cached demand
+must agree. Missing host capacity, performance-derived GPU CPU demand, and
+unmodeled memory-scaling policies are unknown rather than inferred from cache.
 Selected work is also checked against cumulative per-host free disk, shared
 between CPU and GPU allocations. Uniform per-workunit disk bounds cap each
 host's allocation directly. If a mixed-weight maximum matching or combined
@@ -89,8 +96,10 @@ over 180 seconds reset them and emit a collection warning. An open backlog
 with no newly observed workunit for an uninterrupted hour fires; a new workunit
 or closed backlog resets that timer. Shortage fires at exactly 30 minutes.
 Refill expiry/remaining ≤6h, controller failure, or runtime >15 minutes fire
-immediately. A failed tick followed by recovery between polls is retained by
-its journal timestamp. The alert rule retains **all firing checks** for ten
+immediately. A failed tick or a successfully completed tick over 15 minutes is
+retained by its journal timestamp, even if a short tick follows or a new tick
+starts before collection. Both use the durable `last_failure_at` alert watermark,
+acknowledged only after publication. The alert rule retains **all firing checks** for ten
 minutes so a five-minute alert evaluation does not miss a shortage or other
 failure that recovers between evaluations. Duration thresholds are already
 enforced by the evaluator; this retention does not shorten them.
