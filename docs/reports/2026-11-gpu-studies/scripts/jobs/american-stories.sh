@@ -4,9 +4,16 @@
 set -u
 O=/work/out; I=/work/in; A=/work/as; mkdir -p $A/models
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq git unzip libgl1 libglib2.0-0 >/dev/null 2>&1
-git clone -q https://github.com/dell-research-harvard/AmericanStories.git $A/AmericanStories 2>> $O/setup.log
-c=$(git -C $A/AmericanStories rev-parse HEAD); echo "head $c" >> $O/setup.log
-git -C $A/AmericanStories checkout -q f307e5c 2>> $O/setup.log
+AS_REV=f307e5c
+git clone -q https://github.com/dell-research-harvard/AmericanStories.git "$A/AmericanStories" 2>> "$O/setup.log" || {
+  echo "American Stories: git clone failed" | tee -a "$O/setup.log" >&2
+  exit 6
+}
+c=$(git -C "$A/AmericanStories" rev-parse HEAD); echo "head $c" >> "$O/setup.log"
+git -C "$A/AmericanStories" checkout -q "$AS_REV" 2>> "$O/setup.log" || {
+  echo "American Stories: git checkout of pinned commit $AS_REV failed" | tee -a "$O/setup.log" >&2
+  exit 6
+}
 # The Dropbox link is mutable. This is the sha256 in scripts/ocr-survey/models.lock and of the archive the local batch read.
 MODELS_SHA256=53d46ba7173c06e907d222b1bebbd22689df15b7064b51f7a79cc962a18c9933
 curl -fsSL -o $A/models.zip 'https://www.dropbox.com/sh/sfaf1nmuji9yhu6/AAAj1UGrPmCWFJUiTSP41ihpa?dl=1'
@@ -14,7 +21,11 @@ sha256sum $A/models.zip | tee -a $O/setup.log
 echo "$MODELS_SHA256  $A/models.zip" | sha256sum -c --quiet - >> $O/setup.log 2>&1 || { echo "models.zip does not match the pinned sha256" >> $O/setup.log; exit 6; }
 unzip -q -o $A/models.zip -d $A/models 2>> $O/setup.log
 ls $A/models | head -30 >> $O/setup.log
-cd $A/AmericanStories; python -m pip -q install -r requirements.txt 2>&1 | tail -3 >> $O/setup.log
+cd "$A/AmericanStories" || {
+  echo "American Stories: cannot enter pinned checkout" | tee -a "$O/setup.log" >&2
+  exit 6
+}
+python -m pip -q install -r requirements.txt 2>&1 | tail -3 >> $O/setup.log
 python -m pip -q install 'git+https://github.com/dell-research-harvard/efficient_ocr.git@e38da3cd0b614cf13ba4c148bab5b37aeec3db7d' onnxruntime-gpu 2>&1 | tail -3 >> $O/setup.log
 m=$A/models; n=0; total=$(wc -l < $I/list.tsv)
 while IFS=$'\t' read -r id rel; do

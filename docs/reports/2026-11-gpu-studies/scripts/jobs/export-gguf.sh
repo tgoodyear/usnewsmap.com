@@ -26,7 +26,14 @@ if [ -n "$BASEREPO" ]; then
 elif [ -n "$BASEREV" ]; then echo "base revision without repository" >&2; exit 6; fi
 LLAMA=091b6a7fc
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq cmake g++ git >/dev/null 2>&1
-git clone -q https://github.com/ggml-org/llama.cpp /work/llama 2>> "$O/export.log"; git -C /work/llama checkout -q "$LLAMA" 2>> "$O/export.log"
+git clone -q https://github.com/ggml-org/llama.cpp /work/llama 2>> "$O/export.log" || {
+  echo "llama.cpp: git clone failed" | tee -a "$O/export.log" >&2
+  exit 6
+}
+git -C /work/llama checkout -q "$LLAMA" 2>> "$O/export.log" || {
+  echo "llama.cpp: git checkout of pinned commit $LLAMA failed" | tee -a "$O/export.log" >&2
+  exit 6
+}
 git -C /work/llama log -1 --format='%H %s' > "$O/llama-commit.txt"
 PY=$(command -v python); "$PY" -m pip -q install --no-cache-dir -e /work/llama/gguf-py sentencepiece protobuf mistral-common 2>&1 | tail -1 >> "$O/export.log"
 cmake -S /work/llama -B /work/lb -DGGML_NATIVE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_CURL=OFF >> "$O/export.log" 2>&1
