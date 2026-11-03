@@ -43,7 +43,7 @@ def snapshot(**overrides):
 
 
 class Observation(unittest.TestCase):
-    def observe(self, raw=None, current=None, identities=None, reads=None):
+    def observe(self, raw=None, current=None, identities=None, reads=None, times=None):
         raw = snapshot() if raw is None else raw
         identities = identities or [(DIRECTORY, IDENTITY)] * 2
         reads = reads or [raw, raw]
@@ -52,7 +52,7 @@ class Observation(unittest.TestCase):
              patch.object(GUARD, "read_bounded", side_effect=reads), \
              patch.object(GUARD, "database_apps",
                           return_value={1: 1.0, 6: 16.0, 9: 1.0} if current is None else current) as db, \
-             patch.object(GUARD.time, "monotonic", return_value=NOW_MS / 1000):
+             patch.object(GUARD.time, "monotonic", side_effect=times, return_value=NOW_MS / 1000):
             result = GUARD.check(PROJECT)
         return result, db
 
@@ -112,6 +112,15 @@ class Observation(unittest.TestCase):
         self.assertEqual(result, {"status": "unknown", "reason": "snapshot_process_mismatch"})
         result, _ = self.observe(raw=snapshot(start_ticks="301"), identities=[new_process] * 2)
         self.assertEqual(result["status"], "match")
+
+    def test_snapshot_expiring_during_observation_is_unknown(self):
+        for drift in (False, True):
+            with self.subTest(drift=drift):
+                result, _ = self.observe(
+                    raw=snapshot(monotonic_ms=NOW_MS - GUARD.MAX_AGE_MS + 1, drift=drift),
+                    times=[NOW_MS / 1000, (NOW_MS + 10) / 1000],
+                )
+                self.assertEqual(result, {"status": "unknown", "reason": "stale_snapshot"})
 
     def test_missing_feeder_or_failed_database_is_unknown_not_healthy(self):
         with patch.object(GUARD, "feeder_identity", side_effect=FileNotFoundError):

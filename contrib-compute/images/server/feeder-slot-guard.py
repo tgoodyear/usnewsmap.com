@@ -174,6 +174,8 @@ def check(project, proc=Path("/proc")):
         if feeder_identity(project, proc) != (directory, identity) or \
                 read_bounded(path, owner=os.geteuid()) != raw:
             raise Unknown("observation_changed")
+        # A slow database query can outlast the snapshot's remaining freshness window.
+        parse_snapshot(raw, identity, int(time.monotonic() * 1000))
         if record["drift"]:
             return {"status": "drift", "reason": "reload_changed_app_order_or_weights"}
         added = sorted(current.keys() - allocated.keys())

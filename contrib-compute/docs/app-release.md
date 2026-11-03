@@ -97,6 +97,9 @@ reverts. The independent
 TLS against that allocation, including changes made outside `xadd`. It rejects
 stale, malformed, missing, uninstrumented, in-progress or wrong-process snapshots
 and failed database checks rather than inventing a baseline for an existing feeder.
+If publication and removal of the preceding snapshot both fail, that snapshot may
+still appear valid until its three-minute expiry; also monitor the feeder's
+`usnm-feeder-guard: allocation status unavailable` warning.
 
 The server image's separate supervisor program emits a
 `boinc_feeder_slot_guard` JSON event about every five minutes: `match`, `drift`,
