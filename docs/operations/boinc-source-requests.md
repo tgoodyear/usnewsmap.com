@@ -21,9 +21,10 @@ identities are excluded using the same existing disposition records. A changed
 index checksum or archive version fails explicitly instead of silently changing
 request membership. An exactly matching decode-quarantined member is instead
 reported as `preparation_quarantined` / `needs_science_review` and is not
-rebound to a repaired fingerprint; other request members and ordinary feeding
-can continue. `quarantined_refetch_states` reports its repair state even if
-another copy of that document has since been prepared. Requests waiting for unavailable archives do not starve
+rebound to a changed fingerprint; other request members and ordinary feeding
+can continue. `quarantined_refetch_states` reports its review state even if
+another copy of that document has since been prepared; no re-fetch is queued.
+Requests waiting for unavailable archives do not starve
 ordinary feeding. The 500-fresh-pair watermark, 2,000-unresolved ceiling,
 three-READY-chunk bound, 50 GiB floor and reservation checks still apply.
 

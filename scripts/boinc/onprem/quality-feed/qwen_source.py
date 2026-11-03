@@ -174,7 +174,7 @@ def inspect(args, record):
     quarantined = {tuple(row["source"][key] for key in fields): row["refetch_state"]
                    for row in prepared.get("quarantine", [])}
     requested = {page["doc_id"]: page for page in pages}
-    repair_states = Counter()
+    quarantine_states = Counter()
     inventory = json.loads(feed.remote(args.archive_host, [
         "python3", "/opt/usnm-quality-feed/archive_alto.py",
         "--pages", "-", "--archives", "/tank/locbulk/ocr", "--out", "/tank/locstats/qwen-alto"], b""))
@@ -189,7 +189,7 @@ def inspect(args, record):
             key = tuple(requested[doc].get(field) for field in fields)
             if key in quarantined:
                 status = "preparation_quarantined"
-                repair_states[quarantined[key]] += 1
+                quarantine_states[quarantined[key]] += 1
                 waiting.append(doc)
             elif doc in prepared["skipped.txt"]:
                 status = "preparation_rejected"
@@ -232,7 +232,7 @@ def inspect(args, record):
             and value["status"] not in ("source_conflict", "source_provenance_unavailable")
             for value in native["pages"].values()),
         "waiting_source_pages": len(waiting),
-        "quarantined_refetch_states": dict(repair_states),
+        "quarantined_refetch_states": dict(quarantine_states),
         "waiting_original_archive_pages": sum(
             p["doc_id"] in waiting_set
             and f"{p['batch']}_ver{int(p['batch_version']):02d}.tar.bz2" not in retained for p in pages),

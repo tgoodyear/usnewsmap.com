@@ -27,8 +27,7 @@ pages it can't use (no LoC text) in skipped.txt with the reason, so a restart go
 where it stopped. A scan/index mismatch is retried instead of used. With
 --quarantine-decode, three known decoder failures of the same verified scan fingerprint
 are recorded separately and excluded until its bytes change.
-follow supports the same flag, but leaves its quarantined scans for operator review
-instead of requesting automatic repairs.
+Quarantines in either mode require operator review.
 """
 import argparse
 import concurrent.futures
@@ -433,7 +432,7 @@ def cached_alto(cache, doc):
     return raw
 
 
-def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path, *, automatic_repair=True):
+def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
     """Prepare one chunk of pages and write it to the outbox; returns (pages written, the
     number left for a retry, the next chunk number)."""
     retry = 0
@@ -473,12 +472,9 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path, *
                     error_type=e.original_type, error=str(e)[:200])
                 attempts = 0
                 if getattr(a, "quarantine_decode", False):
-                    attempts = scan_quarantine.record_failure(state, p, e, e.decoder,
-                                                              automatic_repair=automatic_repair)
+                    attempts = scan_quarantine.record_failure(state, p, e, e.decoder)
                 if attempts >= scan_quarantine.FAILURES_BEFORE_QUARANTINE:
-                    msg = ("scan quarantined; repair pending" if automatic_repair else
-                           "scan quarantined; operator review required")
-                    log(msg, doc_id=p["doc_id"], sha256=p["sha256"],
+                    log("scan quarantined; operator review required", doc_id=p["doc_id"], sha256=p["sha256"],
                         attempts=attempts, error_type=e.original_type, error=str(e)[:200])
                 else:
                     retry += 1
@@ -739,7 +735,7 @@ def cmd_follow(a):
                           + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
             for i in range(0, len(pages), a.chunk_pages):
                 _, _, seq = process_chunk(a, texts, pages[i : i + a.chunk_pages], camp_dir, state, seq,
-                                          done_path, skip_path, automatic_repair=False)
+                                          done_path, skip_path)
         if a.once:
             return
         wait_for_room(camp_dir, a.max_pending, a.every_secs, busy=room == 0 or bool(todo))

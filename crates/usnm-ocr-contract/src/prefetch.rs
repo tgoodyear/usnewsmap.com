@@ -30,8 +30,6 @@ use usnm_core::ids::PageKey;
 
 /// The manifest's format version, in the Parquet key-value metadata.
 pub const FORMAT: &str = "usnm-prefetch-manifest/1";
-/// A decode-repair request must be consumed by a no-overwrite-aware fetcher.
-pub const DECODE_REPAIR_FORMAT: &str = "usnm-prefetch-decode-repair/1";
 const FORMAT_KEY: &str = "usnm.format";
 
 /// One page to fetch.
@@ -145,22 +143,13 @@ pub fn sort(rows: &mut [ManifestRow]) {
 
 /// The manifest as Parquet (zstd), rows in the order given.
 pub fn encode(rows: &[ManifestRow]) -> anyhow::Result<Vec<u8>> {
-    encode_format(rows, FORMAT)
-}
-
-/// A manifest that only a no-overwrite-aware decode-repair fetcher may consume.
-pub fn encode_decode_repair(rows: &[ManifestRow]) -> anyhow::Result<Vec<u8>> {
-    encode_format(rows, DECODE_REPAIR_FORMAT)
-}
-
-fn encode_format(rows: &[ManifestRow], manifest_format: &str) -> anyhow::Result<Vec<u8>> {
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(6).expect("valid level"),
         ))
         .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
             FORMAT_KEY.to_owned(),
-            manifest_format.to_owned(),
+            FORMAT.to_owned(),
         )]))
         .build();
     let mut w = ArrowWriter::try_new(Vec::new(), schema(), Some(props))?;
@@ -219,22 +208,6 @@ pub fn decode(bytes: Bytes) -> anyhow::Result<Vec<ManifestRow>> {
 /// checked).
 pub fn decode_where(
     bytes: Bytes,
-    keep: impl FnMut(&ManifestRow) -> bool,
-) -> anyhow::Result<Vec<ManifestRow>> {
-    decode_where_format(bytes, FORMAT, keep)
-}
-
-/// Read a decode-repair manifest with the same row checks as an ordinary manifest.
-pub fn decode_repair_where(
-    bytes: Bytes,
-    keep: impl FnMut(&ManifestRow) -> bool,
-) -> anyhow::Result<Vec<ManifestRow>> {
-    decode_where_format(bytes, DECODE_REPAIR_FORMAT, keep)
-}
-
-fn decode_where_format(
-    bytes: Bytes,
-    expected_format: &str,
     mut keep: impl FnMut(&ManifestRow) -> bool,
 ) -> anyhow::Result<Vec<ManifestRow>> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
@@ -244,8 +217,8 @@ fn decode_where_format(
         .key_value_metadata()
         .and_then(|kv| kv.iter().find(|k| k.key == FORMAT_KEY))
         .and_then(|k| k.value.clone());
-    if format.as_deref() != Some(expected_format) {
-        bail!("not a prefetch manifest ({FORMAT_KEY} is {format:?}, not {expected_format:?})");
+    if format.as_deref() != Some(FORMAT) {
+        bail!("not a prefetch manifest ({FORMAT_KEY} is {format:?}, not {FORMAT:?})");
     }
     let mut out = Vec::new();
     for batch in builder.build()? {

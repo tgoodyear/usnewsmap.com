@@ -35,7 +35,6 @@ import xml.etree.ElementTree as ET
 
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 FORMAT = "usnm-prefetch-manifest/1"
-DECODE_REPAIR_FORMAT = "usnm-prefetch-decode-repair/1"
 DEFAULT_QUARANTINE_ROOT = "/var/lib/usnm-quality-feed"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
@@ -218,7 +217,7 @@ def pending(queued, outcomes, reasons):
     return out
 
 
-def manifest_bytes(rows, manifest_format=FORMAT):
+def manifest_bytes(rows):
     """The fetcher's manifest (usnm_ocr_contract::prefetch): its columns, types, issue order
     and the usnm.format key."""
     import pyarrow as pa
@@ -230,7 +229,7 @@ def manifest_bytes(rows, manifest_format=FORMAT):
         ("lccn", pa.string()), ("date", pa.date32()), ("edition", pa.int16()), ("seq", pa.int16()),
         ("lang", pa.string()), ("decision", pa.string()), ("damage_rate", pa.float64()),
         ("item_url", pa.string()),
-    ], metadata={"usnm.format": manifest_format})
+    ], metadata={"usnm.format": FORMAT})
     t = pa.Table.from_pylist(rows, schema=schema)
     buf = io.BytesIO()
     pq.write_table(t, buf, compression="zstd")
@@ -473,16 +472,6 @@ def load_scan_quarantine():
     return module
 
 
-def queue_decode_repairs(root, server):
-    def encode(record):
-        source = record["source"]
-        details = {"lang": record["lang"], "damage_rate": record["damage_rate"]}
-        row = row_of({**source, "language": record["lang"]}, {source["doc_id"]: details})
-        return manifest_bytes([row], manifest_format=DECODE_REPAIR_FORMAT)
-
-    load_scan_quarantine().reconcile(root, server, encode)
-
-
 def cmd_build_quality(a):
     """The full image pass's next pages (usnm_quality's rank.sql query 2, by issue: worst
     first by damage and LoC's own doubt, round-robin over title and decade, the first
@@ -504,8 +493,6 @@ def cmd_build_quality(a):
     if getattr(a, "non_english", False):
         if not quarantine_root:
             raise ValueError("non-English acquisition requires a scan-quarantine root")
-        if getattr(a, "queue_decode_repairs", "off") == "on" and not a.what_if:
-            queue_decode_repairs(quarantine_root, a.scan_server)
         quarantined_docs = load_scan_quarantine().quarantined_documents(quarantine_root)
     batch_filter = ""
     if a.batches:
@@ -642,14 +629,10 @@ def main(argv=None):
                    help="all non-English pages, descending page damage; keep their true language/scan retention")
     q.add_argument("--quarantine-root", default=DEFAULT_QUARANTINE_ROOT,
                    help="campaign root whose quarantined documents are excluded from non-English acquisition")
-    q.add_argument("--queue-decode-repairs", choices=("on", "off"), default="off",
-                   help="opt in to bounded decode repairs through the existing non-English fetch queue")
     a = ap.parse_args(argv)
     if a.cmd == "build-quality":
         if a.non_english and a.batches:
             sys.exit("--non-english covers the corpus; do not combine it with --batches")
-        if a.queue_decode_repairs == "on" and not a.non_english:
-            sys.exit("--queue-decode-repairs on requires --non-english")
         if not 1 <= a.max_pages <= 20000 or not 1 <= a.strata <= 1000:
             sys.exit("--max-pages 1 to 20000, --strata 1 to 1000")
         cmd_build_quality(a)

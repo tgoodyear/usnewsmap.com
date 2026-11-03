@@ -974,15 +974,11 @@ The updated CPU `usnm-quality-follow.service` opts `quality_feed.py follow` into
 same verification and three-failure threshold. It filters quarantined fingerprints
 before filling its bounded outbox, so an unchanged bad scan neither retries nor crowds
 out other pages. A changed fingerprint remains eligible; network, integrity and unknown
-decoder errors continue to retry. CPU quarantines are recorded as `manual_review`,
-not as automatic repair requests. They are also excluded from new ordinary non-English
-acquisition, but require an operator-reviewed recovery; the CPU record alone never
-queues a re-fetch, even if Qwen repairs are enabled. A separate campaign's eligible
-quarantine for the same document can still trigger its own Qwen repair. These changes
-do not alter BOINC work requests.
+decoder errors continue to retry. CPU and Qwen quarantines are recorded as
+`manual_review` and never queue a re-fetch. These changes do not alter BOINC work requests.
 
 The preparation CT stores this evidence, decoder versions, failure counts/timestamps
-and repair state in the campaign's
+and review state in the campaign's
 `/var/lib/usnm-quality-feed/<campaign>/decode-quarantine.sqlite3`, separate from
 `skipped.txt`. For example, inspect quarantined records without changing them:
 
@@ -991,77 +987,27 @@ pct exec 215 -- /opt/usnm-quality-feed/venv/bin/python -c \
   'import json,sys; from pathlib import Path; sys.path.insert(0,"/opt/usnm-quality-feed"); from scan_quarantine import quarantined; print(json.dumps([{k:v for k,v in r.items() if k != "manifest_body"} for r in quarantined(Path("/var/lib/usnm-quality-feed/qwen-nonenglish-v1"))], indent=2))'
 ```
 
-Re-fetching is **disabled by default**. Before enabling it, install and verify both a
-reviewed `usnm-ocr-worker` containing the decode-repair no-overwrite support on the
-scan-fetch host and a matching `usnm-ocr-dash` that can read repair manifests. Coordinate
-the fetcher's ordinary single-fetcher restart. An older worker rejects the new format and
-would stop the fetch queue; an older dashboard reports a queue error, making downstream
-queue observations unavailable. With repairs off and no repair manifests already visible,
-the producer still writes the existing `usnm-prefetch-manifest/1` format, so the existing
-fetcher and dashboard can remain in place. At an idle boundary, install the quarantine
-helper and matching manifest builder/service first, and verify that the effective
-`QWEN_QUEUE_DECODE_REPAIRS` is `off`. Then install the shared `quality_feed.py` before
-the updated CPU follower service and the matching `qwen_source.py` and `qwen_feed.py`;
-the new service and controller need its interfaces. Restart the follower only at a safe
-boundary, preserving its outbox and state. The Qwen manifest
-builder always reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`) and
-excludes quarantined documents from new ordinary non-English acquisition, even while
-repair queueing is off. A missing or unreadable root or helper is an error.
+This change adds no repair/re-fetch producer or new queue format. The existing fetcher and
+dashboard continue to consume ordinary `usnm-prefetch-manifest/1` manifests. The Qwen
+manifest builder reads `QWEN_QUARANTINE_ROOT` (default `/var/lib/usnm-quality-feed`)
+and excludes quarantined documents from new ordinary non-English acquisition. A missing
+or unreadable root or helper is an error. Already queued manifests and independent OCR
+acquisition are not rewritten or blocked; recovery needs a separately reviewed plan.
 
-If no repair manifests have been published, rollback at an idle boundary can restore
-the previous Qwen controller and source scripts while retaining the new shared feeder,
-helper and manifest exclusion. Preserve quarantine state, READY chunks and queued work;
-the old controller ignores quarantine and can retry bad scans. Do not restore the old
-manifest builder while quarantine records need protection: it can queue those documents
-through ordinary acquisition. If that rollback is necessary, pause that producer at an
-idle boundary and obtain a reviewed recovery plan. To roll back the CPU change without
-reverting the shared feeder, restore the previous follower unit at a safe boundary;
-it will retry the bad scans. An older shared feeder cannot parse the new unit's
-`--quarantine-decode` option, and an older helper cannot read `manual_review` records,
-so keep the updated helper and restore the old unit before any feeder rollback.
-If repair manifests have been published, setting the flag back to `off` stops new ones
-but does not remove existing ones; keep both upgraded consumers until no repair manifest remains visible and the
-rollback has been reviewed. The new builder cannot change manifests already queued, or
-independent OCR acquisition; review those paths before enabling repairs. Then an operator
-can opt in by setting
-`QWEN_QUEUE_DECODE_REPAIRS=on` in the Qwen manifest timer's
-`/etc/usnm/quality-build.env` and installing the matching
-`usnm-qwen-manifest.service`. The independent non-English manifest timer reconciles
-the recorded requests; `build-quality --what-if` excludes quarantines but does not
-reconcile them.
+At an idle boundary, install the quarantine helper and matching manifest builder/service
+first, then the shared `quality_feed.py` before the updated CPU follower service and
+matching `qwen_source.py` and `qwen_feed.py`. Restart the follower only at a safe
+boundary, preserving its outbox and state. To roll back, preserve quarantine state,
+READY chunks and queued work. Restore the previous CPU follower unit before an older
+shared feeder, which cannot parse `--quarantine-decode`; it will resume retrying bad
+scans. Keep the new helper and manifest exclusion while quarantines need protection.
+If the old manifest builder must be restored, pause that producer at an idle boundary
+and obtain a reviewed recovery plan. An old Qwen controller ignores quarantine.
 
-Only a non-English **buffer** source with no occupied keep scan or sidecar is eligible
-for an automatic repair manifest. At most ten are outstanding across campaigns. The
-single-page `queue-quality-zdecode-*` manifests use the existing OCR-first quality
-queue, fetcher, source ordering, checksums and shared LoC pacer; they do not increase
-its rate. The fetcher rechecks for either occupied format and publishes with
-no-replace file operations, so a concurrent retained scan is not overwritten. If a
-target appears during publication, the repair is deferred; a partially published scan
-and its conflicting sidecar are left for operator review.
-No buffer original, keep scan, sidecar or `.done` marker is deleted. Network failures
-remain errors, and a lost PUT response replays the same saved manifest bytes and name.
-
-Repair states include `pending`, `prepared`, `queued`, `observed_same`,
-`observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
-incomplete/conflicting keep target remains queued for rechecking and operator attention;
-the fetcher's `deferred_repair_occupied` count also records a target that became occupied. A
-sidecar that is oversized, malformed or incompatible with the fetcher's required
-metadata is occupied, not a completed repair, and retains an outstanding slot.
-Sidecar reads remain bounded; network errors still propagate. A
-manifest left queued without a resulting keep copy requires operator investigation;
-the reconciler does not enqueue another manifest, but the existing fetch queue can
-retry transient failures or retry a `needs-loc` deferral daily under its normal pacer.
-An observation compares sidecar identity, not a new decode. The dashboard counts a
-document already in the fetch index as fetched even when that index entry is the
-original buffer scan; use the repair state rather than that count to monitor the
-re-fetch. Identical advertised bytes remain quarantined, while a changed index
-fingerprint becomes eligible only for normal hash verification and decoding. Keep
-sources and occupied keep paths require a reviewed operator recovery procedure; the
-feeder never automatically replaces them. Language-budget reservations are still
-made before preparation; an already-reserved failed fingerprint can be retried
-without spending another page. A changed fingerprint after quarantine, or a failure
-before a retry record is persisted or after decoding but before writing READY, can
-still require budget review.
+Language-budget reservations are still made before preparation; an already-reserved
+failed fingerprint can be retried without spending another page. A changed fingerprint
+after quarantine, or a failure before a retry record is persisted or after decoding but
+before writing READY, can still require budget review.
 
 Matching size, SHA256 and (for batch JP2s) the advertised bag MD5 proves the retained
 bytes match those recorded checksums, **not** that the bytes are decodable or whether

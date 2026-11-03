@@ -318,7 +318,7 @@ class DecodeQuarantineTest(unittest.TestCase):
                     feed.cmd_run(args)
                 self.assertEqual(error.exception.code, 1)
             feed.cmd_run(args)
-            self.assertIn("scan quarantined; repair pending", output.getvalue())
+            self.assertIn("scan quarantined; operator review required", output.getvalue())
             before = len(calls)
             feed.cmd_run(args)
             self.assertEqual(len(calls), before)
@@ -331,7 +331,7 @@ class DecodeQuarantineTest(unittest.TestCase):
         records = feed.scan_quarantine.quarantined(self.state)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["attempts"], 3)
-        self.assertEqual(records[0]["refetch_state"], "pending")
+        self.assertEqual(records[0]["refetch_state"], "manual_review")
         self.assertEqual(records[0]["source"]["sha256"], hashlib.sha256(bad_raw).hexdigest())
         self.assertEqual(records[0]["decoder"]["pillow"], pillow_version)
         self.assertFalse((self.state / "skipped.txt").exists())
@@ -423,6 +423,20 @@ class DecodeQuarantineTest(unittest.TestCase):
             feed.scan_quarantine.quarantined(self.state)
         with self.assertRaisesRegex(ValueError, "invalid scan-quarantine record"):
             feed.scan_quarantine.retryable_ids(self.state)
+
+    def test_existing_recovery_state_is_not_silently_treated_as_manual_quarantine(self):
+        page = self.page(1, self.image()[:-2])
+        error = feed.ScanDecodeError(OSError("image file is truncated"), "jpg")
+        for _ in range(3):
+            feed.scan_quarantine.record_failure(self.state, page, error, error.decoder)
+        with sqlite3.connect(self.state / feed.scan_quarantine.DB_NAME) as connection:
+            connection.execute("UPDATE failures SET refetch_state = 'queued'")
+        with self.assertRaisesRegex(ValueError, "invalid scan-quarantine record"):
+            feed.scan_quarantine.quarantined(self.state)
+        with sqlite3.connect(self.state / feed.scan_quarantine.DB_NAME) as connection:
+            connection.execute("UPDATE failures SET refetch_state = 'manual_review', manifest_body = ?", (b"x",))
+        with self.assertRaisesRegex(ValueError, "unexpected recovery data"):
+            feed.scan_quarantine.quarantined(self.state)
 
     def test_original_page_failure_is_logged_even_if_state_writing_fails(self):
         page = self.page(1, self.image())

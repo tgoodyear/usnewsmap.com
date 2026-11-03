@@ -16,7 +16,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use usnm_ocr_contract::prefetch::{decode_repair_where, decode_where, ManifestRow};
+use usnm_ocr_contract::prefetch::decode_where;
 use usnm_ocr_worker::prefetch::{self, priority, set_of, Order, Set, Sets};
 
 use crate::tail::{Got, Tail};
@@ -1008,17 +1008,11 @@ impl Fetch {
             let mut hashes = Vec::new();
             let mut rows = Vec::new();
             let keep_rows = state != "fetched";
-            let repair = name.starts_with(prefetch::DECODE_REPAIR_PREFIX);
             let read = std::fs::read(&path)
                 .map_err(anyhow::Error::from)
                 .and_then(|b| {
-                    let mut invalid_repair = false;
-                    let visit = |r: &ManifestRow| {
+                    decode_where(Bytes::from(b), |r| {
                         hashes.push(doc_hash(&r.doc_id));
-                        if repair {
-                            let english = r.lang.as_deref().is_none_or(|lang| iso(lang) == "eng");
-                            invalid_repair |= english || set_of(r) != Set::Keep;
-                        }
                         if keep_rows
                             && rows.len() < QUEUE_ROWS
                             && !self.all.contains_key(&doc_hash(&r.doc_id))
@@ -1029,17 +1023,7 @@ impl Fetch {
                             ));
                         }
                         false
-                    };
-                    if repair {
-                        decode_repair_where(Bytes::from(b), visit)?;
-                        anyhow::ensure!(
-                            hashes.len() == 1 && !invalid_repair,
-                            "decode repair requires exactly one non-English keep page"
-                        );
-                    } else {
-                        decode_where(Bytes::from(b), visit)?;
-                    }
-                    Ok(())
+                    })
                 });
             match read {
                 Ok(_) => {
@@ -1197,7 +1181,7 @@ impl Fetch {
 mod tests {
     use super::*;
     use usnm_core::ids::PageKey;
-    use usnm_ocr_contract::prefetch::{encode, encode_decode_repair, ManifestRow};
+    use usnm_ocr_contract::prefetch::{encode, ManifestRow};
 
     fn row(doc: &str, batch: &str, lang: &str) -> ManifestRow {
         let key = PageKey::from_doc_id(doc).unwrap();
@@ -1474,66 +1458,6 @@ mod tests {
         assert!(f.plan.is_none());
         assert!(f.plan_error.is_none());
         assert_eq!(f.total.pages, 3);
-    }
-
-    #[test]
-    fn queue_reads_decode_repairs_but_rejects_mismatched_formats() {
-        let dir = tempfile::tempdir().unwrap();
-        let scans = dir.path().join("scans");
-        let manifests = dir.path().join("manifests");
-        let repair = manifests.join("queue-quality-zdecode-test");
-        std::fs::create_dir_all(&scans).unwrap();
-        std::fs::create_dir_all(&repair).unwrap();
-        let page = row("sn9_1890-01-01_ed-1_seq-1", "az_a", "ger");
-        std::fs::write(
-            repair.join("manifest.parquet"),
-            encode_decode_repair(std::slice::from_ref(&page)).unwrap(),
-        )
-        .unwrap();
-        let mut f = Fetch::new(scans.clone(), None).with_manifests(Some(manifests.clone()));
-        f.poll(Utc::now());
-        assert!(f.queue_error.is_none(), "{:?}", f.queue_error);
-        assert_eq!(f.queue(Utc::now())[0].pages, 1);
-        assert_eq!(f.next_queued(1)[0].1, page.doc_id);
-
-        std::fs::write(
-            repair.join("manifest.parquet"),
-            encode(std::slice::from_ref(&page)).unwrap(),
-        )
-        .unwrap();
-        let mut f = Fetch::new(scans.clone(), None).with_manifests(Some(manifests.clone()));
-        f.poll(Utc::now());
-        assert!(f
-            .queue_error
-            .unwrap()
-            .contains("queue-quality-zdecode-test"));
-
-        let english = row("sn9_1890-01-01_ed-1_seq-2", "az_a", "eng");
-        for invalid in [vec![english], vec![page.clone(), page.clone()]] {
-            std::fs::write(
-                repair.join("manifest.parquet"),
-                encode_decode_repair(&invalid).unwrap(),
-            )
-            .unwrap();
-            let mut f = Fetch::new(scans.clone(), None).with_manifests(Some(manifests.clone()));
-            f.poll(Utc::now());
-            assert!(f
-                .queue_error
-                .unwrap()
-                .contains("queue-quality-zdecode-test"));
-        }
-
-        std::fs::remove_dir_all(&repair).unwrap();
-        let ordinary = manifests.join("queue-quality-normal");
-        std::fs::create_dir_all(&ordinary).unwrap();
-        std::fs::write(
-            ordinary.join("manifest.parquet"),
-            encode_decode_repair(&[page]).unwrap(),
-        )
-        .unwrap();
-        let mut f = Fetch::new(scans, None).with_manifests(Some(manifests));
-        f.poll(Utc::now());
-        assert!(f.queue_error.unwrap().contains("queue-quality-normal"));
     }
 
     #[test]
