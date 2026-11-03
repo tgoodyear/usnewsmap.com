@@ -1169,6 +1169,23 @@ cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # p
 cargo fmt --all -- --check # passed
 ```
 
+An additional offline historical-artifact probe verified the candidate labelled
+`20261102-6e76c7d` against SHA256
+`79f9a5be452b178d0f7c325963043e232faa0100d1a3b3c77c649c40bf813750`.
+Its copied executable was mounted read-only in a disposable, network-disabled
+128 MiB container using the already-present Linux/ARM64 MySQL runtime image.
+Running `--version` exited **255**, before argument or manifest parsing:
+
+```text
+qemu-x86_64: Could not open '/lib64/ld-linux-x86-64.so.2': No such file or directory
+```
+
+This is a runtime dependency blocker, **not** evidence that the old consumer rejects
+repairs or accepts ordinary manifests. Completing that probe requires an existing
+compatible Linux/x86-64 loader and libraries; no image was pulled or replacement
+runtime built. The probe container was removed. Matching this candidate's digest
+to the currently deployed worker remains a separate verification step.
+
 **Still required before production enablement:** identify and test the exact
 currently deployed worker/dashboard revisions and their actual upgrade/rollback
 artifacts. The local ordinary decoder rejection is a protocol check, **not** a run
