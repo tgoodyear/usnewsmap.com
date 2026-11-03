@@ -162,9 +162,9 @@ def database_apps(project):
 
 
 def check(project, proc=Path("/proc")):
-    if (project / "stop_maintenance").exists():
-        return {"status": "maintenance", "reason": "stop_maintenance"}
     try:
+        if (project / "stop_maintenance").exists():
+            return {"status": "maintenance", "reason": "stop_maintenance"}
         directory, identity = feeder_identity(project, proc)
         path = status_path()
         raw = read_bounded(path, owner=os.geteuid())

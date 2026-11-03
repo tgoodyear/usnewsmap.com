@@ -141,6 +141,13 @@ class Observation(unittest.TestCase):
         self.assertEqual(result, {"status": "maintenance", "reason": "stop_maintenance"})
         db.assert_not_called()
 
+    def test_unavailable_maintenance_probe_is_unknown_not_a_monitor_crash(self):
+        with patch.object(Path, "exists", side_effect=PermissionError("private detail")), \
+             patch.object(GUARD, "database_apps") as db:
+            result = GUARD.check(PROJECT)
+        self.assertEqual(result, {"status": "unknown", "reason": "observation_unavailable"})
+        db.assert_not_called()
+
 
 class ProcessIdentity(unittest.TestCase):
     def stat_line(self, state="S", ticks="300"):
