@@ -12,6 +12,7 @@ import time
 import types
 import unittest
 from unittest import mock
+import zipfile
 
 
 HERE = Path(__file__).resolve().parent
@@ -252,9 +253,9 @@ if [ "$input" = bad.png ] && [ "${FAIL_BAD:-0}" = 1 ]; then exit 42; fi
         )
         return args, out
 
-    def read_rows(self, out):
+    def read_rows(self, out, kind="tesseract"):
         result = self.run_script(
-            sys.executable, "-I", str(HERE / "to-jsonl.py"), "--kind", "tesseract",
+            sys.executable, "-I", str(HERE / "to-jsonl.py"), "--kind", kind,
             "--dir", str(out), "--out", str(self.work / "out.jsonl"),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -297,6 +298,100 @@ if [ "$input" = bad.png ] && [ "${FAIL_BAD:-0}" = 1 ]; then exit 42; fi
             (out / "txt" / f"{name}.txt").write_text("synthetic", encoding="utf-8")
         (out / "timing.tsv").write_text("failed\t1\t0\nfailed\t2\t9\nsuccess\t1\t0\n", encoding="utf-8")
         self.assertEqual([row["page"] for row in self.read_rows(out)], ["success"])
+
+    def jochre_fixture(self, names):
+        executable(
+            self.bin / "curl",
+            """#!/usr/bin/env python3
+import os, pathlib, sys, zipfile
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index('-o') + 1])
+image = next(a for a in args if a.startswith('image=@'))[7:].split(';type=')[0]
+stem = pathlib.Path(image).stem
+with open(os.environ['TRACE'], 'a') as f: f.write(stem + '\\n')
+if os.environ.get('FAIL_JOCHRE') == '1':
+    if stem in ('httpfail', 'timeout', 'badbody'):
+        out.write_bytes(b'invalid synthetic response')
+        print({'httpfail': '500', 'timeout': '000', 'badbody': '200'}[stem], end='')
+        sys.exit(28 if stem == 'timeout' else 0)
+    if stem == 'notext':
+        with zipfile.ZipFile(out, 'w') as z: z.writestr('page.xml', b'synthetic')
+        print('200', end='')
+        sys.exit(0)
+    if stem == 'badutf':
+        with zipfile.ZipFile(out, 'w') as z: z.writestr('page.txt', b'\\xff')
+        print('200', end='')
+        sys.exit(0)
+with zipfile.ZipFile(out, 'w') as z: z.writestr('page.txt', b'synthetic')
+print('200', end='')
+sys.exit(18 if os.environ.get('FAIL_JOCHRE') == '1' and stem == 'transport' else 0)
+""",
+        )
+        images = self.work / "images"
+        images.mkdir()
+        for name in names:
+            (images / f"{name}.png").touch()
+        listing = self.work / "ids.list"
+        listing.write_text("\n".join(names) + "\n", encoding="utf-8")
+        out = self.work / "jochre"
+        args = (
+            "bash", str(HERE / "jochre-pages.sh"), "--pages", str(images),
+            "--list", str(listing), "--out", str(out), "--url", "http://synthetic.invalid",
+        )
+        return args, out
+
+    @staticmethod
+    def write_zip(path, name="page.txt"):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(name, b"synthetic")
+
+    def test_jochre_retries_failed_receipts_and_invalid_cached_archives(self):
+        names = ["cached", "failed", "corrupt", "missing", "notext", "badcrc"]
+        args, out = self.jochre_fixture(names)
+        (out / "zip").mkdir(parents=True)
+        for name in ("cached", "failed", "badcrc", "unverified"):
+            self.write_zip(out / "zip" / f"{name}.zip")
+        self.write_zip(out / "zip" / "notext.zip", name="page.xml")
+        (out / "zip" / "corrupt.zip").write_bytes(b"not a zip")
+        crc_path = out / "zip" / "badcrc.zip"
+        data = bytearray(crc_path.read_bytes())
+        data[data.index(b"synthetic")] ^= 1
+        crc_path.write_bytes(data)
+        self.write_zip(out / "zip" / "cached.zip.part")
+        (out / "timing.tsv").write_text(
+            "cached\t1\t200\nfailed\t1\t200\nfailed\t2\t500\n"
+            "corrupt\t1\t200\nmissing\t1\t200\nnotext\t1\t200\nbadcrc\t1\t200\n",
+            encoding="utf-8",
+        )
+        self.assertEqual([row["page"] for row in self.read_rows(out, "jochre")], ["cached"])
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(self.trace_lines()), set(names) - {"cached"})
+        self.assertEqual({row["page"] for row in self.read_rows(out, "jochre")}, set(names))
+        self.assertTrue((out / "timing.tsv.done").exists())
+
+    def test_jochre_failed_transfers_are_missing_and_retryable(self):
+        names = ["httpfail", "timeout", "badbody", "notext", "badutf", "transport"]
+        args, out = self.jochre_fixture(names)
+        out.mkdir()
+        (out / "timing.tsv.done").write_text("stale", encoding="utf-8")
+        env = self.env.copy()
+        env["FAIL_JOCHRE"] = "1"
+        result = self.run_script(*args, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((out / "timing.tsv.done").exists())
+        self.assertEqual(list((out / "zip").iterdir()), [])
+        self.assertEqual(self.read_rows(out, "jochre"), [])
+        receipts = {parts[0]: parts[2] for line in (out / "timing.tsv").read_text().splitlines() if (parts := line.split("\t"))}
+        self.assertEqual(receipts["httpfail"], "500")
+        self.assertEqual(receipts["timeout"], "000")
+        self.assertEqual(receipts["transport"], "000")
+
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({row["page"] for row in self.read_rows(out, "jochre")}, set(names))
+        for name in names:
+            self.assertEqual(self.trace_lines().count(name), 2)
 
     def test_cleanup_waits_when_a_process_snapshot_misses_an_adopted_child(self):
         supervisor = runpy.run_path(str(HERE / "run-deadline.py"))
