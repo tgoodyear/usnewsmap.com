@@ -1071,11 +1071,16 @@ incomplete/conflicting keep target remains queued for rechecking and operator at
 the fetcher's `deferred_repair_occupied` count also records a target that became occupied. A
 sidecar that is oversized, malformed or incompatible with the fetcher's required
 metadata is occupied, not a completed repair, and retains an outstanding slot.
-Sidecar reads remain bounded; network errors still propagate. A
+Before releasing an outstanding slot the reconciler streams the actual keep scan,
+checking its length, SHA256 and any advertised MD5, not merely a successful GET.
+Reads use 64 KiB chunks and stop at the advertised size plus one byte; sidecars
+advertising more than the fetcher's 128 MiB image limit are occupied. Truncated or
+checksum-mismatched scans remain queued and are checked again. Sidecar reads remain
+bounded; network errors still propagate. A
 manifest left queued without a resulting keep copy requires operator investigation;
 the reconciler does not enqueue another manifest, but the existing fetch queue can
 retry transient failures or retry a `needs-loc` deferral daily under its normal pacer.
-An observation compares sidecar identity, not a new decode. The dashboard counts a
+An observation verifies the sidecar against the retained bytes, not a new decode. The dashboard counts a
 document already in the fetch index as fetched even when that index entry is the
 original buffer scan; use the repair state rather than that count to monitor the
 re-fetch. Identical advertised bytes remain quarantined, while a changed index

@@ -23,6 +23,9 @@ USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 CAMPAIGN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 DOC_RE = re.compile(r"(?P<lccn>[a-z0-9]{1,16})_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)")
 SIDECAR_LIMIT = 65536
+# Match the fetcher's MAX_IMAGE_BYTES; never trust a sidecar to bound a download.
+SCAN_LIMIT = 128 * 1024 * 1024
+SCAN_CHUNK = 64 * 1024
 # Keep the allowed fields aligned with the fetcher's deny-unknown-fields Sidecar.
 SIDECAR_REQUIRED = {"doc_id", "batch", "batch_version", "loc_url", "iiif_base", "resolution",
                     "fetched_at", "bytes", "sha256", "download_ms", "user_agent"}
@@ -303,6 +306,32 @@ def _scan_exists(url):
         raise
 
 
+def _scan_matches(url, side):
+    """Verify retained bytes, streaming at most the advertised size plus one."""
+    if side["bytes"] > SCAN_LIMIT:
+        return False
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    sha, md5, size = hashlib.sha256(), hashlib.md5(usedforsecurity=False), 0
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            while True:
+                chunk = response.read(min(SCAN_CHUNK, side["bytes"] + 1 - size))
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > side["bytes"]:
+                    return False
+                sha.update(chunk)
+                md5.update(chunk)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            error.close()
+            return False
+        raise
+    return (size == side["bytes"] and sha.hexdigest() == side["sha256"]
+            and (side.get("md5") is None or md5.hexdigest() == side["md5"]))
+
+
 def _unique_fields(pairs):
     result = {}
     for key, value in pairs:
@@ -352,19 +381,15 @@ def _keep_state(server, source):
         if sidecar is not None and len(sidecar) > SIDECAR_LIMIT:
             occupied = True
             continue
-        scan_exists = _scan_exists(url)
         if sidecar is None:
-            occupied |= scan_exists
-            continue
-        if not scan_exists:
-            occupied = True
+            occupied |= _scan_exists(url)
             continue
         try:
             side = json.loads(sidecar.decode("utf-8"), object_pairs_hook=_unique_fields)
             valid = _valid_sidecar(side, source, fmt)
         except (TypeError, ValueError, RecursionError):
             valid = False
-        if not valid:
+        if not valid or not _scan_matches(url, side):
             occupied = True
             continue
         found.append((side["bytes"], side["sha256"]))

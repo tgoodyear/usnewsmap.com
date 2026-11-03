@@ -3,6 +3,7 @@ import datetime as dt
 import contextlib
 import io
 import importlib.util
+import hashlib
 import sys
 import threading
 import unittest
@@ -193,16 +194,17 @@ class DecodeRepairTest(unittest.TestCase):
                 raise urllib.error.HTTPError(url, 404, "not found", {}, None)
             return DecodeRepairTest.Response(self.files[url])
 
-        def keep(self, page, sha=None):
+        def keep(self, page, data=b"fixture scan"):
             scan = page["scan"].replace("buffer/", "keep/", 1)
             url = "http://scan/scans/" + scan
-            self.files[url] = b"scan exists"
+            self.files[url] = data
             self.files[url + ".json"] = json.dumps({
                 "doc_id": page["doc_id"], "batch": page["batch"], "batch_version": 1,
                 "loc_url": "https://tile.loc.gov/example.jp2", "iiif_base": "https://example.test/iiif",
                 "fetched_at": "2026-11-03T03:00:00Z", "download_ms": 100, "user_agent": "test",
-                "bytes": page["bytes"], "sha256": sha or page["sha256"],
-                "format": "jp2", "resolution": "full", "md5": "b" * 32}).encode()
+                "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                "format": "jp2", "resolution": "full",
+                "md5": hashlib.md5(data, usedforsecurity=False).hexdigest()}).encode()
 
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -214,7 +216,8 @@ class DecodeRepairTest(unittest.TestCase):
     @staticmethod
     def page(seq=1, storage="buffer", lang="rus"):
         return {"doc_id": f"sn1_1900-01-02_ed-1_seq-{seq}", "batch": "xx_test", "batch_version": 1,
-                "bytes": 12, "sha256": "a" * 64, "lang": lang, "damage_rate": 0.8,
+                "bytes": 12, "sha256": hashlib.sha256(b"fixture scan").hexdigest(),
+                "lang": lang, "damage_rate": 0.8,
                 "scan": f"{storage}/xx_test/sn1/1900-01-02/1/{seq}.jp2"}
 
     def quarantine(self, page):
@@ -319,7 +322,7 @@ class DecodeRepairTest(unittest.TestCase):
     def test_existing_changed_keep_source_is_observed_not_overwritten(self):
         page = self.page()
         self.quarantine(page)
-        self.server.keep(page, "b" * 64)
+        self.server.keep(page, b"changed scan")
         self.reconcile()
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_new")
         self.assertFalse(any(method == "PUT" for method, _, _ in self.server.requests))
@@ -398,10 +401,55 @@ class DecodeRepairTest(unittest.TestCase):
         self.server.files[url] = b"incomplete keep write"
         self.reconcile()
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
-        self.server.keep(page, "b" * 64)
+        self.server.keep(page, b"changed scan")
         self.reconcile()
         self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_new")
         self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+
+    def test_invalid_scan_bytes_keep_queued_and_do_not_release_outstanding_slots(self):
+        pages = [self.page(seq) for seq in range(1, 11)]
+        for page in pages:
+            self.quarantine(page)
+        self.reconcile()
+        for index, page in enumerate(pages):
+            self.server.keep(page)
+            url = "http://scan/scans/" + page["scan"].replace("buffer/", "keep/", 1)
+            # Valid metadata cannot prove a truncated, different or oversized scan complete.
+            if index % 4 == 0:
+                self.server.files[url] = b"fixture"
+            elif index % 4 == 1:
+                self.server.files[url] = b"changed scan"
+            elif index % 4 == 2:
+                self.server.files[url] += b"extra"
+            else:
+                side = json.loads(self.server.files[url + ".json"])
+                side["md5"] = "0" * 32
+                self.server.files[url + ".json"] = json.dumps(side).encode()
+        waiting = self.page(11)
+        self.quarantine(waiting)
+        self.reconcile()
+        statuses = {r["source"]["doc_id"]: r["refetch_state"] for r in quarantine.quarantined(self.state)}
+        self.assertEqual([statuses[p["doc_id"]] for p in pages], ["queued"] * 10)
+        self.assertEqual(statuses[waiting["doc_id"]], "pending")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 10)
+        self.server.keep(pages[0])
+        self.reconcile()
+        statuses = {r["source"]["doc_id"]: r["refetch_state"] for r in quarantine.quarantined(self.state)}
+        self.assertEqual(statuses[pages[0]["doc_id"]], "observed_same")
+        self.assertEqual(statuses[waiting["doc_id"]], "queued")
+
+    def test_scan_verification_bounds_reads_and_rejects_untrusted_sizes(self):
+        data = b"x" * (quarantine.SCAN_CHUNK * 2 + 7)
+        side = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        response = self.Response(data)
+        with mock.patch.object(response, "read", wraps=response.read) as read, \
+                mock.patch.object(quarantine.urllib.request, "urlopen", return_value=response):
+            self.assertTrue(quarantine._scan_matches("http://scan/test", side))
+        self.assertTrue(all(0 < call.args[0] <= quarantine.SCAN_CHUNK for call in read.call_args_list))
+        with mock.patch.object(quarantine.urllib.request, "urlopen") as get:
+            self.assertFalse(quarantine._scan_matches("http://scan/test",
+                                                      {**side, "bytes": quarantine.SCAN_LIMIT + 1}))
+        get.assert_not_called()
 
     def test_legacy_jpeg_sidecar_without_format_or_md5_is_observed(self):
         page = self.page()
