@@ -106,6 +106,9 @@ pub enum QualityCommands {
     },
     /// Hand staged units to create_work, two results each.
     Submit {
+        /// Ordered JSON array of source doc_ids; never publish unrelated pending jobs.
+        #[arg(long)]
+        members: Option<PathBuf>,
         #[arg(long)]
         root: PathBuf,
         #[arg(long)]
@@ -367,15 +370,19 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             eprintln!("{s:?}");
         }
         QualityCommands::Submit {
+            members,
             root,
             project,
             max_units,
         } => {
-            let s = x::submit::run(&x::submit::Options {
-                root,
-                project,
-                max_units,
-            })
+            let s = x::submit::run_selected(
+                &x::submit::Options {
+                    root,
+                    project,
+                    max_units,
+                },
+                members.as_deref(),
+            )
             .await?;
             eprintln!("{s:?}");
         }

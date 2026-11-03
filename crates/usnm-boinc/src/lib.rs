@@ -42,6 +42,7 @@ pub mod qwen;
 pub mod reject;
 pub mod retry;
 pub mod scans;
+mod selection;
 pub mod submit;
 pub mod surya;
 pub mod trust;

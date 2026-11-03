@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 YIDDISH = "yid"
 GERMAN = "deu"
@@ -91,6 +92,260 @@ def listed_pages(index, path):
     """The index rows for the pages a --german-pages file names, one doc_id a line."""
     wanted = {line.strip() for line in path.read_text().splitlines() if line.strip()}
     return b"".join(line + b"\n" for line in index.splitlines() if json.loads(line)["doc_id"] in wanted)
+
+
+def shipment_receipt(output, identity):
+    found = None
+    for line in (output or b"").decode("utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and "transaction_receipt" in row:
+            found = row["transaction_receipt"]
+            if found.get("transaction_id") != identity:
+                raise ValueError("unbound remote transaction receipt")
+    return found
+
+
+def acknowledged(value, receipt):
+    docs = {member["source"]["doc_id"] for member in value["members"]}
+    return bool(receipt and receipt.get("schema") == 1
+                and receipt.get("transaction_id") == value["id"]
+                and receipt.get("parent_id") == value["parent"]["id"]
+                and receipt.get("status") == "acknowledged"
+                and receipt.get("native_acknowledged") and receipt.get("quality_acknowledged")
+                and set(receipt.get("members", {})) == docs
+                and all(row.get("native") in ("published", "no_crops", "too_large")
+                        and row.get("quality") == "published" for row in receipt["members"].values()))
+
+
+def transfer_subset(a, payload, identity):
+    upload = "upload-" + uuid.uuid4().hex
+    target = "/srv/usnm-boinc/project/qwen-shipments/" + a.target + "/" + identity + "/" + upload
+    remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "mkdir", "-p", target])
+    args = ["pct", "exec", str(a.server_ct), "--", "tar", "-x", "--no-same-owner", "-C", target]
+    with subprocess.Popen(["tar", "-C", str(payload), "-cf", "-", "."], stdout=subprocess.PIPE) as archive:
+        try:
+            subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                            "root@" + a.server_host, shlex.join(args)], stdin=archive.stdout,
+                           check=True, timeout=7200)
+        finally:
+            archive.stdout.close()
+        if archive.wait() != 0:
+            raise RuntimeError("subset archive transfer incomplete")
+    return upload
+
+
+def ship_subsets(a):
+    """The existing Temporal ship activity opts in; this creates no new owner or timer."""
+    outbox = a.outbox
+    with (outbox / (".qwen-ship-" + a.campaign + ".lock")).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"status": "deferred", "phase": "ship_mutex",
+                              "publication_attempted": False, "transferred_pages": 0}))
+            return 75
+        return _ship_subsets(a)
+
+
+def _ship_subsets(a):
+    import qwen_shipment as shipment
+    helper = "/project/ops/qwen-feed/qwen_submit.py"
+    ct = ["pct", "exec", str(a.server_ct), "--"]
+    server = ct + ["podman", "exec", "usnm-boinc-server", "python3", helper]
+    completed = 0
+    for chunk in sorted((a.outbox / a.campaign).glob("c[0-9][0-9][0-9][0-9][0-9]")):
+        if completed >= a.max_chunks or not (chunk / "READY").is_file():
+            continue
+        parent = shipment.chunk_snapshot(chunk, a.campaign)
+        languages = {member["sample"]["lang"] for member in parent["members"]}
+        a.target, version = a.qwen_root or a.campaign, a.prompt_version
+        if version >= 3 and "yid" in languages:
+            if languages != {"yid"} or not a.qwen_yiddish_root:
+                raise ValueError("mixed/unrouted Yiddish parent; retain READY")
+            a.target, version = a.qwen_yiddish_root, a.yiddish_prompt_version
+        recipe = {"campaign": a.target, "prompt_version": version, "engine_image": a.engine_image,
+                  "readers": a.readers, "bundle_size": a.bundle_size}
+        journal = a.outbox / ".qwen-transactions" / a.campaign / chunk.name
+        if not a.what_if:
+            shipment.freeze(journal / "parent.json", parent)
+            shipment.freeze(journal / "recipe.json", recipe)
+        values = [shipment.validate(json.loads(path.read_text())) for path in journal.glob("*/manifest.json")]
+        done = set()
+        active = []
+        for value in values:
+            if value["parent"]["id"] != shipment.digest(parent) or value["recipe"] != recipe:
+                raise ValueError("changed frozen parent or transaction recipe")
+            receipt_path = journal / value["id"] / "receipt.json"
+            receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
+            members = {member["source"]["doc_id"] for member in value["members"]}
+            if acknowledged(value, receipt):
+                if done & members:
+                    raise ValueError("overlapping transaction acknowledgements")
+                done.update(members)
+            else:
+                active.append(value)
+        if len(active) > 1:
+            raise ValueError("multiple active subsets; reconcile before shipping")
+        if active and done.intersection(member["source"]["doc_id"] for member in active[0]["members"]):
+            raise ValueError("active subset overlaps acknowledged membership")
+        left = [member for member in parent["members"] if member["source"]["doc_id"] not in done]
+        if left:
+            state = json.loads(remote(a.server_host, server + ["--inventory"]))
+            pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b",
+                                                    "--nosuffix", "-o", "lv_size,data_percent",
+                                                    "pve/data"]))["report"][0]["lv"][0]
+            free = min(shutil.disk_usage(a.outbox).free,
+                       int(float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)))
+            limit = shipment.capacity(state, free, max_ready=a.qwen_max_ready,
+                                      max_unresolved=a.max_unresolved, min_free_gb=a.min_free_gb)
+            value = active[0] if active else shipment.manifest(parent, left[:limit], recipe) if limit else None
+            count = len(value["members"]) if value else 0
+            if value is None or min(state["free_bytes"], free) - count * 64 * 1024**2 < a.min_free_gb * 1024**3:
+                retained = None
+                if active:
+                    prior = journal / active[0]["id"] / "receipt.json"
+                    if not prior.exists():
+                        prior = journal / active[0]["id"] / "invocation.json"
+                    retained = json.loads(prior.read_text()) if prior.exists() else None
+                status = ("partial" if retained and retained.get("native_acknowledged")
+                          else "uncertain" if retained and retained.get("publication_attempted") else "deferred")
+                print(json.dumps({"status": status,
+                                  "phase": "preflight", "transferred_pages": 0,
+                                  "reserve_pages": count, "parent_id": shipment.digest(parent),
+                                  "ready_retained": True,
+                                  "native_acknowledged": bool(retained and retained.get("native_acknowledged")),
+                                  "publication_attempted": bool(retained and retained.get("publication_attempted"))}))
+                return 75
+            if a.what_if:
+                print(json.dumps({"status": "would_ship_subset", "reserve_pages": count,
+                                  "transaction_id": value["id"], "parent_id": value["parent"]["id"]}))
+                return 0
+            tx = journal / value["id"]
+            shipment.freeze(tx / "manifest.json", value)
+            state_path = tx / "transfer.json"
+            transferred = state_path.exists()
+            if not transferred:
+                shipment.materialize(chunk, tx / "input", value)
+                upload = transfer_subset(a, tx / "input", value["id"])
+                shipment.save(state_path, {"transaction_id": value["id"], "transferred_pages": count,
+                                          "upload": upload})
+            transfer = json.loads(state_path.read_text())
+            if (transfer.get("transaction_id") != value["id"] or transfer.get("transferred_pages") != count
+                    or not re.fullmatch(r"upload-[a-f0-9]{32}", transfer.get("upload", ""))):
+                raise ValueError("changed transfer journal")
+            previous_path = tx / "receipt.json"
+            previous = json.loads(previous_path.read_text()) if previous_path.exists() else None
+            invocation_path = tx / "invocation.json"
+            invocation = {"schema": 1, "transaction_id": value["id"], "parent_id": value["parent"]["id"],
+                          "phase": "locked_publication", "status": "uncertain", "ready_retained": True,
+                          "transferred_pages": 0 if transferred else count, "reserve_pages": count,
+                          "native_acknowledged": bool(previous and previous.get("native_acknowledged")),
+                          "quality_acknowledged": bool(previous and previous.get("quality_acknowledged")),
+                          "publication_attempted": True}
+            shipment.save(invocation_path, invocation)
+            lock_wait = 900
+            if a.step_window_minutes:
+                now = time.localtime()
+                if now.tm_min >= a.step_window_minutes:
+                    invocation.update(status="partial" if invocation["native_acknowledged"] else "deferred",
+                                      phase="step_window", publication_attempted=False)
+                    shipment.save(invocation_path, invocation)
+                    print(json.dumps({"shipment_invocation": invocation}))
+                    return 75
+                lock_wait = a.step_window_minutes * 60 - now.tm_min * 60 - now.tm_sec
+            args = ct + ["flock", "-w", str(lock_wait), "-E", "75", "/run/usnm-boinc-step.lock",
+                         *server[len(ct):], "--campaign", a.target, "--transaction", value["id"],
+                         "--upload", transfer["upload"],
+                         "--engine-plan", a.qwen_engine_plan, "--models", a.qwen_models,
+                         "--prompt-version", str(version), "--max-ready", str(a.qwen_max_ready),
+                         "--max-unresolved", str(a.max_unresolved), "--min-free-gb", str(a.min_free_gb)]
+            code, output = 0, b""
+            try:
+                output = remote(a.server_host, args)
+            except subprocess.CalledProcessError as error:
+                code, output = error.returncode, error.output
+            except BaseException:
+                print(json.dumps({"shipment_invocation": invocation}))
+                raise
+            receipt = shipment_receipt(output, value["id"])
+            if receipt is not None:
+                if (receipt.get("parent_id") != value["parent"]["id"]
+                        or set(receipt.get("members", {})) != {m["source"]["doc_id"] for m in value["members"]}):
+                    raise ValueError("remote receipt membership changed")
+                shipment.save(previous_path, receipt)
+                invocation.update(status=receipt["status"], phase=receipt["phase"],
+                                  native_acknowledged=receipt["native_acknowledged"],
+                                  quality_acknowledged=receipt["quality_acknowledged"],
+                                  publication_attempted=receipt["publication_attempted"])
+            invocation["exit_code"] = code
+            shipment.save(invocation_path, invocation)
+            print(json.dumps({"shipment_invocation": invocation}), flush=True)
+            if code:
+                return code
+            if not acknowledged(value, receipt):
+                raise RuntimeError("server returned success without exact two-application acknowledgement")
+            done.update(member["source"]["doc_id"] for member in value["members"])
+        if len(done) == len(parent["members"]):
+            if a.what_if:
+                return 0
+            output = json.loads(remote(a.server_host, ct + [
+                "flock", "-w", "900", "-E", "75", "/run/usnm-boinc-step.lock", *server[len(ct):],
+                "--campaign", a.target, "--retire-parent", shipment.digest(parent)]))
+            if output != {"retired_parent": shipment.digest(parent)}:
+                raise RuntimeError("unbound parent retirement response")
+            shipment.freeze(journal / "retired.json", output)
+            for path in journal.glob("*/input"):
+                shutil.rmtree(path)
+            shutil.rmtree(chunk)
+            shipment.sync_dir(chunk.parent)
+        # A partial parent stays oldest: a later tick finishes it before newer work.
+        completed += 1
+        if len(done) != len(parent["members"]):
+            break
+    return 0
+
+
+def ship_main():
+    import qwen_shipment as shipment
+    ap = argparse.ArgumentParser(description="Opt-in bounded Qwen subset shipment for the existing Temporal owner")
+    ap.add_argument("--ship-subsets", action="store_true")
+    ap.add_argument("--qwen-subsets", action="store_true")
+    ap.add_argument("--campaign", required=True)
+    ap.add_argument("--outbox", type=Path, default=Path("/var/lib/usnm-quality-feed/outbox"))
+    ap.add_argument("--server-host", default="pve.tjg.fyi")
+    ap.add_argument("--server-ct", type=int, default=230)
+    ap.add_argument("--engine-image", required=True)
+    ap.add_argument("--qwen-engine-plan", required=True)
+    ap.add_argument("--qwen-models", required=True)
+    ap.add_argument("--qwen-root")
+    ap.add_argument("--qwen-yiddish-root")
+    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1)
+    ap.add_argument("--yiddish-prompt-version", type=int, choices=(1, 2, 3, 4), default=4)
+    ap.add_argument("--readers", default="loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract")
+    ap.add_argument("--bundle-size", type=int, default=200)
+    ap.add_argument("--qwen-max-ready", type=int, default=1000)
+    ap.add_argument("--max-unresolved", type=int, default=2000)
+    ap.add_argument("--max-chunks", type=int, default=1)
+    ap.add_argument("--min-free-gb", type=int, default=50)
+    ap.add_argument("--max-unsent", type=int, default=300)  # Legacy CLI compatibility; never gates native.
+    ap.add_argument("--step-window-minutes", type=int, default=0)
+    ap.add_argument("--what-if", action="store_true")
+    a = ap.parse_args()
+    if (any(not re.fullmatch(shipment.NAME, name) for name in
+            (a.campaign, a.qwen_root or a.campaign, a.qwen_yiddish_root or a.campaign))
+            or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", a.server_host)
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", a.engine_image)
+            or any(not re.fullmatch(r"/project/[a-zA-Z0-9_./-]+", path)
+                   for path in (a.qwen_engine_plan, a.qwen_models))
+            or not re.fullmatch(r"[a-z0-9_,-]+", a.readers)
+            or not 1 <= a.bundle_size <= 500 or a.max_chunks < 1 or a.server_ct < 1
+            or not 2 <= a.qwen_max_ready <= 1000 or not 1 <= a.max_unresolved <= 2000
+            or a.min_free_gb < 50 or not 0 <= a.step_window_minutes < 60):
+        ap.error("invalid subset shipment route or bounded limits")
+    return ship_subsets(a)
 
 
 def tick(a):
@@ -271,6 +526,8 @@ def _tick(a):
 
 
 def main():
+    if "--ship-subsets" in sys.argv:
+        raise SystemExit(ship_main())
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--campaign", required=True)
     ap.add_argument("--state", type=Path, required=True)

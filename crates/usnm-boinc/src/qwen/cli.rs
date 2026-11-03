@@ -46,6 +46,9 @@ pub enum QwenCommands {
         /// The usnm_quality staging root whose units to cut crops from.
         #[arg(long)]
         quality_root: PathBuf,
+        /// Ordered JSON array of source doc_ids; never scan unrelated quality pages.
+        #[arg(long)]
+        members: Option<PathBuf>,
         #[arg(long)]
         root: PathBuf,
         /// The worker image's registry digest (sha256:...).
@@ -77,6 +80,9 @@ pub enum QwenCommands {
     },
     /// Hand staged units to create_work, two results each.
     Submit {
+        /// Ordered JSON array of source doc_ids; never publish unrelated pending jobs.
+        #[arg(long)]
+        members: Option<PathBuf>,
         #[arg(long)]
         root: PathBuf,
         #[arg(long)]
@@ -223,6 +229,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
         }
         QwenCommands::Stage {
             quality_root,
+            members,
             root,
             engine_image,
             engine_llama,
@@ -234,39 +241,46 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             max_pages,
             bundle_size,
         } => {
-            let s = x::stage::run(&x::stage::Options {
-                quality_root,
-                root,
-                engine: usnm_ocr_contract::qwen::Engine {
-                    image: engine_image,
-                    llama: engine_llama,
-                    models: x::default_models(),
-                    weights: engine_weights,
+            let s = x::stage::run_selected(
+                &x::stage::Options {
+                    quality_root,
+                    root,
+                    engine: usnm_ocr_contract::qwen::Engine {
+                        image: engine_image,
+                        llama: engine_llama,
+                        models: x::default_models(),
+                        weights: engine_weights,
+                    },
+                    gpu_timeout_secs,
+                    cpu_timeout_secs,
+                    max_tokens_per_1000px2,
+                    prompt_version,
+                    max_pages,
+                    bundle_size,
                 },
-                gpu_timeout_secs,
-                cpu_timeout_secs,
-                max_tokens_per_1000px2,
-                prompt_version,
-                max_pages,
-                bundle_size,
-            })
+                members.as_deref(),
+            )
             .await?;
             eprintln!("{s:?}");
         }
         QwenCommands::Submit {
+            members,
             root,
             project,
             max_units,
             target,
             model_dir,
         } => {
-            let s = x::submit::run(&x::submit::Options {
-                root,
-                project,
-                max_units,
-                target,
-                model_dir,
-            })
+            let s = x::submit::run_selected(
+                &x::submit::Options {
+                    root,
+                    project,
+                    max_units,
+                    target,
+                    model_dir,
+                },
+                members.as_deref(),
+            )
             .await?;
             eprintln!("{s:?}");
         }

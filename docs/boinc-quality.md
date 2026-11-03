@@ -909,14 +909,13 @@ scripts/boinc/onprem/quality-feed/quality-feed-install.sh --campaign v1-wave10 \
 
 ### Sustained non-English Qwen crop feed
 
-The opt-in `usnm-qwen-feed.timer` prepares sources on the quality shipper host every
-ten minutes after preparation finishes. The separate `usnm-qwen-ship.timer` drains
-at most two immutable READY chunks every minute after shipping finishes. Neither
-unit orders itself after the other: archive extraction, scan preparation or their
-failure cannot hold already-READY native work behind preparation. A campaign-local
-ship lock also prevents an old inline shipper and the independent shipper from
-copying/cleaning the same chunk concurrently; normal project mutexes still serialize
-server staging/submission. This does not replace the ordinary quality feeder.
+The existing **Temporal singleton is the sole Qwen prepare/ship owner**. The retained
+`usnm-qwen-feed.timer` and `usnm-qwen-ship.timer` units are intentionally disabled;
+do not enable them alongside Temporal. Preparation and shipping remain separate
+activities, so archive extraction or preparation failure does not hold already-READY
+work behind preparation. A campaign-local ship lock prevents concurrent consumers
+from copying/cleaning one parent chunk; normal project mutexes serialize publication.
+This does not replace the ordinary quality feeder.
 Install `qwen_feed.py`, `quality-ship.sh` and `quality_receive.py` into a Qwen-owned
 `/opt/usnm-quality-feed/qwen-throughput/` directory, leaving other campaigns'
 installed shared helpers unchanged. Install `scan_quarantine.py` in the preparation CT's
@@ -932,13 +931,12 @@ Configure `/etc/usnm/qwen-feed.env` on the shipper host with `CAMPAIGN` (a new c
 `QWEN_ENGINE_PLAN` (a reviewed `/project/.../plan.json` containing the pinned `engine`),
 and `QWEN_MODELS` (the existing checksum-pinned shared-model directory, not another
 model copy). `QWEN_MAX_READY` defaults to 1000 **fresh original replicas** (500
-untouched native pairs); it is not the global unsent-replica headline. Install both
-service/timer pairs from `scripts/boinc/onprem/quality-feed/` at an actual old
-Qwen-service idle boundary, after the old inline invocation completes. Do not start
-a competing consumer while an old unguarded shipper is active. Enable the new
-ship timer without manually invoking feed/ship; verify its genuine ordinary run
-and authoritative native audit. The preparation timer and source/archive budgets
-are unchanged. Phase JSON distinguishes inventory, selection, original ALTO and
+untouched native pairs); it is not the global unsent-replica headline. Install the
+helpers from `scripts/boinc/onprem/quality-feed/` at the Temporal activity's idle
+boundary. Do not start a competing consumer while an old shipper is active, and keep
+the systemd feed/ship timers disabled. Verify the singleton's genuine ordinary run
+and authoritative native audit. Source/archive budgets are unchanged.
+Phase JSON distinguishes inventory, selection, original ALTO and
 READY preparation; native shipping logs normal mutex acquisition.
 
 Each tick excludes all retained Qwen single-page/bundle documents and the campaign's
@@ -1054,6 +1052,95 @@ Successful native workunit audits are retained in `audit.json`, bound to the exa
 SHA256. Historical jobs need not still exist in BOINC's periodically purged database;
 new jobs always require a fresh authoritative audit; changed previously audited
 job bytes require explicit reconciliation, never automatic replay.
+
+#### Transactional subset shipment (#1466, opt-in)
+
+The legacy invocation above still reserves a whole chunk. The existing Temporal
+ship activity may explicitly select `quality-ship.sh --qwen-subsets` **only after
+the matching helpers and binary are installed**. No timer, scheduler, language
+budget, routing policy, or queue ceiling is changed by this switch. The limits
+remain 1,000 fresh-original replicas (500 pairs), 2,000 unresolved native units,
+three READY parents, 50 GiB storage floors, and 64 MiB reserved per selected source.
+
+The transaction takes the oldest parent's remaining sources in their original
+sample order. Thus a 96-source parent with 54 slots of headroom ships exactly 54,
+not the entire parent with a smaller `--max-pages`. The immutable manifest binds
+the parent's checksum inventory, ordered original-source fingerprints
+(`doc_id,batch,batch_version,bytes,sha256`), selected sample rows, every selected
+input's size/SHA256, and the staging recipe. It is persisted before transfer;
+retries reuse its content-addressed identity and never silently shrink or replace
+its membership. Changed parent bytes, membership, recipe, or retained provenance
+fail closed. Legacy source chunks without image provenance require explicit
+reconciliation; a marker alone cannot acknowledge a member.
+
+Only the selected scans/texts and generated selected sample travel over the
+existing LAN transport. Each transfer uses a unique upload directory; the server
+verifies it and atomically adopts it under the existing host bridge mutex, never
+overwriting inputs an earlier invocation may still be using. Native
+`qwen stage --members FILE`, `qwen submit --members FILE`, and
+`quality submit --members FILE` use an ordered JSON array of document IDs.
+Unrelated pending units are never drained. Native subset staging requires
+single-page units. Quality staging uses the selected sample and the existing
+bundle recipe. An unsubmitted pre-existing bundle crossing the selection boundary
+is refused before staging/publication; reconcile that legacy partial explicitly
+rather than silently publishing its extra members.
+
+Storage is rechecked under the bridge mutex before staging, and authoritative
+native capacity is rechecked again immediately before publication. Reservation
+counts the **entire selected subset**, including eventual `no_crops`/`too_large`
+dispositions; new native capacity counts only still-unpublished native jobs.
+Requests, pinned engines, scientific identities, batch 8, quorum two, and
+distinct-host scheduling are unchanged. The native and quality submits both run
+under that same existing mutex. The scheduler's short database publication
+read-lock interval may briefly delay their INSERTs.
+
+Per-application publication intents bind job checksums before submission. An
+interrupted publication is reconciled against BOINC by exact workunit identity,
+application, input name, routing, and quorum. Positive evidence completes the
+marker; missing/duplicate/conflicting history retains the journal and parent,
+never clears `submitting` to replay. Native audit rows additionally bind the exact
+source/JPEG. A fully acknowledged durable transaction can replay without requiring
+already-purged BOINC history, but its retained jobs, intents, markers, and source
+audits must still agree.
+
+Producer journals live outside the removable parent:
+`<outbox>/.qwen-transactions/<campaign>/<chunk>/`, with `parent.json`, `recipe.json`,
+and `<transaction-id>/{manifest,transfer,receipt,invocation}.json`.
+Server evidence lives at `/project/qwen-shipments/<native-campaign>/<transaction-id>/`.
+The emitted `shipment_invocation` includes transaction/parent IDs, reservation and
+transferred counts, phase, exit code, `publication_attempted`,
+`native_acknowledged`, and `quality_acknowledged`. **Exit 75 is not itself a
+zero-publication receipt**: native success followed by quality failure is
+`status=partial`; a lost response is uncertain until replay/reconciliation.
+Use these receipts, not only process status, for monitoring.
+
+The original parent and all subset input copies remain until a disjoint, complete
+cover of the parent's members has both native disposition and quality publication
+acknowledgements. Server retirement verifies retained evidence again and persists
+its retirement record before freeing transferred input copies. Only then may the
+producer remove the parent. Manifests, intents, audits, source bindings, and
+receipts stay retained. An interrupted retirement safely repeats. Once a parent
+has a transaction journal, the legacy whole-chunk path refuses it; rollback must
+drain or reconcile it, not bypass the journal.
+
+Deployment/integration gates (offline tests do not satisfy these):
+
+* Install reviewed `qwen_shipment.py` beside `qwen_feed.py` on the shipper and beside
+  `qwen_submit.py` in the server container. Install the matching `quality-ship.sh`.
+  The existing preparation/archive helpers need no new dependency or network access.
+* Install a hash-verified matching `usnm-boinc-stage` with all three `--members`
+  options and quality staging/function-word commands. All transaction Rust commands
+  use this binary, not an older server-image `quality submit`.
+* At an idle singleton boundary, confirm writable durable transaction storage,
+  canonical quality `places.txt` (or its existing `v1-wave9` source), compatible
+  guarded app versions, shared pinned models, and no conflicting legacy partial
+  bundles/unbound source receipts. Keep both feed/ship timers disabled.
+* Enable the activity's explicit flag, then verify one real bounded transaction,
+  exact native/quality database identities, audit/quorum and one-result-per-host
+  configuration, receipts after an interrupted response, and all backing-store
+  floors. Review observed mutex duration and retirement before expanding use.
+  No production invocation, database mutation, deployment, or SSH rehearsal is
+  implied by the mocked offline process tests.
 
 Ramp the configured target only after measured automatic runs, not to manufacture
 10,000 via a number change. For example, start at 200 fresh replicas (100 pairs),

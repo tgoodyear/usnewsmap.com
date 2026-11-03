@@ -212,6 +212,10 @@ fn check_retained_source(root: &Path, page: &Path, unit: &Path) -> anyhow::Resul
 /// no unit. The quality unit's `sample.json`, when there, is copied along
 /// for `collect`.
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    run_selected(opts, None).await
+}
+
+pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Result<Summary> {
     let bundle_size = if opts.bundle_size == 0 {
         1
     } else {
@@ -220,6 +224,10 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     ensure!(
         (1..=MAX_BUNDLE_PAGES).contains(&bundle_size),
         "--bundle-size must be 1 to {MAX_BUNDLE_PAGES}"
+    );
+    ensure!(
+        members.is_none() || bundle_size == 1,
+        "explicit membership requires --bundle-size 1"
     );
     super::check_digest(&opts.engine.image, "--engine-image")?;
     super::check_digest(&opts.engine.llama, "--engine-llama")?;
@@ -263,6 +271,27 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         .filter(|p| p.join(crate::quality::JOB_FILE).exists())
         .collect();
     pages.sort();
+    if let Some(members) = members {
+        let docs = crate::selection::members(members)?;
+        ensure!(
+            docs.len() <= opts.max_pages,
+            "membership exceeds --max-pages"
+        );
+        pages = docs
+            .into_iter()
+            .map(|doc| {
+                let mut page = src.join(&doc);
+                if !page.join(crate::quality::JOB_FILE).is_file() {
+                    page = crate::quality::units(&opts.quality_root).join(&doc);
+                }
+                ensure!(
+                    page.join(crate::quality::JOB_FILE).is_file(),
+                    "{doc}: missing selected quality job"
+                );
+                Ok(page)
+            })
+            .collect::<anyhow::Result<_>>()?;
+    }
     let mut summary = Summary::default();
     for page in pages {
         if summary.staged + summary.no_crops + summary.too_large >= opts.max_pages {
@@ -1303,6 +1332,50 @@ pub(crate) mod tests {
         atomic(&unit.join("no_crops"), b"legacy evidence").unwrap();
         assert_eq!(run(&opts).await.unwrap().already, 1);
         assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn explicit_membership_does_not_stage_unrelated_quality_pages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let selected = "sn83045462_1890-05-03_ed-1_seq-2";
+        let unrelated = "sn83045462_1890-05-03_ed-1_seq-1";
+        for doc in [selected, unrelated] {
+            let unit = crate::quality::units(&qroot).join(doc);
+            crate::quality::work::tests::unit(&unit);
+            bind_source(&qroot, &unit);
+        }
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
+            max_pages: 1,
+            bundle_size: 1,
+        };
+        let members = tmp.path().join("members.json");
+        atomic(&members, &serde_json::to_vec(&[selected]).unwrap()).unwrap();
+        assert_eq!(run_selected(&opts, Some(&members)).await.unwrap().staged, 1);
+        assert!(units(&opts.root).join(selected).join(JOB_FILE).exists());
+        assert!(!units(&opts.root).join(unrelated).exists());
+        assert_eq!(
+            run_selected(&opts, Some(&members)).await.unwrap().already,
+            1
+        );
+        assert!(!units(&opts.root).join(unrelated).exists());
+        atomic(
+            &members,
+            &serde_json::to_vec(&[selected, unrelated]).unwrap(),
+        )
+        .unwrap();
+        assert!(run_selected(&opts, Some(&members))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds"));
     }
 
     #[tokio::test]

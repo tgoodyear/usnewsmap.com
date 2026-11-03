@@ -9,6 +9,7 @@
 #     [--bundle-size 200] [--max-unsent 300] [--max-chunks 1] [--min-free-gb 40] [--what-if]
 #     [--qwen-engine-plan /project/.../plan.json --qwen-models /project/.../models]
 #     [--qwen-max-ready 1000] (fresh native original replicas, not retry replicas)
+#     [--qwen-subsets] (explicit frozen subset transactions; existing Temporal owner only)
 #     [--step-window-minutes 15] (native publication only; 0, the default, is no window)
 #     [--prompt-version 1] [--qwen-root NAME] (native only: the campaign root and the request
 #     version chunks are staged into; the default root is --campaign, the outbox stays there)
@@ -47,6 +48,11 @@ usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" 
 die() { echo "error: $*" >&2; exit 1; }
 log() { echo "quality-ship: $*" >&2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
+for arg in "$@"; do
+  if [ "$arg" = --qwen-subsets ]; then
+    exec python3 "$HERE/qwen_feed.py" --ship-subsets "$@"
+  fi
+done
 
 CAMPAIGN="" ENGINE="" OUTBOX=/var/lib/usnm-quality-feed/outbox SERVER=pve.tjg.fyi CT=230
 READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
@@ -234,6 +240,8 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
   chunk=$(next_ready "$last")
   [ -n "$chunk" ] || break
   last=$chunk dir="$OUTBOX/$CAMPAIGN/$chunk"
+  [ ! -f "$OUTBOX/.qwen-transactions/$CAMPAIGN/$chunk/parent.json" ] ||
+    die "$chunk: frozen subset parent exists; resume with --qwen-subsets, never whole-chunk replay"
   pages=$(cat "$dir/READY")
   target=$CAMPAIGN version=1
   if [ -n "$QWEN_PLAN" ]; then

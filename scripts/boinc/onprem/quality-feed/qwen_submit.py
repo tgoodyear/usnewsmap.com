@@ -372,6 +372,401 @@ echo json_encode($verified);
             "workunit_ids": [v["workunit_id"] for v in new.values()]}
 
 
+def selected_jobs(root, file, wanted):
+    selected = []
+    for path in sorted((root / "units").glob("*/" + file)):
+        job = json.loads(path.read_text())
+        members = documents(job)
+        if not members.intersection(wanted):
+            continue
+        if not members <= set(wanted) and not (path.parent / "submitted").is_file():
+            raise RuntimeError("pending unit crosses shipment membership: " + str(path))
+        selected.append((path, job))
+    selected.sort(key=lambda item: min(wanted.index(doc) for doc in documents(item[1]) if doc in wanted))
+    return selected
+
+
+def publication_rows(project, selected, app):
+    """Reconcile by exact scientific identity, not command exit or a marker alone."""
+    import qwen_shipment as shipment
+    expected = {str(path): shipment.file_hash(path) for path, _ in selected}
+    php = """
+chdir(%s);
+require_once("boinc_db.inc");
+$appname = %s;
+$app = BoincApp::lookup("name='".$appname."'");
+if (!$app) throw new RuntimeException("Application missing");
+$out = [];
+foreach (json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR) as $path => $sha) {
+    if (hash_file("sha256", $path) !== $sha) throw new RuntimeException("Job changed during reconciliation");
+    $job = json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+    if (!preg_match('/^[a-f0-9]{64}$/D', $job["id"])) throw new RuntimeException("Bad identity");
+    $name = $appname."_".$job["id"];
+    $rows = BoincWorkunit::enum("name='".$name."'");
+    if (count($rows) > 1) throw new RuntimeException("Duplicate scientific identity");
+    if (!$rows) continue;
+    $wu = $rows[0];
+    if (intval($wu->appid) !== intval($app->id) || intval($wu->min_quorum) !== 2 ||
+        intval($wu->target_nresults) !== 2 || ($appname === "usnm_qwen" && intval($wu->batch) !== 8) ||
+        strpos($wu->xml_doc, $job["id"]."_".($appname === "usnm_qwen" ? "qwen" : "quality")."_json") === false)
+        throw new RuntimeException("Unexpected scientific input, routing or quorum");
+    $out[$job["id"]] = ["job_sha256"=>$sha, "workunit_id"=>intval($wu->id),
+        "batch"=>intval($wu->batch), "min_quorum"=>2, "target_nresults"=>2];
+}
+echo json_encode($out);
+""" % (json.dumps(str(project / "html/inc")), json.dumps(app))
+    rows = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(expected), text=True))
+    known = {job["id"]: shipment.file_hash(path) for path, job in selected}
+    if not set(rows) <= known.keys() or any(
+            row["job_sha256"] != known[identity] or type(row["workunit_id"]) is not int
+            or row["workunit_id"] < 1 or row["min_quorum"] != 2 or row["target_nresults"] != 2
+            or (app == "usnm_qwen" and row["batch"] != 8) for identity, row in rows.items()):
+        raise RuntimeError("changed publication reconciliation")
+    return rows
+
+
+def reconcile(project, selected, app):
+    import qwen_shipment as shipment
+    rows = publication_rows(project, selected, app)
+    for path, job in selected:
+        unit = path.parent
+        name = app + "_" + job["id"]
+        for marker in ("submitting", "submitted"):
+            if (unit / marker).exists() and (unit / marker).read_text() != name:
+                raise RuntimeError("changed submission journal: " + str(unit))
+        if job["id"] in rows:
+            if not (unit / "submitted").exists():
+                # Positive authoritative evidence repairs an interrupted publication.
+                # Absence never licenses deleting a submitting marker.
+                marker = unit / "submitting"
+                if not marker.exists():
+                    marker.write_text(name)
+                with marker.open("rb") as stream:
+                    import os
+                    os.fsync(stream.fileno())
+                marker.replace(unit / "submitted")
+                shipment.sync_dir(unit)
+        elif any((unit / marker).exists() for marker in ("submitting", "submitted")):
+            raise RuntimeError("publication history unavailable/uncertain; retain journals, never replay")
+    return rows
+
+
+def transaction_quality(a, value, input_dir, quality):
+    import qwen_shipment as shipment
+    docs = [member["source"]["doc_id"] for member in value["members"]]
+    # Refuse a pre-existing, unsubmitted bundle spanning the reservation before
+    # quality stage could repack it. Completed bundles remain immutable.
+    selected_jobs(quality, "quality.json", docs)
+    for member in value["members"]:
+        doc = member["source"]["doc_id"]
+        binding_path = quality / "texts" / (doc + ".image-provenance.json")
+        incoming = json.loads((input_dir / "texts" / binding_path.name).read_text())
+        existing = [quality / layout / doc / "quality.json" for layout in ("pages", "units")]
+        if any(path.exists() for path in existing) and not binding_path.exists():
+            raise RuntimeError("legacy/unbound quality source; retain transaction")
+        shipment.freeze(binding_path, incoming)
+        shipment.freeze(quality / "shipment-sources" / (doc + ".json"), member)
+        for path in existing:
+            if path.exists():
+                job = json.loads(path.read_text())
+                for field, expected in (("page", member["files"][f"scans/{doc}.jpg"]), ("alto", member["quality_alto"])):
+                    if {k: job["inputs"][field][k] for k in ("bytes", "sha256")} != expected:
+                        raise RuntimeError("changed retained quality input")
+    recipe = value["recipe"]
+    places = quality / "places.txt"
+    if not places.exists():
+        shipment.mkdir(quality)
+        shutil.copyfile(a.share / "quality" / "v1-wave9" / "places.txt", places)
+        with places.open("rb") as stream:
+            import os
+            os.fsync(stream.fileno())
+        shipment.sync_dir(quality)
+    langs = sorted({member["sample"]["lang"] for member in value["members"]})
+    subprocess.run([a.stage_binary, "quality", "function-words", "--out-dir", str(quality / "function-words"),
+                    *[arg for lang in langs for arg in ("--lang", lang)]], check=True)
+    subprocess.run([
+        a.stage_binary, "quality", "stage", "--sample", str(input_dir / "sample.jsonl"),
+        "--root", str(quality), "--group", a.campaign, "--texts-dir", str(input_dir / "texts"),
+        "--scans-dir", str(input_dir / "scans"), "--places", str(quality / "places.txt"),
+        "--function-words-dir", str(quality / "function-words"), "--readers", recipe["readers"],
+        "--engine-image", recipe["engine_image"], "--max-pages", str(len(docs)),
+        "--bundle-size", str(recipe["bundle_size"])], check=True)
+
+
+def transaction_native_sources(root, value):
+    states = {}
+    for member in value["members"]:
+        doc = member["source"]["doc_id"]
+        unit = root / "units" / doc
+        if terminal_source(unit) != member["source"]:
+            raise RuntimeError("legacy/unbound native source: " + doc)
+        if (unit / "qwen.json").exists():
+            job = json.loads((unit / "qwen.json").read_text())
+            if (job.get("pages") or job["doc_id"] != doc
+                    or job["prompt_version"] != value["recipe"]["prompt_version"]
+                    or job["language"] != member["sample"]["lang"]
+                    or {key: job["input"][key] for key in ("bytes", "sha256")} != member["files"][f"scans/{doc}.jpg"]):
+                raise RuntimeError("transaction requires bound single-page native jobs at its request version")
+            states[doc] = "pending"
+        elif (unit / "no_crops").exists():
+            states[doc] = "no_crops"
+        elif (unit / "too_large").exists() and (unit / "rejected-qwen.json").exists():
+            states[doc] = "too_large"
+        else:
+            raise RuntimeError("native source has no bound disposition: " + doc)
+    return states
+
+
+def check_transaction_jobs(value, native, quality_jobs, engine):
+    expected = {member["source"]["doc_id"]: member for member in value["members"]}
+    counts = {doc: 0 for doc in expected}
+    for _, job in native:
+        if any(job["engine"][key] != engine[key] for key in ("image", "llama", "weights")):
+            raise RuntimeError("native job engine changed")
+    for _, job in quality_jobs:
+        if job["engine"]["image"] != value["recipe"]["engine_image"]:
+            raise RuntimeError("quality job engine changed")
+        for page in job.get("pages") or [job]:
+            doc = page["doc_id"]
+            if doc not in expected:
+                continue
+            member = expected[doc]
+            counts[doc] += 1
+            if page["language"] != member["sample"]["lang"] or page["group"] != value["recipe"]["campaign"]:
+                raise RuntimeError("quality job recipe changed")
+            for name, expected_input in (("page", member["files"][f"scans/{doc}.jpg"]), ("alto", member["quality_alto"])):
+                if {key: page["inputs"][name][key] for key in ("bytes", "sha256")} != expected_input:
+                    raise RuntimeError("quality job is not bound to shipment inputs")
+    if any(count != 1 for count in counts.values()):
+        raise RuntimeError("quality source is missing or duplicated; retain parent")
+
+
+def verify_acknowledgement(a, tx, value, receipt):
+    """Durable positive receipts survive BOINC history purging; unbound markers do not."""
+    import qwen_shipment as shipment
+    docs = [member["source"]["doc_id"] for member in value["members"]]
+    root = a.share / "qwen" / a.campaign
+    states = transaction_native_sources(root, value)
+    native = selected_jobs(root, "qwen.json", docs)
+    quality_jobs = selected_jobs(a.share / "quality" / a.campaign, "quality.json", docs)
+    check_transaction_jobs(value, native, quality_jobs, json.loads((tx / "engine.json").read_text()))
+    for kind, selected, app in (("native", native, "usnm_qwen"), ("quality", quality_jobs, "usnm_quality")):
+        intent = {job["id"]: shipment.file_hash(path) for path, job in selected}
+        if json.loads((tx / (kind + "-intent.json")).read_text()) != intent:
+            raise RuntimeError("acknowledged job changed")
+        rows = receipt.get(kind + "_workunits", {})
+        if set(rows) != set(intent):
+            raise RuntimeError("unbound publication acknowledgement")
+        for path, job in selected:
+            row = rows[job["id"]]
+            if (row["job_sha256"] != intent[job["id"]] or row["min_quorum"] != 2 or row["target_nresults"] != 2
+                    or type(row["workunit_id"]) is not int or row["workunit_id"] < 1
+                    or (path.parent / "submitting").exists()
+                    or (path.parent / "submitted").read_text() != app + "_" + job["id"]):
+                raise RuntimeError("publication acknowledgement changed")
+            if kind == "native":
+                audited = json.loads((root / "audit.json").read_text()).get(job["id"], {})
+                if (row["batch"] != 8 or row.get("source_bindings") != source_bindings(root, job)
+                        or any(audited.get(key) != item for key, item in row.items())):
+                    raise RuntimeError("native acknowledgement lost bound audit")
+                states[job["doc_id"]] = "published"
+    if (receipt.get("schema") != 1 or receipt.get("transaction_id") != value["id"]
+            or receipt.get("parent_id") != value["parent"]["id"] or receipt.get("status") != "acknowledged"
+            or not receipt.get("native_acknowledged") or not receipt.get("quality_acknowledged")
+            or receipt["members"] != {doc: {"native": states[doc], "quality": "published"} for doc in docs}):
+        raise RuntimeError("incomplete transaction acknowledgement")
+
+
+def run_transaction(a):
+    """Called only by the shipper under /run/usnm-boinc-step.lock."""
+    import qwen_shipment as shipment
+    if not re.fullmatch(r"[a-f0-9]{64}", a.transaction):
+        raise ValueError("invalid transaction identity")
+    tx = a.share / "qwen-shipments" / a.campaign / a.transaction
+    input_dir = tx / "input"
+    if a.upload and not re.fullmatch(r"upload-[a-f0-9]{32}", a.upload):
+        raise ValueError("invalid shipment upload")
+    upload = tx / a.upload if a.upload else None
+    if not input_dir.exists():
+        if upload is None:
+            raise RuntimeError("transaction upload missing; retain parent")
+        value = shipment.validate(json.loads((upload / "manifest.json").read_text()))
+        if value["id"] != a.transaction:
+            raise ValueError("upload transaction identity changed")
+        shipment.verify_payload(upload, value)
+        shipment.sync_payload(upload)
+        upload.rename(input_dir)
+        shipment.sync_dir(tx)
+    value = shipment.validate(json.loads((input_dir / "manifest.json").read_text()))
+    if value["id"] != a.transaction or value["recipe"]["campaign"] != a.campaign:
+        raise ValueError("transaction route changed")
+    if a.prompt_version != value["recipe"]["prompt_version"]:
+        raise ValueError("transaction request version changed")
+    shipment.verify_payload(input_dir, value)
+    shipment.freeze(tx / "manifest.json", value)
+    docs = [member["source"]["doc_id"] for member in value["members"]]
+    a.max_pages = len(docs)
+    members_path = tx / "members.json"
+    shipment.freeze(members_path, docs)
+    root = a.share / "qwen" / a.campaign
+    quality = a.share / "quality" / a.campaign
+    record_path = tx / "receipt.json"
+    receipt = json.loads(record_path.read_text()) if record_path.exists() else {
+        "schema": 1, "transaction_id": value["id"], "parent_id": value["parent"]["id"],
+        "members": {doc: {"native": "pending", "quality": "pending"} for doc in docs},
+        "publication_attempted": False, "native_acknowledged": False, "quality_acknowledged": False}
+    if (receipt.get("transaction_id") != value["id"] or receipt.get("parent_id") != value["parent"]["id"]
+            or set(receipt["members"]) != set(docs)):
+        raise ValueError("receipt membership changed")
+    if receipt.get("status") == "acknowledged":
+        verify_acknowledgement(a, tx, value, receipt)
+        print(json.dumps({"transaction_receipt": receipt}, sort_keys=True), flush=True)
+        return
+    receipt["status"] = "in_progress"
+    shipment.save(record_path, receipt)
+    try:
+        state = inventory(a.share, a.project)
+        if state["free_bytes"] - len(docs) * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
+            receipt.update(status="partial" if receipt["publication_attempted"] else "deferred",
+                           phase="locked_storage", reason="reserved_input_free_space", reserve_pages=len(docs))
+            raise SystemExit(75)
+        elsewhere = set()
+        for path, job in jobs(a.share / "qwen"):
+            if root not in path.parents:
+                elsewhere.update(documents(job))
+        for member in value["members"]:
+            row = member["sample"]
+            if row["lang"] in ("eng", "", "und") or row["doc_id"] in elsewhere:
+                raise RuntimeError("English, unclassified or duplicate transaction source")
+            assert_request_cohort({"language": row["lang"], "doc_id": row["doc_id"]}, a.prompt_version)
+        engine = json.loads(a.engine_plan.read_text())["engine"]
+        shipment.freeze(tx / "engine.json", engine)
+        transaction_quality(a, value, input_dir, quality)
+        subprocess.run([
+            a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
+            "--engine-image", engine["image"], "--engine-llama", engine["llama"],
+            "--engine-weights", engine["weights"], "--max-pages", str(len(docs)),
+            "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
+            "--prompt-version", str(a.prompt_version), "--members", str(members_path)], check=True)
+        states = transaction_native_sources(root, value)
+        native = selected_jobs(root, "qwen.json", docs)
+        quality_jobs = selected_jobs(quality, "quality.json", docs)
+        check_transaction_jobs(value, native, quality_jobs, engine)
+        for kind, selected in (("native", native), ("quality", quality_jobs)):
+            shipment.freeze(tx / (kind + "-intent.json"),
+                            {job["id"]: shipment.file_hash(path) for path, job in selected})
+        audit_path = root / "audit.json"
+        audited = json.loads(audit_path.read_text()) if audit_path.exists() else {}
+        for path, job in native:
+            previous = audited.get(job["id"])
+            if previous and (previous.get("job_sha256") != shipment.file_hash(path)
+                             or previous.get("source_bindings") != source_bindings(root, job)):
+                raise RuntimeError("legacy/unbound or changed native audit; explicit reconciliation required")
+        native_rows = reconcile(a.project, native, "usnm_qwen")
+        reconcile(a.project, quality_jobs, "usnm_quality")
+        # Published replays do not consume new queue capacity; disk reservation
+        # remains the exact transferred subset, including terminal dispositions.
+        state = inventory(a.share, a.project)
+        pending = sum(job["id"] not in native_rows for _, job in native)
+        reason = None
+        if unreadable_versions(state, a.prompt_version) and pending:
+            reason = "dispatchable_app_cannot_read_request"
+        elif 2 * (state["fresh_pairs"] + pending) > a.max_ready and pending:
+            reason = "fresh_original_watermark"
+        elif state["unresolved_native"] + pending > a.max_unresolved and pending:
+            reason = "unresolved_native_ceiling"
+        elif state["free_bytes"] - len(docs) * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
+            reason = "reserved_input_free_space"
+        receipt.update(reserve_pages=len(docs), pending_native=pending, reason=reason,
+                       phase="locked_recheck")
+        if reason:
+            receipt["status"] = "partial" if native_rows or receipt["publication_attempted"] else "deferred"
+            raise SystemExit(75)
+        receipt.update(phase="native_submit", publication_attempted=True)
+        shipment.save(record_path, receipt)
+        subprocess.run([a.stage_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
+                        "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(len(docs)),
+                        "--members", str(members_path)], check=True)
+        native_rows = reconcile(a.project, native, "usnm_qwen")
+        if set(native_rows) != {job["id"] for _, job in native}:
+            raise RuntimeError("native publication incomplete")
+        for path, job in native:
+            row = native_rows[job["id"]]
+            row["source_bindings"] = source_bindings(root, job)
+            previous = audited.get(job["id"])
+            if previous and any(previous.get(k) != row[k] for k in row):
+                raise RuntimeError("legacy/unbound or changed native audit; explicit reconciliation required")
+            audited[job["id"]] = {**row, "audited_at": previous.get("audited_at", time.time()) if previous else time.time()}
+            states[job["doc_id"]] = "published"
+        shipment.save(audit_path, audited)
+        for doc, state in states.items():
+            receipt["members"][doc]["native"] = state
+        receipt["native_workunits"] = native_rows
+        receipt.update(native_acknowledged=True, phase="quality_submit")
+        shipment.save(record_path, receipt)
+        subprocess.run([a.stage_binary, "quality", "submit", "--root", str(quality),
+                        "--project", str(a.project), "--max-units", str(len(docs)),
+                        "--members", str(members_path)], check=True)
+        quality_rows = reconcile(a.project, quality_jobs, "usnm_quality")
+        if set(quality_rows) != {job["id"] for _, job in quality_jobs}:
+            raise RuntimeError("quality publication incomplete")
+        receipt["quality_workunits"] = quality_rows
+        for doc in docs:
+            receipt["members"][doc]["quality"] = "published"
+        receipt.update(quality_acknowledged=True, status="acknowledged", phase="complete")
+    except BaseException:
+        if receipt["status"] == "in_progress":
+            receipt["status"] = ("partial" if receipt["native_acknowledged"]
+                                 else "uncertain" if receipt["publication_attempted"] else "failed")
+        raise
+    finally:
+        shipment.save(record_path, receipt)
+        print(json.dumps({"transaction_receipt": receipt}, sort_keys=True), flush=True)
+
+
+def retire_parent(a):
+    import qwen_shipment as shipment
+    base = a.share / "qwen-shipments" / a.campaign
+    records = []
+    parent = None
+    covered = []
+    for path in base.glob("*/manifest.json"):
+        value = shipment.validate(json.loads(path.read_text()))
+        if value["parent"]["id"] != a.retire_parent:
+            continue
+        if parent is not None and value["parent"] != parent:
+            raise RuntimeError("conflicting parent retirement")
+        parent = value["parent"]
+        receipt = json.loads((path.parent / "receipt.json").read_text())
+        if (receipt.get("transaction_id") != value["id"] or receipt.get("parent_id") != a.retire_parent
+                or receipt.get("status") != "acknowledged" or not receipt.get("native_acknowledged")
+                or not receipt.get("quality_acknowledged")
+                or set(receipt["members"]) != {m["source"]["doc_id"] for m in value["members"]}
+                or any(row["native"] not in ("published", "no_crops", "too_large")
+                       or row["quality"] != "published" for row in receipt["members"].values())):
+            raise RuntimeError("parent still has unacknowledged members")
+        verify_acknowledgement(a, path.parent, value, receipt)
+        records.append(path.parent)
+        covered.extend(member["source"] for member in value["members"])
+    if not parent or covered != parent["sources"]:
+        # Directory iteration has no semantic order; compare fingerprints and
+        # require a disjoint, complete cover, not merely equal page counts.
+        if (not parent or len(covered) != len(parent["sources"])
+                or sorted(covered, key=lambda p: p["doc_id"]) != sorted(parent["sources"], key=lambda p: p["doc_id"])):
+            raise RuntimeError("incomplete or overlapping parent acknowledgement")
+    shipment.freeze(base / ("retired-" + a.retire_parent + ".json"), {
+        "schema": 1, "parent": parent, "transactions": sorted(path.name for path in records)})
+    for path in records:
+        if (path / "input").exists():
+            shutil.rmtree(path / "input")
+            shipment.sync_dir(path)
+        for upload in path.glob("upload-*"):
+            if upload.is_dir() and re.fullmatch(r"upload-[a-f0-9]{32}", upload.name):
+                shutil.rmtree(upload)
+        shipment.sync_dir(path)
+    print(json.dumps({"retired_parent": a.retire_parent}))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--share", type=Path, default=Path("/project"))
@@ -380,6 +775,9 @@ def main():
     ap.add_argument("--source-status", action="store_true")
     ap.add_argument("--preflight", action="store_true",
                     help="Read-only admission before transferring a READY chunk; exit 75 on capacity deferral")
+    ap.add_argument("--transaction", help="Frozen subset identity; run under the existing host bridge mutex")
+    ap.add_argument("--upload", help="Unique, completed transfer directory to adopt under the bridge mutex")
+    ap.add_argument("--retire-parent", help="Retire input copies only after a complete two-application acknowledgement")
     ap.add_argument("--campaign")
     ap.add_argument("--engine-plan", type=Path)
     ap.add_argument("--models", type=Path)
@@ -404,6 +802,12 @@ def main():
             raise ValueError("source-status sample exceeds bound")
         print(json.dumps(source_status(a.share, a.project, sample), sort_keys=True))
         return
+    if a.retire_parent:
+        if (not a.campaign or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
+                or not re.fullmatch(r"[a-f0-9]{64}", a.retire_parent)):
+            ap.error("invalid retirement identity")
+        retire_parent(a)
+        return
     state = inventory(a.share, a.project)
     if a.inventory:
         print(json.dumps(state))
@@ -415,6 +819,16 @@ def main():
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
+    if a.transaction:
+        if a.preflight:
+            ap.error("transaction publication is not a read-only preflight")
+        if a.max_ready > 1000 or a.max_unresolved > 2000 or a.min_free_gb < 50:
+            ap.error("subset transactions retain the 1000/2000 watermarks and 50 GiB floor")
+        try:
+            run_transaction(a)
+        except subprocess.CalledProcessError as error:
+            raise SystemExit(error.returncode) from error
+        return
     admission(a, state, root)
     if a.preflight:
         return
