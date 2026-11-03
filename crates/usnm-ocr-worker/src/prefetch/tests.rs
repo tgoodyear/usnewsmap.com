@@ -302,7 +302,7 @@ async fn decode_repair_restart_recovers_missing_index_without_republishing_or_re
                         status.failed_transient,
                         status.failed_permanent
                     ),
-                    (0, 0, 0)
+                    (0, u64::from(!complete), 0)
                 );
                 assert_eq!(status.already_there, u64::from(complete));
                 assert_eq!(status.deferred_repair_occupied, u64::from(!complete));
@@ -584,9 +584,10 @@ async fn decode_repair_publication_rechecks_alternate_format_before_indexing() {
                 (
                     status.fetched,
                     status.already_there,
-                    status.deferred_repair_occupied
+                    status.deferred_repair_occupied,
+                    status.failed_transient
                 ),
-                (0, 0, 1),
+                (0, 0, 1, 1),
             );
             assert_eq!(std::fs::read_to_string(&index).unwrap(), history);
             for (path, bytes) in retained {
@@ -613,6 +614,7 @@ fn decode_repair_index_replay_refuses_bad_tail_after_matching_sidecar() {
 
 #[tokio::test]
 async fn decode_repair_never_fetches_over_an_incomplete_retained_target() {
+    let source = StandIn::start().await;
     for (format, sidecar_only) in [
         (ScanFormat::Jp2, false),
         (ScanFormat::Jpeg, false),
@@ -633,17 +635,30 @@ async fn decode_repair_never_fetches_over_an_incomplete_retained_target() {
         let opts = Options {
             manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
             out,
+            max_failures_in_a_row: 1,
+            stop_min_titles: 1,
             ..Options::default()
         };
         let (_tx, rx) = watch::channel(false);
-        let status = run(
-            opts,
-            client("http://127.0.0.1:9", Duration::from_millis(1)),
-            rx,
-        )
-        .await
-        .unwrap();
-        assert_eq!((status.fetched, status.deferred_repair_occupied), (0, 1));
+        let status = run(opts, client(&source.root, Duration::from_millis(1)), rx)
+            .await
+            .unwrap();
+        assert_eq!(
+            status.state, "done",
+            "occupancy must not trip the LoC failure streak"
+        );
+        assert_eq!(
+            (
+                status.fetched,
+                status.deferred_repair_occupied,
+                status.failed_transient
+            ),
+            (0, 1, 1),
+        );
+        assert_eq!(status.failed_permanent, 0);
+        assert_eq!(status.deferred_needs_loc, 0);
+        assert!(status.error.is_none());
+        assert_eq!(source.hits_under("/"), 0);
         assert_eq!(std::fs::read(retained).unwrap(), b"preserve");
     }
 }

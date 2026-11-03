@@ -258,6 +258,18 @@ class RepairRehearsal(unittest.TestCase):
     def fetch(self, path, *, root=None):
         return json.loads(self.driver("fetch", manifest=path, source=self.source.url, root=root).stdout)
 
+    def assert_occupied_noncompletion(self, status):
+        persisted = json.loads((self.root / "scans/status-full.json").read_bytes())
+        fields = ("state", "failed_transient", "deferred_repair_occupied", "deferred_needs_loc")
+        self.assertEqual([persisted[key] for key in fields], [status[key] for key in fields])
+        self.assertEqual([persisted[key] for key in fields], ["done", 1, 1, 0])
+        self.assertEqual((persisted["fetched"], persisted["bytes_fetched"]), (0, 0))
+        # The historical supervisor's documented fetched-marker predicate.
+        # Its actual script/one-day cooling upgrade is rehearsed separately.
+        legacy_fetched = (persisted["state"] == "done" and persisted["failed_transient"] == 0
+                          and persisted["deferred_needs_loc"] == 0)
+        self.assertFalse(legacy_fetched, "an occupied repair must not be retired as fetched")
+
     def dashboard(self):
         value = json.loads(self.driver("dashboard").stdout)
         self.assertIsNone(value["queue_error"], value)
@@ -291,9 +303,11 @@ class RepairRehearsal(unittest.TestCase):
         self.assertEqual({q["kind"] for q in self.dashboard()["queue"]}, {"quality"})
         first = self.fetch(repairs[0])
         self.assertEqual((first["fetched"], first["fetched_jp2"]), (1, 1))
+        self.assertEqual(first["failed_transient"], 0)
         self.source.retry_once = Source.image_path(2)
         second = self.fetch(repairs[1])
         self.assertEqual(second["fetched"], 1)
+        self.assertEqual(second["failed_transient"], 0)
         self.produce()
         self.assertEqual([self.records()[self.page(seq)["doc_id"]]["refetch_state"] for seq in (1, 2)],
                          ["observed_same", "observed_new"])
@@ -387,10 +401,12 @@ class RepairRehearsal(unittest.TestCase):
         self.assertEqual(self.records()[self.page(11)["doc_id"]]["refetch_state"], "pending")
         result = self.fetch(self.repair(1))
         self.assertEqual((result["fetched"], result["deferred_repair_occupied"]), (0, 1))
+        self.assert_occupied_noncompletion(result)
         self.assertEqual(self.source.hits, [])
         self.assertEqual(self.snapshot(self.root / "scans/keep"), before)
         print("PASS lost ACK: durable prepared bytes replay identically; cap=10; valid sidecars "
-              "with truncated/wrong bytes retain queued slots and worker defers without HTTP fetch")
+              "with truncated/wrong bytes retain queued slots; occupied status blocks legacy "
+              "fetched markers without HTTP fetch")
 
     def test_concurrent_acquisition_and_killed_fetcher_restart(self):
         self.seed(1)
@@ -408,7 +424,7 @@ class RepairRehearsal(unittest.TestCase):
         self.source.release.set()
         stdout, stderr = running.communicate(timeout=60)
         self.assertEqual(running.returncode, 0, stderr)
-        self.assertEqual(json.loads(stdout)["deferred_repair_occupied"], 1)
+        self.assert_occupied_noncompletion(json.loads(stdout))
         self.assertEqual(path.read_bytes(), b"concurrent independent retained scan")
         self.assertFalse(Path(str(path) + ".json").exists())
         self.assertEqual((self.root / "scans/index-full.jsonl").read_bytes(), b"")
@@ -455,6 +471,7 @@ class RepairRehearsal(unittest.TestCase):
         self.assertEqual((self.root / "scans/index-full.jsonl").read_bytes(), original_index)
         self.assertEqual(path.read_bytes(), b"concurrent independent retained scan")
         print("PASS concurrency/crash: second fetch process excluded; late retained file wins; "
+              "occupied status cannot be marked fetched by the legacy predicate; "
               "SIGKILL/restart releases lock and preserves partial files; copied post-publication "
               "crash boundary restores exactly one index entry without refetch")
 

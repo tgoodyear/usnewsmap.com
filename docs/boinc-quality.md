@@ -1095,6 +1095,21 @@ incomplete/conflicting keep target remains queued for rechecking and operator at
 the fetcher's `deferred_repair_occupied` count also records a target that became occupied. A
 sidecar that is oversized, malformed or incompatible with the fetcher's required
 metadata is occupied, not a completed repair, and retains an outstanding slot.
+An occupied single-page repair returns exit **0**, `state=done`,
+`deferred_repair_occupied=1` and **`failed_transient=1`**, with no fetched page or
+bytes. The dedicated counter is a subset of `failed_transient`, not an additional
+failed page. This backward-compatible non-completion signal prevents an older
+supervisor that checks `state=done && failed_transient=0` from marking the manifest
+`fetched`. Occupancy does not advance the consecutive LoC-failure streak or change
+LoC backoff; it remains an operator-reviewed retained-target conflict.
+
+The matching supervisor must explicitly recognize `deferred_repair_occupied`,
+write its existing **one-day `cooling` marker**, and advance to other manifests.
+The worker counter alone prevents false completion but an older supervisor may
+still retry the oldest occupied repair every 30 seconds. Verify the supervisor
+upgrade and this cooling/advance behavior before enabling repairs. Malformed-index
+or indexing errors remain hard worker failures, not occupied-target deferrals.
+
 Before releasing an outstanding slot the reconciler streams the actual keep scan,
 checking its length, SHA256 and any advertised MD5, not merely a successful GET.
 Reads use 64 KiB chunks and stop at the advertised size plus one byte; sidecars
@@ -1155,7 +1170,7 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
 ```
 
 Executed locally on 3 November 2026 with the named-option CLI: **4 tests passed in
-95.786 seconds**, with
+95.450 seconds**, with
 these asserted results:
 
 - The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
@@ -1171,6 +1186,9 @@ these asserted results:
   manifest with exactly the same name/bytes. Eleven requests admitted only ten
   outstanding repairs. Valid sidecars with truncated or wrong scan bytes kept all
   ten slots occupied, and the worker deferred them without an upstream request.
+  The persisted occupied status also failed the historical supervisor's documented
+  fetched-marker predicate; successful repairs retained `failed_transient=0`.
+  This status-contract regression is not execution of the supervisor script.
 - Separate fetch processes shared the real persisted global pacer: observed request
   spacing was at least 2.85 seconds (3-second policy, timing tolerance), and a
   synthetic 429 caused a retry at least 4.85 seconds later under the 5-second slow

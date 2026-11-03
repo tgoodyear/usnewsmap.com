@@ -281,6 +281,7 @@ pub struct Status {
     pub already_there: u64,
     pub fetched: u64,
     pub failed_permanent: u64,
+    /// Retryable failures, including occupied repairs for legacy queue supervisors.
     pub failed_transient: u64,
     /// Pages skipped because their issue's item was an item error (#414),
     /// each time one is skipped.
@@ -320,7 +321,7 @@ pub struct Status {
     /// may ask LoC. Counted in `finished`, not as failures.
     #[serde(default)]
     pub deferred_needs_loc: u64,
-    /// Decode repairs whose retained target became occupied; operator review is required.
+    /// Occupied decode repairs, also included in `failed_transient`; require review.
     #[serde(default)]
     pub deferred_repair_occupied: u64,
     pub bytes_fetched: u64,
@@ -557,6 +558,9 @@ impl Run {
         self.counts
             .deferred_repair_occupied
             .fetch_add(1, Ordering::SeqCst);
+        // Legacy supervisors gate completion on this counter. Occupancy is not a
+        // LoC failure: do not advance the failure streak or change its backoff.
+        self.counts.failed_transient.fetch_add(1, Ordering::SeqCst);
         tracing::warn!(
             doc_id = row.doc_id,
             "repair target occupied; existing files left unchanged"
