@@ -63,5 +63,104 @@ class MainTest(unittest.TestCase):
         self.assertFalse(record["tick_failed_or_slow"])
 
 
+class DurationTest(unittest.TestCase):
+    def setUp(self):
+        self.state = {}
+        self.facts = {
+            "enabled_until": NOW + 86400,
+            "backlogs": {"usnm_ocr": 2, "usnm_qwen": 0},
+            "last_workunits": {"usnm_ocr": NOW - 10, "usnm_qwen": NOW},
+            "supply": {"cpu": {"idle": 4, "eligible": 3}, "gpu": {"idle": 1, "eligible": 1}},
+            "tick": {"ok": True, "seconds": 900},
+        }
+
+    def tick(self, elapsed, **overrides):
+        args = dict(now=NOW + elapsed, monotonic=10000 + elapsed, boot_id="boot", config_id="cfg")
+        args.update(overrides)
+        document, self.state = F.evaluate(self.facts, self.state, **args)
+        self.document = document
+        return {c["code"]: c for c in document["checks"]}
+
+    def test_exact_thresholds_and_new_workunit_resets(self):
+        self.assertEqual(self.tick(0)["cpu_shortage"]["state"], "pending")
+        for at in range(60, 1800, 60):
+            self.tick(at)
+        self.assertEqual(self.tick(1799)["cpu_shortage"]["state"], "pending")
+        self.assertEqual(self.tick(1800)["cpu_shortage"]["state"], "firing")
+        for at in range(1860, 3600, 60):
+            self.tick(at)
+        self.assertEqual(self.tick(3599)["usnm_ocr_no_work"]["state"], "pending")
+        self.assertEqual(self.tick(3600)["usnm_ocr_no_work"]["state"], "firing")
+        self.facts["last_workunits"]["usnm_ocr"] = NOW + 3601
+        self.assertEqual(self.tick(3660)["usnm_ocr_no_work"]["duration_s"], 0)
+        self.facts["backlogs"]["usnm_ocr"] = 0
+        self.assertEqual(self.tick(3720)["usnm_ocr_no_work"]["state"], "healthy")
+
+    def test_unknown_and_recovery_interrupt_durations(self):
+        for at in range(0, 1800, 60):
+            self.tick(at)
+        del self.facts["supply"]["cpu"]
+        self.assertEqual(self.tick(1800)["cpu_shortage"]["state"], "unknown")
+        self.facts["supply"]["cpu"] = {"idle": 4, "eligible": 3}
+        self.assertEqual(self.tick(1860)["cpu_shortage"]["duration_s"], 0)
+        self.facts["supply"]["cpu"]["eligible"] = 4
+        self.assertEqual(self.tick(1920)["cpu_shortage"]["state"], "healthy")
+        self.facts["supply"]["cpu"]["eligible"] = 3
+        self.assertEqual(self.tick(1980)["cpu_shortage"]["duration_s"], 0)
+
+    def test_restart_persists_but_boot_config_gap_and_clock_reset(self):
+        for change in ({"boot_id": "new"}, {"config_id": "new"}, {"monotonic": 9999},
+                       {"now": NOW - 1}, {"now": NOW + 1000, "monotonic": 11000}):
+            self.state = {}
+            self.tick(0)
+            self.state = json.loads(json.dumps(self.state))  # next process
+            self.assertEqual(self.tick(60)["cpu_shortage"]["duration_s"], 60)
+            checks = self.tick(120, **change)
+            self.assertEqual(checks["cpu_shortage"]["duration_s"], 0)
+            self.assertEqual(checks["collection"]["state"], "firing")
+
+    def test_immediate_conditions_and_metrics_contract(self):
+        self.facts["enabled_until"] = NOW + 21600
+        self.facts["tick"] = {"ok": False, "seconds": 1}
+        checks = self.tick(0)
+        self.assertEqual(checks["qwen_refill_window"]["state"], "firing")
+        self.assertEqual(checks["controller_tick"]["state"], "firing")
+        self.facts["tick"] = {"ok": None, "seconds": 901}
+        self.assertEqual(self.tick(60)["controller_tick"]["state"], "firing")
+        self.facts["tick"] = {"ok": True, "seconds": 900}
+        self.assertEqual(self.tick(120)["controller_tick"]["state"], "healthy")
+        text = F.metrics(self.document)
+        self.assertIn('boinc_feed_check{check="cpu_shortage",state="pending"} 1', text)
+        self.assertEqual(len([s for s in text.splitlines()
+                              if s.startswith("boinc_feed_check{") and s.endswith("} 1")]), 7)
+        self.assertIn('boinc_feed_idle_slots{check="cpu_shortage"} 4', text)
+        self.assertEqual(json.loads(json.dumps(self.document))["schema_version"], 1)
+
+    def test_failure_between_observations_is_not_hidden_by_success(self):
+        self.tick(0)
+        self.facts["tick"]["last_failure_at"] = NOW + 20
+        self.assertEqual(self.tick(60)["controller_tick"]["state"], "firing")
+        self.assertEqual(self.tick(120)["controller_tick"]["state"], "healthy")
+
+    def test_alert_retains_firing_shortage_after_latest_observation_recovers(self):
+        for elapsed in range(0, 1801, 60):
+            checks = self.tick(elapsed)
+        self.assertEqual(checks["cpu_shortage"]["state"], "firing")
+        self.facts["supply"]["cpu"]["eligible"] = 4
+        self.assertEqual(self.tick(1860)["cpu_shortage"]["state"], "healthy")
+        # Contract for the retained-history branch; actual workspace query delivery
+        # remains a rollout gate, not a local Kusto execution claim.
+        query = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        retained = query.split("| union (", 1)[1].split("| distinct Check", 1)[0]
+        self.assertIn("Observed between (ago(10m) .. now())", retained)
+        self.assertIn("| where Check.state == 'firing'", retained)
+        self.assertIn("| project Check = tostring(Check.code)", retained)
+        self.assertNotIn("controller_tick", retained)
+
+    def test_corrupt_duration_state_resets_instead_of_trusting_old_health(self):
+        self.state = {"schema_version": 1, "time": "broken", "conditions": []}
+        self.assertEqual(self.tick(0)["collection"]["state"], "firing")
+
+
 if __name__ == "__main__":
     unittest.main()

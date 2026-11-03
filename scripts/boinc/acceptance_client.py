@@ -55,7 +55,7 @@ def mac_podman():
     return next((p for p in ('/opt/podman/bin/podman', homebrew) if os.access(p, os.X_OK)), None)
 
 
-def container_runtime():
+def container_runtime(read_command=None):
     commands = []
     if platform.system() == 'Darwin':
         helper = '/Library/Application Support/BOINC Data/Run_Podman'
@@ -70,10 +70,14 @@ def container_runtime():
                 commands.append((name, [executable, 'info', *args]))
     for name, command in commands:
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=15)
-            if result.returncode:
-                continue
-            info = json.loads(result.stdout)
+            if read_command is None:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+                if result.returncode:
+                    continue
+                output = result.stdout
+            else:
+                output = read_command(command)
+            info = json.loads(output)
             if not isinstance(info, dict):
                 continue
             if name == 'docker' and isinstance(info.get('ServerVersion'), str) and info['ServerVersion']:
