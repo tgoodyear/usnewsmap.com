@@ -447,6 +447,95 @@ exit 1
                 self.assertEqual((fixture["out"] / "bln.jsonl").exists(), kind == "missing-dta")
                 self.assertFalse((fixture["out"] / "dta.jsonl").exists())
 
+    def test_analysis_test_flag_selects_test_inputs_and_rejects_unknown_flags(self):
+        root, bin_dir = self.work / "study", self.work / "bin"
+        root.mkdir()
+        bin_dir.mkdir()
+        for path in (
+            "results/s5-t82/test-baseline.jsonl",
+            "results/s5-t84/test-baseline.jsonl",
+            "results/s5-t8t-baseline/test-baseline.jsonl",
+            "results/s5-t83/test-adapter.jsonl",
+            "results/s5-t8t-adapter/test-adapter.jsonl",
+        ):
+            file = root / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text("{}\n", encoding="utf-8")
+        tool = bin_dir / "score"
+        executable(
+            tool,
+            """#!/bin/bash
+printf '%s\\n' "$*" >>"$TRACE"
+while [ $# -gt 0 ]; do
+  if [ "$1" = --out ]; then printf '{}\\n' >"$2"; shift 2; else shift; fi
+done
+""",
+        )
+        executable(bin_dir / "jq", "#!/bin/bash\nexit 0\n")
+        env = self.environment(root, bin_dir)
+        env.update(GPU_STUDY_ROOT=str(root), TOOL=str(tool), TRACE=str(self.work / "trace"))
+        result = self.run_command(["bash", str(STUDY / "analyze-5d.sh"), "--test"], env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.work / "trace").read_text(encoding="utf-8").splitlines()
+        self.assertEqual([call.split()[0] for call in calls], ["score", "invent"])
+        self.assertTrue(all("8b-test-baseline.jsonl" in call for call in calls))
+        legacy = self.run_command(["bash", str(STUDY / "analyze-5d.sh"), "test"], env)
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertIn("deprecated", legacy.stderr)
+        invalid = self.run_command(["bash", str(STUDY / "analyze-5d.sh"), "--unknown"], env)
+        self.assertEqual(invalid.returncode, 2)
+        self.assertIn("unknown flag", invalid.stderr)
+
+    def test_hf_engine_loop_preserves_each_engine_and_input(self):
+        work, bin_dir = self.work / "work", self.work / "bin"
+        (work / "in").mkdir(parents=True)
+        (work / "out").mkdir()
+        bin_dir.mkdir()
+        executable(
+            bin_dir / "python",
+            """#!/bin/bash
+if [ "$1" = -m ]; then exit 0; fi
+printf '%s\\t' "$@" >>"$TRACE"
+printf '\\n' >>"$TRACE"
+""",
+        )
+        source = (STUDY / "jobs" / "hf-engines.sh").read_text(encoding="utf-8")
+        job = self.work / "hf-engines.sh"
+        job.write_text(source.replace("/work", str(work)), encoding="utf-8")
+        env = self.environment(self.work, bin_dir)
+        env["TRACE"] = str(self.work / "trace")
+        result = self.run_command(["bash", str(job)], env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [line.rstrip("\t").split("\t") for line in
+                 (self.work / "trace").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(calls), 3)
+        for args, (engine, crop_list) in zip(
+            calls, (("churro", "crops"), ("got", "latin-crops"), ("granite", "latin-crops"))
+        ):
+            self.assertEqual(args[args.index("--engine") + 1], engine)
+            self.assertEqual(args[args.index("--list") + 1], str(work / "in" / f"{crop_list}.jsonl"))
+            self.assertRegex(args[args.index("--revision") + 1], r"^[0-9a-f]{40}$")
+
+    def test_silver_selection_uses_named_root(self):
+        root = self.work / "qwen"
+        for directory, language in (("chosen", "yid"), ("excluded", "eng")):
+            path = root / directory / "qwen.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "language": language, "doc_id": "title_1900", "id": directory,
+                "crops": [{"id": "crop", "box": [1, 2, 3, 4], "stratum": "page"}],
+            }), encoding="utf-8")
+        script = STUDY / "yiddish" / "silver-select.py"
+        result = self.run_command([sys.executable, str(script), "--root", str(root)], os.environ.copy())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["source_job"], "chosen")
+        legacy = self.run_command([sys.executable, str(script), str(root)], os.environ.copy())
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertEqual(legacy.stdout, result.stdout)
+        self.assertIn("deprecated", legacy.stderr)
+        missing = self.run_command([sys.executable, str(script)], os.environ.copy())
+        self.assertEqual(missing.returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

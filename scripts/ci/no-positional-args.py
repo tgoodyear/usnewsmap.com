@@ -20,10 +20,10 @@ Checks every tracked shell script, Python file and Rust file:
   (`Parser`, `Args`, `Subcommand`) that isn't `#[arg(long ...)]` (or
   short), a subcommand or a flattened group: clap makes it positional.
 
-ALLOWED lists the deprecated positional forms kept for one release, and
-HAND_PARSED the reviewed hand-written Rust parsers; the count must match
-exactly, so an entry goes when its code does. Standard
-library only. Exits 1 listing every finding.
+ALLOWED lists the deprecated positional forms kept for one release,
+HAND_PARSED the reviewed hand-written Rust parsers, and PASSTHROUGH the
+reviewed child-command argv boundary. Counts must match exactly, so an entry
+goes when its code does. Standard library only. Exits 1 listing every finding.
 """
 
 import ast
@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 # move to the named ones (#277): findings per file. Remove each entry with
 # its fallback (`grep -rn '#277'` finds them).
 ALLOWED = {
+    "docs/reports/2026-11-gpu-studies/scripts/yiddish/silver-select.py": 1,
     "ocr/ja-ocr/tools/build-wordlists.py": 1,
     "ocr/ja-ocr/tools/crops.py": 1,
     "ocr/ja-ocr/tools/quality-rows.sh": 2,
@@ -241,10 +242,16 @@ HAND_PARSED = {
     "crates/usnm-ingest/examples/single_field_fixture.rs": 1,
 }
 
+# A supervisor must pass an opaque child command and its flags through after
+# `--`; this is not an ordered list of script options.
+PASSTHROUGH = {
+    "docs/reports/2026-11-gpu-studies/scripts/yiddish/run-deadline.py": 1,
+}
+
 
 def main() -> int:
     files = {p: (ROOT / p).read_text(encoding="utf-8") for p in tracked()}
-    problems = check(files, {**ALLOWED, **HAND_PARSED})
+    problems = check(files, {**ALLOWED, **HAND_PARSED, **PASSTHROUGH})
     for p in problems:
         print(p, file=sys.stderr)
     if not problems:

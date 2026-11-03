@@ -12,7 +12,8 @@ $PY -m pip freeze > $O/pip-freeze.txt 2>&1
 GOT=d3017ef2c2c1395888c8d635c5e0508bcb0ac78d; GRANITE=982fe3b40f2fa73c365bdb1bcacf6c81b7184bfe
 echo "got $GOT"$'\n'"granite $GRANITE"$'\n'"churro ca2150ea465d5a3d67818c50e234b9422619c75d" > $O/revisions.txt
 # CHURRO reads everything. GOT and Granite don't claim Japanese, so they get the Latin-script crops only.
-for e in "churro ca2150ea465d5a3d67818c50e234b9422619c75d crops" "got $GOT latin-crops" "granite $GRANITE latin-crops"; do set -- $e
-  $PY $I/hf_engines.py --engine $1 --revision $2 --list $I/$3.jsonl --root $I --out $O/$1.jsonl > $O/$1.log 2>&1
-  echo "done $1 exit $?" >> $O/progress.txt
+for e in "churro ca2150ea465d5a3d67818c50e234b9422619c75d crops" "got $GOT latin-crops" "granite $GRANITE latin-crops"; do
+  read -r engine revision list <<<"$e"
+  "$PY" "$I/hf_engines.py" --engine "$engine" --revision "$revision" --list "$I/$list.jsonl" --root "$I" --out "$O/$engine.jsonl" >"$O/$engine.log" 2>&1
+  echo "done $engine exit $?" >>"$O/progress.txt"
 done

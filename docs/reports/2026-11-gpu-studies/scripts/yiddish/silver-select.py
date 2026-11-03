@@ -1,7 +1,19 @@
 # Silver-set selection, read-only: 100 Yiddish pages from qwen-nonenglish-v1, 20 per LoC title by
 # sha256("yid-silver-202611:"+doc) rank, then one crop per page by sha256(doc+":"+crop) rank.
-import json, glob, hashlib, collections, sys
-root = sys.argv[1]
+import argparse, json, glob, hashlib, collections, sys
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--root", help="directory containing the Qwen job directories")
+# Deprecated positional root retained for existing callers (#277).
+parser.add_argument("legacy_root", nargs="?", help=argparse.SUPPRESS)
+args = parser.parse_args()
+if args.root and args.legacy_root:
+    parser.error("use only --root")
+root = args.root or args.legacy_root
+if not root:
+    parser.error("--root is required")
+if args.legacy_root:
+    print("warning: positional root is deprecated; use --root", file=sys.stderr)
 h = lambda s: hashlib.sha256(s.encode()).hexdigest()
 by = collections.defaultdict(list)
 for f in glob.glob(root + "/*/qwen.json"):
