@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -150,7 +151,7 @@ class RepairRehearsal(unittest.TestCase):
         self.quality.mkdir()
         # A genuinely outstanding ordinary manifest makes build-quality return
         # after repair reconciliation, before its unrelated PostgreSQL selector.
-        self.ordinary = self.put_initial_manifest(20, "queue-quality-qwen-rehearsal")
+        self.ordinary = self.put_initial_manifest(20, "queue-quality-zz-rehearsal")
         (self.quality / "last-quality.json").write_text(json.dumps({
             "name": self.ordinary.parent.name, "at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "pairs": [["xx_test", self.page(20)["doc_id"]]]}))
@@ -195,6 +196,21 @@ class RepairRehearsal(unittest.TestCase):
             if value is not None:
                 args.extend((flag, str(value)))
         return args
+
+    @staticmethod
+    def stop_group(process):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            output = process.communicate(timeout=10)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        return output
 
     def spawn(self, action, *, root=None, manifest=None, source=None):
         process = subprocess.Popen(self.command(action, root=root, manifest=manifest, source=source),
@@ -282,6 +298,89 @@ class RepairRehearsal(unittest.TestCase):
     @staticmethod
     def snapshot(root):
         return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+    @unittest.skipUnless(os.environ.get("USNM_REPAIR_QUEUE_SUPERVISOR"),
+                         "supply the reviewed supervisor script to exercise its actual shell policy")
+    def test_actual_queue_supervisor_cools_occupied_repair_and_advances(self):
+        supervisor = Path(os.environ["USNM_REPAIR_QUEUE_SUPERVISOR"]).resolve(strict=True)
+        supervisor_sha = sha(supervisor.read_bytes())
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "Bash is required for the actual queue supervisor")
+        self.seed(1)
+        self.produce()
+        repair = self.repair(1)
+        self.assertLess(repair.parent.name, self.ordinary.parent.name)
+        occupied = self.retained(1)
+        occupied.parent.mkdir(parents=True, exist_ok=True)
+        occupied.write_bytes(b"preserve independent retained scan")
+        manifests_before = self.snapshot(self.root / "manifests")
+        quarantine_before = self.snapshot(self.quarantines)
+        buffer_before = self.snapshot(self.root / "scans/buffer")
+        source_before = dict(self.source.files)
+        self.assertFalse((self.root / "pacer.json").exists())
+        env = {
+            "PATH": os.defpath, "HOME": str(self.root), "TMPDIR": str(self.root), "LC_ALL": "C",
+            "NO_PROXY": "127.0.0.1,localhost",
+            "USNM_OCR_WORKER_BIN": self.binary,
+            "USNM_REPAIR_ROOT": str(self.root),
+            "USNM_REPAIR_SOURCE": self.source.url,
+            "USNM_PREFETCH_OUT": str(self.root / "scans"),
+            "USNM_LOC_GLOBAL_PACER": str(self.root / "pacer.json"),
+        }
+        process = subprocess.Popen(
+            [bash, str(supervisor), "--manifests", str(self.root / "manifests"),
+             "--idle-secs", "1", "--quality-slice-secs", "120"],
+            env=env, start_new_session=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        completed = False
+        try:
+            deadline = time.monotonic() + 150
+            while time.monotonic() < deadline and process.poll() is None:
+                if ((repair.parent / "cooling").exists()
+                        and (self.ordinary.parent / "fetched").exists()):
+                    completed = True
+                    # Let one real idle tick prove the fresh cooling marker is skipped.
+                    time.sleep(1.2)
+                    self.assertIsNone(process.poll(), "supervisor exited instead of staying idle")
+                    break
+                time.sleep(0.1)
+        finally:
+            stdout, stderr = self.stop_group(process)
+        self.assertTrue(completed, f"supervisor did not advance within 150s:\n{stdout}\n{stderr}")
+        statuses = [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
+        self.assertEqual(len(statuses), 2, stdout + stderr)
+        first, second = statuses
+        self.assertEqual(first["manifest"], str(repair))
+        self.assertEqual(
+            (first["state"], first["failed_transient"], first["deferred_repair_occupied"],
+             first["fetched"], first["bytes_fetched"]),
+            ("done", 1, 1, 0, 0),
+        )
+        self.assertEqual(second["manifest"], str(self.ordinary))
+        self.assertEqual(
+            (second["state"], second["failed_transient"], second["deferred_repair_occupied"],
+             second["fetched"]),
+            ("done", 0, 0, 1),
+        )
+        self.assertFalse((repair.parent / "fetched").exists())
+        self.assertFalse((repair.parent / "needs-loc").exists())
+        self.assertFalse((self.ordinary.parent / "cooling").exists())
+        self.assertEqual(self.retained(20).read_bytes(), Source.body(20))
+        self.assertEqual(occupied.read_bytes(), b"preserve independent retained scan")
+        self.assertFalse(Path(str(occupied) + ".json").exists())
+        for path, body in manifests_before.items():
+            self.assertEqual((self.root / "manifests" / path).read_bytes(), body)
+        self.assertEqual(self.snapshot(self.quarantines), quarantine_before)
+        self.assertEqual(self.snapshot(self.root / "scans/buffer"), buffer_before)
+        self.assertEqual(self.source.files, source_before)
+        self.assertTrue(any(path == Source.image_path(20) for _, path, _ in self.source.hits))
+        self.assertFalse(any(path == Source.image_path(1) for _, path, _ in self.source.hits))
+        self.assertGreater(json.loads((self.root / "pacer.json").read_bytes())["sent"], 0)
+        self.assertEqual(sha(supervisor.read_bytes()), supervisor_sha)
+        print(f"PASS actual supervisor sha256={supervisor_sha}: real 30s polling; occupied repair "
+              "cooled without fetched/needs-loc, next ordinary manifest fetched by real worker; "
+              "retained scans/manifests/quarantine preserved; owned process group stopped")
 
     def test_upgrade_fetch_reconcile_and_disabled_rollback(self):
         self.seed(1)

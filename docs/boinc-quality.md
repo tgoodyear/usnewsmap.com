@@ -1147,7 +1147,11 @@ binds IPv4 loopback, and refuses a non-loopback upstream. It is not a deployed w
 or dashboard replacement. Its clap interface takes named options, for example
 `repair_rehearsal --root <disposable-root> fetch --manifest <manifest> --source http://127.0.0.1:<port>`;
 `serve` and `dashboard` need only `--root`, and `ordinary-decode` also needs
-`--manifest`. The Python fixture supplies synthetic bag/METS/image bytes,
+`--manifest`. For a supplied queue supervisor, the same fixture driver accepts
+`prefetch` as an alias for `fetch`, taking its root/source from
+`USNM_REPAIR_ROOT` / `USNM_REPAIR_SOURCE` and the supervisor's manifest from
+`USNM_PREFETCH_MANIFEST`. This adapter still calls real Rust prefetch; it does not
+fabricate worker status. The Python fixture supplies synthetic bag/METS/image bytes,
 not LoC scans, and starts/stops all helper processes and servers.
 
 An outstanding ordinary manifest deliberately keeps the producer's unrelated
@@ -1169,10 +1173,40 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
   -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py -v
 ```
 
-Executed locally on 3 November 2026 with the named-option CLI: **4 tests passed in
-95.450 seconds**, with
-these asserted results:
+An optional fifth scenario executes an operator-supplied, reviewed queue supervisor
+script directly with Bash; it is **not copied into this repository**:
 
+```sh
+USNM_REPAIR_QUEUE_SUPERVISOR="/absolute/path/to/reviewed/usnm-loc-fetch-queue.sh" \
+  .rehearsal/venv/bin/python -m unittest discover \
+  -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py \
+  -k actual_queue_supervisor -v
+```
+
+The supervisor receives a clean environment pointing only to the disposable
+manifest/scan roots, synthetic loopback source and local pacer. The scenario retains
+its actual 30-second polling, bounds marker completion to 150 seconds, and stops
+its owned process group in `finally` (TERM, then KILL if necessary). It checks that
+an occupied repair gets `cooling` without `fetched` or `needs-loc`, that a subsequent
+ordinary manifest is genuinely fetched, and that a fresh cooling marker is skipped
+on the next idle tick. Both worker statuses come from real prefetch executions;
+retained scans, original manifests, quarantine bytes and synthetic upstream
+contents must remain unchanged.
+
+Executed locally on 3 November 2026 with the named-option CLI and optional
+supervisor: **5 tests passed in 157.379 seconds** (four standard scenarios plus the
+actual-supervisor scenario), with these asserted results:
+
+- The reviewed **updated**, not deployed, supervisor (SHA256
+  `25b9bc62707dbbefc880d3f7566eeed9f0e66526b338af0c366708f20697d329`)
+  exercised real 30-second polling. Its first actual worker execution reported
+  `done`, `failed_transient=1`, `deferred_repair_occupied=1`, and zero fetched
+  pages/bytes; the repair received only `cooling`. Its next execution genuinely
+  fetched the ordinary page with both failure/deferral counters zero, producing
+  `fetched`. The cooling repair was skipped on the next idle tick. The script
+  hash, prior manifests, orphan retained scan, buffer and quarantine bytes were
+  unchanged; the owned process group was stopped. This validates the selected
+  updated helper's acceptance policy, not its deployment.
 - The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
   item/IIIF fallback, dashboard queue/index consumption, and `observed_same` versus
   `observed_new` reconciliation all completed. Existing CPU **and Qwen**
@@ -1188,7 +1222,8 @@ these asserted results:
   ten slots occupied, and the worker deferred them without an upstream request.
   The persisted occupied status also failed the historical supervisor's documented
   fetched-marker predicate; successful repairs retained `failed_transient=0`.
-  This status-contract regression is not execution of the supervisor script.
+  This particular status-contract regression is separate from the optional
+  actual-supervisor execution above.
 - Separate fetch processes shared the real persisted global pacer: observed request
   spacing was at least 2.85 seconds (3-second policy, timing tolerance), and a
   synthetic 429 caused a retry at least 4.85 seconds later under the 5-second slow
@@ -1300,14 +1335,39 @@ compatibility. Upgrade the dashboard before publishing repair manifests. Rolling
 back to this version while repairs remain queued visibly degrades queue activity
 to `unknown`; a healthy process or HTTP 200 must not be mistaken for compatibility.
 
+At **2026-11-03 16:02–16:03 UTC**, an operator-run probe also exercised the exact
+deployed queue supervisor, SHA256
+`10f780d0566607fdee129035d5dd0a1386d4cb86d36877707db4b9035e631f47`,
+with the deployed worker `7e634564` / `eadcbe7c…` identified above. The transient
+unit used `PrivateNetwork=yes`, `ProtectSystem=strict`, `MemoryMax=256M`, a
+90-second runtime limit, clean environment and only disposable scratch writable.
+Its real 30-second polling was retained, without sleep mocks:
+
+- A **zero-row ordinary manifest**, SHA256
+  `9dd42d08ba2318a0e814acdf75f9568ad4608f0362183566e9d6e81306ad6ab0`,
+  completed with zero pages/bytes and received `fetched`.
+- The subsequent one-row repair fixture (`a01619c2…`, full hash above) was
+  rejected by the old worker. The supervisor stopped with **exit 1**, without a
+  repair `fetched` marker.
+- Both manifests were unchanged. The probe took **60 seconds**, with no live
+  paths or network access; the operator owns scratch cleanup.
+
+This verifies the historical supervisor's ordinary completion and stop-on-old-worker
+rejection, **not repair support**. It confirms the upgrade order and the consequence
+of rolling back the worker while a repair remains queued. Separately, its old
+completion predicate would incorrectly mark an occupied repair fetched if a newer
+worker reported `done` / `failed_transient=0` / `deferred_repair_occupied=1`.
+The worker's compatibility counter and the matching supervisor cooling policy
+described above are therefore both required.
+
 **Still required before production enablement:** verify both consumers' reviewed
 replacement artifacts and actual coordinated upgrade/rollback sequencing. The
-exact old-worker decoder and old-dashboard observation checks above are complete,
-but the deployed queue supervisor has not been exercised.
+exact old-worker decoder, old-dashboard observation and historical supervisor
+checks above are complete.
 The end-to-end localhost rehearsal drives fetches through the
-production Rust entry point, not the deployed systemd/shell fetch-queue supervisor;
-its completion/cooling markers, retry schedule, host configuration and complete
-upgrade ordering still need a disposable deployment-level test. The upgraded
+production Rust entry point; the optional supervisor scenario does not certify the
+full deployed systemd environment, day-old marker retry schedule, host configuration
+or complete upgrade ordering. These still need a disposable deployment-level test. The upgraded
 dashboard path tested is its real queue/index reader; the historical binary's
 isolated loopback HTTP/HTML probe does not certify the upgraded deployment's
 HTTP/UI/access configuration.

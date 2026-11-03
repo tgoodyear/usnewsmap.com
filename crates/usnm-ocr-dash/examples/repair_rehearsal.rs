@@ -15,7 +15,7 @@ use usnm_ocr_worker::{prefetch, serve};
 #[command(about = "Rehearse repair protocol entry points with disposable localhost resources")]
 struct Cli {
     /// Explicitly marked disposable rehearsal root.
-    #[arg(long)]
+    #[arg(long, env = "USNM_REPAIR_ROOT")]
     root: PathBuf,
     #[command(subcommand)]
     command: Command,
@@ -24,10 +24,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Serve,
+    #[command(visible_alias = "prefetch")]
     Fetch {
-        #[arg(long)]
+        #[arg(long, env = "USNM_PREFETCH_MANIFEST")]
         manifest: PathBuf,
-        #[arg(long)]
+        #[arg(long, env = "USNM_REPAIR_SOURCE")]
         source: String,
     },
     Dashboard,
