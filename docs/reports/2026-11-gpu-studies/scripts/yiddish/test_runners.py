@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import shlex
 import shutil
 import signal
 import subprocess
@@ -61,15 +62,24 @@ else:
         executable(
             self.bin / "boinccmd",
             """#!/usr/bin/env python3
-import os, pathlib, sys
+import json, os, pathlib, sys
 args = sys.argv[1:]
+if args[:2] == ['--set_gpu_mode', 'auto'] and os.environ.get('CHECK_PIDS'):
+    for pid in json.loads(pathlib.Path(os.environ['CHECK_PIDS']).read_text()):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        with open(os.environ['TRACE'], 'a') as f: f.write('OVERLAP ' + str(pid) + '\\n')
+        sys.exit(9)
+    with open(os.environ['TRACE'], 'a') as f: f.write('REAPED\\n')
 with open(os.environ['TRACE'], 'a') as f:
     f.write('BOINC ' + ' '.join(args) + '\\n')
 if args == ['--get_tasks']:
     if os.environ.get('FAIL_STATUS') == '1' or (os.environ.get('FAIL_AFTER') == '1' and pathlib.Path(os.environ['STATE']).exists()):
         sys.exit(7)
 elif args[:2] == ['--set_gpu_mode', 'never']:
-    if os.environ.get('FAIL_PAUSE') == '1':
+    if os.environ.get('FAIL_PAUSE') == '1' or (args[2:] == ['0'] and os.environ.get('FAIL_PERMANENT') == '1'):
         sys.exit(8)
     pathlib.Path(os.environ['STATE']).touch()
 """,
@@ -89,7 +99,7 @@ if [ "${BAD_GPU_STATUS:-0}" = 1 ]; then echo unknown; else echo 0; fi
             env=env or self.env,
             text=True,
             capture_output=True,
-            timeout=15,
+            timeout=25,
             check=False,
         )
 
@@ -101,6 +111,26 @@ if [ "${BAD_GPU_STATUS:-0}" = 1 ]; then echo unknown; else echo 0; fi
         scripts.mkdir(parents=True)
         shutil.copy2(HERE / "gpu-window.sh", scripts)
         executable(scripts / "qwen-native-units.sh", "#!/usr/bin/env bash\n" + body)
+        (scripts / "run-deadline.py").write_text(
+            """import os, pathlib, signal, subprocess, sys
+args = sys.argv[1:]
+if os.environ.get('FAIL_SUPERVISOR') == '1':
+    sys.exit(37)
+marker = pathlib.Path(args[args.index('--completion-file') + 1])
+command = args[args.index('--') + 1:]
+child = subprocess.Popen(command)
+interrupted = 0
+def stop(signum, _frame):
+    global interrupted
+    interrupted = 128 + signum
+    child.terminate()
+signal.signal(signal.SIGTERM, stop)
+rc = child.wait()
+marker.touch()
+sys.exit(interrupted or rc)
+""",
+            encoding="utf-8",
+        )
         units = self.work / "units"
         units.mkdir()
         log = self.work / "window.log"
@@ -146,6 +176,32 @@ if [ "${BAD_GPU_STATUS:-0}" = 1 ]; then echo unknown; else echo 0; fi
         self.assertFalse(any(line.startswith("RUN ") for line in trace))
         self.assertEqual(trace[-1], "BOINC --set_gpu_mode auto")
 
+    def test_window_fails_closed_when_supervisor_cannot_confirm_cleanup(self):
+        args, log = self.window_fixture()
+        env = self.env.copy()
+        env["FAIL_SUPERVISOR"] = "1"
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("BOINC --set_gpu_mode never 0", self.trace_lines())
+        self.assertNotIn("BOINC --set_gpu_mode auto", self.trace_lines())
+        self.assertIn("operator", log.read_text(encoding="utf-8"))
+
+    def test_window_does_not_restore_if_emergency_hold_fails(self):
+        args, log = self.window_fixture()
+        env = self.env.copy()
+        env.update(FAIL_SUPERVISOR="1", FAIL_PERMANENT="1")
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertIn("BOINC --set_gpu_mode never 0", self.trace_lines())
+        self.assertNotIn("BOINC --set_gpu_mode auto", self.trace_lines())
+        self.assertIn("failed to extend", log.read_text(encoding="utf-8"))
+
+    def test_window_restores_after_success(self):
+        args, _ = self.window_fixture()
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.trace_lines()[-1], "BOINC --set_gpu_mode auto")
+
     def test_window_waits_for_interrupted_runner_before_restoring(self):
         args, _ = self.window_fixture(
             """trap 'echo CLEANING >> "$TRACE"; /bin/sleep 0.3; echo STOPPED >> "$TRACE"; exit 143' TERM
@@ -185,13 +241,17 @@ while :; do /bin/sleep 0.2; done
         self.assertEqual(len(trace), 1)
         self.assertIn(str(units), trace[0])
 
-    def test_native_runner_never_caches_a_timed_out_unit(self):
+    def native_fixture(self):
         scripts = self.work / "scripts" / "yiddish"
         scripts.mkdir(parents=True)
         shutil.copy2(HERE / "qwen-native-units.sh", scripts)
         (scripts / "run-deadline.py").write_text(
-            """import os, pathlib, sys
+            """import os, pathlib, subprocess, sys
 with open(os.environ['TRACE'], 'a') as f: f.write('SUPERVISOR ' + ' '.join(sys.argv[1:]) + '\\n')
+command = sys.argv[sys.argv.index('--') + 1:]
+if command[0].endswith('qwen-native-units.sh'):
+    os.environ['USNM_DEADLINE_PARENT_PID'] = str(os.getpid())
+    sys.exit(subprocess.run(command, check=False).returncode)
 pathlib.Path('result.json').write_text('synthetic result')
 pathlib.Path('qwen_checkpoint.json').write_text('synthetic checkpoint')
 sys.exit(int(os.environ.get('RUN_RC', '0')))
@@ -216,6 +276,10 @@ sys.exit(int(os.environ.get('RUN_RC', '0')))
             "--boinc-until", str(int(time.time()) + 80), "--unit-seconds", "1",
             "--gpu-log", str(self.work / "gpu.log"),
         )
+        return list(args), unit
+
+    def test_native_runner_never_caches_a_timed_out_unit(self):
+        args, unit = self.native_fixture()
         env = self.env.copy()
         env["RUN_RC"] = "124"
         failed = self.run_script(*args, env=env)
@@ -228,6 +292,79 @@ sys.exit(int(os.environ.get('RUN_RC', '0')))
         self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
         self.assertTrue((unit / "result.json").exists())
         self.assertTrue((unit / "qwen_checkpoint.final.json").exists())
+
+    def test_native_runner_does_not_cache_a_partial_result_copy(self):
+        args, unit = self.native_fixture()
+        executable(
+            self.bin / "cp",
+            """#!/usr/bin/env bash
+case "$1" in
+  */result.json) printf partial > "$2"; exit 42;;
+  *) exec /bin/cp "$@";;
+esac
+""",
+        )
+        failed = self.run_script(*args)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertFalse((unit / "result.json").exists())
+
+        (self.bin / "cp").unlink()
+        succeeded = self.run_script(*args)
+        self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
+        self.assertEqual((unit / "result.json").read_text(encoding="utf-8"), "synthetic result")
+
+    def test_native_runner_requires_a_safe_hold_or_explicit_no_boinc(self):
+        args, unit = self.native_fixture()
+        until = args.index("--until") + 1
+        hold = args.index("--boinc-until") + 1
+        args[until] = str(int(time.time()) + 200)
+        args[hold] = str(int(time.time()) + 30)
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(unit.joinpath("result.json").exists())
+        self.assertEqual(self.trace_lines(), [])
+
+        args[hold] = str(int(args[until]) + 59)
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.trace_lines(), [])
+
+        result = self.run_script(*args, "--no-boinc")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.trace_lines(), [])
+
+        args[hold] = str(int(args[until]) + 60)
+        result = self.run_script(*args, "--internal-supervised")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.trace_lines(), [])
+
+        del args[hold - 1:hold + 1]
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.trace_lines(), [])
+
+        result = self.run_script(*args, "--no-boinc")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--no-boinc", self.trace_lines()[0])
+
+    def test_supervisor_rejects_missing_or_unsafe_boinc_mode(self):
+        marker = self.work / "unexpected-launch"
+        until = time.time() + 120
+        modes = (
+            (),
+            ("--boinc-until", str(until - 90)),
+            ("--boinc-until", str(until + 59)),
+            ("--boinc-until", str(until + 60), "--no-boinc"),
+        )
+        for mode in modes:
+            with self.subTest(mode=mode):
+                result = self.run_script(
+                    sys.executable, "-I", str(HERE / "run-deadline.py"),
+                    "--until", str(until), *mode,
+                    "--", sys.executable, "-c", f"open({str(marker)!r},'w').close()",
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse(marker.exists())
 
     def tesseract_fixture(self):
         executable(
@@ -407,6 +544,24 @@ sys.exit(18 if os.environ.get('FAIL_JOCHRE') == '1' and stem == 'transport' else
                     cleanup(process, 0)
                 self.assertEqual(adopted.call_count, 2)
 
+    def test_cleanup_extends_a_near_expiring_gpu_hold(self):
+        supervisor = runpy.run_path(str(HERE / "run-deadline.py"))
+        cleanup = supervisor["cleanup"]
+        process = mock.Mock()
+        process.poll.side_effect = [None, 0]
+        clock = types.SimpleNamespace(monotonic=lambda: 1, time=lambda: 100, sleep=lambda _delay: None)
+        renewal = mock.Mock(return_value=types.SimpleNamespace(returncode=0))
+        commands = types.SimpleNamespace(run=renewal, DEVNULL=subprocess.DEVNULL, TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.dict(
+            cleanup.__globals__,
+            reap_adopted=lambda: False,
+            descendants=lambda: set(),
+            time=clock,
+            subprocess=commands,
+        ):
+            cleanup(process, 120)
+        self.assertEqual(renewal.call_args.args[0], ["boinccmd", "--set_gpu_mode", "never", "120"])
+
     @staticmethod
     def descendant_workload(marker, orphan):
         server = (
@@ -427,24 +582,187 @@ with open({str(marker)!r}, 'w') as f: json.dump([os.getpid(), server.pid], f)
             with self.assertRaises(ProcessLookupError, msg=f"process {pid} survived cleanup"):
                 os.kill(pid, 0)
 
-    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
-    def test_deadline_kills_detached_descendants_and_renews_a_near_expiry(self):
+    def full_window_fixture(self, kill_inner=False):
+        scripts = self.work / "scripts" / "yiddish"
+        scripts.mkdir(parents=True)
+        appdir = self.work / "app"
+        appdir.mkdir()
+        app_name = "usnm_qwen_1.17_x86_64-pc-linux-gnu_nvidia_vulkan_8b"
+        window = (HERE / "gpu-window.sh").read_text(encoding="utf-8")
+        original = "--app-dir /var/lib/boinc-client/projects/boinc.usnewsmap.com"
+        self.assertEqual(window.count(original), 1)
+        window = window.replace(original, "--app-dir " + shlex.quote(str(appdir)))
+        executable(scripts / "gpu-window.sh", window)
+        shutil.copy2(HERE / "qwen-native-units.sh", scripts)
+        shutil.copy2(HERE / "run-deadline.py", scripts)
         marker = self.work / "pids.json"
+        workload = self.descendant_workload(marker, orphan=False)
+        if kill_inner:
+            workload = workload.replace("time.sleep(30)\n", "os.kill(os.getppid(), signal.SIGKILL)\ntime.sleep(30)\n")
+            workload = "import signal\n" + workload
+        executable(appdir / app_name, "#!/usr/bin/env python3\n" + workload)
+        (appdir / f"{app_name}_helper").touch()
+        for model in ("Qwen3VL-8B-Instruct-Q4_K_M.gguf", "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"):
+            (appdir / f"usnm_qwen_test_{model}").touch()
+        executable(self.bin / "strace", '#!/usr/bin/env bash\nfor last in "$@"; do :; done\nexec "$last"\n')
+        units = self.work / "units"
+        unit = units / "b001"
+        unit.mkdir(parents=True)
+        (unit / "qwen.json").write_text("synthetic", encoding="utf-8")
+        (unit / "page.jpg").write_bytes(b"synthetic")
+        args = (
+            "bash", str(scripts / "gpu-window.sh"), "--seconds", "68", "--unit-seconds", "1",
+            "--wait-max", "0", "--units", str(units), "--log", str(self.work / "window.log"),
+        )
+        env = self.env.copy()
+        env["CHECK_PIDS"] = str(marker)
+        return args, env, marker, unit
+
+    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
+    def test_window_reaps_detached_descendants_before_gpu_restore(self):
+        args, env, marker, unit = self.full_window_fixture()
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assert_gone(marker)
+        self.assertFalse((unit / "result.json").exists())
+        trace = self.trace_lines()
+        self.assertNotIn("OVERLAP", "\n".join(trace))
+        self.assertLess(trace.index("REAPED"), trace.index("BOINC --set_gpu_mode auto"))
+
+    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
+    def test_window_adopts_orphans_when_inner_supervisor_is_killed(self):
+        args, env, marker, unit = self.full_window_fixture(kill_inner=True)
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 137, result.stderr)
+        self.assert_gone(marker)
+        self.assertFalse((unit / "result.json").exists())
+        trace = self.trace_lines()
+        self.assertLess(trace.index("REAPED"), trace.index("BOINC --set_gpu_mode auto"))
+
+    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
+    def test_direct_native_runner_reaps_orphans_when_inner_supervisor_is_killed(self):
+        _, env, marker, unit = self.full_window_fixture(kill_inner=True)
+        args = (
+            "bash", str(self.work / "scripts" / "yiddish" / "qwen-native-units.sh"),
+            "--units", str(unit.parent), "--app-dir", str(self.work / "app"),
+            "--app", "usnm_qwen_1.17_x86_64-pc-linux-gnu_nvidia_vulkan_8b",
+            "--plan-class", "synthetic", "--scratch", str(self.work / "scratch"),
+            "--until", str(int(time.time()) + 15), "--no-boinc", "--unit-seconds", "1",
+            "--gpu-log", str(self.work / "gpu.log"),
+        )
+        try:
+            result = self.run_script(*args, env=env)
+            self.assertEqual(result.returncode, 137, result.stderr)
+            self.assert_gone(marker)
+            self.assertFalse((unit / "result.json").exists())
+        finally:
+            if marker.exists():
+                for pid in json.loads(marker.read_text(encoding="utf-8")):
+                    try:
+                        fd = os.pidfd_open(pid)
+                    except ProcessLookupError:
+                        continue
+                    try:
+                        signal.pidfd_send_signal(fd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    finally:
+                        os.close(fd)
+
+    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
+    def test_window_cancellation_reaps_descendants_before_gpu_restore(self):
+        args, env, marker, _ = self.full_window_fixture()
+        process = subprocess.Popen(args, cwd=self.work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            limit = time.monotonic() + 6
+            while not marker.exists() and time.monotonic() < limit:
+                time.sleep(0.05)
+            self.assertTrue(marker.exists())
+            process.send_signal(signal.SIGTERM)
+            _, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 143, stderr.decode())
+            self.assert_gone(marker)
+            trace = self.trace_lines()
+            self.assertLess(trace.index("REAPED"), trace.index("BOINC --set_gpu_mode auto"))
+        finally:
+            if process.poll() is None:
+                if marker.exists():
+                    for pid in json.loads(marker.read_text(encoding="utf-8")):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                process.terminate()
+                try:
+                    process.communicate(timeout=8)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=8)
+
+    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
+    def test_window_keeps_gpu_suspended_if_outer_supervisor_is_killed(self):
+        args, env, marker, _ = self.full_window_fixture()
+        process = subprocess.Popen(args, cwd=self.work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        descriptors = []
+        try:
+            limit = time.monotonic() + 6
+            while not marker.exists() and time.monotonic() < limit:
+                time.sleep(0.05)
+            self.assertTrue(marker.exists())
+            pids = json.loads(marker.read_text(encoding="utf-8"))
+
+            def parent(pid):
+                return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+
+            inner = parent(pids[0])
+            outer = parent(parent(inner))
+            self.assertEqual(parent(outer), process.pid)
+            descriptors = [os.pidfd_open(pid) for pid in [inner, outer, *pids]]
+            signal.pidfd_send_signal(descriptors[1], signal.SIGKILL)
+            _, stderr = process.communicate(timeout=8)
+            self.assertEqual(process.returncode, 125, stderr.decode())
+            trace = self.trace_lines()
+            self.assertIn("BOINC --set_gpu_mode never 0", trace)
+            self.assertNotIn("BOINC --set_gpu_mode auto", trace)
+
+            signal.pidfd_send_signal(descriptors[0], signal.SIGTERM)
+            limit = time.monotonic() + 8
+            while time.monotonic() < limit:
+                try:
+                    self.assert_gone(marker)
+                    break
+                except AssertionError:
+                    time.sleep(0.1)
+            self.assert_gone(marker)
+        finally:
+            for fd in descriptors:
+                try:
+                    signal.pidfd_send_signal(fd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.close(fd)
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=8)
+
+    @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
+    def test_deadline_kills_detached_descendants(self):
+        marker = self.work / "pids.json"
+        until = time.time() + 1.5
         result = self.run_script(
             sys.executable, "-I", str(HERE / "run-deadline.py"),
-            "--until", str(time.time() + 1.5), "--boinc-until", str(time.time() + 2),
+            "--until", str(until), "--boinc-until", str(until + 60),
             "--", sys.executable, "-c", self.descendant_workload(marker, orphan=False),
         )
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assert_gone(marker)
-        self.assertIn("BOINC --set_gpu_mode never 120", self.trace_lines())
 
     @unittest.skipUnless(sys.platform == "linux", "the native supervisor requires Linux")
     def test_successful_parent_cannot_leave_detached_orphans(self):
         marker = self.work / "pids.json"
         result = self.run_script(
             sys.executable, "-I", str(HERE / "run-deadline.py"),
-            "--until", str(time.time() + 10), "--", sys.executable, "-c",
+            "--until", str(time.time() + 10), "--no-boinc", "--", sys.executable, "-c",
             self.descendant_workload(marker, orphan=True),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -455,7 +773,7 @@ with open({str(marker)!r}, 'w') as f: json.dump([os.getpid(), server.pid], f)
         marker = self.work / "pids.json"
         args = (
             sys.executable, "-I", str(HERE / "run-deadline.py"),
-            "--until", str(time.time() + 20), "--", sys.executable, "-c",
+            "--until", str(time.time() + 20), "--no-boinc", "--", sys.executable, "-c",
             self.descendant_workload(marker, orphan=False),
         )
         process = subprocess.Popen(args, cwd=self.work, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

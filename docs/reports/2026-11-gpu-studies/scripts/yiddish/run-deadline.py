@@ -144,25 +144,41 @@ def cleanup(process, boinc_until):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--until", type=float, required=True, help="last time to run, as epoch seconds")
-    parser.add_argument("--boinc-until", type=float, default=0, help="timed BOINC suspension expiry")
+    boinc = parser.add_mutually_exclusive_group(required=True)
+    boinc.add_argument("--boinc-until", type=float, help="timed BOINC suspension expiry")
+    boinc.add_argument("--no-boinc", action="store_true", help="standalone host without BOINC GPU work")
+    parser.add_argument("--completion-file", help="create only after all descendants are reaped")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if (
         not command
         or not math.isfinite(args.until)
-        or not math.isfinite(args.boinc_until)
         or args.until <= 0
-        or args.boinc_until < 0
+        or (
+            args.boinc_until is not None
+            and (not math.isfinite(args.boinc_until) or args.boinc_until - args.until < 60)
+        )
     ):
-        parser.error("a command and a positive finite deadline are required")
+        parser.error("a command, positive deadline and BOINC suspension at least 60 seconds longer are required")
+
+    def completed(status):
+        if args.completion_file:
+            try:
+                fd = os.open(args.completion_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+            except OSError as exc:
+                print(f"cannot confirm descendant cleanup: {exc}", file=sys.stderr)
+                return 125
+        return status
+
     if args.until <= time.time():
-        return 124
+        return completed(124)
     try:
         enable_subreaper()
     except (OSError, RuntimeError) as exc:
         print(f"cannot supervise native workload: {exc}", file=sys.stderr)
-        return 125
+        return completed(125)
 
     def interrupt(signum, _frame):
         raise Interrupted(signum)
@@ -172,7 +188,9 @@ def main(argv=None):
     process = None
     result = 125
     try:
-        process = subprocess.Popen(command, start_new_session=True)
+        env = os.environ.copy()
+        env["USNM_DEADLINE_PARENT_PID"] = str(os.getpid())
+        process = subprocess.Popen(command, start_new_session=True, env=env)
         result = process.wait(timeout=max(0, args.until - time.time()))
         if result < 0:
             result = 128 - result
@@ -187,7 +205,8 @@ def main(argv=None):
     finally:
         for sig in signals:
             signal.signal(sig, signal.SIG_IGN)
-        cleanup(process, args.boinc_until)
+        cleanup(process, args.boinc_until or 0)
+        result = completed(result)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
     return result

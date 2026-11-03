@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One bounded GPU window on this BOINC host: wait until no GPU task executes, set GPU mode never for
-# --seconds, run units, then set GPU mode auto once the native processes have exited.
+# --seconds, run units, then set GPU mode auto only after descendant cleanup is confirmed.
 # --seconds N, --units DIR (repeatable, run in order), --unit-seconds N, --log FILE, --wait-max N.
 set -uo pipefail
 SECS=2400; UNIT_S=120; LOG=""; WAITMAX=3600; UNITS=()
@@ -43,7 +43,7 @@ if ! boinccmd --set_gpu_mode never "$SECS"; then
   log "failed to suspend BOINC GPU work; not opening a window"
   exit 4
 fi
-worker_pid=""
+worker_pid=""; confirmation=""
 restore() {
   local status=$?
   trap - EXIT
@@ -51,6 +51,18 @@ restore() {
   if [ -n "$worker_pid" ]; then
     kill -TERM "$worker_pid" 2>/dev/null || true
     wait "$worker_pid" 2>/dev/null || true
+  fi
+  if [ -n "$confirmation" ]; then
+    if [ ! -f "$confirmation" ]; then
+      if boinccmd --set_gpu_mode never 0; then
+        log "cleanup unconfirmed: gpu_mode never without expiry; operator must inspect and resume"
+      else
+        log "cleanup unconfirmed: failed to extend GPU suspension; operator must intervene before expiry"
+      fi
+      [ "$status" -ne 0 ] || status=125
+      exit "$status"
+    fi
+    rm -f "$confirmation"
   fi
   if boinccmd --set_gpu_mode auto; then
     log "window closed: gpu_mode auto"
@@ -74,10 +86,18 @@ else
   if [ "$rc" -ne 1 ]; then log "cannot check GPU activity after suspension"; exit 3; fi
 fi
 until=$((start + SECS - 60))
+mkdir -p "$D/scratch" || { log "cannot create supervisor scratch directory"; exit 4; }
 for u in "${UNITS[@]}"; do
-  "$HERE/qwen-native-units.sh" --units "$u" --app-dir /var/lib/boinc-client/projects/boinc.usnewsmap.com --app usnm_qwen_1.17_x86_64-pc-linux-gnu_nvidia_vulkan_8b --plan-class nvidia_vulkan_8b --scratch "$D/scratch" --until "$until" --boinc-until "$((start + SECS))" --unit-seconds "$UNIT_S" --gpu-log "$D/gpu-$(date +%Y%m%d).csv" --preload "$D/shim/libkeep-checkpoint.so" >> "$LOG" 2>&1 &
+  confirmation="$D/scratch/.gpu-window-$$-$RANDOM-$RANDOM.done"
+  [ ! -e "$confirmation" ] && [ ! -L "$confirmation" ] || { log "supervisor confirmation already exists"; confirmation=""; exit 4; }
+  python3 -I "$HERE/run-deadline.py" --until "$until" --boinc-until "$((start + SECS))" --completion-file "$confirmation" -- "$HERE/qwen-native-units.sh" --internal-supervised --units "$u" --app-dir /var/lib/boinc-client/projects/boinc.usnewsmap.com --app usnm_qwen_1.17_x86_64-pc-linux-gnu_nvidia_vulkan_8b --plan-class nvidia_vulkan_8b --scratch "$D/scratch" --until "$until" --boinc-until "$((start + SECS))" --unit-seconds "$UNIT_S" --gpu-log "$D/gpu-$(date +%Y%m%d).csv" --preload "$D/shim/libkeep-checkpoint.so" >> "$LOG" 2>&1 &
   worker_pid=$!
   wait "$worker_pid"; rc=$?; worker_pid=""
+  [ -f "$confirmation" ] || { log "supervisor exited without confirming cleanup"; exit 125; }
+  completed="$confirmation"
+  confirmation=""
+  rm -f "$completed"
   [ "$rc" -eq 0 ] || { log "native runner failed: rc=$rc"; exit "$rc"; }
   [ $(( $(date +%s) + UNIT_S )) -gt "$until" ] && break
 done
+exit 0
