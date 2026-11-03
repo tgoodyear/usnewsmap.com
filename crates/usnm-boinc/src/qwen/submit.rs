@@ -518,6 +518,7 @@ async fn run_selected_with_lock(
             unit.display()
         );
         std::fs::rename(unit.join("submitting"), unit.join("submitted"))?;
+        std::fs::File::open(&unit)?.sync_all()?;
         summary.submitted += 1;
     }
     Ok(summary)

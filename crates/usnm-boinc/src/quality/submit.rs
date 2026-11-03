@@ -173,6 +173,7 @@ pub async fn run_selected(
             unit.display()
         );
         std::fs::rename(unit.join("submitting"), unit.join("submitted"))?;
+        std::fs::File::open(&unit)?.sync_all()?;
         summary.submitted += 1;
     }
     Ok(summary)

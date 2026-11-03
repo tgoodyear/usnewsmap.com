@@ -439,7 +439,7 @@ def reconcile(project, selected, app):
             if (unit / marker).exists() and (unit / marker).read_text() != name:
                 raise RuntimeError("changed submission journal: " + str(unit))
         if job["id"] in rows:
-            if not (unit / "submitted").exists():
+            if not (unit / "submitted").exists() or (unit / "submitting").exists():
                 # Positive authoritative evidence repairs an interrupted publication.
                 # Absence never licenses deleting a submitting marker.
                 marker = unit / "submitting"
@@ -449,13 +449,28 @@ def reconcile(project, selected, app):
                     import os
                     os.fsync(stream.fileno())
                 marker.replace(unit / "submitted")
-                shipment.sync_dir(unit)
+            else:
+                with (unit / "submitted").open("rb") as stream:
+                    import os
+                    os.fsync(stream.fileno())
+            shipment.sync_dir(unit)
         elif any((unit / marker).exists() for marker in ("submitting", "submitted")):
             raise RuntimeError("publication history unavailable/uncertain; retain journals, never replay")
     return rows
 
 
-def quality_source_binding(quality, member, readers, *, create=False):
+def recipe_inputs(a):
+    import qwen_shipment as shipment
+    binary = Path(shutil.which(a.stage_binary) or a.stage_binary)
+    places = a.share / "quality" / a.campaign / "places.txt"
+    if not places.exists():
+        places = a.share / "quality/v1-wave9/places.txt"
+    return {"native_engine": json.loads(a.engine_plan.read_bytes())["engine"],
+            "stage_binary": {"bytes": binary.stat().st_size, "sha256": shipment.file_hash(binary)},
+            "places": {"bytes": places.stat().st_size, "sha256": shipment.file_hash(places)}}
+
+
+def quality_source_binding(quality, member, recipe, *, create=False):
     """Only newly staged jobs may acquire an export/reader binding."""
     import qwen_shipment as shipment
     doc = member["source"]["doc_id"]
@@ -468,13 +483,16 @@ def quality_source_binding(quality, member, readers, *, create=False):
     if layout not in ("pages", "units"):
         raise RuntimeError("bound quality source job unavailable")
     path = quality / layout / doc / "quality.json"
-    expected = {"schema": 1, "member": member, "readers": readers, "layout": layout,
+    expected = {"schema": 1, "member": member, "recipe": recipe, "layout": layout,
                 "quality_sha256": shipment.file_hash(path)}
     if existing is not None and existing != expected:
         raise RuntimeError("changed retained quality reader/text binding; explicit reconciliation required")
     job = json.loads(path.read_text())
     if job["doc_id"] != doc or job.get("pages"):
         raise RuntimeError("invalid bound quality source job")
+    if (job["engine"]["image"] != recipe["engine_image"]
+            or {key: job["inputs"]["places"][key] for key in ("bytes", "sha256")} != recipe["places"]):
+        raise RuntimeError("quality source job recipe changed")
     if create:
         shipment.check_file(path.parent / "texts.json",
                             {key: job["inputs"]["texts"][key] for key in ("bytes", "sha256")})
@@ -520,7 +538,7 @@ def transaction_quality(a, value, input_dir, quality):
                     or any((path.parent / marker).exists() for path in existing
                            for marker in ("submitting", "submitted")))
         if retained or (quality / "shipment-quality" / (doc + ".json")).exists():
-            quality_source_binding(quality, member, value["recipe"]["readers"])
+            quality_source_binding(quality, member, value["recipe"])
         if retained and not binding_path.exists():
             raise RuntimeError("legacy/unbound quality source; retain transaction")
         shipment.freeze(binding_path, incoming)
@@ -533,13 +551,8 @@ def transaction_quality(a, value, input_dir, quality):
                         raise RuntimeError("changed retained quality input")
     recipe = value["recipe"]
     places = quality / "places.txt"
-    if not places.exists():
-        shipment.mkdir(quality)
-        shutil.copyfile(a.share / "quality" / "v1-wave9" / "places.txt", places)
-        with places.open("rb") as stream:
-            import os
-            os.fsync(stream.fileno())
-        shipment.sync_dir(quality)
+    shipment.freeze_file(places, places if places.exists() else a.share / "quality/v1-wave9/places.txt",
+                         recipe["places"])
     langs = sorted({member["sample"]["lang"] for member in value["members"]})
     subprocess.run([a.stage_binary, "quality", "function-words", "--out-dir", str(quality / "function-words"),
                     *[arg for lang in langs for arg in ("--lang", lang)]], check=True)
@@ -551,7 +564,7 @@ def transaction_quality(a, value, input_dir, quality):
         "--engine-image", recipe["engine_image"], "--max-pages", str(len(docs)),
         "--bundle-size", str(recipe["bundle_size"])], check=True)
     for member in value["members"]:
-        quality_source_binding(quality, member, recipe["readers"], create=True)
+        quality_source_binding(quality, member, recipe, create=True)
 
 
 def transaction_native_sources(root, value):
@@ -582,11 +595,17 @@ def check_transaction_jobs(value, native, quality_jobs, engine):
     expected = {member["source"]["doc_id"]: member for member in value["members"]}
     counts = {doc: 0 for doc in expected}
     for _, job in native:
-        if any(job["engine"][key] != engine[key] for key in ("image", "llama", "weights")):
+        if job["engine"] != engine or engine != value["recipe"]["native_engine"]:
             raise RuntimeError("native job engine changed")
+        if (job["v"] != 1 or job["group"] != value["recipe"]["campaign"]
+                or job["gpu_timeout_secs"] != 14400 or job["cpu_timeout_secs"] != 7200
+                or job["max_tokens_per_1000px2"] != 4):
+            raise RuntimeError("native job staging parameters changed")
     for path, job in quality_jobs:
         if job["engine"]["image"] != value["recipe"]["engine_image"]:
             raise RuntimeError("quality job engine changed")
+        if {key: job["inputs"]["places"][key] for key in ("bytes", "sha256")} != value["recipe"]["places"]:
+            raise RuntimeError("quality job places changed")
         for page in job.get("pages") or [job]:
             doc = page["doc_id"]
             if doc not in expected:
@@ -596,11 +615,13 @@ def check_transaction_jobs(value, native, quality_jobs, engine):
             counts[doc] += 1
             if page["language"] != member["sample"]["lang"] or page["group"] != value["recipe"]["campaign"]:
                 raise RuntimeError("quality job recipe changed")
-            retained = quality_source_binding(path.parent.parent.parent, member, value["recipe"]["readers"])
+            retained = quality_source_binding(path.parent.parent.parent, member, value["recipe"])
             if (page["readers"] != retained["readers"]
                     or any(page["inputs"]["texts"][key] != retained["inputs"]["texts"][key]
                            for key in ("bytes", "sha256"))):
                 raise RuntimeError("quality job reader/text inputs changed")
+            if any(page[key] != retained[key] for key in ("function_words", "crop_seed", "k_crops")):
+                raise RuntimeError("quality job staging parameters changed")
             for name, expected_input in (("page", member["files"][f"scans/{doc}.jpg"]), ("alto", member["quality_alto"])):
                 if {key: page["inputs"][name][key] for key in ("bytes", "sha256")} != expected_input:
                     raise RuntimeError("quality job is not bound to shipment inputs")
@@ -616,7 +637,11 @@ def verify_acknowledgement(a, tx, value, receipt):
     states = transaction_native_sources(root, value)
     native = selected_jobs(root, "qwen.json", docs)
     quality_jobs = selected_jobs(a.share / "quality" / a.campaign, "quality.json", docs)
-    check_transaction_jobs(value, native, quality_jobs, json.loads((tx / "engine.json").read_text()))
+    engine = json.loads((tx / "engine.json").read_text())
+    if engine != value["recipe"]["native_engine"]:
+        raise RuntimeError("changed frozen native engine")
+    check_transaction_jobs(value, native, quality_jobs, engine)
+    audited = json.loads((root / "audit.json").read_text()) if native else {}
     for kind, selected, app in (("native", native, "usnm_qwen"), ("quality", quality_jobs, "usnm_quality")):
         intent = {job["id"]: shipment.file_hash(path) for path, job in selected}
         if json.loads((tx / (kind + "-intent.json")).read_text()) != intent:
@@ -632,9 +657,9 @@ def verify_acknowledgement(a, tx, value, receipt):
                     or (path.parent / "submitted").read_text() != app + "_" + job["id"]):
                 raise RuntimeError("publication acknowledgement changed")
             if kind == "native":
-                audited = json.loads((root / "audit.json").read_text()).get(job["id"], {})
+                audit_row = audited.get(job["id"], {})
                 if (row["batch"] != 8 or row.get("source_bindings") != source_bindings(root, job)
-                        or any(audited.get(key) != item for key, item in row.items())):
+                        or any(audit_row.get(key) != item for key, item in row.items())):
                     raise RuntimeError("native acknowledgement lost bound audit")
                 states[job["doc_id"]] = "published"
     if (receipt.get("schema") != 1 or receipt.get("transaction_id") != value["id"]
@@ -693,6 +718,8 @@ def run_transaction(a):
     receipt.update(status="in_progress", phase="locked_preflight")
     shipment.save(record_path, receipt)
     try:
+        if any(value["recipe"][key] != item for key, item in recipe_inputs(a).items()):
+            raise RuntimeError("changed frozen staging recipe")
         state = inventory(a.share, a.project)
         if state["free_bytes"] - len(docs) * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
             receipt.update(shipment.publication_evidence(receipt),
@@ -707,7 +734,7 @@ def run_transaction(a):
             if row["lang"] in ("eng", "", "und") or row["doc_id"] in elsewhere:
                 raise RuntimeError("English, unclassified or duplicate transaction source")
             assert_request_cohort({"language": row["lang"], "doc_id": row["doc_id"]}, a.prompt_version)
-        engine = json.loads(a.engine_plan.read_text())["engine"]
+        engine = value["recipe"]["native_engine"]
         shipment.freeze(tx / "engine.json", engine)
         transaction_quality(a, value, input_dir, quality)
         subprocess.run([
@@ -842,6 +869,7 @@ def main():
     ap.add_argument("--share", type=Path, default=Path("/project"))
     ap.add_argument("--project", type=Path, default=Path("/project/usnmocr"))
     ap.add_argument("--inventory", action="store_true")
+    ap.add_argument("--recipe-inputs", action="store_true", help="Read-only staging input fingerprints")
     ap.add_argument("--source-status", action="store_true")
     ap.add_argument("--preflight", action="store_true",
                     help="Read-only admission before transferring a READY chunk; exit 75 on capacity deferral")
@@ -864,6 +892,11 @@ def main():
                     help="Conservative incremental bytes per new page on every backing filesystem")
     ap.add_argument("--min-free-gb", type=int, default=50)
     a = ap.parse_args()
+    if a.recipe_inputs:
+        if not a.campaign or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign) or not a.engine_plan:
+            ap.error("--recipe-inputs needs a campaign and engine plan")
+        print(json.dumps(recipe_inputs(a)))
+        return
     if a.source_status:
         if not a.sample:
             ap.error("--source-status needs --sample FILE or -")

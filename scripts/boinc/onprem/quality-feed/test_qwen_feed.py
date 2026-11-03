@@ -4,7 +4,9 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
+import inspect
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -84,6 +86,65 @@ class PublicationRowsPhpTest(unittest.TestCase):
                 submit.publication_rows(Path("."), [], "usnm_qwen")
 
 
+@unittest.skipUnless(shutil.which("flock"), "real util-linux flock required for host/CT gate rehearsal")
+class LockedThinPoolTest(unittest.TestCase):
+    def test_pool_probe_and_publication_share_the_lock_and_failed_probes_never_publish(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            for name, body in {
+                "pct": """import os, sys
+args = sys.argv[4:]
+args = [os.environ["BRIDGE_LOCK"] if a == "/run/usnm-boinc-step.lock" else a for a in args]
+os.execvp(args[0], args)
+""",
+                "lvs": """import fcntl, json, os, sys
+with open(os.environ["BRIDGE_LOCK"], "a") as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise RuntimeError("thin-pool probe outside bridge mutex")
+if os.environ["POOL_FREE"] == "fail":
+    sys.exit(2)
+print(json.dumps({"report": [{"lv": [{"lv_size": os.environ["POOL_FREE"], "data_percent": "0"}]}]}))
+""",
+            }.items():
+                path = base / name
+                path.write_text("#!" + sys.executable + "\n" + body)
+                path.chmod(0o755)
+            server = """import fcntl, os
+from pathlib import Path
+with open(os.environ["BRIDGE_LOCK"], "a") as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise RuntimeError("publication outside bridge mutex")
+Path(os.environ["PUBLISHED"]).write_text("published")
+print("server entered")
+"""
+            script = (inspect.getsource(shipment.locked_transaction)
+                      + "\nimport sys, json\nraise SystemExit(locked_transaction(*json.loads(sys.argv[1])))")
+            published = base / "published"
+            environment = dict(os.environ, PATH=str(base) + os.pathsep + os.environ["PATH"],
+                               BRIDGE_LOCK=str(base / "bridge.lock"), PUBLISHED=str(published))
+            minimum = 50 * 1024**3 + 54 * 64 * 1024**2
+            for free, status in ((str(minimum - 1), 75), ("fail", 1), (str(minimum), 0)):
+                with self.subTest(free=free):
+                    result = subprocess.run(
+                        [sys.executable, "-c", script,
+                         json.dumps([230, 1, "a" * 64, 54, 50, [sys.executable, "-c", server]])],
+                        env=dict(environment, POOL_FREE=free), capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertEqual(published.exists(), status == 0)
+                    if status == 75:
+                        self.assertEqual(json.loads(result.stdout)["shipment_gate"]["reserve_pages"], 54)
+                    with (base / "bridge.lock").open("a") as lock:
+                        driver.fcntl.flock(lock, driver.fcntl.LOCK_EX | driver.fcntl.LOCK_NB)
+
+
 class SubsetShipmentTest(unittest.TestCase):
     """Offline process-boundary rehearsal; never a live BOINC/SSH proof."""
 
@@ -111,6 +172,8 @@ class SubsetShipmentTest(unittest.TestCase):
         (self.share / "quality/v1-wave9/places.txt").write_text("London\n")
         self.plan = self.base / "plan.json"
         self.plan.write_text(json.dumps({"engine": dict(cohort.ENGINE, models=cohort.MODELS)}))
+        self.binary = self.base / "usnm-boinc-stage"
+        self.binary.write_text("offline stage fixture")
         self.state = {"fresh_pairs": 446, "unresolved_native": 1946, "free_bytes": 100 * 1024**3,
                       "app_versions": [{"plan_class": "test_8b", "platformid": 1, "version_num": 117}],
                       "min_version": 117}
@@ -129,6 +192,7 @@ class SubsetShipmentTest(unittest.TestCase):
         self.lose_response = False
         self.outcomes = {}
         self.server_race = False
+        self.locked_pool_free = 100 * 1024**3
         self.real_publication_rows = submit.publication_rows
         self.real_subprocess_run = subprocess.run
         for owner, name, replacement in (
@@ -158,15 +222,27 @@ class SubsetShipmentTest(unittest.TestCase):
         return types.SimpleNamespace(
             campaign="test", share=self.share, project=self.share / "usnmocr", transaction=identity,
             upload="upload-" + "a" * 32, prompt_version=3, max_pages=100,
-            stage_binary="offline-usnm-boinc", engine_plan=self.plan, models=self.base / "models",
+            stage_binary=str(self.binary), engine_plan=self.plan, models=self.base / "models",
             max_ready=1000, max_unresolved=2000, reserve_mib=64, min_free_gb=50)
 
     def remote(self, host, args, data=None):
+        if "--recipe-inputs" in args:
+            return json.dumps(submit.recipe_inputs(self.server_args())).encode()
         if "--inventory" in args:
             return json.dumps(self.state).encode()
         if "lvs" in args:
             return json.dumps({"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": "0"}]}]}).encode()
-        self.assertIn("/run/usnm-boinc-step.lock", args)
+        if args[:2] == ["python3", "-c"]:
+            ct, wait, identity, pages, floor, command = json.loads(args[-1])
+            self.assertEqual(ct, self.args.server_ct)
+            self.assertIn("/run/usnm-boinc-step.lock", args[2])
+            if self.locked_pool_free - pages * 64 * 1024**2 < floor * 1024**3:
+                gate = {"shipment_gate": {"transaction_id": identity, "reserve_pages": pages,
+                                          "phase": "locked_thin_pool", "free_bytes": self.locked_pool_free}}
+                raise subprocess.CalledProcessError(75, args, output=json.dumps(gate).encode())
+            args = command
+        else:
+            self.assertIn("/run/usnm-boinc-step.lock", args)
         if "--retire-parent" in args:
             a = self.server_args()
             a.retire_parent = args[args.index("--retire-parent") + 1]
@@ -205,9 +281,12 @@ class SubsetShipmentTest(unittest.TestCase):
                     "readers": command[command.index("--readers") + 1]})
                 job = {"doc_id": doc, "id": shipment.digest(row), "language": row["lang"], "group": "test",
                        "engine": {"image": self.args.engine_image},
+                       "function_words": ["the"], "crop_seed": 522, "k_crops": 12,
                        "readers": [{"name": "loc", "source": "loc-alto"}], "inputs": {
                     "page": {"bytes": 3, "sha256": hashlib.sha256(b"jpg").hexdigest()},
                     "alto": shipment.quality_alto((sample.parent / f"scans/{doc}.xml").read_bytes()),
+                    "places": {"bytes": (root / "places.txt").stat().st_size,
+                               "sha256": shipment.file_hash(root / "places.txt")},
                     "texts": {"bytes": len(prepared), "sha256": hashlib.sha256(prepared).hexdigest()}}}
                 job["id"] = shipment.digest(job)
                 for layout in ("pages", "units"):
@@ -232,6 +311,7 @@ class SubsetShipmentTest(unittest.TestCase):
                     "schema": 1, "quality_sha256": hashlib.sha256(raw).hexdigest(), "binding": binding})
                 native = {"doc_id": doc, "id": shipment.digest({"qwen": job}), "input": job["inputs"]["page"],
                           "v": 1, "prompt_version": 3, "language": "srp", "group": "test",
+                          "gpu_timeout_secs": 14400, "cpu_timeout_secs": 7200,
                           "max_tokens_per_1000px2": 4, "crops": [{"id": "c01", "loc_text": "text"}],
                           "engine": json.loads(self.plan.read_text())["engine"]}
                 for name in ("page.jpg", "sample.json"):
@@ -337,6 +417,166 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertEqual(self.ship()[0], 0)
         self.assertEqual(len(self.transfers), 1)
 
+    def test_locked_thin_pool_race_preserves_reservation_and_uncertain_publication(self):
+        self.locked_pool_free = 50 * 1024**3 + 54 * 64 * 1024**2 - 1
+        code, output = self.ship()
+        event = json.loads(output)["shipment_invocation"]
+        self.assertEqual((code, event["phase"], event["status"]), (75, "locked_thin_pool", "deferred"))
+        self.assertFalse(event["publication_attempted"])
+        self.assertFalse(self.commands)
+        self.assertEqual(len(self.transfers[0]["members"]), 54)
+        self.locked_pool_free = 100 * 1024**3
+        self.lose_response = True
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.ship()
+        self.locked_pool_free = 50 * 1024**3
+        code, output = self.ship()
+        event = json.loads(output)["shipment_invocation"]
+        self.assertEqual((code, event["status"]), (75, "uncertain"))
+        self.assertTrue(event["publication_attempted"])
+        self.assertEqual(len(self.transfers), 1)
+        self.locked_pool_free = 100 * 1024**3
+        self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(len(self.db["usnm_qwen"]), 54)
+
+    def test_engine_binary_and_places_pins_are_frozen_before_any_locked_staging(self):
+        with mock.patch.object(submit, "inventory", return_value={**self.state, "free_bytes": 50 * 1024**3}):
+            self.assertEqual(self.ship()[0], 75)
+        self.assertFalse(self.commands)
+        value = self.transfers[0]
+        tx = self.share / "qwen-shipments/test" / value["id"]
+        self.assertFalse((tx / "engine.json").exists())
+        original = self.plan.read_bytes()
+        for field in ("image", "llama", "weights", "models"):
+            engine = json.loads(original)
+            engine["engine"][field] = ([{**engine["engine"]["models"][0], "min_gpu_mb": 1}]
+                                        if field == "models" else "sha256:" + "f" * 64)
+            self.plan.write_text(json.dumps(engine))
+            with self.subTest(field=field), contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaisesRegex(RuntimeError, "changed frozen staging recipe"):
+                submit.run_transaction(self.server_args(value["id"]))
+            self.assertFalse(self.commands)
+        self.plan.write_bytes(original)
+        for path in (self.binary, self.share / "quality/v1-wave9/places.txt"):
+            raw = path.read_bytes()
+            path.write_bytes(raw + b"changed")
+            with self.subTest(path=path.name), contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaisesRegex(RuntimeError, "changed frozen staging recipe"):
+                submit.run_transaction(self.server_args(value["id"]))
+            path.write_bytes(raw)
+        self.assertEqual(self.ship()[0], 0)
+        # A later subset of this same parent must not acquire newly installed pins.
+        self.plan.write_text(json.dumps({"engine": {**json.loads(original)["engine"], "llama": "sha256:" + "e" * 64}}))
+        with self.assertRaisesRegex(ValueError, "changed frozen shipment evidence"):
+            self.ship()
+        self.assertEqual(len(self.transfers), 1)
+        self.assertEqual(len(self.db["usnm_qwen"]), 54)
+
+    def test_places_copy_crash_never_promotes_partial_bytes_or_changes_retry_recipe(self):
+        places = self.share / "quality/test/places.txt"
+        source = self.share / "quality/v1-wave9/places.txt"
+        original = shutil.copyfile
+
+        def partial_copy(src, dst, *args, **kwargs):
+            if Path(dst) == places.with_name("places.txt.pending"):
+                Path(dst).write_bytes(b"Lon")
+                raise OSError("interrupted places copy")
+            return original(src, dst, *args, **kwargs)
+
+        with mock.patch.object(shutil, "copyfile", side_effect=partial_copy), \
+                self.assertRaisesRegex(OSError, "interrupted places copy"):
+            self.ship()
+        self.assertFalse(places.exists())
+        self.assertFalse(self.commands)
+        source.write_text("changed vocabulary\n")
+        with self.assertRaisesRegex(ValueError, "changed frozen shipment evidence"):
+            self.ship()
+        source.write_text("London\n")
+        self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(places.read_bytes(), source.read_bytes())
+        self.assertFalse(places.with_name("places.txt.pending").exists())
+        self.assertEqual(len(self.transfers), 1)
+
+    def marker_sync_crash(self, app):
+        original = shipment.sync_dir
+        failed = []
+
+        def crash(path):
+            if (not failed and path.parent == self.share / app / "test/units"
+                    and (path / "submitted").exists()):
+                failed.append(path)
+                raise OSError("interrupted marker directory sync")
+            original(path)
+
+        with mock.patch("qwen_shipment.sync_dir", side_effect=crash), \
+                self.assertRaisesRegex(OSError, "interrupted marker directory sync"):
+            self.ship()
+        tx = self.share / "qwen-shipments/test" / self.transfers[0]["id"]
+        receipt = json.loads((tx / "receipt.json").read_text())
+        self.assertFalse(receipt["quality_acknowledged" if app == "quality" else "native_acknowledged"])
+        before = dict(self.db["usnm_" + app])
+        self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(self.db["usnm_" + app], before)
+        self.assertTrue(self.receipts()[0]["quality_acknowledged"])
+
+    def test_native_existing_submitted_marker_sync_failure_cannot_acknowledge(self):
+        self.marker_sync_crash("qwen")
+
+    def test_quality_existing_submitted_marker_sync_failure_cannot_acknowledge(self):
+        self.marker_sync_crash("quality")
+
+    def test_positive_reconciliation_durably_finishes_duplicate_matching_markers(self):
+        self.native_crash = True
+        self.assertEqual(self.ship()[0], 1)
+        marker = next((self.share / "qwen/test/units").glob("*/submitting"))
+        marker.with_name("submitted").write_bytes(marker.read_bytes())
+        self.assertEqual(self.ship()[0], 0)
+        self.assertFalse(marker.exists())
+        self.assertEqual(len(self.db["usnm_qwen"]), 54)
+
+    def test_acknowledgement_uses_one_campaign_audit_snapshot(self):
+        self.assertEqual(self.ship()[0], 0)
+        audit = self.share / "qwen/test/audit.json"
+        original = Path.read_text
+        reads = []
+
+        def observe(path, *args, **kwargs):
+            if path == audit:
+                reads.append(path)
+            return original(path, *args, **kwargs)
+
+        value = self.transfers[0]
+        tx = self.share / "qwen-shipments/test" / value["id"]
+        with mock.patch.object(Path, "read_text", observe):
+            submit.verify_acknowledgement(self.server_args(), tx, value, self.receipts()[0])
+        self.assertEqual(reads, [audit])
+
+    def test_retained_jobs_cannot_bypass_the_complete_frozen_recipe(self):
+        self.assertEqual(self.ship()[0], 0)
+        value = self.transfers[0]
+        docs = [member["source"]["doc_id"] for member in value["members"]]
+        native = submit.selected_jobs(self.share / "qwen/test", "qwen.json", docs)
+        quality_jobs = submit.selected_jobs(self.share / "quality/test", "quality.json", docs)
+        engine = value["recipe"]["native_engine"]
+        for field in ("group", "gpu_timeout_secs", "cpu_timeout_secs", "max_tokens_per_1000px2", "engine"):
+            path, job = native[0]
+            changed = json.loads(json.dumps(job))
+            if field == "engine":
+                changed[field]["models"][0]["min_gpu_mb"] += 1
+            else:
+                changed[field] = "changed" if field == "group" else 1
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "native job"):
+                submit.check_transaction_jobs(value, [(path, changed)], quality_jobs, engine)
+        for field in ("places", "function_words", "crop_seed", "k_crops"):
+            path, job = quality_jobs[0]
+            changed = json.loads(json.dumps(job))
+            if field == "places":
+                changed["inputs"]["places"]["sha256"] = "e" * 64
+            else:
+                changed[field] = [] if field == "function_words" else 1
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "quality job"):
+                submit.check_transaction_jobs(value, native, [(path, changed)], engine)
+
     def test_lost_success_response_replays_exact_identity_without_retransfer(self):
         self.lose_response = True
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -364,7 +604,7 @@ class SubsetShipmentTest(unittest.TestCase):
         outside = types.SimpleNamespace(tm_min=30, tm_sec=0)
 
         def no_publication(host, args, data=None):
-            self.assertNotIn("--transaction", args)
+            self.assertFalse(args[:2] == ["python3", "-c"])
             return self.remote(host, args, data)
 
         with mock.patch.object(driver.time, "localtime", return_value=outside), \
@@ -413,7 +653,7 @@ class SubsetShipmentTest(unittest.TestCase):
         self.server_race = False
 
         def lost_response(host, args, data=None):
-            if "--transaction" in args:
+            if args[:2] == ["python3", "-c"]:
                 raise subprocess.TimeoutExpired(args, 7200)
             return self.remote(host, args, data)
 
@@ -510,7 +750,7 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertEqual(shipment.capacity(self.state, 50 * 1024**3 - 1), 0)
         parent = shipment.chunk_snapshot(self.chunk, "test")
         recipe = {"campaign": "test", "prompt_version": 3, "engine_image": self.args.engine_image,
-                  "readers": self.args.readers, "bundle_size": 200}
+                  "readers": self.args.readers, "bundle_size": 200, **submit.recipe_inputs(self.server_args())}
         value = shipment.manifest(parent, parent["members"][:2], recipe)
         payload = self.base / "payload"
         shipment.materialize(self.chunk, payload, value)
@@ -545,7 +785,7 @@ class SubsetShipmentTest(unittest.TestCase):
         parent = shipment.chunk_snapshot(self.chunk, "test")
         value = shipment.manifest(parent, parent["members"][:1], {
             "campaign": "test", "prompt_version": 3, "engine_image": self.args.engine_image,
-            "readers": self.args.readers, "bundle_size": 200})
+            "readers": self.args.readers, "bundle_size": 200, **submit.recipe_inputs(self.server_args())})
         payload = self.base / "partial"
         original_copy = shipment.shutil.copyfile
 

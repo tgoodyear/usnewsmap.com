@@ -7,6 +7,7 @@ The normal scan fetcher alone handles new corpus manifests through its global pa
 """
 import argparse
 import fcntl
+import inspect
 import json
 from pathlib import Path
 import re
@@ -282,6 +283,8 @@ def _ship_subsets(a):
             a.target, version = a.qwen_yiddish_root, a.yiddish_prompt_version
         recipe = {"campaign": a.target, "prompt_version": version, "engine_image": a.engine_image,
                   "readers": a.readers, "bundle_size": a.bundle_size}
+        recipe.update(json.loads(remote(a.server_host, server + [
+            "--recipe-inputs", "--campaign", a.target, "--engine-plan", a.qwen_engine_plan])))
         if not a.what_if:
             shipment.freeze(journal / "parent.json", parent)
             shipment.freeze(journal / "recipe.json", recipe)
@@ -361,12 +364,15 @@ def _ship_subsets(a):
             invocation.update(status="partial" if evidence["status"] == "partial" else "uncertain",
                               publication_attempted=True)
             shipment.save(invocation_path, invocation)
-            args = ct + ["flock", "-w", str(lock_wait), "-E", "75", "/run/usnm-boinc-step.lock",
-                         *server[len(ct):], "--campaign", a.target, "--transaction", value["id"],
-                         "--upload", transfer["upload"],
-                         "--engine-plan", a.qwen_engine_plan, "--models", a.qwen_models,
-                         "--prompt-version", str(version), "--max-ready", str(a.qwen_max_ready),
-                         "--max-unresolved", str(a.max_unresolved), "--min-free-gb", str(a.min_free_gb)]
+            submit = [*server[len(ct):], "--campaign", a.target, "--transaction", value["id"],
+                      "--upload", transfer["upload"],
+                      "--engine-plan", a.qwen_engine_plan, "--models", a.qwen_models,
+                      "--prompt-version", str(version), "--max-ready", str(a.qwen_max_ready),
+                      "--max-unresolved", str(a.max_unresolved), "--min-free-gb", str(a.min_free_gb)]
+            script = (inspect.getsource(shipment.locked_transaction)
+                      + "\nimport json, sys\nraise SystemExit(locked_transaction(*json.loads(sys.argv[1])))\n")
+            args = ["python3", "-c", script,
+                    json.dumps([a.server_ct, lock_wait, value["id"], count, a.min_free_gb, submit])]
             code, output = 0, b""
             try:
                 output = remote(a.server_host, args)
@@ -376,6 +382,15 @@ def _ship_subsets(a):
                 print(json.dumps({"shipment_invocation": invocation}))
                 raise
             receipt = shipment_receipt(output, value["id"])
+            for line in (output or b"").splitlines():
+                try:
+                    gate = json.loads(line).get("shipment_gate")
+                except (ValueError, AttributeError):
+                    continue
+                if gate:
+                    if gate.get("transaction_id") != value["id"] or gate.get("reserve_pages") != count:
+                        raise ValueError("unbound locked storage deferral")
+                    invocation.update(evidence, phase=gate["phase"])
             if receipt is not None:
                 if (receipt.get("parent_id") != value["parent"]["id"]
                         or set(receipt.get("members", {})) != {m["source"]["doc_id"] for m in value["members"]}):

@@ -90,6 +90,47 @@ def publication_evidence(*records):
             "status": "partial" if partial else "uncertain" if attempted else "deferred"}
 
 
+def locked_transaction(ct, wait, identity, pages, floor_gb, command):
+    """Run on the host: keep the CT bridge mutex across the host LVM check."""
+    import json
+    import shutil
+    import subprocess
+    import sys
+    from decimal import Decimal
+
+    handshake = ('printf "LOCKED\\n"; read -r admission || exit 75; '
+                 '[ "$admission" = publish ] || exit 75; exec "$@"')
+    with subprocess.Popen(
+            ["pct", "exec", str(ct), "--", "flock", "-w", str(wait), "-E", "75",
+             "/run/usnm-boinc-step.lock", "sh", "-c", handshake, "shipment-gate", *command],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE) as child:
+        try:
+            first = child.stdout.readline()
+            if first != b"LOCKED\n":
+                sys.stdout.buffer.write(first)
+            else:
+                pool = json.loads(subprocess.check_output([
+                    "lvs", "--reportformat", "json", "--units", "b", "--nosuffix",
+                    "-o", "lv_size,data_percent", "pve/data"], text=True, timeout=30))["report"][0]["lv"][0]
+                size, used = Decimal(pool["lv_size"]), Decimal(pool["data_percent"])
+                if not size.is_finite() or not used.is_finite() or size <= 0 or not 0 <= used <= 100:
+                    raise ValueError("invalid authoritative thin-pool inventory")
+                free = int(size * (1 - used / 100))
+                if free - pages * 64 * 1024**2 < floor_gb * 1024**3:
+                    print(json.dumps({"shipment_gate": {
+                        "transaction_id": identity, "phase": "locked_thin_pool",
+                        "free_bytes": free, "reserve_pages": pages}}), flush=True)
+                    child.stdin.write(b"defer\n")
+                else:
+                    child.stdin.write(b"publish\n")
+                child.stdin.flush()
+        finally:
+            child.stdin.close()
+        shutil.copyfileobj(child.stdout, sys.stdout.buffer)
+        sys.stdout.buffer.flush()
+        return child.wait()
+
+
 def source(page):
     if (not isinstance(page, dict)
             or not re.fullmatch(DOC, page.get("doc_id", ""))
@@ -187,6 +228,18 @@ def validate(value):
             or set(body) != {"schema", "parent", "members", "recipe"}):
         raise ValueError("changed frozen transaction membership")
     parent, members, recipe = value["parent"], value["members"], value["recipe"]
+    if set(recipe) != {"campaign", "prompt_version", "engine_image", "readers", "bundle_size",
+                       "native_engine", "stage_binary", "places"}:
+        raise ValueError("incomplete frozen staging recipe; explicit reconciliation required")
+    engine = recipe["native_engine"]
+    if (not isinstance(engine, dict) or set(engine) != {"image", "llama", "weights", "models"}
+            or any(not re.fullmatch(r"sha256:[a-f0-9]{64}", engine[key]) for key in ("image", "llama", "weights"))
+            or not isinstance(engine["models"], list) or not engine["models"]):
+        raise ValueError("invalid frozen native engine")
+    for info in (recipe["stage_binary"], recipe["places"]):
+        if (set(info) != {"bytes", "sha256"} or type(info["bytes"]) is not int or info["bytes"] < 1
+                or not re.fullmatch(r"[a-f0-9]{64}", info["sha256"])):
+            raise ValueError("invalid frozen staging input")
     if (not re.fullmatch(NAME, parent["campaign"]) or not re.fullmatch(r"c\d{5}", parent["chunk"])
             or not re.fullmatch(r"[a-f0-9]{64}", parent["id"])
             or not 1 <= len(parent["sources"]) <= 490 or not 1 <= len(members) <= 490

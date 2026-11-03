@@ -1072,6 +1072,14 @@ retries reuse its content-addressed identity and never silently shrink or replac
 its membership. Changed parent bytes, membership, recipe, or retained provenance
 fail closed. Legacy source chunks without image provenance require explicit
 reconciliation; a marker alone cannot acknowledge a member.
+Before transfer, the existing server helper's read-only `--recipe-inputs` also
+binds the full native engine/model plan, staging-binary checksum, and exact
+campaign places bytes into that parent recipe. Every subset uses those same
+pins; the server rechecks them before staging, including after a storage deferral.
+Incomplete older recipes require reconciliation, not automatic pin adoption.
+The pinned binary determines the generated function words and staging defaults;
+retained jobs must match the full engine, native runtime parameters, places, and
+bound source-job crop/function-word parameters, not just reader and image hashes.
 
 Only the selected scans/texts and generated selected sample travel over the
 existing LAN transport. Each transfer uses a unique upload directory; the server
@@ -1091,6 +1099,7 @@ cohort invariant.
 New quality source jobs also acquire a retained
 `quality/<campaign>/shipment-quality/<doc_id>.json` binding to the exact frozen
 exported-text bytes, requested reader recipe, and resulting source-job checksum.
+The binding also retains the complete frozen staging recipe.
 Bundle reader lists and prepared-text checksums must match that bound source job.
 Previously staged jobs without this evidence are not adopted, even when their
 JPEG/ALTO match. They require explicit reconciliation, as does a quality-stage
@@ -1114,6 +1123,12 @@ Requests, pinned engines, scientific identities, batch 8, quorum two, and
 distinct-host scheduling are unchanged. The native and quality submits both run
 under that same existing mutex. The scheduler's short database publication
 read-lock interval may briefly delay their INSERTs.
+The host-side gate first acquires that same CT mutex, then probes `pve/data`
+with a bounded `lvs` call and reserves the full selected count at 64 MiB/page
+above the 50 GiB floor. Only a passing probe releases the waiting command into
+the server container; the mutex remains held through publication. A failed
+probe or EOF cannot start staging. `phase=locked_thin_pool` deferrals preserve
+earlier positive/uncertain publication evidence.
 
 Per-application publication intents bind job checksums before submission. An
 interrupted publication is reconciled against BOINC by exact workunit identity,
@@ -1123,6 +1138,13 @@ never clears `submitting` to replay. Native audit rows additionally bind the exa
 source/JPEG. A fully acknowledged durable transaction can replay without requiring
 already-purged BOINC history, but its retained jobs, intents, markers, and source
 audits must still agree.
+Both Rust submitters fsync the unit directory after the submission-marker rename.
+Positive reconciliation also syncs already-present submitted markers before
+acknowledgement; matching interrupted duplicate markers are completed, never
+replayed. Acknowledgement validation uses one campaign-audit snapshot per
+transaction, rather than reopening the entire audit for every member.
+Campaign places are installed with the frozen-byte atomic-copy helper; a partial
+`.pending` copy cannot become an accepted campaign vocabulary on retry.
 
 Producer journals live outside the removable parent:
 `<outbox>/.qwen-transactions/<campaign>/<chunk>/`, with `parent.json`, `recipe.json`,
@@ -1172,6 +1194,9 @@ Deployment/integration gates (offline tests do not satisfy these):
   bundles/unbound source receipts or retirement ownership records. Confirm each
   selected archive receipt satisfies the actual downstream cohort binder.
   Keep both feed/ship timers disabled.
+- Verify host Python, `pct exec` pipe forwarding, `flock`, and the `pve/data`
+  inventory under the real bridge mutex. The Linux CI rehearsal uses real `flock`
+  with disposable `pct`/LVM stand-ins; it is not a production Proxmox proof.
 - Enable the activity's explicit flag, then verify one real bounded transaction,
   exact native/quality database identities, audit/quorum and one-result-per-host
   configuration, receipts after an interrupted response, and all backing-store
