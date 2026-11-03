@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe BOINC feed health each minute (never schedule work)
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

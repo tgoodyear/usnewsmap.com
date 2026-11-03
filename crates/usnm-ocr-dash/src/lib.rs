@@ -5,6 +5,7 @@
 //! text: pages appear by doc_id, with counts, sizes, times and engine tags.
 
 pub mod diagrams;
+pub mod feed;
 pub mod fetch;
 pub mod hosts;
 pub mod html;
@@ -59,6 +60,8 @@ pub struct App {
     pub sset_pushers: BTreeMap<String, Allow>,
     /// Throughput source → the addresses that may push it (its host's).
     pub throughput_pushers: BTreeMap<String, Allow>,
+    pub feed_pushers: BTreeMap<String, Allow>,
+    pub feed_source_dir: Mutex<Option<PathBuf>>,
 }
 
 impl App {
@@ -140,6 +143,7 @@ impl App {
             now,
         );
         v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        v.feed = feed::read(self.settings.feed_health_path.as_deref(), now);
         v.throughput = throughput::view(
             &self.throughput.lock().expect("throughput lock"),
             &fetch.hourly,
@@ -328,6 +332,7 @@ async fn put_throughput(
         tracing::info!(peer = %ip, source, "refused a throughput push");
         return StatusCode::FORBIDDEN.into_response();
     }
+
     let now = Utc::now();
     let packet = match throughput::parse(&body, &source, now) {
         Ok(p) => p,
@@ -353,6 +358,33 @@ async fn put_throughput(
     }
 }
 
+async fn put_feed_source(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(source): Path<String>,
+    body: Bytes,
+) -> StatusCode {
+    if !app
+        .feed_pushers
+        .get(&source)
+        .is_some_and(|a| a.contains(peer.ip().to_canonical()))
+    {
+        return StatusCode::FORBIDDEN;
+    }
+    tokio::task::spawn_blocking(move || {
+        let root = app.feed_source_dir.lock().expect("feed source lock");
+        let Some(root) = root.as_ref() else {
+            return StatusCode::SERVICE_UNAVAILABLE;
+        };
+        match feed::save_source(root, &source, &body, Utc::now()) {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(_) => StatusCode::BAD_REQUEST,
+        }
+    })
+    .await
+    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
@@ -361,6 +393,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
         .route("/api/throughput/{source}", put(put_throughput))
+        .route(
+            "/api/feed-source/{source}",
+            put(put_feed_source).layer(DefaultBodyLimit::max(feed::MAX_SOURCE_BYTES)),
+        )
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
         .with_state(app)
@@ -416,6 +452,10 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
             "/api/throughput/{source}",
             put(put_throughput).fallback(redirect.clone()),
         )
+        .route(
+            "/api/feed-source/{source}",
+            put(put_feed_source).layer(DefaultBodyLimit::max(feed::MAX_SOURCE_BYTES)),
+        )
         .fallback(redirect)
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
@@ -439,6 +479,8 @@ mod tests {
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
             throughput: Mutex::new(throughput::Throughput::default()),
+            feed_pushers: BTreeMap::new(),
+            feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
             seed_plan: Mutex::new(None),
             settings: Settings {
@@ -446,6 +488,7 @@ mod tests {
                 refresh_secs: 30,
                 guest_prefix: "usnm-".into(),
                 workbook_url: None,
+                feed_health_path: None,
             },
             allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
             throughput_pushers: [(
@@ -464,6 +507,71 @@ mod tests {
             )]
             .into(),
         })
+    }
+
+    #[tokio::test]
+    async fn feed_pushes_are_source_scoped_private_and_drive_the_stale_panel() {
+        let dir = std::env::temp_dir().join(format!("usnm-feed-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = app(&dir);
+        {
+            let a = Arc::get_mut(&mut a).unwrap();
+            a.feed_pushers.insert(
+                "client-own".into(),
+                Allow::new(vec!["198.51.100.14".parse().unwrap()]),
+            );
+            *a.feed_source_dir.get_mut().unwrap() = Some(dir.join("feed-sources"));
+            a.settings.feed_health_path = Some(dir.join("feed-health.json"));
+        }
+        let envelope = serde_json::json!({"schema_version":1,"source":"client",
+            "observed_at":Utc::now().timestamp(),"host_id":9});
+        let body = envelope.to_string();
+        let route = "/api/feed-source/client-own";
+        assert_eq!(
+            call(a.clone(), "198.51.100.15", "PUT", route, &body)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(
+                a.clone(),
+                "198.51.100.14",
+                "PUT",
+                "/api/feed-source/server",
+                &body
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(a.clone(), "198.51.100.14", "PUT", route, &body)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        assert!(dir.join("feed-sources/client-own.json").exists());
+        let public = public_router(a.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri(route)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public.status(), StatusCode::NOT_FOUND);
+        let (_, html) = call(a.clone(), "198.51.100.14", "GET", "/", "").await;
+        assert!(html.contains("BOINC feed / stale data"));
+        assert!(html.contains("BOINC feed evidence is unavailable or invalid"));
+        let (_, json) = call(a, "198.51.100.14", "GET", "/api/view.json", "").await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["feed"]["stale"],
+            true
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -932,6 +1040,8 @@ mod tests {
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
             throughput: Mutex::new(throughput::Throughput::default()),
+            feed_pushers: BTreeMap::new(),
+            feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
             seed_plan: Mutex::new(Some(
                 [("pve-big".to_owned(), "/etc/usnm/seed.env".to_owned())].into(),
@@ -941,6 +1051,7 @@ mod tests {
                 refresh_secs: 30,
                 guest_prefix: "usnm-".into(),
                 workbook_url: Some(workbook),
+                feed_health_path: None,
             },
             allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
             pushers: BTreeMap::new(),

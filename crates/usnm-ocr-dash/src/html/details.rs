@@ -135,6 +135,54 @@ pub(super) fn at_a_glance(v: &View, o: &mut String) {
     o.push_str("</table></section>");
 
     o.push_str(&pipeline_panel(&v.pipeline));
+    feed_panel(&v.feed, o);
+}
+
+fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
+    use crate::feed::State;
+    o.push_str("<section class=\"wide\" id=\"boinc-feed-health\"><h2>BOINC feed / stale data</h2>");
+    if let Some(error) = v.error {
+        let _ = write!(o, "<p class=\"stale\">{}</p>", esc(error));
+    }
+    o.push_str(
+        "<table><tr><th>Check</th><th>State</th><th>Observed duration</th><th>Evidence</th></tr>",
+    );
+    for check in &v.checks {
+        let (class, state) = match check.state {
+            State::Healthy => ("good", "healthy"),
+            State::Pending => ("warning", "pending"),
+            State::Firing => ("critical", "alert"),
+            State::Unknown => ("warning", "unknown"),
+        };
+        let detail =
+            match check.code.as_str() {
+                "qwen_refill_window" => check
+                    .remaining_s
+                    .map(|n| format!("{n}s until expiry (warn at 6h)")),
+                "cpu_shortage" | "gpu_shortage" => check
+                    .idle_slots
+                    .zip(check.eligible_results)
+                    .map(|(idle, eligible)| {
+                        format!("{eligible} eligible results / {idle} own idle slots")
+                    }),
+                "controller_tick" => check.seconds.map(|n| format!("{n:.0}s (limit 900s)")),
+                "usnm_ocr_no_work" | "usnm_qwen_no_work" => {
+                    check.backlog.map(|n| format!("{n} backlogged"))
+                }
+                _ => None,
+            };
+        let _ = write!(
+            o,
+            "<tr><td>{}</td><td>{}</td><td>{}s / {}s</td><td>{}</td></tr>",
+            esc(&check.code),
+            badge(class, state),
+            check.duration_s,
+            check.threshold_s,
+            esc(&detail.unwrap_or_else(|| "—".into()))
+        );
+    }
+    o.push_str("</table><p class=\"note\">Read-only observations; no work is admitted or scheduled here. \
+        Missing or old sources are unknown, not healthy. Duration windows reset on gaps or clock changes.</p></section>");
 }
 
 pub(super) fn pool_and_hosts(v: &View, o: &mut String) {

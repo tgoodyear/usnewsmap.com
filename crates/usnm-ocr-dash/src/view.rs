@@ -17,6 +17,7 @@ use crate::sset::{SsetStatus, Ssets};
 /// Settings that shape the view.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
+    pub feed_health_path: Option<std::path::PathBuf>,
     /// Guests whose names start with this are shown.
     pub guest_prefix: String,
     /// Rows in each "what's next" list and each node's latest pages.
@@ -29,6 +30,7 @@ pub struct Settings {
 
 #[derive(Debug, Serialize)]
 pub struct View {
+    pub feed: crate::feed::FeedView,
     pub pipeline: crate::pipeline::PipelineView,
     pub throughput: crate::throughput::ThroughputView,
     pub generated_at: DateTime<Utc>,
@@ -649,6 +651,7 @@ pub fn build(
         .collect();
     let queues = merge_queues(nodes, now);
     View {
+        feed: crate::feed::FeedView::default(),
         pipeline: crate::pipeline::PipelineView::default(),
         throughput: crate::throughput::ThroughputView::default(),
         generated_at: now,

@@ -194,9 +194,9 @@ jobs:
           BOINC_FEEDER_SOURCE="$PWD/.feeder-upstream.cpp" python3 -m unittest -v scripts/boinc/test_feeder_guard.py
       - name: The feeder allocation guard detects drift and fails unknown
         run: python3 -m unittest -v images/server/test_feeder_slot_guard.py
-      - name: The BOINC feed status snapshot computes its alert facts
+      - name: BOINC feed monitoring collects live facts and preserves alert durations
         working-directory: .
-        run: python3 -m unittest -v scripts/boinc/test_feed_status.py
+        run: python3 -m unittest -v scripts/boinc/test_feed_status.py scripts/boinc/test_feed_collect.py
       - name: The Arc token path sends its key only to a loopback endpoint
         run: python3 -m unittest -v images/server/test_lib_kv_token.py
       - name: Key Vault reads retry transient failures (#958)
