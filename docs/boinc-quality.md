@@ -1084,6 +1084,9 @@ single-page units. Quality staging uses the selected sample and the existing
 bundle recipe. An unsubmitted pre-existing bundle crossing the selection boundary
 is refused before staging/publication; reconcile that legacy partial explicitly
 rather than silently publishing its extra members.
+Every retained native job in the root, including unselected and submitted jobs,
+must use the requested version. Subset selection never bypasses this root-wide
+cohort invariant.
 
 New quality source jobs also acquire a retained
 `quality/<campaign>/shipment-quality/<doc_id>.json` binding to the exact frozen
@@ -1093,6 +1096,15 @@ Previously staged jobs without this evidence are not adopted, even when their
 JPEG/ALTO match. They require explicit reconciliation, as does a quality-stage
 crash that leaves jobs before their bindings are persisted; sources stay retained
 and no publication is attempted.
+
+The exact supplied `texts/<doc_id>.loc-provenance.json` bytes are frozen at
+`quality/<campaign>/texts/<doc_id>.loc-provenance.json` before staging/publication
+and remain after retirement. Replay and retirement recheck their frozen hashes.
+Missing or conflicting archive provenance requires explicit reconciliation.
+The archive receipt must bind both original and prepared ALTO: if namespace
+normalization changes its hash, publication fails closed because the existing
+cohort binder requires that same hash. Do not rewrite the supplied receipt or
+silently change the cohort controller's contract.
 
 Storage is rechecked under the bridge mutex before staging, and authoritative
 native capacity is rechecked again immediately before publication. Reservation
@@ -1114,13 +1126,17 @@ audits must still agree.
 
 Producer journals live outside the removable parent:
 `<outbox>/.qwen-transactions/<campaign>/<chunk>/`, with `parent.json`, `recipe.json`,
-and `<transaction-id>/{manifest,transfer,receipt,invocation}.json`.
+`owner.json`, and `<transaction-id>/{manifest,transfer,receipt,invocation}.json`.
 Server evidence lives at `/project/qwen-shipments/<native-campaign>/<transaction-id>/`.
 The emitted `shipment_invocation` includes transaction/parent IDs, reservation and
 transferred counts, phase, exit code, `publication_attempted`,
 `native_acknowledged`, and `quality_acknowledged`. **Exit 75 is not itself a
 zero-publication receipt**: native success followed by quality failure is
 `status=partial`; a lost response is uncertain until replay/reconciliation.
+Storage and step-window deferrals combine positive/uncertain evidence from both
+local journals, never prefer an older zero-publication receipt or erase an
+unreconciled attempt. With the ship mutex unavailable, publication state is
+unknown (`publication_attempted=null`), not a zero-publication claim.
 Use these receipts, not only process status, for monitoring.
 
 The original parent and all subset input copies remain until a disjoint, complete
@@ -1130,10 +1146,17 @@ its retirement record before freeing transferred input copies. Only then may the
 producer remove the parent. Manifests, intents, audits, source bindings, and
 receipts stay retained. Before reading a READY parent's files, cleanup retries
 validate its durable `retired.json`, frozen parent/recipe, and a complete,
-disjoint set of exact transaction acknowledgements. This also handles a crash
-after some scans or the READY marker have already been removed. Once a parent
-has a transaction journal, the legacy whole-chunk path refuses it; rollback must
-drain or reconcile it, not bypass the journal.
+disjoint set of exact transaction acknowledgements. The original directory also
+has a unique `.qwen-shipment-owner.json` bound to the retained `owner.json`.
+Cleanup persists a `retirement-move.json` intent, checks that incarnation, then
+atomically moves the directory to the journal's `retired-parent` and fsyncs both
+directories before recursive deletion. Retries discover unfinished tombstones
+even without a READY directory, including after scans, READY, or the ownership
+marker were removed; `cleaned.json` records completion. A new directory reusing a
+retired name is retained and rejected, never deleted using the old receipts.
+Legacy retirement records without incarnation evidence require explicit
+reconciliation. Once a parent has a transaction journal, the legacy whole-chunk
+path refuses it; rollback must drain or reconcile it, not bypass the journal.
 
 Deployment/integration gates (offline tests do not satisfy these):
 
@@ -1146,7 +1169,9 @@ Deployment/integration gates (offline tests do not satisfy these):
 - At an idle singleton boundary, confirm writable durable transaction storage,
   canonical quality `places.txt` (or its existing `v1-wave9` source), compatible
   guarded app versions, shared pinned models, and no conflicting legacy partial
-  bundles/unbound source receipts. Keep both feed/ship timers disabled.
+  bundles/unbound source receipts or retirement ownership records. Confirm each
+  selected archive receipt satisfies the actual downstream cohort binder.
+  Keep both feed/ship timers disabled.
 - Enable the activity's explicit flag, then verify one real bounded transaction,
   exact native/quality database identities, audit/quorum and one-result-per-host
   configuration, receipts after an interrupted response, and all backing-store

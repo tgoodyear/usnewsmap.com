@@ -21,8 +21,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, HERE / (name + ".py"))
+def load(name, path=None):
+    spec = importlib.util.spec_from_file_location(name, path or HERE / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -34,6 +34,7 @@ submit = load("qwen_submit")
 driver = load("qwen_feed")
 source = load("qwen_source")
 shipment = load("qwen_shipment")
+cohort = load("qwen_auto_cohort", HERE.parents[1] / "qwen-auto-cohort.py")
 DOC = "sn1_1900-01-02_ed-1_seq-3"
 
 
@@ -95,15 +96,21 @@ class SubsetShipmentTest(unittest.TestCase):
         self.chunk.parent.mkdir(parents=True)
         pages = [{**frozen_page(f"sn1_1900-01-02_ed-1_seq-{i}"), "date": "1900-01-02", "lang": "srp"}
                  for i in range(1, 97)]
+        cache = self.base / "archive-cache"
+        cache.mkdir()
+        for page in pages:
+            doc = page["doc_id"]
+            (cache / (doc + ".provenance.json")).write_text(json.dumps({
+                "doc_id": doc, "sha256": hashlib.sha256(b"alto").hexdigest(),
+                "archive": "xx_test_ver01.tar.bz2", "member": doc + "/ocr.xml",
+                "archive_bytes": 1000}, indent=2) + "\n")
         quality.write_chunk(str(self.chunk.parent), self.chunk.name, pages,
-                            {p["doc_id"]: (b"jpg", b"alto", {}, None) for p in pages})
+                            {p["doc_id"]: (b"jpg", b"alto", {}, None) for p in pages}, str(cache))
         self.share = self.base / "server"
         (self.share / "quality/v1-wave9").mkdir(parents=True)
         (self.share / "quality/v1-wave9/places.txt").write_text("London\n")
         self.plan = self.base / "plan.json"
-        self.plan.write_text(json.dumps({"engine": {"image": "sha256:" + "a" * 64,
-                                                   "llama": "sha256:" + "b" * 64,
-                                                   "weights": "sha256:" + "c" * 64}}))
+        self.plan.write_text(json.dumps({"engine": dict(cohort.ENGINE, models=cohort.MODELS)}))
         self.state = {"fresh_pairs": 446, "unresolved_native": 1946, "free_bytes": 100 * 1024**3,
                       "app_versions": [{"plan_class": "test_8b", "platformid": 1, "version_num": 117}],
                       "min_version": 117}
@@ -149,7 +156,7 @@ class SubsetShipmentTest(unittest.TestCase):
 
     def server_args(self, identity=None):
         return types.SimpleNamespace(
-            campaign="test", share=self.share, project=self.share, transaction=identity,
+            campaign="test", share=self.share, project=self.share / "usnmocr", transaction=identity,
             upload="upload-" + "a" * 32, prompt_version=3, max_pages=100,
             stage_binary="offline-usnm-boinc", engine_plan=self.plan, models=self.base / "models",
             max_ready=1000, max_unresolved=2000, reserve_mib=64, min_free_gb=50)
@@ -206,6 +213,8 @@ class SubsetShipmentTest(unittest.TestCase):
                 for layout in ("pages", "units"):
                     shipment.save(root / layout / doc / "quality.json", job)
                     (root / layout / doc / "texts.json").write_bytes(prepared)
+                    (root / layout / doc / "page.jpg").write_bytes(b"jpg")
+                    shipment.save(root / layout / doc / "sample.json", row)
             return
         members = json.loads(Path(command[command.index("--members") + 1]).read_text())
         if operation == "stage":
@@ -222,8 +231,11 @@ class SubsetShipmentTest(unittest.TestCase):
                 shipment.save(unit / "source-provenance.json", {
                     "schema": 1, "quality_sha256": hashlib.sha256(raw).hexdigest(), "binding": binding})
                 native = {"doc_id": doc, "id": shipment.digest({"qwen": job}), "input": job["inputs"]["page"],
-                          "prompt_version": 3, "language": "srp",
+                          "v": 1, "prompt_version": 3, "language": "srp", "group": "test",
+                          "max_tokens_per_1000px2": 4, "crops": [{"id": "c01", "loc_text": "text"}],
                           "engine": json.loads(self.plan.read_text())["engine"]}
+                for name in ("page.jpg", "sample.json"):
+                    shutil.copyfile(qroot / "pages" / doc / name, unit / name)
                 outcome = self.outcomes.get(doc)
                 if outcome:
                     (unit / outcome).write_text("bound terminal evidence")
@@ -243,6 +255,11 @@ class SubsetShipmentTest(unittest.TestCase):
             self.db["usnm_" + app][job["id"]] = {
                 "job_sha256": shipment.file_hash(path), "workunit_id": len(self.db["usnm_" + app]) + 1,
                 "batch": 8 if app == "qwen" else 0, "min_quorum": 2, "target_nresults": 2}
+            if app == "qwen":
+                download = self.server_args().project / "download"
+                shipment.mkdir(download)
+                shutil.copyfile(path, download / (job["id"] + "_qwen_json"))
+                shutil.copyfile(path.parent / "page.jpg", download / (job["id"] + "_page_jpg"))
             if app == "qwen" and self.native_crash:
                 self.native_crash = False
                 raise subprocess.CalledProcessError(1, command)
@@ -260,7 +277,7 @@ class SubsetShipmentTest(unittest.TestCase):
     def test_exact_54_of_96_transfer_mixed_outcomes_and_parent_retirement(self):
         self.outcomes = {DOC: "no_crops", "sn1_1900-01-02_ed-1_seq-4": "too_large"}
         unrelated = self.share / "qwen/test/units/sn9_1900-01-02_ed-1_seq-1"
-        shipment.save(unrelated / "qwen.json", {"doc_id": unrelated.name, "id": "d" * 64})
+        shipment.save(unrelated / "qwen.json", {"doc_id": unrelated.name, "id": "d" * 64, "prompt_version": 3})
         code, output = self.ship()
         self.assertEqual(code, 0)
         self.assertEqual(len(self.transfers), 1)
@@ -333,6 +350,125 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertEqual(self.db["usnm_qwen"], {})
         self.assertEqual(len(self.transfers), 1)
 
+    def test_deferrals_preserve_newer_uncertain_invocation_until_server_reconciliation(self):
+        self.server_race = True
+        self.assertEqual(self.ship()[0], 75)
+        self.assertFalse(self.receipts()[0]["publication_attempted"])
+        self.server_race = False
+        self.lose_response = True
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.ship()
+        tx = self.outbox / ".qwen-transactions/test/c00001" / self.transfers[0]["id"]
+        before = dict(self.db["usnm_qwen"])
+        self.args.step_window_minutes = 5
+        outside = types.SimpleNamespace(tm_min=30, tm_sec=0)
+
+        def no_publication(host, args, data=None):
+            self.assertNotIn("--transaction", args)
+            return self.remote(host, args, data)
+
+        with mock.patch.object(driver.time, "localtime", return_value=outside), \
+                mock.patch.object(driver, "remote", side_effect=no_publication):
+            for phase in ("step_window", "step_window", "preflight"):
+                if phase == "preflight":
+                    self.state["free_bytes"] = 50 * 1024**3
+                code, output = self.ship()
+                event = json.loads(output)
+                event = event.get("shipment_invocation", event)
+                self.assertEqual((code, event["phase"], event["status"]), (75, phase, "uncertain"))
+                self.assertTrue(event["publication_attempted"])
+                self.assertTrue(json.loads((tx / "invocation.json").read_text())["publication_attempted"])
+        self.assertFalse(self.receipts()[0]["publication_attempted"])
+        self.assertEqual(self.db["usnm_qwen"], before)
+        self.assertEqual(len(self.transfers), 1)
+        self.state["free_bytes"] = 100 * 1024**3
+        self.args.step_window_minutes = 0
+        self.assertEqual(self.ship()[0], 0)
+        self.assertTrue(self.receipts()[0]["native_acknowledged"])
+        self.assertEqual(self.db["usnm_qwen"], before)
+
+    def test_step_window_and_storage_preserve_positive_evidence_in_either_journal(self):
+        self.quality_failure = True
+        self.assertEqual(self.ship()[0], 75)
+        tx = self.outbox / ".qwen-transactions/test/c00001" / self.transfers[0]["id"]
+        partial = self.receipts()[0]
+        zero = {**partial, "status": "deferred", "publication_attempted": False, "native_acknowledged": False}
+        self.args.step_window_minutes = 5
+        with mock.patch.object(driver.time, "localtime", return_value=types.SimpleNamespace(tm_min=30)):
+            for positive in ("receipt.json", "invocation.json"):
+                for phase in ("step_window", "preflight"):
+                    shipment.save(tx / "receipt.json", partial if positive == "receipt.json" else zero)
+                    shipment.save(tx / "invocation.json", partial if positive == "invocation.json" else zero)
+                    self.state["free_bytes"] = (50 if phase == "preflight" else 100) * 1024**3
+                    code, output = self.ship()
+                    event = json.loads(output)
+                    event = event.get("shipment_invocation", event)
+                    self.assertEqual((code, event["phase"], event["status"]), (75, phase, "partial"))
+                    self.assertTrue(event["native_acknowledged"])
+                    self.assertTrue(event["publication_attempted"])
+
+    def test_server_storage_receipt_cannot_clear_an_unreconciled_local_attempt(self):
+        self.server_race = True
+        self.assertEqual(self.ship()[0], 75)
+        self.server_race = False
+
+        def lost_response(host, args, data=None):
+            if "--transaction" in args:
+                raise subprocess.TimeoutExpired(args, 7200)
+            return self.remote(host, args, data)
+
+        with mock.patch.object(driver, "remote", side_effect=lost_response), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            self.ship()
+        with mock.patch.object(submit, "inventory", return_value={**self.state, "free_bytes": 50 * 1024**3}):
+            code, output = self.ship()
+        event = json.loads(output)["shipment_invocation"]
+        self.assertEqual((code, event["phase"], event["status"]), (75, "locked_storage", "uncertain"))
+        self.assertTrue(event["publication_attempted"])
+        self.assertFalse(self.receipts()[0]["publication_attempted"])
+        self.assertEqual(self.ship()[0], 0)
+        self.assertTrue(self.receipts()[0]["native_acknowledged"])
+
+    def test_first_out_of_window_deferral_does_not_invent_publication(self):
+        self.args.step_window_minutes = 5
+        with mock.patch.object(driver.time, "localtime", return_value=types.SimpleNamespace(tm_min=30)):
+            code, output = self.ship()
+        event = json.loads(output)["shipment_invocation"]
+        self.assertEqual((code, event["status"], event["publication_attempted"]), (75, "deferred", False))
+        self.assertFalse(self.commands)
+        self.assertFalse(self.db["usnm_qwen"])
+
+    def test_mutex_and_locked_storage_deferrals_do_not_claim_zero_publication(self):
+        with mock.patch.object(driver.fcntl, "flock", side_effect=BlockingIOError):
+            code, output = self.ship()
+        self.assertEqual((code, json.loads(output)["status"]), (75, "uncertain"))
+        self.assertIsNone(json.loads(output)["publication_attempted"])
+        self.native_crash = True
+        self.assertEqual(self.ship()[0], 1)
+        with mock.patch.object(submit, "inventory", return_value={**self.state, "free_bytes": 50 * 1024**3}):
+            code, output = self.ship()
+        event = json.loads(output)["shipment_invocation"]
+        self.assertEqual((code, event["phase"], event["status"]), (75, "locked_storage", "uncertain"))
+        self.assertTrue(event["publication_attempted"])
+        self.assertEqual(len(self.db["usnm_qwen"]), 1)
+
+    def test_subset_rejects_mixed_request_versions_across_unselected_root_before_staging(self):
+        for layout, version, submitted in (("units", 2, False), ("units", 4, True), ("bundles", 4, False)):
+            with self.subTest(layout=layout, version=version, submitted=submitted):
+                unit = self.share / "qwen/test" / layout / "unrelated"
+                shipment.save(unit / "qwen.json",
+                              {"id": "e" * 64, "doc_id": "unrelated", "prompt_version": version})
+                if submitted:
+                    (unit / "submitted").write_text("usnm_qwen_" + "e" * 64)
+                with self.assertRaisesRegex(RuntimeError, f"holds request version {version}, not 3"):
+                    self.ship()
+                self.assertFalse(self.commands)
+                self.assertFalse(self.db["usnm_qwen"])
+                self.assertTrue((self.chunk / "READY").is_file())
+                shutil.rmtree(unit)
+        self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(len(self.transfers), 1)
+
     def test_retirement_rejects_changed_acknowledged_jobs_and_retains_all_sources(self):
         self.assertEqual(self.ship()[0], 0)
         path = next((self.share / "qwen/test/units").glob("*/qwen.json"))
@@ -387,20 +523,23 @@ class SubsetShipmentTest(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             shipment.chunk_snapshot(self.chunk, "test")
 
-    def test_existing_alto_namespace_normalization_keeps_original_source_bytes_bound(self):
+    def test_normalized_alto_cannot_publish_with_incompatible_downstream_archive_binding(self):
         raw = b'<alto xmlns="http://schema.ccs-gmbh.com/ALTO"></alto>'
         path = self.chunk / f"scans/{DOC}.xml"
         path.write_bytes(raw)
         sums = self.chunk / "SHA256SUMS"
-        sums.write_text("\n".join(
-            hashlib.sha256(raw).hexdigest() + "  " + f"scans/{DOC}.xml"
-            if line.endswith("  " + f"scans/{DOC}.xml") else line
-            for line in sums.read_text().splitlines()) + "\n")
-        self.assertEqual(self.ship()[0], 0)
+        provenance = self.chunk / f"texts/{DOC}.loc-provenance.json"
+        shipment.save(provenance, {**json.loads(provenance.read_text()), "sha256": hashlib.sha256(raw).hexdigest()})
+        sums.write_text("".join(shipment.file_hash(self.chunk / line.split("  ", 1)[1]) + "  "
+                               + line.split("  ", 1)[1] + "\n" for line in sums.read_text().splitlines()))
+        with self.assertRaisesRegex(RuntimeError, "archive provenance does not bind prepared ALTO"):
+            self.ship()
         member = next(m for m in self.transfers[0]["members"] if m["source"]["doc_id"] == DOC)
         self.assertNotEqual(member["quality_alto"], member["files"][f"scans/{DOC}.xml"])
         self.assertEqual(path.read_bytes(), raw)
-        self.assertEqual(self.receipts()[0]["members"][DOC], {"native": "published", "quality": "published"})
+        self.assertFalse(self.commands)
+        self.assertFalse(self.db["usnm_qwen"])
+        self.assertTrue((self.chunk / "READY").is_file())
 
     def test_partial_local_materialization_recovers_without_changing_parent(self):
         parent = shipment.chunk_snapshot(self.chunk, "test")
@@ -426,10 +565,11 @@ class SubsetShipmentTest(unittest.TestCase):
         original = shutil.rmtree
 
         def partial_cleanup(path, *args, **kwargs):
-            if Path(path) == self.chunk:
-                next((self.chunk / "scans").glob("*.jpg")).unlink()
+            if Path(path).name == "retired-parent":
+                next((path / "scans").glob("*.jpg")).unlink()
+                (path / ".qwen-shipment-owner.json").unlink()
                 if remove_ready:
-                    (self.chunk / "READY").unlink()
+                    (path / "READY").unlink()
                 raise OSError("interrupted parent cleanup")
             return original(path, *args, **kwargs)
 
@@ -440,20 +580,123 @@ class SubsetShipmentTest(unittest.TestCase):
 
     def test_parent_cleanup_resumes_before_snapshot_with_ready_retained(self):
         journal = self.crash_parent_cleanup()
-        self.assertTrue((self.chunk / "READY").exists())
+        self.assertFalse(self.chunk.exists())
+        self.assertTrue((journal / "retired-parent/READY").exists())
         before = dict(self.db["usnm_qwen"])
         with mock.patch.object(driver, "remote", side_effect=AssertionError("must not republish")):
             self.assertEqual(self.ship()[0], 0)
         self.assertFalse(self.chunk.exists())
         self.assertTrue((journal / "retired.json").exists())
+        self.assertTrue((journal / "cleaned.json").exists())
+        self.assertFalse((journal / "retired-parent").exists())
         self.assertEqual(self.db["usnm_qwen"], before)
 
     def test_parent_cleanup_resumes_even_if_ready_was_already_removed(self):
-        self.crash_parent_cleanup(remove_ready=True)
-        self.assertFalse((self.chunk / "READY").exists())
+        journal = self.crash_parent_cleanup(remove_ready=True)
+        self.assertFalse((journal / "retired-parent/READY").exists())
         with mock.patch.object(driver, "remote", side_effect=AssertionError("must not republish")):
             self.assertEqual(self.ship()[0], 0)
         self.assertFalse(self.chunk.exists())
+
+    def replacement_parent(self):
+        # A re-created directory with identical source bytes is still a new incarnation.
+        original = self.base / "replacement-source"
+        if not original.exists():
+            shutil.copytree(self.chunk, original, ignore=shutil.ignore_patterns(".qwen-shipment-owner.json"))
+        if self.chunk.exists():
+            shutil.rmtree(self.chunk)
+        shutil.copytree(original, self.chunk)
+        return shipment.chunk_snapshot(self.chunk, "test")
+
+    def test_retirement_never_deletes_replacement_after_completed_cleanup(self):
+        self.replacement_parent()
+        self.state.update(fresh_pairs=0, unresolved_native=0)
+        self.assertEqual(self.ship()[0], 0)
+        expected = self.replacement_parent()
+        with self.assertRaisesRegex(ValueError, "retired chunk name reused"):
+            self.ship()
+        self.assertEqual(shipment.chunk_snapshot(self.chunk, "test"), expected)
+
+    def test_retirement_recovers_partial_tombstone_without_deleting_replacement(self):
+        self.replacement_parent()
+        journal = self.crash_parent_cleanup(remove_ready=True)
+        expected = self.replacement_parent()
+        with self.assertRaisesRegex(ValueError, "retired chunk name reused"):
+            self.ship()
+        self.assertEqual(shipment.chunk_snapshot(self.chunk, "test"), expected)
+        self.assertFalse((journal / "retired-parent").exists())
+        self.assertTrue((journal / "cleaned.json").exists())
+
+    def test_retirement_crash_before_move_cannot_claim_replacement_incarnation(self):
+        self.replacement_parent()
+        self.state.update(fresh_pairs=0, unresolved_native=0)
+        original = Path.rename
+
+        def fail_move(path, destination):
+            if path == self.chunk:
+                raise OSError("crash before rename")
+            return original(path, destination)
+
+        with mock.patch.object(Path, "rename", fail_move), self.assertRaisesRegex(OSError, "before rename"):
+            self.ship()
+        expected = self.replacement_parent()
+        with self.assertRaisesRegex(ValueError, "parent directory incarnation changed"):
+            self.ship()
+        self.assertEqual(shipment.chunk_snapshot(self.chunk, "test"), expected)
+
+    def test_unbound_legacy_retirement_never_claims_or_deletes_a_parent(self):
+        journal = self.crash_parent_cleanup()
+        (journal / "owner.json").unlink()
+        with self.assertRaisesRegex(ValueError, "unbound parent incarnation"):
+            self.ship()
+        self.assertTrue((journal / "retired-parent").exists())
+
+    def test_retirement_recovers_rename_and_completed_delete_crash_boundaries(self):
+        self.state.update(fresh_pairs=0, unresolved_native=0)
+        journal = self.outbox / ".qwen-transactions/test/c00001"
+        original_sync = shipment.sync_dir
+
+        def fail_after_move(path):
+            if path == self.chunk.parent and (journal / "retired-parent").exists():
+                raise OSError("crash after rename")
+            original_sync(path)
+
+        # Both modules import the canonical shipment helper internally.
+        with mock.patch("qwen_shipment.sync_dir", side_effect=fail_after_move), \
+                self.assertRaisesRegex(OSError, "after rename"):
+            self.ship()
+        self.assertFalse(self.chunk.exists())
+        original_freeze = shipment.freeze
+
+        def fail_after_delete(path, value):
+            if path == journal / "cleaned.json":
+                raise OSError("crash after deletion")
+            original_freeze(path, value)
+
+        with mock.patch("qwen_shipment.freeze", side_effect=fail_after_delete), \
+                self.assertRaisesRegex(OSError, "after deletion"):
+            self.ship()
+        self.assertFalse((journal / "retired-parent").exists())
+        with mock.patch.object(driver, "remote", side_effect=AssertionError("must not republish")):
+            self.assertEqual(self.ship()[0], 0)
+        self.assertTrue((journal / "cleaned.json").exists())
+
+    def test_parent_ownership_recovers_crash_between_marker_and_journal(self):
+        original = shipment.freeze
+        journal = self.outbox / ".qwen-transactions/test/c00001"
+
+        def fail_owner(path, value):
+            if path == journal / "owner.json":
+                raise OSError("crash before owner journal")
+            original(path, value)
+
+        with mock.patch("qwen_shipment.freeze", side_effect=fail_owner), \
+                self.assertRaisesRegex(OSError, "before owner journal"):
+            self.ship()
+        owner = json.loads((self.chunk / ".qwen-shipment-owner.json").read_text())
+        self.assertFalse(self.transfers)
+        self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(json.loads((journal / "owner.json").read_text()), owner)
 
     def test_retirement_record_cannot_bypass_incomplete_acknowledgements(self):
         self.assertEqual(self.ship()[0], 0)
@@ -467,7 +710,7 @@ class SubsetShipmentTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("php"), "PHP CLI required for all-terminal native reconciliation")
     def test_all_terminal_subset_uses_real_php_empty_native_results(self):
         self.outcomes = {f"sn1_1900-01-02_ed-1_seq-{i}": "no_crops" for i in range(1, 55)}
-        empty_boinc_php(self.share)
+        empty_boinc_php(self.server_args().project)
 
         def rows(project, selected, app):
             if app == "usnm_qwen":
@@ -482,6 +725,68 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertEqual(len(self.db["usnm_quality"]), 54)
         self.assertTrue(self.receipts()[0]["native_acknowledged"])
         self.assertTrue((self.chunk / "READY").exists())
+
+    def test_exact_archive_provenance_survives_retirement_and_actual_cohort_binding(self):
+        expected = {path.name: path.read_bytes() for path in (self.chunk / "texts").glob("*.loc-provenance.json")}
+        self.assertEqual(self.ship()[0], 0)
+        self.state.update(fresh_pairs=0, unresolved_native=0)
+        self.assertEqual(self.ship()[0], 0)
+        self.assertFalse(self.chunk.exists())
+        self.assertFalse(list((self.share / "qwen-shipments/test").glob("*/input")))
+        project = self.server_args().project
+        audit = json.loads((self.share / "qwen/test/audit.json").read_text())
+        for path, job in submit.jobs(self.share / "qwen/test"):
+            identity, doc = job["id"], job["doc_id"]
+            names = (identity + "_qwen_json", identity + "_page_jpg")
+            row = {"unit": {"id": audit[identity]["workunit_id"], "name": "usnm_qwen_" + identity,
+                           "xml_doc": "".join("<file_info><name>" + name + "</name><url>"
+                                             "https://example.test/usnmocr_download/" + name
+                                             + "</url></file_info>" for name in names)}}
+            bound = cohort.bind_inputs(project, row, identity, audit[identity], "test", 3)
+            raw = expected[doc + ".loc-provenance.json"]
+            self.assertEqual(bound["provenance_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual((self.share / "quality/test/texts" / (doc + ".loc-provenance.json")).read_bytes(), raw)
+        self.assertEqual(len(audit), 96)
+
+    def test_missing_or_changed_archive_provenance_cannot_publish(self):
+        self.server_race = True
+        self.assertEqual(self.ship()[0], 75)
+        path = self.share / "quality/test/texts" / (DOC + ".loc-provenance.json")
+        original = path.read_bytes()
+        path.write_bytes(original + b"\n")
+        self.server_race = False
+        with self.assertRaisesRegex(ValueError, "changed shipment input"):
+            self.ship()
+        self.assertEqual(path.read_bytes(), original + b"\n")
+        self.assertFalse(self.db["usnm_qwen"])
+        path.write_bytes(original)
+        value = json.loads(json.dumps(self.transfers[0]))
+        value["members"][0]["files"].pop(f"texts/{value['members'][0]['source']['doc_id']}.loc-provenance.json")
+        tx = self.share / "qwen-shipments/test" / value["id"]
+        with self.assertRaisesRegex(RuntimeError, "missing frozen archive provenance"):
+            submit.transaction_quality(self.server_args(), value, tx / "input", self.share / "quality/test")
+
+    def test_archive_provenance_copy_recovers_crash_before_publication(self):
+        original = shutil.copyfile
+        interrupted = []
+
+        def partial_copy(src, dst, *args, **kwargs):
+            if (Path(dst).parent == self.share / "quality/test/texts"
+                    and Path(dst).name.endswith(".loc-provenance.json.pending")):
+                Path(dst).write_bytes(b"partial")
+                interrupted.append(Path(dst))
+                raise OSError("interrupted provenance retention")
+            return original(src, dst, *args, **kwargs)
+
+        with mock.patch.object(shutil, "copyfile", side_effect=partial_copy), \
+                self.assertRaisesRegex(OSError, "interrupted provenance retention"):
+            self.ship()
+        self.assertFalse(self.db["usnm_qwen"])
+        self.assertFalse(self.commands)
+        self.assertEqual(len(interrupted), 1)
+        self.assertEqual(self.ship()[0], 0)
+        self.assertFalse(interrupted[0].exists())
+        self.assertEqual(len(self.transfers), 1)
 
     def test_preexisting_quality_job_without_reader_text_binding_is_not_adopted(self):
         parent = shipment.chunk_snapshot(self.chunk, "test")

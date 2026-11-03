@@ -268,7 +268,15 @@ def assert_request_cohort(job, prompt_version):
                            f"{job['doc_id']}")
 
 
+def assert_root_request_version(a, root):
+    for _, job in jobs(root):
+        if job.get("prompt_version") != a.prompt_version:
+            raise RuntimeError(f"Root {a.campaign} holds request version {job.get('prompt_version')}, "
+                               f"not {a.prompt_version}; a version gets its own root")
+
+
 def admission(a, state, root):
+    assert_root_request_version(a, root)
     if list(root.glob("units/*/submitting")):
         raise RuntimeError("Uncertain Qwen submission: reconcile existing markers against BOINC, never replay")
     receipt = root / "audit.json"
@@ -280,10 +288,6 @@ def admission(a, state, root):
         if job["id"] in seen:
             raise RuntimeError(f"Duplicate staged Qwen identity: {job['id']}; reconcile, never replay")
         seen.add(job["id"])
-        # The refill admits a root at one request version, so a root holds one.
-        if job["prompt_version"] != a.prompt_version:
-            raise RuntimeError(f"Root {a.campaign} holds request version {job['prompt_version']}, "
-                               f"not {a.prompt_version}; a version gets its own root")
         previous = verified.get(job["id"])
         if previous is not None and previous["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest():
             raise RuntimeError(f"Previously audited Qwen job changed: {path}; reconcile, never replay")
@@ -478,6 +482,27 @@ def quality_source_binding(quality, member, readers, *, create=False):
     return job
 
 
+def archive_provenance(quality, member, input_dir=None):
+    import qwen_shipment as shipment
+    doc = member["source"]["doc_id"]
+    rel = f"texts/{doc}.loc-provenance.json"
+    expected = member["files"].get(rel)
+    if expected is None:
+        raise RuntimeError("missing frozen archive provenance; explicit reconciliation required")
+    path = (input_dir if input_dir is not None else quality) / rel
+    shipment.check_file(path, expected)
+    provenance = json.loads(path.read_bytes())
+    if (provenance.get("doc_id") != doc
+            or provenance.get("sha256") != member["files"][f"scans/{doc}.xml"]["sha256"]
+            or not provenance.get("archive") or not provenance.get("member")
+            or int(provenance.get("archive_bytes", 0)) <= 0):
+        raise RuntimeError("archive provenance does not bind source ALTO")
+    if provenance["sha256"] != member["quality_alto"]["sha256"]:
+        raise RuntimeError("archive provenance does not bind prepared ALTO; explicit reconciliation required")
+    if input_dir is not None:
+        shipment.freeze_file(quality / rel, path, expected)
+
+
 def transaction_quality(a, value, input_dir, quality):
     import qwen_shipment as shipment
     docs = [member["source"]["doc_id"] for member in value["members"]]
@@ -487,6 +512,7 @@ def transaction_quality(a, value, input_dir, quality):
     staged_docs = set().union(*(documents(job) for _, job in staged))
     for member in value["members"]:
         doc = member["source"]["doc_id"]
+        archive_provenance(quality, member, input_dir)
         binding_path = quality / "texts" / (doc + ".image-provenance.json")
         incoming = json.loads((input_dir / "texts" / binding_path.name).read_text())
         existing = [quality / layout / doc / "quality.json" for layout in ("pages", "units")]
@@ -566,6 +592,7 @@ def check_transaction_jobs(value, native, quality_jobs, engine):
             if doc not in expected:
                 continue
             member = expected[doc]
+            archive_provenance(path.parent.parent.parent, member)
             counts[doc] += 1
             if page["language"] != member["sample"]["lang"] or page["group"] != value["recipe"]["campaign"]:
                 raise RuntimeError("quality job recipe changed")
@@ -658,16 +685,17 @@ def run_transaction(a):
     if (receipt.get("transaction_id") != value["id"] or receipt.get("parent_id") != value["parent"]["id"]
             or set(receipt["members"]) != set(docs)):
         raise ValueError("receipt membership changed")
+    assert_root_request_version(a, root)
     if receipt.get("status") == "acknowledged":
         verify_acknowledgement(a, tx, value, receipt)
         print(json.dumps({"transaction_receipt": receipt}, sort_keys=True), flush=True)
         return
-    receipt["status"] = "in_progress"
+    receipt.update(status="in_progress", phase="locked_preflight")
     shipment.save(record_path, receipt)
     try:
         state = inventory(a.share, a.project)
         if state["free_bytes"] - len(docs) * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
-            receipt.update(status="partial" if receipt["publication_attempted"] else "deferred",
+            receipt.update(shipment.publication_evidence(receipt),
                            phase="locked_storage", reason="reserved_input_free_space", reserve_pages=len(docs))
             raise SystemExit(75)
         elsewhere = set()
@@ -720,7 +748,9 @@ def run_transaction(a):
         receipt.update(reserve_pages=len(docs), pending_native=pending, reason=reason,
                        phase="locked_recheck")
         if reason:
-            receipt["status"] = "partial" if native_rows or receipt["publication_attempted"] else "deferred"
+            receipt.update(shipment.publication_evidence(receipt))
+            if native_rows:
+                receipt["status"] = "partial"
             raise SystemExit(75)
         receipt.update(phase="native_submit", publication_attempted=True)
         shipment.save(record_path, receipt)

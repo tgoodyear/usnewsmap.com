@@ -61,6 +61,35 @@ def freeze(path, value):
         save(path, value)
 
 
+def freeze_file(path, incoming, expected):
+    """Retain the supplied bytes, not a re-encoded provenance receipt."""
+    check_file(incoming, expected)
+    if path.exists():
+        check_file(path, expected)
+        sync_dir(path.parent)
+        return
+    mkdir(path.parent)
+    pending = path.with_name(path.name + ".pending")
+    shutil.copyfile(incoming, pending)
+    check_file(pending, expected)
+    with pending.open("rb") as stream:
+        os.fsync(stream.fileno())
+    pending.replace(path)
+    sync_dir(path.parent)
+
+
+def publication_evidence(*records):
+    records = [row for row in records if row]
+    native = any(row.get("native_acknowledged") for row in records)
+    quality = any(row.get("quality_acknowledged") for row in records)
+    partial = native or quality or any(row.get("status") == "partial" for row in records)
+    attempted = partial or any(row.get("publication_attempted")
+                               or row.get("status") in ("uncertain", "acknowledged") for row in records)
+    return {"native_acknowledged": native, "quality_acknowledged": quality,
+            "publication_attempted": attempted,
+            "status": "partial" if partial else "uncertain" if attempted else "deferred"}
+
+
 def source(page):
     if (not isinstance(page, dict)
             or not re.fullmatch(DOC, page.get("doc_id", ""))

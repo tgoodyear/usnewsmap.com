@@ -144,10 +144,47 @@ def ship_subsets(a):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print(json.dumps({"status": "deferred", "phase": "ship_mutex",
-                              "publication_attempted": False, "transferred_pages": 0}))
+            print(json.dumps({"status": "uncertain", "phase": "ship_mutex",
+                              "publication_attempted": None, "transferred_pages": 0}))
             return 75
         return _ship_subsets(a)
+
+
+def parent_owner(journal, parent_id):
+    path = journal / "owner.json"
+    if not path.is_file():
+        raise ValueError("unbound parent incarnation; explicit reconciliation required")
+    owner = json.loads(path.read_text())
+    if (set(owner) != {"schema", "parent_id", "token"} or owner["schema"] != 1
+            or owner["parent_id"] != parent_id or not re.fullmatch(r"[a-f0-9]{32}", owner["token"])):
+        raise ValueError("changed parent incarnation evidence")
+    return owner
+
+
+def bind_parent_owner(chunk, journal, parent_id):
+    import qwen_shipment as shipment
+    marker = chunk / ".qwen-shipment-owner.json"
+    if not (journal / "owner.json").exists():
+        if not marker.exists():
+            shipment.save(marker, {"schema": 1, "parent_id": parent_id, "token": uuid.uuid4().hex})
+        shipment.freeze(journal / "owner.json", json.loads(marker.read_text()))
+    owner = parent_owner(journal, parent_id)
+    if chunk.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != owner:
+        raise ValueError("parent directory incarnation changed; retain replacement")
+
+
+def retained_publication(tx, value):
+    import qwen_shipment as shipment
+    records = []
+    for name in ("receipt.json", "invocation.json"):
+        path = tx / name
+        if path.exists():
+            record = json.loads(path.read_text())
+            if (record.get("schema") != 1 or record.get("transaction_id") != value["id"]
+                    or record.get("parent_id") != value["parent"]["id"]):
+                raise ValueError("unbound retained publication evidence")
+            records.append(record)
+    return shipment.publication_evidence(*records)
 
 
 def cleanup_retired_parent(a, chunk, journal):
@@ -177,11 +214,41 @@ def cleanup_retired_parent(a, chunk, journal):
             covered.add(doc)
     if not covered or covered != set(expected) or len(expected) != len(parent["members"]):
         raise ValueError("incomplete parent retirement acknowledgement")
+    owner = parent_owner(journal, shipment.digest(parent))
+    tombstone = journal / "retired-parent"
+    moved = journal / "retirement-move.json"
+    cleaned = journal / "cleaned.json"
+    if cleaned.exists():
+        if json.loads(cleaned.read_text()) != owner or tombstone.exists():
+            raise ValueError("changed parent cleanup evidence")
+        if chunk.exists():
+            raise ValueError("retired chunk name reused; retain replacement")
+        return True
+    if tombstone.exists():
+        if tombstone.is_symlink() or not moved.is_file() or json.loads(moved.read_text()) != owner:
+            raise ValueError("unbound retirement tombstone")
+    elif chunk.exists():
+        marker = chunk / ".qwen-shipment-owner.json"
+        if chunk.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != owner:
+            raise ValueError("parent directory incarnation changed; retain replacement")
+        if not a.what_if:
+            shipment.freeze(moved, owner)
+            chunk.rename(tombstone)
+    elif not moved.is_file() or json.loads(moved.read_text()) != owner:
+        raise ValueError("retired parent missing without owned move evidence")
     if not a.what_if:
+        # Persist both sides of the rename before deleting even the ownership marker.
+        shipment.sync_dir(chunk.parent)
+        shipment.sync_dir(journal)
         for path in journal.glob("*/input"):
             shutil.rmtree(path)
-        shutil.rmtree(chunk)
-        shipment.sync_dir(chunk.parent)
+            shipment.sync_dir(path.parent)
+        if tombstone.exists():
+            shutil.rmtree(tombstone)
+            shipment.sync_dir(journal)
+        shipment.freeze(cleaned, owner)
+    if chunk.exists() and (not a.what_if or tombstone.exists()):
+        raise ValueError("retired chunk name reused; retain replacement")
     return True
 
 
@@ -191,7 +258,13 @@ def _ship_subsets(a):
     ct = ["pct", "exec", str(a.server_ct), "--"]
     server = ct + ["podman", "exec", "usnm-boinc-server", "python3", helper]
     completed = 0
-    for chunk in sorted((a.outbox / a.campaign).glob("c[0-9][0-9][0-9][0-9][0-9]")):
+    campaign = a.outbox / a.campaign
+    journals = a.outbox / ".qwen-transactions" / a.campaign
+    chunks = set(campaign.glob("c[0-9][0-9][0-9][0-9][0-9]"))
+    chunks.update(campaign / path.parent.name for path in
+                  journals.glob("c[0-9][0-9][0-9][0-9][0-9]/retired.json")
+                  if not (path.parent / "cleaned.json").exists())
+    for chunk in sorted(chunks):
         if completed >= a.max_chunks:
             break
         journal = a.outbox / ".qwen-transactions" / a.campaign / chunk.name
@@ -212,6 +285,7 @@ def _ship_subsets(a):
         if not a.what_if:
             shipment.freeze(journal / "parent.json", parent)
             shipment.freeze(journal / "recipe.json", recipe)
+            bind_parent_owner(chunk, journal, shipment.digest(parent))
         values = [shipment.validate(json.loads(path.read_text())) for path in journal.glob("*/manifest.json")]
         done = set()
         active = []
@@ -244,20 +318,12 @@ def _ship_subsets(a):
             value = active[0] if active else shipment.manifest(parent, left[:limit], recipe) if limit else None
             count = len(value["members"]) if value else 0
             if value is None or min(state["free_bytes"], free) - count * 64 * 1024**2 < a.min_free_gb * 1024**3:
-                retained = None
-                if active:
-                    prior = journal / active[0]["id"] / "receipt.json"
-                    if not prior.exists():
-                        prior = journal / active[0]["id"] / "invocation.json"
-                    retained = json.loads(prior.read_text()) if prior.exists() else None
-                status = ("partial" if retained and retained.get("native_acknowledged")
-                          else "uncertain" if retained and retained.get("publication_attempted") else "deferred")
-                print(json.dumps({"status": status,
+                evidence = (retained_publication(journal / active[0]["id"], active[0]) if active
+                            else shipment.publication_evidence())
+                print(json.dumps({**evidence,
                                   "phase": "preflight", "transferred_pages": 0,
                                   "reserve_pages": count, "parent_id": shipment.digest(parent),
-                                  "ready_retained": True,
-                                  "native_acknowledged": bool(retained and retained.get("native_acknowledged")),
-                                  "publication_attempted": bool(retained and retained.get("publication_attempted"))}))
+                                  "ready_retained": True}))
                 return 75
             if a.what_if:
                 print(json.dumps({"status": "would_ship_subset", "reserve_pages": count,
@@ -277,25 +343,24 @@ def _ship_subsets(a):
                     or not re.fullmatch(r"upload-[a-f0-9]{32}", transfer.get("upload", ""))):
                 raise ValueError("changed transfer journal")
             previous_path = tx / "receipt.json"
-            previous = json.loads(previous_path.read_text()) if previous_path.exists() else None
+            evidence = retained_publication(tx, value)
             invocation_path = tx / "invocation.json"
-            invocation = {"schema": 1, "transaction_id": value["id"], "parent_id": value["parent"]["id"],
-                          "phase": "locked_publication", "status": "uncertain", "ready_retained": True,
-                          "transferred_pages": 0 if transferred else count, "reserve_pages": count,
-                          "native_acknowledged": bool(previous and previous.get("native_acknowledged")),
-                          "quality_acknowledged": bool(previous and previous.get("quality_acknowledged")),
-                          "publication_attempted": True}
-            shipment.save(invocation_path, invocation)
+            invocation = {**evidence, "schema": 1, "transaction_id": value["id"],
+                          "parent_id": value["parent"]["id"], "phase": "locked_publication",
+                          "ready_retained": True,
+                          "transferred_pages": 0 if transferred else count, "reserve_pages": count}
             lock_wait = 900
             if a.step_window_minutes:
                 now = time.localtime()
                 if now.tm_min >= a.step_window_minutes:
-                    invocation.update(status="partial" if invocation["native_acknowledged"] else "deferred",
-                                      phase="step_window", publication_attempted=False)
+                    invocation["phase"] = "step_window"
                     shipment.save(invocation_path, invocation)
                     print(json.dumps({"shipment_invocation": invocation}))
                     return 75
                 lock_wait = a.step_window_minutes * 60 - now.tm_min * 60 - now.tm_sec
+            invocation.update(status="partial" if evidence["status"] == "partial" else "uncertain",
+                              publication_attempted=True)
+            shipment.save(invocation_path, invocation)
             args = ct + ["flock", "-w", str(lock_wait), "-E", "75", "/run/usnm-boinc-step.lock",
                          *server[len(ct):], "--campaign", a.target, "--transaction", value["id"],
                          "--upload", transfer["upload"],
@@ -316,10 +381,10 @@ def _ship_subsets(a):
                         or set(receipt.get("members", {})) != {m["source"]["doc_id"] for m in value["members"]}):
                     raise ValueError("remote receipt membership changed")
                 shipment.save(previous_path, receipt)
-                invocation.update(status=receipt["status"], phase=receipt["phase"],
-                                  native_acknowledged=receipt["native_acknowledged"],
-                                  quality_acknowledged=receipt["quality_acknowledged"],
-                                  publication_attempted=receipt["publication_attempted"])
+                combined = shipment.publication_evidence(evidence, receipt)
+                invocation.update(combined, phase=receipt["phase"])
+                if receipt["status"] == "acknowledged" or not combined["publication_attempted"]:
+                    invocation["status"] = receipt["status"]
             invocation["exit_code"] = code
             shipment.save(invocation_path, invocation)
             print(json.dumps({"shipment_invocation": invocation}), flush=True)
