@@ -1,6 +1,7 @@
 import contextlib
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import os
 from pathlib import Path
@@ -89,6 +90,21 @@ def database():
 
 
 class EligibilityTests(unittest.TestCase):
+    def test_mixed_gpu_profiles_cannot_fill_fractional_slots_with_full_gpu_work(self):
+        db, h = database(), host()
+        db["units"].append(dict(db["units"][0], id=6))
+        half = dict(version(plan="half"), gpu_count=.5)
+        h["versions"].append(half)
+        db["versions"].append(half)
+        db["plans"]["half"] = {"min_batch": "2", "max_batch": "2"}
+        with self.assertRaisesRegex(ValueError, "mixed GPU resource profiles"):
+            C.supply(db, [h], "gpu")
+        half["gpu_count"] = 1
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+        half.update(gpu="NVIDIA", gpu_count=.5)
+        h["idle_gpu"]["NVIDIA"] = 1
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 3, "eligible": 1})
+
     def test_shared_results_and_one_replica_per_host_are_not_double_counted(self):
         db = database()
         self.assertEqual(C.supply(db, [host(9, 2)], "gpu"), {"idle": 2, "eligible": 1})
@@ -135,6 +151,52 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(C.supply(db, [host()], "cpu"), {"idle": 0, "eligible": 0})
 
 
+class ControllerTests(unittest.TestCase):
+    def observe(self, events=(), **status):
+        properties = {"LoadState": "loaded", "SubState": "dead", "Result": "success",
+                      "ExecMainStartTimestampMonotonic": 100000000,
+                      "ExecMainExitTimestampMonotonic": 120000000}
+        properties.update(status)
+        journal = "\n".join(json.dumps({
+            "__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE": json.dumps(event),
+        }) for at, event in events).encode()
+        systemd = "\n".join(f"{key}={value}" for key, value in properties.items()).encode()
+        with patch.object(C, "run", side_effect=[journal, systemd]), \
+                patch.object(C.time, "time", return_value=NOW):
+            return C.controller("usnm-boinc-priority-controller.service")
+
+    def test_running_tick_uses_systemd_clock_despite_prior_suspend(self):
+        for elapsed, expected in ((10, "healthy"), (900, "healthy"), (901, "firing")):
+            with self.subTest(elapsed=elapsed), \
+                    patch.object(C.time, "CLOCK_BOOTTIME", -1, create=True), \
+                    patch.object(C.time, "clock_gettime", side_effect=lambda clock:
+                                 1000 + elapsed + (7200 if clock != C.time.CLOCK_MONOTONIC else 0)):
+                tick = self.observe(SubState="running", ExecMainStartTimestampMonotonic=1000000000,
+                                    ExecMainExitTimestampMonotonic=0)
+                self.assertEqual(tick["seconds"], elapsed)
+                document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000 + elapsed, "boot", "cfg")
+                self.assertEqual(next(c for c in document["checks"]
+                                      if c["code"] == "controller_tick")["state"], expected)
+
+    def test_failure_without_timings_survives_systemd_fallback_and_recovery(self):
+        events = [(NOW - 10, {"event": "boinc_batch_failure", "schema_version": 1,
+                             "at": NOW - 10, "error": "fixture early failure"})]
+        failed = self.observe(events, SubState="failed", Result="exit-code")
+        self.assertEqual(failed, {"ok": False, "seconds": 20, "finished_at": NOW,
+                                  "last_failure_at": NOW - 10})
+        events.append((NOW - 5, {"event": "boinc_batch_tick", "schema_version": 1,
+                                "at": NOW - 5, "timings": {"tick_seconds": 12}}))
+        recovered = self.observe(events)
+        self.assertEqual(recovered, {"ok": True, "seconds": 12, "finished_at": NOW - 5,
+                                     "last_failure_at": NOW - 10})
+        previous = {}
+        for elapsed, expected in ((0, "firing"), (60, "healthy")):
+            document, previous = F.evaluate({"tick": recovered}, previous, NOW + elapsed,
+                                            1000 + elapsed, "boot", "cfg")
+            self.assertEqual(next(c for c in document["checks"]
+                                  if c["code"] == "controller_tick")["state"], expected)
+
+
 class CollectionTests(unittest.TestCase):
     def documents(self):
         def doc(source, **fields):
@@ -179,6 +241,82 @@ class CollectionTests(unittest.TestCase):
             finally:
                 http.shutdown()
                 thread.join()
+
+    def test_wrong_json_shapes_are_source_local_and_recover(self):
+        with fixture() as root:
+            docs = self.documents()
+            paths = {name: root / (name[1:] + ".json") for name in docs}
+            for name, value in docs.items():
+                paths[name].write_text(json.dumps(value))
+            config = {name: str(paths["/" + name]) for name in ("server", "controller", "backlog")}
+            config["clients"] = [str(paths["/own"])]
+            cases = [(name, value) for name in ("/server", "/controller", "/backlog", "/own")
+                     for value in (None, [])]
+            cases += [
+                ("/server", dict(docs["/server"], host_preferences=[])),
+                ("/server", dict(docs["/server"], plans={"intel": []})),
+                ("/controller", dict(docs["/controller"], tick=[])),
+                ("/own", dict(docs["/own"], gpu_capabilities={"intel_gpu": None})),
+            ]
+            for name, value in cases:
+                with self.subTest(source=name, value=value), patch.object(C.time, "time", return_value=NOW):
+                    paths[name].write_text(json.dumps(value))
+                    facts = C.collect(config)
+                    source = "client_0" if name == "/own" else name[1:]
+                    self.assertEqual(facts["errors"], [source])
+                    self.assertEqual(facts["sources"][source]["state"], "unknown")
+                    document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+                    checks = {c["code"]: c["state"] for c in document["checks"]}
+                    if name != "/server":
+                        self.assertEqual(checks["qwen_refill_window"], "healthy")
+                    if name != "/controller":
+                        self.assertEqual(checks["controller_tick"], "healthy")
+                    paths[name].write_text(json.dumps(docs[name]))
+                    self.assertEqual(C.collect(config)["errors"], [])
+
+    def test_failure_acknowledgement_waits_for_all_publication_steps(self):
+        class FailedFlush(io.StringIO):
+            def flush(self):
+                raise OSError("fixture flush failure")
+
+        for stage in ("feed-health.json", "feed-health.prom", "flush", "duration.json"):
+            with self.subTest(stage=stage), fixture() as root:
+                config = root / "config.json"
+                config.write_text("{}")
+                state_dir = root / "state"
+                facts = {"tick": {"ok": True, "seconds": 1, "last_failure_at": 0}}
+                real_write = F.atomic_text
+
+                def write(path, value):
+                    if path.name == stage:
+                        raise OSError("fixture publication failure")
+                    return real_write(path, value)
+
+                with patch.object(C, "collect", return_value=facts), \
+                        patch.object(F.time, "time", return_value=NOW) as wall:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        F.monitor(config, state_dir)
+                    before = (state_dir / "duration.json").read_bytes()
+                    facts["tick"]["last_failure_at"] = NOW + 10
+                    wall.return_value = NOW + 60
+                    output = FailedFlush() if stage == "flush" else io.StringIO()
+                    with patch.object(F, "atomic_text", side_effect=write), \
+                            contextlib.redirect_stdout(output), self.assertRaises(OSError):
+                        F.monitor(config, state_dir)
+                    self.assertEqual((state_dir / "duration.json").read_bytes(), before)
+                    for elapsed, expected in ((120, "firing"), (180, "healthy")):
+                        wall.return_value = NOW + elapsed
+                        emitted = io.StringIO()
+                        with contextlib.redirect_stdout(emitted):
+                            document = F.monitor(config, state_dir)
+                        self.assertEqual(next(c for c in document["checks"]
+                                              if c["code"] == "controller_tick")["state"], expected)
+                        self.assertEqual(json.loads(emitted.getvalue()), document)
+                        self.assertEqual(json.loads((state_dir / "feed-health.json").read_text()), document)
+                        self.assertIn(f'check="controller_tick",state="{expected}"}} 1',
+                                      (state_dir / "feed-health.prom").read_text())
+                        self.assertEqual(json.loads((state_dir / "duration.json").read_text())["last_failure_at"],
+                                         NOW + 10)
 
     def test_actual_process_limits_and_failed_read(self):
         self.assertEqual(C.run([sys.executable, "-c", "print('observed')"]), b"observed\n")
@@ -314,6 +452,26 @@ class CollectionTests(unittest.TestCase):
                     self.assertEqual(json.loads(output.read_text())["error"], "source unavailable")
                     self.assertNotIn("fixture-only-secret", output.read_text())
                     self.assertNotIn("old", json.loads(output.read_text()))
+
+    def test_php_flag_matches_native_scheduler_raw_tokens(self):
+        with server_fixture() as root:
+            tag = "one_result_per_host_per_wu"
+            for value in ("0", "", "<![CDATA[]]>", "<![CDATA[1]]>", "<disabled/>", "&#49;"):
+                with self.subTest(value=value):
+                    (root / "config.xml").write_text(f"<boinc><config><{tag}>{value}</{tag}></config></boinc>")
+                    with self.assertRaises(ValueError):
+                        C.server(root, root / "window.env")
+            for raw in (f"<boinc><{tag}/><config/></boinc>",
+                        f"<boinc><config><{tag}/><{tag}/></config></boinc>",
+                        f"<boinc><config/><config><{tag}/></config></boinc>"):
+                with self.subTest(config=raw):
+                    (root / "config.xml").write_text(raw)
+                    with self.assertRaises(ValueError):
+                        C.server(root, root / "window.env")
+            for flag in (f"<{tag}/>", f"<{tag}> \n1\t </{tag}>"):
+                with self.subTest(flag=flag):
+                    (root / "config.xml").write_text(f"<boinc><config>{flag}</config></boinc>")
+                    self.assertEqual(C.server(root, root / "window.env")["enabled_until"], NOW + 86400)
 
     def test_php_server_rejects_config_changed_during_database_read(self):
         with server_fixture() as root:

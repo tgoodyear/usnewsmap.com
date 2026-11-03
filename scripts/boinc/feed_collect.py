@@ -72,6 +72,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def read_source(location):
+    if not isinstance(location, str) or not location:
+        raise ValueError("invalid source location")
     if location.startswith(("http://", "https://")):
         request = urllib.request.Request(location, headers={"Accept": "application/json"})
         try:
@@ -103,12 +105,16 @@ def natural(value, maximum=2**53):
 
 
 def fresh(document, now, kind):
+    if not isinstance(document, dict):
+        raise ValueError("source must be an object")
     if (type(document.get("schema_version")) is not int or document.get("schema_version") != 1 or document.get("source") != kind
             or not 0 <= now - natural(document.get("observed_at")) <= MAX_AGE
             or document.get("error")):
         raise ValueError("source unavailable, stale or future-dated")
     if kind == "controller":
         tick = document["tick"]
+        if not isinstance(tick, dict):
+            raise ValueError("invalid tick")
         if tick["ok"] is not None and type(tick["ok"]) is not bool:
             raise ValueError("invalid tick outcome")
         if type(tick["seconds"]) not in (int, float) or not math.isfinite(tick["seconds"]) or tick["seconds"] < 0:
@@ -118,24 +124,34 @@ def fresh(document, now, kind):
         if natural(tick.get("last_failure_at", 0)) > now:
             raise ValueError("future controller failure")
     if kind == "backlog":
+        if not isinstance(document["backlogs"], dict):
+            raise ValueError("invalid backlogs")
         for app in APP_NAMES:
             if document["backlogs"][app] is not None:
                 natural(document["backlogs"][app])
     if kind == "server":
+        if any(not isinstance(document[key], dict) for key in (
+                "last_workunits", "minimum_versions", "host_preferences", "plans")):
+            raise ValueError("invalid server mappings")
         natural(document["enabled_until"])
         for app in APP_NAMES:
             if natural(document["last_workunits"][app]) > now:
                 raise ValueError("future workunit")
             natural(document["minimum_versions"][app])
-        if not isinstance(document["plans"], dict) or len(document["plans"]) > 256:
+        if (len(document["plans"]) > 256 or any(not isinstance(plan, dict)
+                or any(not isinstance(value, str) for value in plan.values())
+                for plan in document["plans"].values())):
             raise ValueError("invalid scheduler policies")
         for prefs in document["host_preferences"].values():
-            if (not isinstance(prefs["apps"], list) or not set(prefs["apps"]) <= set(APP_NAMES)
+            if (not isinstance(prefs, dict)
+                    or not isinstance(prefs["apps"], list) or not set(prefs["apps"]) <= set(APP_NAMES)
                     or not isinstance(prefs["blocked"], list)
                     or not set(prefs["blocked"]) <= {"CPU", "NVIDIA", "ATI", "intel_gpu", "apple_gpu"}
                     or type(prefs.get("fallback", False)) is not bool):
                 raise ValueError("invalid host preferences")
-        if len(document["units"]) > MAX_ROWS or len(document["versions"]) > 256:
+        if (not isinstance(document["units"], list) or not isinstance(document["versions"], list)
+                or len(document["units"]) > MAX_ROWS or len(document["versions"]) > 256
+                or any(not isinstance(row, dict) for row in document["units"] + document["versions"])):
             raise ValueError("inventory limit")
         for unit in document["units"]:
             if unit["app"] not in APP_NAMES or not isinstance(unit["hosts"], list):
@@ -155,8 +171,14 @@ def fresh(document, now, kind):
                     or version["plan_class"] and version["plan_class"] not in document["plans"]):
                 raise ValueError("invalid dispatchable version")
     if kind == "client":
-        if natural(document["host_id"]) == 0 or len(document["versions"]) > 256:
+        if (natural(document["host_id"]) == 0 or not isinstance(document["versions"], list)
+                or len(document["versions"]) > 256
+                or any(not isinstance(version, dict) for version in document["versions"])):
             raise ValueError("invalid own host")
+        if (not isinstance(document.get("gpu_memory", {}), dict)
+                or not isinstance(document.get("gpu_capabilities", {}), dict)
+                or any(not isinstance(caps, dict) for caps in document.get("gpu_capabilities", {}).values())):
+            raise ValueError("invalid GPU capabilities")
         for field in ("idle_cpu", "memory_bytes", "disk_bytes"):
             if type(document[field]) not in (int, float) or not math.isfinite(document[field]) or document[field] < 0:
                 raise ValueError("invalid capacity")
@@ -166,7 +188,8 @@ def fresh(document, now, kind):
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 64:
                 raise ValueError("invalid GPU capacity")
         for version in document["versions"]:
-            if version["app"] not in APP_NAMES or not isinstance(version["platform"], str):
+            if (version["app"] not in APP_NAMES or not isinstance(version["platform"], str)
+                    or version["gpu"] is not None and not isinstance(version["gpu"], str)):
                 raise ValueError("invalid client application")
             natural(version["version_num"])
             for key in ("cpus", "gpu_count"):
@@ -207,9 +230,14 @@ libxml_use_internal_errors(true);
 $feed_config_xml = simplexml_load_string($feed_config_before, 'SimpleXMLElement', LIBXML_NONET);
 libxml_clear_errors();
 if ($feed_config_xml === false) throw new Exception('invalid scheduler config');
-$feed_flags = $feed_config_xml->xpath('.//one_result_per_host_per_wu');
-if (count($feed_flags) !== 1 || count($feed_flags[0]->children()) !== 0 ||
-    !in_array((string)$feed_flags[0], ['', '1'], true)) {
+// Match native_qwen_one_result_per_host's raw tokens without deploying that operator helper.
+$feed_flags = $feed_config_xml->xpath('/boinc/config/one_result_per_host_per_wu');
+if (count($feed_flags) !== 1 ||
+    count($feed_config_xml->xpath('//one_result_per_host_per_wu')) !== 1 ||
+    preg_match_all('/<one_result_per_host_per_wu[\s>\/]/', $feed_config_before) !== 1 ||
+    preg_match_all('/<config[\s>\/]/', $feed_config_before) !== 1 ||
+    preg_match('/<config>(?:(?!<\/config>).)*(?:<one_result_per_host_per_wu\s*\/>|'
+        .'<one_result_per_host_per_wu>\s*1\s*<\/one_result_per_host_per_wu>)/s', $feed_config_before) !== 1) {
     throw new Exception('requires one-result-per-host scheduling');
 }
 require_once 'boinc_db.inc';
@@ -429,17 +457,28 @@ def controller(unit):
     latest, last_failure = None, 0
     for line in raw.splitlines():
         entry = json.loads(line)
+        if not isinstance(entry, dict):
+            continue
         try:
             event = json.loads(entry.get("MESSAGE", ""))
         except (ValueError, TypeError):
             continue
         if not isinstance(event, dict) or event.get("event") not in ("boinc_batch_tick", "boinc_batch_failure"):
             continue
-        latest = {"ok": event["event"] == "boinc_batch_tick",
-                  "seconds": float(event["timings"]["tick_seconds"]),
-                  "finished_at": int(entry["__REALTIME_TIMESTAMP"]) // 1000000}
-        if not latest["ok"]:
-            last_failure = latest["finished_at"]
+        finished = int(entry["__REALTIME_TIMESTAMP"]) // 1000000
+        ok = event["event"] == "boinc_batch_tick"
+        if not ok:
+            last_failure = max(last_failure, finished)
+        timings = event.get("timings")
+        if not isinstance(timings, dict):
+            continue
+        try:
+            seconds = float(timings["tick_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(seconds) or seconds < 0:
+            continue
+        latest = {"ok": ok, "seconds": seconds, "finished_at": finished}
     status = dict(line.split("=", 1) for line in run([
         "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
         "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
@@ -451,7 +490,7 @@ def controller(unit):
     # This is the existing oneshot OCR controller, NOT a long-running Temporal worker.
     running = status.get("SubState") in ("start", "running") and start > end
     if running:
-        return {"ok": None, "seconds": max(0, time.clock_gettime(time.CLOCK_BOOTTIME) - start),
+        return {"ok": None, "seconds": max(0, time.clock_gettime(time.CLOCK_MONOTONIC) - start),
                 "finished_at": int(time.time()), "last_failure_at": last_failure}
     if status.get("Result") != "success":
         return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time()),
@@ -578,6 +617,10 @@ def supply(database, hosts, resource):
             continue
         if len({v["cpus"] for v in versions}) > 1 and resource == "cpu":
             raise ValueError("mixed CPU resource profiles require scheduler evidence")
+        if resource == "gpu" and any(
+                len({v["gpu_count"] for v in versions if v["gpu"] == device}) > 1
+                for device in {v["gpu"] for v in versions}):
+            raise ValueError("mixed GPU resource profiles require weighted matching")
         capacities = {}
         for v in versions:
             device = v["gpu"] or "cpu"

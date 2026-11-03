@@ -19,6 +19,9 @@ The source collectors read:
   queries in the already-running BOINC container, where container-only
   `config.xml` symlink targets resolve. Only inventory is exported, never config
   XML or credentials. The host still reads the policy and window env files.
+  The distinct-host flag uses the native scheduler's raw-token semantics:
+  self-closing or whitespace-padded literal `1` in the sole effective `<config>`
+  block, not empty pairs, CDATA, entity expansion or flags elsewhere.
   This does not restart or replace the container.
 - **client:** authenticated **loopback-only** GUI RPC, reusing `client_account.RPC`,
   working CPU preferences, suspend/no-work flags, detected GPU counts, queued
@@ -28,7 +31,10 @@ The source collectors read:
 - **controller:** the existing oneshot OCR priority controller's bounded journal
   and `systemctl show` timestamps/result. Both completed and currently running
   ticks are checked. Do not point this adapter at a permanently running Temporal
-  worker: service uptime is not tick duration.
+  worker: service uptime is not tick duration. Running durations use systemd's
+  `CLOCK_MONOTONIC`, not suspend-inclusive boot time. Early failure records
+  without timings still retain their failure timestamp; systemd supplies the
+  current failed/running state, and later successful ticks restore duration evidence.
 - **backlog:** the dashboard's existing read-only pgmq metrics (`ocr-priority`
   and `ocr-bulk`), immutable Qwen source requests and their inspector `.progress`
   receipts, the Qwen campaign's remaining `c*/READY` markers, and optionally the
@@ -54,13 +60,18 @@ and prior host participation. Shared stock is matched against all own slots:
 one unsent replica cannot fill two slots, nor can two replicas of a unit fill two
 slots on one host. Assigned and homogeneous-redundancy work is excluded from
 the ordinary feed. Unsupported account gates, unknown profiles, mixed CPU
-resource profiles, non-preferred-app fallback requiring other apps' inventory,
+resource profiles or differing `gpu_count` profiles for the same GPU type on one host,
+non-preferred-app fallback requiring other apps' inventory,
 or oversized inventories produce unknown, not healthy.
 This is not a replacement implementation of the BOINC scheduler or proof that
 a driver/container can successfully execute an assigned task.
 
-The evaluator fsyncs and atomically replaces `duration.json` and
-`feed-health.json` under one stable lock. Recovery or unknown evidence resets
+The evaluator fsyncs and atomically replaces `feed-health.json` and
+`feed-health.prom`, then flushes its Syslog JSON line before committing
+`duration.json` under one stable lock. A failed publication or acknowledgement
+may repeat a controller failure on retry, but cannot silently consume it.
+Malformed source objects become unknown without suppressing unaffected checks.
+Recovery or unknown evidence resets
 the affected condition. Process restarts preserve durations. Host reboot,
 configuration changes, backwards time, wall/monotonic disagreement or a gap
 over 180 seconds reset them and emit a collection warning. An open backlog
@@ -110,6 +121,28 @@ PUSH_URL="http://[existing-dashboard]/api/feed-source/server"
 # backlog: SOURCE_ARGS="backlog --dashboard http://[existing-dashboard]/api/view.json --requests [qwen-state]/requests --outbox [outbox]/[qwen-campaign] --selection [read-only-selected.jsonl]"
 # each own client: SOURCE_ARGS="client --data-dir [existing-boinc-data-dir]"
 # Its PUSH_URL ends in /controller, /backlog, or /client-<inventory-name>.
+```
+
+For the **server instance only**, Podman needs writable metadata and lock paths
+even for a read-only `exec`. Keep `ProtectSystem=strict` and the other template
+restrictions. Inspect the existing rootful configuration:
+
+```sh
+sudo podman info --format 'graphroot={{.Store.GraphRoot}} runroot={{.Store.RunRoot}}'
+```
+
+The supplied server-only drop-in permits `/var/lib/containers/storage`,
+`/run/containers/storage` and `/run/libpod`. A transient-systemd rehearsal with
+these three paths succeeded; storage paths alone failed on `alive.lck`.
+Verify the existing host's paths before installation; on differently configured
+hosts adjust only this instance's allowlist to its actual Podman storage and
+runtime paths, not the template or a broad parent directory. Do not install
+this exception on client, controller or backlog instances.
+
+```sh
+sudo install -d -m 0755 /etc/systemd/system/usnm-boinc-feed-source@server.service.d
+sudo install -m 0644 scripts/boinc/onprem/usnm-boinc-feed-source@server.service.d/podman.conf \
+  /etc/systemd/system/usnm-boinc-feed-source@server.service.d/podman.conf
 ```
 
 Configure `USNM_OCRDASH_FEED_PUSH` on the existing dashboard as a comma-separated

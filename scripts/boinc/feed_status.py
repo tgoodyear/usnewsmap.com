@@ -18,14 +18,13 @@ MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
 
 
-def atomic_json(path, value):
+def atomic_text(path, value):
     """Same-directory replacement; a stable separate lock protects the state inode."""
     path = Path(path)
     pending = path.with_name(path.name + ".new")
     try:
         with pending.open("w") as stream:
-            json.dump(value, stream, sort_keys=True, allow_nan=False)
-            stream.write("\n")
+            stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
         pending.replace(path)
@@ -37,6 +36,10 @@ def atomic_json(path, value):
                 os.close(fd)
     finally:
         pending.unlink(missing_ok=True)
+
+
+def atomic_json(path, value):
+    atomic_text(path, json.dumps(value, sort_keys=True, allow_nan=False) + "\n")
 
 
 def evaluate(facts, previous, now, monotonic, boot_id, config_id):
@@ -145,12 +148,11 @@ def monitor(config_path, state_dir):
             boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         document, state = evaluate(facts, previous, now, time.monotonic(), boot,
                                    hashlib.sha256(config_bytes).hexdigest())
-        atomic_json(state_dir / "duration.json", state)
         atomic_json(state_dir / "feed-health.json", document)
-        pending = state_dir / "feed-health.prom.new"
-        pending.write_text(metrics(document))
-        pending.replace(state_dir / "feed-health.prom")
+        atomic_text(state_dir / "feed-health.prom", metrics(document))
         print(json.dumps(document, sort_keys=True), flush=True)
+        # A retry may repeat a failure, but must never acknowledge one before publication.
+        atomic_json(state_dir / "duration.json", state)
         return document
 
 
