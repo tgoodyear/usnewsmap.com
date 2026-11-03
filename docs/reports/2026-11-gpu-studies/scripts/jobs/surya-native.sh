@@ -11,4 +11,5 @@ V=$!
 for i in $(seq 180); do curl -fsS -m 2 http://127.0.0.1:8000/health >/dev/null 2>&1 && break; kill -0 $V 2>/dev/null || { echo "vllm exited" >> $O/progress.txt; exit 9; }; sleep 5; done
 export SURYA_INFERENCE_BACKEND=vllm SURYA_INFERENCE_URL=http://127.0.0.1:8000/v1 SURYA_INFERENCE_PARALLEL=1 VLLM_GPU_TYPE=3090 TORCH_DEVICE=cuda
 cp $I/run.py /work/; cd /work; s=$(date +%s); $PY $I/surya_read.py --list $I/list.tsv --mode line --out $O/surya-native.jsonl > $O/native.log 2>&1
-echo "native seconds $(( $(date +%s)-s )) exit $?" >> $O/timing.txt; kill $V 2>/dev/null; echo done >> $O/progress.txt
+status=$?
+echo "native seconds $(( $(date +%s)-s )) exit $status" >> $O/timing.txt; kill $V 2>/dev/null; echo done >> $O/progress.txt

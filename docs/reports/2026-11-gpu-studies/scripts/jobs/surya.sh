@@ -11,6 +11,7 @@ cd /app; /app/llama-server --list-devices 2>&1 | tee $O/devices.txt | grep -q CU
 cd /work; pip --version > $O/python.txt 2>&1; /opt/venv/bin/pip freeze 2>/dev/null | grep -E '^surya' >> $O/python.txt
 while IFS=$'\t' read -r list mode name; do
   s=$(date +%s); /opt/venv/bin/python $I/surya_read.py --list "$I/$list" --mode "$mode" --out "$O/$name.jsonl" > "$O/$name.log" 2>&1
-  echo "$name seconds $(( $(date +%s)-s )) exit $?" >> $O/timing.txt
+  status=$?
+  echo "$name seconds $(( $(date +%s)-s )) exit $status" >> $O/timing.txt
 done < $I/runs.tsv
 echo done >> $O/progress.txt

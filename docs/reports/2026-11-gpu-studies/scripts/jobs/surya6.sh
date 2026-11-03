@@ -13,6 +13,7 @@ cd /work; /opt/venv/bin/pip -q install --no-cache-dir 'torch==2.8.0' --index-url
 /opt/venv/bin/pip freeze 2>/dev/null | grep -E '^surya' >> $O/python.txt
 while IFS=$'\t' read -r list mode name; do
   s=$(date +%s); /opt/venv/bin/python $I/surya_read.py --list "$I/$list" --mode "$mode" --out "$O/$name.jsonl" > "$O/$name.log" 2>&1
-  echo "$name seconds $(( $(date +%s)-s )) exit $?" >> $O/timing.txt
+  status=$?
+  echo "$name seconds $(( $(date +%s)-s )) exit $status" >> $O/timing.txt
 done < $I/runs.tsv
 echo done >> $O/progress.txt
