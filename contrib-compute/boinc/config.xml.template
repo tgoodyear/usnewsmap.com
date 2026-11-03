@@ -51,8 +51,9 @@
         <!-- All-app interleaving divides both these cache slots and the query below by app weight.
              Keep each positive-weight app's rounded query budget >= 2 * total cache
              slots, and Qwen's cache share >= its 1800-result ready baseline (#860, #529).
-             Qwen weight 16 of 24 gives about 2730 Qwen slots, 170-171 per other app and
-             8192 candidates per weight-1 app. Re-size for app/weight or backlog growth.
+             With the former nine active apps, Qwen weight 16 of 24 gave about 2730 Qwen
+             slots, 170-171 per other app and 8192 candidates per weight-1 app. Re-size
+             for the actual active DB apps, app/weight changes or backlog growth.
              This bounded window is not starvation-free scheduling.
              See contrib-compute/docs/app-release.md, Feeder visibility. -->
         <feeder_query_size>196608</feeder_query_size>
