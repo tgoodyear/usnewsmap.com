@@ -1085,6 +1085,15 @@ bundle recipe. An unsubmitted pre-existing bundle crossing the selection boundar
 is refused before staging/publication; reconcile that legacy partial explicitly
 rather than silently publishing its extra members.
 
+New quality source jobs also acquire a retained
+`quality/<campaign>/shipment-quality/<doc_id>.json` binding to the exact frozen
+exported-text bytes, requested reader recipe, and resulting source-job checksum.
+Bundle reader lists and prepared-text checksums must match that bound source job.
+Previously staged jobs without this evidence are not adopted, even when their
+JPEG/ALTO match. They require explicit reconciliation, as does a quality-stage
+crash that leaves jobs before their bindings are persisted; sources stay retained
+and no publication is attempted.
+
 Storage is rechecked under the bridge mutex before staging, and authoritative
 native capacity is rechecked again immediately before publication. Reservation
 counts the **entire selected subset**, including eventual `no_crops`/`too_large`
@@ -1119,7 +1128,10 @@ cover of the parent's members has both native disposition and quality publicatio
 acknowledgements. Server retirement verifies retained evidence again and persists
 its retirement record before freeing transferred input copies. Only then may the
 producer remove the parent. Manifests, intents, audits, source bindings, and
-receipts stay retained. An interrupted retirement safely repeats. Once a parent
+receipts stay retained. Before reading a READY parent's files, cleanup retries
+validate its durable `retired.json`, frozen parent/recipe, and a complete,
+disjoint set of exact transaction acknowledgements. This also handles a crash
+after some scans or the READY marker have already been removed. Once a parent
 has a transaction journal, the legacy whole-chunk path refuses it; rollback must
 drain or reconcile it, not bypass the journal.
 

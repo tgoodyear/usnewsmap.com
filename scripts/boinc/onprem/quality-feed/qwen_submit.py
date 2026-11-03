@@ -413,11 +413,11 @@ foreach (json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR)
     $out[$job["id"]] = ["job_sha256"=>$sha, "workunit_id"=>intval($wu->id),
         "batch"=>intval($wu->batch), "min_quorum"=>2, "target_nresults"=>2];
 }
-echo json_encode($out);
+echo json_encode((object)$out);
 """ % (json.dumps(str(project / "html/inc")), json.dumps(app))
     rows = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(expected), text=True))
     known = {job["id"]: shipment.file_hash(path) for path, job in selected}
-    if not set(rows) <= known.keys() or any(
+    if not isinstance(rows, dict) or not set(rows) <= known.keys() or any(
             row["job_sha256"] != known[identity] or type(row["workunit_id"]) is not int
             or row["workunit_id"] < 1 or row["min_quorum"] != 2 or row["target_nresults"] != 2
             or (app == "usnm_qwen" and row["batch"] != 8) for identity, row in rows.items()):
@@ -451,18 +451,51 @@ def reconcile(project, selected, app):
     return rows
 
 
+def quality_source_binding(quality, member, readers, *, create=False):
+    """Only newly staged jobs may acquire an export/reader binding."""
+    import qwen_shipment as shipment
+    doc = member["source"]["doc_id"]
+    receipt = quality / "shipment-quality" / (doc + ".json")
+    if not create and not receipt.is_file():
+        raise RuntimeError("unbound retained quality reader/text inputs; explicit reconciliation required")
+    existing = json.loads(receipt.read_text()) if receipt.is_file() else None
+    layout = existing["layout"] if existing else next(
+        (name for name in ("pages", "units") if (quality / name / doc / "quality.json").is_file()), None)
+    if layout not in ("pages", "units"):
+        raise RuntimeError("bound quality source job unavailable")
+    path = quality / layout / doc / "quality.json"
+    expected = {"schema": 1, "member": member, "readers": readers, "layout": layout,
+                "quality_sha256": shipment.file_hash(path)}
+    if existing is not None and existing != expected:
+        raise RuntimeError("changed retained quality reader/text binding; explicit reconciliation required")
+    job = json.loads(path.read_text())
+    if job["doc_id"] != doc or job.get("pages"):
+        raise RuntimeError("invalid bound quality source job")
+    if create:
+        shipment.check_file(path.parent / "texts.json",
+                            {key: job["inputs"]["texts"][key] for key in ("bytes", "sha256")})
+        shipment.freeze(receipt, expected)
+    return job
+
+
 def transaction_quality(a, value, input_dir, quality):
     import qwen_shipment as shipment
     docs = [member["source"]["doc_id"] for member in value["members"]]
     # Refuse a pre-existing, unsubmitted bundle spanning the reservation before
     # quality stage could repack it. Completed bundles remain immutable.
-    selected_jobs(quality, "quality.json", docs)
+    staged = selected_jobs(quality, "quality.json", docs)
+    staged_docs = set().union(*(documents(job) for _, job in staged))
     for member in value["members"]:
         doc = member["source"]["doc_id"]
         binding_path = quality / "texts" / (doc + ".image-provenance.json")
         incoming = json.loads((input_dir / "texts" / binding_path.name).read_text())
         existing = [quality / layout / doc / "quality.json" for layout in ("pages", "units")]
-        if any(path.exists() for path in existing) and not binding_path.exists():
+        retained = (doc in staged_docs or any(path.exists() for path in existing)
+                    or any((path.parent / marker).exists() for path in existing
+                           for marker in ("submitting", "submitted")))
+        if retained or (quality / "shipment-quality" / (doc + ".json")).exists():
+            quality_source_binding(quality, member, value["recipe"]["readers"])
+        if retained and not binding_path.exists():
             raise RuntimeError("legacy/unbound quality source; retain transaction")
         shipment.freeze(binding_path, incoming)
         shipment.freeze(quality / "shipment-sources" / (doc + ".json"), member)
@@ -491,6 +524,8 @@ def transaction_quality(a, value, input_dir, quality):
         "--function-words-dir", str(quality / "function-words"), "--readers", recipe["readers"],
         "--engine-image", recipe["engine_image"], "--max-pages", str(len(docs)),
         "--bundle-size", str(recipe["bundle_size"])], check=True)
+    for member in value["members"]:
+        quality_source_binding(quality, member, recipe["readers"], create=True)
 
 
 def transaction_native_sources(root, value):
@@ -523,7 +558,7 @@ def check_transaction_jobs(value, native, quality_jobs, engine):
     for _, job in native:
         if any(job["engine"][key] != engine[key] for key in ("image", "llama", "weights")):
             raise RuntimeError("native job engine changed")
-    for _, job in quality_jobs:
+    for path, job in quality_jobs:
         if job["engine"]["image"] != value["recipe"]["engine_image"]:
             raise RuntimeError("quality job engine changed")
         for page in job.get("pages") or [job]:
@@ -534,6 +569,11 @@ def check_transaction_jobs(value, native, quality_jobs, engine):
             counts[doc] += 1
             if page["language"] != member["sample"]["lang"] or page["group"] != value["recipe"]["campaign"]:
                 raise RuntimeError("quality job recipe changed")
+            retained = quality_source_binding(path.parent.parent.parent, member, value["recipe"]["readers"])
+            if (page["readers"] != retained["readers"]
+                    or any(page["inputs"]["texts"][key] != retained["inputs"]["texts"][key]
+                           for key in ("bytes", "sha256"))):
+                raise RuntimeError("quality job reader/text inputs changed")
             for name, expected_input in (("page", member["files"][f"scans/{doc}.jpg"]), ("alto", member["quality_alto"])):
                 if {key: page["inputs"][name][key] for key in ("bytes", "sha256")} != expected_input:
                     raise RuntimeError("quality job is not bound to shipment inputs")

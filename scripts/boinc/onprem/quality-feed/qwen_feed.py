@@ -150,6 +150,41 @@ def ship_subsets(a):
         return _ship_subsets(a)
 
 
+def cleanup_retired_parent(a, chunk, journal):
+    """Validate durable acknowledgements, not possibly half-deleted source files."""
+    import qwen_shipment as shipment
+    if not (journal / "retired.json").exists():
+        return False
+    parent = json.loads((journal / "parent.json").read_text())
+    recipe = json.loads((journal / "recipe.json").read_text())
+    retired = json.loads((journal / "retired.json").read_text())
+    if (parent["campaign"] != a.campaign or parent["chunk"] != chunk.name
+            or retired != {"retired_parent": shipment.digest(parent)}):
+        raise ValueError("unbound parent retirement evidence")
+    expected = {member["source"]["doc_id"]: member for member in parent["members"]}
+    covered = set()
+    for path in journal.glob("*/manifest.json"):
+        value = shipment.validate(json.loads(path.read_text()))
+        receipt = json.loads((path.parent / "receipt.json").read_text())
+        if (path.parent.name != value["id"]
+                or value != shipment.manifest(parent, value["members"], recipe)
+                or not acknowledged(value, receipt)):
+            raise ValueError("unbound transaction retirement evidence")
+        for member in value["members"]:
+            doc = member["source"]["doc_id"]
+            if expected.get(doc) != member or doc in covered:
+                raise ValueError("conflicting parent retirement membership")
+            covered.add(doc)
+    if not covered or covered != set(expected) or len(expected) != len(parent["members"]):
+        raise ValueError("incomplete parent retirement acknowledgement")
+    if not a.what_if:
+        for path in journal.glob("*/input"):
+            shutil.rmtree(path)
+        shutil.rmtree(chunk)
+        shipment.sync_dir(chunk.parent)
+    return True
+
+
 def _ship_subsets(a):
     import qwen_shipment as shipment
     helper = "/project/ops/qwen-feed/qwen_submit.py"
@@ -157,7 +192,13 @@ def _ship_subsets(a):
     server = ct + ["podman", "exec", "usnm-boinc-server", "python3", helper]
     completed = 0
     for chunk in sorted((a.outbox / a.campaign).glob("c[0-9][0-9][0-9][0-9][0-9]")):
-        if completed >= a.max_chunks or not (chunk / "READY").is_file():
+        if completed >= a.max_chunks:
+            break
+        journal = a.outbox / ".qwen-transactions" / a.campaign / chunk.name
+        if cleanup_retired_parent(a, chunk, journal):
+            completed += 1
+            continue
+        if not (chunk / "READY").is_file():
             continue
         parent = shipment.chunk_snapshot(chunk, a.campaign)
         languages = {member["sample"]["lang"] for member in parent["members"]}
@@ -168,7 +209,6 @@ def _ship_subsets(a):
             a.target, version = a.qwen_yiddish_root, a.yiddish_prompt_version
         recipe = {"campaign": a.target, "prompt_version": version, "engine_image": a.engine_image,
                   "readers": a.readers, "bundle_size": a.bundle_size}
-        journal = a.outbox / ".qwen-transactions" / a.campaign / chunk.name
         if not a.what_if:
             shipment.freeze(journal / "parent.json", parent)
             shipment.freeze(journal / "recipe.json", recipe)
@@ -297,10 +337,7 @@ def _ship_subsets(a):
             if output != {"retired_parent": shipment.digest(parent)}:
                 raise RuntimeError("unbound parent retirement response")
             shipment.freeze(journal / "retired.json", output)
-            for path in journal.glob("*/input"):
-                shutil.rmtree(path)
-            shutil.rmtree(chunk)
-            shipment.sync_dir(chunk.parent)
+            cleanup_retired_parent(a, chunk, journal)
         # A partial parent stays oldest: a later tick finishes it before newer work.
         completed += 1
         if len(done) != len(parent["members"]):

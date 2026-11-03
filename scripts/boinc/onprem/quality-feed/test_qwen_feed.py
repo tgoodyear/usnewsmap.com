@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import stat
@@ -50,6 +51,38 @@ def terminal_provenance(unit):
         "schema": 1, "binding": binding, "quality_sha256": hashlib.sha256(quality).hexdigest()}))
 
 
+def empty_boinc_php(project):
+    directory = project / "html/inc"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "boinc_db.inc").write_text("""<?php
+class BoincApp {
+    static function lookup($query) { return (object)["id" => 1]; }
+}
+class BoincWorkunit {
+    static function enum($query) { return []; }
+}
+""")
+
+
+@unittest.skipUnless(shutil.which("php"), "PHP CLI required for actual query JSON encoding")
+class PublicationRowsPhpTest(unittest.TestCase):
+    def test_real_php_empty_result_for_fresh_and_no_selected_workunits(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            empty_boinc_php(project)
+            job = {"id": "a" * 64, "doc_id": DOC}
+            path = project / "qwen.json"
+            path.write_text(json.dumps(job))
+            for selected in ([], [(path, job)]):
+                with self.subTest(selected=len(selected)):
+                    self.assertEqual(submit.publication_rows(project, selected, "usnm_qwen"), {})
+
+    def test_non_object_publication_response_fails_closed(self):
+        with mock.patch.object(submit.subprocess, "check_output", return_value="[]"):
+            with self.assertRaisesRegex(RuntimeError, "changed publication reconciliation"):
+                submit.publication_rows(Path("."), [], "usnm_qwen")
+
+
 class SubsetShipmentTest(unittest.TestCase):
     """Offline process-boundary rehearsal; never a live BOINC/SSH proof."""
 
@@ -89,6 +122,8 @@ class SubsetShipmentTest(unittest.TestCase):
         self.lose_response = False
         self.outcomes = {}
         self.server_race = False
+        self.real_publication_rows = submit.publication_rows
+        self.real_subprocess_run = subprocess.run
         for owner, name, replacement in (
                 (driver, "remote", self.remote), (driver, "transfer_subset", self.transfer),
                 (submit, "publication_rows", self.rows),
@@ -156,12 +191,21 @@ class SubsetShipmentTest(unittest.TestCase):
             sample = Path(command[command.index("--sample") + 1])
             for row in map(json.loads, sample.read_text().splitlines()):
                 doc = row["doc_id"]
+                if any((root / layout / doc / "quality.json").exists() for layout in ("pages", "units")):
+                    continue
+                prepared = shipment.encoded({
+                    "export": json.loads((sample.parent / f"texts/{doc}.json").read_text()),
+                    "readers": command[command.index("--readers") + 1]})
                 job = {"doc_id": doc, "id": shipment.digest(row), "language": row["lang"], "group": "test",
-                       "engine": {"image": self.args.engine_image}, "inputs": {
+                       "engine": {"image": self.args.engine_image},
+                       "readers": [{"name": "loc", "source": "loc-alto"}], "inputs": {
                     "page": {"bytes": 3, "sha256": hashlib.sha256(b"jpg").hexdigest()},
-                    "alto": shipment.quality_alto((sample.parent / f"scans/{doc}.xml").read_bytes())}}
+                    "alto": shipment.quality_alto((sample.parent / f"scans/{doc}.xml").read_bytes()),
+                    "texts": {"bytes": len(prepared), "sha256": hashlib.sha256(prepared).hexdigest()}}}
+                job["id"] = shipment.digest(job)
                 for layout in ("pages", "units"):
                     shipment.save(root / layout / doc / "quality.json", job)
+                    (root / layout / doc / "texts.json").write_bytes(prepared)
             return
         members = json.loads(Path(command[command.index("--members") + 1]).read_text())
         if operation == "stage":
@@ -376,6 +420,136 @@ class SubsetShipmentTest(unittest.TestCase):
             shipment.materialize(self.chunk, payload, value)
         shipment.verify_payload(payload, value)
         self.assertEqual(shipment.chunk_snapshot(self.chunk, "test"), parent)
+
+    def crash_parent_cleanup(self, remove_ready=False):
+        self.state.update(fresh_pairs=0, unresolved_native=0)
+        original = shutil.rmtree
+
+        def partial_cleanup(path, *args, **kwargs):
+            if Path(path) == self.chunk:
+                next((self.chunk / "scans").glob("*.jpg")).unlink()
+                if remove_ready:
+                    (self.chunk / "READY").unlink()
+                raise OSError("interrupted parent cleanup")
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(driver.shutil, "rmtree", side_effect=partial_cleanup):
+            with self.assertRaisesRegex(OSError, "interrupted parent cleanup"):
+                self.ship()
+        return self.outbox / ".qwen-transactions/test/c00001"
+
+    def test_parent_cleanup_resumes_before_snapshot_with_ready_retained(self):
+        journal = self.crash_parent_cleanup()
+        self.assertTrue((self.chunk / "READY").exists())
+        before = dict(self.db["usnm_qwen"])
+        with mock.patch.object(driver, "remote", side_effect=AssertionError("must not republish")):
+            self.assertEqual(self.ship()[0], 0)
+        self.assertFalse(self.chunk.exists())
+        self.assertTrue((journal / "retired.json").exists())
+        self.assertEqual(self.db["usnm_qwen"], before)
+
+    def test_parent_cleanup_resumes_even_if_ready_was_already_removed(self):
+        self.crash_parent_cleanup(remove_ready=True)
+        self.assertFalse((self.chunk / "READY").exists())
+        with mock.patch.object(driver, "remote", side_effect=AssertionError("must not republish")):
+            self.assertEqual(self.ship()[0], 0)
+        self.assertFalse(self.chunk.exists())
+
+    def test_retirement_record_cannot_bypass_incomplete_acknowledgements(self):
+        self.assertEqual(self.ship()[0], 0)
+        journal = self.outbox / ".qwen-transactions/test/c00001"
+        shipment.save(journal / "retired.json", {"retired_parent": self.transfers[0]["parent"]["id"]})
+        with self.assertRaisesRegex(ValueError, "incomplete parent retirement acknowledgement"):
+            self.ship()
+        self.assertTrue((self.chunk / "READY").exists())
+        self.assertEqual(len(self.transfers), 1)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP CLI required for all-terminal native reconciliation")
+    def test_all_terminal_subset_uses_real_php_empty_native_results(self):
+        self.outcomes = {f"sn1_1900-01-02_ed-1_seq-{i}": "no_crops" for i in range(1, 55)}
+        empty_boinc_php(self.share)
+
+        def rows(project, selected, app):
+            if app == "usnm_qwen":
+                self.assertEqual(selected, [])
+                with mock.patch.object(submit.subprocess, "run", self.real_subprocess_run):
+                    return self.real_publication_rows(project, selected, app)
+            return self.rows(project, selected, app)
+
+        with mock.patch.object(submit, "publication_rows", side_effect=rows):
+            self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(self.db["usnm_qwen"], {})
+        self.assertEqual(len(self.db["usnm_quality"]), 54)
+        self.assertTrue(self.receipts()[0]["native_acknowledged"])
+        self.assertTrue((self.chunk / "READY").exists())
+
+    def test_preexisting_quality_job_without_reader_text_binding_is_not_adopted(self):
+        parent = shipment.chunk_snapshot(self.chunk, "test")
+        member = parent["members"][0]
+        doc = member["source"]["doc_id"]
+        qroot = self.share / "quality/test"
+        # A legacy job can match source/JPEG/ALTO while reading older exported
+        # text with another reader recipe; image provenance alone is insufficient.
+        binding = json.loads((self.chunk / f"texts/{doc}.image-provenance.json").read_text())
+        shipment.save(qroot / "texts" / (doc + ".image-provenance.json"), binding)
+        old_text = b'{"readers":[{"name":"as","source":"american-stories","text":"old export"}]}'
+        shipment.save(qroot / "units" / doc / "quality.json",
+                      {"id": "b" * 64, "doc_id": doc, "language": "srp", "group": "test",
+                       "engine": {"image": self.args.engine_image},
+                       "readers": [{"name": "as", "source": "american-stories"}],
+                       "inputs": {"page": member["files"][f"scans/{doc}.jpg"],
+                                  "alto": member["quality_alto"],
+                                  "texts": {"bytes": len(old_text), "sha256": hashlib.sha256(old_text).hexdigest()}}})
+        (qroot / "units" / doc / "texts.json").write_bytes(old_text)
+        shutil.copytree(qroot / "units" / doc, qroot / "pages" / doc)
+        with self.assertRaisesRegex(RuntimeError, "unbound retained quality reader/text"):
+            self.ship()
+        self.assertFalse((qroot / "shipment-quality" / (doc + ".json")).exists())
+        self.assertEqual(self.db["usnm_qwen"], {})
+        self.assertTrue((self.chunk / "READY").exists())
+
+    def test_retained_quality_binding_rejects_changed_requested_readers(self):
+        self.server_race = True
+        self.assertEqual(self.ship()[0], 75)
+        value = self.transfers[0]
+        value = json.loads(json.dumps(value))
+        value["recipe"]["readers"] = "loc-hist,ours-tesseract"
+        tx = self.share / "qwen-shipments/test" / self.transfers[0]["id"]
+        with self.assertRaisesRegex(RuntimeError, "changed retained quality reader/text binding"):
+            submit.transaction_quality(self.server_args(), value, tx / "input", self.share / "quality/test")
+        self.assertEqual(self.db["usnm_qwen"], {})
+        self.assertTrue((self.chunk / "READY").exists())
+
+    def test_retained_quality_binding_rejects_changed_exported_text(self):
+        self.server_race = True
+        self.assertEqual(self.ship()[0], 75)
+        value = json.loads(json.dumps(self.transfers[0]))
+        member = value["members"][0]
+        doc = member["source"]["doc_id"]
+        tx = self.share / "qwen-shipments/test" / value["id"]
+        path = tx / "input/texts" / (doc + ".json")
+        path.write_text('{"readers":[{"name":"as","text":"changed exported text"}]}')
+        member["files"][f"texts/{doc}.json"] = {"bytes": path.stat().st_size, "sha256": shipment.file_hash(path)}
+        with self.assertRaisesRegex(RuntimeError, "changed retained quality reader/text binding"):
+            submit.transaction_quality(self.server_args(), value, tx / "input", self.share / "quality/test")
+        self.assertEqual(self.db["usnm_quality"], {})
+        self.assertTrue((self.chunk / "READY").exists())
+
+    def test_quality_bundle_reader_text_must_match_bound_source_job(self):
+        self.assertEqual(self.ship()[0], 0)
+        value = self.transfers[0]
+        quality_jobs = submit.selected_jobs(self.share / "quality/test", "quality.json",
+                                            [m["source"]["doc_id"] for m in value["members"]])
+        path, job = quality_jobs[0]
+        for field in ("readers", "texts"):
+            changed = json.loads(json.dumps(job))
+            if field == "readers":
+                changed["readers"] = [{"name": "as", "source": "american-stories"}]
+            else:
+                changed["inputs"]["texts"]["sha256"] = "e" * 64
+            bundle = {**job, "pages": [changed]}
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "reader/text inputs changed"):
+                submit.check_transaction_jobs(value, [], [(path, bundle)], {})
 
 
 class PrepareDiagnosticsTest(unittest.TestCase):
