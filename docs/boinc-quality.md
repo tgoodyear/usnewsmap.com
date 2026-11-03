@@ -1125,17 +1125,17 @@ drain or reconcile it, not bypass the journal.
 
 Deployment/integration gates (offline tests do not satisfy these):
 
-* Install reviewed `qwen_shipment.py` beside `qwen_feed.py` on the shipper and beside
+- Install reviewed `qwen_shipment.py` beside `qwen_feed.py` on the shipper and beside
   `qwen_submit.py` in the server container. Install the matching `quality-ship.sh`.
   The existing preparation/archive helpers need no new dependency or network access.
-* Install a hash-verified matching `usnm-boinc-stage` with all three `--members`
+- Install a hash-verified matching `usnm-boinc-stage` with all three `--members`
   options and quality staging/function-word commands. All transaction Rust commands
   use this binary, not an older server-image `quality submit`.
-* At an idle singleton boundary, confirm writable durable transaction storage,
+- At an idle singleton boundary, confirm writable durable transaction storage,
   canonical quality `places.txt` (or its existing `v1-wave9` source), compatible
   guarded app versions, shared pinned models, and no conflicting legacy partial
   bundles/unbound source receipts. Keep both feed/ship timers disabled.
-* Enable the activity's explicit flag, then verify one real bounded transaction,
+- Enable the activity's explicit flag, then verify one real bounded transaction,
   exact native/quality database identities, audit/quorum and one-result-per-host
   configuration, receipts after an interrupted response, and all backing-store
   floors. Review observed mutex duration and retirement before expanding use.
