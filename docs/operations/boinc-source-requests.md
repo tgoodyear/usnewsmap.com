@@ -52,6 +52,23 @@ one needs science review and cannot satisfy source consensus; deduplication rema
 in force and no historical source receipt is invented or backfilled. Missing
 bindings can instead be resolved by the explicit retrospective verification below.
 
+New Qwen staging also retains `source-provenance.json` and the exact `quality.json`
+before writing `no_crops` or `too_large`. The receipt binds the original image
+fingerprint to the verified JPEG and hashes the quality manifest, including ALTO
+identity and crop recipe. Source status accepts these terminal dispositions only
+for that exact frozen source; a conflicting terminal receipt remains visible even
+when another campaign has published work for the page. Staging retries reject
+changed source evidence without rewriting the receipt. A crash leaving only the
+quality manifest, before its source receipt, requires review rather than automatic
+rebinding. Partial staging without a terminal marker remains nonterminal; retained
+receipts survive removal of handoff texts.
+
+Legacy terminal markers are preserved, not automatically backfilled: source status
+reports `source_provenance_unavailable` and requires review. Upgrade the staging
+binary and `qwen_submit.py` together to produce new bound dispositions. This does
+not implement subset shipment, change the existing whole-chunk acknowledgement
+protocol, or close the scheduler/admission publication race.
+
 Deploy `qwen_provenance.py` beside `qwen_submit.py` on the native server, and
 `qwen_source.py` on the producer,
 before activating the Temporal source entry. Replace `qwen_feed.py` only at an
