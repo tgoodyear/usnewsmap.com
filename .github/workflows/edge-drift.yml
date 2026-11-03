@@ -41,4 +41,4 @@ jobs:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - run: scripts/ci/check-edge-drift.sh --vault usnmtlskvprodffapzy --token-secret usnm-prod-edge-drift-token
+      - run: edge/fallback-worker/drift.sh --vault usnmtlskvprodffapzy --token-secret usnm-prod-edge-drift-token

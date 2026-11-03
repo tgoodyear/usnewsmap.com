@@ -3,7 +3,7 @@
 # Worker's observability, routes and custom domains) with
 # edge/fallback-worker/zone-expected.json. Read-only.
 #
-#   scripts/ci/check-edge-drift.sh --vault NAME --token-secret NAME
+#   edge/fallback-worker/drift.sh --vault NAME --token-secret NAME
 #
 # --token-secret names the Key Vault secret holding a read-only Cloudflare token with
 # Zone Observability Read, Workers Routes Read and Workers Scripts Read. The token
@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$VAULT" ] && [ -n "$SECRET" ] || usage
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+HERE=$(cd "$(dirname "$0")" && pwd)
 
 ACCOUNT=$(az keyvault secret show --vault-name "$VAULT" -n usnm-prod-cloudflare-account-id --query value -o tsv) ||
   die "can't read usnm-prod-cloudflare-account-id from $VAULT"
@@ -30,6 +30,6 @@ TOKEN=$(az keyvault secret show --vault-name "$VAULT" -n "$SECRET" --query value
 [ -n "$TOKEN" ] || die "$SECRET in $VAULT is empty"
 
 status=0
-CLOUDFLARE_API_TOKEN=$TOKEN CLOUDFLARE_ACCOUNT_ID=$ACCOUNT node "$ROOT/edge/fallback-worker/drift.mjs" || status=$?
+CLOUDFLARE_API_TOKEN=$TOKEN CLOUDFLARE_ACCOUNT_ID=$ACCOUNT node "$HERE/drift.mjs" || status=$?
 unset TOKEN
 exit "$status"
