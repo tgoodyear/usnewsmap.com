@@ -1,6 +1,6 @@
 ---
 title: "GPU studies, November 2026"
-subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pages per dollar, a loop guard, a Surya retest, an image-token sweep and Yiddish"
+subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pages per dollar, a loop guard, a Surya retest, an image-token sweep, Yiddish and Xiaomi-OCR-0"
 date: "November 2026"
 ---
 
@@ -21,6 +21,8 @@ The guard is `stop`: end the reading when the contract's `tail_repetition` fires
 Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 was faster than a 3090 and dearer per page. Study 3's Surya scores measured our configuration: in Study 6, line recognition took Surya from 109.2% to 23.0% pooled CER, still behind Tesseract's 9.0% on those crops, and `whole` mode kept column order better but read less than half the text.
 
 On Japanese, NDLOCR-Lite, CHURRO and Surya agree most with each other and with the machine references. That is agreement, not accuracy. No human transcription of these crops exists that we could verify.
+
+On Study 3's 612 crops, Xiaomi-OCR-0, a 0.8B reader, has a pooled CER of 4.0% against Tesseract's 9.0%, a difference of -5.0 points (limits -6.4 to -3.8). That passes Study 9's rule, so a deployed-path study comes next. It ties Qwen 8B with the guard (4.5%; difference -0.4, limits -1.4 to 0.5), has 7 major hallucinations flagged to Qwen's 32, and read all 676 crops, Latin and Japanese, in 69 seconds on the local 2060 SUPER. It returns text without coordinates, so it can't make ALTO by itself. Its whole-page mode at 2,048 px misses about half of a newspaper page.
 
 On 104 hand-corrected Yiddish book pages, mean page CER is 1.52% for Jochre 3, 8.72% for Tesseract `yid` and 30.15% for Qwen request version 4. Qwen was given the corpus's line segmentation and reading order; the page readers were not. The 100 damaged newspaper crops have no transcriptions, so their high disagreement is not a measure of accuracy. Don't launch a full Yiddish reread at version 4 on this evidence.
 
@@ -422,6 +424,82 @@ The historical Jochre runs have HTTP 200 receipts and valid text-containing ZIPs
 
 Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.py) from the repository root with `python3 -B -I scripts/ci/test_gpu_study_yiddish.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
 
+# Study 9: Xiaomi-OCR-0 (3 November 2026)
+
+Xiaomi-OCR-0 is a 0.8B reader built on Qwen3.5-0.8B, released under Apache-2.0 on 30 September 2026. The protocol amendment of 3 November fixed the samples, measures and rule before any reading. It ran on the local RTX 2060 SUPER in bounded windows, with BOINC GPU work suspended: vLLM 0.29.0 in FP16 (the card has no BF16, and vLLM fell back to its Triton attention backend), weights at revision `bbd8cf8d21f2`, requests sent through saturate 0.3.0. The first window ended at the 10-minute readiness limit while vLLM was still compiling and read nothing. The second window ran the whole protocol. Scripts are in [`scripts/s9/`](scripts/s9/) and [`analyze-9.sh`](scripts/analyze-9.sh).
+
+Xiaomi's training data isn't published, so exposure to Overproof or the NewsEye sets can't be ruled out. The same holds for CHURRO and Chronicling America.
+
+## Latin-script crops, on human transcriptions
+
+Region prompt, at most 2,048 output tokens. Pooled CER by source, median crop CER in brackets. Qwen 8B is Study 3's reading with Study 5's `stop` guard applied after the fact. The guard changed none of Xiaomi's readings and 3 of Qwen's.
+
+| Source (crops, pages) | Xiaomi-OCR-0 | Qwen 8B, guard | CHURRO | Tesseract |
+| --- | ---: | ---: | ---: | ---: |
+| All (612) | 4.0 (3.4) | 4.5 (2.1) | 6.4 (4.0) | 9.0 (4.5) |
+| Overproof English (100, 18) | 0.9 (0.4) | 1.6 (0.4) | 1.9 (0.4) | 3.1 (2.0) |
+| French (24, 8) | 3.0 (2.0) | 2.8 (2.0) | 3.2 (2.3) | 7.2 (5.7) |
+| Finnish (18, 6) | 5.1 (3.7) | 2.4 (2.6) | 0.9 (0.9) | 8.2 (9.6) |
+| Swedish (10, 4), unranked | 3.0 (3.6) | 2.1 (2.1) | 2.1 (2.3) | 11.4 (12.4) |
+| Reichsanzeiger German (100, 20) | 10.4 (5.9) | 13.0 (5.1) | 18.3 (4.6) | 18.6 (3.5) |
+| NZZ German (360, 167) | 5.3 (3.8) | 7.0 (2.0) | 13.4 (5.7) | 13.4 (5.3) |
+
+**Primary.** Against Tesseract the pooled difference is -5.0 points (limits -6.4 to -3.8). The limits exclude zero, so by the protocol's rule Xiaomi-OCR-0 earns a deployed-path study.
+
+Secondary, all paired by source page:
+
+| Pair | Difference | 95% limits |
+| --- | ---: | ---: |
+| Xiaomi-OCR-0 against Qwen 8B, guard | -0.4 | -1.4 to 0.5 |
+| Xiaomi-OCR-0 against CHURRO | -2.4 | -4.2 to -0.7 |
+
+No difference is called against Qwen 8B. By source, Xiaomi-OCR-0 is ahead of Qwen on Overproof (-0.6, limits -1.3 to -0.1) and behind it on Finnish (+2.7, limits 0.5 to 4.4); elsewhere the limits include zero. Its median crop CER is higher than Qwen's on most sets, while its pooled CER is lower, which fits fewer large failures and more small errors per crop. Folding long s, the double hyphen and superscript e (post-hoc) gives 3.6% for Xiaomi-OCR-0, 4.0% for Qwen and 8.2% for Tesseract.
+
+Invented text, on 612 crops:
+
+| Reader | Major hallucinations | Over-length guard | Under-length guard | Word-overlap guard |
+| --- | ---: | ---: | ---: | ---: |
+| Xiaomi-OCR-0 | 7 | 12 | 4 | 5 |
+| Qwen 8B, guard | 32 | 29 | 2 | 9 |
+| CHURRO | 54 | 53 | 13 | 4 |
+| Tesseract | 48 | 46 | 7 | 17 |
+
+No Xiaomi reading hit the token cap, looped, came back empty or contained Han characters. Nobody has read the flagged crops.
+
+## Japanese agreement scores
+
+The same 64 crops and measures as Study 3. Agreement, not accuracy. Median bigram F1 against the 23 machine references is 0.65 for Xiaomi-OCR-0: 0.51 on typeset crops and 0.78 on camp papers. NDLOCR-Lite has 0.84, CHURRO 0.81 and Qwen 8B 0.74. Its median F1 with NDLOCR-Lite over all 64 crops is 0.55. It looped on 2 crops, against Qwen's 15. On typeset Japanese only `jpn_vert` scores below it.
+
+## Whole pages
+
+The 20 reading-order pages in whole-page mode, as the `uv-scripts/ocr` saturate recipe runs it: the document prompt, the page fitted to 2,048 px, at most 12,000 output tokens.
+
+| Reader | Pages with 20 or more matched words | Median tau | Lowest | Pages under 0.5 | Matched words a page |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| LoC | 20 | 0.97 | 0.57 | 0 | 1,709 |
+| `frak2021` PSM 3, whole page | 12 | 0.73 | 0.11 | 3 | 205 |
+| Xiaomi-OCR-0, whole page | 7 | 0.66 | 0.22 | 2 | 46 |
+
+At 2,048 px a newspaper's body type is a few pixels high. The readings hold a median of about 1,900 words, against about 3,800 in the geometric reference built from LoC's ALTO. They read like newspaper text but share few words with LoC's text. One page hit the 12,000-token cap, and two contained Han characters (7 and 1). This mode doesn't suit our pages. The crop results above are the region stage of upstream's two-stage pipeline, with our crops in place of its layout model's.
+
+## Speed
+
+On the 2060 SUPER, after a start of about 10 minutes for compilation and graph capture:
+
+| Set | Items | Seconds | Rate | Window saturate settled at |
+| --- | ---: | ---: | ---: | ---: |
+| Crops, Latin and Japanese | 676 | 68.5 | 9.9 crops a second | 32 |
+| Whole pages | 20 | 320.9 | 224 pages an hour | 8 (the cap) |
+
+At Study 4's 12 crops a page, 9.9 crops a second is about 2,900 pages an hour, against 91 for Qwen 8B on a rented 3090 with llama.cpp. The two runs used different engines, batching and crops, so this is a rough comparison and not a measured ratio. BOINC's `usnm_qwen` runs llama.cpp with `--parallel 1`, and nothing here measures Xiaomi-OCR-0 that way. vLLM reserves 88% of the card's memory, so the samples' peak of 6.4 GB says nothing about what the model needs. Its weights are 1.7 GB.
+
+## Output
+
+The model returns text: Markdown for whole pages, plain text for regions. It gives no word, line or block coordinates, so it can't produce ALTO by itself. Upstream's two-stage pipeline gets block boxes from a separate layout model. Using it for search text means aligning its words to Tesseract's or LoC's word boxes, which hasn't been tried here.
+
+## saturate
+
+saturate drove both sets with no errors, retries or circuit-breaker trips. On crops its window settled at 32 after two cuts for queue growth. On pages it stayed at the cap of 8. Its summary flagged that run as input-bound, while 105 of its 106 ticks named the engine as the bottleneck. The crop run finished in 68.5 s, before the planned kill at 90 s, so the kill and resume check only covered a completed run: the rerun skipped all 676 ids and read none twice. A kill mid-run wasn't tested.
 # Study 10: Tesseract trained on the Yiddish corpus (3 November 2026)
 
 Study 8 put stock Tesseract `yid` at 8.72% mean page CER on the corpus's book pages, against 1.52% for Jochre 3. This study fine-tunes `yid` on the corpus's training split and reads Study 8's test pages, line crops and newspaper crops with the result, scored with Study 8's references, scorer and bootstrap (#1479). It was added after Study 8 and is not preregistered: the second training run, the checkpoint and the dictionary comparison were chosen after seeing the first run's results. It ran on a local CPU.
@@ -597,3 +675,5 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Whether Study 10's trained model reads Yiddish newspapers better than stock `yid` needs a transcribed newspaper sample; it isn't deployed (#1479).
 - The public provenance key names a Tesseract profile but not its model's digest, so a changed model needs a new profile id (#1481).
 - MinerU and dots.ocr remain unrun.
+- Study 9's deployed path: Xiaomi-OCR-0 as a GGUF in the `usnm_qwen` llama.cpp runtime, on GPU and CPU, scored against these vLLM readings. Community GGUFs exist; upstream hasn't checked them.
+- Xiaomi-OCR-0 returns no coordinates. Using it for search text means aligning its words to Tesseract's or LoC's word boxes.
