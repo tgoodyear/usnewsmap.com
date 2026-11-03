@@ -137,7 +137,7 @@ elif command == "timeout":
         fail("unexpected reader command")
     if not (Path(option("--manifest_path")) / "page.jpg").exists():
         fail("missing synthetic input")
-    (Path(option("--output_save_path")) / "page.json").write_text(
+    (Path(option("--output_save_path")) / "page.jpg").write_text(
         json.dumps({"bboxes": [{"raw_text": "synthetic reading"}]}), encoding="utf-8"
     )
 elif command == "base64":

@@ -36,7 +36,8 @@ while IFS=$'\t' read -r id rel; do
     --effocr_recognizer_dir $m/word_recognizer_new --effocr_char_recognizer_dir $m/char_recognizer --effocr_localizer_dir $m/ \
     --output_save_path $d/out --legibility-classifier $m/legibility_model_new.onnx --localizer_model_backend yolov8 \
     --line_model_backend yolov8 --layout_model_backend yolov8 --recognizer_word_thresh 0.85 --word-level-effocr) > $d/log 2>&1
-  if [ -f $d/out/page.json ]; then printf '%s\t%s\t%s\n' "$id" "$(( $(date +%s)-s ))" "$(base64 -w0 $d/out/page.json)" >> $O/as.b64
+  # The pinned producer writes JSON with the original .jpg name for directory manifests.
+  if [ -f "$d/out/page.jpg" ]; then printf '%s\t%s\t%s\n' "$id" "$(( $(date +%s)-s ))" "$(base64 -w0 "$d/out/page.jpg")" >> "$O/as.b64"
   else tail -n 5 $d/log >> $O/as-errors.log; fi
   rm -rf $d; n=$((n+1)); [ $((n%10)) = 0 ] && echo "$n/$total" >> $O/progress.txt
 done < $I/list.tsv

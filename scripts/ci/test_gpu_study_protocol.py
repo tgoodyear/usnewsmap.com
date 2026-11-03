@@ -58,6 +58,12 @@ with open(os.environ["TRACE"], "a", encoding="utf-8") as trace:
 if args.command == "score":
     rows = [{"group": "all", "reader": "baseline", "cer": 0.4},
             {"group": "all", "reader": "s250", "cer": 0.1}]
+    if os.environ.get("BASELINE_WINS") == "1":
+        rows = [{"group": "all", "reader": "baseline", "cer": 0.01},
+                {"group": "all", "reader": "s250", "cer": 0.1},
+                {"group": "all", "reader": "s500", "cer": 0.06}]
+    if os.environ.get("NO_CHECKPOINTS") == "1":
+        rows = [{"group": "all", "reader": "baseline", "cer": 0.01}]
 else:
     rows = [{"group": "all", "reader": "adapter", "crops": 1}]
 Path(args.out).write_text("".join(json.dumps(row) + "\\n" for row in rows), encoding="utf-8")
@@ -121,6 +127,20 @@ class Study2PhaseTests(ProtocolFixture):
         ])
         self.assertIn('"s250"', result.stdout)
         self.assertFalse((self.root / "analysis/s2/test.jsonl").exists())
+
+    @unittest.skipUnless(shutil.which("jq"), "Study 2 analysis requires jq")
+    def test_validation_selects_best_checkpoint_even_when_baseline_wins(self):
+        result = self.analyze("--phase", "validation", env={**self.env, "BASELINE_WINS": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(lines[0]["reader"], "baseline")
+        self.assertEqual(lines[-1], "s500")
+
+    @unittest.skipUnless(shutil.which("jq"), "Study 2 analysis requires jq")
+    def test_validation_fails_when_no_checkpoint_score_is_available(self):
+        result = self.analyze("--phase", "validation", env={**self.env, "NO_CHECKPOINTS": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no adapter checkpoint scores", result.stderr)
 
     @unittest.skipUnless(shutil.which("jq"), "Study 2 analysis requires jq")
     def test_test_phase_scores_and_invents_only_on_the_test_split(self):
@@ -215,6 +235,76 @@ class Study5PinnedBaseTests(ProtocolFixture):
         self.assertEqual(result.returncode, 6, result.stderr)
         self.assertFalse((self.out / "base-revision.txt").exists())
         self.assertEqual([event["event"] for event in self.events()], ["download"])
+
+
+class Study5ExportSummaryTests(ProtocolFixture):
+    def setUp(self):
+        super().setUp()
+        self.root = self.work / "study"
+        analysis = self.root / "analysis/s5"
+        scripts = self.root / "scripts"
+        analysis.mkdir(parents=True)
+        scripts.mkdir()
+        executable(
+            scripts / "decode.sh",
+            """#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in --out) out=$2; shift 2;; *) shift;; esac
+done
+printf '{}\\n' >"$out"
+""",
+        )
+        tool = self.work / "tool"
+        executable(
+            tool,
+            """#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["TRACE"], "a", encoding="utf-8") as trace:
+    trace.write(json.dumps({"command": args[0], "args": args[1:]}) + "\\n")
+out = Path(args[args.index("--out") + 1])
+if args[0] == "guard-cut":
+    out.write_text(Path(args[args.index("--input") + 1]).read_text())
+elif args[0] == "score":
+    out.write_text(json.dumps({"group": "all", "reader": "gguf-adapter", "items": 1,
+        "missing": 0, "cer": 0.1, "cer_lo": 0.1, "cer_hi": 0.1,
+        "median_crop_cer": 0.1, "wer": 0.1}) + "\\n")
+elif args[0] == "invent":
+    out.write_text(json.dumps({"group": "all", "reader": "gguf-adapter",
+        "crops": 1, "major": 0, "invented_run": 0, "over_length_guard": 0,
+        "under_length_guard": 0, "under_word_overlap_guard": 0}) + "\\n")
+else:
+    raise SystemExit("unexpected synthetic command")
+""",
+        )
+        self.env = {
+            **os.environ,
+            "GPU_STUDY_ROOT": str(self.root),
+            "TOOL": str(tool),
+            "TRACE": str(self.trace),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+
+    @unittest.skipUnless(shutil.which("jq"), "Study 5 analysis requires jq")
+    def test_export_summary_requires_current_bf16_readings(self):
+        analysis = self.root / "analysis/s5"
+        (analysis / "8b-export-adapter.jsonl").write_text("stale export summary\n")
+        for available in (False, True):
+            with self.subTest(bf16_available=available):
+                if available:
+                    (analysis / "8b-test-adapter.jsonl").write_text("{}\n")
+                result = subprocess.run(
+                    ["/bin/bash", str(SCRIPTS / "analyze-5e.sh")],
+                    cwd=self.work, env=self.env, capture_output=True, text=True,
+                    timeout=30, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("== 8b-gguf", result.stdout)
+                self.assertIn("gguf-adapter", result.stdout)
+                self.assertEqual("== 8b-export-adapter" in result.stdout, available)
+                scores = [event for event in self.events() if event["command"] == "score"]
+                self.assertEqual(len(scores), 3 if available else 1)
 
 
 if __name__ == "__main__":

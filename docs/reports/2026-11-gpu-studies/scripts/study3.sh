@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study 3: same crops for every reader. --step qwen|surya|hf. Tesseract and American Stories are CPU engines and run on a local node (tesseract-local.sh).
 set -uo pipefail
-W=${GPU_STUDY_ROOT}; cd "$W"
+W=${GPU_STUDY_ROOT}; cd "$W" || { echo "cannot enter study root: $W" >&2; exit 1; }
 QWEN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e
 SURYA=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494
 TRAIN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:960ba48cb33e6c164764246bba2c9aded7d791b48a6aed49f39c3a95acff3ee1

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Study 4: the same 40 pages on one card class. --gpu "RTX 3090" --tag 3090 --kind qwen|surya
 set -uo pipefail
-W=${GPU_STUDY_ROOT}; cd "$W"
+W=${GPU_STUDY_ROOT}; cd "$W" || { echo "cannot enter study root: $W" >&2; exit 1; }
 QWEN=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:6676d88226f050c63ad821c220aacd1205ac9f35c964c02dbdca8b93b031193e
 SURYA=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:bccf7cba49878481d394f94f9ca313787d8f28886e369009ae4cfe94859fb494
 GPU=""; TAG=""; KIND=""; MAXDPH=0.30; PREFER=""

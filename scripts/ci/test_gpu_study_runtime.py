@@ -491,6 +491,35 @@ done
         self.assertEqual(invalid.returncode, 2)
         self.assertIn("unknown flag", invalid.stderr)
 
+    def test_study_drivers_stop_before_cleanup_when_root_is_missing(self):
+        cases = (
+            ("study2.sh", ("--step", "1"), "s2-1"),
+            ("study3.sh", ("--step", "qwen"), "s3-qwen"),
+            ("study4.sh", ("--kind", "qwen", "--tag", "test"), "s4-qwen-test"),
+        )
+        for script, args, directory in cases:
+            with self.subTest(script=script):
+                case = self.work / script
+                marker = case / "push" / directory / "keep.txt"
+                marker.parent.mkdir(parents=True)
+                marker.write_text("untouched", encoding="utf-8")
+                trace = case / "rental-trace"
+                executable(case / "scripts/rent.sh", '#!/bin/sh\nprintf "called\\n" >"$TRACE"\n')
+                env = {
+                    **os.environ,
+                    "GPU_STUDY_ROOT": str(case / "missing-root"),
+                    "GPU_STUDY_DEV": str(case),
+                    "TRACE": str(trace),
+                }
+                result = subprocess.run(
+                    ["/bin/bash", str(STUDY / script), *args],
+                    cwd=case, env=env, text=True, capture_output=True, timeout=30, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cannot enter study root", result.stderr)
+                self.assertEqual(marker.read_text(encoding="utf-8"), "untouched")
+                self.assertFalse(trace.exists())
+
     def test_hf_engine_loop_preserves_each_engine_and_input(self):
         work, bin_dir = self.work / "work", self.work / "bin"
         (work / "in").mkdir(parents=True)

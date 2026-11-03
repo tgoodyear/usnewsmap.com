@@ -25,7 +25,7 @@ if [ "$PHASE" = validation ]; then
   H=(--hyp "baseline=$R/val-baseline.jsonl"); for s in 250 500 1000 2000; do H+=(--hyp "s$s=$R/val-s$s.jsonl"); done
   $T score --refs lora/validation-refs.jsonl "${H[@]}" --baseline baseline --out "$A/validation.jsonl"
   jq -c 'select(.group=="all")|{reader,items,pages,missing,cer,cer_lo,cer_hi,wer,median_crop_cer,cer_diff,cer_diff_lo,cer_diff_hi}' "$A/validation.jsonl"
-  jq -s 'map(select(.group=="all"))|sort_by(.cer)|.[0].reader' "$A/validation.jsonl"
+  jq -es 'map(select(.group=="all" and .reader!="baseline"))|sort_by(.cer)|.[0].reader // error("no adapter checkpoint scores")' "$A/validation.jsonl"
 else
   H=(--hyp baseline=results/s2-2/test-baseline.jsonl --hyp adapter=results/s2-2/test-adapter.jsonl)
   $T score --refs lora/test-refs.jsonl "${H[@]}" --baseline baseline --out "$A/test.jsonl"
