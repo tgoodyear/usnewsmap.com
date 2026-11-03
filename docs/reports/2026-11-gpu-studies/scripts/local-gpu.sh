@@ -21,7 +21,7 @@ cleanup() {
       [ "$status" -ne 0 ] || status=6
     fi
   elif [ "$OWNED" -eq 1 ]; then
-    echo "scratch retained on container $CT: $D" >&2
+    echo "scratch retained on container $CT: $D (tmpfs; recover before container restart)" >&2
   fi
   exit "$status"
 }

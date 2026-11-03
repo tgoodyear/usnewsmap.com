@@ -196,6 +196,7 @@ class GPUStudyTransportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(str(scratch), result.stderr)
         self.assertIn("123", result.stderr)
+        self.assertIn("tmpfs", result.stderr)
         self.assertEqual((scratch / "out/result.txt").read_bytes(), RESULT)
         self.assertFalse(any(cmd[:2] == ["rm", "-rf"] for cmd in self.events(case / "pct-trace")))
         self.assertEqual((scratch.parent / "untouched.txt").read_text(encoding="utf-8"),
