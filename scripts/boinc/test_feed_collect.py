@@ -164,6 +164,7 @@ class EligibilityTests(unittest.TestCase):
         half.update(gpu="NVIDIA", gpu_count=.5)
         db["plans"]["half"]["ngpus"] = ".5"
         h["idle_gpu"]["NVIDIA"] = 1
+        h.update(cpus=3, idle_cpu=3)
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 3, "eligible": 1})
 
     def test_live_gpu_profile_must_match_installed_usage_even_without_stock(self):
@@ -182,13 +183,14 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
         db["plans"]["intel"]["ngpus"] = "0"
         h["versions"][0]["gpu_count"] = 1
+        h.update(cpus=2, idle_cpu=2)
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
 
     def test_cumulative_disk_budget_is_checked_per_host_not_per_workunit(self):
         db, h = database(), host()
         h.update(cpus=2, idle_cpu=2)
         db["units"] = [dict(db["units"][0], id=i, app="usnm_ocr", rsc_disk_bound=600) for i in (5, 6)]
-        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 1})
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
         db["units"][1]["rsc_disk_bound"] = 500
         with self.assertRaisesRegex(ValueError, "cumulative host disk budget"):
             C.supply(db, [h], "cpu")
@@ -200,7 +202,7 @@ class EligibilityTests(unittest.TestCase):
     def test_gpu_cpu_demand_caps_uniform_allocation_and_rejects_mixed_overcommit(self):
         db, h = database(), host(count=2)
         db["units"].append(dict(db["units"][0], id=6))
-        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
         h.update(cpus=2, idle_cpu=2)
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
         nvidia = dict(version(plan="nvidia", gpu="NVIDIA"), cpus=2)
@@ -218,7 +220,7 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 0, "eligible": 0})
 
         db, h = database(), host(count=2)
-        h.update(cpus=2, idle_cpu=2)
+        h.update(cpus=4, idle_cpu=4)
         alternate = dict(version(plan="alternate"), cpus=2)
         db["plans"]["alternate"] = {"avg_ncpus": "2"}
         db["versions"].append(alternate)
@@ -231,7 +233,7 @@ class EligibilityTests(unittest.TestCase):
         db, h = database(), host()
         h.update(cpus=2, idle_cpu=2)
         db["units"] = [dict(db["units"][0], id=i, app="usnm_ocr", rsc_memory_bound=600) for i in (5, 6)]
-        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 2, "eligible": 1})
+        self.assertEqual(C.supply(db, [h], "cpu"), {"idle": 1, "eligible": 1})
         db["units"][1]["rsc_memory_bound"] = 500
         with self.assertRaisesRegex(C.SupplyUnknown, "mixed_resource_packing"):
             C.supply(db, [h], "cpu")
@@ -244,7 +246,7 @@ class EligibilityTests(unittest.TestCase):
         h["versions"][0]["gpu_count"] = .5
         db["plans"]["intel"].update(ngpus=".5", gpu_ram_used_mb=".0006")
         db["units"].append(dict(db["units"][0], id=6))
-        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
         h["gpu_memory"]["intel_gpu"] = 1200
         self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
         for evidence in ({"gpu_devices": {"intel_gpu": 2}},
@@ -252,6 +254,43 @@ class EligibilityTests(unittest.TestCase):
                          {"gpu_memory": {}}, {"gpu_devices": {}}):
             with self.subTest(evidence=evidence), self.assertRaisesRegex(C.SupplyUnknown, "gpu_memory_packing"):
                 C.supply(db, [h | evidence], "gpu")
+
+    def test_minimum_gpu_ram_is_the_task_reservation_unless_explicitly_overridden(self):
+        db, h = database(), host()
+        h.update(cpus=2, idle_cpu=2, gpu_devices={"intel_gpu": 1}, gpu_memory={"intel_gpu": 8e9})
+        h["versions"][0]["gpu_count"] = .5
+        db["plans"]["intel"].update(ngpus=".5", min_gpu_ram_mb="6000")
+        db["units"].append(dict(db["units"][0], id=6))
+        for explicit in (None, "0"):
+            if explicit is not None:
+                db["plans"]["intel"]["gpu_ram_used_mb"] = explicit
+            with self.subTest(explicit=explicit):
+                self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+                for evidence in ({"gpu_devices": {"intel_gpu": 2}},
+                                 {"used_gpu": {"intel_gpu": .5}}):
+                    with self.assertRaisesRegex(C.SupplyUnknown, "gpu_memory_packing"):
+                        C.supply(db, [h | evidence], "gpu")
+        db["plans"]["intel"]["gpu_ram_used_mb"] = "1000"
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+
+    def test_gpu_shortage_uses_resource_eligible_capacity_with_empty_or_plentiful_stock(self):
+        db, h = database(), host()
+        stock = [dict(db["units"][0], id=i) for i in range(2, 10)]
+        h["idle_cpu"] = 0
+        for units in ([], stock):
+            db["units"] = units
+            with self.subTest(stock=len(units)):
+                self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 0, "eligible": 0})
+        h["idle_cpu"] = 1
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+        db["units"] = []
+        supply = C.supply(db, [h], "gpu")
+        self.assertEqual(supply, {"idle": 1, "eligible": 0})
+        previous = {}
+        for elapsed in range(0, 1801, 60):
+            document, previous = F.evaluate({"supply": {"gpu": supply}}, previous,
+                                            NOW + elapsed, 1000 + elapsed, "boot", "cfg")
+        self.assertEqual(next(c for c in document["checks"] if c["code"] == "gpu_shortage")["state"], "firing")
 
     def test_candidate_budgets_stop_construction_before_scanning_remaining_stock(self):
         db = database()
@@ -273,7 +312,8 @@ class EligibilityTests(unittest.TestCase):
 
     def test_shared_results_and_one_replica_per_host_are_not_double_counted(self):
         db = database()
-        self.assertEqual(C.supply(db, [host(9, 2)], "gpu"), {"idle": 2, "eligible": 1})
+        h = host(9, 2) | {"cpus": 2, "idle_cpu": 2}
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 1})
         self.assertEqual(C.supply(db, [host(9), host(10)], "gpu"), {"idle": 2, "eligible": 2})
         db["units"][0]["unsent"] = 1
         self.assertEqual(C.supply(db, [host(9), host(10)], "gpu")["eligible"], 1)
@@ -317,6 +357,32 @@ class EligibilityTests(unittest.TestCase):
         db = database()
         db["host_preferences"] = preferences
         self.assertEqual(C.supply(db, [host()], "cpu"), {"idle": 0, "eligible": 0})
+
+    def test_stock_nested_project_specific_preferences_override_the_default_venue(self):
+        apps = [{"id": 1, "name": "usnm_ocr"}, {"id": 6, "name": "usnm_qwen"}]
+        raw = """<project_preferences>
+<project_specific><apps_selected><app_id>1</app_id></apps_selected></project_specific>
+<venue name="home"><no_cuda>1</no_cuda><project_specific>
+<apps_selected><app_id>6</app_id></apps_selected>
+<allow_non_preferred_apps>0</allow_non_preferred_apps>
+</project_specific></venue></project_preferences>"""
+        row = {"id": 9, "venue": "home", "project_prefs": raw}
+        prefs = C.host_preferences([row], apps)
+        self.assertEqual(prefs["9"], {"apps": ["usnm_qwen"], "blocked": ["NVIDIA"], "fallback": False})
+        db = database() | {"host_preferences": prefs}
+        self.assertEqual(C.supply(db, [host()], "cpu"), {"idle": 0, "eligible": 0})
+        self.assertEqual(C.supply(db, [host()], "gpu"), {"idle": 1, "eligible": 1})
+        row["venue"] = ""
+        self.assertEqual(C.host_preferences([row], apps)["9"]["apps"], ["usnm_ocr"])
+        row.update(venue="home", project_prefs=raw.replace(
+            "<allow_non_preferred_apps>0", "<allow_non_preferred_apps>1"))
+        db["host_preferences"] = C.host_preferences([row], apps)
+        self.assertTrue(db["host_preferences"]["9"]["fallback"])
+        with self.assertRaisesRegex(ValueError, "non-preferred fallback"):
+            C.supply(db, [host()], "gpu")
+        row["project_prefs"] = raw.replace("<venue name=\"home\">", '<venue name="home"><apps_selected/>')
+        with self.assertRaisesRegex(ValueError, "ambiguous project-specific"):
+            C.host_preferences([row], apps)
 
 
 class ControllerTests(unittest.TestCase):
@@ -474,7 +540,7 @@ class CollectionTests(unittest.TestCase):
             docs["/own"]["disk_bytes"] = 1200
             facts = C.collect(config)
             self.assertEqual(facts["errors"], [])
-            self.assertEqual(facts["supply"], {"cpu": {"idle": 2, "eligible": 1},
+            self.assertEqual(facts["supply"], {"cpu": {"idle": 1, "eligible": 1},
                                               "gpu": {"idle": 1, "eligible": 1}})
 
     def test_shared_cpu_and_ram_overlap_are_unknown_then_recover_without_hiding_shortage(self):
@@ -497,6 +563,19 @@ class CollectionTests(unittest.TestCase):
             docs["/own"]["memory_bytes"] = 20
             facts = C.collect(config)
             self.assertEqual(facts["errors"], [])
+            self.assertEqual(facts["supply"]["cpu"], {"idle": 1, "eligible": 1})
+            cpu_stock = docs["/server"]["units"].pop()
+            limited = C.collect(config)
+            self.assertEqual(limited["supply_errors"]["cpu"], "shared_capacity_unproven")
+            self.assertNotIn("cpu", limited["supply"])
+            docs["/server"]["units"].append(cpu_stock)
+            # A separate CPU host has genuine free capacity: its shortage must
+            # still fire, without counting CPU support reserved by the GPU host.
+            docs["/server"]["host_preferences"]["9"]["apps"] = ["usnm_qwen"]
+            docs["/server"]["host_preferences"]["10"]["apps"] = ["usnm_ocr"]
+            docs["/cpu-own"] = docs["/own"] | host(10) | {"cpus": 2, "idle_cpu": 2, "idle_gpu": {}}
+            config["clients"].append("/cpu-own")
+            facts = C.collect(config)
             previous = {}
             for elapsed in range(0, 1801, 60):
                 document, previous = F.evaluate(facts, previous, NOW + elapsed, 1000 + elapsed, "boot", "cfg")

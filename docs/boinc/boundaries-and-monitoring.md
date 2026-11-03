@@ -59,7 +59,13 @@ never served by a GET or the public listener.
 CPU supply is the established `usnm_ocr` CPU lane; GPU supply is the established
 `usnm_qwen` GPU lane. **These are modeled candidates, never guaranteed scheduler
 dispatch.** The compatibility field `eligible_results` retains that name in
-JSON/metrics but means supply within this bounded model. Modeled checks include platform/installed dispatchable
+JSON/metrics but means supply within this bounded model. `idle_slots` means
+**resource-eligible own slots**, not raw idle device count. Profile CPU/GPU-memory
+limits apply even with empty stock; uniform workunit RAM/disk limits apply to
+both the allocation and its comparison capacity. Known reservations by the
+other lane reduce remaining capacity; unproven shared headroom is
+`shared_capacity_unproven`, not a stock shortage.
+Modeled checks include platform/installed dispatchable
 version, authoritative account/venue app selection and resource flags, live
 workunit/batch admission bounds, memory/disk/device constraints,
 and prior host participation. Shared stock is matched against all own slots:
@@ -82,7 +88,10 @@ shared between CPU and GPU allocations. GPU work consumes its live CPU demand,
 not just a GPU slot; a CPU-app exclusion does not disable CPU support for permitted
 GPU work. Existing queued work reserves its CPU and workunit RAM
 bounds first; missing occupied-work RAM evidence is unknown. Uniform resource
-costs cap graph capacity directly. Positive `gpu_ram_used_mb` is enforced for
+costs cap graph capacity directly. Per-task GPU memory is `gpu_ram_used_mb`, falling
+back to `min_gpu_ram_mb` when absent or zero, matching the
+[pinned scheduler](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L1079).
+Positive reservations are enforced for
 fractional slots on a single observed, otherwise unoccupied GPU of that type.
 Multiple physical devices or already occupied GPU memory need per-device placement
 evidence this collector does not have, and produce `gpu_memory_packing` unknown.
@@ -92,8 +101,11 @@ an explicit `reason`, not healthy or a greedy lower bound reported as a shortage
 The stock alerts remain present and still fire after 30 minutes of a proven
 modeled shortage.
 
-The account/venue reader applies selected apps and CPU/GPU resource exclusions;
-it rejects non-preferred-app fallback needing wider inventory. It does **not**
+The account/venue reader reads selected apps and fallback from the effective
+venue's stock `project_specific` block, retaining legacy flat preferences.
+Ambiguous duplicate/mixed app-preference blocks are unknown. CPU/GPU resource
+exclusions remain venue-level. Non-preferred-app fallback needing wider inventory
+is rejected. The reader does **not**
 validate every account XML field. Additional account restrictions, custom
 scheduler hooks, per-user restrictions, host/application daily quotas and
 in-progress limits are unobserved, as are scheduler request budgets, work-fetch

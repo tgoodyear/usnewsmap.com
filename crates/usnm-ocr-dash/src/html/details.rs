@@ -162,7 +162,7 @@ fn feed_panel(v: &crate::feed::FeedView, o: &mut String) {
                 .idle_slots
                 .zip(check.eligible_results)
                 .map(|(idle, eligible)| {
-                    format!("{eligible} modeled candidates / {idle} own idle slots")
+                    format!("{eligible} modeled candidates / {idle} resource-eligible own slots")
                 })
                 .or_else(|| check.reason.clone()),
             "controller_tick" => check.seconds.map(|n| format!("{n:.0}s (limit 900s)")),

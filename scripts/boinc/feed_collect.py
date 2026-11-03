@@ -306,11 +306,16 @@ def host_preferences(rows, apps):
         if len(venues) > 1:
             raise ValueError("ambiguous venue preferences")
         node = venues[0] if venues else root
-        selection = node.find("apps_selected")
-        ids = node.findall("app_id") if selection is None else selection.findall("app_id")
+        specific = node.findall("project_specific")
+        if len(specific) > 1 or specific and any(node.find(tag) is not None for tag in (
+                "apps_selected", "app_id", "allow_non_preferred_apps")):
+            raise ValueError("ambiguous project-specific preferences")
+        app_prefs = specific[0] if specific else node
+        selection = app_prefs.find("apps_selected")
+        ids = app_prefs.findall("app_id") if selection is None else selection.findall("app_id")
         selected = {int(n.text) for n in ids}
         allowed = [app["name"] for app in apps if int(app["id"]) in selected] if ids or selection is not None else list(APP_NAMES)
-        fallback = node.findtext("allow_non_preferred_apps", "0") == "1" and set(allowed) != set(APP_NAMES)
+        fallback = app_prefs.findtext("allow_non_preferred_apps", "0").strip() == "1" and set(allowed) != set(APP_NAMES)
         blocked = []
         for resource, tag in (("CPU", "no_cpu"), ("NVIDIA", "no_cuda"), ("ATI", "no_ati"),
                               ("intel_gpu", "no_intel_gpu"), ("apple_gpu", "no_apple_gpu")):
@@ -573,6 +578,10 @@ def backlog(dashboard, requests, outbox, selection=None):
     return {"backlogs": result}
 
 
+def gpu_task_memory(plan):
+    return (float(plan.get("gpu_ram_used_mb", 0)) or float(plan.get("min_gpu_ram_mb", 0))) * 1e6
+
+
 def host_profile(host, version, database):
     """Validate policy and live resource demand independently of workunit inventory."""
     plan = database["plans"][version["plan_class"]] if version["plan_class"] else {}
@@ -624,7 +633,7 @@ def host_profile(host, version, database):
             raise ValueError("unmodeled GPU CPU demand")
         if numbers["min_gpu_ram_mb"] * 1e6 > host.get("gpu_memory", {}).get(gpu, 0):
             return None
-        if numbers["gpu_ram_used_mb"] and (
+        if gpu_task_memory(numbers) and (
                 host.get("gpu_devices", {}).get(gpu) != 1
                 or host.get("used_gpu", {}).get(gpu, 0) != 0
                 or not math.isfinite(host.get("gpu_memory", {}).get(gpu, 0))
@@ -659,7 +668,7 @@ def supply(database, hosts, resource, resource_usage=None):
     Work offered to two classes is not two results, and two replicas of a unit
     cannot fill two slots on the same host.
     """
-    prepared = []
+    prepared, host_limits, host_costs = [], {}, {}
     for host in hosts:
         prefs = database["host_preferences"][str(host["host_id"])]
         if prefs.get("fallback"):
@@ -699,6 +708,23 @@ def supply(database, hosts, resource, resource_usage=None):
             capacities[device] = max(capacities.get(device, 0), math.floor(capacity))
         if any(count > 1024 for count in capacities.values()):
             raise ValueError("slot limit")
+        for device, count in capacities.items():
+            demands = {gpu_task_memory(database["plans"].get(v["plan_class"], {}))
+                       for v in versions if v["gpu"] == device}
+            if len(demands) > 1:
+                raise SupplyUnknown("ambiguous_resource_profile")
+            if demands and (demand := next(iter(demands))):
+                capacities[device] = min(count, math.floor(host["gpu_memory"][device] / demand))
+        limit = sum(capacities.values())
+        demands = {v["cpus"] for v in versions}
+        cpu = host.get("available_cpu", host["idle_cpu"])
+        if len(demands) == 1:
+            limit = min(limit, math.floor(cpu / next(iter(demands))))
+        elif sum(count * max(v["cpus"] for v in versions if (v["gpu"] or "cpu") == device)
+                 for device, count in capacities.items()) > cpu:
+            raise SupplyUnknown("mixed_resource_packing")
+        host_limits[host["host_id"]] = limit
+        host_costs[host["host_id"]] = {"cpu": next(iter(demands)) if len(demands) == 1 else None}
         prepared.append((host, profiles, capacities))
     # No stock-dependent branch can bypass the host/profile validation above.
     slots, candidates = [], {}
@@ -721,7 +747,7 @@ def supply(database, hosts, resource, resource_usage=None):
                         profile_checks += 1
                         if eligible(unit, host, v, bounds):
                             plan = database["plans"].get(v["plan_class"], {})
-                            demands.append((v["cpus"], float(plan.get("gpu_ram_used_mb", 0)) * 1e6))
+                            demands.append((v["cpus"], gpu_task_memory(plan) if v["gpu"] else 0))
                     if demands:
                         if len(set(demands)) != 1:
                             raise SupplyUnknown("ambiguous_resource_profile")
@@ -730,21 +756,24 @@ def supply(database, hosts, resource, resource_usage=None):
                         edges += 1
                         candidates[slot][unit["id"]] = demands[0]
     # Capacitated network flow, including host/unit nodes (one replica per host).
-    graph = {}
+    graph, host_capacity = {}, {}
     units = {u["id"]: u for u in database["units"]}
     def edge(a, b, count):
         graph.setdefault(a, {})[b] = count
         graph.setdefault(b, {}).setdefault(a, 0)
     for host in hosts:
         host_slots = [slot for slot in slots if slot[0] == host["host_id"]]
-        limit = len(host_slots)
+        limit = host_limits.get(host["host_id"], 0)
+        costs = host_costs.setdefault(host["host_id"], {"cpu": None})
         for field, budget in (("rsc_disk_bound", "disk_bytes"), ("rsc_memory_bound", "memory_bytes")):
             weights = {units[uid][field] for slot in host_slots for uid in candidates[slot]}
+            costs["disk" if field == "rsc_disk_bound" else "memory"] = next(iter(weights)) if len(weights) == 1 else None
             if len(weights) == 1 and (weight := next(iter(weights))):
                 limit = min(limit, math.floor(host[budget] / weight))
         demands = {cost[0] for slot in host_slots for cost in candidates[slot].values()}
         if len(demands) == 1:
             limit = min(limit, math.floor(host.get("available_cpu", host["idle_cpu"]) / next(iter(demands))))
+        host_capacity[host["host_id"]] = limit
         edge("source", ("host", host["host_id"]), limit)
         for device in {slot[1] for slot in host_slots}:
             device_slots = [slot for slot in host_slots if slot[1] == device]
@@ -780,11 +809,14 @@ def supply(database, hosts, resource, resource_usage=None):
             graph[node][prev] += 1
             node = prev
         flow += 1
-    used = {h["host_id"]: {"cpu": 0, "memory": 0, "disk": 0, "gpu_memory": {}} for h in hosts}
+    used = {h["host_id"]: {"cpu": 0, "memory": 0, "disk": 0, "gpu_memory": {},
+                          "capacity": host_capacity[h["host_id"]], "costs": host_costs[h["host_id"]],
+                          "allocated": 0} for h in hosts}
     for slot in slots:
         usage = used[slot[0]]
         for uid, (cpu, gpu_memory) in candidates[slot].items():
             if graph[("pair", slot[0], uid)][slot]:
+                usage["allocated"] += 1
                 usage["cpu"] += cpu
                 usage["memory"] += units[uid]["rsc_memory_bound"]
                 usage["disk"] += units[uid]["rsc_disk_bound"]
@@ -802,7 +834,7 @@ def supply(database, hosts, resource, resource_usage=None):
             raise SupplyUnknown("mixed_gpu_memory_packing")
     if resource_usage is not None:
         resource_usage.update(used)
-    return {"idle": len(slots), "eligible": flow}
+    return {"idle": sum(host_capacity.values()), "eligible": flow}
 
 
 def collect(config):
@@ -849,6 +881,36 @@ def collect(config):
                     reason = "shared_" + field + "_budget"
                     facts.setdefault("supply_errors", {})[resource] = reason
                     facts["errors"].append(resource + "_" + reason)
+        for resource, other in (("cpu", "gpu"), ("gpu", "cpu")):
+            current = facts["supply"].get(resource)
+            if not current:
+                continue
+            capacity, unknown = 0, False
+            for host in hosts:
+                used = usage[resource][host["host_id"]]
+                other_used = usage[other].get(host["host_id"], {})
+                limit, missing = used["capacity"], False
+                for field, budget in (("cpu", "idle_cpu"), ("memory", "memory_bytes"), ("disk", "disk_bytes")):
+                    consumed = other_used.get(field, 0)
+                    if not consumed:
+                        continue
+                    cost = used["costs"][field]
+                    available = host.get("available_cpu", host[budget]) if field == "cpu" else host[budget]
+                    if cost is None:
+                        missing = True
+                    elif cost:
+                        limit = min(limit, math.floor(max(0, available - consumed) / cost))
+                # Preserve the already-proven allocation; unknown applies only
+                # to unproven extra headroom, not to independent healthy lanes.
+                unknown |= limit < used["allocated"] or missing and limit > used["allocated"]
+                capacity += limit
+            if unknown:
+                del facts["supply"][resource]
+                reason = "shared_capacity_unproven"
+                facts.setdefault("supply_errors", {})[resource] = reason
+                facts["errors"].append(resource + "_" + reason)
+            else:
+                current["idle"] = capacity
     # Allocation can take time too. Publish one completion timestamp, after a
     # final freshness check, rather than renewing earlier evidence's age.
     completed = int(time.time())

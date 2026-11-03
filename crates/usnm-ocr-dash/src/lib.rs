@@ -603,7 +603,7 @@ mod tests {
         )
         .unwrap();
         let (_, html) = call(a, "198.51.100.14", "GET", "/", "").await;
-        assert!(html.contains("2 modeled candidates / 2 own idle slots"));
+        assert!(html.contains("2 modeled candidates / 2 resource-eligible own slots"));
         assert!(html.contains("not guaranteed scheduler dispatch"));
         assert!(html.contains("gpu_memory_packing"));
         std::fs::remove_dir_all(dir).unwrap();
