@@ -822,6 +822,10 @@ class BuildInputs(unittest.TestCase):
                 self.assertEqual(self.select(path), {"edge", "code", "infra"})
         self.assertEqual(self.select("edge/fallback-worker/README.md"), {"markdown"})
 
+    def test_the_drift_check_wrapper_runs_the_edge_job(self):
+        # The edge job shellchecks it (#1478).
+        self.assertIn("edge", self.select("scripts/ci/check-edge-drift.sh"))
+
     def test_other_changes_do_not_run_the_fallback_worker_job(self):
         for path in ["crates/usnm-api/src/main.rs", "web/src/main.tsx", "scripts/onprem/serving/install.sh",
                      "scripts/ci/changes.sh", "docs/design/09-operations-security-cost.md"]:

@@ -251,8 +251,8 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 contrib='^(contrib-compute/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
-# documentation, above).
-edge='^edge/'
+# documentation, above), and the drift check's wrapper, which the edge job shellchecks.
+edge='^(edge/|scripts/ci/check-edge-drift\.sh$)'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path
 # dependencies in their manifests), from cargo metadata, so a new dependency
