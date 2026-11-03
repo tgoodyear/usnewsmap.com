@@ -3,19 +3,19 @@
 # the crops (with one kill and resume of the client) and the pages through saturate. Outputs go to /work/out.
 set -u
 I=/work/in; O=/work/out; mkdir -p "$O"
-export HOME=/tmp HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export HOME=/tmp HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 VLLM_CACHE_ROOT=/work/cache
 log() { echo "$(date -Is) $*" >>"$O/progress.txt"; }
 python3 -m pip install -q --no-cache-dir 'saturate==0.3.0' >"$O/pip.log" 2>&1 || { log "pip install failed"; exit 3; }
 python3 -m pip freeze >"$O/pip-freeze.txt" 2>&1
 nvidia-smi >"$O/gpu.txt" 2>&1
-python3 -c 'import vllm; print(vllm.__version__)' >"$O/vllm.version" 2>&1
 log "serve start"
 vllm serve "$I/model" --served-model-name xiaomi-research/Xiaomi-OCR-0 --host 127.0.0.1 --port 8000 \
   --max-model-len 16384 --dtype float16 --gpu-memory-utilization 0.88 \
   --limit-mm-per-prompt '{"image": 1}' --mm-processor-cache-gb 0 --no-enable-prefix-caching >"$O/vllm.log" 2>&1 &
 V=$!
 ready=0
-for _ in $(seq 1 120); do
+# Compilation and graph capture take about 10 minutes on a Turing card; the cache under /work makes reruns faster.
+for _ in $(seq 1 360); do
   kill -0 "$V" 2>/dev/null || break
   python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/v1/models", timeout=5)' 2>/dev/null && { ready=1; break; }
   sleep 5
