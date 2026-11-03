@@ -38,7 +38,10 @@ with open(a.out, "w", encoding="utf-8", buffering=1) as out, open("/work/out/pro
             if a.mode == "tiled":
                 for x0, y0, x1, y1, core in surya_run.tiles(*im.size):
                     for b in rec([im.crop((x0, y0, x1, y1))], full_page=True)[0].blocks:
-                        if b.error or b.skipped:
+                        if b.error:
+                            status = "error: block"
+                            continue
+                        if b.skipped:
                             continue
                         bx0, by0, bx1, by1 = b.bbox
                         t = surya_run.block_text(b.html)
@@ -52,6 +55,7 @@ with open(a.out, "w", encoding="utf-8", buffering=1) as out, open("/work/out/pro
                 for b in res.blocks:
                     if b.error:
                         status = "error: block"
+                        continue
                     t = surya_run.block_text(b.html)
                     if t:
                         lines.append(t)
@@ -60,10 +64,14 @@ with open(a.out, "w", encoding="utf-8", buffering=1) as out, open("/work/out/pro
                     f = surya_run.CAPPED_LONG_SIDE / max(im.size)
                     im = im.resize((max(1, round(im.width * f)), max(1, round(im.height * f))), Image.LANCZOS)
                 for b in rec([im], full_page=True)[0].blocks:
-                    if not (b.error or b.skipped):
-                        t = surya_run.block_text(b.html)
-                        if t:
-                            lines.append(t)
+                    if b.error:
+                        status = "error: block"
+                        continue
+                    if b.skipped:
+                        continue
+                    t = surya_run.block_text(b.html)
+                    if t:
+                        lines.append(t)
         except Exception as e:  # counted as missing on our side
             status = f"error: {str(e)[:200]}"
         rec_out = {"id": cid, "status": status, "ms": int((time.time() - s) * 1000)}

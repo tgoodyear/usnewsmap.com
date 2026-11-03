@@ -20,7 +20,7 @@ a = ap.parse_args()
 
 import torch
 from PIL import Image
-from peft import set_peft_model_state_dict
+from peft import get_peft_model_state_dict, set_peft_model_state_dict
 from safetensors.torch import load_file
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration, StoppingCriteria, StoppingCriteriaList
 
@@ -64,9 +64,14 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
     torch_dtype=torch.bfloat16, attn_implementation="sdpa").to("cuda")
 if a.adapter:
     model = worker.attach_lora(model, a.rank)
-    r = set_peft_model_state_dict(model, load_file(str(a.adapter)))
+    state = load_file(str(a.adapter))
+    expected = set(get_peft_model_state_dict(model))
+    missing, unexpected = expected - state.keys(), state.keys() - expected
+    if not expected or missing or unexpected:
+        raise SystemExit(f"adapter keys do not fit: expected {len(expected)}, missing {len(missing)}, unexpected {len(unexpected)}")
+    r = set_peft_model_state_dict(model, state)
     if getattr(r, "unexpected_keys", None):
-        raise SystemExit("adapter keys do not fit")
+        raise SystemExit("adapter keys do not fit after loading")
 model.eval()
 rows = [json.loads(l) for l in a.list.read_text(encoding="utf-8").splitlines() if l.strip()]
 with a.out.open("w", buffering=1, encoding="utf-8") as out, open("/work/out/progress.txt", "a", buffering=1) as prog:
