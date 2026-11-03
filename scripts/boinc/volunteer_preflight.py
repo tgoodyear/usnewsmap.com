@@ -515,7 +515,7 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
             ]
             try:
                 runner(create_cmd)
-                runner(["podman", "start", name])
+                runner(["podman", "start", name], timeout=180)
             except PreflightError as error:
                 if limits.use_gpu:
                     raise PreflightError(
