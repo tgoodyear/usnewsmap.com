@@ -106,6 +106,26 @@ def source_bindings(root, job):
     return bindings
 
 
+def terminal_source(unit):
+    receipt = unit / "source-provenance.json"
+    if not receipt.exists():
+        logging.warning("Terminal source provenance unavailable: %s", unit)
+        return None
+    record = json.loads(receipt.read_text())
+    raw = (unit / "quality.json").read_bytes()
+    quality = json.loads(raw)
+    binding = record["binding"]
+    source = source_fingerprint(binding["source"])
+    if (type(record["schema"]) is not int or record["schema"] != 1
+            or record["quality_sha256"] != hashlib.sha256(raw).hexdigest()
+            or type(binding["schema"]) is not int or binding["schema"] != 1
+            or source != binding["source"]
+            or source["doc_id"] != unit.name or quality["doc_id"] != unit.name
+            or binding["jpeg"] != {k: quality["inputs"]["page"][k] for k in ("bytes", "sha256")}):
+        raise ValueError("changed or unbound terminal source provenance: " + str(receipt))
+    return source
+
+
 def source_status(share, project, sample):
     frozen = [source_fingerprint(json.loads(line)) for line in sample.splitlines() if line.strip()]
     pages = [page["doc_id"] for page in frozen]
@@ -133,7 +153,9 @@ def source_status(share, project, sample):
                     raise ValueError("changed or unbound native source audit: " + str(path))
             for doc in members:
                 if not row:
-                    if not states[doc]["workunit_ids"]:
+                    if (not states[doc]["workunit_ids"]
+                            and states[doc]["status"] not in (
+                                "source_conflict", "source_provenance_unavailable")):
                         states[doc]["status"] = "pending_audit"
                     continue
                 states[doc]["workunit_ids"].append(row["workunit_id"])
@@ -159,7 +181,14 @@ def source_status(share, project, sample):
                 for marker in (campaign / layout).glob("*/" + disposition):
                     doc = marker.parent.name
                     if doc in wanted and not states[doc]["workunit_ids"]:
-                        states[doc]["status"] = disposition
+                        binding = terminal_source(marker.parent)
+                        if binding is None:
+                            states[doc]["status"] = "source_provenance_unavailable"
+                        elif binding != expected[doc]:
+                            states[doc]["status"] = "source_conflict"
+                        elif states[doc]["status"] not in (
+                                "source_conflict", "source_provenance_unavailable"):
+                            states[doc]["status"] = disposition
     ids = sorted(audited)
     totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
               "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,
