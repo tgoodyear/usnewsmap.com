@@ -61,6 +61,8 @@ The invented-text check counts 88 major hallucinations for Qwen and 126 for `fra
 
 100 pages frozen from the pilot list, 1,187 crops. There's no transcription here, so this is agreement, not accuracy. These numbers say how far readers differ, and nothing about which is right. The list records no typeface, so these aren't known to be Fraktur pages.
 
+For future preparation, `scripts/prep-pilot.sh` skips a unit only when both `page.jpg` and `qwen.json` exist. It stages the scan conversion and checks retained page bytes before retrying a page-only unit with `local-unit`'s atomic, synced writer; a manifest without its page is preserved for review. Recovery uses the current ALTO: an orphan cannot prove which ALTO was used before interruption. Failures prevent `PREP-DONE`; don't run concurrent writers against the same work directory. The [offline synthetic tests](../../../scripts/ci/test_gpu_study_prep_pilot.py) do not rerun or verify historical preparation.
+
 | Pair | Symmetric edit rate | 95% limits | Mean word-bag Dice |
 | --- | ---: | ---: | ---: |
 | `frak2021` PSM 3 and `deu_latf` PSM 3 | 20.1% | 18.3 to 21.7 | 0.57 |
