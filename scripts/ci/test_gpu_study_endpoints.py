@@ -500,6 +500,62 @@ class GPUStudyEndpointTests(unittest.TestCase):
         self.assertIn("GPU_STUDY_SECRETS", result.stderr)
         self.assertEqual(self.events(case / "ssh-trace"), [])
 
+    def test_watchdog_passes_secret_path_as_one_argument(self):
+        runner = self.work / "runner"
+        runner.mkdir()
+        script = runner / "watchdog.sh"
+        shutil.copy2(STUDY / "watchdog.sh", script)
+        executable(
+            runner / "vast.sh",
+            """\
+            #!/bin/sh
+            case "$2" in
+              credit) echo 100;;
+              list) :;;
+              *) exit 99;;
+            esac
+            """,
+        )
+        executable(
+            self.bin / "date",
+            """\
+            #!/bin/sh
+            case "$1" in
+              +%s) echo 1700000000;;
+              -Is) echo 2026-11-03T00:00:00Z;;
+              *) exit 99;;
+            esac
+            """,
+        )
+        executable(self.bin / "jq", "#!/bin/sh\nexit 0\n")
+        for command in ("shred", "systemctl"):
+            executable(
+                self.bin / command,
+                """\
+                #!/usr/bin/env python3
+                import json, os, pathlib, sys
+                pathlib.Path(os.environ[sys.argv[0].rsplit("/", 1)[-1].upper() + "_TRACE"]).write_text(
+                    json.dumps(sys.argv[1:]), encoding="utf-8"
+                )
+                """,
+            )
+        secrets = self.work / "secrets with * spaces"
+        secrets.mkdir()
+        env = {
+            **self.env,
+            "GPU_STUDY_SECRETS": str(secrets),
+            "SHRED_TRACE": str(self.work / "shred-trace"),
+            "SYSTEMCTL_TRACE": str(self.work / "systemctl-trace"),
+        }
+        result = self.run_script(
+            script, env, "--final-deadline", "1", "--log", str(self.work / "watchdog.log")
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(Path(env["SHRED_TRACE"]).read_text()),
+                         ["-u", str(secrets / "vast.key")])
+        self.assertEqual(json.loads(Path(env["SYSTEMCTL_TRACE"]).read_text()),
+                         ["stop", "usnm-gpu-studies-watchdog.timer"])
+
     def vast_fixture(self):
         executable(
             self.bin / "curl",
