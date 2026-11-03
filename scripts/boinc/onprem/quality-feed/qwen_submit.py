@@ -135,6 +135,7 @@ def source_status(share, project, sample):
     wanted = set(pages)
     states = {doc: {"status": "pending", "workunit_ids": []} for doc in pages}
     audited = {}
+    terminals = []
     for campaign in sorted((share / "qwen").glob("*")):
         if not campaign.is_dir():
             continue
@@ -180,15 +181,20 @@ def source_status(share, project, sample):
             for disposition in ("no_crops", "too_large"):
                 for marker in (campaign / layout).glob("*/" + disposition):
                     doc = marker.parent.name
-                    if doc in wanted and not states[doc]["workunit_ids"]:
-                        binding = terminal_source(marker.parent)
-                        if binding is None:
-                            states[doc]["status"] = "source_provenance_unavailable"
-                        elif binding != expected[doc]:
-                            states[doc]["status"] = "source_conflict"
-                        elif states[doc]["status"] not in (
-                                "source_conflict", "source_provenance_unavailable"):
-                            states[doc]["status"] = disposition
+                    if doc in wanted:
+                        terminals.append((doc, marker, disposition))
+    # Inspect all retained bindings; publication takes precedence only over matching
+    # dispositions and unbound legacy markers, never over conflicting evidence.
+    for doc, marker, disposition in terminals:
+        binding = terminal_source(marker.parent)
+        if binding is not None and binding != expected[doc]:
+            states[doc]["status"] = "source_conflict"
+        elif not states[doc]["workunit_ids"]:
+            if binding is None and states[doc]["status"] != "source_conflict":
+                states[doc]["status"] = "source_provenance_unavailable"
+            elif states[doc]["status"] not in (
+                    "source_conflict", "source_provenance_unavailable"):
+                states[doc]["status"] = disposition
     ids = sorted(audited)
     totals = {"published_workunits": len(ids), "agreed_workunits": 0, "unsent_replicas": 0,
               "running_replicas": 0, "returned_replicas": 0, "invalid_replicas": 0,

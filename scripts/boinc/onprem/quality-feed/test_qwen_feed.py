@@ -384,6 +384,44 @@ class SourceRequestTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed or unbound terminal"):
                 submit.source_status(root, root, json.dumps(frozen_page()))
 
+    def test_published_work_does_not_hide_terminal_conflicts_in_either_campaign_order(self):
+        for published, rejected in (("a", "z"), ("z", "a")):
+            for kind in ("matching", "conflict", "legacy"):
+                with self.subTest(published=published, kind=kind), \
+                        tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    campaign = root / "qwen" / published
+                    unit = campaign / "units" / DOC
+                    unit.mkdir(parents=True)
+                    image = {"bytes": 3, "sha256": hashlib.sha256(b"jpg").hexdigest()}
+                    binding = {"schema": 1, "source": frozen_page(), "jpeg": image}
+                    job = {"id": "a" * 64, "doc_id": DOC, "input": image}
+                    raw = json.dumps(job).encode()
+                    (unit / "qwen.json").write_bytes(raw)
+                    (unit / "submitted").touch()
+                    (campaign / "audit.json").write_text(json.dumps({job["id"]: {
+                        "workunit_id": 42, "job_sha256": hashlib.sha256(raw).hexdigest(),
+                        "batch": 8, "min_quorum": 2, "target_nresults": 2,
+                        "source_bindings": {DOC: binding}}}))
+                    terminal = root / "qwen" / rejected / "units" / DOC
+                    terminal.mkdir(parents=True)
+                    (terminal / "no_crops").touch()
+                    if kind != "legacy":
+                        terminal_provenance(terminal)
+                        if kind == "conflict":
+                            path = terminal / "source-provenance.json"
+                            record = json.loads(path.read_text())
+                            record["binding"]["source"]["batch_version"] = 2
+                            path.write_text(json.dumps(record))
+                    response = json.dumps([{"id": 42, "canonical_resultid": 0, "error_mask": 0,
+                                            "unsent": 2, "running": 0, "returned": 0, "invalid": 0}])
+                    with mock.patch.object(submit.subprocess, "check_output", return_value=response):
+                        result = submit.source_status(root, root, json.dumps(frozen_page()))
+                    self.assertEqual(result["published_workunits"], 1)
+                    self.assertEqual(result["source_conflict_pages"], int(kind == "conflict"))
+                    self.assertEqual(result["pages"][DOC]["status"],
+                                     "source_conflict" if kind == "conflict" else "published")
+
     def test_native_audit_retains_original_to_jpeg_binding_after_handoff_cleanup(self):
         with tempfile.TemporaryDirectory() as folder:
             share = Path(folder)

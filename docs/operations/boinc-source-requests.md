@@ -56,9 +56,12 @@ New Qwen staging also retains `source-provenance.json` and the exact `quality.js
 before writing `no_crops` or `too_large`. The receipt binds the original image
 fingerprint to the verified JPEG and hashes the quality manifest, including ALTO
 identity and crop recipe. Source status accepts these terminal dispositions only
-for that exact frozen source. Staging retries reject changed source evidence
-without rewriting the receipt. Partial staging without a terminal marker remains
-nonterminal; retained receipts survive removal of handoff texts.
+for that exact frozen source; a conflicting terminal receipt remains visible even
+when another campaign has published work for the page. Staging retries reject
+changed source evidence without rewriting the receipt. A crash leaving only the
+quality manifest, before its source receipt, requires review rather than automatic
+rebinding. Partial staging without a terminal marker remains nonterminal; retained
+receipts survive removal of handoff texts.
 
 Legacy terminal markers are preserved, not automatically backfilled: source status
 reports `source_provenance_unavailable` and requires review. Upgrade the staging

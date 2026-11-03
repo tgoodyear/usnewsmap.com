@@ -166,6 +166,14 @@ fn retain_source(
 
 fn check_retained_source(root: &Path, page: &Path, unit: &Path) -> anyhow::Result<()> {
     if !unit.join(SOURCE_FILE).try_exists()? {
+        ensure!(
+            !unit.join(crate::quality::JOB_FILE).try_exists()?
+                || [JOB_FILE, "no_crops", TOO_LARGE]
+                    .iter()
+                    .any(|name| unit.join(name).exists()),
+            "{}: incomplete retained source provenance; retain existing evidence",
+            unit.display()
+        );
         // Legacy markers are preserved, not rebound to a current source.
         return Ok(());
     }
@@ -1166,6 +1174,66 @@ pub(crate) mod tests {
         let job: Job = serde_json::from_slice(&std::fs::read(out.join(JOB_FILE)).unwrap()).unwrap();
         job.validate().unwrap();
         assert_eq!(job.prompt_version, opts.prompt_version);
+    }
+
+    #[tokio::test]
+    async fn quality_only_partial_stage_cannot_rebind_but_completed_legacy_units_are_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let source = crate::quality::units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        crate::quality::work::tests::unit(&source);
+        let binding_path = bind_source(&qroot, &source);
+        let original = std::fs::read(source.join("quality.json")).unwrap();
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
+            max_pages: 20,
+            bundle_size: 1,
+        };
+        let unit = units(&opts.root).join(source.file_name().unwrap());
+        std::fs::create_dir_all(&unit).unwrap();
+        atomic(&unit.join("quality.json"), &original).unwrap();
+        for change_quality in [false, true] {
+            if change_quality {
+                let mut quality: QualityJob = serde_json::from_slice(&original).unwrap();
+                quality.crop_seed += 1;
+                quality.id = quality.identity().unwrap();
+                atomic(
+                    &source.join("quality.json"),
+                    &serde_json::to_vec(&quality).unwrap(),
+                )
+                .unwrap();
+            } else {
+                let mut binding: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&binding_path).unwrap()).unwrap();
+                binding["source"]["batch_version"] = serde_json::json!(2);
+                atomic(&binding_path, &serde_json::to_vec(&binding).unwrap()).unwrap();
+            }
+            assert!(run(&opts)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete retained source provenance"));
+            assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
+            assert!(!unit.join(SOURCE_FILE).exists());
+            assert!(!unit.join(JOB_FILE).exists());
+        }
+        for marker in [JOB_FILE, "no_crops", TOO_LARGE] {
+            atomic(&unit.join(marker), b"legacy evidence").unwrap();
+            assert_eq!(run(&opts).await.unwrap().already, 1);
+            assert_eq!(
+                std::fs::read(unit.join(marker)).unwrap(),
+                b"legacy evidence"
+            );
+            assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
+            assert!(!unit.join(SOURCE_FILE).exists());
+            std::fs::remove_file(unit.join(marker)).unwrap();
+        }
     }
 
     #[tokio::test]
