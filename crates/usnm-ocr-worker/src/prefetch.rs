@@ -767,9 +767,6 @@ impl Run {
         let fenced = layout::repair_fenced(&self.opts.out, &row, size).await?;
         let existing = if self.decode_repair || fenced {
             if let Some(side) = repair_there(&self.opts.out, &row, size).await? {
-                if self.decode_repair {
-                    layout::fence_repair(&self.opts.out, &row, size).await?;
-                }
                 if !index_repair(&self.opts.out, &row, size, &side, &self.index[&tag(size)]).await?
                 {
                     return Ok(self.defer_occupied_repair(&row));

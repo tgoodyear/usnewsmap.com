@@ -1059,13 +1059,36 @@ work. Keep these lock files in place while any writer is running.
 
 Serialization alone does not establish ownership across crashes. Before publishing
 a repair scan, the worker creates and syncs an extension-neutral
-`<keep-page-stem>.decode-repair` fence and its directory. It never automatically
+`<keep-page-stem>.decode-repair` fence and its directory ancestry. It never automatically
 removes this fence. Later **ordinary** manifests honor it: incomplete, conflicting
 or empty fenced targets defer without fetching or replacing anything. A complete
 fenced pair is verified and its index recovered through the same validated repair
 path. Unfenced ordinary targets retain their previous recovery behavior.
 An interrupted sidecar publication therefore cannot let a subsequent ordinary run
 overwrite the repair scan, even after the output lock has been released.
+
+Repair completion follows an explicit durability order, using the worker's existing
+`File::sync_all` / opened-directory sync convention:
+
+1. Sync the ownership fence and directory ancestry before publishing scan bytes.
+2. For the scan, then its sidecar, sync the temporary file contents, create the
+   no-replace final hard link, remove the temporary name, and sync the directory
+   ancestry before returning success.
+3. Before any repair index append or replay acknowledgement, re-sync the fence,
+   verified retained scan/sidecar files in both occupied formats, and their directory
+   ancestry. This also covers a previous attempt whose directory sync failed.
+4. Validate the complete index, append only if the exact entry is absent, sync the
+   index file, and sync its containing directory ancestry **even if the entry was
+   already present**. Only then may the worker count completion.
+
+Ancestor synchronization includes newly created nested output/keep directories and
+the new index's directory entry, through both named and resolved paths. It is not
+limited to directories first created in the current attempt: an earlier failed
+attempt may already have left their names visible but unconfirmed durable. Any sync
+error fails the run without reporting the page fetched. Published files or an index
+line already appended remain untouched; a complete pair can be validated and
+re-synced on retry, while a partial pair stays deferred for operator review.
+Unfenced ordinary publication remains unchanged.
 
 This coordinates **updated prefetch writers**, not arbitrary independent writers.
 Before enabling repairs, inventory every writer to the keep tree and index,
@@ -1110,6 +1133,13 @@ Sequential restart regressions run actual repair publication into a sidecar-writ
 failure, then run ordinary prefetch against the retained scan. They also cover an
 empty fenced target, ordinary recovery of a complete fenced pair's missing index,
 unfenced ordinary orphan recovery, and non-object index histories.
+The durability regression observes barrier order during actual prefetch calls and
+uses test-only, path-scoped fault injection at fence, ancestor, scan/sidecar content
+and link, replay-file, and index-file/parent barriers. It checks failed completion,
+preserved partial results and idempotent retry; successful barriers execute real
+filesystem syncs. These are software-ordering/error-handling checks, **not physical
+power-loss acceptance**. Filesystem, mount and storage hardware persistence still
+require separate validation before enabling repairs.
 
 Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 `observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
@@ -1217,7 +1247,7 @@ retained scans, original manifests, quarantine bytes and synthetic upstream
 contents must remain unchanged.
 
 Executed locally on 3 November 2026 with the named-option CLI and optional
-supervisor: **6 tests passed in 164.163 seconds** (five standard scenarios plus the
+supervisor: **6 tests passed in 170.550 seconds** (five standard scenarios plus the
 actual-supervisor scenario), with these asserted results:
 
 - The reviewed **updated**, not deployed, supervisor (SHA256
@@ -1273,7 +1303,7 @@ Related focused validation:
 ```sh
 .rehearsal/venv/bin/python -m unittest discover \
   -s scripts/boinc/onprem/ocr-feed -p test_ocr_manifest.py -q # 32 passed
-cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 43 passed
+cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 44 passed
 cargo test -j 2 -p usnm-ocr-dash --lib \
   queue_reads_decode_repairs_but_rejects_mismatched_formats --quiet # 1 passed
 cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # passed

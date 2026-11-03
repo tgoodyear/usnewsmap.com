@@ -346,6 +346,235 @@ async fn decode_repair_restart_recovers_missing_index_without_republishing_or_re
 }
 
 #[tokio::test]
+async fn repair_durability_barriers_precede_ack_and_fail_closed() {
+    #[derive(Clone, Debug)]
+    struct Observation {
+        path: PathBuf,
+        directory: bool,
+        scan: bool,
+        side: bool,
+        parts: bool,
+        index_bytes: u64,
+    }
+
+    let hits = Arc::new(Mutex::new(BTreeMap::new()));
+    let root = titles_loc(&[], &[], hits.clone()).await;
+    for failure in [
+        None,
+        Some("fence_file"),
+        Some("fence_ancestor"),
+        Some("scan_file"),
+        Some("scan_link"),
+        Some("sidecar_file"),
+        Some("sidecar_link"),
+        Some("replay_scan"),
+        Some("index_file"),
+        Some("index_parent"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let row = row("sn1", 1890, 1, "rus");
+        let out = dir.path().join("new/parents/scans");
+        let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+        let side = sidecar_path(&scan);
+        let fence = layout::repair_fence_path(&out, &row, ImageSize::Full);
+        let index = out.join("index-full.jsonl");
+        let part = |path: &Path| {
+            PathBuf::from(format!(
+                "{}.repair-{}.part",
+                path.display(),
+                std::process::id()
+            ))
+        };
+        let scan_part = part(&scan);
+        let side_part = part(&side);
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&observations);
+        let (s, j, f, i, sp, jp, o) = (
+            scan.clone(),
+            side.clone(),
+            fence.clone(),
+            index.clone(),
+            scan_part.clone(),
+            side_part.clone(),
+            out.clone(),
+        );
+        let hook = layout::sync_test::install(dir.path(), move |path, directory| {
+            let observation = Observation {
+                path: path.to_owned(),
+                directory,
+                scan: s.exists(),
+                side: j.exists(),
+                parts: sp.exists() || jp.exists(),
+                index_bytes: std::fs::metadata(&i).map_or(0, |m| m.len()),
+            };
+            let fail = match failure {
+                Some("fence_file") => !directory && path == f,
+                Some("fence_ancestor") => {
+                    directory && path == o.parent().unwrap() && !observation.scan
+                }
+                Some("scan_file") => !directory && path == sp,
+                Some("scan_link") => {
+                    directory
+                        && path == s.parent().unwrap()
+                        && observation.scan
+                        && !observation.side
+                }
+                Some("sidecar_file") => !directory && path == jp,
+                Some("sidecar_link") => {
+                    directory && path == s.parent().unwrap() && observation.side
+                }
+                Some("replay_scan") => !directory && path == s,
+                Some("index_file") => !directory && path == i,
+                Some("index_parent") => directory && path == o && observation.index_bytes > 0,
+                None => false,
+                _ => unreachable!(),
+            };
+            recorded.lock().unwrap().push(observation);
+            if fail {
+                return Err(std::io::Error::other("injected repair fsync failure"));
+            }
+            Ok(())
+        });
+        let opts = Options {
+            manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+            out: out.clone(),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let result = run(
+            opts.clone(),
+            client(&root, Duration::from_millis(1)),
+            rx.clone(),
+        )
+        .await;
+        drop(hook);
+        let status: Status =
+            serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap()).unwrap();
+        if failure.is_none() {
+            assert!(result.is_ok());
+            assert_eq!(status.fetched, 1);
+            let events = observations.lock().unwrap();
+            let at = |path: &Path| {
+                events
+                    .iter()
+                    .position(|e| !e.directory && e.path == path)
+                    .unwrap()
+            };
+            let fence_at = at(&fence);
+            let scan_at = at(&scan_part);
+            let side_at = at(&side_part);
+            let index_at = at(&index);
+            assert!(fence_at < scan_at && scan_at < side_at && side_at < index_at);
+            assert!(at(&scan) < index_at && at(&side) < index_at);
+            for ancestor in scan.parent().unwrap().ancestors() {
+                assert!(events[fence_at + 1..scan_at]
+                    .iter()
+                    .any(|e| e.directory && e.path == ancestor));
+            }
+            for (start, end, side_exists) in [(scan_at, side_at, false), (side_at, index_at, true)]
+            {
+                assert!(
+                    events[start + 1..end].iter().any(|e| e.directory
+                        && e.path == scan.parent().unwrap()
+                        && e.scan
+                        && e.side == side_exists
+                        && !e.parts),
+                    "published link and temporary cleanup must precede its directory barrier"
+                );
+            }
+            for ancestor in out.ancestors() {
+                assert!(events[index_at + 1..]
+                    .iter()
+                    .any(|e| e.directory && e.path == ancestor && e.index_bytes > 0));
+            }
+            continue;
+        }
+        assert!(result.is_err(), "{failure:?}");
+        assert_eq!(status.state, "failed");
+        assert_eq!((status.fetched, status.already_there), (0, 0));
+        assert!(status
+            .error
+            .unwrap()
+            .contains("injected repair fsync failure"));
+        let history = std::fs::read(&index).unwrap();
+        if matches!(failure, Some("index_file" | "index_parent")) {
+            assert_eq!(
+                read_index(std::str::from_utf8(&history).unwrap())
+                    .unwrap()
+                    .len(),
+                1
+            );
+        } else {
+            assert!(
+                history.is_empty(),
+                "{failure:?}: index must follow data barriers"
+            );
+        }
+        if matches!(failure, Some("index_file" | "index_parent")) {
+            let existing_index = index.clone();
+            let index_parent = out.clone();
+            let index_seen = std::sync::atomic::AtomicBool::new(false);
+            let hook = layout::sync_test::install(dir.path(), move |path, directory| {
+                if !directory && path == existing_index {
+                    index_seen.store(true, Ordering::SeqCst);
+                }
+                if (failure == Some("index_file") && !directory && path == existing_index)
+                    || (failure == Some("index_parent")
+                        && directory
+                        && path == index_parent
+                        && index_seen.load(Ordering::SeqCst))
+                {
+                    return Err(std::io::Error::other("injected replay fsync failure"));
+                }
+                Ok(())
+            });
+            assert!(run(
+                opts.clone(),
+                client(&root, Duration::from_millis(1)),
+                rx.clone()
+            )
+            .await
+            .is_err());
+            drop(hook);
+            let replay: Status =
+                serde_json::from_slice(&std::fs::read(out.join("status-full.json")).unwrap())
+                    .unwrap();
+            assert_eq!(replay.state, "failed");
+            assert_eq!((replay.fetched, replay.already_there), (0, 0));
+            assert_eq!(std::fs::read(&index).unwrap(), history);
+        }
+        let before = hits.lock().unwrap().clone();
+        let retained = std::fs::read(&scan).ok();
+        let side_bytes = std::fs::read(&side).ok();
+        let replay = run(opts, client(&root, Duration::from_millis(1)), rx)
+            .await
+            .unwrap();
+        if side_bytes.is_some() {
+            assert_eq!((replay.fetched, replay.already_there), (0, 1));
+            assert_eq!(*hits.lock().unwrap(), before);
+            assert_eq!(std::fs::read(&scan).ok(), retained);
+            assert_eq!(std::fs::read(&side).ok(), side_bytes);
+            assert_eq!(
+                read_index(&std::fs::read_to_string(&index).unwrap())
+                    .unwrap()
+                    .len(),
+                1
+            );
+        } else if retained.is_some() {
+            assert_eq!((replay.fetched, replay.deferred_repair_occupied), (0, 1));
+            assert_eq!(*hits.lock().unwrap(), before);
+            assert_eq!(std::fs::read(&scan).ok(), retained);
+            assert_eq!(std::fs::read(&index).unwrap(), history);
+        } else {
+            assert_eq!(
+                replay.fetched, 1,
+                "an empty fenced target remains resumable"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn ordinary_restart_preserves_a_failed_repair_publication_and_its_fence() {
     let hits = Arc::new(Mutex::new(BTreeMap::new()));
     let root = titles_loc(&[], &[], hits.clone()).await;

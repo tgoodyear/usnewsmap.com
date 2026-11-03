@@ -14,6 +14,78 @@ use crate::loc::{ImageSize, ScanFormat};
 
 use super::{set_of, sha256};
 
+fn sync_repair_file(file: &std::fs::File, path: &Path) -> anyhow::Result<()> {
+    #[cfg(test)]
+    sync_test::before(path, path, false)?;
+    file.sync_all()
+        .with_context(|| format!("syncing repair file {}", path.display()))
+}
+
+/// Include ancestors that an earlier interrupted attempt may have created.
+fn sync_repair_directories(dir: &Path) -> anyhow::Result<()> {
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let absolute = std::path::absolute(dir)?;
+    let canonical = std::fs::canonicalize(dir)?;
+    let mut synced = std::collections::BTreeSet::new();
+    for path in absolute.ancestors().chain(canonical.ancestors()) {
+        if !synced.insert(path.to_owned()) {
+            continue;
+        }
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("opening repair directory {}", path.display()))?;
+        #[cfg(test)]
+        sync_test::before(dir, path, true)?;
+        file.sync_all()
+            .with_context(|| format!("syncing repair directory {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) mod sync_test {
+    use super::*;
+    use std::sync::Arc;
+
+    type Hook = Arc<dyn Fn(&Path, bool) -> std::io::Result<()> + Send + Sync>;
+    static HOOKS: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+    pub(crate) struct Guard(PathBuf);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOKS.lock().unwrap().retain(|(root, _)| root != &self.0);
+        }
+    }
+
+    pub(crate) fn install(
+        root: &Path,
+        hook: impl Fn(&Path, bool) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Guard {
+        HOOKS
+            .lock()
+            .unwrap()
+            .push((root.to_owned(), Arc::new(hook)));
+        Guard(root.to_owned())
+    }
+
+    pub(super) fn before(scope: &Path, path: &Path, directory: bool) -> std::io::Result<()> {
+        let hook = HOOKS
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(root, _)| scope.starts_with(root))
+            .map(|(_, hook)| Arc::clone(hook));
+        if let Some(hook) = hook {
+            hook(path, directory)?;
+        }
+        Ok(())
+    }
+}
+
 /// The tag of a size in file names: `full` or `pct50`.
 pub fn tag(size: ImageSize) -> String {
     match size {
@@ -250,6 +322,26 @@ pub(super) async fn index_repair(
     if repair_there(out, row, size).await?.as_ref() != Some(side) {
         return Ok(false);
     }
+    fence_repair(out, row, size).await?;
+    let scans: Vec<_> = formats(size)
+        .iter()
+        .map(|format| scan_path(out, row, size, *format))
+        .collect();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        for scan in scans {
+            match std::fs::symlink_metadata(&scan) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            }
+            for path in [&scan, &sidecar_path(&scan)] {
+                sync_repair_file(&std::fs::File::open(path)?, path)?;
+            }
+            sync_repair_directories(scan.parent().context("no repair scan parent")?)?;
+        }
+        Ok(())
+    })
+    .await??;
     index.ensure_sidecar(side)?;
     // An unsupported writer may ignore the lock. Preserve any appended history,
     // but do not report success if it changed the target while we read the index.
@@ -316,8 +408,8 @@ pub(super) async fn fence_repair(
             }
             Err(e) => return Err(e).context("creating repair fence"),
         };
-        fence.sync_all()?;
-        std::fs::File::open(dir)?.sync_all()?;
+        sync_repair_file(&fence, &path)?;
+        sync_repair_directories(dir)?;
         Ok(())
     })
     .await?
@@ -355,19 +447,25 @@ pub(super) async fn write_new_atomic(path: &Path, body: Vec<u8>) -> anyhow::Resu
             .write(true)
             .create_new(true)
             .open(&part)?;
-        let written = file.write_all(&body).and_then(|_| file.sync_all());
+        let written = file
+            .write_all(&body)
+            .map_err(anyhow::Error::from)
+            .and_then(|_| sync_repair_file(&file, &part));
         drop(file);
         let published = match written {
             Ok(()) => match std::fs::hard_link(&part, &path) {
                 Ok(()) => Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             Err(error) => Err(error),
         };
         let cleanup = std::fs::remove_file(&part);
         match (published, cleanup) {
-            (Ok(published), Ok(())) => Ok(published),
+            (Ok(published), Ok(())) => {
+                sync_repair_directories(dir)?;
+                Ok(published)
+            }
             (Err(error), Ok(())) => Err(error)
                 .with_context(|| format!("publishing repair without replacing {}", path.display())),
             (Ok(_), Err(error)) => {
@@ -454,14 +552,16 @@ impl Lines {
             }
         }
         if found {
-            f.sync_all()?;
+            sync_repair_file(&f, &self.path)?;
+            sync_repair_directories(self.path.parent().context("no repair index parent")?)?;
             return Ok(());
         }
         // Stream the existing history only for repairs; never rewrite it.
         let mut line = serde_json::to_vec(side)?;
         line.push(b'\n');
         f.write_all(&line)?;
-        f.sync_all()?;
+        sync_repair_file(&f, &self.path)?;
+        sync_repair_directories(self.path.parent().context("no repair index parent")?)?;
         Ok(())
     }
 }
