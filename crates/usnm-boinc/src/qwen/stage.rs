@@ -282,6 +282,11 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
                 .any(|f| dir.join(f).exists())
         };
         let old_unit = units_dir.join(&name);
+        if bundle_size > 1 {
+            // A crash may retain evidence before a job or terminal marker.
+            // Switching layouts must not bypass that original binding.
+            check_retained_source(&opts.quality_root, &page, &old_unit)?;
+        }
         let existing = if staged(&unit) {
             Some(&unit)
         } else if bundle_size > 1 && staged(&old_unit) {
@@ -1234,6 +1239,70 @@ pub(crate) mod tests {
             assert!(!unit.join(SOURCE_FILE).exists());
             std::fs::remove_file(unit.join(marker)).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn switching_to_bundles_checks_partial_single_page_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let source = crate::quality::units(&qroot).join("sn83045462_1890-05-03_ed-1_seq-1");
+        crate::quality::work::tests::unit(&source);
+        let binding_path = bind_source(&qroot, &source);
+        let original_binding = std::fs::read(&binding_path).unwrap();
+        let original = std::fs::read(source.join("quality.json")).unwrap();
+        let quality: QualityJob = serde_json::from_slice(&original).unwrap();
+        let opts = Options {
+            quality_root: qroot,
+            root: tmp.path().join("qwen"),
+            engine: engine(),
+            gpu_timeout_secs: 1800,
+            cpu_timeout_secs: 7200,
+            max_tokens_per_1000px2: 4,
+            prompt_version: PROMPT_VERSION,
+            max_pages: 20,
+            bundle_size: 2,
+        };
+        let unit = units(&opts.root).join(source.file_name().unwrap());
+        std::fs::create_dir_all(&unit).unwrap();
+        retain_source(&opts.quality_root, &unit, &quality, &original).unwrap();
+        let retained = std::fs::read(unit.join(SOURCE_FILE)).unwrap();
+        let mut binding: serde_json::Value = serde_json::from_slice(&original_binding).unwrap();
+        binding["source"]["batch_version"] = serde_json::json!(2);
+        atomic(&binding_path, &serde_json::to_vec(&binding).unwrap()).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retained original source changed"));
+        atomic(&binding_path, &original_binding).unwrap();
+        let mut changed = quality.clone();
+        changed.crop_seed += 1;
+        changed.id = changed.identity().unwrap();
+        atomic(
+            &source.join("quality.json"),
+            &serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retained quality source changed"));
+        assert_eq!(std::fs::read(unit.join(SOURCE_FILE)).unwrap(), retained);
+        std::fs::remove_file(unit.join(SOURCE_FILE)).unwrap();
+        assert!(run(&opts)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete retained source provenance"));
+        assert!(!opts
+            .root
+            .join("pages")
+            .join(source.file_name().unwrap())
+            .exists());
+        atomic(&unit.join("no_crops"), b"legacy evidence").unwrap();
+        assert_eq!(run(&opts).await.unwrap().already, 1);
+        assert_eq!(std::fs::read(unit.join("quality.json")).unwrap(), original);
     }
 
     #[tokio::test]
