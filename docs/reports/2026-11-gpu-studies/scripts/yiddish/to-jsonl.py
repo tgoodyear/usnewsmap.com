@@ -1,4 +1,4 @@
-"""Engine outputs to JSONL for gpu-study: --kind jochre (zips with <id>.txt) or tesseract (txt/<id>.txt).
+"""Engine outputs to JSONL: Jochre zips or Tesseract text with a successful latest timing receipt.
 --dir DIR, --key page|id (the JSON field the file stem goes in), --out FILE, --idmap (stem a_b -> a:b for crop ids)."""
 import argparse, json, os, zipfile
 ap = argparse.ArgumentParser()
@@ -20,8 +20,17 @@ if a.kind == "jochre":
             text = None
         rows.append((stem, text))
 else:
+    receipts = {}
+    try:
+        with open(os.path.join(a.dir, "timing.tsv"), encoding="utf-8") as timing:
+            for line in timing:
+                parts = line.rstrip("\n").split("\t")
+                if parts[0]:
+                    receipts[parts[0]] = len(parts) == 3 and parts[2] == "0"
+    except FileNotFoundError:
+        pass
     for f in sorted(os.listdir(os.path.join(a.dir, "txt"))):
-        if f.endswith(".txt"):
+        if f.endswith(".txt") and receipts.get(f[:-4], False):
             rows.append((f[:-4], open(os.path.join(a.dir, "txt", f), encoding="utf-8", errors="replace").read()))
 with open(a.out, "w", encoding="utf-8") as o:
     for stem, text in rows:
