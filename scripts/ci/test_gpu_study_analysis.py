@@ -95,6 +95,8 @@ class Study3AnalysisTests(unittest.TestCase):
         self.tool.write_text(FAKE_SCORER, encoding="utf-8")
         self.tool.chmod(0o755)
         self.env = os.environ.copy()
+        self.env.pop("AMERICAN_STORIES_B64", None)
+        self.env.pop("AMERICAN_STORIES_JSONL", None)
         self.env.update(
             GPU_STUDY_ROOT=str(self.root),
             GPU_STUDY_DEV=str(self.work / "dev root"),
@@ -201,6 +203,146 @@ class Study3AnalysisTests(unittest.TestCase):
         self.assertEqual(self.events()[0]["present"], ["crop:1"])
         row = json.loads((self.root / "analysis/s3/american-stories.jsonl").read_text())
         self.assertEqual(row, {"id": "crop:1", "text": "selected"})
+
+    def test_decoder_uses_named_input_and_output_flags(self):
+        self.raw.write_text(as_row("crop:1", {"bboxes": [{"raw_text": "synthetic"}]}), encoding="utf-8")
+        out = self.work / "named-output.jsonl"
+        command = ["python3", str(SCRIPTS / "decode-american-stories.py")]
+        result = subprocess.run(
+            [*command, "--input", str(self.raw), "--output", str(out)],
+            cwd=REPO, env=self.env, capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(out.read_text()), {"id": "crop:1", "text": "synthetic"})
+        for args in ([str(self.raw), str(out)], ["--input", str(self.raw)]):
+            with self.subTest(args=args):
+                out.write_text("unchanged\n", encoding="utf-8")
+                result = subprocess.run(
+                    [*command, *args], cwd=REPO, env=self.env,
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(out.read_text(), "unchanged\n")
+
+    def test_opt_in_retained_jsonl_regenerates_without_raw_receipts(self):
+        rows = [{"id": "crop:1", "text": "synthetic café"}, {"id": "crop:2", "text": ""}]
+        jsonl(self.retained, rows)
+        result = self.analyze(AMERICAN_STORIES_JSONL=str(self.retained))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.raw.exists())
+        output = self.root / "analysis/s3/american-stories.jsonl"
+        self.assertEqual(list(map(json.loads, output.read_text(encoding="utf-8").splitlines())), rows)
+        for event in self.events():
+            self.assertEqual(event["present"], ["crop:1", "crop:2"])
+            self.assertEqual(event["empty"], ["crop:2"])
+            self.assertEqual(event["missing"], 2)
+
+    def test_jsonl_filters_unreferenced_rows_when_input_is_the_output_path(self):
+        jsonl(self.retained, [{"id": "crop:1", "text": "latest"}, {"id": "crop:2", "text": ""}])
+        output = self.root / "analysis/s3/american-stories.jsonl"
+        jsonl(output, [
+            {"id": "crop:1", "text": "older"},
+            {"id": "crop:1", "text": "latest", "unused": "metadata"},
+            {"id": "crop:2", "text": ""},
+            {"id": "extra", "text": "unreferenced"},
+        ])
+        result = self.analyze(AMERICAN_STORIES_JSONL=str(output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(map(json.loads, output.read_text().splitlines())), [
+            {"id": "crop:1", "text": "older"},
+            {"id": "crop:1", "text": "latest"},
+            {"id": "crop:2", "text": ""},
+        ])
+        self.assertEqual(self.events()[0]["missing"], 2)
+
+    def test_jsonl_missing_mismatched_or_invalid_input_never_scores(self):
+        expected = {"id": "crop:1", "text": "expected"}
+        jsonl(self.retained, [expected])
+        source = self.work / "precomputed input.jsonl"
+        previous = self.root / "analysis/s3/american-stories.jsonl"
+        jsonl(previous, [{"id": "crop:1", "text": "previous"}])
+        valid_line = (json.dumps(expected) + "\n").encode()
+        cases = {
+            "missing": None,
+            "mismatch": b'{"id":"crop:1","text":"different"}\n',
+            "missing_selected_id": b'',
+            "unexpected_selected_id": valid_line + b'{"id":"crop:3","text":"x"}\n',
+            "bad_json": valid_line + b'not-json\n',
+            "bad_id": valid_line + b'{"id":"bad/id","text":"x"}\n',
+            "missing_id": valid_line + b'{"text":"x"}\n',
+            "nonstring_text": valid_line + b'{"id":"extra","text":null}\n',
+            "bad_utf8": valid_line + b'{"id":"extra","text":"\xff"}\n',
+            "surrogate": valid_line + b'{"id":"extra","text":"\\ud800"}\n',
+        }
+        for name, contents in cases.items():
+            with self.subTest(case=name):
+                if contents is None:
+                    source.unlink(missing_ok=True)
+                else:
+                    source.write_bytes(contents)
+                result = self.analyze(AMERICAN_STORIES_JSONL=str(source))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.trace.exists())
+                self.assertEqual(list(map(json.loads, previous.read_text().splitlines())), [
+                    {"id": "crop:1", "text": "previous"},
+                ])
+
+    def test_input_modes_are_exclusive_and_explicit_paths_cannot_be_empty(self):
+        self.raw.write_text("", encoding="utf-8")
+        previous = self.root / "analysis/s3/american-stories.jsonl"
+        jsonl(previous, [{"id": "crop:1", "text": "previous"}])
+        for env, diagnostic in (
+            ({"AMERICAN_STORIES_JSONL": str(self.retained), "AMERICAN_STORIES_B64": str(self.raw)},
+             "Set only one"),
+            ({"AMERICAN_STORIES_JSONL": ""}, "AMERICAN_STORIES_JSONL must name"),
+            ({"AMERICAN_STORIES_B64": ""}, "AMERICAN_STORIES_B64 must name"),
+            ({"AMERICAN_STORIES_REFERENCE": ""}, "AMERICAN_STORIES_REFERENCE must name"),
+        ):
+            with self.subTest(env=env):
+                result = self.analyze(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertFalse(self.trace.exists())
+                self.assertEqual(list(map(json.loads, previous.read_text().splitlines())), [
+                    {"id": "crop:1", "text": "previous"},
+                ])
+
+    def test_retained_reference_cannot_be_clobbered_by_intermediate_output(self):
+        source = self.work / "precomputed.jsonl"
+        jsonl(source, [{"id": "crop:1", "text": "new"}])
+        intermediate = self.root / "analysis/s3/american-stories-all.jsonl"
+        for case in ("missing", "existing"):
+            with self.subTest(case=case):
+                if case == "existing":
+                    jsonl(intermediate, [{"id": "crop:1", "text": "retained"}])
+                    before = intermediate.read_bytes()
+                result = self.analyze(
+                    AMERICAN_STORIES_JSONL=str(source), AMERICAN_STORIES_REFERENCE=str(intermediate),
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.trace.exists())
+                if case == "missing":
+                    self.assertFalse(intermediate.exists())
+                else:
+                    self.assertEqual(intermediate.read_bytes(), before)
+
+        intermediate.unlink()
+        jsonl(self.retained, [{"id": "crop:1", "text": "retained"}])
+        before = self.retained.read_bytes()
+        intermediate.symlink_to(self.retained)
+        result = self.analyze(AMERICAN_STORIES_JSONL=str(source))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.retained.read_bytes(), before)
+        self.assertFalse(self.trace.exists())
+        intermediate.unlink()
+
+        retained = self.root / "analysis/s3/american-stories.jsonl"
+        jsonl(retained, [{"id": "crop:1", "text": "retained", "unused": "preserve"}])
+        before = retained.read_bytes()
+        result = self.analyze(AMERICAN_STORIES_JSONL=str(retained), AMERICAN_STORIES_REFERENCE=str(retained))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(retained.read_bytes(), before)
+        self.assertEqual(self.events()[0]["present"], ["crop:1"])
 
     def test_default_snapshot_is_relative_to_the_analysis_script(self):
         self.raw.write_text("", encoding="utf-8")

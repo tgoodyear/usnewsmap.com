@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Decode the American Stories job's id/seconds/base64-JSON records."""
+"""Decode American Stories receipts or validate precomputed id/text JSONL."""
 
+import argparse
 import base64
 import binascii
 import json
 import re
-import sys
 from pathlib import Path
 
 
 ID = re.compile(r"[A-Za-z0-9._:-]{1,200}")
 SECONDS = re.compile(r"[0-9]{1,9}")
+
+
+def valid_text(text, number):
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"line {number}: invalid Unicode in text") from None
 
 
 def decode(path):
@@ -35,10 +42,7 @@ def decode(path):
                 text = box.get("raw_text", "")
                 if not isinstance(text, str):
                     raise ValueError(f"line {number}: non-string bbox raw_text")
-                try:
-                    text.encode("utf-8")
-                except UnicodeEncodeError:
-                    raise ValueError(f"line {number}: invalid Unicode in bbox raw_text") from None
+                valid_text(text, number)
                 if text.strip():
                     texts.append(text)
             # Match the survey's AmericanStories.run: keep bbox order and join nonblank regions.
@@ -46,13 +50,34 @@ def decode(path):
     return rows
 
 
+def read_jsonl(path):
+    rows = []
+    with path.open(encoding="utf-8") as source:
+        for number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                raise ValueError(f"line {number}: invalid JSON") from None
+            if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                    or not ID.fullmatch(row["id"]) or not isinstance(row.get("text"), str)):
+                raise ValueError(f"line {number}: invalid id/text row")
+            valid_text(row["text"], number)
+            rows.append({"id": row["id"], "text": row["text"]})
+    return rows
+
+
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: decode-american-stories.py INPUT OUTPUT")
-    source, output = map(Path, sys.argv[1:])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--input-format", choices=("b64", "jsonl"), default="b64",
+                        help="base64 receipts (default) or precomputed id/text JSONL")
+    args = parser.parse_args()
     try:
-        rows = decode(source)
-        with output.open("w", encoding="utf-8") as dest:
+        rows = decode(args.input) if args.input_format == "b64" else read_jsonl(args.input)
+        with args.output.open("w", encoding="utf-8") as dest:
             for row in rows:
                 dest.write(json.dumps(row, ensure_ascii=False) + "\n")
     except (OSError, UnicodeError, ValueError) as error:
