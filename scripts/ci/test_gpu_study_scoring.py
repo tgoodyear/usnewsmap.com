@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 
-SCRIPTS = Path(__file__).resolve().parent
+SCRIPTS = Path(__file__).resolve().parents[2] / "docs/reports/2026-11-gpu-studies/scripts"
 JOBS = SCRIPTS / "jobs"
 
 

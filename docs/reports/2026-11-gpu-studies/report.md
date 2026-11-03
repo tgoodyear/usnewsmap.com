@@ -412,7 +412,7 @@ If cleanup approaches the timed suspension's expiry, the supervisor retries exte
 
 The historical Jochre runs have HTTP 200 receipts and valid text-containing ZIPs for all 104 book pages and 100 newspaper crops. Study 8 calls its own Tesseract runner, not the earlier studies' Tesseract wrappers. Both whole-page settings have 104 of 104 successful receipts, the line setting has 4,011 of 4,011, and the newspaper run has 100 of 100; the scored readings match the retained outputs. The 139 empty line readings are noted above. An exit code alone cannot establish that a reading is semantically complete. No readers were rerun for these changes.
 
-Run the [synthetic regression tests](scripts/yiddish/test_runners.py) from the repository root with `python3 -B -I docs/reports/2026-11-gpu-studies/scripts/yiddish/test_runners.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
+Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.py) from the repository root with `python3 -B -I scripts/ci/test_gpu_study_yiddish.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
 
 # Spend
 

@@ -16,7 +16,7 @@ from unittest import mock
 import zipfile
 
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2] / "docs/reports/2026-11-gpu-studies/scripts/yiddish"
 WORK = Path.cwd() / f".study8-test-{os.getpid()}"
 
 
