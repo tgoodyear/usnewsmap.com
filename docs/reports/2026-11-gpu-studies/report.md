@@ -10,6 +10,8 @@ All limits are 95% bootstrap limits, resampling source pages. For Studies 1 to 7
 
 # Summary
 
+**Review limitation:** The historical LoRA adapter files were not checked for missing tensors, and the earlier Surya page-mode runners could discard block errors. The affected adapter and Surya page-mode comparisons are provisional; the retained evidence does not establish whether either problem affected a result. Study 8 used separately checked runners.
+
 Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, a difference of 8.2 points with limits of -4.6 to 25.4, so no difference is called. On the German measured set the protocol's pooled CER is 49.6% for Qwen 8B against 17.9% for `frak2021` PSM 3, a difference that is called, against Qwen. Repetition loops are the visible cause: leaving out the 9 looped crops of 1,060 (post-hoc) brings Qwen to 10.9%. Loops were rarer on some sets than others: 3.9% of pilot crops and 15 of 64 Japanese crops. A loop guard is the first change to make.
 
 A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%. Study 5 found that a loop guard alone gives the same gain (-45.0 points against the adapter's -44.7): with the guard on both, the 2B adapter's own gain is -6.9 points on Reichsanzeiger (second use) and -1.0 on unseen Fraktur books, with none on English. An 8B adapter gains -4.5 on Reichsanzeiger and little or nothing on the clean sets. Both lose little or nothing when exported to the GGUF the BOINC app runs. They stay untrusted.
@@ -87,6 +89,8 @@ Validation. Used once, to pick a checkpoint.
 
 The 1,000-step adapter was selected, SHA-256 `b6bc8c2a1c6b4e953e10321ebb8bdf27a363840cb7a8b05bf92eb16ed6d77b80`.
 
+The historical loaders did not require a complete adapter tensor-key set. The retained training logs record checkpoint hashes but not tensor keys, and the inspected study data do not contain the checkpoint payloads. Completeness of the 2B and 8B adapters therefore remains unverified, so the adapter comparisons in Studies 2 and 5 are provisional. The updated loaders reject incomplete adapters; no readings were rerun.
+
 Held-out test. Scored once.
 
 | Source | Reader | Items | Pooled CER | 95% limits | Pooled WER | 95% limits |
@@ -131,6 +135,7 @@ A CER above 100% means the reading is longer than the reference.
 Caveats:
 
 - These Surya rows measure our configuration, not the engine at its best: `full_page=True` on line crops, CPU layout and the GGUF through llama.cpp. Study 6 retests it.
+- The historical `whole`, `capped` and `tiled` runners discarded block errors like skips. The retained rows do not identify whether any such errors occurred, so the affected Surya scores and page-mode comparisons remain provisional. The updated runner records block failures; no readings were rerun.
 - A crop isn't a page. Surya's full-page mode and American Stories' layout model are built for pages. On NZZ's one-line crops Surya's median crop CER is 100%, and 317 of 612 crops fail the under-length guard. American Stories returned nothing on 530 of 611 crops. This says those crops don't suit them, and little about their reading.
 - Tesseract used `eng`, `frak2021` or `fra+fin+swe` by source, at PSM 6. Qwen and CHURRO were given no language.
 - CHURRO's training data includes Chronicling America, so its Overproof result can't be separated from training exposure. Licence: Qwen Research License.
@@ -326,6 +331,8 @@ Layout ran on the GPU here, with a CUDA torch in the image. Surya's own order in
 ## Native weights against the GGUF
 
 50 crops by the frozen hash order, line mode, native weights (revision `3b3d4cdf`, OpenRAIL) on vLLM 0.20.1 with Surya's server settings scaled to a 12 GB card (`max-num-seqs` 16, `max-num-batched-tokens` 4096), 9.9 GB peak VRAM. Pooled CER is 61.4% (37.6 to 95.4) for native and 18.9% (10.0 to 30.7) for the GGUF, 42.5 points worse (19.6 to 76.9). A few readings run far past their reference, such as 552 characters on a 57-character crop. This wasn't investigated further, and it may come from our server settings, so it isn't a verdict on the native model.
+
+All 50 archived native rows have successful status and nonempty output, and their IDs match the selection reconstructed from the retained 612 line IDs. The original native input list was not found in the inspected worktree, so it cannot independently verify that reconstruction.
 
 # Study 7: image-token sweep
 
