@@ -7,6 +7,8 @@ param ciPrincipalId string
 param secretNames array = [
   'usnm-prod-workers-ci-token'
   'usnm-prod-cloudflare-account-id'
+  // Read-only token for .github/workflows/edge-drift.yml; create it before provisioning.
+  'usnm-prod-edge-drift-token'
 ]
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
