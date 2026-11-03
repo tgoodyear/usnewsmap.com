@@ -29,6 +29,7 @@ MAX_MATCH_EDGES = 100000
 MAX_PROFILE_CHECKS = 1000000
 TIMEOUT = 15
 NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
+SOURCE_UNKNOWN_REASONS = ("task_resource_usage_unavailable", "active_task_resource_usage_unavailable")
 
 
 class SupplyUnknown(ValueError):
@@ -117,9 +118,12 @@ def fresh(document, now, kind):
     if not isinstance(document, dict):
         raise ValueError("source must be an object")
     if (type(document.get("schema_version")) is not int or document.get("schema_version") != 1 or document.get("source") != kind
-            or not 0 <= now - natural(document.get("observed_at")) <= MAX_AGE
-            or document.get("error")):
+            or not 0 <= now - natural(document.get("observed_at")) <= MAX_AGE):
         raise ValueError("source unavailable, stale or future-dated")
+    if document.get("error"):
+        if kind == "client" and document["error"] in SOURCE_UNKNOWN_REASONS:
+            raise SupplyUnknown(document["error"])
+        raise ValueError("source unavailable")
     if kind == "controller":
         tick = document["tick"]
         if not isinstance(tick, dict):
@@ -356,6 +360,29 @@ def server(project, env_file, container=None, container_project="/project/usnmoc
     return data | {"plans": plans, "enabled_until": window(env_file)}
 
 
+def client_resource_usage(node, default_cpu):
+    """Read one complete client resource record, never merge WU and version fields."""
+    try:
+        coprocs = node.findall("coproc")
+        if len(node.findall("avg_ncpus")) > 1 or len(coprocs) > 1:
+            raise ValueError("ambiguous resource record")
+        cpu = float(node.findtext("avg_ncpus", str(default_cpu)))
+        gpu, count = None, 0
+        if coprocs:
+            coproc = coprocs[0]
+            if len(coproc.findall("type")) != 1 or len(coproc.findall("count")) != 1:
+                raise ValueError("incomplete GPU resource record")
+            gpu = coproc.findtext("type", "").strip()
+            count = float(coproc.findtext("count"))
+            if not gpu or not math.isfinite(count) or count <= 0:
+                raise ValueError("invalid GPU demand")
+        if not math.isfinite(cpu) or cpu < 0 or not gpu and cpu == 0:
+            raise ValueError("invalid CPU demand")
+        return {"cpus": cpu, "gpu": gpu, "gpu_count": count}
+    except (ValueError, TypeError):
+        raise SupplyUnknown("task_resource_usage_unavailable") from None
+
+
 def client(data_dir, port):
     from client_account import MASTER, RPC, flag
 
@@ -395,13 +422,10 @@ def client(data_dir, port):
         if v.tag != "app_version":
             continue
         app = v.findtext("app_name")
-        coproc = v.find("coproc")
         versions.append({"project": owner, "app": app, "version_num": int(v.findtext("version_num")),
                          "plan_class": v.findtext("plan_class", ""),
                          "platform": v.findtext("platform", state.findtext(".//platform_name")),
-                         "cpus": float(v.findtext("avg_ncpus", "1")),
-                         "gpu": coproc.findtext("type") if coproc is not None else None,
-                         "gpu_count": float(coproc.findtext("count", "1")) if coproc is not None else 0})
+                         **client_resource_usage(v, 1)})
     # Count queued/download-pending work as occupied: it already feeds this device.
     used_cpu, used_memory, used_gpu = 0, 0, {}
     units = {(owner, w.findtext("name")): w for owner, w in scoped if w.tag == "workunit"}
@@ -413,6 +437,13 @@ def client(data_dir, port):
             continue
         if flag(result, "suspended_via_gui"):
             raise ValueError("suspended queued task")
+        active = result.findall("active_task")
+        if active and (len(active) != 1 or active[0].findtext("active_task_state") != "0"):
+            # Running jobs retain old reservations after app_config/scheduler
+            # updates; get_state exposes only a rounded display string for them.
+            raise SupplyUnknown("active_task_resource_usage_unavailable")
+        if flag(result, "coproc_missing"):
+            raise SupplyUnknown("task_resource_usage_unavailable")
         unit = units.get((owner, result.findtext("wu_name")))
         app = unit.findtext("app_name") if unit is not None else None
         match = [v for v in versions if v["project"] == owner and v["app"] == app
@@ -422,14 +453,16 @@ def client(data_dir, port):
         if len(match) != 1:
             # Unknown or other-project work must not inflate idle capacity.
             raise ValueError("unaccounted client task")
-        v = match[0]
+        usage = match[0]
+        if unit is not None and (unit.find("avg_ncpus") is not None or unit.find("coproc") is not None):
+            usage = client_resource_usage(unit, 0)
         memory_bound = unit.findtext("rsc_memory_bound") if unit is not None else None
         if memory_bound is None or not math.isfinite(float(memory_bound)) or float(memory_bound) < 0:
             raise ValueError("occupied task memory unavailable")
         used_memory += float(memory_bound)
-        used_cpu += v["cpus"]
-        if v["gpu"]:
-            used_gpu[v["gpu"]] = used_gpu.get(v["gpu"], 0) + v["gpu_count"]
+        used_cpu += usage["cpus"]
+        if usage["gpu"]:
+            used_gpu[usage["gpu"]] = used_gpu.get(usage["gpu"], 0) + usage["gpu_count"]
     gpus, gpu_devices, gpu_memory, capabilities = {}, {}, {}, {}
     for node in state.findall(".//coprocs/*"):
         vendor = {"coproc_cuda": "NVIDIA", "coproc_ati": "ATI",
@@ -446,6 +479,8 @@ def client(data_dir, port):
                 "min_nvidia_compcap": int(node.findtext(".//major", "0")) * 100 + int(node.findtext(".//minor", "0")),
                 "min_opencl_version": int(opencl[1]) * 100 + int(opencl[2]) if opencl else 0,
             }
+    if any(device not in gpu_devices or gpu_devices[device] <= 0 for device in used_gpu):
+        raise SupplyUnknown("task_resource_usage_unavailable")
     blocked = {node.text for tag in ("no_rsc_pref", "no_rsc_apps", "no_rsc_ams", "no_rsc_config")
                for node in project.findall(tag)}
     for vendor, tag in (("NVIDIA", "no_cuda"), ("ATI", "no_ati"), ("intel_gpu", "no_intel_gpu"),
@@ -855,7 +890,10 @@ def collect(config):
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
                 documents[name] = document
             except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
-                reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
+                if isinstance(error, SupplyUnknown) and str(error) in SOURCE_UNKNOWN_REASONS:
+                    reason = str(error)
+                else:
+                    reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
                 facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
                 facts["errors"].append(name)
     database = documents.get("server")
@@ -966,6 +1004,8 @@ def main(argv=None):
             result["tick"] = controller(args.unit)
         else:
             result.update(backlog(args.dashboard, args.requests, args.outbox, args.selection))
+    except SupplyUnknown as error:
+        result["error"] = str(error) if str(error) in SOURCE_UNKNOWN_REASONS else "source unavailable"
     except Exception:
         # Source errors must replace the last success; never publish stderr, paths or credentials.
         result["error"] = "source unavailable"

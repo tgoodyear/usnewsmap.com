@@ -90,6 +90,56 @@ def database():
                        "rsc_memory_bound": 10, "rsc_disk_bound": 10}]}
 
 
+@contextlib.contextmanager
+def client_rpc_fixture():
+    operations = []
+    answers = {
+        "auth1": "<nonce>nonce</nonce>",
+        "auth2": "<authorized/>",
+        "get_state": """<client_state><platform_name>linux</platform_name>
+<project><master_url>https://boinc.usnewsmap.com/</master_url><hostid>9</hostid></project>
+<host_info><p_ncpus>4</p_ncpus><m_nbytes>1000</m_nbytes></host_info>
+<coprocs><coproc_intel_gpu><count>1</count></coproc_intel_gpu></coprocs>
+<app_version><app_name>usnm_ocr</app_name><version_num>117</version_num><plan_class>docker</plan_class><avg_ncpus>1</avg_ncpus></app_version>
+</client_state>""",
+        "get_cc_status": "<cc_status><task_suspend_reason>0</task_suspend_reason><gpu_suspend_reason>0</gpu_suspend_reason></cc_status>",
+        "get_global_prefs_working": "<global_preferences><max_ncpus_pct>50</max_ncpus_pct></global_preferences>",
+        "get_disk_usage": "<disk_usage_summary><project><disk_usage>600</disk_usage></project><d_free>900</d_free><d_boinc>100</d_boinc><d_allowed>1000</d_allowed></disk_usage_summary>",
+    }
+
+    class Handler(socketserver.BaseRequestHandler):
+        def handle(self):
+            buffer = b""
+            while True:
+                chunk = self.request.recv(65536)
+                if not chunk:
+                    return
+                buffer += chunk
+                if b"\x03" not in buffer:
+                    continue
+                message, buffer = buffer.split(b"\x03", 1)
+                op = C.xml(message)[0].tag
+                operations.append(op)
+                self.request.sendall(("<boinc_gui_rpc_reply>" + answers[op] + "</boinc_gui_rpc_reply>").encode() + b"\x03")
+
+    with fixture() as root, socketserver.TCPServer(("127.0.0.1", 0), Handler) as rpc:
+        (root / "gui_rpc_auth.cfg").write_text("secret")
+        thread = threading.Thread(target=rpc.serve_forever)
+        thread.start()
+        try:
+            yield root, rpc.server_address[1], answers, operations
+        finally:
+            rpc.shutdown()
+            thread.join()
+
+
+def queued_task(resources="", result_fields=""):
+    return f"""<workunit><name>queued</name><app_name>usnm_ocr</app_name>
+<rsc_memory_bound>100</rsc_memory_bound>{resources}</workunit>
+<result><wu_name>queued</wu_name><version_num>117</version_num>
+<plan_class>docker</plan_class><state>1</state>{result_fields}</result>"""
+
+
 class EligibilityTests(unittest.TestCase):
     def test_every_idle_gpu_type_needs_an_installed_and_live_profile(self):
         db, h = database(), host()
@@ -905,69 +955,104 @@ class CollectionTests(unittest.TestCase):
                 C.server(root, root / "window.env")
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
-        operations = []
-        answers = {
-            "auth1": "<nonce>nonce</nonce>",
-            "auth2": "<authorized/>",
-            "get_state": """<client_state><platform_name>linux</platform_name>
-<project><master_url>https://boinc.usnewsmap.com/</master_url><hostid>9</hostid></project>
-<host_info><p_ncpus>4</p_ncpus><m_nbytes>1000</m_nbytes></host_info>
-<coprocs><coproc_intel_gpu><count>1</count></coproc_intel_gpu></coprocs>
-<app_version><app_name>usnm_ocr</app_name><version_num>117</version_num><plan_class>docker</plan_class><avg_ncpus>1</avg_ncpus></app_version>
-</client_state>""",
-            "get_cc_status": "<cc_status><task_suspend_reason>0</task_suspend_reason><gpu_suspend_reason>0</gpu_suspend_reason></cc_status>",
-            "get_global_prefs_working": "<global_preferences><max_ncpus_pct>50</max_ncpus_pct></global_preferences>",
-            "get_disk_usage": "<disk_usage_summary><project><disk_usage>600</disk_usage></project><d_free>900</d_free><d_boinc>100</d_boinc><d_allowed>1000</d_allowed></disk_usage_summary>",
-        }
-        class Handler(socketserver.BaseRequestHandler):
-            def handle(self):
-                buffer = b""
-                while True:
-                    chunk = self.request.recv(65536)
-                    if not chunk:
-                        return
-                    buffer += chunk
-                    if b"\x03" not in buffer:
-                        continue
-                    message, buffer = buffer.split(b"\x03", 1)
-                    op = C.xml(message)[0].tag
-                    operations.append(op)
-                    self.request.sendall(("<boinc_gui_rpc_reply>" + answers[op] + "</boinc_gui_rpc_reply>").encode() + b"\x03")
-        with fixture() as root, socketserver.TCPServer(("127.0.0.1", 0), Handler) as rpc:
-            (root / "gui_rpc_auth.cfg").write_text("secret")
-            thread = threading.Thread(target=rpc.serve_forever)
-            thread.start()
-            try:
-                result = C.client(root, rpc.server_address[1])
-                self.assertEqual(result["host_id"], 9)
-                self.assertEqual(result["idle_cpu"], 2)
-                self.assertEqual(result["disk_bytes"], 300)
-                self.assertEqual(operations, list(answers))
-                self.assertNotIn("secret", json.dumps(result))
-                answers["get_state"] = answers["get_state"].replace("</client_state>", """
+        with client_rpc_fixture() as (root, port, answers, operations):
+            result = C.client(root, port)
+            self.assertEqual(result["host_id"], 9)
+            self.assertEqual(result["idle_cpu"], 2)
+            self.assertEqual(result["disk_bytes"], 300)
+            self.assertEqual(operations, list(answers))
+            self.assertNotIn("secret", json.dumps(result))
+            answers["get_state"] = answers["get_state"].replace("</client_state>", """
 <workunit><name>finished</name><app_name>usnm_ocr</app_name></workunit>
 <result><wu_name>finished</wu_name><version_num>117</version_num><plan_class>docker</plan_class><state>4</state></result>
 </client_state>""")
-                self.assertEqual(C.client(root, rpc.server_address[1])["idle_cpu"], 2)
+            self.assertEqual(C.client(root, port)["idle_cpu"], 2)
+            answers["get_state"] = answers["get_state"].replace(
+                "<state>4</state>", "<state>1</state>").replace(
+                "<name>finished</name>", "<name>finished</name><rsc_memory_bound>100</rsc_memory_bound>")
+            result = C.client(root, port)
+            self.assertEqual((result["idle_cpu"], result["memory_bytes"]), (1, 400))
+            answers["get_state"] = answers["get_state"].replace(
+                "<rsc_memory_bound>100</rsc_memory_bound>", "")
+            with self.assertRaisesRegex(ValueError, "occupied task memory unavailable"):
+                C.client(root, port)
+            answers["get_state"] = answers["get_state"].replace("<state>1</state>", "<state>4</state>")
+            answers["get_state"] = answers["get_state"].replace("</project>",
+                "<no_rsc_pref>CPU</no_rsc_pref><no_rsc_config>intel_gpu</no_rsc_config></project>")
+            result = C.client(root, port)
+            self.assertEqual(result["idle_cpu"], 0)
+            self.assertEqual(result["available_cpu"], 2)
+            self.assertEqual(result["idle_gpu"]["intel_gpu"], 0)
+
+    def test_workunit_resource_records_replace_version_records_for_each_project(self):
+        with client_rpc_fixture() as (root, port, answers, _):
+            base = answers["get_state"]
+            coproc = "<coproc><type>intel_gpu</type><count>.5</count></coproc>"
+            for resources, gpu_version, expected in (
+                    ("<avg_ncpus>2</avg_ncpus>", False, (0, 1)),
+                    ("<avg_ncpus>2</avg_ncpus>", True, (0, 1)),
+                    ("<avg_ncpus>.25</avg_ncpus>" + coproc, False, (1.75, .5)),
+                    ("<avg_ncpus>0</avg_ncpus>" + coproc, False, (2, .5))):
+                with self.subTest(resources=resources, gpu_version=gpu_version):
+                    state = base.replace("</app_version>", coproc + "</app_version>") if gpu_version else base
+                    answers["get_state"] = state.replace("</client_state>", queued_task(resources) + "</client_state>")
+                    observed = C.client(root, port)
+                    self.assertEqual((observed["available_cpu"], observed["idle_gpu"]["intel_gpu"]), expected)
+                    self.assertEqual(observed["memory_bytes"], 400)
+            other = """<project><master_url>https://other.invalid/</master_url><hostid>7</hostid></project>
+<app_version><app_name>usnm_ocr</app_name><version_num>117</version_num><plan_class>docker</plan_class>
+<avg_ncpus>.25</avg_ncpus><coproc><type>intel_gpu</type><count>.25</count></coproc></app_version>"""
+            other += queued_task("<avg_ncpus>.5</avg_ncpus><coproc><type>intel_gpu</type><count>.75</count></coproc>")
+            answers["get_state"] = base.replace("</client_state>", queued_task() + other + "</client_state>")
+            observed = C.client(root, port)
+            self.assertEqual((observed["available_cpu"], observed["idle_gpu"]["intel_gpu"], observed["memory_bytes"]),
+                             (.5, .25, 300))
+
+    def test_unprovable_task_reservations_are_source_local_unknown_and_recover(self):
+        with client_rpc_fixture() as (root, port, answers, _):
+            base = answers["get_state"]
+            coproc = "<coproc><type>intel_gpu</type><count>.5</count></coproc>"
+            for resources in ("<avg_ncpus>-1</avg_ncpus>", "<avg_ncpus>nan</avg_ncpus>",
+                              "<avg_ncpus>1</avg_ncpus>" + coproc * 2,
+                              "<avg_ncpus>1</avg_ncpus><coproc><type>intel_gpu</type></coproc>",
+                              "<avg_ncpus>1</avg_ncpus><coproc><type>absent_gpu</type><count>1</count></coproc>"):
+                with self.subTest(resources=resources):
+                    answers["get_state"] = base.replace("</client_state>", queued_task(resources) + "</client_state>")
+                    with self.assertRaisesRegex(C.SupplyUnknown, "task_resource_usage_unavailable"):
+                        C.client(root, port)
+            for active in ("<active_task/>", "<active_task><active_task_state>1</active_task_state></active_task>",
+                           "<active_task><active_task_state>9</active_task_state></active_task>"):
+                fields = active + "<resources>0.25 CPUs + 0.25 Intel GPUs</resources>"
+                answers["get_state"] = base.replace(
+                    "</client_state>", queued_task("<avg_ncpus>2</avg_ncpus>", fields) + "</client_state>")
+                with self.subTest(active=active), self.assertRaisesRegex(C.SupplyUnknown, "active_task_resource_usage_unavailable"):
+                    C.client(root, port)
+            output = root / "client.json"
+            args = ["client", "--data-dir", str(root), "--port", str(port), "--output", str(output)]
+            docs = self.documents()
+            config = {name: "/" + name for name in ("server", "controller", "backlog")}
+            config["clients"] = ["/own"]
+            with patch.object(C.time, "time", return_value=NOW):
+                self.assertEqual(C.main(args), 1)
+                docs["/own"] = json.loads(output.read_text())
+                with patch.object(C, "read_source", side_effect=lambda path: docs[path]):
+                    facts = C.collect(config)
+                self.assertEqual(facts["sources"]["client_0"]["reason"], "active_task_resource_usage_unavailable")
+                document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+                checks = {c["code"]: c["state"] for c in document["checks"]}
+                self.assertEqual((checks["cpu_shortage"], checks["gpu_shortage"], checks["controller_tick"]),
+                                 ("unknown", "unknown", "healthy"))
                 answers["get_state"] = answers["get_state"].replace(
-                    "<state>4</state>", "<state>1</state>").replace(
-                    "<name>finished</name>", "<name>finished</name><rsc_memory_bound>100</rsc_memory_bound>")
-                result = C.client(root, rpc.server_address[1])
-                self.assertEqual((result["idle_cpu"], result["memory_bytes"]), (1, 400))
+                    "<active_task_state>9</active_task_state>", "<active_task_state>0</active_task_state>")
+                self.assertEqual(C.main(args), 0)
+                recovered = json.loads(output.read_text())
+                self.assertNotIn("error", recovered)
+                self.assertEqual(recovered["available_cpu"], 0)
                 answers["get_state"] = answers["get_state"].replace(
-                    "<rsc_memory_bound>100</rsc_memory_bound>", "")
-                with self.assertRaisesRegex(ValueError, "occupied task memory unavailable"):
-                    C.client(root, rpc.server_address[1])
-                answers["get_state"] = answers["get_state"].replace("<state>1</state>", "<state>4</state>")
-                answers["get_state"] = answers["get_state"].replace("</project>",
-                    "<no_rsc_pref>CPU</no_rsc_pref><no_rsc_config>intel_gpu</no_rsc_config></project>")
-                result = C.client(root, rpc.server_address[1])
-                self.assertEqual(result["idle_cpu"], 0)
-                self.assertEqual(result["available_cpu"], 2)
-                self.assertEqual(result["idle_gpu"]["intel_gpu"], 0)
-            finally:
-                rpc.shutdown()
-                thread.join()
+                    "<active_task_state>0</active_task_state>", "<active_task_state>1</active_task_state>").replace(
+                    "<state>1</state>", "<state>4</state>")
+                self.assertEqual(C.main(args), 0)
+                self.assertEqual(json.loads(output.read_text())["available_cpu"], 2)
 
     @unittest.skipUnless(os.environ.get("USNM_FEED_DASH_BINARY"), "set USNM_FEED_DASH_BINARY for binary rehearsal")
     def test_python_observations_to_real_dashboard_http_and_durable_monitor(self):

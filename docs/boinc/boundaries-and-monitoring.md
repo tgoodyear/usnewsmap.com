@@ -87,8 +87,28 @@ Selected work is checked against cumulative per-host CPU, RAM and disk budgets,
 shared between CPU and GPU allocations. GPU work consumes its live CPU demand,
 not just a GPU slot; a CPU-app exclusion does not disable CPU support for permitted
 GPU work. Existing queued work reserves its CPU and workunit RAM
-bounds first; missing occupied-work RAM evidence is unknown. Uniform resource
-costs cap graph capacity directly. Per-task GPU memory is `gpu_ram_used_mb`, falling
+bounds first; missing occupied-work RAM evidence is unknown. Queued task CPU/GPU
+reservations use the workunit's **complete** resource record when present,
+otherwise the app version's record, matching
+[BOINC result initialization](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/result.h#L129).
+This includes other attached projects and CPU-only, GPU-only and fractional
+overrides; fields are never merged with stale version defaults. Invalid or
+ambiguous reservations produce `task_resource_usage_unavailable`.
+
+**Active-task evidence limit:** BOINC can retain old reservations for started
+tasks after app-version/configuration updates
+([client_state.cpp](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/client/client_state.cpp#L2462)).
+GUI RPC exposes only rounded, cached task resource text, not an exact running
+resource record. An unfinished task with a started or unrecognized active-task
+state therefore makes its client source `active_task_resource_usage_unavailable`.
+The monitor does not infer a precise reservation from that display string.
+Consequently both stock checks can be unknown while any configured client has
+such a task; refill, backlog and controller checks remain independently evaluated.
+Unstarted tasks and completed uploads retain their normal accounting. This
+explicit evidence limitation does not change the unobserved-policy boundary.
+
+Uniform resource costs cap graph capacity directly. Per-task GPU memory is
+`gpu_ram_used_mb`, falling
 back to `min_gpu_ram_mb` when absent or zero, matching the
 [pinned scheduler](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L1079).
 Positive reservations are enforced for
