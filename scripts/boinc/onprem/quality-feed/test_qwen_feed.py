@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import stat
 import tarfile
@@ -37,6 +38,32 @@ DOC = "sn1_1900-01-02_ed-1_seq-3"
 def frozen_page(doc=DOC):
     return {"doc_id": doc, "batch": "xx_test", "batch_version": 1,
             "bytes": 12, "sha256": "a" * 64}
+
+
+class PrepareDiagnosticsTest(unittest.TestCase):
+    def test_child_stdout_is_preserved_and_exceptions_propagate(self):
+        for error in (subprocess.CalledProcessError(1, ["prepare"], output=b'{"doc_id":"p","error":"bad"}\n'),
+                      subprocess.TimeoutExpired(["prepare"], 30, output=b"partial prepare output")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(driver, "command", side_effect=error), \
+                    contextlib.redirect_stderr(io.StringIO()) as output:
+                with self.assertRaises(type(error)) as raised:
+                    driver.prepare(["prepare"])
+                self.assertIs(raised.exception, error)
+                self.assertIn(error.output.decode(), output.getvalue())
+
+    def test_success_forwards_diagnostics_and_counts_only_ready_pages(self):
+        output = (b'{"msg":"page failed; will retry","doc_id":"p"}\n'
+                  b'{"msg":"chunk ready","pages":2}\nignored line\n'
+                  b'{"msg":"chunk ready","pages":1}\n')
+        with mock.patch.object(driver, "command", return_value=output), \
+                contextlib.redirect_stdout(io.StringIO()) as logged:
+            self.assertEqual(driver.prepare(["prepare"]), 3)
+        self.assertIn("page failed; will retry", logged.getvalue())
+        with mock.patch.object(driver, "command", return_value=b'{"msg":"chunk ready","pages":true}\n'), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, "invalid prepared chunk page count"):
+            driver.prepare(["prepare"])
 
 
 class SourceRequestTest(unittest.TestCase):
@@ -94,6 +121,31 @@ class SourceRequestTest(unittest.TestCase):
             source.save(path, record)
             with self.assertRaisesRegex(ValueError, "integrity"):
                 source.read(path)
+
+    def test_quarantined_frozen_member_never_rebinds_and_does_not_stop_other_pages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            old = frozen_page()
+            good = frozen_page("sn1_1900-01-02_ed-1_seq-4")
+            spec = source.specification("sn1", 10, "test")
+            record = {"request_id": source.digest(spec), "spec": spec, "pages": [old, good],
+                      "pages_sha256": source.digest([old, good])}
+            source.save(root / "requests" / (record["request_id"] + ".json"), record)
+            changed = {**old, "sha256": "b" * 64}
+            index = b"".join((json.dumps(p) + "\n").encode() for p in (changed, good))
+            quarantine_id = quality.scan_quarantine.source_id(old)
+            self.assertEqual(source.source_id(old), quarantine_id)
+            with self.assertRaisesRegex(ValueError, "requested source changed"):
+                source.priority_index(index, root, "test", set())
+            selected, request_id = source.priority_index(index, root, "test", set(),
+                                                         quarantined_ids={quarantine_id})
+            self.assertEqual(request_id, record["request_id"])
+            self.assertEqual(json.loads(selected), good)
+            selected, request_id = source.priority_index(index, root, "test", {good["doc_id"]},
+                                                         quarantined_ids={quarantine_id})
+            self.assertEqual((selected, request_id), (index, None))
+            self.assertEqual(source.read(root / "requests" / (record["request_id"] + ".json")), record)
 
     def test_registered_source_replays_without_rerunning_selection(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -338,6 +390,31 @@ class SourceRequestTest(unittest.TestCase):
                 self.assertEqual(result["reconstructed_source_pages"], int(
                     delta.get("pages", {}).get(DOC, {}) == {
                         "status": "published", "provenance": "verified_reconstruction"}))
+
+    def test_quarantine_progress_binds_exact_fingerprint_even_after_another_copy_is_prepared(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "requests").mkdir()
+            args = types.SimpleNamespace(state=root, prep_ct=215, server_ct=230, campaign="test",
+                                         server_host="server", archive_host="archive")
+            spec, page = source.specification(DOC, 1, "test"), frozen_page()
+            record = {"request_id": source.digest(spec), "spec": spec, "pages": [page],
+                      "pages_sha256": source.digest([page])}
+            native = {"pages": {DOC: {"status": "pending"}}, "published_workunits": 0,
+                      "agreed_workunits": 0, "unsent_replicas": 0, "running_replicas": 0,
+                      "returned_replicas": 0, "invalid_replicas": 0, "error_workunits": 0,
+                      "history_unavailable_workunits": 0, "source_conflict_pages": 0}
+            for sha, done, expected in ((page["sha256"], {DOC: "another copy"}, "preparation_quarantined"),
+                                        ("b" * 64, {}, "awaiting_preparation")):
+                prepared = {"done.txt": done, "skipped.txt": {},
+                            "quarantine": [{"source": {**page, "sha256": sha}, "refetch_state": "observed_new"}]}
+                with mock.patch("qwen_feed.remote", side_effect=[
+                        json.dumps(native).encode(), b'{"available_archives":["xx_test_ver01.tar.bz2"]}']), \
+                        mock.patch("qwen_feed.command", return_value=json.dumps(prepared).encode()):
+                    result = source.inspect(args, record)
+                self.assertEqual(result["source_dispositions"], {expected: 1})
+                self.assertEqual(result["state"], "needs_science_review" if done else "preparing_and_publishing")
+                self.assertEqual(result["quarantined_refetch_states"], {"observed_new": 1} if done else {})
 
 
 class ArchiveTest(unittest.TestCase):
@@ -654,7 +731,8 @@ class SourceTest(unittest.TestCase):
                     mock.patch.object(driver.shutil, "disk_usage",
                                       return_value=types.SimpleNamespace(free=100 * 1024**3)), \
                     mock.patch.object(driver, "command", side_effect=run) as command, \
-                    mock.patch.object(driver.urllib.request, "urlopen") as source:
+                    mock.patch.object(driver.urllib.request, "urlopen") as source, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
                 source.return_value.__enter__.return_value.__iter__.return_value = iter([
                     b'{"doc_id":"candidate","batch":"xx_test","batch_version":1}\n'])
                 driver.tick(a)
@@ -662,6 +740,9 @@ class SourceTest(unittest.TestCase):
                         if "run" in call.args[0] and any(
                             arg.endswith("/quality_feed.py") for arg in call.args[0])]
             self.assertEqual(len(prepared), 1)
+            result = next(json.loads(line) for line in output.getvalue().splitlines()
+                          if json.loads(line).get("status") == "prepared")
+            self.assertEqual((result["selected_for_preparation"], result["pages"]), (1, 0))
 
     def test_native_gate_uses_fresh_original_pairs_but_retains_capacity_and_unresolved_bounds(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -781,7 +862,7 @@ class SourceTest(unittest.TestCase):
             self.assertEqual(stage[stage.index("--prompt-version") + 1], "3")
             self.assertEqual(publish[:3], ["/guard/usnm-boinc", "qwen", "submit"])
 
-    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None):
+    def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=()):
         """One feed tick with a stub corpus; returns the filters each select used and the
         pages it sent to `run`. A filter's refused languages are one string when one is refused."""
         args = types.SimpleNamespace(
@@ -805,12 +886,14 @@ class SourceTest(unittest.TestCase):
                 indexed = {json.loads(line)["doc_id"] for line in index.splitlines()}
                 pool = [p for p in yiddish + others
                         if (wanted is None or p["lang"] == wanted) and p["lang"] not in refused
-                        and (german_pages is None or wanted != "deu" or p["doc_id"] in indexed)]
+                        and p["doc_id"] in indexed]
                 selected = "".join(json.dumps(p) + "\n" for p in pool[:filters[-1][2]]).encode()
             if "cat" in argv:
                 return selected
             if "tee" in argv and argv[-1].endswith("/pages.jsonl"):
                 prepared.extend(json.loads(line) for line in data.splitlines())
+            if "-c" in argv and "retryable_ids" in argv[-1]:
+                return json.dumps(list(retryable)).encode()
             return b"[]" if "-c" in argv else b""
 
         def remote(host, argv, data=None):
@@ -850,6 +933,22 @@ class SourceTest(unittest.TestCase):
             filters, pages = self.budget_tick(root, 30, yiddish[30:], others)
             self.assertEqual(filters, [(None, "yid", 100)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_failed_budget_reservation_can_retry_without_spending_another_page(self):
+        page = {**frozen_page(), "lang": "yid", "damage_rate": .9}
+        other = {"doc_id": "sn2_1900-01-02_ed-1_seq-1", "lang": "srp", "damage_rate": .8}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "yiddish-budget.json").write_text(json.dumps([DOC]))
+            retryable = {quality.scan_quarantine.source_id(page)}
+            filters, chosen = self.budget_tick(root, 1, [page], [other], retryable=retryable)
+            self.assertEqual(filters, [("yid", None, 1)])
+            self.assertEqual(chosen, [DOC])
+            self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), [DOC])
+            filters, chosen = self.budget_tick(root, 1, [page], [other], retryable=())
+            self.assertEqual(filters, [(None, "yid", 100)])
+            self.assertEqual(chosen, [other["doc_id"]])
+            self.assertEqual(json.loads((root / "yiddish-budget.json").read_text()), [DOC])
 
     def test_the_budget_goes_ahead_of_a_source_request(self):
         yiddish = [{"doc_id": "sn1_1900-01-02_ed-1_seq-1", "lang": "yid", "damage_rate": .9}]

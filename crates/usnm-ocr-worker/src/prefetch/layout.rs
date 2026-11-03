@@ -198,6 +198,25 @@ pub(super) async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Opt
     None
 }
 
+/// A repair may not replace even an incomplete or unverifiable retained copy.
+pub(super) async fn repair_occupied(
+    out: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+) -> std::io::Result<bool> {
+    for f in formats(size) {
+        let scan = scan_path(out, row, size, *f);
+        for path in [sidecar_path(&scan), scan] {
+            match tokio::fs::symlink_metadata(path).await {
+                Ok(_) => return Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Write `body` to `path` through a synced `.part` file and a rename.
 pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<()> {
     let path = path.to_owned();
@@ -212,6 +231,31 @@ pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<(
         f.sync_all()?;
         drop(f);
         std::fs::rename(&part, &path)?;
+        Ok(())
+    })
+    .await?
+}
+
+/// Publish a synced file without replacing a path created after the occupancy check.
+pub(super) async fn write_new_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<()> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let dir = path.parent().context("no parent directory")?;
+        std::fs::create_dir_all(dir)?;
+        let mut part = path.as_os_str().to_owned();
+        part.push(format!(".repair-{}.part", std::process::id()));
+        let part = PathBuf::from(part);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)?;
+        let result = file.write_all(&body).and_then(|_| file.sync_all());
+        drop(file);
+        let result = result.and_then(|_| std::fs::hard_link(&part, &path));
+        let cleanup = std::fs::remove_file(&part);
+        result
+            .with_context(|| format!("publishing repair without replacing {}", path.display()))?;
+        cleanup?;
         Ok(())
     })
     .await?

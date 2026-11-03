@@ -75,7 +75,7 @@ stage=/root/usnm-quality-feed-install
 
 # The files, to a root-only directory on the host, then into the container.
 "${SSH[@]}" "rm -rf $stage && install -d -m 700 $stage"
-scp -q "$HERE/quality_feed.py" "$HERE/quality_campaign.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
+scp -q "$HERE/quality_feed.py" "$HERE/scan_quarantine.py" "$HERE/quality_campaign.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
   "$HERE/quality_results.py" "$HERE/quality_results_partial.py" "$HERE/quality-results-pull.sh" \
   "$HERE/usnm-quality-results.service" "$HERE/usnm-quality-results.timer" \
@@ -97,6 +97,7 @@ in_ct test -d /srv/curated/pages || { echo "error: no curated copy in CT $ct: ru
 in_ct bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get install -y -q python3-venv postgresql-client > /dev/null'
 in_ct install -d /opt/usnm-quality-feed /etc/usnm /var/lib/usnm-quality-feed
 pct push "$ct" "$stage/requirements.txt" /opt/usnm-quality-feed/requirements.txt
+pct push "$ct" "$stage/scan_quarantine.py" /opt/usnm-quality-feed/scan_quarantine.py --perms 644
 pct push "$ct" "$stage/quality_feed.py" /opt/usnm-quality-feed/quality_feed.py --perms 755
 pct push "$ct" "$stage/quality_campaign.py" /opt/usnm-quality-feed/quality_campaign.py --perms 755
 pct push "$ct" "$stage/load.py" /opt/usnm-quality-feed/load.py --perms 755

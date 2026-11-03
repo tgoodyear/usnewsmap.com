@@ -215,6 +215,207 @@ async fn a_buffer_at_its_cap_doesnt_block_pages_already_there() {
     assert_eq!((s.state.as_str(), s.already_there), ("done", 1));
 }
 
+fn decode_repair_manifest(dir: &Path, rows: &[ManifestRow]) -> PathBuf {
+    let parent = dir.join("queue-quality-zdecode-test");
+    std::fs::create_dir_all(&parent).unwrap();
+    let path = parent.join("manifest.parquet");
+    std::fs::write(&path, prefetch::encode_decode_repair(rows).unwrap()).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn decode_repair_never_fetches_over_an_incomplete_retained_target() {
+    for (format, sidecar_only) in [
+        (ScanFormat::Jp2, false),
+        (ScanFormat::Jpeg, false),
+        (ScanFormat::Jp2, true),
+        (ScanFormat::Jpeg, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let row = row("sn1", 1890, 1, "rus");
+        let out = dir.path().join("scans");
+        let scan = scan_path(&out, &row, ImageSize::Full, format);
+        std::fs::create_dir_all(scan.parent().unwrap()).unwrap();
+        let retained = if sidecar_only {
+            sidecar_path(&scan)
+        } else {
+            scan
+        };
+        std::fs::write(&retained, b"preserve").unwrap();
+        let opts = Options {
+            manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+            out,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let status = run(
+            opts,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!((status.fetched, status.deferred_repair_occupied), (0, 1));
+        assert_eq!(std::fs::read(retained).unwrap(), b"preserve");
+    }
+}
+
+#[tokio::test]
+async fn decode_repair_rechecks_a_target_created_during_download() {
+    let dir = tempfile::tempdir().unwrap();
+    let row = row("sn1", 1890, 1, "rus");
+    let out = dir.path().join("scans");
+    let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+    let opts = Options {
+        manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+        out,
+        ..Options::default()
+    };
+    let hits = Arc::new(AtomicUsize::new(0));
+    let root = fake_loc(Arc::new(Mutex::new(Vec::new())), hits.clone()).await;
+    let (_tx, rx) = watch::channel(false);
+    let task = tokio::spawn(run(opts, client(&root, Duration::from_millis(1)), rx));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while hits.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    std::fs::create_dir_all(scan.parent().unwrap()).unwrap();
+    std::fs::write(&scan, b"concurrent retained bytes").unwrap();
+    let status = task.await.unwrap().unwrap();
+    assert_eq!((status.fetched, status.deferred_repair_occupied), (0, 1));
+    assert_eq!(std::fs::read(&scan).unwrap(), b"concurrent retained bytes");
+    assert!(!sidecar_path(&scan).exists());
+}
+
+#[tokio::test]
+async fn decode_repair_atomic_publish_refuses_a_late_existing_scan_or_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["scan.jp2", "scan.jp2.json"] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, b"retained").unwrap();
+        assert!(write_new_atomic(&path, b"replacement".to_vec())
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"retained");
+    }
+    let fresh = dir.path().join("fresh.jp2");
+    write_new_atomic(&fresh, b"new scan".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(fresh).unwrap(), b"new scan");
+    assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".part")));
+}
+
+#[tokio::test]
+async fn decode_repair_uses_a_fail_closed_format_and_single_non_english_full_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let row = row("sn1", 1890, 1, "rus");
+    let bytes = prefetch::encode_decode_repair(std::slice::from_ref(&row)).unwrap();
+    assert!(prefetch::decode(Bytes::from(bytes.clone())).is_err());
+    let decoded = prefetch::decode_repair_where(Bytes::from(bytes), |_| true).unwrap();
+    assert_eq!(decoded.as_slice(), std::slice::from_ref(&row));
+    let path = decode_repair_manifest(dir.path(), std::slice::from_ref(&row));
+    let opts = Options {
+        manifest: path.clone(),
+        out: dir.path().join("scans"),
+        ..Options::default()
+    };
+    let (_tx, rx) = watch::channel(false);
+    for change in [
+        Options {
+            size: ImageSize::Pct(50),
+            ..opts.clone()
+        },
+        Options {
+            sets: Sets::Buffer,
+            ..opts.clone()
+        },
+        Options {
+            awardees: vec!["other".into()],
+            ..opts.clone()
+        },
+        Options {
+            limit: Some(0),
+            ..opts.clone()
+        },
+    ] {
+        assert!(run(
+            change,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx.clone()
+        )
+        .await
+        .is_err());
+    }
+    let mut english = row.clone();
+    english.lang = Some("eng".into());
+    for rows in [vec![english], vec![row.clone(), row.clone()]] {
+        std::fs::write(&path, prefetch::encode_decode_repair(&rows).unwrap()).unwrap();
+        assert!(run(
+            opts.clone(),
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx.clone()
+        )
+        .await
+        .is_err());
+    }
+    std::fs::write(&path, prefetch::encode(std::slice::from_ref(&row)).unwrap()).unwrap();
+    assert!(run(
+        opts,
+        client("http://127.0.0.1:9", Duration::from_millis(1)),
+        rx
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn decode_repair_fetches_once_to_a_new_keep_path_through_the_normal_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let row = row("sn1", 1890, 1, "rus");
+    let out = dir.path().join("scans");
+    let opts = Options {
+        manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+        out: out.clone(),
+        ..Options::default()
+    };
+    let hits = Arc::new(Mutex::new(BTreeMap::new()));
+    let root = titles_loc(&[], &[], hits.clone()).await;
+    let (_tx, rx) = watch::channel(false);
+    let status = run(
+        opts.clone(),
+        client(&root, Duration::from_millis(1)),
+        rx.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!((status.fetched, status.deferred_repair_occupied), (1, 0));
+    let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+    let image = std::fs::read(&scan).unwrap();
+    let side: Sidecar =
+        serde_json::from_slice(&std::fs::read(sidecar_path(&scan)).unwrap()).unwrap();
+    assert!(matches_sidecar(&image, &side));
+    assert_eq!(
+        read_index(&std::fs::read_to_string(out.join("index-full.jsonl")).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    let before = hits.lock().unwrap().clone();
+    let replay = run(opts, client(&root, Duration::from_millis(1)), rx)
+        .await
+        .unwrap();
+    assert_eq!((replay.fetched, replay.already_there), (0, 1));
+    assert_eq!(*hits.lock().unwrap(), before);
+}
+
 #[tokio::test]
 async fn a_consumed_buffer_page_isnt_fetched_again() {
     let dir = tempfile::tempdir().unwrap();

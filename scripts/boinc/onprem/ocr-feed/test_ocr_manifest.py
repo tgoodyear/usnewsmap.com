@@ -1,7 +1,11 @@
 """Tests for the OCR prefetch manifest builder (#1055): the parts with no network or pyarrow."""
 import datetime as dt
+import contextlib
+import io
 import importlib.util
+import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 import tempfile
@@ -11,6 +15,9 @@ import json
 spec = importlib.util.spec_from_file_location("ocr_manifest", Path(__file__).resolve().parent / "ocr_manifest.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "quality-feed"))
+import scan_quarantine as quarantine
+
 UTC = dt.timezone.utc
 
 
@@ -151,6 +158,182 @@ class NonEnglishTest(unittest.TestCase):
                     mock.patch.object(m, "available", return_value=False), \
                     mock.patch("subprocess.run", side_effect=AssertionError("queued ahead of recovery")):
                 m.cmd_build_quality(a)
+
+
+@unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for repair manifests")
+class DecodeRepairTest(unittest.TestCase):
+    class DecoderError(Exception):
+        original_type = "OSError"
+
+    class Response(io.BytesIO):
+        def __init__(self, data=b"", status=200):
+            super().__init__(data)
+            self.status = status
+
+    class ScanServer:
+        def __init__(self):
+            self.files = {}
+            self.requests = []
+            self.get_error = None
+            self.fail_put_once = False
+
+        def __call__(self, request, timeout):
+            method, url = request.get_method(), request.full_url
+            self.requests.append((method, url, request.data))
+            if method == "PUT":
+                if self.fail_put_once:
+                    self.fail_put_once = False
+                    raise urllib.error.URLError("response lost after publication")
+                return DecodeRepairTest.Response(status=201)
+            if self.get_error:
+                raise self.get_error
+            if url not in self.files:
+                raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+            return DecodeRepairTest.Response(self.files[url])
+
+        def keep(self, page, sha=None):
+            scan = page["scan"].replace("buffer/", "keep/", 1)
+            url = "http://scan/scans/" + scan
+            self.files[url] = b"scan exists"
+            self.files[url + ".json"] = json.dumps({
+                "doc_id": page["doc_id"], "batch": page["batch"], "batch_version": 1,
+                "bytes": page["bytes"], "sha256": sha or page["sha256"],
+                "format": "jp2", "resolution": "full"}).encode()
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.state = self.root / "qwen-test"
+        self.server = self.ScanServer()
+
+    @staticmethod
+    def page(seq=1, storage="buffer", lang="rus"):
+        return {"doc_id": f"sn1_1900-01-02_ed-1_seq-{seq}", "batch": "xx_test", "batch_version": 1,
+                "bytes": 12, "sha256": "a" * 64, "lang": lang, "damage_rate": 0.8,
+                "scan": f"{storage}/xx_test/sn1/1900-01-02/1/{seq}.jp2"}
+
+    def quarantine(self, page):
+        error = self.DecoderError("broken data stream when reading image file")
+        for _ in range(3):
+            quarantine.record_failure(self.state, page, error, {"pillow": "test", "codec": "jpg_2000"})
+
+    def reconcile(self):
+        with mock.patch.object(m.urllib.request, "urlopen", side_effect=self.server), \
+                contextlib.redirect_stdout(io.StringIO()):
+            m.queue_decode_repairs(self.root, "http://scan")
+
+    def test_buffer_repair_uses_real_single_page_manifest_and_never_deletes_the_source(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        page = self.page()
+        self.quarantine(page)
+        self.reconcile()
+        requests = [r for r in self.server.requests if r[0] == "PUT"]
+        self.assertEqual(len(requests), 1)
+        self.assertIn("/manifests/queue-quality-zdecode-", requests[0][1])
+        table = pq.read_table(pa.BufferReader(requests[0][2]))
+        self.assertEqual(table.schema.metadata[b"usnm.format"], b"usnm-prefetch-decode-repair/1")
+        row = table.to_pylist()[0]
+        self.assertEqual((row["doc_id"], row["batch"], row["lang"], row["seq"]),
+                         (page["doc_id"], page["batch"], "rus", 1))
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+        self.reconcile()
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+        self.server.keep(page)
+        self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_same")
+        self.reconcile()
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+        self.assertTrue(all(method in ("GET", "PUT") for method, _, _ in self.server.requests))
+
+    def test_repair_keeps_pending_on_network_error_and_replays_identical_manifest_after_lost_ack(self):
+        page = self.page()
+        self.quarantine(page)
+        self.server.get_error = urllib.error.URLError("scan server timeout")
+        with self.assertRaises(urllib.error.URLError):
+            self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "pending")
+        self.server.get_error = None
+        self.server.fail_put_once = True
+        with self.assertRaises(urllib.error.URLError):
+            self.reconcile()
+        saved = quarantine.quarantined(self.state)[0]
+        self.assertEqual(saved["refetch_state"], "prepared")
+        self.reconcile()
+        puts = [r for r in self.server.requests if r[0] == "PUT"]
+        self.assertEqual(len(puts), 2)
+        self.assertEqual(puts[0][1:], puts[1][1:])
+        self.assertEqual(saved["manifest_body"], puts[1][2])
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+
+    def test_existing_keep_and_english_sources_are_blocked_without_mutation(self):
+        kept, occupied, english = self.page(1, "keep"), self.page(2), self.page(3, lang="eng")
+        for page in (kept, occupied, english):
+            self.quarantine(page)
+        url = "http://scan/scans/" + occupied["scan"].replace("buffer/", "keep/", 1)
+        self.server.files[url] = b"orphaned retained scan"
+        self.reconcile()
+        statuses = {row["source"]["doc_id"]: row["refetch_state"] for row in quarantine.quarantined(self.state)}
+        self.assertEqual(statuses, {kept["doc_id"]: "blocked_keep", occupied["doc_id"]: "blocked_keep",
+                                    english["doc_id"]: "blocked_language"})
+        self.assertFalse(any(method != "GET" for method, _, _ in self.server.requests))
+        self.assertEqual(self.server.files[url], b"orphaned retained scan")
+
+    def test_existing_changed_keep_source_is_observed_not_overwritten(self):
+        page = self.page()
+        self.quarantine(page)
+        self.server.keep(page, "b" * 64)
+        self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_new")
+        self.assertFalse(any(method == "PUT" for method, _, _ in self.server.requests))
+
+    def test_partial_keep_write_after_queueing_is_rechecked_when_sidecar_arrives(self):
+        page = self.page()
+        self.quarantine(page)
+        self.reconcile()
+        url = "http://scan/scans/" + page["scan"].replace("buffer/", "keep/", 1)
+        self.server.files[url] = b"incomplete keep write"
+        self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "queued")
+        self.server.keep(page, "b" * 64)
+        self.reconcile()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "observed_new")
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 1)
+
+    def test_what_if_never_reconciles_or_changes_quarantine(self):
+        page = self.page()
+        self.quarantine(page)
+        args = types.SimpleNamespace(state=str(self.root / "quality"), dsn="x", scan_server="http://scan",
+                                     max_pages=10, strata=1, batches=None, non_english=True,
+                                     what_if=True, quarantine_root=str(self.root))
+        with mock.patch.object(m, "queue_decode_repairs") as repair, \
+                mock.patch("subprocess.run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")), \
+                mock.patch.object(m, "staged_pairs", return_value={}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            m.cmd_build_quality(args)
+        repair.assert_not_called()
+        self.assertEqual(quarantine.quarantined(self.state)[0]["refetch_state"], "pending")
+        self.assertEqual(self.server.requests, [])
+
+    def test_missing_quarantine_root_fails_visibly(self):
+        with self.assertRaises(FileNotFoundError):
+            m.queue_decode_repairs(self.root / "missing", "http://scan")
+
+    def test_refetch_backlog_is_bounded_until_a_keep_copy_is_observed(self):
+        pages = [self.page(seq) for seq in range(1, 12)]
+        for page in pages:
+            self.quarantine(page)
+        self.reconcile()
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 10)
+        self.reconcile()
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 10)
+        queued = next(row for row in quarantine.quarantined(self.state) if row["refetch_state"] == "queued")
+        page = next(page for page in pages if page["doc_id"] == queued["source"]["doc_id"])
+        self.server.keep(page)
+        self.reconcile()
+        self.assertEqual(len([r for r in self.server.requests if r[0] == "PUT"]), 11)
 
 
 if __name__ == "__main__":

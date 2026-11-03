@@ -23,8 +23,10 @@ run works through --pages in order and writes chunks of --chunk-pages pages unde
 sample.jsonl, langs.txt and SHA256SUMS, then READY last. It waits while --max-pending
 chunks are READY and not yet shipped (the host's quality-ship.sh moves them to the BOINC
 server and removes them). Pages it has written are listed in <state>/<campaign>/done.txt,
-pages it can't use (no LoC text, a scan that doesn't match its index line) in skipped.txt
-with the reason, so a restart goes on where it stopped.
+pages it can't use (no LoC text) in skipped.txt with the reason, so a restart goes on
+where it stopped. A scan/index mismatch is retried instead of used. With
+--quarantine-decode, three known decoder failures of the same verified scan fingerprint
+are recorded separately and excluded until its bytes change.
 """
 import argparse
 import concurrent.futures
@@ -39,6 +41,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+import scan_quarantine
 
 ALL_LANGS = {
     "ces", "dan", "deu", "eng", "fin", "fra", "haw", "hrv", "hun", "ita",
@@ -142,6 +146,11 @@ def cmd_select(a):
             if r["doc_id"] in staged or r.get("resolution", "full") != "full":
                 continue
             cand[r["doc_id"]] = r
+    records = scan_quarantine.quarantined(a.quarantine_state) if getattr(a, "quarantine_state", None) else []
+    blocked_ids = {record["id"] for record in records}
+    blocked_docs = {record["source"]["doc_id"] for record in records}
+    cand = {doc: row for doc, row in cand.items()
+            if doc not in blocked_docs or scan_quarantine.source_id(row) not in blocked_ids}
     by_batch = {}
     for r in cand.values():
         by_batch.setdefault((r["batch"], int(r.get("batch_version") or 1)), []).append(r)
@@ -295,20 +304,56 @@ def fetch_scan(server, p, timeout=120):
     return raw
 
 
+class ScanDecodeError(Exception):
+    def __init__(self, error, codec):
+        from PIL import __version__, features
+
+        super().__init__(str(error))
+        self.original_type = type(error).__name__
+        self.decoder = {"pillow": __version__, "codec": codec, "codec_version": features.version_codec(codec)}
+
+
+def raise_decode_error(error, codec):
+    from PIL import UnidentifiedImageError
+
+    if (isinstance(error, UnidentifiedImageError)
+            or "image file is truncated" in str(error)
+            or "broken data stream when reading image file" in str(error)):
+        raise ScanDecodeError(error, codec) from error
+    raise error
+
+
 def page_jpeg(raw, is_jp2):
     """The worker's page.jpg, as the quality runner makes it: grey, quality 75, a JP2 over
     4000 px decoded at half size; a grey JPEG under 40 Mpx and 20 MB goes as it is."""
-    from PIL import Image
+    from PIL import Image, features
 
     Image.MAX_IMAGE_PIXELS = None
-    with Image.open(io.BytesIO(raw)) as im:
+    codec = "jpg_2000" if is_jp2 else "jpg"
+    if not features.check_codec(codec):
+        raise RuntimeError(f"Pillow's {codec} decoder is unavailable")
+    try:
+        image = Image.open(io.BytesIO(raw))
+    except OSError as error:
+        raise_decode_error(error, codec)
+    with image as im:
+        if im.format != ("JPEG2000" if is_jp2 else "JPEG"):
+            raise ValueError("scan format differs from its indexed file extension")
         if is_jp2 or len(raw) > 20_000_000 or im.mode != "L" or im.size[0] * im.size[1] > 40_000_000:
             if getattr(im, "format", "") == "JPEG2000" and max(im.size) > 4000:
                 im.reduce = 1
+            try:
+                im.load()
+            except OSError as error:
+                raise_decode_error(error, codec)
             g = im.convert("L")
             buf = io.BytesIO()
             g.save(buf, "JPEG", quality=75)
             return buf.getvalue(), g.size
+        try:
+            im.load()
+        except OSError as error:
+            raise_decode_error(error, codec)
         return raw, im.size
 
 
@@ -404,7 +449,11 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
     skipped = []
     prepared = {}
     usable = []
+    blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
     for p in chunk:
+        if blocked and scan_quarantine.source_id(p) in blocked:
+            log("scan remains quarantined", doc_id=p["doc_id"], sha256=p["sha256"])
+            continue
         if p["doc_id"] not in loc:
             if complete:
                 skipped.append((p["doc_id"], "no LoC text in the curated copy"))
@@ -416,12 +465,29 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
         for fut in concurrent.futures.as_completed(futs):
             p = futs[fut]
             try:
-                prepared[p["doc_id"]] = fut.result()
-            except ValueError as e:
-                skipped.append((p["doc_id"], str(e)))
-            except Exception as e:  # a transient read: left for the next run
+                result = fut.result()
+            except ScanDecodeError as e:
+                log("scan decode failed", doc_id=p["doc_id"], sha256=p["sha256"],
+                    error_type=e.original_type, error=str(e)[:200])
+                attempts = 0
+                if getattr(a, "quarantine_decode", False):
+                    attempts = scan_quarantine.record_failure(state, p, e, e.decoder)
+                if attempts >= scan_quarantine.FAILURES_BEFORE_QUARANTINE:
+                    log("scan quarantined; repair pending", doc_id=p["doc_id"], sha256=p["sha256"],
+                        attempts=attempts, error_type=e.original_type, error=str(e)[:200])
+                else:
+                    retry += 1
+                    log("page failed; will retry", doc_id=p["doc_id"], attempts=attempts,
+                        error_type=e.original_type, error=str(e)[:200])
+            except Exception as e:  # Not classified as corrupt: left for the next run.
+                log("page failed; will retry", doc_id=p["doc_id"], error_type=type(e).__name__, error=str(e)[:200])
+                if getattr(a, "quarantine_decode", False):
+                    scan_quarantine.record_retryable(state, p, e)
                 retry += 1
-                log("page failed; will retry", doc_id=p["doc_id"], error=str(e)[:200])
+            else:
+                if getattr(a, "quarantine_decode", False):
+                    scan_quarantine.record_success(state, p)
+                prepared[p["doc_id"]] = result
     if getattr(a, "alto_cache", None):
         # A corrupt source receipt is an integrity failure, not a permanently skipped page.
         for doc, (jpg, _, tx, ours_alto_path) in list(prepared.items()):
@@ -457,8 +523,10 @@ def cmd_run(a):
     skip_path = os.path.join(state, "skipped.txt")
     done = read_lines(done_path) | read_lines(skip_path)
     with open(a.pages) as f:
-        todo = [p for p in map(json.loads, f) if p["doc_id"] not in done]
-    log("start", campaign=a.campaign, todo=len(todo), done=len(done))
+        candidates = [p for p in map(json.loads, f) if p["doc_id"] not in done]
+    blocked = scan_quarantine.quarantined_ids(state) if getattr(a, "quarantine_decode", False) else set()
+    todo = [p for p in candidates if not blocked or scan_quarantine.source_id(p) not in blocked]
+    log("start", campaign=a.campaign, todo=len(todo), done=len(done), quarantined=len(candidates) - len(todo))
     seq = 1 + max([int(os.path.basename(d)[1:]) for d in glob.glob(os.path.join(camp_dir, "c[0-9]*"))]
                   + [int(x) for x in read_lines(os.path.join(state, "chunks.txt"))] + [0])
     texts = Texts(a.curated)
@@ -468,6 +536,9 @@ def cmd_run(a):
         while len(pending_chunks(camp_dir)) >= a.max_pending:
             if a.once:
                 log("pending chunks at the limit; stopping", pending=a.max_pending)
+                if retry:
+                    log("pages left to retry", campaign=a.campaign, pages=retry)
+                    sys.exit(1)
                 return
             time.sleep(60)
         chunk = todo[pos : pos + a.chunk_pages]
@@ -689,6 +760,7 @@ def main(argv=None):
                    help="leave out pages in this language; may repeat")
     s.add_argument("--scan-server", help="check actual scan availability before taking --count pages")
     s.add_argument("--damage-dsn-file", help="query indexed quality.page_summary instead of rereading corpus Parquet")
+    s.add_argument("--quarantine-state", help="campaign state whose quarantined scan fingerprints are excluded")
     r = sub.add_parser("run")
     r.add_argument("--campaign", required=True)
     r.add_argument("--pages", required=True)
@@ -701,6 +773,8 @@ def main(argv=None):
     r.add_argument("--workers", type=int, default=4)
     r.add_argument("--once", action="store_true", help="stop instead of waiting at --max-pending")
     r.add_argument("--alto-cache", help="original bulk-archive ALTO with per-page SHA256 provenance receipts")
+    r.add_argument("--quarantine-decode", action="store_true",
+                   help="quarantine repeated known decoder failures of the same verified scan")
     w = sub.add_parser("follow")
     w.add_argument("--campaign", required=True)
     w.add_argument("--curated", required=True)

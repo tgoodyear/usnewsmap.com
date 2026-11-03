@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 
@@ -22,6 +23,32 @@ GERMAN = "deu"
 
 def command(args, data=None):
     return subprocess.check_output(args, input=data, timeout=7200)
+
+
+def prepare(args):
+    """Keep the child's diagnostics in the unit journal, even when it fails."""
+    try:
+        output = command(args)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        if error.output:
+            text = error.output.decode("utf-8", errors="replace") if isinstance(error.output, bytes) else error.output
+            print(text, file=sys.stderr, end="" if text.endswith("\n") else "\n", flush=True)
+        raise
+    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+    if text:
+        print(text, end="" if text.endswith("\n") else "\n", flush=True)
+    written = 0
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("msg") == "chunk ready":
+            pages = event.get("pages")
+            if type(pages) is not int or pages < 0:
+                raise ValueError("invalid prepared chunk page count")
+            written += pages
+    return written
 
 
 def remote(host, args, data=None):
@@ -132,7 +159,7 @@ def _tick(a):
                          "--pages", "-", "--archives", a.archives, "--out", a.alto_export], b""))
     with urllib.request.urlopen(a.scan_server.rstrip("/") + "/index/full.jsonl", timeout=300) as r:
         index, total, retained = available_source_index(r, archive_inventory)
-    from qwen_source import priority_index
+    from qwen_source import priority_index, source_id
     excluded_requests = set()
 
     def select(limit, *filters):
@@ -140,7 +167,8 @@ def _tick(a):
                          "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(limit),
                          "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
                          "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
-                         "--scan-server", a.scan_server, *filters])
+                         "--scan-server", a.scan_server,
+                         "--quarantine-state", "/var/lib/usnm-quality-feed/" + a.campaign, *filters])
         selected = command(ct + ["cat", work + "/selected.jsonl"])
         return selected, [json.loads(line) for line in selected.splitlines() if line]
 
@@ -151,21 +179,47 @@ def _tick(a):
     # The budgeted pass is the only way in for these languages, whatever a source request names.
     filters = tuple(arg for language, _, _ in budgeted for arg in ("--exclude-language", language))
     pages = []
+    retryable = None
     for language, name, budget in budgeted:
         spent = budget_spent(a.state / f"{name}-budget.json")
-        left = min(count, budget - len(spent))
-        if left <= 0:
-            continue
         own = index
         if language == GERMAN and a.german_pages is not None:
             own = listed_pages(index, a.german_pages)
+        if spent and len(spent) <= budget:
+            if retryable is None:
+                retryable = set(json.loads(command(python + ["-c", (
+                    "from pathlib import Path; import json, sys; "
+                    "sys.path.insert(0, '/opt/usnm-quality-feed'); from scan_quarantine import retryable_ids; "
+                    f"print(json.dumps(sorted(retryable_ids(Path('/var/lib/usnm-quality-feed/{a.campaign}')))))"
+                )])))
+            reserved = set(spent)
+            retry_index = b"".join(line + b"\n" for line in own.splitlines()
+                                   if (row := json.loads(line))["doc_id"] in reserved
+                                   and source_id(row) in retryable)
+            if retry_index:
+                command(ct + ["tee", work + "/index.jsonl"], retry_index)
+                raw, pages = select(min(count, len(reserved)), "--language", language)
+                phase(name + "_retry", reserved=len(reserved), selected=len(pages))
+                if pages:
+                    break
+        left = min(count, budget - len(spent))
+        if left <= 0:
+            continue
         command(ct + ["tee", work + "/index.jsonl"], own)
         raw, pages = select(left, "--language", language)
         phase(name + "_budget", spent=len(spent), budget=budget, selected=len(pages))
         if pages:
             break
+    quarantined = set()
+    if not pages:
+        quarantined = set(json.loads(command(python + ["-c", (
+            "from pathlib import Path; import json, sys; "
+            "sys.path.insert(0, '/opt/usnm-quality-feed'); from scan_quarantine import quarantined_ids; "
+            f"print(json.dumps(sorted(quarantined_ids(Path('/var/lib/usnm-quality-feed/{a.campaign}')))))"
+        )])))
     while not pages:
-        selected_index, request_id = priority_index(index, a.state, a.campaign, seen, excluded_requests)
+        selected_index, request_id = priority_index(index, a.state, a.campaign, seen, excluded_requests,
+                                                     quarantined)
         command(ct + ["tee", work + "/index.jsonl"], selected_index)
         phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
               source_request=request_id)
@@ -201,15 +255,17 @@ def _tick(a):
             tmp.write_text(json.dumps(sorted(set(spent) | {p["doc_id"] for p in usable
                                                            if p["lang"] == language})))
             tmp.replace(budget_path)
+        written = 0
         if usable:
-            command(python + [helper + "quality_feed.py", "run", "--campaign", a.campaign,
+            written = prepare(python + [helper + "quality_feed.py", "run", "--campaign", a.campaign,
                              "--pages", work + "/pages.jsonl", "--curated", "/srv/curated",
                              "--scan-server", a.scan_server, "--outbox", str(a.outbox),
                              "--state", "/var/lib/usnm-quality-feed", "--chunk-pages", str(a.chunk_pages),
                              "--max-pending", str(a.max_pending), "--workers", "2", "--once",
-                             "--alto-cache", "/srv/locstats/qwen-alto"])
-        phase("prepare_ready", pages=len(usable))
-        print(json.dumps({"status": "prepared", "pages": len(usable), "missing_original_alto": receipt["missing"],
+                             "--alto-cache", "/srv/locstats/qwen-alto", "--quarantine-decode"])
+        phase("prepare_ready", pages=written)
+        print(json.dumps({"status": "prepared", "pages": written, "selected_for_preparation": len(usable),
+                          "missing_original_alto": receipt["missing"],
                           "pending_original_alto": receipt["pending"],
                           "ready_before": inv["ready"], "highest_damage": pages[0]["damage_rate"]}))
 

@@ -35,6 +35,7 @@ import xml.etree.ElementTree as ET
 
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 FORMAT = "usnm-prefetch-manifest/1"
+DECODE_REPAIR_FORMAT = "usnm-prefetch-decode-repair/1"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
 MAX_TRIES = 3
@@ -216,7 +217,7 @@ def pending(queued, outcomes, reasons):
     return out
 
 
-def manifest_bytes(rows):
+def manifest_bytes(rows, manifest_format=FORMAT):
     """The fetcher's manifest (usnm_ocr_contract::prefetch): its columns, types, issue order
     and the usnm.format key."""
     import pyarrow as pa
@@ -228,7 +229,7 @@ def manifest_bytes(rows):
         ("lccn", pa.string()), ("date", pa.date32()), ("edition", pa.int16()), ("seq", pa.int16()),
         ("lang", pa.string()), ("decision", pa.string()), ("damage_rate", pa.float64()),
         ("item_url", pa.string()),
-    ], metadata={"usnm.format": FORMAT})
+    ], metadata={"usnm.format": manifest_format})
     t = pa.Table.from_pylist(rows, schema=schema)
     buf = io.BytesIO()
     pq.write_table(t, buf, compression="zstd")
@@ -457,6 +458,27 @@ def pick_issues(rows, queued, index, strata, max_pages):
     return out
 
 
+def queue_decode_repairs(root, server):
+    import importlib.util
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    helper = here / "scan_quarantine.py"
+    if not helper.is_file():
+        helper = here.parent / "quality-feed" / "scan_quarantine.py"
+    spec = importlib.util.spec_from_file_location("scan_quarantine", helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def encode(record):
+        source = record["source"]
+        details = {"lang": record["lang"], "damage_rate": record["damage_rate"]}
+        row = row_of({**source, "language": record["lang"]}, {source["doc_id"]: details})
+        return manifest_bytes([row], manifest_format=DECODE_REPAIR_FORMAT)
+
+    module.reconcile(root, server, encode)
+
+
 def cmd_build_quality(a):
     """The full image pass's next pages (usnm_quality's rank.sql query 2, by issue: worst
     first by damage and LoC's own doubt, round-robin over title and decade, the first
@@ -473,6 +495,8 @@ def cmd_build_quality(a):
     import subprocess
 
     os.makedirs(a.state, exist_ok=True)
+    if getattr(a, "quarantine_root", None) and not a.what_if:
+        queue_decode_repairs(a.quarantine_root, a.scan_server)
     batch_filter = ""
     if a.batches:
         # usnm_quality keeps a batch's name without its version (ak_goat, 1 for ak_goat_ver01).
@@ -600,10 +624,14 @@ def main(argv=None):
     q.add_argument("--what-if", action="store_true")
     q.add_argument("--non-english", action="store_true",
                    help="all non-English pages, descending page damage; keep their true language/scan retention")
+    q.add_argument("--quarantine-root",
+                   help="reconcile recorded decode failures through the existing non-English fetch queue")
     a = ap.parse_args(argv)
     if a.cmd == "build-quality":
         if a.non_english and a.batches:
             sys.exit("--non-english covers the corpus; do not combine it with --batches")
+        if a.quarantine_root and not a.non_english:
+            sys.exit("--quarantine-root requires --non-english")
         if not 1 <= a.max_pages <= 20000 or not 1 <= a.strata <= 1000:
             sys.exit("--max-pages 1 to 20000, --strata 1 to 1000")
         cmd_build_quality(a)

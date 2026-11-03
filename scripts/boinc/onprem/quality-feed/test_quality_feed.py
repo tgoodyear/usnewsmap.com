@@ -1,16 +1,22 @@
-"""Tests for the on-prem quality feeder (#962): the parts that need no Pillow, pyarrow or network."""
+"""Tests for the on-prem quality feeder (#962), with no network or production state."""
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import sqlite3
+import sys
 import tempfile
+import types
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
 
 def load(name, file):
@@ -187,6 +193,270 @@ class FeedTest(unittest.TestCase):
                 receive.main(["--campaign", "v1-test", "--chunk", "c00001", "--share", d, "--after-submit"])
             self.assertTrue((camp / f"scans/{doc}.jpg").exists())
             self.assertFalse(inc.exists())
+
+
+@unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow required for scan decoder tests")
+class DecodeQuarantineTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.state = self.root / "state" / "qwen-test"
+        (self.root / "curated" / "pages").mkdir(parents=True)
+
+    @staticmethod
+    def image(fmt="JPEG", value=128):
+        from PIL import Image
+
+        output = io.BytesIO()
+        Image.new("L", (64, 64), value).save(output, fmt)
+        return output.getvalue()
+
+    @staticmethod
+    def page(seq, raw, ext="jpg"):
+        doc = f"sn1_1900-01-02_ed-1_seq-{seq}"
+        return {"doc_id": doc, "batch": "xx_test", "batch_version": 1, "lccn": "sn1",
+                "date": "1900-01-02", "edition": 1, "seq": seq, "lang": "rus",
+                "damage_rate": 0.8, "scan": f"buffer/xx_test/sn1/1900-01-02/1/{seq}.{ext}",
+                "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+    def texts(self):
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, version, docs: ({doc: "LoC text" for doc in docs}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+        texts.ours_alto.return_value = None
+        return texts
+
+    def args(self, pages):
+        pages_file = self.root / "pages.jsonl"
+        pages_file.write_text("".join(json.dumps(page) + "\n" for page in pages))
+        return types.SimpleNamespace(campaign="qwen-test", curated=str(self.root / "curated"),
+                                     state=str(self.root / "state"), outbox=str(self.root / "outbox"),
+                                     pages=str(pages_file), scan_server="http://scan", chunk_pages=2,
+                                     max_pending=4, workers=1, once=True, alto_cache=None,
+                                     quarantine_decode=True)
+
+    def test_real_truncated_jpeg_and_jp2_fail_decode_including_jpeg_passthrough(self):
+        from PIL import features
+
+        for fmt, is_jp2 in (("JPEG", False), ("JPEG2000", True)):
+            if is_jp2 and not features.check_codec("jpg_2000"):
+                continue
+            with self.subTest(format=fmt):
+                raw = self.image(fmt)
+                jpg, size = feed.page_jpeg(raw, is_jp2)
+                self.assertEqual(size, (64, 64))
+                if not is_jp2:
+                    self.assertEqual(jpg, raw)
+                with self.assertRaises(feed.ScanDecodeError) as error:
+                    feed.page_jpeg(raw[:-2], is_jp2)
+                self.assertEqual(error.exception.original_type, "OSError")
+                self.assertIn("truncated" if not is_jp2 else "broken data stream", str(error.exception))
+
+    def test_missing_codec_and_indexed_format_disagreement_are_not_decode_quarantines(self):
+        from PIL import features
+
+        raw = self.image()
+        with mock.patch.object(features, "check_codec", return_value=False), \
+                self.assertRaisesRegex(RuntimeError, "decoder is unavailable"):
+            feed.page_jpeg(raw, False)
+        if features.check_codec("jpg_2000"):
+            with self.assertRaisesRegex(ValueError, "format differs"):
+                feed.page_jpeg(raw, True)
+        with self.assertRaises(feed.ScanDecodeError) as error:
+            feed.page_jpeg(b"not an image", False)
+        self.assertEqual(error.exception.original_type, "UnidentifiedImageError")
+        unknown = OSError("decoder resource unavailable")
+        with self.assertRaises(OSError) as error:
+            feed.raise_decode_error(unknown, "jpg")
+        self.assertIs(error.exception, unknown)
+
+    def test_hash_mismatch_is_retried_before_attempting_to_decode(self):
+        page = self.page(1, self.image())
+        self.state.mkdir(parents=True)
+        camp = self.root / "campaign"
+        camp.mkdir()
+        args = types.SimpleNamespace(workers=1, scan_server="http://scan", alto_cache=None,
+                                     quarantine_decode=True)
+        with mock.patch.object(feed.urllib.request, "urlopen", side_effect=lambda *a, **k: io.BytesIO(b"bad")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            for _ in range(3):
+                self.assertEqual(feed.process_chunk(args, self.texts(), [page], str(camp), str(self.state), 1,
+                                                    str(self.state / "done.txt"), str(self.state / "skipped.txt")),
+                                 (0, 1, 1))
+        self.assertIn("scan doesn't match its index line", output.getvalue())
+        self.assertEqual(feed.scan_quarantine.quarantined(self.state), [])
+        self.assertEqual(feed.scan_quarantine.retryable_ids(self.state), {feed.scan_quarantine.source_id(page)})
+
+    def test_known_decode_failure_is_quarantined_after_three_runs_and_changed_bytes_can_prepare(self):
+        from PIL import __version__ as pillow_version
+
+        good_raw, bad_raw = self.image(value=40), self.image(value=128)[:-2]
+        good, bad = self.page(1, good_raw), self.page(2, bad_raw)
+        args = self.args([good, bad])
+        scans = {good["scan"]: good_raw, bad["scan"]: bad_raw}
+        calls = []
+
+        def fetch(request, timeout):
+            path = request.full_url.split("/scans/", 1)[1]
+            calls.append(path)
+            return io.BytesIO(scans[path])
+
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            for attempt in range(2):
+                with self.assertRaises(SystemExit) as error:
+                    feed.cmd_run(args)
+                self.assertEqual(error.exception.code, 1)
+            feed.cmd_run(args)
+            self.assertIn("scan quarantined; repair pending", output.getvalue())
+            before = len(calls)
+            feed.cmd_run(args)
+            self.assertEqual(len(calls), before)
+            replacement = self.image(value=200)
+            scans[bad["scan"]] = replacement
+            bad = self.page(2, replacement)
+            Path(args.pages).write_text(json.dumps(bad) + "\n")
+            feed.cmd_run(args)
+
+        records = feed.scan_quarantine.quarantined(self.state)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["attempts"], 3)
+        self.assertEqual(records[0]["refetch_state"], "pending")
+        self.assertEqual(records[0]["source"]["sha256"], hashlib.sha256(bad_raw).hexdigest())
+        self.assertEqual(records[0]["decoder"]["pillow"], pillow_version)
+        self.assertFalse((self.state / "skipped.txt").exists())
+        self.assertEqual(feed.read_lines(self.state / "done.txt"), {good["doc_id"], bad["doc_id"]})
+        self.assertTrue((self.root / "outbox/qwen-test/c00001/READY").exists())
+        self.assertTrue((self.root / "outbox/qwen-test/c00002/READY").exists())
+
+    def test_network_integrity_and_unknown_decoder_errors_remain_retryable(self):
+        page = self.page(1, self.image())
+        self.state.mkdir(parents=True)
+        camp = self.root / "campaign"
+        camp.mkdir()
+        args = types.SimpleNamespace(workers=1, scan_server="http://scan", alto_cache=None,
+                                     quarantine_decode=True)
+        for error in (urllib.error.URLError("timeout"), ValueError("scan doesn't match its index line"),
+                      OSError("decoder resource unavailable"), RuntimeError("decoder is unavailable")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(feed, "prepare_page", side_effect=error), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                for _ in range(3):
+                    self.assertEqual(feed.process_chunk(args, self.texts(), [page], str(camp), str(self.state), 1,
+                                                        str(self.state / "done.txt"),
+                                                        str(self.state / "skipped.txt")), (0, 1, 1))
+                self.assertIn("page failed; will retry", output.getvalue())
+        self.assertEqual(feed.scan_quarantine.quarantined(self.state), [])
+        self.assertEqual(feed.scan_quarantine.retryable_ids(self.state), {feed.scan_quarantine.source_id(page)})
+        with sqlite3.connect(self.state / feed.scan_quarantine.DB_NAME) as connection:
+            self.assertEqual(connection.execute("SELECT attempts FROM failures").fetchone()[0], 0)
+        self.assertFalse((self.state / "skipped.txt").exists())
+
+    def test_a_successful_decode_resets_previous_attempts(self):
+        page = self.page(1, self.image())
+        error = feed.ScanDecodeError(OSError("image file is truncated"), "jpg")
+        quarantine = feed.scan_quarantine
+        self.assertEqual(quarantine.record_failure(self.state, page, error, error.decoder), 1)
+        self.assertEqual(quarantine.record_failure(self.state, page, error, error.decoder), 2)
+        quarantine.record_success(self.state, page)
+        self.assertEqual(quarantine.record_failure(self.state, page, error, error.decoder), 1)
+        self.assertEqual(quarantine.quarantined(self.state), [])
+        quarantine.record_retryable(self.state, page, urllib.error.URLError("timeout"))
+        quarantine.record_success(self.state, page)
+        self.assertEqual(quarantine.retryable_ids(self.state), set())
+
+    def test_transient_failure_does_not_increment_or_erase_decoder_failures(self):
+        page = self.page(1, self.image())
+        error = feed.ScanDecodeError(OSError("image file is truncated"), "jpg")
+        quarantine = feed.scan_quarantine
+        quarantine.record_failure(self.state, page, error, error.decoder)
+        quarantine.record_failure(self.state, page, error, error.decoder)
+        quarantine.record_retryable(self.state, page, urllib.error.URLError("timeout"))
+        self.assertEqual(quarantine.retryable_ids(self.state), {quarantine.source_id(page)})
+        self.assertEqual(quarantine.record_failure(self.state, page, error, error.decoder), 3)
+        self.assertEqual(quarantine.retryable_ids(self.state), set())
+
+    def test_concurrent_decoder_failures_are_counted_without_lost_updates(self):
+        page = self.page(1, self.image()[:-2])
+        error = feed.ScanDecodeError(OSError("image file is truncated"), "jpg")
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            attempts = list(executor.map(
+                lambda _: feed.scan_quarantine.record_failure(self.state, page, error, error.decoder), range(6)))
+        self.assertEqual(sorted(attempts), list(range(1, 7)))
+        self.assertEqual(feed.scan_quarantine.quarantined(self.state)[0]["attempts"], 6)
+
+    def test_unreadable_or_corrupt_quarantine_state_is_not_silently_ignored(self):
+        with mock.patch.object(Path, "stat", side_effect=PermissionError("state inaccessible")), \
+                self.assertRaisesRegex(PermissionError, "state inaccessible"):
+            feed.scan_quarantine.quarantined(self.state)
+        self.state.mkdir(parents=True)
+        (self.state / feed.scan_quarantine.DB_NAME).write_bytes(b"not a database")
+        with self.assertRaises(sqlite3.DatabaseError):
+            feed.scan_quarantine.quarantined(self.state)
+
+    def test_inconsistent_retry_state_fails_closed(self):
+        page = self.page(1, self.image())
+        feed.scan_quarantine.record_retryable(self.state, page, urllib.error.URLError("timeout"))
+        with sqlite3.connect(self.state / feed.scan_quarantine.DB_NAME) as connection:
+            connection.execute("UPDATE failures SET refetch_state = 'queued'")
+        with self.assertRaisesRegex(ValueError, "invalid scan-quarantine record"):
+            feed.scan_quarantine.quarantined(self.state)
+        with self.assertRaisesRegex(ValueError, "invalid scan-quarantine record"):
+            feed.scan_quarantine.retryable_ids(self.state)
+
+    def test_original_page_failure_is_logged_even_if_state_writing_fails(self):
+        page = self.page(1, self.image())
+        self.state.mkdir(parents=True)
+        camp = self.root / "campaign"
+        camp.mkdir()
+        args = types.SimpleNamespace(workers=1, scan_server="http://scan", alto_cache=None,
+                                     quarantine_decode=True)
+        with mock.patch.object(feed, "prepare_page", side_effect=urllib.error.URLError("network down")), \
+                mock.patch.object(feed.scan_quarantine, "record_retryable",
+                                  side_effect=sqlite3.OperationalError("state read-only")), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                self.assertRaisesRegex(sqlite3.OperationalError, "state read-only"):
+            feed.process_chunk(args, self.texts(), [page], str(camp), str(self.state), 1,
+                               str(self.state / "done.txt"), str(self.state / "skipped.txt"))
+        self.assertIn(page["doc_id"], output.getvalue())
+        self.assertIn("network down", output.getvalue())
+
+    def test_once_does_not_hide_earlier_retries_when_outbox_fills(self):
+        bad_raw, good_raw = self.image()[:-2], self.image(value=40)
+        pages = [self.page(1, bad_raw), self.page(2, good_raw), self.page(3, good_raw)]
+        args = self.args(pages)
+        args.chunk_pages, args.max_pending = 1, 1
+        scans = {page["scan"]: raw for page, raw in zip(pages, (bad_raw, good_raw, good_raw))}
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen",
+                                  side_effect=lambda request, timeout: io.BytesIO(
+                                      scans[request.full_url.split("/scans/", 1)[1]])), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                self.assertRaises(SystemExit) as error:
+            feed.cmd_run(args)
+        self.assertEqual(error.exception.code, 1)
+        self.assertIn("pages left to retry", output.getvalue())
+        self.assertTrue((self.root / "outbox/qwen-test/c00001/READY").exists())
+
+    def test_selection_excludes_only_the_quarantined_fingerprint(self):
+        old = self.page(1, self.image()[:-2])
+        error = feed.ScanDecodeError(OSError("image file is truncated"), "jpg")
+        for _ in range(3):
+            feed.scan_quarantine.record_failure(self.state, old, error, error.decoder)
+        index, out = self.root / "index.jsonl", self.root / "selected.jsonl"
+        index.write_text(json.dumps(old) + "\n")
+        args = types.SimpleNamespace(index=str(index), staged=None, curated=str(self.root / "curated"),
+                                     out=str(out), count=10, order="fetched", quarantine_state=str(self.state))
+        with contextlib.redirect_stdout(io.StringIO()):
+            feed.cmd_select(args)
+            self.assertEqual(out.read_text(), "")
+            new = self.page(1, self.image(value=10))
+            index.write_text(json.dumps(old) + "\n" + json.dumps(new) + "\n")
+            feed.cmd_select(args)
+        self.assertEqual(json.loads(out.read_text())["sha256"], new["sha256"])
 
 
 class FollowTest(unittest.TestCase):

@@ -113,7 +113,7 @@ mod layout;
 mod select;
 
 use cooling::{Check, Cooling};
-use layout::{last_fetched, lock, there, write_atomic, Lines};
+use layout::{last_fetched, lock, repair_occupied, there, write_atomic, write_new_atomic, Lines};
 
 pub use cooling::ItemError;
 pub use estimate::{estimate, Estimate};
@@ -125,6 +125,7 @@ pub use select::{sample, select};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
+const DECODE_REPAIR_PREFIX: &str = "queue-quality-zdecode-";
 
 /// What to fetch.
 #[derive(Debug, Clone)]
@@ -315,6 +316,9 @@ pub struct Status {
     /// may ask LoC. Counted in `finished`, not as failures.
     #[serde(default)]
     pub deferred_needs_loc: u64,
+    /// Decode repairs whose retained target became occupied; operator review is required.
+    #[serde(default)]
+    pub deferred_repair_occupied: u64,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -379,6 +383,7 @@ struct Counts {
     buffer_written: AtomicU64,
     failed_item_error: AtomicU64,
     deferred_needs_loc: AtomicU64,
+    deferred_repair_occupied: AtomicU64,
 }
 
 /// The failures since the last page that was done, and their titles.
@@ -426,6 +431,7 @@ struct Run {
     deferred: Mutex<Vec<(DateTime<Utc>, ManifestRow)>>,
     /// JP2s only from LoC's bucket or a mirror ([`Options::no_loc_prefixes`]).
     no_loc: bool,
+    decode_repair: bool,
 }
 
 impl Run {
@@ -441,6 +447,7 @@ impl Run {
         s.failed_transient = c.failed_transient.load(Ordering::SeqCst);
         s.failed_item_error = c.failed_item_error.load(Ordering::SeqCst);
         s.deferred_needs_loc = c.deferred_needs_loc.load(Ordering::SeqCst);
+        s.deferred_repair_occupied = c.deferred_repair_occupied.load(Ordering::SeqCst);
         (s.issues_cooling, s.issues_item_permanent) = self.cooling.counts();
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
         s.fetched_jp2 = c.fetched_jp2.load(Ordering::SeqCst);
@@ -514,6 +521,7 @@ impl Run {
             failed_transient = s.failed_transient,
             failed_item_error = s.failed_item_error,
             deferred_needs_loc = s.deferred_needs_loc,
+            deferred_repair_occupied = s.deferred_repair_occupied,
             issues_cooling = s.issues_cooling,
             bytes_fetched = s.bytes_fetched,
             bytes_on_disk = s.bytes_on_disk,
@@ -539,6 +547,17 @@ impl Run {
     /// A page is done: the run of failures is over.
     fn streak_ok(&self) {
         *self.streak.lock().expect("streak lock") = Streak::default();
+    }
+
+    fn defer_occupied_repair(&self, row: &ManifestRow) -> Outcome {
+        self.counts
+            .deferred_repair_occupied
+            .fetch_add(1, Ordering::SeqCst);
+        tracing::warn!(
+            doc_id = row.doc_id,
+            "repair target occupied; retained scan left unchanged"
+        );
+        Outcome::Done
     }
 
     /// A page failed: stop once the run of failures is long enough and
@@ -747,6 +766,9 @@ impl Run {
             self.streak_ok();
             return Ok(Outcome::Done);
         }
+        if self.decode_repair && repair_occupied(&self.opts.out, &row, size).await? {
+            return Ok(self.defer_occupied_repair(&row));
+        }
         // A buffer page a worker has read and the scan server deleted.
         if set == Set::Buffer {
             for f in formats(size) {
@@ -789,6 +811,9 @@ impl Run {
             }
             Fetched::Scan(scan, route, via) => {
                 let path = scan_path(&self.opts.out, &row, size, scan.format);
+                if self.decode_repair && repair_occupied(&self.opts.out, &row, size).await? {
+                    return Ok(self.defer_occupied_repair(&row));
+                }
                 let side = Sidecar {
                     doc_id: row.doc_id.clone(),
                     batch: row.batch.clone(),
@@ -804,8 +829,14 @@ impl Run {
                     format: scan.format.name().into(),
                     md5: scan.md5.clone(),
                 };
-                write_atomic(&path, scan.bytes.to_vec()).await?;
-                write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
+                if self.decode_repair {
+                    write_new_atomic(&path, scan.bytes.to_vec()).await?;
+                    write_new_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?)
+                        .await?;
+                } else {
+                    write_atomic(&path, scan.bytes.to_vec()).await?;
+                    write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
+                }
                 self.index[&t].push(&side)?;
                 c.fetched.fetch_add(1, Ordering::SeqCst);
                 c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
@@ -957,13 +988,38 @@ pub async fn run(
     let manifest_sha256 = sha256(&bytes);
     // Only the rows of the sets asked for are held (about 250 bytes a row).
     let mut manifest_pages = 0usize;
+    let mut invalid_repair = false;
     let sets = opts.sets;
-    let rows = prefetch::decode_where(Bytes::from(bytes), |r| {
+    let decode_repair = no_loc_for(&opts.manifest, &[DECODE_REPAIR_PREFIX.into()]);
+    let accept = |r: &ManifestRow| {
         manifest_pages += 1;
+        if decode_repair {
+            let english = r
+                .lang
+                .as_deref()
+                .is_none_or(|lang| usnm_core::lang::marc_to_iso3(lang).unwrap_or(lang) == "eng");
+            invalid_repair |= english || set_of(r) != Set::Keep;
+        }
         sets.has(set_of(r))
-    })
+    };
+    let rows = if decode_repair {
+        prefetch::decode_repair_where(Bytes::from(bytes), accept)
+    } else {
+        prefetch::decode_where(Bytes::from(bytes), accept)
+    }
     .context("reading the manifest")?;
+    if decode_repair
+        && (manifest_pages != 1
+            || invalid_repair
+            || opts.size != ImageSize::Full
+            || !sets.has(Set::Keep))
+    {
+        bail!("decode repair requires exactly one non-English full-resolution keep page");
+    }
     let rows = select(rows, &opts);
+    if decode_repair && rows.len() != 1 {
+        bail!("decode repair page was excluded by prefetch selection options");
+    }
     // The status is named for the resolution of the set the run starts with.
     let status_tag = tag(if opts.sets == Sets::Buffer {
         opts.buffer_size
@@ -1065,6 +1121,7 @@ pub async fn run(
         cooling,
         deferred: Mutex::new(Vec::new()),
         no_loc,
+        decode_repair,
         opts,
     });
     tracing::info!(
@@ -1076,6 +1133,7 @@ pub async fn run(
         concurrency = run.opts.concurrency,
         out = %run.opts.out.display(),
         no_loc = run.no_loc,
+        decode_repair = run.decode_repair,
         "prefetch starting"
     );
     // The buffer walk reads every file in it (over 300 GB on tank took about
