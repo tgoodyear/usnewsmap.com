@@ -34,7 +34,7 @@ ap.add_argument("--export", type=Path, required=True)  # JSONL {id,text,finish_r
 a = ap.parse_args()
 
 from PIL import Image
-from saturate import Auto, pump, read_output
+from saturate import Auto, Fixed, pump, read_output
 
 root = a.root.resolve()
 
@@ -98,7 +98,7 @@ def parse(row, body):
     }
 
 
-stats = pump(rows, to_request, parse, a.endpoint, str(a.out), window=Auto(max_limit=a.max_window), prepare_workers=4)
+stats = pump(rows, to_request, parse, a.endpoint, str(a.out), window=Fixed(1) if a.max_window == 1 else Auto(max_limit=a.max_window), prepare_workers=4)
 print("S9_STATS " + stats.to_json(), flush=True)
 with a.export.open("w", encoding="utf-8") as out:
     for row_id, row in read_output(str(a.out)):

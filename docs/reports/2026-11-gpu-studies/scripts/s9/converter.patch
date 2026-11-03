@@ -1,0 +1,7 @@
+--- a/convert_hf_to_gguf.py
++++ b/convert_hf_to_gguf.py
+@@ get_vocab_base_pre @@
++        if chkhsh == "1444df51289cfa8063b96f0e62b1125440111bc79a52003ea14b6eac7016fd5f":
++            # Study 9: xiaomi-research/Xiaomi-OCR-0 at bbd8cf8d; its tokenizer.json pre-tokenizer is the Qwen2 regex
++            res = "qwen2"
+         if chkhsh == "d30d75d9059f1aa2c19359de71047b3ae408c70875e8a3ccf8c5fba56c9d8af4":
