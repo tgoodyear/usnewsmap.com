@@ -1057,6 +1057,16 @@ output while it is held.
 output lock. Existing configurations naming that same lock or an inode alias still
 work. Keep these lock files in place while any writer is running.
 
+Serialization alone does not establish ownership across crashes. Before publishing
+a repair scan, the worker creates and syncs an extension-neutral
+`<keep-page-stem>.decode-repair` fence and its directory. It never automatically
+removes this fence. Later **ordinary** manifests honor it: incomplete, conflicting
+or empty fenced targets defer without fetching or replacing anything. A complete
+fenced pair is verified and its index recovered through the same validated repair
+path. Unfenced ordinary targets retain their previous recovery behavior.
+An interrupted sidecar publication therefore cannot let a subsequent ordinary run
+overwrite the repair scan, even after the output lock has been released.
+
 This coordinates **updated prefetch writers**, not arbitrary independent writers.
 Before enabling repairs, inventory every writer to the keep tree and index,
 including older prefetch binaries with custom locks, import/copy jobs and manual
@@ -1065,6 +1075,11 @@ output lock throughout their target checks, publication and indexing. An advisor
 lock cannot fence a writer that ignores it, and finite post-publication checks
 cannot make arbitrary external writes atomic with the index append. Repairs must
 remain disabled until that independent-writer exclusion/coordination gate is verified.
+The inventory must also rule out pre-fence partial repair outputs: a new marker
+cannot retrospectively identify arbitrary orphan files. Older workers do not honor
+these fences. Rolling back to one requires stopping acquisition while repair-owned
+targets remain at risk, not merely disabling new repair manifests. Preserve fences,
+partial scans and queue/quarantine state for reviewed recovery.
 
 On repair replay after a crash between scan/sidecar publication and index append, the
 fetcher verifies both possible formats and their batch identity before accepting the
@@ -1072,11 +1087,14 @@ retained copy. It restores a missing sidecar entry to the append-only fetch inde
 syncs that append, and does not append it again on a second replay. Existing index
 history (including older entries without newer sidecar fields) is preserved. Both
 newly fetched repairs and replays stream and validate the full index before appending
-and syncing their exact sidecar entry; ordinary fetches retain their existing append
+and syncing their exact sidecar entry; unfenced ordinary fetches retain their existing append
 behavior. An incomplete or conflicting replay pair is deferred without a fetch or
 index append. A malformed or unterminated existing index fails even a newly fetched
 repair without changing that index or reporting it fetched; its published scan and
 sidecar remain intact for operator-reviewed recovery.
+Every history record must be a JSON **object**: `null`, arrays, strings, numbers and
+booleans are rejected before the legacy-field fallback, including after an exact
+matching sidecar. Older object records may still lack newer sidecar fields.
 
 The worker's `decode_repair_restart_*` regressions exercise synthetic publication/index
 crash boundaries for JP2 and JPEG, repeated replay, cross-format partial/conflicting
@@ -1088,6 +1106,10 @@ Additional publication regressions fetch a new repair against torn/malformed ind
 history, inject an alternate-format scan/sidecar/pair after the no-replace file
 publications but before indexing, and verify that custom locks cannot bypass the
 output-wide lock for ordinary or repair manifests.
+Sequential restart regressions run actual repair publication into a sidecar-write
+failure, then run ordinary prefetch against the retained scan. They also cover an
+empty fenced target, ordinary recovery of a complete fenced pair's missing index,
+unfenced ordinary orphan recovery, and non-object index histories.
 
 Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 `observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
@@ -1102,6 +1124,7 @@ failed page. This backward-compatible non-completion signal prevents an older
 supervisor that checks `state=done && failed_transient=0` from marking the manifest
 `fetched`. Occupancy does not advance the consecutive LoC-failure streak or change
 LoC backoff; it remains an operator-reviewed retained-target conflict.
+Ordinary pages deferred by a repair fence use the same counters and cooling policy.
 
 The matching supervisor must explicitly recognize `deferred_repair_occupied`,
 write its existing **one-day `cooling` marker**, and advance to other manifests.
@@ -1173,7 +1196,7 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
   -s scripts/boinc/onprem/ocr-feed -p test_repair_rehearsal.py -v
 ```
 
-An optional fifth scenario executes an operator-supplied, reviewed queue supervisor
+An optional sixth scenario executes an operator-supplied, reviewed queue supervisor
 script directly with Bash; it is **not copied into this repository**:
 
 ```sh
@@ -1194,7 +1217,7 @@ retained scans, original manifests, quarantine bytes and synthetic upstream
 contents must remain unchanged.
 
 Executed locally on 3 November 2026 with the named-option CLI and optional
-supervisor: **5 tests passed in 157.379 seconds** (four standard scenarios plus the
+supervisor: **6 tests passed in 164.163 seconds** (five standard scenarios plus the
 actual-supervisor scenario), with these asserted results:
 
 - The reviewed **updated**, not deployed, supervisor (SHA256
@@ -1234,6 +1257,12 @@ actual-supervisor scenario), with these asserted results:
   A separate copied fixture of the actual completed scan/sidecar, with the index
   append absent, recovered exactly one matching entry across two process replays
   without refetching or altering the original index.
+- An actual repair process published its scan, then failed sidecar publication
+  against a preserved partial file. Separate subsequent **ordinary, repair,
+  ordinary** processes all deferred without another upstream request. The durable
+  fence, scan, partial sidecar, empty index, manifests and queued quarantine bytes
+  remained unchanged. This tests sequential ownership after the prior lock holder
+  exits, not just concurrent lock exclusion.
 - Turning the producer off and restarting the HTTP server with upgraded consumers
   retained every manifest, quarantine database and keep scan byte. The queue
   remained readable. All disposable subprocesses and fixture directories were
@@ -1244,7 +1273,7 @@ Related focused validation:
 ```sh
 .rehearsal/venv/bin/python -m unittest discover \
   -s scripts/boinc/onprem/ocr-feed -p test_ocr_manifest.py -q # 32 passed
-cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 42 passed
+cargo test -j 2 -p usnm-ocr-worker --lib prefetch:: --quiet # 43 passed
 cargo test -j 2 -p usnm-ocr-dash --lib \
   queue_reads_decode_repairs_but_rejects_mismatched_formats --quiet # 1 passed
 cargo clippy -j 2 -p usnm-ocr-dash --example repair_rehearsal -- -D warnings # passed
@@ -1371,8 +1400,9 @@ or complete upgrade ordering. These still need a disposable deployment-level tes
 dashboard path tested is its real queue/index reader; the historical binary's
 isolated loopback HTTP/HTML probe does not certify the upgraded deployment's
 HTTP/UI/access configuration.
-The post-publication crash boundary is reconstructed from copied real output, not
-a SIGKILL precisely between its two filesystem operations; power loss, filesystem
+The missing-index crash boundary is reconstructed from copied real output; the
+partial-publication case uses an actual sidecar-write failure, not a SIGKILL
+precisely between its filesystem operations. Power loss, filesystem
 durability and independently deployed acquisition paths are not certified. Nor
 does this test establish upstream image decodability, the production SQL ranking
 path, retained-data retirement or production access policy. Keep repairs disabled

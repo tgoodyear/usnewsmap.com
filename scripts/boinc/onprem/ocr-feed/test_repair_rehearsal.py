@@ -507,6 +507,41 @@ class RepairRehearsal(unittest.TestCase):
               "with truncated/wrong bytes retain queued slots; occupied status blocks legacy "
               "fetched markers without HTTP fetch")
 
+    def test_ordinary_restart_preserves_crash_left_repair_ownership(self):
+        self.seed(1)
+        self.produce()
+        ordinary = self.put_initial_manifest(1, "queue-quality-before-repair")
+        manifests_before = self.snapshot(self.root / "manifests")
+        quarantine_before = self.snapshot(self.quarantines)
+        self.source.wait_path = Source.image_path(1)
+        running = self.spawn("fetch", manifest=self.repair(1), source=self.source.url)
+        self.assertTrue(self.source.started.wait(60), "repair did not reach synthetic image")
+        scan = self.retained(1)
+        scan.parent.mkdir(parents=True, exist_ok=True)
+        part = Path(f"{scan}.json.repair-{running.pid}.part")
+        part.write_bytes(b"preserve interrupted sidecar")
+        self.source.release.set()
+        stdout, stderr = running.communicate(timeout=60)
+        self.assertNotEqual(running.returncode, 0, stdout + stderr)
+        self.assertEqual(scan.read_bytes(), Source.body(1))
+        self.assertFalse(Path(str(scan) + ".json").exists())
+        self.assertTrue(scan.with_suffix(".decode-repair").is_file())
+        before = self.snapshot(self.root / "scans/keep")
+        hits = list(self.source.hits)
+        # Distinct later processes, not simultaneous writers sharing a live lock.
+        for path in (ordinary, self.repair(1), ordinary):
+            self.assert_occupied_noncompletion(self.fetch(path))
+            self.assertEqual(self.snapshot(self.root / "scans/keep"), before)
+            self.assertEqual(self.source.hits, hits)
+            self.assertEqual((self.root / "scans/index-full.jsonl").read_bytes(), b"")
+        self.produce()
+        self.assertEqual(self.records()[self.page(1)["doc_id"]]["refetch_state"], "queued")
+        self.assertEqual(self.snapshot(self.quarantines), quarantine_before)
+        self.assertEqual(self.snapshot(self.root / "manifests"), manifests_before)
+        print("PASS repair ownership: actual scan publication followed by sidecar failure; "
+              "sequential ordinary/repair/ordinary processes preserve the durable fence, scan, "
+              "partial sidecar, empty index and queued quarantine without refetch")
+
     def test_concurrent_acquisition_and_killed_fetcher_restart(self):
         self.seed(1)
         self.seed(2)

@@ -764,8 +764,12 @@ impl Run {
             Set::Buffer => self.opts.buffer_size,
         };
         let c = &self.counts;
-        let existing = if self.decode_repair {
+        let fenced = layout::repair_fenced(&self.opts.out, &row, size).await?;
+        let existing = if self.decode_repair || fenced {
             if let Some(side) = repair_there(&self.opts.out, &row, size).await? {
+                if self.decode_repair {
+                    layout::fence_repair(&self.opts.out, &row, size).await?;
+                }
                 if !index_repair(&self.opts.out, &row, size, &side, &self.index[&tag(size)]).await?
                 {
                     return Ok(self.defer_occupied_repair(&row));
@@ -787,7 +791,9 @@ impl Run {
             self.streak_ok();
             return Ok(Outcome::Done);
         }
-        if self.decode_repair && repair_occupied(&self.opts.out, &row, size).await? {
+        if (!self.decode_repair && fenced)
+            || (self.decode_repair && repair_occupied(&self.opts.out, &row, size).await?)
+        {
             return Ok(self.defer_occupied_repair(&row));
         }
         // A buffer page a worker has read and the scan server deleted.
@@ -832,6 +838,9 @@ impl Run {
             }
             Fetched::Scan(scan, route, via) => {
                 let path = scan_path(&self.opts.out, &row, size, scan.format);
+                if !self.decode_repair && layout::repair_fenced(&self.opts.out, &row, size).await? {
+                    return Ok(self.defer_occupied_repair(&row));
+                }
                 if self.decode_repair && repair_occupied(&self.opts.out, &row, size).await? {
                     return Ok(self.defer_occupied_repair(&row));
                 }
@@ -851,6 +860,7 @@ impl Run {
                     md5: scan.md5.clone(),
                 };
                 if self.decode_repair {
+                    layout::fence_repair(&self.opts.out, &row, size).await?;
                     if !write_repair_atomic(
                         &path,
                         scan.bytes.to_vec(),

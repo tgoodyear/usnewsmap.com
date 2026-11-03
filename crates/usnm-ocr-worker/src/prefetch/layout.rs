@@ -274,6 +274,55 @@ pub(super) async fn repair_occupied(
     Ok(false)
 }
 
+pub(super) fn repair_fence_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
+    scan_path(out, row, size, ScanFormat::Jpeg).with_extension("decode-repair")
+}
+
+/// A durable, extension-neutral claim survives a repair dying between publications.
+pub(super) async fn repair_fenced(
+    out: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+) -> std::io::Result<bool> {
+    match tokio::fs::symlink_metadata(repair_fence_path(out, row, size)).await {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+pub(super) async fn fence_repair(
+    out: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+) -> anyhow::Result<()> {
+    let path = repair_fence_path(out, row, size);
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let dir = path.parent().context("no repair fence parent")?;
+        std::fs::create_dir_all(dir)?;
+        let fence = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::ensure!(
+                    std::fs::symlink_metadata(&path)?.file_type().is_file(),
+                    "repair fence is not a regular file: {}",
+                    path.display()
+                );
+                std::fs::File::open(&path)?
+            }
+            Err(e) => return Err(e).context("creating repair fence"),
+        };
+        fence.sync_all()?;
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })
+    .await?
+}
+
 /// Write `body` to `path` through a synced `.part` file and a rename.
 pub(super) async fn write_atomic(path: &Path, body: Vec<u8>) -> anyhow::Result<()> {
     let path = path.to_owned();
@@ -394,6 +443,11 @@ impl Lines {
             );
             let indexed: serde_json::Value = serde_json::from_str(&line)
                 .with_context(|| format!("reading repair index {}", self.path.display()))?;
+            anyhow::ensure!(
+                indexed.is_object(),
+                "non-object record in repair index {}; operator review required",
+                self.path.display()
+            );
             // Older index entries may lack fields that current sidecars require.
             if serde_json::from_value::<Sidecar>(indexed).ok().as_ref() == Some(side) {
                 found = true;

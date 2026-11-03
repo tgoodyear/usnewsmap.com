@@ -253,6 +253,12 @@ async fn decode_repair_restart_recovers_missing_index_without_republishing_or_re
             let side = repair_sidecar(&row, body, format);
             let manifest = decode_repair_manifest(dir.path(), std::slice::from_ref(&row));
             let manifest_bytes = std::fs::read(&manifest).unwrap();
+            let ordinary = dir.path().join("ordinary.parquet");
+            std::fs::write(
+                &ordinary,
+                prefetch::encode(std::slice::from_ref(&row)).unwrap(),
+            )
+            .unwrap();
             let mut buffer_row = row.clone();
             buffer_row.lang = Some("eng".into());
             let original = scan_path(&out, &buffer_row, ImageSize::Full, format);
@@ -267,6 +273,9 @@ async fn decode_repair_restart_recovers_missing_index_without_republishing_or_re
             std::fs::write(&index, &prefix).unwrap();
 
             // Stop at the actual publication boundaries, before any index append.
+            layout::fence_repair(&out, &row, ImageSize::Full)
+                .await
+                .unwrap();
             if complete {
                 assert!(write_repair_atomic(
                     &scan,
@@ -287,9 +296,11 @@ async fn decode_repair_restart_recovers_missing_index_without_republishing_or_re
                 ..Options::default()
             };
             let (_tx, rx) = watch::channel(false);
-            for _ in 0..2 {
+            for current_manifest in [&ordinary, &manifest, &ordinary, &manifest] {
+                let mut opts = opts.clone();
+                opts.manifest = current_manifest.clone();
                 let status = run(
-                    opts.clone(),
+                    opts,
                     client("http://127.0.0.1:9", Duration::from_millis(1)),
                     rx.clone(),
                 )
@@ -331,6 +342,122 @@ async fn decode_repair_restart_recovers_missing_index_without_republishing_or_re
                 assert_eq!(std::fs::read(&manifest).unwrap(), manifest_bytes);
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_restart_preserves_a_failed_repair_publication_and_its_fence() {
+    let hits = Arc::new(Mutex::new(BTreeMap::new()));
+    let root = titles_loc(&[], &[], hits.clone()).await;
+    for interrupted_after_scan in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let row = row("sn1", 1890, 1, "rus");
+        let out = dir.path().join("scans");
+        let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+        let repair = decode_repair_manifest(dir.path(), std::slice::from_ref(&row));
+        let ordinary = dir.path().join("ordinary.parquet");
+        std::fs::write(
+            &ordinary,
+            prefetch::encode(std::slice::from_ref(&row)).unwrap(),
+        )
+        .unwrap();
+        let opts = Options {
+            manifest: repair.clone(),
+            out: out.clone(),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        std::fs::create_dir_all(scan.parent().unwrap()).unwrap();
+        let part = PathBuf::from(format!(
+            "{}.repair-{}.part",
+            sidecar_path(&scan).display(),
+            std::process::id()
+        ));
+        if interrupted_after_scan {
+            // Actual prefetch publishes its scan, then fails its sidecar publication.
+            std::fs::write(&part, b"preserve interrupted sidecar").unwrap();
+            assert!(run(
+                opts.clone(),
+                client(&root, Duration::from_millis(1)),
+                rx.clone()
+            )
+            .await
+            .is_err());
+            assert!(scan.exists());
+        } else {
+            layout::fence_repair(&out, &row, ImageSize::Full)
+                .await
+                .unwrap();
+        }
+        let fence = layout::repair_fence_path(&out, &row, ImageSize::Full);
+        assert!(fence.exists());
+        assert!(!sidecar_path(&scan).exists());
+        let retained = std::fs::read(&scan).ok();
+        let prior_hits = hits.lock().unwrap().clone();
+        for _ in 0..2 {
+            let ordinary_opts = Options {
+                manifest: ordinary.clone(),
+                ..opts.clone()
+            };
+            let status = run(
+                ordinary_opts,
+                client(&root, Duration::from_millis(1)),
+                rx.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (
+                    status.fetched,
+                    status.already_there,
+                    status.deferred_repair_occupied,
+                    status.failed_transient
+                ),
+                (0, 0, 1, 1)
+            );
+            assert_eq!(std::fs::read(&scan).ok(), retained);
+            assert!(!sidecar_path(&scan).exists());
+            assert_eq!(std::fs::read(out.join("index-full.jsonl")).unwrap(), b"");
+            assert_eq!(*hits.lock().unwrap(), prior_hits);
+            assert!(fence.exists());
+        }
+        if interrupted_after_scan {
+            assert_eq!(
+                std::fs::read(&part).unwrap(),
+                b"preserve interrupted sidecar"
+            );
+        } else {
+            let status = run(
+                opts.clone(),
+                client(&root, Duration::from_millis(1)),
+                rx.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                status.fetched, 1,
+                "only the repair may resume an empty fenced target"
+            );
+        }
+
+        // Ordinary orphan recovery is unchanged for a target never claimed by a repair.
+        let legacy_out = dir.path().join("ordinary-scans");
+        let legacy_scan = scan_path(&legacy_out, &row, ImageSize::Full, ScanFormat::Jpeg);
+        std::fs::create_dir_all(legacy_scan.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_scan, b"ordinary orphan").unwrap();
+        let status = run(
+            Options {
+                manifest: ordinary,
+                out: legacy_out,
+                ..opts
+            },
+            client(&root, Duration::from_millis(1)),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.fetched, 1);
+        assert!(sidecar_path(&legacy_scan).exists());
     }
 }
 
@@ -408,6 +535,11 @@ async fn decode_repair_restart_preserves_legacy_index_and_refuses_torn_records()
         ("{\"doc_id\":\"interrupted\"", false),
         ("{\"doc_id\":\"unterminated\"}", false),
         ("invalid json\n", false),
+        ("null\n", false),
+        ("[]\n", false),
+        ("true\n", false),
+        ("1\n", false),
+        ("\"not an object\"\n", false),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let row = row("sn1", 1890, 1, "rus");
@@ -467,6 +599,8 @@ async fn decode_repair_new_fetch_preserves_torn_index_and_never_reports_success(
         "{\"doc_id\":\"interrupted\"",
         "{\"doc_id\":\"unterminated\"}",
         "invalid json\n",
+        "null\n",
+        "[]\n",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let row = row("sn1", 1890, 1, "rus");
@@ -495,10 +629,19 @@ async fn decode_repair_new_fetch_preserves_torn_index_and_never_reports_success(
         let image = std::fs::read(&scan).unwrap();
         assert!(matches_sidecar(&image, &side), "the new pair was published");
         let fetched_hits = hits.lock().unwrap().clone();
-        for replay in [false, true] {
-            if replay {
+        let ordinary = dir.path().join("ordinary.parquet");
+        std::fs::write(
+            &ordinary,
+            prefetch::encode(std::slice::from_ref(&row)).unwrap(),
+        )
+        .unwrap();
+        for replay in [None, Some(opts.manifest.clone()), Some(ordinary)] {
+            if let Some(manifest) = replay {
                 assert!(run(
-                    opts.clone(),
+                    Options {
+                        manifest,
+                        ..opts.clone()
+                    },
                     client(&root, Duration::from_millis(1)),
                     rx.clone(),
                 )
@@ -602,7 +745,12 @@ fn decode_repair_index_replay_refuses_bad_tail_after_matching_sidecar() {
     let dir = tempfile::tempdir().unwrap();
     let index = dir.path().join("index-full.jsonl");
     let side = repair_sidecar(&row("sn1", 1890, 1, "rus"), b"repair", ScanFormat::Jpeg);
-    for tail in ["invalid json\n", "{\"doc_id\":\"unterminated\"}"] {
+    for tail in [
+        "invalid json\n",
+        "{\"doc_id\":\"unterminated\"}",
+        "null\n",
+        "[]\n",
+    ] {
         let history = format!("{}\n{tail}", serde_json::to_string(&side).unwrap());
         std::fs::write(&index, &history).unwrap();
         let lines = Lines::open(&index).unwrap();
