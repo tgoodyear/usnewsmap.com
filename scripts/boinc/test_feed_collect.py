@@ -141,6 +141,43 @@ def queued_task(resources="", result_fields=""):
 
 
 class EligibilityTests(unittest.TestCase):
+    def test_opencl_requires_rpc_support_and_compatible_memory_evidence(self):
+        with client_rpc_fixture() as (root, port, answers, _):
+            original = answers["get_state"]
+            for flag, prop, minimum, expected in (
+                ("0", False, "0", "opencl_support_unavailable"),
+                (None, True, "0", "opencl_support_unavailable"),
+                ("1", False, "0", "opencl_memory_unavailable"),
+                ("1", True, "0", None),
+                ("1", True, "3000", "eligibility unavailable"),
+                ("1", True, "1000", "opencl_memory_profile_unavailable"),
+            ):
+                with self.subTest(flag=flag, properties=prop, minimum=minimum):
+                    support = f"<have_opencl>{flag}</have_opencl>" if flag is not None else ""
+                    properties = """<coproc_opencl><global_mem_size>2000000000</global_mem_size>
+<opencl_device_version>OpenCL 2.0 fixture</opencl_device_version></coproc_opencl>""" if prop else ""
+                    answers["get_state"] = original.replace("<count>1</count>",
+                        f"<count>1</count><available_ram>8000000000</available_ram>{support}{properties}")
+                    observed = C.client(root, port)
+                    db, h = database(), host()
+                    h.update({key: observed[key] for key in ("gpu_memory", "gpu_capabilities", "gpu_devices")})
+                    db["plans"]["intel"].update(opencl="1", min_gpu_ram_mb=minimum)
+                    if expected:
+                        with self.assertRaisesRegex(ValueError, expected):
+                            C.supply(db, [h], "gpu")
+                    else:
+                        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+                        db["plans"]["intel"]["min_opencl_version"] = "201"
+                        with self.assertRaisesRegex(ValueError, "eligibility unavailable"):
+                            C.supply(db, [h], "gpu")
+                        db["plans"]["intel"]["min_opencl_version"] = "200"
+                        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+            answers["get_state"] = answers["get_state"].replace(
+                "<available_ram>8000000000</available_ram>", "<available_ram>2000000000</available_ram>")
+            observed = C.client(root, port)
+            h.update({key: observed[key] for key in ("gpu_memory", "gpu_capabilities", "gpu_devices")})
+            self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+
     def test_every_idle_gpu_type_needs_an_installed_and_live_profile(self):
         db, h = database(), host()
         db["units"].append(dict(db["units"][0], id=6))
@@ -436,18 +473,57 @@ class EligibilityTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
-    def observe(self, events=(), **status):
+    def observe(self, events=(), native=(), **status):
         properties = {"LoadState": "loaded", "SubState": "dead", "Result": "success",
                       "ExecMainStartTimestampMonotonic": 100000000,
                       "ExecMainExitTimestampMonotonic": 120000000}
         properties.update(status)
-        journal = "\n".join(json.dumps({
+        entries = [{"__REALTIME_TIMESTAMP": str(at * 1000000), **entry} for at, entry in native]
+        entries.extend({
             "__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE": json.dumps(event),
-        }) for at, event in events).encode()
+        } for at, event in events)
+        journal = "\n".join(json.dumps(entry) for entry in
+                            sorted(entries, key=lambda e: int(e["__REALTIME_TIMESTAMP"]))).encode()
         systemd = "\n".join(f"{key}={value}" for key, value in properties.items()).encode()
         with patch.object(C, "run", side_effect=[journal, systemd]), \
                 patch.object(C.time, "time", return_value=NOW):
             return C.controller("usnm-boinc-priority-controller.service")
+
+    def test_native_failures_survive_successful_or_running_restart_and_acknowledgement(self):
+        for message_id, field, result in (
+            ("d9b373ed55a64feb8242e02dbe79a49c", "UNIT_RESULT", "exit-code"),
+            ("be02cf6855d2428ba40df7e9d022f03d", "JOB_RESULT", "dependency"),
+        ):
+            for running in (False, True):
+                with self.subTest(message_id=message_id, running=running):
+                    entry = {"MESSAGE_ID": message_id, "UNIT": "usnm-boinc-priority-controller.service",
+                             field: result, "MESSAGE": "Native failure without application JSON or timings."}
+                    events = [(NOW - 5, {"event": "boinc_batch_tick", "timings": {"tick_seconds": 1}})]
+                    status = {"SubState": "running", "ExecMainStartTimestampMonotonic": 1000000000,
+                              "ExecMainExitTimestampMonotonic": 0} if running else {}
+                    with patch.object(C.time, "clock_gettime", return_value=1001):
+                        tick = self.observe(events, native=[(NOW - 10, entry)], **status)
+                    self.assertEqual(tick["last_failure_at"], NOW - 10)
+                    previous = {}
+                    for elapsed, expected in ((0, "firing"), (60, "healthy")):
+                        document, previous = F.evaluate({"tick": tick}, previous, NOW + elapsed,
+                                                        1000 + elapsed, "boot", "cfg")
+                        self.assertEqual(next(c for c in document["checks"]
+                                              if c["code"] == "controller_tick")["state"], expected)
+                        previous = json.loads(json.dumps(previous))
+
+    def test_native_failure_identity_and_invalid_evidence(self):
+        events = [(NOW - 5, {"event": "boinc_batch_tick", "timings": {"tick_seconds": 1}})]
+        entry = {"MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c",
+                 "UNIT": "unrelated.service", "UNIT_RESULT": "exit-code", "MESSAGE": "Failed."}
+        self.assertEqual(self.observe(events, native=[(NOW - 10, entry)])["last_failure_at"], 0)
+        entry["UNIT"] = "usnm-boinc-priority-controller.service"
+        del entry["UNIT_RESULT"]
+        with self.assertRaisesRegex(ValueError, "invalid native controller failure evidence"):
+            self.observe(events, native=[(NOW - 10, entry)])
+        entry["MESSAGE_ID"] = "0e4284a0caca4bfc81c0bb6786972673"
+        entry["UNIT_RESULT"] = "exec-condition"
+        self.assertEqual(self.observe(events, native=[(NOW - 10, entry)])["last_failure_at"], 0)
 
     def test_running_tick_uses_systemd_clock_despite_prior_suspend(self):
         for elapsed, expected in ((10, "healthy"), (900, "healthy"), (901, "firing")):

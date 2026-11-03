@@ -30,6 +30,11 @@ MAX_PROFILE_CHECKS = 1000000
 TIMEOUT = 15
 NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
 SOURCE_UNKNOWN_REASONS = ("task_resource_usage_unavailable", "active_task_resource_usage_unavailable")
+SYSTEMD_FAILURE_FIELDS = {
+    # UNIT_FAILURE_RESULT and UNIT_FAILED (failed start job), not free-text messages.
+    "d9b373ed55a64feb8242e02dbe79a49c": "UNIT_RESULT",
+    "be02cf6855d2428ba40df7e9d022f03d": "JOB_RESULT",
+}
 
 
 class SupplyUnknown(ValueError):
@@ -473,11 +478,23 @@ def client(data_dir, port):
             gpu_memory[vendor] = max([float(n.text or 0) for tag in
                 ("available_ram", "totalGlobalMem", "global_mem_size")
                 for n in node.findall(".//" + tag)] or [0])
-            opencl = re.search(r"OpenCL\s+(\d+)\.(\d+)", node.findtext(".//opencl_device_version", ""))
+            properties = node.findall("coproc_opencl")
+            prop = properties[0] if len(properties) == 1 else None
+            opencl = re.search(r"OpenCL\s+(\d+)\.(\d+)",
+                               prop.findtext("opencl_device_version", "") if prop is not None else "")
+            flags = node.findall("have_opencl")
+            support = flags[0].text if len(flags) == 1 else None
+            try:
+                opencl_memory = float(prop.findtext("global_mem_size")) if prop is not None else None
+            except (TypeError, ValueError):
+                opencl_memory = None
             capabilities[vendor] = {
                 "min_cuda_version": int(node.findtext(".//cudaVersion", "0")),
                 "min_nvidia_compcap": int(node.findtext(".//major", "0")) * 100 + int(node.findtext(".//minor", "0")),
                 "min_opencl_version": int(opencl[1]) * 100 + int(opencl[2]) if opencl else 0,
+                "have_opencl": support == "1" if support in ("0", "1") else None,
+                "opencl_memory_bytes": opencl_memory if opencl_memory is not None and math.isfinite(opencl_memory)
+                and opencl_memory > 0 else None,
             }
     if any(device not in gpu_devices or gpu_devices[device] <= 0 for device in used_gpu):
         raise SupplyUnknown("task_resource_usage_unavailable")
@@ -521,6 +538,14 @@ def controller(unit):
     for line in raw.splitlines():
         entry = json.loads(line)
         if not isinstance(entry, dict):
+            continue
+        message_id = entry.get("MESSAGE_ID")
+        field = SYSTEMD_FAILURE_FIELDS.get(message_id) if isinstance(message_id, str) else None
+        if field and entry.get("UNIT") == unit:
+            outcome = entry.get(field)
+            if not isinstance(outcome, str) or not outcome or outcome in ("success", "done"):
+                raise ValueError("invalid native controller failure evidence")
+            last_failure = max(last_failure, int(entry["__REALTIME_TIMESTAMP"]) // 1000000)
             continue
         try:
             event = json.loads(entry.get("MESSAGE", ""))
@@ -657,9 +682,20 @@ def host_profile(host, version, database):
         return None
     if version["gpu"]:
         gpu = version["gpu"]
+        capabilities = host.get("gpu_capabilities", {}).get(gpu, {})
         expected = {"nvidia": "NVIDIA", "ati": "ATI", "amd": "ATI", "intel": "intel_gpu", "apple": "apple_gpu"}
         if "gpu_type" in plan and expected.get(plan["gpu_type"]) != gpu:
             return None
+        if "opencl" in plan:
+            if capabilities.get("have_opencl") is not True:
+                raise SupplyUnknown("opencl_support_unavailable")
+            memory = capabilities.get("opencl_memory_bytes")
+            if type(memory) not in (int, float) or not math.isfinite(memory) or memory <= 0:
+                raise SupplyUnknown("opencl_memory_unavailable")
+            if numbers["min_gpu_ram_mb"] * 1e6 > memory:
+                return None
+            if gpu_task_memory(numbers) and memory < host.get("gpu_memory", {}).get(gpu, 0):
+                raise SupplyUnknown("opencl_memory_profile_unavailable")
         if (numbers["ngpus"] or 1) != version["gpu_count"]:
             raise ValueError("live GPU policy differs from installed resource profile")
         # Without an explicit CPU demand the GPU profile depends on host performance
@@ -675,7 +711,7 @@ def host_profile(host, version, database):
                 or host.get("gpu_memory", {}).get(gpu, 0) <= 0):
             raise SupplyUnknown("gpu_memory_packing")
         for gate in ("min_cuda_version", "min_nvidia_compcap", "min_opencl_version"):
-            if integers[gate] > host.get("gpu_capabilities", {}).get(gpu, {}).get(gate, 0):
+            if integers[gate] > capabilities.get(gate, 0):
                 return None
         demand = numbers["avg_ncpus"]
     else:

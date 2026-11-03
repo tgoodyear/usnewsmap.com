@@ -83,6 +83,15 @@ and live profile. CPU demand comes from the live fixed `avg_ncpus`, or from
 `max_threads` capped by the observed host's effective CPU count; cached demand
 must agree. Missing host capacity, performance-derived GPU CPU demand, and
 unmodeled memory-scaling policies are unknown rather than inferred from cache.
+An OpenCL GPU plan requires explicit GUI-RPC `have_opencl` support even without
+a minimum-version gate, matching the
+[pinned scheduler's OpenCL branch](https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/plan_class_spec.cpp#L998).
+Its minimum memory requirement uses the nested OpenCL `global_mem_size`, not
+a larger native-device memory figure. Missing support/memory evidence, or
+positive memory reservations with a larger generic than OpenCL memory budget,
+produce explicit `opencl_*_unavailable` unknown reasons; the latter needs
+per-profile memory accounting this model does not provide. Other unmodeled
+OpenCL policy fields remain unsupported, rather than silently ignored.
 Selected work is checked against cumulative per-host CPU, RAM and disk budgets,
 shared between CPU and GPU allocations. GPU work consumes its live CPU demand,
 not just a GPU slot; a CPU-app exclusion does not disable CPU support for permitted
@@ -164,7 +173,17 @@ Refill expiry/remaining ≤6h, controller failure, or runtime >15 minutes fire
 immediately. A failed tick or a successfully completed tick over 15 minutes is
 retained by its journal timestamp, even if a short tick follows or a new tick
 starts before collection. Both use the durable `last_failure_at` alert watermark,
-acknowledged only after publication. The alert rule retains **all firing checks** for ten
+acknowledged only after publication. The same watermark retains structured
+systemd unit-failure and failed-start-job records, scoped to this system unit,
+including failures before application JSON logging. A subsequent start or
+`reset-failed` can clear systemd's `Result`, but does not erase the bounded
+journal evidence
+([unit failures](https://github.com/systemd/systemd/blob/v257/src/core/unit.c#L6027),
+[start jobs](https://github.com/systemd/systemd/blob/v257/src/core/job.c#L729)).
+Unrelated-unit records and condition skips are not counted as failures;
+malformed recognized failure records make the controller source unknown.
+This still requires readable journal evidence within the two-hour/2,000-record
+collection window. The alert rule retains **all firing checks** for ten
 minutes so a five-minute alert evaluation does not miss a shortage or other
 failure that recovers between evaluations. Duration thresholds are already
 enforced by the evaluator; this retention does not shorten them.
