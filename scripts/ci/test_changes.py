@@ -605,6 +605,14 @@ class BuildInputs(unittest.TestCase):
     def test_docs_only_change_runs_only_the_markdown_check(self):
         self.assertEqual(self.select("docs/operations/onprem-ocr.md", "README.md"), {"markdown"})
 
+    def test_gpu_study_scripts_run_script_checks(self):
+        for path in (
+            "docs/reports/2026-11-gpu-studies/scripts/analyze-6.sh",
+            "docs/reports/2026-11-gpu-studies/scripts/yiddish/run-deadline.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.select(path), {"code", "infra"})
+
     def test_shared_well_known_metadata_runs_both_site_and_boinc_image_checks(self):
         on = self.select("web/public/.well-known/security.txt")
         self.assertGreaterEqual(on, {"contrib", "image", "web", "e2e"})

@@ -9,8 +9,8 @@
 # whether it changes the Azure stack beyond what a deploy applies (the API
 # image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
 # applies), so scripts/azure/provision.sh must run. Documentation (Markdown
-# anywhere, anything under docs/) counts for no output but markdown: a change
-# to it alone runs only the Markdown format check.
+# anywhere, and docs/ except the executable GPU-study scripts) counts for no
+# output but markdown: a change to it alone runs only the Markdown format check.
 # ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
 # Rust scorer's golden files that gold.py writes), whose unit tests and golden
 # check run in the infra job. Most fixtures/ocr-gold/ files count for none
@@ -108,9 +108,9 @@ files=$(git diff --name-only --no-renames "$range") || all "git diff failed for 
 echo "$files" | sed 's/^/changed: /'
 # Prettier formats Markdown anywhere (.prettierrc.json, .prettierignore).
 if grep -Eq '\.md$' <<< "$files"; then markdown=true; else markdown=false; fi
-# Documentation is only read: nothing below counts it. No README is compiled
-# into a binary or an image.
-files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
+# Documentation is only read, except the executable GPU-study scripts, which
+# have regression tests in scripts/ci/. No README is compiled into an image.
+files=$(awk '!/\.md$/ && ($0 !~ /^docs\// || $0 ~ /^docs\/reports\/2026-11-gpu-studies\/scripts\/.*\.(py|sh)$/)' <<< "$files")
 if grep -Eq '^contrib-compute/boinc/html/' <<< "$files"; then boinc_pages=true; else boinc_pages=false; fi
 files=$(grep -Ev '^contrib-compute/boinc/html/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }

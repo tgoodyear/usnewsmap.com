@@ -10,7 +10,7 @@ All limits are 95% bootstrap limits, resampling source pages. For Studies 1 to 7
 
 # Summary
 
-**Review limitation:** The historical LoRA adapter files were not checked for missing tensors, and the earlier Surya page-mode runners could discard block errors. The affected adapter and Surya page-mode comparisons are provisional; the retained evidence does not establish whether either problem affected a result. Study 8 used separately checked runners.
+**Review limitation:** The historical LoRA adapter files were not checked for missing tensors, earlier Surya page-mode runners could discard block errors, and earlier Tesseract wrappers could mask failed reads. The affected comparisons are provisional; the retained evidence does not establish whether these problems affected a result. Study 8 used separately checked runners.
 
 Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, a difference of 8.2 points with limits of -4.6 to 25.4, so no difference is called. On the German measured set the protocol's pooled CER is 49.6% for Qwen 8B against 17.9% for `frak2021` PSM 3, a difference that is called, against Qwen. Repetition loops are the visible cause: leaving out the 9 looped crops of 1,060 (post-hoc) brings Qwen to 10.9%. Loops were rarer on some sets than others: 3.9% of pilot crops and 15 of 64 Japanese crops. A loop guard is the first change to make.
 
@@ -27,6 +27,8 @@ On 104 hand-corrected Yiddish book pages, mean page CER is 1.52% for Jochre 3, 8
 # Study 1: German Fraktur (#926, #835)
 
 Readers: Qwen3-VL 8B Q4_K_M on an RTX 3090, Tesseract 5.5 `frak2021` and `deu_latf+deu`, and LoC's text on the pilot pages.
+
+The historical Tesseract wrappers could record failed or timed-out reads as text. The retained Study 1 and 3 outputs lack per-read exit receipts, so job-level success and zero missing counts cannot establish that all reads succeeded. Their Tesseract comparisons remain provisional. Updated wrappers record failures separately; no OCR was rerun.
 
 ## Measured CER, on human transcriptions
 
@@ -453,6 +455,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 
 - Post-hoc views. The no-loop scores and folded scores weren't planned. They're labelled wherever used.
 - Tesseract ran from the pinned worker image under `chroot` on a plain base, because that image's container closes SSH on Vast. Study 1's crop arms ran on a rented host with an unused GPU. The remaining Tesseract arms ran on a local node at the same version and flags.
+- The updated earlier-study Tesseract wrappers require verified model pins. `jpn_vert` has no approved pin in the worker lock, so that Japanese run is unavailable until one is reviewed.
 - Surya used image digest `e326a2a5` locally and `bccf7cba` rented, with the same Surya version, llama.cpp build and weights digest.
 - CHURRO ran in a Python 3.12 environment with torch 2.8.0, at the pinned commit and model revision, since its package needs 3.12.
 - American Stories ran as one batch on a local CPU with torch 1.13.1, onnxruntime 1.16.3 and timm 0.6.12, not the repository's pins, which don't run on this kernel.
