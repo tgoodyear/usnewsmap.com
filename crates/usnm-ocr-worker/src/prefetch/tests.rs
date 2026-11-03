@@ -223,6 +223,257 @@ fn decode_repair_manifest(dir: &Path, rows: &[ManifestRow]) -> PathBuf {
     path
 }
 
+fn repair_sidecar(row: &ManifestRow, body: &[u8], format: ScanFormat) -> Sidecar {
+    Sidecar {
+        doc_id: row.doc_id.clone(),
+        batch: row.batch.clone(),
+        batch_version: row.batch_version,
+        loc_url: "https://tile.loc.gov/example.jp2".into(),
+        iiif_base: "https://tile.loc.gov/image-services/iiif/example".into(),
+        resolution: "full".into(),
+        fetched_at: Utc::now(),
+        bytes: body.len() as u64,
+        sha256: sha256(body),
+        download_ms: 10,
+        user_agent: USER_AGENT.into(),
+        format: format.name().into(),
+        md5: (format == ScanFormat::Jp2).then(|| batch::md5_hex(body)),
+    }
+}
+
+#[tokio::test]
+async fn decode_repair_restart_recovers_missing_index_without_republishing_or_refetching() {
+    for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
+        for complete in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let row = row("sn1", 1890, 1, "rus");
+            let out = dir.path().join("scans");
+            let scan = scan_path(&out, &row, ImageSize::Full, format);
+            let body = b"retained repair";
+            let side = repair_sidecar(&row, body, format);
+            let manifest = decode_repair_manifest(dir.path(), std::slice::from_ref(&row));
+            let manifest_bytes = std::fs::read(&manifest).unwrap();
+            let mut buffer_row = row.clone();
+            buffer_row.lang = Some("eng".into());
+            let original = scan_path(&out, &buffer_row, ImageSize::Full, format);
+            let mut original_side = repair_sidecar(&buffer_row, b"quarantined original", format);
+            original_side.fetched_at = side.fetched_at - chrono::Duration::days(1);
+            std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+            std::fs::write(&original, b"quarantined original").unwrap();
+            let marker = consumed_path(&original);
+            std::fs::write(&marker, serde_json::to_vec(&original_side).unwrap()).unwrap();
+            let index = out.join("index-full.jsonl");
+            let prefix = format!("{}\n", serde_json::to_string(&original_side).unwrap());
+            std::fs::write(&index, &prefix).unwrap();
+
+            // Stop at the actual publication boundaries, before any index append.
+            if complete {
+                assert!(write_repair_atomic(
+                    &scan,
+                    body.to_vec(),
+                    serde_json::to_vec(&side).unwrap(),
+                )
+                .await
+                .unwrap());
+            } else {
+                assert!(layout::write_new_atomic(&scan, body.to_vec())
+                    .await
+                    .unwrap());
+            }
+            let published_at = std::fs::metadata(&scan).unwrap().modified().unwrap();
+            let opts = Options {
+                manifest: manifest.clone(),
+                out: out.clone(),
+                ..Options::default()
+            };
+            let (_tx, rx) = watch::channel(false);
+            for _ in 0..2 {
+                let status = run(
+                    opts.clone(),
+                    client("http://127.0.0.1:9", Duration::from_millis(1)),
+                    rx.clone(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(status.state, "done");
+                assert_eq!(
+                    (
+                        status.fetched,
+                        status.failed_transient,
+                        status.failed_permanent
+                    ),
+                    (0, 0, 0)
+                );
+                assert_eq!(status.already_there, u64::from(complete));
+                assert_eq!(status.deferred_repair_occupied, u64::from(!complete));
+                let text = std::fs::read_to_string(&index).unwrap();
+                assert!(
+                    text.starts_with(&prefix),
+                    "existing index history must be preserved"
+                );
+                let expected = if complete {
+                    vec![original_side.clone(), side.clone()]
+                } else {
+                    vec![original_side.clone()]
+                };
+                assert_eq!(read_index(&text).unwrap(), expected);
+                assert_eq!(std::fs::read(&scan).unwrap(), body);
+                assert_eq!(
+                    std::fs::metadata(&scan).unwrap().modified().unwrap(),
+                    published_at
+                );
+                assert_eq!(sidecar_path(&scan).exists(), complete);
+                assert_eq!(std::fs::read(&original).unwrap(), b"quarantined original");
+                assert_eq!(
+                    std::fs::read(&marker).unwrap(),
+                    serde_json::to_vec(&original_side).unwrap()
+                );
+                assert_eq!(std::fs::read(&manifest).unwrap(), manifest_bytes);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn decode_repair_restart_does_not_index_conflicting_or_mismatched_targets() {
+    for conflict in ["scan", "sidecar", "pair", "batch", "version"] {
+        let dir = tempfile::tempdir().unwrap();
+        let row = row("sn1", 1890, 1, "rus");
+        let out = dir.path().join("scans");
+        let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jp2);
+        let body = b"retained repair";
+        let mut side = repair_sidecar(&row, body, ScanFormat::Jp2);
+        if conflict == "batch" {
+            side.batch = "other_batch".into();
+        } else if conflict == "version" {
+            side.batch_version += 1;
+        }
+        assert!(
+            write_repair_atomic(&scan, body.to_vec(), serde_json::to_vec(&side).unwrap())
+                .await
+                .unwrap()
+        );
+        let other = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+        let other_side = repair_sidecar(&row, b"independent acquisition", ScanFormat::Jpeg);
+        if matches!(conflict, "scan" | "pair") {
+            std::fs::write(&other, b"independent acquisition").unwrap();
+        }
+        if matches!(conflict, "sidecar" | "pair") {
+            std::fs::write(
+                sidecar_path(&other),
+                serde_json::to_vec(&other_side).unwrap(),
+            )
+            .unwrap();
+        }
+        let retained: Vec<_> = [&scan, &sidecar_path(&scan), &other, &sidecar_path(&other)]
+            .into_iter()
+            .filter_map(|path| std::fs::read(path).ok().map(|bytes| (path.clone(), bytes)))
+            .collect();
+        let opts = Options {
+            manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+            out: out.clone(),
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        let status = run(
+            opts,
+            client("http://127.0.0.1:9", Duration::from_millis(1)),
+            rx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                status.fetched,
+                status.already_there,
+                status.deferred_repair_occupied
+            ),
+            (0, 0, 1),
+            "{conflict}"
+        );
+        assert_eq!(std::fs::read(out.join("index-full.jsonl")).unwrap(), b"");
+        for (path, bytes) in retained {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+}
+
+#[tokio::test]
+async fn decode_repair_restart_preserves_legacy_index_and_refuses_torn_records() {
+    for (prefix, recover) in [
+        (
+            "{\"doc_id\":\"legacy\",\"bytes\":1,\"fetched_at\":\"2020-01-01T00:00:00Z\"}\n",
+            true,
+        ),
+        ("{\"doc_id\":\"interrupted\"", false),
+        ("{\"doc_id\":\"unterminated\"}", false),
+        ("invalid json\n", false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let row = row("sn1", 1890, 1, "rus");
+        let out = dir.path().join("scans");
+        let scan = scan_path(&out, &row, ImageSize::Full, ScanFormat::Jpeg);
+        let side = repair_sidecar(&row, b"repair", ScanFormat::Jpeg);
+        assert!(write_repair_atomic(
+            &scan,
+            b"repair".to_vec(),
+            serde_json::to_vec(&side).unwrap()
+        )
+        .await
+        .unwrap());
+        let index = out.join("index-full.jsonl");
+        std::fs::write(&index, prefix).unwrap();
+        let opts = Options {
+            manifest: decode_repair_manifest(dir.path(), std::slice::from_ref(&row)),
+            out,
+            ..Options::default()
+        };
+        let (_tx, rx) = watch::channel(false);
+        for _ in 0..2 {
+            let result = run(
+                opts.clone(),
+                client("http://127.0.0.1:9", Duration::from_millis(1)),
+                rx.clone(),
+            )
+            .await;
+            assert_eq!(result.is_ok(), recover);
+            let status: Status =
+                serde_json::from_slice(&std::fs::read(opts.out.join("status-full.json")).unwrap())
+                    .unwrap();
+            assert_eq!(status.state, if recover { "done" } else { "failed" });
+            assert_eq!(status.fetched, 0);
+            assert_eq!(status.already_there, u64::from(recover));
+            let expected = if recover {
+                format!("{prefix}{}\n", serde_json::to_string(&side).unwrap())
+            } else {
+                assert!(status.error.unwrap().contains("repair index"));
+                prefix.to_owned()
+            };
+            assert_eq!(std::fs::read_to_string(&index).unwrap(), expected);
+            assert_eq!(std::fs::read(&scan).unwrap(), b"repair");
+            assert_eq!(
+                std::fs::read(sidecar_path(&scan)).unwrap(),
+                serde_json::to_vec(&side).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn decode_repair_index_replay_refuses_bad_tail_after_matching_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = dir.path().join("index-full.jsonl");
+    let side = repair_sidecar(&row("sn1", 1890, 1, "rus"), b"repair", ScanFormat::Jpeg);
+    for tail in ["invalid json\n", "{\"doc_id\":\"unterminated\"}"] {
+        let history = format!("{}\n{tail}", serde_json::to_string(&side).unwrap());
+        std::fs::write(&index, &history).unwrap();
+        let lines = Lines::open(&index).unwrap();
+        let error = lines.ensure_sidecar(&side).unwrap_err();
+        assert!(error.to_string().contains("repair index"));
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), history);
+    }
+}
+
 #[tokio::test]
 async fn decode_repair_never_fetches_over_an_incomplete_retained_target() {
     for (format, sidecar_only) in [

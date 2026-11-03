@@ -1047,6 +1047,24 @@ and its conflicting sidecar are left for operator review.
 No buffer original, keep scan, sidecar or `.done` marker is deleted. Network failures
 remain errors, and a lost PUT response replays the same saved manifest bytes and name.
 
+On repair replay after a crash between scan/sidecar publication and index append, the
+fetcher verifies both possible formats and their batch identity before accepting the
+retained copy. It restores a missing sidecar entry to the append-only fetch index,
+syncs that append, and does not append it again on a second replay. Existing index
+history (including older entries without newer sidecar fields) is preserved. This
+replay streams the index to check for the exact entry; ordinary fetches are unchanged.
+An incomplete or conflicting pair is deferred without a fetch or index append. A
+malformed or unterminated index record encountered during recovery fails the run
+without changing that index; retain it for operator review rather than rewriting it.
+
+The worker's `decode_repair_restart_*` regressions exercise these synthetic crash
+boundaries for JP2 and JPEG, repeated replay, cross-format partial/conflicting files,
+batch mismatches, and preservation of original buffer bytes, consumption markers and
+manifest bytes. They do **not** rehearse the real producer/HTTP queue/dashboard path,
+process termination or power loss, concurrent independent acquisition, or a
+coordinated upgrade/rollback. Those operational gates remain required before enabling
+repairs; these tests do not promote any durable CPU or Qwen manual quarantine.
+
 Repair states include `pending`, `prepared`, `queued`, `observed_same`,
 `observed_new`, `blocked_keep`, `blocked_language` and CPU `manual_review`. A queued
 incomplete/conflicting keep target remains queued for rechecking and operator attention;

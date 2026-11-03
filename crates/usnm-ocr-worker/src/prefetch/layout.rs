@@ -1,6 +1,6 @@
 //! Scan paths, sidecars, checksums and durable prefetch file I/O.
 
-use std::io::Write as _;
+use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -168,14 +168,14 @@ pub fn matches_sidecar(bytes: &[u8], side: &Sidecar) -> bool {
             .is_none_or(|m| batch::md5_hex(bytes) == *m)
 }
 
-/// The size of the scan at `scan`, if it and its sidecar are there and
+/// The sidecar at `scan`, if it and the scan are there and
 /// agree (format, size, sha256 and md5).
 async fn verified(
     scan: &Path,
     row: &ManifestRow,
     size: ImageSize,
     format: ScanFormat,
-) -> Option<u64> {
+) -> Option<Sidecar> {
     let side = tokio::fs::read(sidecar_path(scan)).await.ok()?;
     let side = serde_json::from_slice::<Sidecar>(&side).ok()?;
     if side.doc_id != row.doc_id
@@ -185,17 +185,58 @@ async fn verified(
         return None;
     }
     let b = tokio::fs::read(scan).await.ok()?;
-    matches_sidecar(&b, &side).then_some(side.bytes)
+    matches_sidecar(&b, &side).then_some(side)
 }
 
 /// The size of the page's scan, if one is there in any format and checks out.
 pub(super) async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Option<u64> {
     for f in formats(size) {
-        if let Some(n) = verified(&scan_path(out, row, size, *f), row, size, *f).await {
-            return Some(n);
+        if let Some(side) = verified(&scan_path(out, row, size, *f), row, size, *f).await {
+            return Some(side.bytes);
         }
     }
     None
+}
+
+async fn occupied(scan: &Path) -> std::io::Result<bool> {
+    for path in [sidecar_path(scan), scan.to_owned()] {
+        match tokio::fs::symlink_metadata(path).await {
+            Ok(_) => return Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
+}
+
+/// A completed repair may be replayed only if every occupied format agrees.
+pub(super) async fn repair_there(
+    out: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+) -> std::io::Result<Option<Sidecar>> {
+    let mut found: Option<Sidecar> = None;
+    for f in formats(size) {
+        let scan = scan_path(out, row, size, *f);
+        if !occupied(&scan).await? {
+            continue;
+        }
+        let Some(side) = verified(&scan, row, size, *f).await else {
+            return Ok(None);
+        };
+        if side.batch != row.batch
+            || side.batch_version != row.batch_version
+            || found
+                .as_ref()
+                .is_some_and(|s| s.bytes != side.bytes || s.sha256 != side.sha256)
+        {
+            return Ok(None);
+        }
+        if found.is_none() {
+            found = Some(side);
+        }
+    }
+    Ok(found)
 }
 
 /// A repair may not replace even an incomplete or unverifiable retained copy.
@@ -205,13 +246,8 @@ pub(super) async fn repair_occupied(
     size: ImageSize,
 ) -> std::io::Result<bool> {
     for f in formats(size) {
-        let scan = scan_path(out, row, size, *f);
-        for path in [sidecar_path(&scan), scan] {
-            match tokio::fs::symlink_metadata(path).await {
-                Ok(_) => return Ok(true),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
+        if occupied(&scan_path(out, row, size, *f)).await? {
+            return Ok(true);
         }
     }
     Ok(false)
@@ -292,24 +328,65 @@ pub(super) async fn write_repair_atomic(
 }
 
 /// An append-only JSON Lines file, shared by the tasks.
-pub(super) struct Lines(Mutex<std::fs::File>);
+pub(super) struct Lines {
+    file: Mutex<std::fs::File>,
+    path: PathBuf,
+}
 
 impl Lines {
     pub(super) fn open(path: &Path) -> anyhow::Result<Self> {
-        Ok(Self(Mutex::new(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .with_context(|| format!("opening {}", path.display()))?,
-        )))
+        Ok(Self {
+            file: Mutex::new(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .with_context(|| format!("opening {}", path.display()))?,
+            ),
+            path: path.to_owned(),
+        })
     }
 
     pub(super) fn push(&self, v: &impl Serialize) -> anyhow::Result<()> {
         let mut line = serde_json::to_vec(v)?;
         line.push(b'\n');
-        let mut f = self.0.lock().expect("lines lock");
+        let mut f = self.file.lock().expect("lines lock");
         f.write_all(&line)?;
+        Ok(())
+    }
+
+    /// Recover a crash between scan/sidecar publication and the index append.
+    pub(super) fn ensure_sidecar(&self, side: &Sidecar) -> anyhow::Result<()> {
+        let mut f = self.file.lock().expect("lines lock");
+        let mut reader = std::io::BufReader::new(std::fs::File::open(&self.path)?);
+        let mut line = String::new();
+        let mut found = false;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            anyhow::ensure!(
+                line.ends_with('\n'),
+                "incomplete repair index {}; operator review required",
+                self.path.display()
+            );
+            let indexed: serde_json::Value = serde_json::from_str(&line)
+                .with_context(|| format!("reading repair index {}", self.path.display()))?;
+            // Older index entries may lack fields that current sidecars require.
+            if serde_json::from_value::<Sidecar>(indexed).ok().as_ref() == Some(side) {
+                found = true;
+            }
+        }
+        if found {
+            f.sync_all()?;
+            return Ok(());
+        }
+        // Stream the existing history only on repair replay; never rewrite it.
+        let mut line = serde_json::to_vec(side)?;
+        line.push(b'\n');
+        f.write_all(&line)?;
+        f.sync_all()?;
         Ok(())
     }
 }

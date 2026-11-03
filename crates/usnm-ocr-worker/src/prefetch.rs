@@ -114,7 +114,8 @@ mod select;
 
 use cooling::{Check, Cooling};
 use layout::{
-    last_fetched, lock, repair_occupied, there, write_atomic, write_repair_atomic, Lines,
+    last_fetched, lock, repair_occupied, repair_there, there, write_atomic, write_repair_atomic,
+    Lines,
 };
 
 pub use cooling::ItemError;
@@ -759,7 +760,17 @@ impl Run {
             Set::Buffer => self.opts.buffer_size,
         };
         let c = &self.counts;
-        if let Some(n) = there(&self.opts.out, &row, size).await {
+        let existing = if self.decode_repair {
+            if let Some(side) = repair_there(&self.opts.out, &row, size).await? {
+                self.index[&tag(size)].ensure_sidecar(&side)?;
+                Some(side.bytes)
+            } else {
+                None
+            }
+        } else {
+            there(&self.opts.out, &row, size).await
+        };
+        if let Some(n) = existing {
             c.already_there.fetch_add(1, Ordering::SeqCst);
             match set {
                 Set::Keep => c.keep_bytes.fetch_add(n, Ordering::SeqCst),
