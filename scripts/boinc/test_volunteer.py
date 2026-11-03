@@ -509,6 +509,31 @@ class PreflightTest(unittest.TestCase):
         with self.assertRaisesRegex(pre.PreflightError, "nvidia-ctk cdi generate"):
             pre.preflight(self.data, IMAGE, failing_gpu_runner, job_toml=qwen_gpu_path)
 
+    def test_slow_runtime_commands_still_run_all_preflight_checks(self):
+        runtime = Runtime()
+        elapsed = 0
+        probe_lifetime = 0
+
+        def slow_command(args, capture_output, text, timeout):
+            nonlocal elapsed, probe_lifetime
+            minimum = 240 if args[1] == "start" else 45
+            if timeout < minimum:
+                raise pre.subprocess.TimeoutExpired(args, timeout)
+            if args[1] == "create":
+                remaining = next(line for line in args[-1].splitlines() if line.startswith("remaining="))
+                probe_lifetime = int(remaining.split("=", 1)[1])
+            if args[1] in ("logs", "pause", "unpause"):
+                elapsed += 130
+                if elapsed >= probe_lifetime:
+                    return pre.subprocess.CompletedProcess(args, 1, "", "probe exited")
+            return pre.subprocess.CompletedProcess(args, 0, runtime(args, timeout), "")
+
+        with patch.object(pre.subprocess, "run", side_effect=slow_command):
+            pre.preflight(self.data, IMAGE)
+        self.assertTrue(any(call[1] == "pause" for call in runtime.calls))
+        self.assertTrue(any(call[1] == "unpause" for call in runtime.calls))
+        self.assertTrue(any(call[1] == "rm" for call in runtime.calls))
+
     def test_invalid_job_toml_is_rejected(self):
         bad_toml = self.data / "bad_job.toml"
         for content in [
