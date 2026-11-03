@@ -1,9 +1,10 @@
-# Licence decisions transcribed from design 13 §13.7.2 (checked 2026-10-11).
+# Licence decisions transcribed from design 13 §13.7.2 (checked 2026-10-11;
+# CC-BY-NC-SA-4.0 and AGPL-3.0-only cleared 2026-11-03, #1479).
 # Inventory is not deployment: Tesseract and pinned CPU NDLOCR-Lite have production profiles.
 # See README.md for the machine-readable credit schema.
 schema = 1
-production_licenses = ["Apache-2.0", "MIT", "BSD-3-Clause", "CC0-1.0", "CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "LicenseRef-Datalab-OpenRAIL-M", "LicenseRef-MinerU", "LicenseRef-DINOv3", "LicenseRef-dots-MIT"]
-credit_required = ["CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "LicenseRef-Datalab-OpenRAIL-M", "LicenseRef-MinerU", "LicenseRef-dots-MIT"]
+production_licenses = ["Apache-2.0", "MIT", "BSD-3-Clause", "CC0-1.0", "CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "CC-BY-NC-SA-4.0", "AGPL-3.0-only", "LicenseRef-Datalab-OpenRAIL-M", "LicenseRef-MinerU", "LicenseRef-DINOv3", "LicenseRef-dots-MIT"]
+credit_required = ["CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "CC-BY-NC-SA-4.0", "LicenseRef-Datalab-OpenRAIL-M", "LicenseRef-MinerU", "LicenseRef-dots-MIT"]
 
 [[engine]]
 id = "tesseract-5.5"
