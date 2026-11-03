@@ -1129,30 +1129,30 @@ export USNM_REPAIR_WORK="$PWD/.rehearsal/runs" NO_PROXY=127.0.0.1,localhost
 Executed locally on 3 November 2026: **4 tests passed in 96.893 seconds**, with
 these asserted results:
 
-* The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
+- The producer off/on transition, actual HTTP publication, JP2 fetch and JPEG
   item/IIIF fallback, dashboard queue/index consumption, and `observed_same` versus
   `observed_new` reconciliation all completed. Existing CPU **and Qwen**
   `manual_review` quarantines stayed manual; original buffer bytes and `.done`
   markers were unchanged.
-* Ordinary and repair manifests coexisted, including an ordinary HTTP PUT and the
+- Ordinary and repair manifests coexisted, including an ordinary HTTP PUT and the
   dashboard's OCR-first ordering. The ordinary-format Rust decoder rejected every
   repair manifest while accepting the ordinary manifest.
-* A localhost proxy let the real PUT finish, then closed the connection without an
+- A localhost proxy let the real PUT finish, then closed the connection without an
   acknowledgement. A fresh producer process replayed the durable `prepared`
   manifest with exactly the same name/bytes. Eleven requests admitted only ten
   outstanding repairs. Valid sidecars with truncated or wrong scan bytes kept all
   ten slots occupied, and the worker deferred them without an upstream request.
-* Separate fetch processes shared the real persisted global pacer: observed request
+- Separate fetch processes shared the real persisted global pacer: observed request
   spacing was at least 2.85 seconds (3-second policy, timing tolerance), and a
   synthetic 429 caused a retry at least 4.85 seconds later under the 5-second slow
   policy. A second fetch process was refused by the existing single-fetcher lock.
-* An independent local writer occupying the keep path during a download won without
+- An independent local writer occupying the keep path during a download won without
   replacement or an index append. A fetcher was actually SIGKILLed while awaiting an
   image, then restarted successfully; an abandoned `.part` file was preserved.
   A separate copied fixture of the actual completed scan/sidecar, with the index
   append absent, recovered exactly one matching entry across two process replays
   without refetching or altering the original index.
-* Turning the producer off and restarting the HTTP server with upgraded consumers
+- Turning the producer off and restarting the HTTP server with upgraded consumers
   retained every manifest, quarantine database and keep scan byte. The queue
   remained readable. All disposable subprocesses and fixture directories were
   cleaned up; build/dependency caches can be retained for repeat runs.
