@@ -465,6 +465,24 @@ class DecodeRepairTest(unittest.TestCase):
         self.assertEqual(table.schema.metadata[b"usnm.format"], b"usnm-prefetch-manifest/1")
         self.assertEqual([row["doc_id"] for row in table.to_pylist()], [healthy["doc_id"]])
 
+    def test_quarantine_appearing_during_selection_is_excluded_before_publication(self):
+        blocked, healthy = self.page(1), self.page(2)
+        candidates = "".join(f"{page['doc_id']},xx_test,1,detected,0.8,sn1,1900,rus\n"
+                             for page in (blocked, healthy))
+        helper = types.SimpleNamespace(quarantined_documents=mock.Mock(
+            side_effect=[set(), set(), {blocked["doc_id"]}]))
+        args = types.SimpleNamespace(state=str(self.root / "quality"), dsn="test", scan_server="http://scan",
+                                     max_pages=10, strata=1, batches=None, non_english=True,
+                                     what_if=True, quarantine_root=str(self.root), queue_decode_repairs="off")
+        with mock.patch.object(m, "load_scan_quarantine", return_value=helper), \
+                mock.patch.object(m, "staged_pairs", return_value={}), \
+                mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest, \
+                mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                    returncode=0, stdout=candidates, stderr="")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            m.cmd_build_quality(args)
+        self.assertEqual([row["doc_id"] for row in manifest.call_args.args[0]], [healthy["doc_id"]])
+
     def test_nonenglish_acquisition_requires_readable_quarantine_root_even_when_repairs_are_off(self):
         args = types.SimpleNamespace(state=str(self.root / "quality"), scan_server="http://scan",
                                      non_english=True, quarantine_root=str(self.root / "missing"),
