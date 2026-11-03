@@ -4,13 +4,13 @@ subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pa
 date: "November 2026"
 ---
 
-For Studies 1 to 7, the samples, split, metrics and decision rules were fixed in [`protocol.md`](protocol.md) before the corresponding runs. Seven setup rentals began earlier; none of them read a crop. The Japanese amendment was committed before any reader ran on these crops under this study, though 24 of them were read under #128. Study 8 was added later; its method and limitations are below. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the earlier scores in [`data/`](data/).
+For Studies 1 to 7, the samples, split, metrics and decision rules were fixed in [`protocol.md`](protocol.md) before the corresponding runs. Seven setup rentals began earlier; none of them read a crop. The Japanese amendment was committed before any reader ran on these crops under this study, though 24 of them were read under #128. Studies 8 and 10 were added later, outside the protocol; their methods and limitations are below. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the earlier scores in [`data/`](data/).
 
 All limits are 95% bootstrap limits, resampling source pages. For Studies 1 to 7, a number from the protocol is the primary result. Anything marked post-hoc was chosen after seeing results.
 
 # Summary
 
-**Review limitation:** The historical LoRA adapter files were not checked for missing tensors, earlier Surya page-mode runners could discard block errors, and earlier Tesseract wrappers could mask failed reads. The affected comparisons are provisional; the retained evidence does not establish whether these problems affected a result. Study 8 used separately checked runners.
+**Review limitation:** The historical LoRA adapter files were not checked for missing tensors, earlier Surya page-mode runners could discard block errors, and earlier Tesseract wrappers could mask failed reads. The affected comparisons are provisional; the retained evidence does not establish whether these problems affected a result. Studies 8 and 10 used separately checked runners.
 
 Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, a difference of 8.2 points with limits of -4.6 to 25.4, so no difference is called. On the German measured set the protocol's pooled CER is 49.6% for Qwen 8B against 17.9% for `frak2021` PSM 3, a difference that is called, against Qwen. Repetition loops are the visible cause: leaving out the 9 looped crops of 1,060 (post-hoc) brings Qwen to 10.9%. Loops were rarer on some sets than others: 3.9% of pilot crops and 15 of 64 Japanese crops. A loop guard is the first change to make.
 
@@ -23,6 +23,8 @@ Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 wa
 On Japanese, NDLOCR-Lite, CHURRO and Surya agree most with each other and with the machine references. That is agreement, not accuracy. No human transcription of these crops exists that we could verify.
 
 On 104 hand-corrected Yiddish book pages, mean page CER is 1.52% for Jochre 3, 8.72% for Tesseract `yid` and 30.15% for Qwen request version 4. Qwen was given the corpus's line segmentation and reading order; the page readers were not. The 100 damaged newspaper crops have no transcriptions, so their high disagreement is not a measure of accuracy. Don't launch a full Yiddish reread at version 4 on this evidence.
+
+Study 10 trained Tesseract `yid` on the corpus's 554 training pages. The trained model reads the test pages at 4.03% mean page CER, against 8.72% for stock `yid`, still behind Jochre 3; the test pages come from the books it trained on. In the first run, Latin and Cyrillic letters in the training text made the model's character set left to right by majority, and it read multi-column pages with their columns in the wrong order; the second run left those lines out. On the newspaper crops, the trained model's readings moved no closer to Jochre's, so whether it reads newspapers better is unknown. Nothing is deployed.
 
 # Study 1: German Fraktur (#926, #835)
 
@@ -420,6 +422,96 @@ The historical Jochre runs have HTTP 200 receipts and valid text-containing ZIPs
 
 Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.py) from the repository root with `python3 -B -I scripts/ci/test_gpu_study_yiddish.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
 
+# Study 10: Tesseract trained on the Yiddish corpus (3 November 2026)
+
+Study 8 put stock Tesseract `yid` at 8.72% mean page CER on the corpus's book pages, against 1.52% for Jochre 3. This study fine-tunes `yid` on the corpus's training split and reads Study 8's test pages, line crops and newspaper crops with the result, scored with Study 8's references, scorer and bootstrap (#1479). It was added after Study 8 and is not preregistered: the second training run, the checkpoint and the dictionary comparison were chosen after seeing the first run's results. It ran on a local CPU.
+
+## Training
+
+The corpus's training split, at Study 8's commit, has 554 pages from the same 60 books as the 104 test pages, and no page is in both. The test is therefore of unseen pages from seen books, not of unseen books. Only the training directory was checked out. [`cut-lines.py`](scripts/yiddish/cut-lines.py) cut each ALTO text line from its page the way Study 8 reads lines, with a margin of 15% of the line's height above and below and 50% at each end, and recorded the SHA-256 of every page image and ALTO file it read. It wrote 21,021 lines from 553 pages; one page has no text lines.
+
+Training started from the production `yid` model, `tessdata_best` as pinned in `ocr/engines/tesseract/models.lock`, and used [tesstrain](https://github.com/tesseract-ocr/tesstrain) at `405346a3` in Study 8's Tesseract 5.5.0 image with make and Python added ([`tesstrain.Containerfile`](scripts/yiddish/tesstrain.Containerfile)). It set `LANG_TYPE=RTL` and 60,000 iterations and kept tesstrain's other defaults: a learning rate of 0.0001, and 90% of the lines for training and 10% for tesstrain's own evaluation. A trained model's character set is stock `yid`'s 73 entries, first and unchanged, plus any new characters in the training text. [`study10.sh`](scripts/yiddish/study10.sh) has the steps.
+
+Two findings shaped the runs.
+
+**Reading direction.** Tesseract lays a page out right to left, which among other things puts its columns in right-to-left order, only when the model's character set has more right-to-left entries than left-to-right ones (`UNICHARSET::major_right_to_left`). The corpus's lines include words in Latin script, some of them Polish, and in Cyrillic, and the first run's character set took 61 Latin and 31 Cyrillic letters, among 95 left-to-right entries against 34 right-to-left. At 17,900 iterations, that model scored 8.34% on the line crops but 16.25% on whole pages. It was more than 10 points worse than stock `yid` on 21 of the 104 pages, where its line crops scored 2% to 29%. On 20 of those 21, its reading began partway through the page, usually at the top of the second column: it had read the columns left to right. The run was stopped after 31,900 iterations. The second run left out the 512 lines containing any character of Unicode bidirectional class L, which is left to right. That left 20,509 lines, 18,458 for training and 2,051 for evaluation, and a character set with 1 left-to-right entry, as in stock `yid`, against 34; like stock `yid`, it has no Latin or Cyrillic letters. At 15,300 iterations, its readings of all 21 pages began at the start, and no page was more than 10 points worse than stock `yid`. The driver now refuses to convert a model that isn't right to left by majority.
+
+**Dictionaries.** Stock `yid`'s word, punctuation and number lists are stored in logical order, while Tesseract matches them in visual order, so a Yiddish word matches only if its reverse is also listed. tesstrain rebuilds the lists in visual order for a right-to-left model, here from stock `yid`'s own 20,582 words. To separate that change from training, `yidrev` is the stock network with the rebuilt lists, and `yidj2_sd` is the trained network with stock `yid`'s lists.
+
+`yidj2` is the second run's last checkpoint saved as a new best on training error: 52,300 iterations, with a training BCER of 1.470%. lstmtraining saves a best checkpoint only when the error beats the last one saved by more than 1/32, so the run's later lows, down to 1.439% at 59,700 iterations, have no checkpoint of their own. lstmtraining's 13 evaluations on the 2,051 held-out lines, which come from the training pages, went from a BCER of 2.93% to a low of 2.25% at the last. The second run took 1 hour 24 minutes in one thread, at the lowest CPU priority, on a machine shared with BOINC.
+
+## Book accuracy
+
+The measures are Study 8's: mean page CER after YIVO simplification, with 95% bootstrap limits over pages. Whole pages ran at PSM 3. The 4,011 ALTO line crops ran at PSM 7, joined in ALTO order, so the line results measure recognition with the corpus's segmentation and reading order.
+
+| Model | Network | Dictionaries | Whole page | 95% limits | ALTO lines | 95% limits |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `yid` | Stock | Stock | 8.72% | 7.14 to 10.47 | 13.57% | 11.41 to 16.28 |
+| `yidrev` | Stock | Rebuilt | 8.31% | 6.64 to 10.17 | 12.91% | 10.64 to 15.51 |
+| `yidj18k` | Run 1 at 17,900 | Rebuilt | 16.25% | 11.04 to 21.81 | 8.34% | 6.30 to 10.97 |
+| `yidj2s15` | Run 2 at 15,300 | Rebuilt | 4.08% | 2.83 to 5.48 | 8.36% | 6.24 to 10.90 |
+| `yidj2_sd` | Run 2 at 52,300 | Stock | 4.14% | 2.89 to 5.61 | 8.29% | 6.15 to 10.79 |
+| `yidj2` | Run 2 at 52,300 | Rebuilt | 4.03% | 2.84 to 5.52 | 8.21% | 6.11 to 10.75 |
+| Jochre 3 | | | 1.52% | 1.17 to 1.90 | | |
+
+| Paired difference, points | Whole page | 95% limits | ALTO lines | 95% limits |
+| --- | ---: | ---: | ---: | ---: |
+| Rebuilt dictionaries, stock network: `yidrev` minus `yid` | -0.41 | -0.57 to -0.20 | -0.66 | -0.78 to -0.54 |
+| Rebuilt dictionaries, trained network: `yidj2` minus `yidj2_sd` | -0.11 | -0.19 to -0.03 | -0.08 | -0.12 to -0.04 |
+| Training, stock dictionaries: `yidj2_sd` minus `yid` | -4.58 | -5.29 to -3.91 | -5.28 | -6.01 to -4.66 |
+| Training, rebuilt dictionaries: `yidj2` minus `yidrev` | -4.28 | -4.99 to -3.66 | -4.70 | -5.40 to -4.10 |
+| Both: `yidj2` minus `yid` | -4.69 | -5.43 to -4.04 | -5.36 | -6.10 to -4.69 |
+| Run 2 at 15,300 against the end: `yidj2` minus `yidj2s15` | -0.05 | -0.16 to +0.08 | -0.15 | -0.23 to -0.07 |
+| Run 1 at 17,900 against run 2 at 15,300: `yidj18k` minus `yidj2s15` | +12.17 | +7.39 to +17.63 | -0.02 | -0.12 to +0.07 |
+| `yidj2` minus Jochre 3 | +2.51 | +1.31 to +3.94 | | |
+
+The scorer draws one bootstrap sequence for all readers scored together, so stock `yid`'s line limits here, 11.41 to 16.28, differ slightly from Study 8's 11.32 to 16.12.
+
+Training cut mean page CER from 8.72% for stock `yid` to 4.03% for `yidj2`, a paired difference of -4.69 points (-5.43 to -4.04), and from 13.57% to 8.21% on the line crops. `yidj2` read 103 of the 104 pages better than stock `yid`, and its median page CER is 1.71% against 5.71%. The one page it read worse, by 6.4 points, was already among stock `yid`'s worst, at 43.0% against 1.0% for Jochre 3; it and one other page remain above 30%. `yidj2` is still 2.51 points (+1.31 to +3.94) behind Jochre 3 on whole pages.
+
+Training did nearly all of the work. Rebuilding the dictionaries in visual order cut page CER by 0.41 points on the stock network and 0.11 on the trained one, both small but with limits that exclude zero; training cut it by 4.28 to 4.58 points with either set of dictionaries.
+
+`yidj18k` and `yidj2s15` are each run's newest best checkpoint when it passed 17,900 iterations. Most of run 2's gain had come by then: `yidj2` is 0.05 points better on whole pages (-0.16 to +0.08), no difference called, and 0.15 better on line crops (-0.23 to -0.07). The two snapshots also show that run 1's failure was in layout, not recognition. On line crops, where the corpus gives the order, they differ by -0.02 points (-0.12 to +0.07); on whole pages, `yidj18k` is 12.17 points worse (+7.39 to +17.63).
+
+As with stock `yid` in Study 8, every model scored worse on line crops than on whole pages. The same 139 crops came back empty from every model, and one more from three of them, so the empty readings don't depend on training.
+
+These are unseen pages from the books the model was trained on, so they probably overstate the gain on other books, and they say nothing about newspapers. The second run, the dictionary comparison and the snapshot at 17,900 iterations were chosen after seeing the first run's results, but each model is the newest best checkpoint on training error, at 17,900 iterations or at the end of the run, not one picked by test score.
+
+## Newspaper agreement
+
+The 100 newspaper crops were read at PSM 3 and compared with Study 8's readings in the same way. **These numbers measure agreement, not accuracy.**
+
+| Pair | Symmetric edit distance | 95% limits |
+| --- | ---: | ---: |
+| Jochre 3 and `yid` | 69.7% | 63.4 to 75.6 |
+| Jochre 3 and `yidrev` | 69.5% | 63.4 to 75.5 |
+| Jochre 3 and `yidj2_sd` | 68.4% | 61.6 to 74.9 |
+| Jochre 3 and `yidj2` | 68.4% | 61.4 to 74.8 |
+| `yid` and `yidj2` | 18.6% | 15.6 to 22.4 |
+| `yidrev` and `yidj2` | 18.3% | 15.2 to 22.0 |
+| `yidj2_sd` and `yidj2` | 2.7% | 2.1 to 3.5 |
+
+Training changed Tesseract's newspaper readings, which differ from stock `yid`'s by 18.6%, but left them about as far from Jochre 3's as before: 68.4% against 69.7%. Without transcriptions, this can't show whether the trained model reads newspapers better. A transcribed newspaper sample is needed before deploying `yidj2` or `yidrev` (#1479).
+
+## Use and provenance
+
+Nothing from this study is deployed or published beyond this report: no models, readings or per-page results. A model trained on the corpus is Adapted Material of it, cleared on 3 November 2026 under CC BY-NC-SA 4.0 with credit required, as recorded in [`docs/design/13-ocr-engines.md`](../../design/13-ocr-engines.md) (#1480). `yidrev` contains nothing from the corpus: it is stock `yid`, Apache-2.0, with dictionaries rebuilt from stock `yid`'s own lists. Either would need a new Tesseract profile id before deployment, because the public provenance key names the engine version and profile but not the model's digest (#1481).
+
+The inputs are pinned: the stock model's SHA-256, tesstrain's and the corpus's commits, the Debian snapshot behind both images, and langdata_lstm at `07930fd9`. tesstrain fetches langdata_lstm's unpinned main branch; the 33 files the runs used match that commit. [`study10.sh`](scripts/yiddish/study10.sh) is a rewrite of the commands as run, checked against them: it rebuilt `yidrev` and run 1's 17,900-iteration model byte for byte, selected the same 20,509 lines for run 2, fetched the same langdata, and rescored the readings to identical files. `yidj2s15`, `yidj2` and `yidj2_sd` were converted, read and scored through it. The training runs were not repeated, through it or otherwise, so whether they repeat exactly is untested.
+
+The models as read, by SHA-256:
+
+| Model | SHA-256 |
+| --- | --- |
+| `yid`, stock | `086ec92aea9c7016c74b503c3d24906381e7e57cc3f487f12e1784eb2530ba94` |
+| `yidrev` | `76c706cb4da609be79c08fb4aa79236b5e08a736401199ee21e6e5dd78085434` |
+| `yidj18k` | `6fb1325a01d1be11db51800a6d9fa5aa7557baee1763b7706b94f743ae063983` |
+| `yidj2s15` | `4616f754a757a048bae7e212321232de1c1c5bbbac8e29c6b7b5b68a61a59a2c` |
+| `yidj2` | `e12d3b57191df9915179b4c779a218775f010670e980a72dc8e938bf5c4d4578` |
+| `yidj2_sd` | `d3626a4bbd3fbed3e2ca3363728f1ed9f75f92f07f8b136fa02d2e8f9c99d295` |
+
+The hash list of the training split's 554 page images and ALTO files has SHA-256 `962f675d253219f67facbcec8d4c43f0197ebb499a6defa34d1654a30d688da9`. The models, readings and hash lists are kept with the runs.
+
 # Spend
 
 Credit went from $49.88 to $37.97, so $11.91 of the $40 limit. The ledger's estimate, hourly price times time from instance creation to destruction, comes to $11.40. That estimate differs from what was paid because it counts loading time and leaves out bandwidth and storage, and it hasn't been checked against Vast's billing records.
@@ -434,6 +526,7 @@ Credit went from $49.88 to $37.97, so $11.91 of the $40 limit. The ledger's esti
 | 6: Surya retest | | 3 | 4.10 | 0.24 |
 | 7: image tokens | | 1 | 1.90 | 0.13 |
 | 8: Yiddish, local | | 0 | 0 | 0.00 |
+| 10: Yiddish training, local | | 0 | 0 | 0.00 |
 | All | 40 | 69 | 60.70 | 11.40 |
 
 Study 5's figure includes the lost 8B run, about 4 hours and $0.85, and the 8B deployed reads, which stopped once when four parallel rentals together tripped one rental's spend cap. The cap compares account credit, so it counts other rentals' spend; it should track its own instance.
@@ -480,6 +573,7 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Study 7 ran the image's CUDA build, not the native Vulkan build, and raised context above 4,096 for 2,048 and 3,072 image tokens. The typed Yiddish crops of #529 weren't found.
 - Study 6 started alongside Study 5 rather than after it.
 - Study 8 was added after the original protocol. Its line readers used corpus segmentation and order, unlike the page readers; its book results do not establish newspaper accuracy.
+- Study 10 was added after Study 8, without a protocol amendment. Its second training run, checkpoint and dictionary comparison were chosen after seeing the first run's results, and its test pages come from the books it trained on.
 
 # Findings about the rental
 
@@ -500,4 +594,6 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Podman temp files from a cancelled pull remain on the BOINC client container; a permission check blocked their removal, so they still need deleting.
 - Surya's native weights scored worse than the GGUF on 50 crops, with server settings that may be the cause.
 - Study 7's Yiddish crops have no transcriptions, so it can't say whether any image-token value reads them better. Study 8 adds book accuracy, not newspaper accuracy.
+- Whether Study 10's trained model reads Yiddish newspapers better than stock `yid` needs a transcribed newspaper sample; it isn't deployed (#1479).
+- The public provenance key names a Tesseract profile but not its model's digest, so a changed model needs a new profile id (#1481).
 - MinerU and dots.ocr remain unrun.

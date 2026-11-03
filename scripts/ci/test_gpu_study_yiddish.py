@@ -428,6 +428,26 @@ if [ "$input" = bad.png ] && [ "${FAIL_BAD:-0}" = 1 ]; then exit 42; fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.trace_lines().count("ok.png"), 2)
 
+    def test_tesseract_mounts_extra_models_read_only_only_when_asked(self):
+        args, out = self.tesseract_fixture()
+        executable(self.bin / "podman", '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$TRACE"\n')
+        (self.work / "models").mkdir()
+        with_models = list(args[:-2]) + ["--jobs", "1", "--tessdata", "models"]
+        result = self.run_script(*with_models)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.trace_lines()
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            self.assertIn(f"-v {self.work / 'models'}:/td:ro ", call)
+            self.assertIn(" - --tessdata-dir /td -l yid ", call)
+
+        self.trace.unlink()
+        shutil.rmtree(out)
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.trace_lines()), 3)
+        self.assertFalse(any("/td" in call for call in self.trace_lines()))
+
     def test_import_uses_latest_receipt_and_requires_one(self):
         out = self.work / "results"
         (out / "txt").mkdir(parents=True)
