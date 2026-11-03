@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import textwrap
@@ -60,7 +61,7 @@ class GPUStudyEndpointTests(unittest.TestCase):
 
     # Executable stand-ins consume existing child-command arguments and never access the network.
     def s7_fixture(self, name, rows):
-        case = self.work / name
+        case = self.work / "runner/work" / name
         inp, out, app, scratch = (
             case / "work/in", case / "work/out", case / "app", case / "scratch"
         )
@@ -190,14 +191,16 @@ class GPUStudyEndpointTests(unittest.TestCase):
 
         script = case / "s7.sh"
         source = (STUDY / "jobs/s7.sh").read_text(encoding="utf-8")
-        for original, replacement in (
-            ("/tmp/b.json", str(scratch / "body.json")),
-            ("/tmp/r.json", str(scratch / "response.json")),
-            ("/opt/qwen/models", str(case / "models")),
-            ("/app", str(app)),
-            ("/work", str(case / "work")),
-        ):
-            source = source.replace(original, replacement)
+        replacements = {
+            "/tmp/b.json": str(scratch / "body.json"),
+            "/tmp/r.json": str(scratch / "response.json"),
+            "/opt/qwen/models": str(case / "models"),
+            "/app": str(app),
+            "/work": str(case / "work"),
+        }
+        source = re.sub(
+            "|".join(map(re.escape, replacements)), lambda match: replacements[match.group()], source
+        )
         self.assertNotIn("/tmp/", source)
         script.write_text(source, encoding="utf-8")
         env = self.env.copy()
