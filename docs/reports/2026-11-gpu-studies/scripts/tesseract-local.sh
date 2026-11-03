@@ -3,10 +3,11 @@
 # --list holds id<TAB>path under --root; successful output is id<TAB>base64, failures are id<TAB>exit status.
 # An interrupted run retains <name>.<pid>.<serial>.*.part for recovery; do not merge different attempts.
 # Retrying an ID replaces its prior result or failure receipt.
-# --models-lock (or TESSERACT_MODELS_LOCK) may locate the exact repository lock when scripts are copied elsewhere.
+# --models-lock and --survey-models-lock (or TESSERACT_MODELS_LOCK and TESSERACT_SURVEY_MODELS_LOCK)
+# may locate the exact repository locks when scripts are copied elsewhere. OSD is research-only.
 set -uo pipefail
-LIST=""; ROOT=""; NAME=""; LANGS=""; PSM=3; RF=""; OUT=""; JOBS=2; LOCK=${TESSERACT_MODELS_LOCK:-}
-while [ $# -gt 0 ]; do case "$1" in --list) LIST=$2; shift 2;; --root) ROOT=$2; shift 2;; --name) NAME=$2; shift 2;; --langs) LANGS=$2; shift 2;; --psm) PSM=$2; shift 2;; --rootfs) RF=$2; shift 2;; --out) OUT=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --models-lock) LOCK=$2; shift 2;; *) echo "unknown flag $1" >&2; exit 2;; esac; done
+LIST=""; ROOT=""; NAME=""; LANGS=""; PSM=3; RF=""; OUT=""; JOBS=2; LOCK=${TESSERACT_MODELS_LOCK:-}; SURVEY_LOCK=${TESSERACT_SURVEY_MODELS_LOCK:-}
+while [ $# -gt 0 ]; do case "$1" in --list) LIST=$2; shift 2;; --root) ROOT=$2; shift 2;; --name) NAME=$2; shift 2;; --langs) LANGS=$2; shift 2;; --psm) PSM=$2; shift 2;; --rootfs) RF=$2; shift 2;; --out) OUT=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --models-lock) LOCK=$2; shift 2;; --survey-models-lock) SURVEY_LOCK=$2; shift 2;; *) echo "unknown flag $1" >&2; exit 2;; esac; done
 [ -n "$LIST" ] && [ -n "$ROOT" ] && [ -n "$RF" ] && [ -n "$OUT" ] || { echo "missing required argument" >&2; exit 2; }
 [[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$ && $JOBS =~ ^[1-9][0-9]*$ ]] || { echo "invalid name or job count" >&2; exit 2; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -16,12 +17,16 @@ if [ -z "$LOCK" ]; then
   LOCK="$HERE/../../../../ocr/engines/tesseract/models.lock"
   if [ ! -f "$LOCK" ] && [ -n "${GPU_STUDY_ROOT:-}" ]; then LOCK="$GPU_STUDY_ROOT/repo/ocr/engines/tesseract/models.lock"; fi
 fi
+if [ -z "$SURVEY_LOCK" ]; then
+  SURVEY_LOCK="$HERE/../../../../scripts/ocr-survey/models.lock"
+  if [ ! -f "$SURVEY_LOCK" ] && [ -n "${GPU_STUDY_ROOT:-}" ]; then SURVEY_LOCK="$GPU_STUDY_ROOT/repo/scripts/ocr-survey/models.lock"; fi
+fi
 tesseract_verify_lock "$LOCK" || exit 6
-models=$(tesseract_models_for_run "$LOCK" "$LANGS" "$PSM") || exit 6
+models=$(tesseract_models_for_run "$LOCK" "$LANGS" "$PSM" "$SURVEY_LOCK") || exit 6
 # Verify the same files that the chroot will read.
 [ ! -L "$RF/work" ] && [ ! -L "$RF/work/tessdata" ] || { echo "symlinked Tesseract directory" >&2; exit 6; }
 while IFS= read -r model; do
-  pin=$(tesseract_model_pin "$LOCK" "$model") || exit 6
+  pin=$(tesseract_model_pin "$LOCK" "$model" "$SURVEY_LOCK") || exit 6
   IFS=$'\t' read -r _ sum <<<"$pin"
   tesseract_model_checksum "$RF/work/tessdata/$model.traineddata" "$sum" || {
     echo "missing or mismatched Tesseract model: $model" >&2; exit 6;

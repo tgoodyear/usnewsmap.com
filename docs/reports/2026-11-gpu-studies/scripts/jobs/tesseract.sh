@@ -3,11 +3,12 @@
 # /work/in/runs.tsv lines: list<TAB>name<TAB>lang<TAB>psm; each list holds id<TAB>relative image path.
 # Successful reads go to <name>.b64; failed reads go to <name>.failures.tsv as id<TAB>exit status.
 # An interrupted run retains <name>.<pid>.<serial>.*.part for recovery; do not merge different attempts.
+# OSD modes additionally require the pinned survey-models.lock, for research use only.
 set -uo pipefail
 O=/work/out; I=/work/in; R=/work/rootfs
 # shellcheck source=/dev/null
 . "$I/tesseract-models.sh" || exit 6
-LOCK="$I/models.lock"
+LOCK="$I/models.lock"; SURVEY_LOCK="$I/survey-models.lock"
 tesseract_verify_lock "$LOCK" || exit 6
 [ -r "$I/runs.tsv" ] || { echo "missing runs.tsv" >&2; exit 6; }
 awk -F'\t' 'NF != 4 || $2 == "" || seen[$2]++ { exit 1 }' "$I/runs.tsv" || {
@@ -20,12 +21,12 @@ while IFS=$'\t' read -r list name lang psm; do
   awk -F'\t' 'NF != 2 || $1 !~ /^[A-Za-z0-9._:-]+$/ || length($1) > 200 || $2 == "" || seen[$1]++ { exit 1 }' "$I/$list" || {
     echo "invalid or duplicate id in list: $list" >&2; exit 6;
   }
-  models=$(tesseract_models_for_run "$LOCK" "$lang" "$psm") || exit 6
+  models=$(tesseract_models_for_run "$LOCK" "$lang" "$psm" "$SURVEY_LOCK") || exit 6
   while IFS= read -r model; do
     case " ${required[*]} " in *" $model "*) ;; *) required+=("$model");; esac
   done <<<"$models"
 done <"$I/runs.tsv"
-for model in "${required[@]}"; do tesseract_model_pin "$LOCK" "$model" >/dev/null || exit 6; done
+for model in "${required[@]}"; do tesseract_model_pin "$LOCK" "$model" "$SURVEY_LOCK" >/dev/null || exit 6; done
 
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates jq >/dev/null 2>&1
 bash "$I/rootfs.sh" --repo tgoodyear/usnm-boinc-worker --digest sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa || exit 6
@@ -65,7 +66,7 @@ for model in "${required[@]}"; do
       break
     done
   fi
-  pin=$(tesseract_model_pin "$LOCK" "$model") || exit 6
+  pin=$(tesseract_model_pin "$LOCK" "$model" "$SURVEY_LOCK") || exit 6
   IFS=$'\t' read -r url sum <<<"$pin"
   get "$model" "$url" "$sum" || exit 6
   (cd "$T" && sha256sum "$model.traineddata") >> "$O/tessdata.sha256" || exit 6

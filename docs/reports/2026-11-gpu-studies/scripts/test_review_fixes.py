@@ -19,6 +19,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 LOCK = REPO / "ocr/engines/tesseract/models.lock"
+SURVEY_LOCK = REPO / "scripts/ocr-survey/models.lock"
 WORK = Path.cwd() / f".gpu-study-review-tests-{os.getpid()}"
 
 
@@ -83,7 +84,8 @@ if '--version' in args:
 else:
     image = next(a for a in args if a.startswith('/work/in/'))
     name = pathlib.Path(image).name.split('.')[0]
-    event = {'event': 'read', 'id': name}
+    event = {'event': 'read', 'id': name, 'psm': args[args.index('--psm') + 1],
+             'lang': args[args.index('-l') + 1]}
 with open(os.environ['TRACE'], 'a') as f: f.write(json.dumps(event) + '\\n')
 if event['event'] == 'version':
     print('synthetic Tesseract')
@@ -143,19 +145,20 @@ out.write_bytes((pathlib.Path(os.environ['MODEL_REPLIES']) / model).read_bytes()
         base.mkdir(parents=True, exist_ok=True)
         models = {
             name: f"synthetic pinned model {name}\n".encode()
-            for name in ("deu_latf", "frak2021", "eng", "deu", "fra", "fin", "swe")
+            for name in ("deu_latf", "frak2021", "eng", "deu", "fra", "fin", "swe", "osd", "survey_only")
         }
         replies = base / "model-replies"
         replies.mkdir()
-        lines = []
+        lines, survey_lines = [], []
         for name, body in models.items():
             (replies / name).write_bytes(body)
-            lines.append(
-                f"tessdata/{name}.traineddata https://fixture.invalid/{name}.traineddata "
-                f"{hashlib.sha256(body).hexdigest()}\n"
-            )
+            line = (f"tessdata/{name}.traineddata https://fixture.invalid/{name}.traineddata "
+                    f"{hashlib.sha256(body).hexdigest()}\n")
+            (survey_lines if name in ("osd", "survey_only") else lines).append(line)
         lock = base / "models.lock"
         lock.write_text("".join(lines), encoding="utf-8")
+        survey_lock = base / "survey-models.lock"
+        survey_lock.write_text("".join(survey_lines), encoding="utf-8")
         helper = base / "tesseract-models.sh"
         text = (HERE / "tesseract-models.sh").read_text(encoding="utf-8")
         text, count = re.subn(
@@ -164,9 +167,15 @@ out.write_bytes((pathlib.Path(os.environ['MODEL_REPLIES']) / model).read_bytes()
             text,
         )
         self.assertEqual(count, 1)
+        text, count = re.subn(
+            r"(?m)^TESSERACT_SURVEY_LOCK_SHA256=[0-9a-f]{64}$",
+            f"TESSERACT_SURVEY_LOCK_SHA256={hashlib.sha256(survey_lock.read_bytes()).hexdigest()}",
+            text,
+        )
+        self.assertEqual(count, 1)
         helper.write_text(text, encoding="utf-8")
         env = self.env.copy()
-        env["MODEL_REPLIES"] = str(replies)
+        env.update(MODEL_REPLIES=str(replies), TESSERACT_SURVEY_MODELS_LOCK=str(survey_lock))
         return lock, helper, models, env
 
     def job_fixture(self, name, ids, lang="eng", psm="3"):
@@ -181,6 +190,7 @@ out.write_bytes((pathlib.Path(os.environ['MODEL_REPLIES']) / model).read_bytes()
             (image_models / f"{model}.traineddata").write_bytes(body)
         (image_models / "unknown.traineddata").write_bytes(b"not pinned")
         shutil.copy2(lock, inp / "models.lock")
+        shutil.copy2(env["TESSERACT_SURVEY_MODELS_LOCK"], inp / "survey-models.lock")
         shutil.copy2(helper, inp / "tesseract-models.sh")
         executable(inp / "rootfs.sh", "#!/usr/bin/env bash\nexit 0\n")
         (inp / "reads.tsv").write_text(
@@ -429,9 +439,28 @@ with open(os.environ['TRACE'], 'a') as f:
 
     def test_repository_lock_is_the_pinned_source(self):
         helper = (HERE / "tesseract-models.sh").read_text(encoding="utf-8")
-        match = re.search(r"(?m)^TESSERACT_MODEL_LOCK_SHA256=([0-9a-f]{64})$", helper)
-        self.assertIsNotNone(match)
-        self.assertEqual(hashlib.sha256(LOCK.read_bytes()).hexdigest(), match.group(1))
+        for variable, lock in (("TESSERACT_MODEL_LOCK_SHA256", LOCK),
+                               ("TESSERACT_SURVEY_LOCK_SHA256", SURVEY_LOCK)):
+            match = re.search(rf"(?m)^{variable}=([0-9a-f]{{64}})$", helper)
+            self.assertIsNotNone(match)
+            self.assertEqual(hashlib.sha256(lock.read_bytes()).hexdigest(), match.group(1))
+        osd_line = next(line for line in SURVEY_LOCK.read_text().splitlines()
+                        if line.startswith("tessdata/osd.traineddata "))
+        _, url, checksum = osd_line.split()
+        eng_line = next(line for line in LOCK.read_text().splitlines()
+                        if line.startswith("tessdata/eng.traineddata "))
+        self.assertEqual(url.rsplit("/", 1)[0], eng_line.split()[1].rsplit("/", 1)[0])
+        result = self.run_script(
+            "bash", "-c", '. "$1"; tesseract_verify_lock "$2" && tesseract_model_pin "$2" osd "$3"',
+            "_", str(HERE / "tesseract-models.sh"), str(LOCK), str(SURVEY_LOCK),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"{url}\t{checksum}\n")
+        unpinned = self.run_script(
+            "bash", "-c", '. "$1"; tesseract_verify_lock "$2" && tesseract_model_pin "$2" jpn_vert "$3"',
+            "_", str(HERE / "tesseract-models.sh"), str(LOCK), str(SURVEY_LOCK),
+        )
+        self.assertNotEqual(unpinned.returncode, 0)
 
     def test_study1_stages_the_model_lock_and_verifier(self):
         root = self.work / "study1"
@@ -456,12 +485,14 @@ with open(os.environ['TRACE'], 'a') as f:
         (crops / "crops.jsonl").write_text('{"id":"crop","file":"fixture.png"}\n')
         env = self.env.copy()
         env.update(GPU_STUDY_ROOT=str(root), GPU_STUDY_DEV=str(dev),
-                   TESSERACT_MODELS_LOCK=str(LOCK), RENT_MARKER=str(marker))
+                   TESSERACT_MODELS_LOCK=str(LOCK), TESSERACT_SURVEY_MODELS_LOCK=str(SURVEY_LOCK),
+                   RENT_MARKER=str(marker))
         result = self.run_script("bash", str(HERE / "study1.sh"), "--step", "tess", env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.exists())
         staged = root / "push/s1-tess"
         self.assertEqual((staged / "models.lock").read_bytes(), LOCK.read_bytes())
+        self.assertEqual((staged / "survey-models.lock").read_bytes(), SURVEY_LOCK.read_bytes())
         self.assertEqual((staged / "tesseract-models.sh").read_bytes(),
                          (HERE / "tesseract-models.sh").read_bytes())
         marker.unlink()
@@ -471,6 +502,18 @@ with open(os.environ['TRACE'], 'a') as f:
         result = self.run_script("bash", str(HERE / "study1.sh"), "--step", "tess", env=env)
         self.assertEqual(result.returncode, 6, result.stderr)
         self.assertFalse(marker.exists())
+        env["TESSERACT_MODELS_LOCK"] = str(LOCK)
+        bad_survey_lock = root / "bad-survey.lock"
+        bad_survey_lock.write_bytes(SURVEY_LOCK.read_bytes() + b"# altered\n")
+        env["TESSERACT_SURVEY_MODELS_LOCK"] = str(bad_survey_lock)
+        result = self.run_script("bash", str(HERE / "study1.sh"), "--step", "tess", env=env)
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertFalse(marker.exists())
+        env.pop("TESSERACT_SURVEY_MODELS_LOCK")
+        result = self.run_script("bash", str(HERE / "study1.sh"), "--step", "tess", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+        self.assertFalse((staged / "survey-models.lock").exists())
 
     def test_rented_verifies_image_models_and_repairs_bad_cached_bytes(self):
         args, out, rootfs, image, models, env = self.job_fixture("repair", ["ok"], lang="fra+eng")
@@ -484,6 +527,142 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertEqual([e["model"] for e in self.events() if e["event"] == "fetch"], ["frak2021"])
         self.assertEqual(len((out / "tessdata.sha256").read_text().splitlines()), 5)
         self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+
+    def test_local_osd_modes_use_the_verified_survey_pin(self):
+        for psm in ("0", "1", "12", "01"):
+            with self.subTest(psm=psm):
+                self.trace.unlink(missing_ok=True)
+                args, out, _, _, _, _, env = self.local_fixture(f"osd-local-{psm}", ["ok"], psm=psm)
+                result = self.run_script(*args, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+                reads = [e for e in self.events() if e["event"] == "read"]
+                self.assertEqual([(e["id"], e["psm"]) for e in reads], [("ok", psm)])
+
+        args, out, _, _, _, _, env = self.local_fixture("osd-explicit", ["ok"], lang="eng+osd", psm="3")
+        survey_lock = env["TESSERACT_SURVEY_MODELS_LOCK"]
+        env["TESSERACT_SURVEY_MODELS_LOCK"] = str(self.work / "absent.lock")
+        result = self.run_script(*args, "--survey-models-lock", survey_lock, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+
+        for location in ("repository", "study-root"):
+            with self.subTest(survey_lookup=location):
+                args, out, _, _, _, _, env = self.local_fixture(f"osd-lookup-{location}", ["ok"], psm="1")
+                survey_lock = Path(env.pop("TESSERACT_SURVEY_MODELS_LOCK"))
+                base = Path(args[1]).parent.parent
+                if location == "repository":
+                    repo = base / "fake-repo"
+                    scripts = repo / "docs/reports/2026-11-gpu-studies/scripts"
+                    scripts.mkdir(parents=True)
+                    for name in ("tesseract-local.sh", "tesseract-models.sh"):
+                        shutil.copy2(Path(args[1]).parent / name, scripts / name)
+                    args = (args[0], str(scripts / "tesseract-local.sh"), *args[2:])
+                    env.pop("GPU_STUDY_ROOT", None)
+                else:
+                    scripts = base / "scripts/copied"
+                    scripts.mkdir()
+                    for name in ("tesseract-local.sh", "tesseract-models.sh"):
+                        shutil.copy2(Path(args[1]).parent / name, scripts / name)
+                    args = (args[0], str(scripts / "tesseract-local.sh"), *args[2:])
+                    repo = base / "repo"
+                    env["GPU_STUDY_ROOT"] = str(base)
+                destination = repo / "scripts/ocr-survey/models.lock"
+                destination.parent.mkdir(parents=True)
+                shutil.copy2(survey_lock, destination)
+                result = self.run_script(*args, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+
+    def test_local_osd_fails_closed_on_missing_or_changed_inputs(self):
+        for setting in ("missing-lock", "bad-lock", "missing-model", "bad-model", "symlink-model"):
+            with self.subTest(setting=setting):
+                self.trace.unlink(missing_ok=True)
+                args, out, rootfs, _, models, _, env = self.local_fixture(f"osd-{setting}", ["ok"], psm="1")
+                survey_lock = Path(env["TESSERACT_SURVEY_MODELS_LOCK"])
+                model = rootfs / "work/tessdata/osd.traineddata"
+                if setting == "missing-lock":
+                    survey_lock.unlink()
+                elif setting == "bad-lock":
+                    with survey_lock.open("a", encoding="utf-8") as f:
+                        f.write("# changed\n")
+                elif setting == "missing-model":
+                    model.unlink()
+                elif setting == "bad-model":
+                    model.write_bytes(b"wrong osd")
+                else:
+                    external = self.work / "osd-symlink-target"
+                    external.write_bytes(models["osd"])
+                    model.unlink()
+                    model.symlink_to(external)
+                result = self.run_script(*args, env=env)
+                self.assertEqual(result.returncode, 6, result.stderr)
+                self.assertFalse(any(e["event"] == "read" for e in self.events()))
+                self.assertFalse((out / "batch.b64").exists())
+
+    def test_rented_osd_modes_verify_and_record_the_survey_pin(self):
+        for psm, lang in (("0", "eng"), ("1", "eng"), ("12", "eng"), ("3", "eng+osd")):
+            with self.subTest(psm=psm, lang=lang):
+                self.trace.unlink(missing_ok=True)
+                args, out, rootfs, _, models, env = self.job_fixture(f"osd-job-{psm}", ["ok"], lang=lang, psm=psm)
+                result = self.run_script(*args, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+                self.assertEqual((rootfs / "work/tessdata/osd.traineddata").read_bytes(), models["osd"])
+                receipt = (out / "tessdata.sha256").read_text().splitlines()
+                self.assertEqual(sum(line.endswith("  osd.traineddata") for line in receipt), 1)
+                self.assertIn(f"{hashlib.sha256(models['osd']).hexdigest()}  osd.traineddata", receipt)
+                self.assertFalse(any(e["event"] == "fetch" for e in self.events()))
+                reads = [e for e in self.events() if e["event"] == "read"]
+                self.assertEqual([(e["psm"], e["lang"]) for e in reads], [(psm, lang)])
+
+    def test_rented_osd_rejects_bad_locks_and_bad_downloads(self):
+        for setting in ("missing-lock", "bad-lock", "corrupt", "partial"):
+            with self.subTest(setting=setting):
+                self.trace.unlink(missing_ok=True)
+                args, out, rootfs, image, _, env = self.job_fixture(f"osd-job-{setting}", ["ok"], psm="1")
+                survey_lock = Path(args[1]).parent / "in/survey-models.lock"
+                if setting == "missing-lock":
+                    survey_lock.unlink()
+                elif setting == "bad-lock":
+                    with survey_lock.open("a", encoding="utf-8") as f:
+                        f.write("# changed\n")
+                else:
+                    (image / "osd.traineddata").unlink()
+                    env.update(BAD_DOWNLOAD="osd", DOWNLOAD_MODE=setting)
+                result = self.run_script(*args, env=env)
+                self.assertEqual(result.returncode, 6, result.stderr)
+                self.assertFalse(any(e["event"] in ("read", "version") for e in self.events()))
+                self.assertFalse((out / "batch.b64").exists())
+                self.assertFalse((rootfs / "work/tessdata/osd.traineddata").exists())
+                if setting in ("missing-lock", "bad-lock"):
+                    self.assertFalse(self.events())
+
+        self.trace.unlink(missing_ok=True)
+        args, out, rootfs, image, models, env = self.job_fixture("osd-job-repair", ["ok"], psm="12")
+        (image / "osd.traineddata").write_bytes(b"wrong cached osd")
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((rootfs / "work/tessdata/osd.traineddata").read_bytes(), models["osd"])
+        self.assertEqual([e["model"] for e in self.events() if e["event"] == "fetch"], ["osd"])
+        self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+
+    def test_non_osd_runs_do_not_require_a_survey_lock(self):
+        args, out, _, _, _, _, env = self.local_fixture("without-survey-local", ["ok"])
+        env["TESSERACT_SURVEY_MODELS_LOCK"] = str(self.work / "absent-survey.lock")
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+
+        self.trace.unlink(missing_ok=True)
+        args, out, _, image, _, env = self.job_fixture("without-survey-job", ["ok"])
+        (Path(args[1]).parent / "in/survey-models.lock").unlink()
+        (image / "osd.traineddata").unlink()
+        result = self.run_script(*args, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.decode(out / "batch.b64"), {"ok": "synthetic ok\n"})
+        self.assertNotIn("osd.traineddata", (out / "tessdata.sha256").read_text())
+        self.assertFalse(any(e["event"] == "fetch" for e in self.events()))
 
     def test_corrupt_or_interrupted_model_download_never_reaches_tesseract(self):
         for mode in ("corrupt", "partial"):
@@ -553,13 +732,12 @@ with open(os.environ['TRACE'], 'a') as f:
         self.assertFalse(self.events())
         self.assertEqual(list(outside.iterdir()), [])
 
-    def test_unknown_models_bad_locks_and_implicit_osd_are_rejected(self):
-        for setting in ("unknown", "bad-lock", "bad-bytes", "osd"):
+    def test_unknown_models_and_bad_worker_locks_are_rejected(self):
+        for setting in ("unknown", "survey-only", "bad-lock", "bad-bytes"):
             with self.subTest(setting=setting):
                 self.trace.unlink(missing_ok=True)
-                lang = "eng+jpn_vert" if setting == "unknown" else "eng"
-                psm = "01" if setting == "osd" else "3"
-                args, out, rootfs, _, _, lock, env = self.local_fixture(setting, ["ok"], lang=lang, psm=psm)
+                lang = {"unknown": "eng+jpn_vert", "survey-only": "survey_only"}.get(setting, "eng")
+                args, out, rootfs, _, _, lock, env = self.local_fixture(setting, ["ok"], lang=lang)
                 (rootfs / "work/tessdata/jpn_vert.traineddata").write_bytes(b"unknown model")
                 if setting == "bad-lock":
                     with lock.open("a", encoding="utf-8") as f:

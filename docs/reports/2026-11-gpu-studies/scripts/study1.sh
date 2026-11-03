@@ -23,6 +23,12 @@ case "$STEP" in
     # shellcheck source=/dev/null
     . scripts/tesseract-models.sh
     tesseract_verify_lock push/s1-tess/models.lock || exit 6
+    # Optional for these PSM 3/6 runs; OSD modes fail closed without this lock.
+    SURVEY_LOCK=${TESSERACT_SURVEY_MODELS_LOCK:-repo/scripts/ocr-survey/models.lock}
+    if [ -e "$SURVEY_LOCK" ] || [ -n "${TESSERACT_SURVEY_MODELS_LOCK:-}" ]; then
+      cp "$SURVEY_LOCK" push/s1-tess/survey-models.lock || exit 6
+      tesseract_verify_survey_lock push/s1-tess/survey-models.lock || exit 6
+    fi
     ls "$PC/pages" | sed -n 's/\.jpg$//p' | awk '{print $1"\tpages/"$1".jpg"}' >push/s1-tess/pages.tsv
     printf 'list.tsv\tfrak2021-psm3\tfrak2021\t3\nlist.tsv\tfrak2021-psm6\tfrak2021\t6\nlist.tsv\tdeu_latf-psm3\tdeu_latf+deu\t3\nlist.tsv\tdeu_latf-psm6\tdeu_latf+deu\t6\npages.tsv\tfrak2021-page\tfrak2021\t3\npages.tsv\tdeu_latf-page\tdeu_latf+deu\t3\n' >push/s1-tess/runs.tsv
     scripts/rent.sh --study s1tess --image "$TESS" --max-hours 3 --cap-dollars 1 --disk 30 --push-dir push/s1-tess --job scripts/jobs/tesseract.sh --prefer-machine "$PREFER" --out results/s1-tess;;
