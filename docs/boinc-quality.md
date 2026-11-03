@@ -1080,6 +1080,11 @@ Incomplete older recipes require reconciliation, not automatic pin adoption.
 The pinned binary determines the generated function words and staging defaults;
 retained jobs must match the full engine, native runtime parameters, places, and
 bound source-job crop/function-word parameters, not just reader and image hashes.
+Bundled pages inherit the bundle's function-word list when their serialized list
+is absent or empty, exactly as the Rust contract and quality worker specify.
+Explicit nonempty overrides still must match the retained source job; crop seed
+and crop-count checks remain strict. A Rust staging regression feeds actual
+default-size bundles through both initial and retained-acknowledgement checks.
 
 Only the selected scans/texts and generated selected sample travel over the
 existing LAN transport. Each transfer uses a unique upload directory; the server

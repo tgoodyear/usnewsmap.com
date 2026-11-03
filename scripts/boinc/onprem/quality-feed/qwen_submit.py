@@ -620,7 +620,10 @@ def check_transaction_jobs(value, native, quality_jobs, engine):
                     or any(page["inputs"]["texts"][key] != retained["inputs"]["texts"][key]
                            for key in ("bytes", "sha256"))):
                 raise RuntimeError("quality job reader/text inputs changed")
-            if any(page[key] != retained[key] for key in ("function_words", "crop_seed", "k_crops")):
+            words = page.get("function_words", [])
+            if (not isinstance(words, list)
+                    or (words or job["function_words"]) != retained["function_words"]
+                    or any(page[key] != retained[key] for key in ("crop_seed", "k_crops"))):
                 raise RuntimeError("quality job staging parameters changed")
             for name, expected_input in (("page", member["files"][f"scans/{doc}.jpg"]), ("alto", member["quality_alto"])):
                 if {key: page["inputs"][name][key] for key in ("bytes", "sha256")} != expected_input:

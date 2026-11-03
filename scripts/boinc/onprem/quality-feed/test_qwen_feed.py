@@ -145,6 +145,95 @@ print("server entered")
                         driver.fcntl.flock(lock, driver.fcntl.LOCK_EX | driver.fcntl.LOCK_NB)
 
 
+@unittest.skipUnless(os.environ.get("USNM_QUALITY_BUNDLE_FIXTURE"),
+                     "invoked by the actual Rust default-bundle staging regression")
+class RustQualityBundleContractTest(unittest.TestCase):
+    def test_actual_default_bundle_and_retained_acknowledgement_share_worker_defaults(self):
+        base = Path(os.environ["USNM_QUALITY_BUNDLE_FIXTURE"])
+        qroot = base / "quality/v1-wave5"
+        native_root = base / "qwen/v1-wave5"
+        quality_path, = (qroot / "units").glob("*/quality.json")
+        raw_bundle = quality_path.read_bytes()
+        bundle = json.loads(raw_bundle)
+        self.assertEqual(len(bundle["pages"]), 2)
+        self.assertTrue(bundle["function_words"])
+        self.assertTrue(all("function_words" not in page for page in bundle["pages"]))
+        native = list(submit.jobs(native_root))
+        recipe = {
+            "campaign": "v1-wave5", "prompt_version": 3, "bundle_size": 200,
+            "engine_image": bundle["engine"]["image"], "readers": "loc,as,ours-tesseract",
+            "native_engine": native[0][1]["engine"],
+        }
+
+        def fingerprint(path):
+            return {"bytes": path.stat().st_size, "sha256": shipment.file_hash(path)}
+
+        recipe["stage_binary"] = fingerprint(Path(os.environ["USNM_QUALITY_STAGE_BINARY"]))
+        recipe["places"] = fingerprint(base / "places.txt")
+        samples = {row["doc_id"]: row for row in map(json.loads, (base / "sample.jsonl").read_text().splitlines())}
+        members = []
+        for page in bundle["pages"]:
+            doc = page["doc_id"]
+            original = json.loads((qroot / "texts" / (doc + ".image-provenance.json")).read_text())
+            provenance = qroot / "texts" / (doc + ".loc-provenance.json")
+            shipment.save(provenance, {
+                "doc_id": doc, "sha256": shipment.file_hash(base / "scans" / (doc + ".xml")),
+                "archive": "dlc_abc_ver01.tar.bz2", "member": doc + "/ocr.xml", "archive_bytes": 1000})
+            files = {f"scans/{doc}.{ext}": fingerprint(base / "scans" / (doc + "." + ext))
+                     for ext in ("jpg", "xml")}
+            files[f"texts/{doc}.json"] = fingerprint(base / "texts" / (doc + ".json"))
+            for suffix in ("image-provenance.json", "loc-provenance.json"):
+                files[f"texts/{doc}.{suffix}"] = fingerprint(qroot / "texts" / (doc + "." + suffix))
+            member = {"source": original["source"], "sample": samples[doc], "files": files,
+                      "quality_alto": shipment.quality_alto((base / "scans" / (doc + ".xml")).read_bytes())}
+            members.append(member)
+        parent = {"schema": 1, "campaign": "v1-wave5", "chunk": "c00001",
+                  "checksums_sha256": "a" * 64, "members": members}
+        value = shipment.manifest(parent, members, recipe)
+        for member in members:
+            submit.quality_source_binding(qroot, member, recipe, create=True)
+        quality_jobs = [(quality_path, bundle)]
+        submit.check_transaction_jobs(value, native, quality_jobs, recipe["native_engine"])
+
+        tx = base / "qwen-shipments/v1-wave5" / value["id"]
+        shipment.freeze(tx / "engine.json", recipe["native_engine"])
+        receipt = {"schema": 1, "transaction_id": value["id"], "parent_id": value["parent"]["id"],
+                   "status": "acknowledged", "native_acknowledged": True, "quality_acknowledged": True,
+                   "members": {m["source"]["doc_id"]: {"native": "published", "quality": "published"} for m in members}}
+        for kind, selected, app in (("native", native, "usnm_qwen"), ("quality", quality_jobs, "usnm_quality")):
+            shipment.freeze(tx / (kind + "-intent.json"), {job["id"]: shipment.file_hash(path) for path, job in selected})
+            rows = {}
+            for number, (path, job) in enumerate(selected, 1):
+                (path.parent / "submitted").write_text(app + "_" + job["id"])
+                rows[job["id"]] = {"job_sha256": shipment.file_hash(path), "workunit_id": number,
+                                   "batch": 8 if kind == "native" else 0, "min_quorum": 2, "target_nresults": 2}
+                if kind == "native":
+                    rows[job["id"]]["source_bindings"] = submit.source_bindings(native_root, job)
+            receipt[kind + "_workunits"] = rows
+        shipment.save(native_root / "audit.json", receipt["native_workunits"])
+        args = types.SimpleNamespace(share=base, campaign="v1-wave5")
+        submit.verify_acknowledgement(args, tx, value, receipt)
+
+        # serde defaults absent/empty page words; the worker inherits the bundle list.
+        for words in ([], bundle["function_words"]):
+            changed = json.loads(raw_bundle)
+            changed["pages"][0]["function_words"] = words
+            submit.check_transaction_jobs(value, native, [(quality_path, changed)], recipe["native_engine"])
+        for field in ("function_words", "crop_seed", "k_crops", "bundle_words", "null_words"):
+            changed = json.loads(raw_bundle)
+            if field == "bundle_words":
+                changed["function_words"] = ["different"]
+            elif field in ("function_words", "null_words"):
+                changed["pages"][0]["function_words"] = ["different"] if field == "function_words" else None
+            else:
+                changed["pages"][0][field] += 1
+            quality_path.write_text(json.dumps(changed))
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "quality job staging parameters"):
+                submit.verify_acknowledgement(args, tx, value, receipt)
+        quality_path.write_bytes(raw_bundle)
+        submit.verify_acknowledgement(args, tx, value, receipt)
+
+
 class SubsetShipmentTest(unittest.TestCase):
     """Offline process-boundary rehearsal; never a live BOINC/SSH proof."""
 
