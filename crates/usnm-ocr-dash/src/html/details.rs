@@ -527,7 +527,9 @@ pub(super) fn downloads(v: &View, o: &mut String) {
         o,
         "<h3>Failures{}</h3><p>{} pages LoC can't serve (permanent failures). {} pages of queued manifests skipped for now because \
          loc.gov answers 503 for their issue while serving others (<code>loc_item_error</code>); the queue runs their manifest again after a day's cool-off. \
-         {} other pages skipped this way are in no queued manifest, so they are asked for again only if they are queued again.</p>",
+         {} other pages skipped this way are in no queued manifest, so they are asked for again only if they are queued again. \
+         A manifest that ends with transient failures runs again, so most of these pages are fetched later: \
+         <em>Fetched since</em> says which.</p>",
         if f.recent_failures.is_empty() {
             String::new()
         } else {
@@ -539,15 +541,19 @@ pub(super) fn downloads(v: &View, o: &mut String) {
     );
     if !f.recent_failures.is_empty() {
         o.push_str(&scroll("Latest failures"));
-        o.push_str("<table><tr><th>When</th><th>doc_id</th><th>Kind</th><th>Error</th></tr>");
+        o.push_str("<table><tr><th>When</th><th>doc_id</th><th>Kind</th><th>Error</th><th>Fetched since</th></tr>");
         for e in &f.recent_failures {
+            let since = e.recovered_at.map_or_else(
+                || "<span class=\"muted\">not yet</span>".to_owned(),
+                |t| format!("{} {}", badge("good", "fetched"), ago(now, t)),
+            );
             let _ = write!(
                 o,
-                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>{}</tr>",
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>{}<td>{since}</td></tr>",
                 ago(now, e.at),
                 esc(&e.doc_id),
                 esc(&e.kind),
-                msg(&e.error, Some(e.at))
+                failure_msg(&e.error, Some(e.at))
             );
         }
         o.push_str("</table></div>");

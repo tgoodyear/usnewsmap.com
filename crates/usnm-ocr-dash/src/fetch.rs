@@ -329,6 +329,10 @@ pub struct FailureLine {
     pub kind: String,
     pub error: String,
     pub at: DateTime<Utc>,
+    /// When the index says the page was fetched after it failed: filled in
+    /// for the page from [`Fetch::fetched_after`], never in the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_at: Option<DateTime<Utc>>,
 }
 
 /// A keep-set page, in fetch order.
@@ -1133,6 +1137,12 @@ impl Fetch {
         (pages > 0).then(|| (at(50), at(95)))
     }
 
+    /// When the index last has `doc_id` fetched, if that is after `at`: a
+    /// failure the queue's later run got past.
+    pub fn fetched_after(&self, doc_id: &str, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.all.get(&doc_hash(doc_id)).copied().filter(|t| *t > at)
+    }
+
     /// The latest failures' reasons, most common first, and how many failures
     /// that covers.
     pub fn failure_reasons(&self, n: usize) -> (Vec<(String, usize)>, usize) {
@@ -1597,6 +1607,7 @@ mod tests {
             kind: kind.into(),
             error: error.into(),
             at: Utc::now(),
+            recovered_at: None,
         };
         assert_eq!(
             failure_reason(&line(
