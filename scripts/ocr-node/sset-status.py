@@ -8,9 +8,10 @@ Reads the unit's journal since it last started and writes a status file:
 volumes to fetch, written (curated or empty), incomplete, sitemap entries
 refused as package ids ("rejected": the fetch can't finish while there are
 any), volumes listed only as a whole-volume package ("package_only"), the
-rates per hour and an estimate of the time left. Volumes range from one document to
-hundreds, so the estimate goes by documents: the volumes left times the
-average documents a volume has, at the documents-per-hour rate so far.
+rates per hour and an estimate of the time left. Volumes range from one
+document to hundreds, so the estimate goes by documents: the volumes left
+times the average documents a volume has, at the documents-per-hour rate so
+far.
 Sets "finished" when the --done marker exists. With --push-url it also
 PUTs the status to the OCR dashboard (usnm-ocrdash), which takes it from this
 node's address only. Prints it too. usnm-sset-status.timer runs it every 10 minutes.

@@ -91,7 +91,8 @@ const INDEX_PATH: &str = "/sitemap/SERIALSET_sitemap_index.xml";
 
 const PREFIX: &str = "SERIALSET-";
 
-/// How many refused ids the warning names; the count is always whole.
+/// How many ids a warning names; its count is always whole, and the
+/// report lists them all.
 const BAD_ID_SAMPLE: usize = 20;
 
 /// The longest document suffix accepted (`009-0042-0000` is 13 bytes).
@@ -130,14 +131,14 @@ impl PackageId {
             None => (rest, None),
         };
         let parts: Vec<&str> = volume.split('_').collect();
-        let digits = |s: &str| s.len() == 5 && s.bytes().all(|b| b.is_ascii_digit());
+        let serial_digits = |s: &str| s.len() == 5 && s.bytes().all(|b| b.is_ascii_digit());
         // Lowercase only, so no two volumes differ by case alone.
         let part = |s: &str| {
             s.len() == 2
                 && s.bytes()
                     .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
         };
-        if parts.len() != 3 || !digits(parts[0]) || !part(parts[1]) || !part(parts[2]) {
+        if parts.len() != 3 || !serial_digits(parts[0]) || !part(parts[1]) || !part(parts[2]) {
             return None;
         }
         if document.is_some_and(|d| {
@@ -1185,8 +1186,9 @@ pub async fn run(
         );
     }
     if !p.package_only.is_empty() {
+        let sample: Vec<&String> = p.package_only.iter().take(BAD_ID_SAMPLE).collect();
         tracing::warn!(
-            volumes = ?p.package_only,
+            package_only = p.package_only.len(), sample = ?sample,
             "Serial Set volumes listed only as a whole-volume package; not fetched"
         );
     }
