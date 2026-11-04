@@ -659,15 +659,14 @@ fn poll_index(h: &mut impl Hold, now: DateTime<Utc>) {
         }
         let mut parsed = lines
             .iter()
-            .filter_map(|l| serde_json::from_str::<IndexLine>(l).ok())
-            .peekable();
-        while parsed.peek().is_some() {
-            h.hold(|f| {
-                parsed
-                    .by_ref()
-                    .take(INDEX_BATCH)
-                    .for_each(|l| f.add_fetch(l))
-            });
+            .filter_map(|l| serde_json::from_str::<IndexLine>(l).ok());
+        loop {
+            // Parsed before the lock is taken: the iterator is lazy.
+            let batch: Vec<IndexLine> = parsed.by_ref().take(INDEX_BATCH).collect();
+            if batch.is_empty() {
+                break;
+            }
+            h.hold(|f| batch.into_iter().for_each(|l| f.add_fetch(l)));
         }
         h.hold(|f| f.index.offset = tail.offset);
     };
@@ -877,7 +876,7 @@ impl Fetch {
             tracing::info!(
                 secs = (Utc::now() - w.since).num_seconds(),
                 manifests = w.manifests_read,
-                "first read of the fetcher's files done"
+                "read of the fetcher's files done"
             );
         }
     }
@@ -965,6 +964,8 @@ impl Fetch {
             return None;
         }
         self.attempt = Some((key.clone(), now));
+        // Views go on with the plan held while this one is read.
+        self.warming.get_or_insert_with(Warming::now);
         Some(key)
     }
 
@@ -1563,7 +1564,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_poll_lets_go_of_the_lock_while_it_decodes_the_queue() {
+    fn a_poll_lets_go_of_the_lock_while_it_reads_the_fetchers_files() {
         let dir = tempfile::tempdir().unwrap();
         let scans = dir.path().join("scans");
         let manifests = dir.path().join("manifests");
@@ -1594,26 +1595,34 @@ mod tests {
             let fetch = fetch.clone();
             std::thread::spawn(move || Fetch::poll_locked(&fetch, now))
         };
-        // Views get the lock while the poll waits on the manifest, and see
-        // how far it has got.
-        let while_reading = |check: &dyn Fn(&Fetch)| {
+        // Views get the lock while the poll waits on a file, and see how
+        // far it has got.
+        let when_locked = |there: &dyn Fn(&Fetch) -> bool, check: &dyn Fn(&Fetch)| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             loop {
                 if let Ok(f) = fetch.try_lock() {
-                    if f.warming.as_ref().is_some_and(|w| w.manifests == Some(1)) {
-                        assert_eq!(f.warming.as_ref().unwrap().manifests_read, 0);
-                        let note = f.warming_note().unwrap();
-                        assert!(note.contains("0 of 1 so far"), "{note}");
+                    if there(&f) {
                         check(&f);
                         return;
                     }
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "the poll kept the lock, or never got to the queue"
+                    "the poll kept the lock, or never got there"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
+        };
+        let while_reading = |check: &dyn Fn(&Fetch)| {
+            when_locked(
+                &|f| f.warming.as_ref().is_some_and(|w| w.manifests == Some(1)),
+                &|f| {
+                    assert_eq!(f.warming.as_ref().unwrap().manifests_read, 0);
+                    let note = f.warming_note().unwrap();
+                    assert!(note.contains("0 of 1 so far"), "{note}");
+                    check(f);
+                },
+            )
         };
         let rows = [
             row("sn1_1890-01-01_ed-1_seq-1", "az_a", "eng"),
@@ -1642,15 +1651,36 @@ mod tests {
         // An index read again from the start (the fetcher's was replaced)
         // leaves the counts partial too until the poll is over.
         std::fs::remove_dir_all(&q).unwrap();
-        let (_, fifo) = slow("queue-ocr-20261102t000000");
+        let (q, fifo) = slow("queue-ocr-20261102t000000");
         std::fs::write(scans.join("index-full.jsonl"), "").unwrap();
         let poller = poll();
         while_reading(&|f| assert_eq!(f.total.pages, 0));
         std::fs::write(&fifo, encode(&rows).unwrap()).unwrap();
         poller.join().unwrap();
+        {
+            let f = fetch.lock().unwrap();
+            assert!(f.warming.is_none());
+            assert_eq!(f.queue(now)[0].fetched, 0);
+        }
+
+        // So does a new plan the status names, from when its read starts.
+        std::fs::remove_dir_all(&q).unwrap();
+        let (_, plan) = slow("pages-v2");
+        std::fs::write(
+            scans.join("status-full.json"),
+            format!(
+                "{{\"state\":\"running\",\"manifest\":\"{}\",\"manifest_sha256\":\"\"}}",
+                plan.display()
+            ),
+        )
+        .unwrap();
+        let poller = poll();
+        when_locked(&|f| f.warming.is_some(), &|f| assert!(f.plan.is_none()));
+        std::fs::write(&plan, encode(&rows).unwrap()).unwrap();
+        poller.join().unwrap();
         let f = fetch.lock().unwrap();
         assert!(f.warming.is_none());
-        assert_eq!(f.queue(now)[0].fetched, 0);
+        assert!(f.plan.is_some(), "{:?}", f.plan_error);
     }
 
     #[test]
