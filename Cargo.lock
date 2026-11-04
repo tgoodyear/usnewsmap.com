@@ -3885,6 +3885,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "usnm-alto",
  "usnm-core",
  "usnm-ocr-contract",
  "usnm-ocr-quality",
