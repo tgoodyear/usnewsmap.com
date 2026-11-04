@@ -121,11 +121,14 @@ impl Policy {
         if self.requests_per_minute == 0 || self.slow_requests_per_minute == Some(0) {
             bail!("policy {n}: a rate of zero");
         }
-        if self
+        if let Some(s) = self
             .slow_requests_per_minute
-            .is_some_and(|s| s > self.requests_per_minute)
+            .filter(|s| *s > self.requests_per_minute)
         {
-            bail!("policy {n}: a slow rate above the normal rate");
+            bail!(
+                "policy {n}: slow_requests_per_minute {s} is above requests_per_minute {}",
+                self.requests_per_minute
+            );
         }
         if self.slow_for_secs == Some(0) {
             bail!("policy {n}: a slow rate that lasts no time");
