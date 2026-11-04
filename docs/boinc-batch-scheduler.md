@@ -884,14 +884,18 @@ A page qualifies only when all of its journals form one retry chain that ends
 `published`, the last write of that journal is at least `--min-age-hours` (24)
 old, and the controller state agrees. A page of the current plan must be
 claimed for the batch its journal names. A page of an older plan must not be
-claimed or selected. Pages are taken oldest published first, `--pages` (1,000)
-at a time. A fixed page list is never archived, because its pages would be
-selected and exported again. Pages that are prepared, reserved, submitting,
-submitted or failed (including dead-lettered) stay.
+claimed, selected or in a fixed plan's page list. Pages are taken oldest
+published first, `--pages` (1,000) at a time. A fixed page list is never
+archived, because its pages would be selected and exported again. Pages that
+are prepared, reserved, submitting, submitted or failed (including
+dead-lettered) stay.
 
 The controller state goes before the blobs. A journal whose claim is gone fails
 the tick closed in `owned_records`, but a claim whose journal is gone would be
-exported again. The dry run and the apply both check that the same pages need
+exported again. Each blob is copied, its sha256 is kept in `handoff-sha256/`,
+and only then is the blob deleted, and only while it's still the version
+copied. A resumed step checks every copy against that sha256, so a blob without
+a Content-MD5 is checked too. The dry run and the apply both check that the same pages need
 work before and after the batch. The apply refuses if they don't. The bridge
 and database steps can lag behind safely: a tick reads only the journals of
 pages it owns. `claims/<doc_id>.json` and the `ocr-out` ledger are kept, so a
@@ -960,11 +964,17 @@ The maintainer approves each live run. To archive:
 5. Dry-run and apply the `db` step in `usnm-boinc-server`, where the batch is
    `/project/archive/batches/<NNNN>`. Give it a 0600 mysql defaults file for a
    user that can delete from `workunit` and `result`, and remove the file
-   afterwards. The step exports each row to `db/*.tsv` before it deletes it. It
-   deletes only workunits that are assimilated (2), have their files deleted
-   (2) and have every result over (5). It leaves the others for BOINC's
-   `db_purge` and counts them as `deferred`. Those still count towards the
-   10,000 existing-workunit cap.
+   afterwards. The bridge receipt must name the batch's manifest. The step
+   works in chunks of 500 workunits, each in one transaction in one client
+   session. It locks the chunk's rows (`SELECT ... FOR UPDATE`), checks them
+   again and exports them to `db/chunk-<NNNN>-attempt-<N>/`, and only then
+   deletes them. It deletes only workunits that are assimilated (2) with their
+   input files deleted (2), and whose every result is over (5) with its output
+   files deleted (2). It leaves the others for BOINC's `db_purge` and counts
+   them as `deferred`. Those still count towards the 10,000 existing-workunit
+   cap. A stop before a chunk's `COMMIT` rolls it back, and the resumed step
+   exports the rows again beside the first attempt. A stop after it leaves the
+   export, which the resumed step counts as deleted.
 
    ```sh
    podman exec usnm-boinc-server python3 /project/archive/archive_history.py db \

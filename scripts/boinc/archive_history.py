@@ -111,6 +111,9 @@ def write_atomic(path, data):
     final name is always complete."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     partial = path.with_name(path.name + ".partial")
+    # A .partial left by a crash may be a hard link to the file being archived (move): opening
+    # it for writing would truncate the source too.
+    partial.unlink(missing_ok=True)
     with open(partial, "wb") as out:
         out.write(data)
         out.flush()
@@ -389,9 +392,11 @@ def claimed_pages(state):
 
 
 def outstanding(scheduler, config, state, records):
-    """The pages a tick would export or submit: claimed pages without a journal of their own, or
-    whose journal is only prepared. owned_records' refusals are raised as they are."""
-    config = {**config, "pages": claimed_pages(state)}
+    """The pages a tick would export or submit: allocated pages without a journal of their own,
+    or whose journal is only prepared. A queue-fed tick allocates its claimed pages, a fixed
+    plan its configured ones. owned_records' refusals are raised as they are."""
+    if config.get("source") == "queue":
+        config = {**config, "pages": claimed_pages(state)}
     owned = scheduler.owned_records(config, records)
     return {page["page"] for page in config["pages"]
             if page["page"] not in owned or owned[page["page"]]["stage"] == "prepared"}
@@ -412,6 +417,8 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours):
     claimed or selected here."""
     queue = config.get("source") == "queue"
     claims, selected = state.get("claims", {}), state.get("selected", {})
+    # A fixed plan's configured pages are allocated whether or not they are selected yet.
+    configured = set() if queue else {page["page"] for page in config.get("pages", [])}
     by_page = {}
     for record in records:
         by_page.setdefault((record["plan"], record["job"]["message"]["page"]), []).append(record)
@@ -443,7 +450,7 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours):
             if not isinstance(claim, dict) or claim.get("batch") != current["job"]["message"].get("batch"):
                 skip("not_claimed_for_its_batch")
                 continue
-        elif page in claims or page in selected:
+        elif page in claims or page in selected or page in configured:
             skip("allocated_to_current_plan")
             continue
         candidates.append({"plan": plan, "page": page, "published_at": int(published_at),
@@ -603,12 +610,16 @@ def controller_step(manifest, state_path, batch):
             "archive_sha256": sha256_file(archive)}
 
 
-def verified_copy(path, blob):
-    if not path.is_file() or path.stat().st_size != blob["size"]:
+def verified_copy(path, digest_path, blob):
+    """Whether the archived copy is the blob: its size and Content-MD5 as listed, and the sha256
+    recorded when it was downloaded, which is written before the blob is deleted."""
+    if not path.is_file() or path.is_symlink() or path.stat().st_size != blob["size"] \
+            or not digest_path.is_file():
         return False
-    if blob.get("md5"):
-        return base64.b64encode(hashlib.md5(path.read_bytes()).digest()).decode() == blob["md5"]
-    return True
+    data = path.read_bytes()
+    if blob.get("md5") and base64.b64encode(hashlib.md5(data).digest()).decode() != blob["md5"]:
+        return False
+    return sha256_bytes(data) == digest_path.read_text().strip()
 
 
 def handoff_step(manifest, container, batch):
@@ -624,7 +635,7 @@ def handoff_step(manifest, container, batch):
     for name, blob in live.items():
         require(blob["etag"] == planned[name]["etag"],
                 f"{name} changed since the batch was planned; stop and reconcile")
-    root = batch / "handoff"
+    root, digests = batch / "handoff", batch / "handoff-sha256"
     by_job = {}
     for name in planned:
         by_job.setdefault(JOB_BLOB.fullmatch(name)[1], []).append(name)
@@ -633,8 +644,9 @@ def handoff_step(manifest, container, batch):
         deleted = 0
         for name in sorted(names, key=lambda name: (bool(RECORD_BLOB.fullmatch(name)), name)):
             blob, path = planned[name], root / name
+            digest_path = digests / (name + ".sha256")
             if name in live:
-                if not verified_copy(path, blob):
+                if not verified_copy(path, digest_path, blob):
                     data, etag = container.get(name)
                     require(etag == blob["etag"], f"{name} changed while it was copied; stop and reconcile")
                     require(len(data) == blob["size"], f"{name} copy is incomplete")
@@ -642,9 +654,10 @@ def handoff_step(manifest, container, batch):
                         require(base64.b64encode(hashlib.md5(data).digest()).decode() == blob["md5"],
                                 f"{name} copy does not match its Content-MD5")
                     write_atomic(path, data)
+                    write_atomic(digest_path, (sha256_bytes(data) + "\n").encode())
                 deleted += container.delete(name, blob["etag"])
             else:
-                require(verified_copy(path, blob),
+                require(verified_copy(path, digest_path, blob),
                         f"{name} is gone from the container but its archived copy is missing or wrong")
         return deleted
 
@@ -653,6 +666,8 @@ def handoff_step(manifest, container, batch):
     require(not left, f"{len(left)} of the batch's blobs are still in the container")
     entries = archived_entries(root)
     require(len(entries) == len(planned), "the archive does not hold every blob of the batch")
+    require(all((digests / (entry["path"] + ".sha256")).read_text().strip() == entry["sha256"]
+                for entry in entries), "an archived blob no longer matches the sha256 taken when it was copied")
     return {"blobs": len(entries), "bytes": sum(entry["size"] for entry in entries),
             "deleted_now": deleted, "archive_digest": tree_digest(entries)}
 
@@ -828,9 +843,11 @@ def move(source, target, entry):
             source.unlink()
             return
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        partial = target.with_name(target.name + ".partial")
+        partial.unlink(missing_ok=True)
         try:
-            os.link(source, target.with_name(target.name + ".partial"))
-            os.replace(target.with_name(target.name + ".partial"), target)
+            os.link(source, partial)
+            os.replace(partial, target)
         except OSError:
             write_atomic(target, source.read_bytes())
         require(sha256_file(target) == entry["sha256"], f"the archived copy of {source} does not match")
@@ -941,6 +958,54 @@ class MysqlClient:
         require(done.returncode == 0, "a database statement failed; nothing after it ran")
         return done.stdout
 
+    def session(self):
+        return MysqlSession(self.argv + ["--unbuffered"])
+
+
+class MysqlSession:
+    """One mysql client session fed a statement at a time, so a transaction's row locks hold
+    while the step writes its export. The client stops at a failed statement, and a session
+    that ends without COMMIT rolls back."""
+
+    def __init__(self, argv):
+        try:
+            self.process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=subprocess.DEVNULL, encoding="utf-8",
+                                            errors="surrogateescape")
+        except OSError:
+            raise RuntimeError("the mysql client could not run") from None
+
+    def query(self, sql):
+        """The statement's (header, rows), each field as the client escapes it in batch mode;
+        ([], []) when it returns no rows."""
+        marker = "usnm-archive-" + uuid.uuid4().hex
+        try:
+            self.process.stdin.write(f"{sql};\nSELECT '{marker}' AS marker;\n")
+            self.process.stdin.flush()
+        except OSError:
+            raise Refused("a database statement failed; nothing after it ran") from None
+        lines = []
+        while True:
+            line = self.process.stdout.readline()
+            require(line, "a database statement failed; nothing after it ran")
+            line = line.rstrip("\n")
+            if line == marker:
+                break
+            lines.append(line)
+        # The marker's own column header ends the statement's output.
+        require(lines and lines[-1] == "marker", "unexpected database output")
+        lines = [line.split("\t") for line in lines[:-1]]
+        return (lines[0], lines[1:]) if lines else ([], [])
+
+    def close(self):
+        with contextlib.suppress(OSError):
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+
 
 def sql_list(values):
     require(all(re.fullmatch(r"[A-Za-z0-9_]+", str(value)) for value in values), "invalid SQL value")
@@ -952,6 +1017,12 @@ def chunks(values):
 
 
 EXISTING_SQL = "SELECT COUNT(*) FROM workunit WHERE name REGEXP '^usnm_(ocrb_)?[0-9a-f]{64}$'"
+# Finished as db_purge would have it: the workunit assimilated (2) with its input files deleted
+# (2), and every result over (5) with its output files deleted (2). BOINC tracks a result's
+# output-file cleanup apart from its workunit's; a row deleted before file_deleter is done
+# with it would leave its uploads orphaned.
+FINISHED_RESULT = "server_state = 5 AND file_delete_state = 2"
+FINISHED_WORKUNIT = "assimilate_state = 2 AND file_delete_state = 2"
 
 
 def db_rows(client, names):
@@ -960,7 +1031,7 @@ def db_rows(client, names):
         output = client.run(
             "SELECT w.id, w.name, w.assimilate_state, w.file_delete_state, "
             "(SELECT COUNT(*) FROM result r WHERE r.workunitid = w.id), "
-            "(SELECT COUNT(*) FROM result r WHERE r.workunitid = w.id AND r.server_state <> 5) "
+            f"(SELECT COUNT(*) FROM result r WHERE r.workunitid = w.id AND NOT ({FINISHED_RESULT})) "
             f"FROM workunit w WHERE w.name IN ({sql_list(part)}) ORDER BY w.name")
         for line in output.splitlines():
             fields = line.split("\t")
@@ -969,8 +1040,12 @@ def db_rows(client, names):
                     "unexpected database output")
             rows.append({"id": int(fields[0]), "name": fields[1], "assimilate_state": int(fields[2]),
                          "file_delete_state": int(fields[3]), "results": int(fields[4]),
-                         "open_results": int(fields[5])})
+                         "unfinished_results": int(fields[5])})
     return rows
+
+
+def finished(row):
+    return row["assimilate_state"] == 2 and row["file_delete_state"] == 2 and row["unfinished_results"] == 0
 
 
 def existing(client):
@@ -979,73 +1054,136 @@ def existing(client):
     return int(output)
 
 
+def columns(header, names):
+    require(all(name in header for name in names), "unexpected database columns")
+    return [header.index(name) for name in names]
+
+
+def tsv(header, rows):
+    lines = [header] + rows if rows else []
+    return "".join("\t".join(fields) + "\n" for fields in lines).encode("utf-8", "surrogateescape")
+
+
+def exported_ids(path):
+    lines = path.read_bytes().decode("utf-8", "surrogateescape").splitlines()
+    if not lines:
+        return set()
+    require(lines[0].split("\t")[0] == "id", f"{path} is not a workunit export")
+    return {int(line.split("\t")[0]) for line in lines[1:]}
+
+
+def db_chunk(session, batch, index, ids):
+    """Archives one chunk of the batch's workunits in one transaction. Its rows are locked,
+    checked again and exported to the archive, and only then deleted. A crash before COMMIT
+    rolls the deletes back, and the next attempt exports the rows again beside the first
+    export; one after COMMIT leaves an export the next attempt finds the deleted rows in."""
+    directory = batch / "db"
+    earlier = sorted(directory.glob(f"chunk-{index:04d}-attempt-*/workunit.tsv"))
+    session.query("START TRANSACTION")
+    work_header, work = session.query(
+        f"SELECT * FROM workunit WHERE id IN ({sql_list(ids)}) ORDER BY id FOR UPDATE")
+    result_header, results = session.query(
+        f"SELECT * FROM result WHERE workunitid IN ({sql_list(ids)}) ORDER BY id FOR UPDATE")
+    w_id, w_assimilate, w_delete = columns(work_header, ("id", "assimilate_state", "file_delete_state")) \
+        if work else (0, 0, 0)
+    r_unit, r_server, r_delete = columns(result_header, ("workunitid", "server_state", "file_delete_state")) \
+        if results else (0, 0, 0)
+    unfinished = {int(row[r_unit]) for row in results if (row[r_server], row[r_delete]) != ("5", "2")}
+    ready = sorted(int(row[w_id]) for row in work
+                   if (row[w_assimilate], row[w_delete]) == ("2", "2") and int(row[w_id]) not in unfinished)
+    present = {int(row[w_id]) for row in work}
+    files = {}
+    if ready:
+        keep = set(ready)
+        attempt = directory / f"chunk-{index:04d}-attempt-{len(earlier) + 1}"
+        ready_work = [row for row in work if int(row[w_id]) in keep]
+        ready_results = [row for row in results if int(row[r_unit]) in keep]
+        for name, header, rows in (("workunit.tsv", work_header, ready_work),
+                                   ("result.tsv", result_header, ready_results)):
+            write_atomic(attempt / name, tsv(header, rows))
+        # ROW_COUNT() in the same call: the marker query after each call resets it.
+        deleted_results = int(session.query(
+            f"DELETE FROM result WHERE workunitid IN ({sql_list(ready)}) AND {FINISHED_RESULT}; "
+            "SELECT ROW_COUNT() AS deleted")[1][0][0])
+        deleted_work = int(session.query(
+            f"DELETE FROM workunit WHERE id IN ({sql_list(ready)}) AND {FINISHED_WORKUNIT} "
+            "AND NOT EXISTS (SELECT 1 FROM result r WHERE r.workunitid = workunit.id); "
+            "SELECT ROW_COUNT() AS deleted")[1][0][0])
+        if (deleted_results, deleted_work) != (len(ready_results), len(ready)):
+            session.query("ROLLBACK")
+            raise Refused(f"chunk {index} deleted other rows than it exported; rolled back, stop and reconcile")
+    session.query("COMMIT")
+    before = set().union(*(exported_ids(path) for path in earlier)) if earlier else set()
+    gone = set(ids) - present
+    for path in sorted(directory.glob(f"chunk-{index:04d}-attempt-*/*.tsv")):
+        files[str(path.relative_to(directory))] = sha256_file(path)
+    part = {"chunk": index, "ids": len(ids), "deleted": ready,
+            "deferred": sorted(present - set(ready)),
+            # Deleted by an earlier attempt that stopped after its COMMIT: in that export.
+            "deleted_earlier": sorted(gone & before),
+            # Gone without an export here, as db_purge would leave them.
+            "vanished": sorted(gone - before), "files": files}
+    write_json(directory / f"chunk-{index:04d}.json", part)
+    return part
+
+
 def db(args):
     batch = args.batch_dir.resolve()
     dispatched(batch)
+    manifest_sha256 = sha256_file(batch / "manifest.json")
     bridge_receipt = read_json(batch / "receipts/bridge.json")
-    require(bridge_receipt.get("complete") is True and all(WORKUNIT.fullmatch(name) for name in bridge_receipt["workunits"]),
-            "the batch's bridge step must be complete first")
+    require(bridge_receipt.get("complete") is True and bridge_receipt.get("manifest_sha256") == manifest_sha256
+            and all(WORKUNIT.fullmatch(name) for name in bridge_receipt["workunits"]),
+            "the batch's bridge step must be complete first, with this batch's manifest")
     names = bridge_receipt["workunits"]
     client = MysqlClient(args)
     plan_path = batch / "db-plan.json"
     receipt_path = batch / "receipts/db.json"
     rows = db_rows(client, names)
-    # Finished as db_purge would have it: assimilated (2), its files deleted (2), and every
-    # result over (5). Other rows stay for BOINC's own db_purge.
-    ready = [row for row in rows if row["assimilate_state"] == 2 and row["file_delete_state"] == 2
-             and row["open_results"] == 0]
-    deferred = [row for row in rows if row not in ready]
+    ready = [row for row in rows if finished(row)]
     before = existing(client)
     if not args.apply:
         plan = read_json(plan_path) if plan_path.is_file() else None
         emit({"event": "boinc_archive_db", "schema_version": SCHEMA_VERSION, "apply": False,
               "batch": batch.name, "complete": receipt_path.is_file(), "resume": plan is not None,
+              "chunks_done": len(list((batch / "db").glob("chunk-[0-9][0-9][0-9][0-9].json"))),
               "workunits": len(names), "present": len(rows), "absent": len(names) - len(rows),
-              "ready": len(ready), "deferred": len(deferred),
+              "ready": len(ready), "deferred": len(rows) - len(ready),
               "results": sum(row["results"] for row in ready), "existing_workunits": before})
         return 0
     require_apply(args)
     if plan_path.is_file():
         plan = read_json(plan_path)
-        for name, digest in plan["exports"].items():
-            require(sha256_file(batch / "db" / name) == digest, f"the archived db/{name} changed")
+        require(plan.get("manifest_sha256") == manifest_sha256, "db-plan.json belongs to another batch")
         progress(f"resuming db step of batch {batch.name}")
     else:
-        ids = sorted(row["id"] for row in ready)
-        exports = {}
-        for table, column in (("workunit", "id"), ("result", "workunitid")):
-            output = ""
-            for part in chunks(ids):
-                lines = client.run(f"SELECT * FROM {table} WHERE {column} IN ({sql_list(part)}) ORDER BY id",
-                                   header=True).splitlines(keepends=True)
-                # One header line, from the first part's output.
-                output += "".join(lines if not output else lines[1:])
-            write_atomic(batch / "db" / f"{table}.tsv", output.encode())
-            exports[f"{table}.tsv"] = sha256_file(batch / "db" / f"{table}.tsv")
-        plan = {"schema_version": SCHEMA_VERSION, "step": "db", "ids": ids,
-                "names": sorted(row["name"] for row in ready),
-                "deferred": [{key: row[key] for key in ("name", "assimilate_state", "file_delete_state",
-                                                        "open_results")} for row in deferred],
-                "exports": exports, "before": {"existing_workunits": before}}
+        # Every present row is planned; whether it is finished is decided again under its lock.
+        plan = {"schema_version": SCHEMA_VERSION, "step": "db", "manifest_sha256": manifest_sha256,
+                "ids": sorted(row["id"] for row in rows),
+                "before": {"existing_workunits": before, "present": len(rows), "ready": len(ready)}}
         write_json(plan_path, plan)
-    for part in chunks(plan["ids"]):
-        ids = sql_list(part)
-        done = (f"id IN ({ids}) AND assimilate_state = 2 AND file_delete_state = 2")
-        client.run(
-            "BEGIN; "
-            f"DELETE FROM result WHERE workunitid IN (SELECT id FROM workunit WHERE {done}) AND server_state = 5; "
-            f"DELETE FROM workunit WHERE {done} "
-            "AND NOT EXISTS (SELECT 1 FROM result r WHERE r.workunitid = workunit.id); "
-            "COMMIT;")
-    left = [row["name"] for row in db_rows(client, plan["names"])]
-    require(not left, f"{len(left)} of the batch's finished workunits are still in the database")
+    parts = []
+    session = client.session()
+    try:
+        for index, ids in enumerate(chunks(plan["ids"]), 1):
+            done = batch / "db" / f"chunk-{index:04d}.json"
+            parts.append(read_json(done) if done.is_file() else db_chunk(session, batch, index, ids))
+    finally:
+        session.close()
+    deleted = {row for part in parts for row in part["deleted"] + part["deleted_earlier"]}
+    left = [row["name"] for row in db_rows(client, names) if row["id"] in deleted]
+    require(not left, f"{len(left)} of the batch's archived workunits are still in the database")
+    exports = {path: digest for part in parts for path, digest in part["files"].items()}
+    for path, digest in exports.items():
+        require(sha256_file(batch / "db" / path) == digest, f"the archived db/{path} changed")
     receipt = {
         "schema_version": SCHEMA_VERSION, "step": "db", "batch": batch.name, "complete": True,
-        "finished_at": int(time.time()), "manifest_sha256": sha256_file(batch / "manifest.json"),
+        "finished_at": int(time.time()), "manifest_sha256": manifest_sha256,
         "plan_sha256": sha256_file(plan_path), "before": plan["before"],
         "after": {"existing_workunits": existing(client)},
-        "deleted_workunits": len(plan["ids"]), "deferred": len(plan["deferred"]),
-        "absent": len(names) - len(plan["ids"]) - len(plan["deferred"]), "exports": plan["exports"],
+        "deleted_workunits": len(deleted), "deferred": sum(len(part["deferred"]) for part in parts),
+        "vanished": sum(len(part["vanished"]) for part in parts),
+        "absent": len(names) - len(plan["ids"]), "exports": exports,
     }
     write_json(receipt_path, receipt)
     emit({"event": "boinc_archive_db", "apply": True, **receipt})

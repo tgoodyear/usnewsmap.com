@@ -78,6 +78,7 @@ class FakeContainer:
         self.fail_deletes_after = None
         self.deletes = 0
         self.acquired = 0
+        self.md5 = True
         self.lock = threading.Lock()
 
     def put(self, name, data, modified):
@@ -87,7 +88,7 @@ class FakeContainer:
     def list(self, prefix):
         with self.lock:
             return [{"name": name, "etag": blob["etag"], "size": len(blob["data"]),
-                     "md5": base64.b64encode(hashlib.md5(blob["data"]).digest()).decode(),
+                     "md5": base64.b64encode(hashlib.md5(blob["data"]).digest()).decode() if self.md5 else None,
                      "modified": blob["modified"]}
                     for name, blob in sorted(self.blobs.items()) if name.startswith(prefix)]
 
@@ -337,6 +338,35 @@ class DispatchTests(unittest.TestCase):
                 self.assertEqual((batch / "handoff" / name).read_bytes(), data)
         self.assertEqual(archive.batch_dirs(self.archive_dir), [batch])
 
+    def test_a_resume_checks_archived_copies_by_their_sha256(self):
+        self.container.md5 = False
+        originals = self.container.snapshot()[0]
+        self.container.fail_deletes_after = 4
+        self.assertEqual(self.apply()[0], 1)
+        handoff = self.archive_dir / "batches/0001/handoff"
+        copied = [name for name in sorted(originals) if (handoff / name).is_file()]
+        live = [name for name in copied if name in self.container.blobs]
+        gone = [name for name in copied if name not in self.container.blobs]
+        self.assertTrue(live and gone)
+
+        def swap(name):
+            # Same size, other bytes: without Content-MD5 only the sha256 tells them apart.
+            data = originals[name][1]
+            (handoff / name).write_bytes(bytes([data[0] ^ 1]) + data[1:])
+
+        swap(gone[0])
+        swap(live[0])
+        self.container.fail_deletes_after = None
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("archived copy is missing or wrong", errors[-1]["error"])
+        (handoff / gone[0]).write_bytes(originals[gone[0]][1])
+        code, receipt, _ = self.apply()
+        self.assertEqual(code, 0, receipt)
+        # The live blob was copied again rather than deleted against the wrong copy.
+        for name in copied:
+            self.assertEqual((handoff / name).read_bytes(), originals[name][1])
+
     def test_a_blob_changed_since_the_plan_stops_the_resume(self):
         self.container.fail_deletes_after = 1
         self.assertEqual(self.apply()[0], 1)
@@ -355,7 +385,7 @@ class DispatchTests(unittest.TestCase):
         for key in ("source", "claim_queues", "lease_hours"):
             del fixed[key]
         fixed["batch"] = "test_batch"
-        fixed["pages"] = [{"page": page_key(1), "scan": "/tank/ocr/scans/keep/test_batch/1.jp2"}]
+        fixed["pages"] = [{"page": page_key(n), "scan": f"/tank/ocr/scans/keep/test_batch/{n}.jp2"} for n in range(1, 8)]
         self.config_path.write_text(json.dumps(fixed))
         self.state["config_sha256"] = scheduler.digest(scheduler.load_config(self.config_path))
         (self.state_dir / "state.json").write_text(json.dumps(self.state))
@@ -363,6 +393,23 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(summary["pages"]["skipped"]["fixed_page_allocation"], 3)
         self.assertEqual(summary["batch"]["this_plan_pages"], 0)
+        self.assertEqual(summary["outstanding_pages"], {"before": 1, "after": 1, "unchanged": True, "error": None})
+        # A configured page whose only journal is an older plan's stays: the tick refuses it
+        # today, and archiving the journal would let the tick export it again.
+        fixed["pages"].append({"page": page_key(20), "scan": "/tank/ocr/scans/keep/test_batch/20.jp2"})
+        self.config_path.write_text(json.dumps(fixed))
+        self.state["config_sha256"] = scheduler.digest(scheduler.load_config(self.config_path))
+        (self.state_dir / "state.json").write_text(json.dumps(self.state))
+        code, summary, _ = run(self.argv())
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["pages"]["skipped"]["allocated_to_current_plan"], 1)
+        self.assertEqual(summary["batch"]["pages"], 0)
+        self.assertIn("another plan", summary["outstanding_pages"]["error"])
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("don't agree already", errors[-1]["error"])
+        self.assertEqual(before[0], self.snapshot()[0])
 
 
 class RestContainerTests(unittest.TestCase):
@@ -495,6 +542,21 @@ class BridgeTests(unittest.TestCase):
         after[0].pop(".lock")  # the bridge's own lock file, taken as its steps take it
         self.assertEqual(before[:2], after[:2])
 
+    def test_a_stale_partial_link_never_writes_through_to_the_source(self):
+        source = self.handoff / "jobs" / job_id(1) / "page"
+        target = self.batch / "bridge/jobs" / job_id(1) / "page"
+        target.parent.mkdir(parents=True)
+        # What a crash between os.link and os.replace leaves behind.
+        target.with_name("page.partial").hardlink_to(source)
+        archive.write_atomic(target, b"other bytes")
+        self.assertEqual(source.read_bytes(), b"synthetic page")
+        target.unlink()
+        target.with_name("page.partial").hardlink_to(source)
+        with mock.patch.object(archive.os, "link", side_effect=OSError("cross-device")):
+            code, receipt, _ = run(self.argv("--apply", "--confirm-controller-paused"))
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual(target.read_bytes(), b"synthetic page")
+
     def test_needs_the_controller_hosts_unchanged_manifest_and_receipt(self):
         (self.batch / "manifest.json").write_text('{"jobs": []}')
         code, _, errors = run(self.argv())
@@ -506,22 +568,46 @@ class FakeMysql:
     """The mysql client over SQLite, with BOINC's two tables as far as the step reads them."""
 
     db = None
-    fail_deletes = False
+    fail_before = None
+    fail_after = None
 
     def __init__(self, args):
         pass
 
     def run(self, sql, *, header=False):
-        if sql.startswith("BEGIN"):
-            if FakeMysql.fail_deletes:
-                raise archive.Refused("a database statement failed; nothing after it ran")
-            FakeMysql.db.executescript(sql)
-            return ""
         cursor = FakeMysql.db.execute(sql)
         rows = cursor.fetchall()
         lines = ["\t".join(column[0] for column in cursor.description)] if header else []
         lines += ["\t".join("NULL" if value is None else str(value) for value in row) for row in rows]
         return "".join(line + "\n" for line in lines)
+
+    def session(self):
+        return FakeSession()
+
+
+class FakeSession:
+    """A session as the client gives it: a failed statement ends it, and ending a session
+    without COMMIT rolls back."""
+
+    def query(self, sql):
+        if FakeMysql.fail_before and sql.startswith(FakeMysql.fail_before):
+            FakeMysql.fail_before = None
+            raise archive.Refused("a database statement failed; nothing after it ran")
+        lite = sql.replace(" FOR UPDATE", "").replace("ROW_COUNT()", "changes()")
+        for statement in lite.split("; "):
+            cursor = FakeMysql.db.execute("BEGIN" if statement == "START TRANSACTION" else statement)
+        rows = cursor.fetchall() if cursor.description else []
+        if FakeMysql.fail_after and sql.startswith(FakeMysql.fail_after):
+            FakeMysql.fail_after = None
+            raise archive.Refused("the client stopped")
+        if not rows:
+            return [], []
+        return ([column[0] for column in cursor.description],
+                [["NULL" if value is None else str(value) for value in row] for row in rows])
+
+    def close(self):
+        if FakeMysql.db.in_transaction:
+            FakeMysql.db.execute("ROLLBACK")
 
 
 class DbTests(unittest.TestCase):
@@ -534,18 +620,23 @@ class DbTests(unittest.TestCase):
         db.create_function("REGEXP", 2, lambda pattern, value: __import__("re").search(pattern, value) is not None)
         db.executescript(
             "CREATE TABLE workunit (id INTEGER PRIMARY KEY, name TEXT, assimilate_state INT, file_delete_state INT);"
-            "CREATE TABLE result (id INTEGER PRIMARY KEY, workunitid INT, server_state INT, hostid INT);")
+            "CREATE TABLE result (id INTEGER PRIMARY KEY, workunitid INT, server_state INT, file_delete_state INT,"
+            " hostid INT);")
         rows = [
-            (1, f"usnm_{job_id(1)}", 2, 2), (2, f"usnm_{job_id(2)}", 2, 1),   # 2: files not deleted yet
+            (1, f"usnm_{job_id(1)}", 2, 2), (2, f"usnm_{job_id(2)}", 2, 1),   # 2: input files not deleted yet
             (3, f"usnm_ocrb_{'b' * 64}", 2, 2), (4, f"usnm_{job_id(9)}", 2, 2),  # 9 is not in the batch
+            (6, f"usnm_{job_id(7)}", 2, 2),  # 7: a result's output files not deleted yet
         ]
         db.executemany("INSERT INTO workunit VALUES (?, ?, ?, ?)", rows)
-        db.executemany("INSERT INTO result VALUES (?, ?, ?, ?)",
-                       [(10, 1, 5, 7), (11, 1, 5, 8), (12, 2, 5, 7), (13, 3, 5, 7), (14, 4, 5, 7)])
-        FakeMysql.db, FakeMysql.fail_deletes = db, False
-        write_batch(self.batch, [job_id(n) for n in (1, 2, 5)])
-        archive.write_json(self.batch / "receipts/bridge.json", {"step": "bridge", "complete": True, "workunits": [
-            f"usnm_{job_id(1)}", f"usnm_{job_id(2)}", f"usnm_{job_id(5)}", f"usnm_ocrb_{'b' * 64}"]})
+        db.executemany("INSERT INTO result VALUES (?, ?, ?, ?, ?)", [
+            (10, 1, 5, 2, 7), (11, 1, 5, 2, 8), (12, 2, 5, 2, 7), (13, 3, 5, 2, 7), (14, 4, 5, 2, 7),
+            (15, 6, 5, 1, 7)])
+        FakeMysql.db, FakeMysql.fail_before, FakeMysql.fail_after = db, None, None
+        write_batch(self.batch, [job_id(n) for n in (1, 2, 5, 7)])
+        archive.write_json(self.batch / "receipts/bridge.json", {
+            "step": "bridge", "complete": True, "manifest_sha256": archive.sha256_file(self.batch / "manifest.json"),
+            "workunits": [f"usnm_{job_id(1)}", f"usnm_{job_id(2)}", f"usnm_{job_id(5)}", f"usnm_{job_id(7)}",
+                          f"usnm_ocrb_{'b' * 64}"]})
         self.patch = mock.patch.object(archive, "MysqlClient", FakeMysql)
         self.patch.start()
 
@@ -558,6 +649,9 @@ class DbTests(unittest.TestCase):
         return ["db", "--batch-dir", str(self.batch), "--mysql-defaults-file", "/run/fake.cnf",
                 "--database", "usnmocr", *extra]
 
+    def apply(self):
+        return run(self.argv("--apply", "--confirm-controller-paused"))
+
     def rows(self):
         return (FakeMysql.db.execute("SELECT * FROM workunit ORDER BY id").fetchall(),
                 FakeMysql.db.execute("SELECT * FROM result ORDER BY id").fetchall())
@@ -567,33 +661,68 @@ class DbTests(unittest.TestCase):
         code, summary, _ = run(self.argv())
         self.assertEqual(code, 0)
         self.assertEqual(before, (self.rows(), tree(self.batch)))
-        self.assertEqual((summary["present"], summary["absent"], summary["ready"], summary["deferred"]), (3, 1, 2, 1))
-        self.assertEqual(summary["existing_workunits"], 4)
+        self.assertEqual((summary["present"], summary["absent"], summary["ready"], summary["deferred"]), (4, 1, 2, 2))
+        self.assertEqual(summary["existing_workunits"], 5)
 
     def test_apply_exports_the_rows_before_deleting_them_and_resumes(self):
-        FakeMysql.fail_deletes = True
+        # The second DELETE fails: the first is rolled back with it.
+        FakeMysql.fail_before = "DELETE FROM workunit"
         before = self.rows()
-        self.assertEqual(run(self.argv("--apply", "--confirm-controller-paused"))[0], 1)
+        self.assertEqual(self.apply()[0], 1)
         self.assertEqual(before, self.rows())
-        exported = (self.batch / "db/result.tsv").read_text().splitlines()
-        self.assertEqual(exported, ["id\tworkunitid\tserver_state\thostid", "10\t1\t5\t7", "11\t1\t5\t8", "13\t3\t5\t7"])
-        FakeMysql.fail_deletes = False
-        code, receipt, _ = run(self.argv("--apply", "--confirm-controller-paused"))
+        exported = (self.batch / "db/chunk-0001-attempt-1/result.tsv").read_text().splitlines()
+        self.assertEqual(exported, ["id\tworkunitid\tserver_state\tfile_delete_state\thostid",
+                                    "10\t1\t5\t2\t7", "11\t1\t5\t2\t8", "13\t3\t5\t2\t7"])
+        code, receipt, _ = self.apply()
         self.assertEqual(code, 0, receipt)
         workunits, results = self.rows()
-        # The workunit whose files aren't deleted yet stays for db_purge, as does another job's.
-        self.assertEqual([row[0] for row in workunits], [2, 4])
-        self.assertEqual([row[0] for row in results], [12, 14])
-        self.assertEqual((receipt["deleted_workunits"], receipt["deferred"], receipt["absent"]), (2, 1, 1))
-        self.assertEqual((receipt["before"]["existing_workunits"], receipt["after"]["existing_workunits"]), (4, 2))
-        self.assertEqual(receipt["exports"]["workunit.tsv"], archive.sha256_file(self.batch / "db/workunit.tsv"))
+        # Unfinished file cleanup, of a workunit or of a result, stays for db_purge, as does
+        # another job's workunit.
+        self.assertEqual([row[0] for row in workunits], [2, 4, 6])
+        self.assertEqual([row[0] for row in results], [12, 14, 15])
+        self.assertEqual((receipt["deleted_workunits"], receipt["deferred"], receipt["absent"], receipt["vanished"]),
+                         (2, 2, 1, 0))
+        self.assertEqual((receipt["before"]["existing_workunits"], receipt["after"]["existing_workunits"]), (5, 3))
+        # Both attempts' exports are kept; the second is what was deleted.
+        self.assertEqual(sorted(receipt["exports"]), [f"chunk-0001-attempt-{n}/{table}.tsv"
+                                                      for n in (1, 2) for table in ("result", "workunit")])
+        self.assertEqual(archive.exported_ids(self.batch / "db/chunk-0001-attempt-2/workunit.tsv"), {1, 3})
 
-    def test_needs_the_bridge_step_first(self):
+    def test_a_stop_after_commit_resumes_from_its_export(self):
+        FakeMysql.fail_after = "COMMIT"
+        self.assertEqual(self.apply()[0], 1)
+        self.assertEqual([row[0] for row in self.rows()[0]], [2, 4, 6])
+        self.assertFalse((self.batch / "db/chunk-0001.json").exists())
+        code, receipt, _ = self.apply()
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual((receipt["deleted_workunits"], receipt["vanished"]), (2, 0))
+        self.assertEqual(sorted(receipt["exports"]), ["chunk-0001-attempt-1/result.tsv",
+                                                      "chunk-0001-attempt-1/workunit.tsv"])
+
+    def test_rows_are_checked_again_under_their_lock(self):
+        FakeMysql.fail_before = "START TRANSACTION"
+        self.assertEqual(self.apply()[0], 1)
+        self.assertTrue((self.batch / "db-plan.json").exists())
+        # BOINC changed a planned row before the step resumed: a result is open again.
+        FakeMysql.db.execute("UPDATE result SET server_state = 4 WHERE id = 10")
+        code, receipt, _ = self.apply()
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual([row[0] for row in self.rows()[0]], [1, 2, 4, 6])
+        self.assertEqual((receipt["deleted_workunits"], receipt["deferred"]), (1, 3))
+
+    def test_needs_this_batchs_bridge_step_first(self):
+        receipt = json.loads((self.batch / "receipts/bridge.json").read_text())
+        receipt["manifest_sha256"] = "0" * 64  # another batch's
+        archive.write_json(self.batch / "receipts/bridge.json", receipt)
+        before = self.rows()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("this batch's manifest", errors[-1]["error"])
         (self.batch / "receipts/bridge.json").unlink()
         code, _, errors = run(self.argv())
         self.assertEqual(code, 1)
-        self.assertEqual(self.rows()[0][0][0], 1)
         self.assertIn("bridge.json", errors[-1]["error"])
+        self.assertEqual(before, self.rows())
 
 
 if __name__ == "__main__":
