@@ -128,8 +128,8 @@ fn decode_entities(s: &str) -> String {
 ///   its number, and on a printed page the number is part of the text.
 /// - A bullet (`- `, `* `, `+ `) is removed only when its line is one of
 ///   at least two adjacent lines that start with the same bullet. A line
-///   whose item starts with a number, or with a currency sign and a
-///   number, is never such a line: `- 5 Cents`, `- $1.50` and
+///   whose item's text, without its markup, starts with a number, or
+///   with a currency sign and a number, is never such a line: `- 5 Cents`, `- $1.50` and
 ///   `- 31. Dezember` are as likely a printed dash before a price or a
 ///   date. A blank line ends a run, and text stripped one line or one
 ///   word at a time (a line or word box) keeps its bullets.
@@ -181,31 +181,43 @@ fn block_body(line: &str) -> Option<&str> {
 }
 
 /// The bullet `body` starts with, if it may be a list marker: one of
-/// `-`, `*`, `+` and a space, before an item that starts with neither a
-/// number nor a currency sign and a number.
+/// `-`, `*`, `+` and a space, before an item whose text, without its
+/// markup, starts with neither a number nor a currency sign and a number.
 fn bullet(body: &str) -> Option<char> {
+    let (b, item) = bullet_item(body)?;
+    let text = inline(item);
+    let mut t = text.chars();
+    let first = t.next()?;
+    let currency = matches!(first, '$' | '¢' | '£' | '€' | '¥' | '₤' | 'ℳ');
+    let numeric = first.is_numeric() || (currency && t.next().is_some_and(char::is_numeric));
+    (!numeric).then_some(b)
+}
+
+/// The bullet at the start of `body` and its item, after the item's own
+/// heading and quote prefixes.
+fn bullet_item(body: &str) -> Option<(char, &str)> {
     let mut c = body.chars();
     let b = c.next().filter(|b| matches!(b, '-' | '*' | '+'))?;
-    if c.next() != Some(' ') {
-        return None;
-    }
-    let mut item = c.as_str().trim_start().chars();
-    let first = item.next()?;
-    let currency = matches!(first, '$' | '¢' | '£' | '€' | '¥' | '₤' | 'ℳ');
-    let numeric = first.is_numeric() || (currency && item.next().is_some_and(char::is_numeric));
-    (!numeric).then_some(b)
+    let item = c.as_str().strip_prefix(' ')?.trim_start();
+    Some((b, block_body(item).unwrap_or(item)))
 }
 
 /// One line of Markdown as plain text; `None` for a line that is only
 /// markup. `list_item` removes the line's bullet ([`strip_markdown`]).
-/// Only markup is removed: a `*` or `~` that opens or closes nothing
-/// (`2 * 3`) and an underscore inside a word stay.
 fn strip_markdown_line(line: &str, list_item: bool) -> Option<String> {
     let mut s = block_body(line)?;
     if list_item {
-        // A bullet and its space are two ASCII bytes.
-        s = s[2..].trim_start();
+        if let Some((_, item)) = bullet_item(s) {
+            s = item;
+        }
     }
+    Some(inline(s))
+}
+
+/// Text without its inline Markdown, spaces collapsed. Only markup is
+/// removed: a `*` or `~` that opens or closes nothing (`2 * 3`) and an
+/// underscore inside a word stay.
+fn inline(s: &str) -> String {
     let mut chars: Vec<char> = s.chars().collect();
     // Emphasis, strike-through and code spans: a delimiter run that opens
     // (next to text on its right, not on its left) and a later one that
@@ -245,8 +257,7 @@ fn strip_markdown_line(line: &str, list_item: bool) -> Option<String> {
         }
         i += 1;
     }
-    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(out)
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `chars` with each pair of delimiter runs `d` removed, where the first
@@ -370,5 +381,8 @@ mod tests {
             "Prices:\nWheat\nCorn\n- 5 Cents"
         );
         assert_eq!(md("> - Wheat\n> - Corn"), "Wheat\nCorn");
+        // The item's own prefixes go too; formatted prices still stay.
+        assert_eq!(md("- # Wheat\n- > Corn"), "Wheat\nCorn");
+        assert_eq!(md("- **5 Cents**\n- [$1.50](x)"), "- 5 Cents\n- $1.50");
     }
 }
