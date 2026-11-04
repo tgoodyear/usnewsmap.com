@@ -602,9 +602,10 @@ CREATE INDEX by_stage ON latest(kind,stage,state);
 """
 
 
-def migrate_indexed_keys(conn):
+def migrate_indexed_keys(conn, deadline):
     """One-time writable upgrade: collapse legacy run-scoped indexed keys to page-scoped keys."""
     with conn:
+        wait_until(conn, deadline)
         conn.execute("BEGIN IMMEDIATE")
         found = conn.execute(
             "SELECT key, source, page_id, observed_at, event_id FROM latest "
@@ -629,6 +630,7 @@ def migrate_indexed_keys(conn):
                  winner["run_id"], winner["stage"], winner["state"]),
             )
         conn.execute(f"PRAGMA user_version={INDEXED_KEY_SCOPE_VERSION}")
+        wait_until(conn, deadline)  # for the commit's wait on readers
 
 
 def remaining(deadline):
@@ -668,7 +670,10 @@ def connect(path, writable=False, deadline=None):
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
                 require(not conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone(),
                         "not a catalog; choose a new database path")
-                conn.executescript("BEGIN IMMEDIATE;\n" + DDL + "\nCOMMIT;")
+                wait_until(conn, deadline)
+                conn.executescript("BEGIN IMMEDIATE;\n" + DDL)
+                wait_until(conn, deadline)
+                conn.commit()
         versions = conn.execute("SELECT version FROM meta LIMIT 2").fetchall()
         require(len(versions) == 1 and versions[0][0] == 1,
                 "unsupported catalog schema (rebuild from evidence)")
@@ -680,7 +685,7 @@ def connect(path, writable=False, deadline=None):
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=FULL")
             if user_version != INDEXED_KEY_SCOPE_VERSION:
-                migrate_indexed_keys(conn)
+                migrate_indexed_keys(conn, deadline)
         else:
             require(conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete",
                     "catalog must use DELETE journaling; reopen with init to migrate")

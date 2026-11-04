@@ -237,27 +237,45 @@ class CatalogTests(unittest.TestCase):
 
     def test_the_refresh_deadline_bounds_its_lock_waits_together(self):
         path = self.throughput(ocr_import_pages=[1, 2, 3])
-        self.refresh(path)
-        reader = sqlite3.connect(self.db)
-        self.addCleanup(reader.close)
-        reader.execute("BEGIN")
-        reader.execute("SELECT count(*) FROM events").fetchone()  # The commit waits for this reader,
-        writer = sqlite3.connect(self.db, check_same_thread=False)
-        self.addCleanup(writer.close)
-        writer.execute("BEGIN IMMEDIATE")  # and BEGIN IMMEDIATE for this writer, for 2 s.
-        release = threading.Timer(2, writer.rollback)
-        release.start()
-        self.addCleanup(release.join)
-        before = self.committed_batches()
-        started = time.monotonic()
-        with mock.patch.object(c, "REFRESH_SECONDS", 3):
-            with self.assertRaises(sqlite3.OperationalError) as caught:
-                self.refresh(path, "2026-11-01T19:55:00.000000Z")
-        # About 3 s in all, not 2 s for the writer and another 3 s for the reader; a second either
-        # way of slack.
-        self.assertLess(time.monotonic() - started, 4)
-        self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
-        self.assertEqual(self.committed_batches(), before)
+        # A catalog's first refresh creates it, and one on a legacy catalog migrates it first.
+        for case in ("current", "legacy", "new"):
+            with self.subTest(case):
+                self.db.unlink(missing_ok=True)
+                shutil.rmtree(self.work / "evidence", ignore_errors=True)
+                if case != "new":
+                    self.refresh(path)
+                if case == "legacy":
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        conn.execute("PRAGMA user_version=0")
+                before = self.committed_batches() if case != "new" else []
+                with contextlib.closing(sqlite3.connect(self.db)) as reader, \
+                        contextlib.closing(sqlite3.connect(self.db, check_same_thread=False)) as writer:
+                    # The commit waits for this reader, and BEGIN IMMEDIATE for this writer, for 2 s.
+                    reader.execute("BEGIN")
+                    reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
+                    writer.execute("BEGIN IMMEDIATE")
+                    release = threading.Timer(2, writer.rollback)
+                    release.start()
+                    started = time.monotonic()
+                    try:
+                        with mock.patch.object(c, "REFRESH_SECONDS", 3):
+                            with self.assertRaises(sqlite3.OperationalError) as caught:
+                                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+                        elapsed = time.monotonic() - started
+                    finally:
+                        release.join()
+                # About 3 s in all, not 2 s for the writer and another 3 s for the reader; a second
+                # either way of slack.
+                self.assertLess(elapsed, 4)
+                self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
+                if case == "new":
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master").fetchone())
+                else:
+                    self.assertEqual(self.committed_batches(), before)
+                    with contextlib.closing(sqlite3.connect(self.db)) as conn:
+                        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                                         0 if case == "legacy" else c.INDEXED_KEY_SCOPE_VERSION)
 
     def test_a_failed_refresh_names_its_cause_but_no_path(self):
         path = self.throughput(ocr_import_pages=[1, 2, 3])
