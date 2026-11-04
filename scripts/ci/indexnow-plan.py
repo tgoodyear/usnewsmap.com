@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-def plan(xml, host, key, previous):
+def sitemap_urls(xml, host):
     root = ET.fromstring(xml)
     ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
     if root.tag != ns + "urlset":
@@ -37,9 +37,14 @@ def plan(xml, host, key, previous):
         urls[url] = lastmod
     if not urls:
         raise ValueError("sitemap has no <loc> entries")
+    return urls
+
+
+def plan(xml, host, key, previous):
+    urls = sitemap_urls(xml, host)
     state = {"version": 2, "key": key, "urls": urls}
-    # Old versions stored only a digest. A migration or evicted cache submits
-    # the complete current set once, then tracks individual URLs.
+    # A digest-only baseline cannot track per-URL lastmod values, so it requires
+    # a complete submission before individual URLs can be tracked.
     if previous is None or re.fullmatch(r"[0-9a-f]{64}\s*", previous):
         return state, list(urls)
     old = json.loads(previous)
@@ -58,16 +63,46 @@ def plan(xml, host, key, previous):
     return state, changed
 
 
+def current_enough(public_xml, deployed_xml, host):
+    public = sitemap_urls(public_xml, host)
+    deployed = sitemap_urls(deployed_xml, host)
+    if public.keys() != deployed.keys():
+        return False
+
+    def instant(value):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            return dt.datetime.combine(dt.date.fromisoformat(value), dt.time(), dt.timezone.utc)
+        return dt.datetime.fromisoformat(value)
+
+    for url, deployed_date in deployed.items():
+        public_date = public[url]
+        if not deployed_date:
+            continue
+        if not public_date:
+            return False
+        if instant(public_date) < instant(deployed_date):
+            return False
+    return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True)
-    parser.add_argument("--key", required=True)
-    parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--output-state", required=True, type=Path)
+    parser.add_argument("--key")
+    parser.add_argument("--state", type=Path)
+    parser.add_argument("--output-state", type=Path)
+    parser.add_argument("--compare", type=Path, help="require stdin sitemap to catch up with this deployed sitemap")
     args = parser.parse_args()
+    xml = sys.stdin.read()
+    if args.compare:
+        if not current_enough(xml, args.compare.read_text(), args.host):
+            sys.exit(1)
+        sys.exit(0)
+    if not args.key or not args.state or not args.output_state:
+        parser.error("--key, --state and --output-state are required unless --compare is used")
     previous = args.state
     state, changed = plan(
-        sys.stdin.read(), args.host, args.key,
+        xml, args.host, args.key,
         previous.read_text() if previous.exists() else None,
     )
     args.output_state.write_text(json.dumps(state, sort_keys=True) + "\n")
