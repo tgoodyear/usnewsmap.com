@@ -1,0 +1,603 @@
+# Feeder-only refresh (#1462)
+
+This page defines when an operator may restart only the BOINC feeder so that its `--allapps` slot
+allocation is rebuilt from the active app registry, how to do it, and what must stay manual. It is
+the boundary asked for in [#1462](https://github.com/tgoodyear/usnewsmap.com/issues/1462).
+Detection ([#1464](https://github.com/tgoodyear/usnewsmap.com/pull/1464),
+[Allocation drift detection](../../contrib-compute/docs/app-release.md#allocation-drift-detection))
+is merged but not deployed. Nothing on this page restarts anything by itself. Production rollout,
+the first live refresh and any automatic repair need the maintainer's approval.
+
+In short:
+
+- Refresh only on a confirmed `drift` from the guard, onto a registry that is the intended one, with
+  the maintainer's approval. Never on `unknown`, `maintenance`, a failed check or `match`.
+- One `SIGHUP` to the verified feeder PID, one `bin/start --cron`, and at most one retry after a
+  transient cause is fixed. No loops, no `SIGKILL`, no whole-server restart.
+- While no feeder is ready, every new scheduler request is told to come back in an hour.
+- Verify with readbacks: the new process, `show_shmem`'s apps and weights against the database, the
+  guard, slot shares, bounded replicas in the cache and a natural assignment to an eligible host.
+
+BOINC references are to the pinned commit `22bbebe` (`BOINC_COMMIT` in
+[`contrib-compute/images/base/Containerfile`](../../contrib-compute/images/base/Containerfile#L12)),
+which the server image builds. Commands assume the on-prem layout: the `usnm-boinc-server`
+container on CT 230 and the project at `/project/usnmocr`.
+
+## Why `reread_db` is not enough
+
+With `--allapps` ([`config.xml.template` L91](../../contrib-compute/boinc/config.xml.template#L91)),
+the feeder builds two tables once, at startup, from the apps it has just read: `app_indices` maps
+each of the `shmem_work_items` cache slots to an _index_ into the shared-memory app array, and
+`enum_sizes` gives each index its share of `feeder_query_size` ([feeder.cpp
+L150-L158][feeder-150-158], [L904-L933][feeder-904-933]). The interleave gives each app about `slots
+× weight / sum of weights` slots ([L371-L405][feeder-371-405]).
+
+Touching `reread_db` makes the running feeder clear the whole cache and read the tables again
+([L177-L200][feeder-177-200], [sched_shmem.cpp L43-L57][sched-shmem-43-57]), but it does not rebuild
+`app_indices`, `enum_sizes` or the feeder's own app count. Every pass still fills slot `i` with work
+for `ssp->apps[app_indices[i]]`, with that index's startup query budget ([feeder.cpp
+L250-L254][feeder-250-254], [L478-L481][feeder-478-481]). So after a reread that changed the active
+apps:
+
+- an app added since startup gets no slots;
+- after a retirement, each later app moves up one index and inherits the slots and query budget
+  of the app before it, and indices past the new end point at an empty entry (app ID 0) whose
+  slots never fill;
+- a weight change alters nothing.
+
+The guarded feeder from #1464 records the app IDs and weights it allocated from and latches
+`drift` when a reread loads different ones. Only a new feeder process rebuilds the allocation.
+"Feeder-only" means replacing that one process and nothing else.
+
+## Who owns the feeder
+
+- The stock `bin/start` starts the feeder from the `<daemons>` list in `config.xml`
+  ([`config.xml.template` L89-L103](../../contrib-compute/boinc/config.xml.template#L89-L103)). It
+  double-forks, takes an exclusive `lockf` lock on `pid_<host>/feeder.lock`, writes
+  `pid_<host>/feeder.pid` and `exec`s the command, so the feeder itself holds the lock ([start
+  L168-L186][start-168-186], [L309-L325][start-309-325], [L446-L465][start-446-465]). A second start
+  finds the lock held and starts nothing ([L449-L452][start-449-452]).
+- The feeder is not a supervisord program. `[program:boinc]`
+  ([`supervisord.conf` L15-L21](../../contrib-compute/images/server/supervisord.conf#L15-L21))
+  runs `boinc-daemons.sh`, which runs `bin/start` once and then `bin/start --cron` every 300
+  seconds as `boincadm`, unless `stop_maintenance` is present
+  ([`boinc-daemons.sh` L35-L50](../../contrib-compute/images/server/boinc-daemons.sh#L35-L50)).
+  That loop is the feeder's supervisor: a feeder that exits is started again within five minutes,
+  as BOINC expects from cron ([feeder.cpp L269-L277][feeder-269-277], [start L14-L17][start-14-17]).
+  The loop is rate-limited but has no retry count. This procedure adds no loop to it.
+- `pid_<host>` is on the container's own disk and linked into the project
+  ([`boinc-daemons.sh` L16-L33](../../contrib-compute/images/server/boinc-daemons.sh#L16-L33)). The
+  guard's snapshot, `usnm-feeder-slots.json`, is in the same directory.
+- The stock stop is `SIGHUP`. The handler only sets a flag; the feeder exits at its next
+  `check_stop_daemons`, which runs every second while it sleeps and after every pass. On that exit,
+  `cleanup_shmem` clears `ready` and removes the segment ([sched_util_basic.cpp
+  L40-L93][sched-util-basic-40-93], [feeder.cpp L561-L610][feeder-561-610],
+  [L171-L175][feeder-171-175], [L869-L870][feeder-869-870]). `SIGTERM` and `SIGKILL` skip that
+  cleanup. `bin/stop` (`bin/start --stop`) sends `SIGHUP` too, but to every daemon, and disables
+  the project ([start L513-L555][start-513-555], [L589-L599][start-589-599]).
+
+None of these is a feeder-only refresh:
+
+- Starting `bin/feeder` by hand. It would not hold `feeder.lock`, so the next `--cron` starts a
+  second feeder; the second removes the first's segment at startup and the first keeps filling a
+  cache no scheduler can reach ([feeder.cpp L854-L867][feeder-854-867]).
+- `supervisorctl restart boinc`. It restarts the wrapper, whose plain `bin/start` clears
+  `stop_sched` ([start L559-L572][start-559-572]) but leaves the running feeder alone, since the
+  feeder is not the wrapper's child and holds its lock.
+- Restarting `usnm-boinc-server.service`. That restarts Apache, every daemon and the container.
+
+## When a refresh is warranted
+
+The guard's statuses (`feeder-slot-guard.py`, its exit code in brackets):
+
+| Status (exit)                                             | Meaning                                                                                                                                                                                                              | Action                                                                                                                                                                                     |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `match` (0)                                               | The allocation equals the active registry.                                                                                                                                                                           | No refresh. A match does not show that eligible work exists or reaches a host: look at plan-class bounds, app versions, `one_result_per_host_per_wu` and the enumeration budget instead.   |
+| `maintenance` (0)                                         | `stop_maintenance` is present; nothing was checked.                                                                                                                                                                  | No refresh. Someone holds the project.                                                                                                                                                     |
+| `unknown` (2)                                             | The check could not be made: `stale_snapshot`, `snapshot_process_mismatch`, `feeder_reload_in_progress`, `feeder_snapshot_uncertain`, `database_unavailable`, `not_allapps_feeder`, `observation_changed` and so on. | No refresh. A feeder that is starting, reloading or stalled, or a database that is down, is not fixed by a restart. Find the reason; a persistent `unknown` is an incident, not a trigger. |
+| `drift` (1), reason `registry_changed`                    | The active registry differs from the startup allocation. The report lists the added, removed and changed app IDs.                                                                                                    | Candidate, if the registry is the intended one.                                                                                                                                            |
+| `drift` (1), reason `reload_changed_app_order_or_weights` | A reread loaded different apps or weights. Latched until the feeder restarts.                                                                                                                                        | Candidate.                                                                                                                                                                                 |
+
+A refresh is warranted only when all of these hold:
+
+1. Two consecutive runs of the host's guard timer, five minutes apart, report the same `drift`
+   reason and app IDs (elsewhere, two consecutive `boinc_feeder_slot_guard` events from the
+   image's own watch), and `pid_<host>/feeder.pid` names the same feeder at both.
+2. The drift comes from a known, reviewed change to the app table whose rows before the change were
+   saved, and the current registry is the one the project should run. If the change was a mistake,
+   undo the change instead. With `registry_changed` and no reread since, restoring the rows returns
+   the guard to `match` without a restart. A latched `reload_changed_app_order_or_weights` needs the
+   refresh even after the rows are restored.
+3. The current registry meets the [preconditions](#preconditions), because it is what the new
+   feeder will allocate from.
+4. The maintainer has approved the window. While the feeder is down, scheduler requests are told
+   to come back in an hour ([below](#what-the-scheduler-does-during-the-restart)).
+
+A feeder started before the guarded image was deployed has no snapshot, so the guard can only
+report `unknown` for it. Refreshing that feeder needs the maintainer's explicit approval on other
+evidence: either `show_shmem`'s `apps:` list differs from the active rows (the feeder has not read
+the change), or the feeder log shows `Found trigger file reread_db` after the feeder's last
+`Starting` line and the change's own record puts an active-registry change between the two. In
+the second case, cached results whose app differs from the slot's app in the current registry's
+interleave confirm it; the [proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented)
+would compute that. Without such evidence, treat it as unknown.
+
+## Preconditions
+
+All must hold just before the stop. If any fails, stop: there is no refresh.
+
+Coordination:
+
+- A coordination claim on #529 and #1462 names the operator, the window, the evidence directory
+  and the maintainer's approval.
+- The project mutex, `/run/usnm-boinc-step.lock` on CT 230, is held through the restart and
+  the readbacks of step 4. While it is held, bridge steps that take it fail fast. That covers
+  `register-apps` (`bin/xadd`), publication through the step and steps that other hosts start,
+  so tell their owners. The Qwen auto-cohort controller's tick exits 75
+  ([`onprem-step.sh` L353-L372](../../scripts/boinc/onprem-step.sh#L353-L372),
+  [`usnm-qwen-cohort-auto.service`](../../scripts/boinc/usnm-qwen-cohort-auto.service#L8)).
+- Registry writers that don't take that lock are paused for the whole window, verification
+  included: retirement and rollback scripts such as `app_tidy.php`
+  ([Retiring an app](server-and-apps.md#retiring-an-app)), and any direct SQL on
+  `app.deprecated`, `app.weight` or `app.homogeneous_redundancy`.
+- `reread_db` writers that don't change apps are paused too, because each reread empties the whole
+  cache ([feeder.cpp L186][feeder-186]) and spoils the readbacks:
+  [`publish-appver.sh`](../../contrib-compute/images/appver/publish-appver.sh#L222) (its
+  `.usnm-publish.lock` directory must be absent),
+  [`hold-legacy-qwen.php`](../../scripts/boinc/hold-legacy-qwen.php#L81) and
+  [`quality_corpus_runner.py`](../../scripts/boinc/quality_corpus_runner.py#L627).
+
+Project state:
+
+- `bin/status --verbose` says `BOINC is ENABLED` and shows every daemon that is not disabled as
+  `running` and `locked`. `bin/start --cron` also starts any other stopped daemon, so a stopped
+  daemon must be explained
+  first ([start L467-L478][start-467-478], [L574-L583][start-574-583]).
+- None of these exists in the project directory: `stop_maintenance` (pauses the supervisor loop),
+  `stop_sched` (scheduler maintenance), `stop_daemons` (stops every daemon, and `bin/start`
+  removes it, which would undo someone else's stop: [start L209-L221][start-209-221],
+  [L467-L470][start-467-470]) or `reread_db` (a pending reread).
+- Exactly one feeder: `pgrep -u boincadm -x feeder` prints one PID, the PID in
+  `pid_<host>/feeder.pid`. Its command line is `feeder -d 2 --allapps --purge_stale 5`, and the
+  guard's snapshot names the same PID and start ticks.
+- The database answers the guard's verified-TLS query (no `database_unavailable`).
+
+The registry the new feeder will load (`WHERE deprecated=0`,
+[sched_shmem.cpp L112-L264][sched-shmem-112-264]):
+
+- At most 10 active apps; an 11th stops the feeder at startup. The other tables are capped as
+  well: at most 49 active platforms, 99 loaded app versions and 9 multi-host assignments
+  ([sched_shmem.h L37-L48][sched-shmem-h-37-48], [sched_shmem.cpp L99-L108][sched-shmem-99-108],
+  [L119-L261][sched-shmem-119-261]).
+- Every active app has `homogeneous_redundancy = 0` and `n_size_classes` of at most 1. An HR
+  misconfiguration stops the feeder ([feeder.cpp L612-L691][feeder-612-691]), and a missing size
+  census file ends the table scan early, a failure that the startup path ignores ([sched_shmem.cpp
+  L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887]). The project uses no HR ([Feeder
+  visibility](../../contrib-compute/docs/app-release.md#feeder-visibility)).
+- The sizing invariant in [Feeder
+  visibility](../../contrib-compute/docs/app-release.md#feeder-visibility) holds for the current
+  weights: every positive-weight app's `floor(0.5 + feeder_query_size × weight / sum)` ([feeder.cpp
+  L923-L925][feeder-923-925]) is at least twice `shmem_work_items`, Qwen's budget is at least four
+  times its ready baseline, and Qwen's slot share covers that baseline. A registry that fails this
+  needs a reviewed configuration change first, not a refresh.
+- The current `app` rows are saved in the evidence directory (step 1).
+
+Memory: the new feeder creates its segment while requests already attached may still map the old
+one, which the kernel frees only at the last detach ([lib/shmem.cpp L441-L467][shmem-441-467]). Allow
+for two segments of `sizeof(SCHED_SHMEM) + shmem_work_items × sizeof(WU_RESULT)`
+([feeder.cpp L860-L861][feeder-860-861]) for a few seconds; Feeder visibility estimates about 380 MB
+each at 4,096 slots.
+
+## What the scheduler does during the restart
+
+The scheduler runs as plain CGI ([`apache-project.conf.template`
+L11](../../contrib-compute/images/server/apache-project.conf.template#L11)), so each request is a
+new process that attaches to the segment by key ([sched_main.cpp L525-L531][sched-main-525-531]).
+
+1. **Old feeder exits.** `cleanup_shmem` clears `ready`, detaches and removes the segment
+   ([feeder.cpp L171-L175][feeder-171-175]). Removal hides the key at once, but the segment stays
+   mapped in every process attached to it ([lib/shmem.cpp L441-L467][shmem-441-467]).
+2. **In-flight requests finish on the old cache.** A request already past the `ready` check keeps
+   working. To send a cached result it reserves the slot under the semaphore, reads the result from
+   the database again and requires it to be unsent, then marks it sent with an update that only
+   succeeds if the state hasn't changed ([sched_score.cpp L346-L429][sched-score-346-429],
+   [sched_array.cpp L279-L352][sched-array-279-352], [sched_check.cpp
+   L499-L523][sched-check-499-523], [boinc_db.cpp L1178-L1198][boinc-db-1178-1198], [sched_send.cpp
+   L1008-L1012][sched-send-1008-1012]). The database, not the cache, prevents a double send.
+3. **No segment.** A new request cannot attach. It gets `Server error: feeder not running`, with
+   `<project_is_down/>` and a `request_delay` of `maintenance_delay` ([sched_main.cpp
+   L156-L169][sched-main-156-169], [L284-L304][sched-main-284-304]). `maintenance_delay` defaults to
+   3600 seconds and `config.xml.template` does not set it ([sched_config.cpp L93][sched-config-93]),
+   so that client waits an hour before asking again.
+4. **New segment, not yet ready.** The new feeder creates the segment with `ready` false
+   ([feeder.cpp L860-L867][feeder-860-867]) and sets it after its first fill pass
+   ([L569-L576][feeder-569-576]). A request that attaches in between waits up to 10 seconds for
+   `ready`, then gets the same one-hour reply ([sched_main.cpp L316-L331][sched-main-316-331]).
+5. **Semaphore.** The new feeder destroys and re-creates the semaphore at startup ([feeder.cpp
+   L849-L852][feeder-849-852]). Requests look it up by key on every lock and unlock and ignore
+   errors ([lib/synch.cpp L41-L105][synch-41-105], [sched_send.cpp L780-L786][sched-send-780-786]),
+   so a request still on the old segment can briefly lose or skew slot exclusion. `SEM_UNDO`
+   restores the count when that request exits, and the database check in step 2 still prevents a
+   double send.
+
+`stop_sched` would not help: it returns the same `maintenance_delay` ([sched_main.cpp
+L517-L523][sched-main-517-523]) and only widens the window. What keeps the gap short is starting the
+new feeder as soon as the old one exits, instead of waiting up to five minutes for the supervisor
+loop. Lowering `maintenance_delay` is a configuration change that also changes the `config.xml`
+SHA-256 the Qwen auto-cohort controller pins, so it is outside this procedure.
+
+## Procedure
+
+Run as root on CT 230, then as `boincadm` in the server container. Keep every readback in the
+evidence directory. It holds result and workunit IDs, so it stays on the server and never goes into
+the repository.
+
+### 1. Take the project mutex and record the before state
+
+```sh
+# CT 230, as root. The lock is held until this shell exits.
+flock --exclusive --wait 120 /run/usnm-boinc-step.lock \
+  podman exec -it --user boincadm usnm-boinc-server bash
+```
+
+In that shell (create `/project/ops` as root first if `boincadm` cannot write to it):
+
+```sh
+cd /project/usnmocr
+host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
+evidence=/project/ops/feeder-refresh-$(date -u +%Y%m%dT%H%M%SZ)
+mkdir "$evidence"
+python3 /usr/local/lib/usnm-boinc/feeder-slot-guard.py --project /project/usnmocr | tee "$evidence/guard-before.json"
+bin/status --verbose | tee "$evidence/status-before.txt"
+ls -ld stop_maintenance stop_sched stop_daemons reread_db .usnm-publish.lock 2>&1 | tee "$evidence/markers-before.txt"
+bin/show_shmem > "$evidence/shmem-before.txt"
+ipcs -m | tee "$evidence/ipcs-before.txt"
+cp "pid_$host/usnm-feeder-slots.json" "$evidence/snapshot-before.json"
+# The snapshot stores each weight as the hex of its IEEE double.
+snap() { python3 -c 'import json, struct, sys; r = json.load(open(sys.argv[1])); print(r["pid"], r["start_ticks"], [(i, struct.unpack(">d", bytes.fromhex(w))[0]) for i, w in r["apps"]])' "$1"; }
+pid=$(cat "pid_$host/feeder.pid")
+ticks=$(awk '{print $22}' "/proc/$pid/stat")
+echo "$pid $ticks" | tee "$evidence/feeder-before.txt"
+pgrep -u boincadm -x feeder
+tr '\0' ' ' < "/proc/$pid/cmdline"; echo
+snap "$evidence/snapshot-before.json"
+```
+
+The readbacks must show: `drift` in `guard-before.json`; `BOINC is ENABLED` with every enabled daemon
+`running` and `locked`; `No such file or directory` for every marker; `ready: 1` in
+`shmem-before.txt`; one feeder PID, equal to `$pid`, with the expected command line; and a snapshot
+whose `pid` and `start_ticks` equal `$pid` and `$ticks`.
+
+Then save the registry with read-only queries, run the way `entrypoint.sh` runs `mysql`
+(`--defaults-extra-file` naming a 0600 option file, `--ssl --ssl-verify-server-cert
+--ssl-ca=/usr/local/share/usnm/mysql-ca.pem`) with the runtime user from `config.xml`. Never put a
+password on a command line, and delete the option file afterwards. Save the output as
+`$evidence/app-before.txt`:
+
+```sql
+SELECT id, name, deprecated, weight, homogeneous_redundancy, n_size_classes, min_version FROM app ORDER BY id;
+SELECT COUNT(*) FROM platform WHERE deprecated=0;
+SELECT COUNT(*) FROM assignment WHERE multi<>0;
+```
+
+Check the active rows against the preconditions and against the reviewed change. The
+`app versions:` section of `shmem-before.txt` is the set the running feeder loaded; if an app was
+added since its last reread, add that app's newest version for each platform and plan class.
+
+### 2. Stop the feeder
+
+Check the identity again immediately before signalling, then send one `SIGHUP`:
+
+```sh
+lines=$(wc -l < "log_$host/feeder.log")
+date -u +%FT%TZ | tee "$evidence/stop-time.txt"
+[ "$(cat "pid_$host/feeder.pid")" = "$pid" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$ticks" ] && kill -HUP "$pid"
+```
+
+Wait at most two minutes for it to exit:
+
+```sh
+for i in $(seq 24); do [ "$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" = "$ticks" ] || break; sleep 5; done
+tail -n +"$((lines + 1))" "log_$host/feeder.log" | grep 'Quitting due to SIGHUP'
+```
+
+The feeder exits after its current pass, normally within seconds. If it is still running after two
+minutes, do not send another signal, `SIGTERM` or `SIGKILL`. The flag is set, and it will exit
+when its current database call returns. Check the database and the feeder log, and stay with it:
+the supervisor loop starts a new feeder within five minutes of the exit if you don't. If it still
+hasn't exited after 10 minutes, escalate to the maintainer. `SIGTERM` and `SIGKILL` skip
+`cleanup_shmem`, leaving a segment marked ready that nothing refills, so they need the
+maintainer's approval.
+
+### 3. Start the feeder once
+
+```sh
+bin/start --cron 2>&1 | tee "$evidence/start.txt"
+```
+
+Expect exactly one `Starting daemon: feeder -d 2 --allapps --purge_stale 5` line and no other
+daemon. Any periodic task that is due runs as well, as it would in the loop's own run. If the
+output is `start is currently running!` ([start L794-L797][start-794-797]), the supervisor loop is
+starting daemons right now: don't run it again, go to step 4. If it prints no `Starting daemon:` line
+at all, the loop started the feeder between steps 2 and 3, which is just as good: go to step 4.
+
+Never use plain `bin/start` (clears `stop_sched`, [start L559-L572][start-559-572]), `bin/stop` or
+`--disable` (stops every daemon and disables the project, [L589-L599][start-589-599]), `supervisorctl`
+or the systemd unit.
+
+### 4. Verify the start
+
+Within two minutes:
+
+```sh
+newpid=$(cat "pid_$host/feeder.pid"); echo "$newpid"
+pgrep -u boincadm -x feeder
+tr '\0' ' ' < "/proc/$newpid/cmdline"; echo
+tail -n +"$((lines + 1))" "log_$host/feeder.log" > "$evidence/feeder-log-after.txt"
+grep -E 'Starting|read [0-9]+ platforms|Using [0-9]+ job slots' "$evidence/feeder-log-after.txt"
+grep -F '[CRITICAL]' "$evidence/feeder-log-after.txt"
+bin/show_shmem > "$evidence/shmem-after.txt"
+grep -E '^(ready|max_wu_results):' "$evidence/shmem-after.txt"
+sed -n '/^apps:/,/^app versions:/p' "$evidence/shmem-after.txt"
+ipcs -m | tee "$evidence/ipcs-after.txt"
+bin/status --verbose | tee "$evidence/status-after.txt"
+```
+
+Expect:
+
+- A new PID, different from `$pid`, as the only feeder, with the same command line.
+- `Starting`, then `read P platforms, A apps, V app_versions, N assignments` with `A` equal to the
+  number of active apps ([feeder.cpp L887-L902][feeder-887-902]), then `Using 4096 job slots`. The
+  `[CRITICAL]` `grep` prints nothing.
+- `ready: 1` and `max_wu_results: 4096`.
+- The `apps:` list is the active rows in `id` order: same IDs, `hr: 0`, and the same weights to the
+  two decimals `show_shmem` prints ([sched_shmem.cpp L345-L353][sched-shmem-345-353]). A position in
+  this list is the app index the allocation uses. The table is read without an `ORDER BY`
+  ([L130][sched-shmem-130]), normally giving ascending `id`; any other order is a finding.
+- One segment with key `0x1111aaaa` in `ipcs -m`. The old segment may linger with key
+  `0x00000000` and status `dest` until its last request finishes; it must be gone within minutes.
+- In `status-after.txt`, the feeder `running` and `locked` with the new PID, and every other daemon
+  with the same PID as in `status-before.txt`: only the feeder restarted.
+
+At least two minutes after the start (the snapshot is refreshed about once a minute and is
+accepted for three):
+
+```sh
+python3 /usr/local/lib/usnm-boinc/feeder-slot-guard.py --project /project/usnmocr | tee "$evidence/guard-after.json"
+cp "pid_$host/usnm-feeder-slots.json" "$evidence/snapshot-after.json"
+snap "$evidence/snapshot-after.json"
+cat "pid_$host/feeder.pid"
+```
+
+Expect `match` with `allocation_matches_registry`, a snapshot naming `$newpid`, and the same
+`$newpid` still running: a feeder whose first `update_av_scales` fails exits after it has set
+`ready` ([feeder.cpp L595-L605][feeder-595-605]). Then leave the shell to release the mutex. The
+host's guard unit may have recorded failed runs (`unknown`) during the window; that is expected, so
+note them in the evidence.
+
+If anything in this step fails, go to [Failed start and retry](#failed-start-and-retry).
+
+### 5. Verify visibility and assignment
+
+The mutex is released, but the registry writers stay paused until this step is done. Allow at least
+two purge rotations before judging the cache (`--purge_stale 5` is five minutes: [feeder.cpp
+L779-L780][feeder-779-780], [L484-L491][feeder-484-491]), and at least `maintenance_delay`, an hour,
+for clients that hit the window to come back.
+
+1. **Slot shares.** Count the cached results per app:
+
+   ```sh
+   bin/show_shmem | awk '$1 ~ /^[0-9]+$/ {n[$2]++} END {for (a in n) print a, n[a]}'
+   ```
+
+   `show_shmem` cuts app names to 12 characters ([sched_shmem.cpp L397-L427][sched-shmem-397-427]).
+   No app may hold more than its share, about `4096 × weight / sum`. An app whose unsent backlog
+   exceeds its share should be close to it. `weighted_interleave` gives the exact numbers, and the
+   proposed helper would check every slot's app against it.
+
+2. **Bounded replicas visible.** For the currently admitted bounded cohort, list the unsent
+   replicas (`SELECT id, workunitid FROM result WHERE workunitid IN (...) AND server_state=2`) and
+   check that their IDs appear in `show_shmem`'s `result ID` column within two rotations.
+3. **Assignment to an eligible host.** A host with a matching app version that has not run another
+   replica of the workunit (`one_result_per_host_per_wu`,
+   [`config.xml.template` L42](../../contrib-compute/boinc/config.xml.template#L42)) receives one
+   of those replicas on its own next request. For those IDs,
+   `SELECT id, hostid, server_state, sent_time FROM result WHERE id IN (...)` shows
+   `server_state=4` with a `sent_time` after the stop time. Don't restart clients or force requests
+   on volunteer hosts.
+4. **Distinct-host validation.** When both replicas return, they came from different hosts and the
+   workunit validated, as release verification requires
+   ([Feeder visibility](../../contrib-compute/docs/app-release.md#feeder-visibility)).
+5. **Load.** The feeder's CPU time and memory (`ps -o pid,etime,time,rss -p "$newpid"`), the
+   database's load, and the `feeder not running` lines in `log_<host>/scheduler.log` since the
+   stop time, compared with the same hours a day earlier.
+
+If the replicas stay out of the cache for three rotations while the app's slots are full of other
+work, or stay unsent while eligible hosts ask for work, the allocation is not the problem. Stop
+and report: another refresh would not help. As #1462 found, a correct allocation with no replica
+the requesting host may take is not a feeder fault.
+
+## Failed start and retry
+
+A start has failed if, within two minutes of step 3, there is no new live feeder, `ready` is not 1,
+the feeder log has a `[CRITICAL]` line, the `read ... apps` count is not the number of active apps,
+or the new PID disappears or changes before the guard reports `match`. Every error below ends the
+feeder, except perhaps the census one. One that gets past creating the segment removes it on the
+way out ([feeder.cpp L869][feeder-869]), so no ready segment is left, every request gets the
+one-hour reply, and the supervisor loop tries `bin/start --cron` again every five minutes for as
+long as the feeder keeps failing.
+
+| Feeder log                                                 | Source                                                                                                       | Kind                                                                                                                                                                    |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `boinc_db.open`, `DB connection lost`                      | [feeder.cpp L872-L880][feeder-872-880], [L269-L277][feeder-269-277]                                          | Transient: the database.                                                                                                                                                |
+| `update_av_scales failed`                                  | [feeder.cpp L595-L605][feeder-595-605]                                                                       | A database write after `ready`. Transient once; deterministic if again.                                                                                                 |
+| `Can't parse config.xml`                                   | [feeder.cpp L830-L836][feeder-830-836]                                                                       | Deterministic: configuration.                                                                                                                                           |
+| `The SCHED_SHMEM structure is too small for the ... table` | [sched_shmem.cpp L99-L108][sched-shmem-99-108]                                                               | Deterministic: the registry (too many apps, versions, platforms).                                                                                                       |
+| `HR type ... out of range` and the other HR messages       | [feeder.cpp L612-L691][feeder-612-691]                                                                       | Deterministic: the registry.                                                                                                                                            |
+| `can't destroy shmem`                                      | [feeder.cpp L854-L858][feeder-854-858]                                                                       | Deterministic: the segment belongs to another user.                                                                                                                     |
+| `can't create shmem`                                       | [feeder.cpp L860-L865][feeder-860-865]                                                                       | Deterministic: memory or kernel limits.                                                                                                                                 |
+| `Missing size census file`, then `read ... 0 apps`         | [sched_shmem.cpp L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887], [L904-L933][feeder-904-933] | Deterministic: the registry. The scan stops before any app is counted, and allocating slots over no apps is undefined: the feeder may crash or stay up serving nothing. |
+
+The rules:
+
+- One refresh allows at most **one** operator retry: one more `bin/start --cron`, run once, and
+  only after the transient cause is fixed and confirmed (the database answers the guard's query).
+  Never script a retry, loop, or watch and restart.
+- A deterministic failure is never retried as it is. If the registry is the cause, apply
+  [Rollback](#rollback); the retry follows that. Otherwise stop and tell the maintainer at once,
+  because the project sends no work while the feeder is down. Holding the supervisor loop with
+  `stop_maintenance` (which also stops a container start from starting the project,
+  [`boinc-daemons.sh` L48](../../contrib-compute/images/server/boinc-daemons.sh#L48)), a
+  whole-server restart and an image rollback are each the maintainer's decision.
+- A feeder that stayed up after a deterministic failure (the census case) is stopped with one
+  `SIGHUP` as in step 2, after the registry is restored and before the retry. If it does not exit,
+  escalate as in step 2.
+- If the retry fails too, stop and escalate.
+- The supervisor loop's own five-minute attempts are existing stock behaviour, not retries by this
+  procedure. They are rate-limited but not counted; bounding them would be a separate, reviewed
+  change to `boinc-daemons.sh`.
+
+## Rollback
+
+A refresh changes no database row, project file or queue. It replaces one process and its cache.
+There is no way back to the old process or its stale map, and no reason to want one. What can be
+rolled back is the registry the new feeder allocated from:
+
+- If the new allocation is unwanted (the registry change itself was wrong), or the registry made the
+  start fail: restore the `app` rows to what the previous feeder started with. Use the change's own
+  saved rows (for example a retirement's journal, as in
+  [Retiring an app](server-and-apps.md#retiring-an-app)) and check them against the `apps` IDs and
+  weights in `snapshot-before.json`.
+- After a failed start, the one retry then starts the feeder on the restored registry. After a
+  successful but unwanted refresh, run one more feeder-only refresh with this procedure: the same
+  preconditions, readbacks and retry limit, and the maintainer's approval. Touching `reread_db`
+  is not a substitute.
+- A start that fails for any other reason has no rollback here; escalate as above.
+
+## Never automate without approval
+
+The guard and its timer stay read-only reporters. None of the following may be automated, chained
+to a guard result (including through a systemd `OnFailure=` or a supervisor event), or done
+without the maintainer's approval for that occasion:
+
+- Signalling, stopping or starting the feeder or any other daemon, on any guard status; any retry
+  beyond the single manual one; `SIGTERM` or `SIGKILL`.
+- Touching `reread_db` as a repair.
+- Changing the app table (`deprecated`, `weight`, HR fields), `config.xml` (`feeder_query_size`,
+  `shmem_work_items`, `maintenance_delay`) or the `config.xml` SHA-256 the auto-cohort controller
+  pins.
+- Creating `stop_maintenance`, `stop_sched` or `stop_daemons`, running `bin/stop`, or disabling the
+  project.
+- `supervisorctl restart boinc`, restarting `usnm-boinc-server.service`, or changing
+  `SERVER_IMAGE`.
+- Cancelling, resetting or reassigning results; widening plan-class bounds; weakening
+  `one_result_per_host_per_wu` or quorum.
+- Anything on volunteer hosts.
+
+The only automation this design allows is notification: the failed guard unit, and the read-only
+plan below when an operator asks for it.
+
+## Proposed: a dry-run `--plan-refresh` mode (not implemented)
+
+`feeder-slot-guard.py` already verifies the feeder's identity and reads the registry over verified
+TLS. A read-only `--plan-refresh` mode would turn the checks of steps 1 and 4 into one reviewed
+command. The proposal:
+
+- **Reads:** the guard check; `feeder.pid`, the process's identity and owner, and whether it holds
+  `feeder.lock`; `bin/status --verbose`; the marker files and `.usnm-publish.lock`; the active
+  `app`, `platform` and multi-host `assignment` rows; `shmem_work_items` and `feeder_query_size`
+  from `config.xml`; and `bin/show_shmem`.
+- **Computes:** the expected slot map and per-app counts, by reproducing `weighted_interleave`
+  exactly, including its handling of zero weights; the `enum_sizes`; the table limits; the sizing
+  invariant; the segment size. From `show_shmem`, it lists every cached result whose app differs
+  from the expected map for its slot. That comparison also works for a feeder started before the
+  guarded image, which has no snapshot. Mapping 12-character app names back to IDs must fail
+  closed when two names share a prefix.
+- **Prints** one JSON report and the exact commands of steps 2 to 4 with the verified PID and start
+  ticks filled in.
+- **Exits** 0 only if a refresh is warranted and every precondition holds, otherwise non-zero with
+  the reasons. With `--previous-pid` and `--previous-start-ticks` after a restart, it exits 0 only
+  if the new feeder is alive, ready and matching, and is the only daemon that changed.
+- **Never** signals, starts or stops anything, writes to the project or the database, or touches a
+  trigger file. It does not take the project mutex; the operator does.
+
+It would need its own issue, tests against the feeder fixture in `scripts/boinc/db-tls/full.py`
+and review.
+
+## Before first use
+
+- The guarded server image (#1464) must be deployed and its feeder started at a coordinated
+  boundary, so that the guard has a baseline
+  ([Feeder allocation guard](../boinc-onprem.md#feeder-allocation-guard-1462)). The server copies
+  `bin/feeder` from the image only when the container starts
+  ([`entrypoint.sh` L104-L115](../../contrib-compute/images/server/entrypoint.sh#L104-L115)), so
+  that deployment is a server restart and outside this procedure.
+- The first live refresh needs the maintainer's approval. Its step 5 is the rollout verification
+  #1462 asks for: live app IDs and weights, query and slot sizing, HR, bounded replicas in the
+  cache, assignment to an eligible host, distinct-host validation and load.
+
+[feeder-150-158]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L150-L158
+[feeder-904-933]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L904-L933
+[feeder-371-405]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L371-L405
+[feeder-177-200]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L177-L200
+[sched-shmem-43-57]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L43-L57
+[feeder-250-254]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L250-L254
+[feeder-478-481]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L478-L481
+[start-168-186]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L168-L186
+[start-309-325]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L309-L325
+[start-446-465]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L446-L465
+[start-449-452]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L449-L452
+[feeder-269-277]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L269-L277
+[start-14-17]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L14-L17
+[sched-util-basic-40-93]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_util_basic.cpp#L40-L93
+[feeder-561-610]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L561-L610
+[feeder-171-175]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L171-L175
+[feeder-869-870]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L869-L870
+[start-513-555]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L513-L555
+[feeder-854-867]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L854-L867
+[start-559-572]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L559-L572
+[feeder-186]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L186
+[start-467-478]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L467-L478
+[start-574-583]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L574-L583
+[start-209-221]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L209-L221
+[start-467-470]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L467-L470
+[sched-shmem-112-264]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L112-L264
+[sched-shmem-h-37-48]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.h#L37-L48
+[sched-shmem-99-108]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L99-L108
+[sched-shmem-119-261]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L119-L261
+[feeder-612-691]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L612-L691
+[sched-shmem-145-171]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L145-L171
+[feeder-887]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L887
+[feeder-923-925]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L923-L925
+[shmem-441-467]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/shmem.cpp#L441-L467
+[feeder-860-861]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L861
+[sched-main-525-531]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L525-L531
+[sched-score-346-429]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_score.cpp#L346-L429
+[sched-array-279-352]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_array.cpp#L279-L352
+[sched-check-499-523]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_check.cpp#L499-L523
+[boinc-db-1178-1198]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/db/boinc_db.cpp#L1178-L1198
+[sched-send-1008-1012]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_send.cpp#L1008-L1012
+[sched-main-156-169]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L156-L169
+[sched-main-284-304]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L284-L304
+[sched-config-93]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_config.cpp#L93
+[feeder-860-867]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L867
+[feeder-569-576]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L569-L576
+[sched-main-316-331]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L316-L331
+[feeder-849-852]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L849-L852
+[synch-41-105]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/lib/synch.cpp#L41-L105
+[sched-send-780-786]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_send.cpp#L780-L786
+[sched-main-517-523]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_main.cpp#L517-L523
+[start-794-797]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L794-L797
+[start-589-599]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/start#L589-L599
+[feeder-887-902]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L887-L902
+[sched-shmem-345-353]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L345-L353
+[sched-shmem-130]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L130
+[feeder-595-605]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L595-L605
+[feeder-779-780]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L779-L780
+[feeder-484-491]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L484-L491
+[sched-shmem-397-427]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L397-L427
+[feeder-869]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L869
+[feeder-872-880]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L872-L880
+[feeder-830-836]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L830-L836
+[feeder-854-858]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L854-L858
+[feeder-860-865]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L865

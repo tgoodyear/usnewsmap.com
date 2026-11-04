@@ -184,7 +184,8 @@ the `--allapps` slot map is fixed at feeder startup, so touching `reread_db` alo
 does **not** reallocate slots after an app is deprecated or restored. Set
 `deprecated=1` on the app and its versions, then touch `reread_db` and refresh
 the feeder at the coordinated boundary described in
-[Feeder visibility](../../contrib-compute/docs/app-release.md#feeder-visibility).
+[Feeder visibility](../../contrib-compute/docs/app-release.md#feeder-visibility),
+following [Feeder-only refresh](feeder-refresh.md).
 Results already sent can still be reported, and workunits and signed versions stay.
 Rollback restores the saved `deprecated` values and needs the same reload and
 coordinated feeder refresh. Before you start, check that no controller plan, timer
@@ -217,7 +218,8 @@ the change. Rollback, in the server container as `boincadm`: run
 `php /project/ops/app-tidy-20261102/app_tidy.php --project /project/usnmocr --journal /project/ops/app-tidy-20261102 --project-xml /project/ops/app-tidy-20261102/project.xml.new --rollback`.
 It restores the app names and `deprecated` flags, the two workunits' `error_mask` and their
 results' state, and the previous `project.xml`, then touches `reread_db`. That trigger
-does not itself refresh the slot map; coordinate the feeder-only boundary after a rollback.
+does not itself refresh the slot map; coordinate the feeder-only boundary after a rollback
+([Feeder-only refresh](feeder-refresh.md#rollback)).
 
 ## Moving the project share
 

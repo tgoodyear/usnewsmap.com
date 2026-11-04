@@ -250,7 +250,8 @@ external notification here; monitor failed units and missing timer runs separate
 An unreachable container, old feeder, stale snapshot or failed verified-TLS query
 is unknown, not success. The image's independent five-minute JSON event is useful
 for diagnosis. See [Allocation drift detection](../contrib-compute/docs/app-release.md#allocation-drift-detection)
-for the scope, limitations and the required feeder-only recovery coordination.
+for the scope and limitations, and [Feeder-only refresh](boinc/feeder-refresh.md) for the
+recovery procedure.
 Neither check restarts a process or edits work.
 
 ## Security updates
