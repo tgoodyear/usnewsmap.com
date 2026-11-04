@@ -578,6 +578,24 @@ enum Command {
         #[arg(long, env = "USNM_LOC_WORDS_MIN_FREE_GIB", default_value_t = 0)]
         min_free_gib: u64,
     },
+    /// Which software made LoC's OCR (the engine, its version, the wrapper and the vendor),
+    /// from the first page's ALTO header in each bulk OCR archive: one Parquet file, one row
+    /// an archive, for `load.py locsw`. Reads only.
+    LocSoftware {
+        /// The archives (`bulk-ocr`'s output).
+        #[arg(long, env = "USNM_LOC_SOFTWARE_ARCHIVES")]
+        archives: PathBuf,
+        /// The Parquet file to write (replaced whole). Not in `loc-alto-stats`' directory
+        /// itself, whose loader reads every `<batch>_verNN.parquet` there.
+        #[arg(long, env = "USNM_LOC_SOFTWARE_OUT")]
+        out: PathBuf,
+        /// Archives read at once, one thread each.
+        #[arg(long, env = "USNM_LOC_SOFTWARE_WORKERS", default_value_t = 2)]
+        workers: usize,
+        /// At most this many archives (the first, by name).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// The host's global LoC budget: print it, or reset it to the normal rate
     /// after LoC pushed back (an operator's decision).
     LocPacer {
@@ -1375,6 +1393,25 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string(&s)?);
             anyhow::ensure!(s.failed == 0, "{} archives failed", s.failed);
             anyhow::ensure!(!s.stopped_low_disk, "stopped: too little disk free");
+            Ok(())
+        }
+        Command::LocSoftware {
+            archives,
+            out,
+            workers,
+            limit,
+        } => {
+            let s = tokio::task::spawn_blocking(move || {
+                usnm_ocr_worker::loc_software::run(&usnm_ocr_worker::loc_software::Options {
+                    archives,
+                    out,
+                    workers,
+                    limit,
+                })
+            })
+            .await??;
+            println!("{}", serde_json::to_string(&s)?);
+            anyhow::ensure!(s.failed == 0, "{} archives failed", s.failed);
             Ok(())
         }
         Command::LocPacer { file, reset } => {

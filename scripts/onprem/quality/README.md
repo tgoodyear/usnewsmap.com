@@ -30,6 +30,7 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `excluded_estimates` | campaign whose hat is wrong    | campaigns left out of ranking's estimates until rescored (none now; see #1079)                                    |
 | `staging`            | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from                                        |
 | `loc_alto`           | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
+| `loc_software`       | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                |
 
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the
 passage-matched disagreement, and `est_cer_v1` and the other `_v1` columns keep the unit's
@@ -48,11 +49,11 @@ the loader may call it. CT231's disk grew to 96 GiB for it (24 October 2026). A 
 
 ## Roles
 
-| Role                  | May                                                                                                                           |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `quality_loader`      | Read everything; insert, update and delete every table but `text_compare` and `readers` (insert only); refresh `page_summary` |
-| `quality_text_writer` | Read everything; insert and update `text_compare`; insert `campaigns`                                                         |
-| `quality_reader`      | Read everything                                                                                                               |
+| Role                  | May                                                                                                                                                               |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quality_loader`      | Read everything; insert, update and delete every table but `text_compare`, `readers` (insert only) and `loc_software` (insert and update); refresh `page_summary` |
+| `quality_text_writer` | Read everything; insert and update `text_compare`; insert `campaigns`                                                                                             |
+| `quality_reader`      | Read everything                                                                                                                                                   |
 
 Each logs in only with a certificate whose CN is the role (`queue-ct.sh --issue-client --role
 <name>`), and none has a password. `test_roles.sql` checks every row of this table, and CI runs it
@@ -92,6 +93,24 @@ Where each source comes in:
   archive in `/tank/locbulk/ocr` into one Parquet file in `tank/locstats`, which CT215 mounts
   read-only at `/srv/locstats`; `load.py locwc` (hourly, `usnm-quality-locwc-load.timer`) loads
   them into `loc_alto`. Ranking averages the damage score with `1 - wc_mean`.
+- **LoC's OCR software:** `usnm-ocr-worker loc-software --archives /tank/locbulk/ocr --out
+  /tank/locstats/software/loc-software.parquet` reads the first page's ALTO header of each
+  archive (about a minute for all 3,011) into one row per batch version. The same timer then
+  loads it with `load.py locsw` into `loc_software` when the file changes. Software is
+  recorded per batch: `software` keeps every `processingSoftware` in document order with its
+  own version, and `engine_family`, `engine_version`, `wrapper` and `vendor` come from the rules
+  in `crates/usnm-ocr-worker/src/loc_software.rs`. `page_summary` doesn't carry them, because a
+  new column there means rebuilding the 23.8M-row copy; join on `(batch, batch_version)`:
+
+  ```sql
+  SELECT s.engine_family, s.vendor, count(*) AS pages
+  FROM quality.page_summary p JOIN quality.loc_software s USING (batch, batch_version)
+  GROUP BY 1, 2 ORDER BY 3 DESC;
+  ```
+
+  A few batches mix engines across pages (Apex batches with both PrimeOCR and FineReader
+  pages, such as `vi_White_ver01`), and their row names only the first page's engine. The
+  page-level `loc_alto.software` shows those pages.
 - **OCR readers:** `load.py ocr` records each published `ocr-local` run; their scores against
   the other readers arrive with the next quality unit of the page.
 

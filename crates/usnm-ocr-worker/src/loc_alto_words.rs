@@ -291,7 +291,7 @@ fn setting(s: &str, key: &str) -> Option<f64> {
 }
 
 /// A reference in element text. ALTO text has only the XML-defined ones.
-fn entity(r: &BytesRef<'_>) -> Option<String> {
+pub(crate) fn entity(r: &BytesRef<'_>) -> Option<String> {
     if let Ok(Some(c)) = r.resolve_char_ref() {
         return Some(c.to_string());
     }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # CI for the OCR-quality results database (#962): a throwaway PostgreSQL 17 (the queue
 # fixture's pinned image), usnm_quality with setup.sql applied twice, the role checks in
-# test_roles.sql, load.py's upserts run as quality_loader and quality_text_writer, the
-# summary's refresh, and rank.sql as quality_reader.
+# test_roles.sql, load.py's upserts run as quality_loader and quality_text_writer (LoC's
+# software among them), the summary's refresh, and rank.sql as quality_reader.
 #
 #   ci-check.sh [--name usnm-quality-ci]
 #
@@ -48,6 +48,13 @@ print(m.campaign_sql("damage-v2", "damage") + m.campaign_sql("v1-ci", "boinc-qua
       + m.upsert_sql("unit_pages", m.UNIT_COLS, ["campaign", "doc_id"], units)
       + m.upsert_sql("reader_scores", m.SCORE_COLS, ["campaign", "doc_id", "reader"], scores)
       + m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages))  # a rerun replaces
+sw = {"batch": "b", "batch_version": 1, "archive": "b_ver01.tar.bz2", "header_doc": d, "engine_family": "abbyy",
+      "software": '[{"block":1,"step":"pre","name":"CCS docWorks","version":"7.0-1.52"},{"block":1,"step":"ocr","name":"FineReader","version":"11.0"}]',
+      "agencies": "[]", "steps": '["Align"]', "settings_engines": "[]", "engine_name": "FineReader", "engine_version": "11.0",
+      "wrapper": "CCS docWorks", "wrapper_version": "7.0-1.52", "vendor": "CCS Content Conversion Specialists",
+      "read_at": "2026-11-03T21:45:00Z"}
+rows = m.locsw_rows([sw, {**sw, "engine_version": "12.0"}])  # one row a batch version, the last kept
+print(m.upsert_sql("loc_software", m.LOCSW_COLS, ["batch", "batch_version"], rows) * 2)
 PY
 } | psql_admin -d usnm_quality > /dev/null
 # The agreement loader's SQL, as the text writer, then the loader's refresh.
@@ -78,6 +85,8 @@ PY
 } | psql_admin -d usnm_quality > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT doc_id, damage_rate, loc_est_cer, has_image_features, loc_as_local_cer_sym FROM quality.page_summary")
 [ "$got" = "sn1_1900-01-01_ed-1_seq-1|0.4|0.3|t|0.08" ] || die "page_summary after the load: $got"
+got=$(psql_admin -d usnm_quality -tA -c "SELECT engine_family, engine_version, software->1->>'name', vendor FROM quality.pages p JOIN quality.loc_software USING (batch, batch_version)")
+[ "$got" = "abbyy|12.0|FineReader|CCS Content Conversion Specialists" ] || die "loc_software after the load: $got"
 { echo "SET ROLE quality_reader;"; cat "$here/rank.sql"; } | psql_admin -d usnm_quality -v limit=5 > /dev/null
 # The campaign builder's export runs as the reader, so its columns and grants are checked.
 {
@@ -88,4 +97,4 @@ spec = importlib.util.spec_from_file_location("quality_campaign", sys.argv[1]); 
 print(m.EXPORT_SQL)
 PY
 } | psql_admin -d usnm_quality > /dev/null
-echo "usnm_quality checked: schema, roles, loader upserts, page_summary, rank queries, campaign export"
+echo "usnm_quality checked: schema, roles, loader upserts, LoC software, page_summary, rank queries, campaign export"
