@@ -61,6 +61,9 @@ pub struct Header {
     /// `abbyy9 9.0.0.7394-3` (from `abbyy9.version:`), `abbyy8` (from `Engine:Abbyy8`) or
     /// `abbyy6`, `iris`, `scansoft` (from `Abbyy6OCREngine STAT BLOCK` and the like).
     pub settings_engines: Vec<String>,
+    /// The same engines with the `OCRProcessing` block whose OCR step named them, so
+    /// [`derive`] reads only the selected framework's settings.
+    pub settings_by_block: Vec<(u16, String)>,
 }
 
 /// The engine behind a batch and what drove it, from [`derive`].
@@ -175,6 +178,10 @@ pub fn read_header<R: BufRead>(xml: R) -> anyhow::Result<Header> {
                     Open::Step => push_distinct(&mut h.steps, field.unwrap_or_default()),
                     Open::Settings if step == "ocr" => {
                         for engine in settings_engines(s) {
+                            let entry = (block.max(1), engine.clone());
+                            if !h.settings_by_block.contains(&entry) {
+                                h.settings_by_block.push(entry);
+                            }
                             push_distinct(&mut h.settings_engines, engine);
                         }
                     }
@@ -217,9 +224,12 @@ fn engine_token(raw: &str) -> Option<String> {
 
 /// The alphanumeric run that ends at byte `end` of `s`.
 fn word_before(s: &str, end: usize) -> &str {
+    // Step past the separator by its UTF-8 length: it may be multibyte, like a no-break space.
     let start = s[..end]
-        .rfind(|c: char| !c.is_ascii_alphanumeric())
-        .map_or(0, |i| i + 1);
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !c.is_ascii_alphanumeric())
+        .map_or(0, |(i, c)| i + c.len_utf8());
     &s[start..end]
 }
 
@@ -408,8 +418,15 @@ pub fn derive(h: &Header) -> Derived {
             .find(|s| s.name != e.name);
     } else if let Some(fw) = ocr_named().next() {
         wrapper_sw = Some(fw);
+        // Only the settings of the framework's own block: another block may name another engine.
+        let own: Vec<&String> = h
+            .settings_by_block
+            .iter()
+            .filter(|(b, _)| *b == fw.block)
+            .map(|(_, e)| e)
+            .collect();
         let mut families: Vec<&'static str> = Vec::new();
-        for s in &h.settings_engines {
+        for s in &own {
             let f = family_of_setting(s);
             if !families.contains(&f) {
                 families.push(f);
@@ -423,18 +440,19 @@ pub fn derive(h: &Header) -> Derived {
             || name.to_ascii_lowercase().contains("iarchives");
         match families.as_slice() {
             [one] => {
-                let s = h
-                    .settings_engines
+                let s = own
                     .iter()
                     .find(|s| family_of_setting(s) == *one)
                     .expect("a settings engine of that family");
+                let token = s.split(' ').next().unwrap_or(s);
                 d.engine_family = *one;
-                d.engine_name = Some(s.split(' ').next().unwrap_or(s).to_owned());
-                d.engine_version = h
-                    .settings_engines
+                d.engine_name = Some(token.to_owned());
+                // An explicit version only from the same engine token: `abbyy8` never takes
+                // `abbyy9.version:`'s number.
+                d.engine_version = own
                     .iter()
-                    .filter(|s| family_of_setting(s) == *one)
-                    .find_map(|s| s.split_once(' ').map(|(_, v)| v.to_owned()))
+                    .filter(|e| e.split(' ').next() == Some(token))
+                    .find_map(|e| e.split_once(' ').map(|(_, v)| v.to_owned()))
                     .or_else(|| version_of_setting(s));
             }
             [] => {
@@ -806,6 +824,44 @@ mod tests {
             None,
             Some("iArchives"),
         );
+    }
+
+    #[test]
+    fn a_multibyte_separator_before_a_version_does_not_panic() {
+        assert_eq!(
+            settings_engines("Lang:eng\u{a0}abbyy9.version:9.0.0.7394-3"),
+            ["abbyy9 9.0.0.7394-3"]
+        );
+        assert_eq!(settings_engines("é.version:1.0"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn only_the_framework_blocks_settings_choose_the_engine() {
+        let fw = sw("iArchives", "iArchives OCR Framework", Some("Multiple"));
+        let block = |id: &str, settings: &str| {
+            format!(
+                "<OCRProcessing ID=\"{id}\"><ocrProcessingStep><processingStepSettings>{settings}</processingStepSettings>{fw}</ocrProcessingStep></OCRProcessing>"
+            )
+        };
+        let (h, d) = of(&format!(
+            "{}{}",
+            block("OCR.0", "abbyy9.version:9.0.0.7394-3"),
+            block("OCR.1", "Engine:OmniPage15")
+        ));
+        assert_eq!(h.settings_engines.len(), 2, "{h:?}");
+        assert_eq!(d.engine_family, "abbyy", "{d:?}");
+        assert_eq!(d.engine_version.as_deref(), Some("9.0.0.7394-3"), "{d:?}");
+    }
+
+    #[test]
+    fn a_version_belongs_to_its_own_engine_token() {
+        let fw = sw("iArchives", "iArchives OCR Framework", Some("Multiple"));
+        let (_, d) = of(&format!(
+            "<OCRProcessing ID=\"OCR.0\"><ocrProcessingStep><processingStepSettings>Engine:Abbyy8 abbyy9.version:9.0</processingStepSettings>{fw}</ocrProcessingStep></OCRProcessing>"
+        ));
+        assert_eq!(d.engine_family, "abbyy", "{d:?}");
+        assert_eq!(d.engine_name.as_deref(), Some("abbyy8"), "{d:?}");
+        assert_eq!(d.engine_version.as_deref(), Some("8"), "{d:?}");
     }
 
     #[test]
