@@ -592,4 +592,52 @@ mod tests {
         assert!(stage::write_bundle(&dir, &dirs).is_err());
         assert_eq!(std::fs::read(dir.join(MEMBERSHIP_FILE)).unwrap(), before);
     }
+
+    #[test]
+    fn a_bundle_of_a_loc_page_and_a_sample_keeps_each_page_apart() {
+        use crate::qwen::doc_id::DocId;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let sample = DocId::Page("sample:overproof-ca/pub-overproof-ca-001".parse().unwrap());
+        let docs = [DOCS[0].to_owned(), sample.wire().unwrap()];
+        let page_dir = root.join("pages");
+        for d in &docs {
+            stage::tests::page_unit(&page_dir, d, 2);
+        }
+        let dirs: Vec<PathBuf> = docs.iter().map(|d| page_dir.join(d)).collect();
+        let job = stage::write_bundle(&units(&root).join("bundle-00001"), &dirs).unwrap();
+        assert_eq!(job.crops.len(), 4);
+        let pages = tmp.path().join("qwen/pages");
+        let words = |doc: &str, crop: &str| format!("{doc} {crop} the ship sailed for england");
+        let a = result(tmp.path(), &job, "a", words);
+        // Host b loops on the sample only.
+        let b = result(tmp.path(), &job, "b", |doc, crop| {
+            if doc == docs[1] {
+                "[?] ".repeat(30)
+            } else {
+                words(doc, crop)
+            }
+        });
+        assert!(validate::compare(&a, &b, 0.5, None, Some(&pages)).is_err());
+        let ledger = run(&root, &pages).unwrap();
+        let found: Vec<(DocId, &str)> = ledger
+            .iter()
+            .map(|p| (DocId::parse(&p.doc_id).unwrap(), p.status))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (DocId::Page(DOCS[0].parse().unwrap()), "accepted"),
+                (sample, "disagreed"),
+            ]
+        );
+        for p in &ledger {
+            assert_eq!(p.records.len(), 1, "{}", p.doc_id);
+            assert!(pages
+                .join(&job.id)
+                .join(&p.doc_id)
+                .join(&p.records[0])
+                .exists());
+        }
+    }
 }

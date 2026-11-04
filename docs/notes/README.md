@@ -12,6 +12,7 @@ They sit between the other two kinds of document:
 
 | Date       | Note                                                                                                            | Topic                | Measured on                                                                                        |
 | ---------- | --------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| 2026-11-04 | [Sample page ids on the Qwen wire](2026-11-04-page-id-wire-inventory.md)                                        | ocr, operations      | Unit tests against the released `check_doc_id`; the `bundle-v1` and `bundle-v2` gold locks         |
 | 2026-11-04 | [Strict Qwen agreement on crops with no words](2026-11-04-qwen-wordless-crops.md)                               | ocr, operations      | One week of on-prem `usnm_qwen` pairs and retained results, joined to canonical results; read-only |
 | 2026-11-01 | [Why Qwen replicas come back inconclusive](2026-11-01-qwen-cross-vendor-validation.md)                          | ocr, operations      | Retained 8B results replayed under the strict rule and a crop-by-crop rule, with negative controls |
 | 2026-10-28 | [Reversible third-party OCR decision previews](2026-10-28-loc-alternate-decisions.md)                           | ocr, operations      | Synthetic paired-review selection, replay, revocation and fail-closed readers; no release effect   |

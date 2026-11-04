@@ -90,3 +90,17 @@ not current defects, and mixing sources would break them:
 - By design, every new source needs a row and a rule before its ids enter shared stores.
 - BOINC campaigns already staged with bare benchmark ids, such as the Surya campaign
   `gold-bench-20261022`, finish as they are. New campaigns use qualified ids once the staging code does.
+
+## Implementation status
+
+- `PageId` is in `usnm-core`, the Congress index's read adapter qualifies its ids, and Surya
+  benchmark staging writes `sample:<dataset>/<sample id>` (#995).
+- Released `usnm_qwen` workers accept only `[A-Za-z0-9_-]` in a `doc_id`, so on the Qwen wire a
+  sample is spelled `sample-<dataset>_<sample id>`, with the sample id's `_` and `.` written
+  `_5F` and `_2E` (`usnm-boinc/src/qwen/doc_id.rs`). The spelling is reversible and can't
+  collide with a LoC `doc_id` or with the legacy `benchmark-<sha256>` ids, which stay valid for
+  every campaign staged with them. `qwen benchmark-stage --doc-ids sample` uses it; the default
+  is still the legacy spelling.
+- Gold bundle crops and the data catalog are unchanged. The inventory, the collision rules and
+  the remaining cutover steps are in the
+  [2026-11-04 note](../../notes/2026-11-04-page-id-wire-inventory.md) (#983).
