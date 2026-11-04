@@ -46,31 +46,51 @@ body="$work/response"
 payload="$work/request.json"
 next_state="$work/state.json"
 expected="$work/deployed-sitemap.xml"
-trap 'rm -f "$body" "$payload" "$next_state" "$expected"; rmdir "$work"' EXIT
+expected_headers="$work/deployed-sitemap-headers"
+encoded_state="$work/state.b64"
+trap 'rm -f "$body" "$payload" "$next_state" "$expected" "$expected_headers" "$encoded_state"; rmdir "$work"' EXIT
 
 # Read the deployed build's generated sitemap, not a stale source-tree list.
 sitemap=$(curl -fsS -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
   skip "$sitemap_url could not be fetched"
 
-# A deployment notification runs after Azure updates but before the on-prem
-# origin necessarily switches. Wait for its public sitemap before acknowledging
-# this deployment, so the hourly job can retry if the bounded wait expires.
+# A deployment notification waits for Azure to generate the deployed build's
+# checkpoint, then for the on-prem origin to switch before acknowledging it.
+# The hourly job retries if either bounded wait expires.
 if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
   [[ $INDEXNOW_EXPECTED_SITEMAP_URL =~ ^https://[a-z0-9.-]+/sitemap\.xml$ ]] ||
     skip "INDEXNOW_EXPECTED_SITEMAP_URL must be an absolute Azure sitemap URL"
-  deployed=$(curl -fsS -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 \
-    --retry 3 --retry-delay 5 --retry-all-errors "$INDEXNOW_EXPECTED_SITEMAP_URL") ||
-    skip "$INDEXNOW_EXPECTED_SITEMAP_URL could not be fetched"
-  printf '%s' "$deployed" > "$expected"
   wait_secs=${INDEXNOW_PUBLIC_WAIT_SECS:-1800}
   [[ $wait_secs =~ ^[0-9]+$ ]] || skip "INDEXNOW_PUBLIC_WAIT_SECS must be a nonnegative integer"
+  poll_secs=${INDEXNOW_POLL_SECS:-15}
+  [[ $poll_secs =~ ^[0-9]+$ ]] || skip "INDEXNOW_POLL_SECS must be a nonnegative integer"
   deadline=$(($(date +%s) + wait_secs))
+  build_current=false
+  while [ "$build_current" != true ]; do
+    if ! status=$(curl -sS -D "$expected_headers" -o "$expected" -w '%{http_code}' \
+      -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 \
+      --retry 3 --retry-delay 5 --retry-all-errors "$INDEXNOW_EXPECTED_SITEMAP_URL"); then
+      skip "$INDEXNOW_EXPECTED_SITEMAP_URL could not be fetched"
+    fi
+    if [ "$status" = 200 ]; then
+      build_current=$(awk 'tolower($1) == "x-usnm-sitemap-build-current:" {gsub("\r", "", $2); value=$2} END {print value}' \
+        "$expected_headers")
+    elif [ "$status" != 503 ]; then
+      skip "$INDEXNOW_EXPECTED_SITEMAP_URL returned HTTP $status"
+    fi
+    [ "$build_current" = true ] && break
+    now=$(date +%s)
+    [ "$now" -lt "$deadline" ] ||
+      skip "Azure sitemap checkpoint has not been generated for the deployed build"
+    echo "IndexNow: waiting for Azure to generate the deployed build's sitemap checkpoint"
+    sleep "$poll_secs"
+  done
   while ! python3 scripts/ci/indexnow-plan.py --host "$host" --compare "$expected" <<< "$sitemap"; do
     now=$(date +%s)
     [ "$now" -lt "$deadline" ] ||
       skip "public sitemap has not caught up with the deployed Azure sitemap"
     echo "IndexNow: waiting for the public sitemap to reflect the deployed sitemap"
-    sleep 15
+    sleep "$poll_secs"
     sitemap=$(curl -fsS -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 \
       --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
       skip "$sitemap_url could not be fetched while waiting for the public sitemap"
@@ -149,9 +169,10 @@ done
 [ "$submitted" = true ] || exit 0
 mkdir -p "$(dirname "$INDEXNOW_STATE_FILE")" || skip "could not create the submission state directory"
 # Never acknowledge a rejected or partial batch.
-encoded=$(base64 < "$next_state" | tr -d '[:space:]')
+base64 < "$next_state" | tr -d '[:space:]' > "$encoded_state" ||
+  skip "could not encode the successful submission state"
 write_args=(--method PUT "$state_endpoint" -f "message=ci: acknowledge IndexNow sitemap" \
-  -f "content=$encoded" -f "branch=$state_branch")
+  -F "content=@$encoded_state" -f "branch=$state_branch")
 [ -z "$state_sha" ] || write_args+=(-f "sha=$state_sha")
 if ! gh api "${write_args[@]}" >/dev/null 2>"$work/github.err"; then
   skip "IndexNow accepted the URLs but durable state was not saved: $(tail -1 "$work/github.err")"

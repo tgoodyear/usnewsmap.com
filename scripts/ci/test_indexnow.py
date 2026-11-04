@@ -47,7 +47,7 @@ class IndexNow(unittest.TestCase):
         (public / "robots.txt").write_text(f"Sitemap: https://{HOST}/sitemap.xml\n")
         bins = self.root / "bin"
         bins.mkdir()
-        for name in ("az", "curl", "gh"):
+        for name in ("az", "curl", "gh", "sleep"):
             stub = bins / name
             stub.write_text(f"#!{sys.executable}\n" + """
 import json
@@ -60,6 +60,8 @@ root = Path(os.environ["STUB_ROOT"])
 name = Path(sys.argv[0]).name
 if name == "az":
     print("usnewsmap.com")
+elif name == "sleep":
+    pass
 elif name == "gh":
     endpoint = next(a for a in args if a.startswith("repos/"))
     method = args[args.index("--method") + 1] if "--method" in args else "GET"
@@ -85,9 +87,9 @@ elif name == "gh":
             print(json.dumps({"sha": hashlib.sha1(raw).hexdigest(),
                               "content": base64.b64encode(raw).decode()}))
         elif method == "PUT":
-            encoded = next(a[8:] for a in args if a.startswith("content="))
+            encoded_path = next(a.split("@", 1)[1] for a in args if a.startswith("content=@"))
             import base64, hashlib
-            raw = base64.b64decode(encoded)
+            raw = base64.b64decode(Path(encoded_path).read_text())
             state.write_bytes(raw)
             branch.write_text(json.dumps({"ref": "refs/heads/indexnow-state-prod"}))
             print(json.dumps({"content": {"sha": hashlib.sha1(raw).hexdigest()}}))
@@ -109,7 +111,21 @@ elif "-X" in args:
     print(status, end="")
 elif args[-1].endswith("/sitemap.xml"):
     file = "deployed-sitemap.xml" if args[-1] == os.environ.get("EXPECTED_SITEMAP_URL") else "live-sitemap.xml"
-    print((root / file).read_text())
+    xml = (root / file).read_text()
+    if "-D" in args:
+        count_path = root / "azure-sitemap-count"
+        count = int(count_path.read_text()) + 1 if count_path.exists() else 1
+        count_path.write_text(str(count))
+        ready_after = int(os.environ.get("STUB_BUILD_READY_AFTER", "1"))
+        ready = "true" if count >= ready_after else "false"
+        Path(args[args.index("-D") + 1]).write_text(
+            "HTTP/1.1 200 OK\\r\\n" +
+            f"X-USNM-Sitemap-Build-Current: {ready}\\r\\n\\r\\n"
+        )
+        Path(args[args.index("-o") + 1]).write_text(xml)
+        print("200", end="")
+    else:
+        print(xml)
 elif args[-1].endswith(".txt"):
     print(os.environ["STUB_KEY"])
 else:
@@ -306,6 +322,22 @@ else:
         self.assertEqual(posts, [])
         self.assertIn("public sitemap has not caught up", output)
         self.assertFalse((self.root / "durable-state.json").exists())
+
+    def test_deploy_waits_for_a_checkpoint_from_the_current_build(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/examples/gold"]
+        xml = sitemap(urls)
+        self.env["STUB_BUILD_READY_AFTER"] = "2"
+        posts, output = self.submit(xml, expected=xml)
+        self.assertEqual(posts[-1]["body"]["urlList"], urls)
+        self.assertIn("waiting for Azure to generate", output)
+        self.assertEqual((self.root / "azure-sitemap-count").read_text(), "2")
+
+    def test_deploy_skips_when_azure_still_serves_an_old_checkpoint(self):
+        xml = sitemap([f"https://{HOST}/"])
+        self.env.update(INDEXNOW_PUBLIC_WAIT_SECS="0", STUB_BUILD_READY_AFTER="2")
+        posts, output = self.submit(xml, expected=xml)
+        self.assertEqual(posts, [])
+        self.assertIn("Azure sitemap checkpoint has not been generated", output)
 
     def test_public_sitemap_matching_deployed_sitemap_is_submitted(self):
         urls = [f"https://{HOST}/", f"https://{HOST}/examples/gold"]
