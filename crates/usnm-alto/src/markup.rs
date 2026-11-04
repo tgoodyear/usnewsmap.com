@@ -31,11 +31,7 @@ pub fn strip(text: &str, markup: Markup) -> String {
     match markup {
         Markup::None => text.to_owned(),
         Markup::Html => strip_html(text),
-        Markup::Markdown => text
-            .split('\n')
-            .filter_map(strip_markdown_line)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        Markup::Markdown => strip_markdown(text),
     }
 }
 
@@ -119,11 +115,47 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
-/// One line of Markdown as plain text; `None` for a line that is only
-/// markup (a rule, a table's delimiter row, a code fence). Only markup is
-/// removed: a `*` or `~` that opens or closes nothing (`2 * 3`), a `#`
-/// with no space after it (`#1`) and an underscore inside a word stay.
-fn strip_markdown_line(line: &str) -> Option<String> {
+/// Markdown as plain text, line by line.
+///
+/// A list marker at the start of a line is kept as text unless the line
+/// is clearly an item of a Markdown list (#1488). In a newspaper, a line
+/// often starts with a printed number and period or a dash: a date
+/// (`31. Dezember früh …`), a price (`- 5 Cents`), a numbered item, a
+/// dash that opens a paragraph. Stripping those deletes content, while
+/// keeping a real list's marker costs at most a character or two. So:
+///
+/// - An ordered marker (`1. `) is always kept. A Markdown renderer shows
+///   its number, and on a printed page the number is part of the text.
+/// - A bullet (`- `, `* `, `+ `) is removed only when its line is one of
+///   at least two adjacent lines that start with the same bullet. A line
+///   whose item starts with a number, or with a currency sign and a
+///   number, is never such a line: `- 5 Cents`, `- $1.50` and
+///   `- 31. Dezember` are as likely a printed dash before a price or a
+///   date. A blank line ends a run, and text stripped one line or one
+///   word at a time (a line or word box) keeps its bullets.
+fn strip_markdown(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let bullets: Vec<Option<char>> = lines
+        .iter()
+        .map(|l| block_body(l).and_then(bullet))
+        .collect();
+    let in_list = |i: usize| {
+        bullets[i].is_some_and(|b| {
+            (i > 0 && bullets[i - 1] == Some(b)) || bullets.get(i + 1) == Some(&Some(b))
+        })
+    };
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| strip_markdown_line(l, in_list(i)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The line, trimmed, after its heading and quote prefixes; `None` for a
+/// line that is only markup (a rule, a table's delimiter row, a code
+/// fence). A `#` with no space after it (`#1`) stays.
+fn block_body(line: &str) -> Option<&str> {
     let t = line.trim();
     let only = |c: char| t.len() >= 3 && t.chars().all(|x| x == c || x == ' ');
     if only('-') || only('*') || only('_') || t.starts_with("```") {
@@ -133,7 +165,6 @@ fn strip_markdown_line(line: &str) -> Option<String> {
         return None;
     }
     let mut s = t;
-    // Block prefixes: headings, quotes, list markers.
     loop {
         let before = s;
         let hashes = s.chars().take_while(|&c| c == '#').count();
@@ -143,18 +174,37 @@ fn strip_markdown_line(line: &str) -> Option<String> {
         if let Some(r) = s.strip_prefix("> ").or_else(|| (s == ">").then_some("")) {
             s = r.trim_start();
         }
-        for m in ["- ", "* ", "+ "] {
-            if let Some(r) = s.strip_prefix(m) {
-                s = r;
-            }
-        }
-        let digits = s.chars().take_while(char::is_ascii_digit).count();
-        if digits > 0 && s[digits..].starts_with(". ") {
-            s = &s[digits + 2..];
-        }
         if s == before {
-            break;
+            return Some(s);
         }
+    }
+}
+
+/// The bullet `body` starts with, if it may be a list marker: one of
+/// `-`, `*`, `+` and a space, before an item that starts with neither a
+/// number nor a currency sign and a number.
+fn bullet(body: &str) -> Option<char> {
+    let mut c = body.chars();
+    let b = c.next().filter(|b| matches!(b, '-' | '*' | '+'))?;
+    if c.next() != Some(' ') {
+        return None;
+    }
+    let mut item = c.as_str().trim_start().chars();
+    let first = item.next()?;
+    let currency = matches!(first, '$' | '¢' | '£' | '€' | '¥' | '₤' | 'ℳ');
+    let numeric = first.is_numeric() || (currency && item.next().is_some_and(char::is_numeric));
+    (!numeric).then_some(b)
+}
+
+/// One line of Markdown as plain text; `None` for a line that is only
+/// markup. `list_item` removes the line's bullet ([`strip_markdown`]).
+/// Only markup is removed: a `*` or `~` that opens or closes nothing
+/// (`2 * 3`) and an underscore inside a word stay.
+fn strip_markdown_line(line: &str, list_item: bool) -> Option<String> {
+    let mut s = block_body(line)?;
+    if list_item {
+        // A bullet and its space are two ASCII bytes.
+        s = s[2..].trim_start();
     }
     let mut chars: Vec<char> = s.chars().collect();
     // Emphasis, strike-through and code spans: a delimiter run that opens
@@ -264,7 +314,7 @@ mod tests {
 
     #[test]
     fn strips_markdown() {
-        let md = "# The *Evening* Gazette\n\n- **Wheat** rose\n1. [Corn](http://x) fell\n---\n| a | b |\n|---|---|\n> snake_case and __bold__ ![pic](p.png)";
+        let md = "# The *Evening* Gazette\n\n- **Wheat** rose\n- [Corn](http://x) fell\n---\n| a | b |\n|---|---|\n> snake_case and __bold__ ![pic](p.png)";
         assert_eq!(
             strip(md, Markup::Markdown),
             "The Evening Gazette\n\nWheat rose\nCorn fell\na b\nsnake_case and bold"
@@ -282,5 +332,43 @@ mod tests {
             strip("_italic_ and `code` and ~~gone~~", Markup::Markdown),
             "italic and code and gone"
         );
+    }
+
+    #[test]
+    fn markdown_keeps_line_start_numbers_and_dashes() {
+        let md = |s: &str| strip(s, Markup::Markdown);
+        // #1488: a date, a price, an ordered item and a lone bullet stay.
+        let date = "Cöln, 1. Januar. Die englische Post aus London vom\n31. Dezember früh ist ausgeblieben.";
+        assert_eq!(md(date), date);
+        assert_eq!(md("- 5 Cents"), "- 5 Cents");
+        assert_eq!(md("1. Wheat rose"), "1. Wheat rose");
+        assert_eq!(md("- Wheat rose"), "- Wheat rose");
+        // Ordered markers stay even in a list: a renderer shows them.
+        assert_eq!(md("1. Wheat\n2. Corn"), "1. Wheat\n2. Corn");
+        // Prices and dates never count towards a list.
+        assert_eq!(md("- 5 Cents\n- $1.50"), "- 5 Cents\n- $1.50");
+        assert_eq!(
+            md("- 31. Dezember\n- Wheat rose"),
+            "- 31. Dezember\n- Wheat rose"
+        );
+        // Different bullets, or a blank line between, make no list.
+        assert_eq!(md("- Wheat\n* Corn"), "- Wheat\n* Corn");
+        assert_eq!(md("- Wheat\n\n- Corn"), "- Wheat\n\n- Corn");
+        // A dash inside a line is text.
+        assert_eq!(
+            md("Wien - Ungarn, 5 - 10 Cents"),
+            "Wien - Ungarn, 5 - 10 Cents"
+        );
+    }
+
+    #[test]
+    fn markdown_strips_bullets_of_a_list() {
+        let md = |s: &str| strip(s, Markup::Markdown);
+        assert_eq!(md("- Wheat rose\n- Corn fell"), "Wheat rose\nCorn fell");
+        assert_eq!(
+            md("Prices:\n* Wheat\n  * Corn\n- 5 Cents"),
+            "Prices:\nWheat\nCorn\n- 5 Cents"
+        );
+        assert_eq!(md("> - Wheat\n> - Corn"), "Wheat\nCorn");
     }
 }
