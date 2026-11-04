@@ -199,6 +199,26 @@ Added on the maintainer's approval after step 2, before any step 3 rental. Step 
 
 Nothing is signed, published or sent to BOINC. Step 3 runs under the remaining budget, with a cap of $3.
 
+## Amendment, 4 November 2026: Study 11, held-out pages
+
+Added on the maintainer's approval, before any reader saw these pages. Study 3's crops have now been read by every reader, so Study 9's results and the four-reader vote need confirming on pages none of them has seen.
+
+**Sets.** Three sets frozen on 3 November 2026, `SHA256SUMS` SHA-256 `24a42c994a70a4fa85b4df6108b6b687388be0f330f47d2a03e5c9cfb2187662`: American Stories gold on Chronicling America pages (`en-asgold`, 10 pages, 507 transcribed regions), the 81 Reichsanzeiger-GT pages outside `all-700` (`de-rz`) and Chronicling Germany's Test split (`de-cg`, 100 pages, 2,086 transcribed regions). Pages that CHURRO-DS trains on are flagged; CHURRO is scored only on each set's frozen `subset-not-in-churro-train.txt`, and every reader is scored on that subset too.
+
+**(a) Regions.** Each set's own transcribed regions, cut from the page at their box. All of `en-asgold` and `de-cg`; for `de-rz`, the first 2,000 transcribed regions by `sha256("s11:de-rz:"+id+":"+region)` order, at most 30 per page. A region over 2,048 px on its long edge is fitted to 2,048 for the vision-language readers.
+
+**(b) Pages, end to end.** The first 10 `en-asgold`, 20 `de-rz` and 20 `de-cg` pages in each set's frozen order. Two pipelines: Tesseract on the whole page, PSM 3; and RapidOCR PP-OCRv6 small line detection, each detected line read by Xiaomi-OCR-0, lines kept in detection order. Scored order-free: word-bag precision, recall and F1 against the page reference, after the folding of the scoring tool.
+
+**Readers.** Xiaomi-OCR-0, Study 9's Q8_0 GGUF on llama.cpp b12084 (the official release that fixed b8799's Vulkan fault), with Study 9's region prompt, at most 2,048 tokens and the `stop` guard. Qwen3-VL 8B Q4_K_M, `usnm_qwen`'s request version 3 with the guard, on the same runtime. Tesseract as in Study 3: `eng` for English, `frak2021` for German, PSM 6 on regions. RapidOCR PP-OCRv6 small. CHURRO on its unseen subset, if a card that fits it is used. The vote: per region, the reading among Xiaomi, Qwen, Tesseract and RapidOCR with the smallest summed character edit distance to the other three, ties to Xiaomi.
+
+**Measures.** Pooled CER by set with page-resampled limits, as in Study 3; the invented-text checks; loop and empty counts.
+
+**Primary.** On `de-rz` regions, the paired pooled CER difference between Xiaomi-OCR-0 and Tesseract. Secondary: the same on `de-cg` and `en-asgold`; the vote against Xiaomi-OCR-0 on each set; on pages, word-bag F1 of the Xiaomi pipeline against Tesseract.
+
+**Decision rule.** Study 9's result is confirmed if the primary difference is below zero with limits excluding zero. The vote is worth building into the pipeline only if it beats Xiaomi-OCR-0 with limits excluding zero on at least one German set and is not worse on the other. `en-asgold` has 10 pages, so its results are descriptive. `de-cg`'s references keep some recognition errors, which set a floor on every reader's CER there.
+
+Local card first, with BOINC work on it paused; a rental only if a reader doesn't fit, within the remaining budget.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.
