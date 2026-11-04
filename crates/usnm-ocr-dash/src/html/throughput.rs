@@ -588,7 +588,8 @@ pub(super) fn panel(v: &ThroughputView) -> String {
         let _ = write!(
             o,
             "<tbody><tr><td><details data-refresh-key=\"throughput-{id}\"><summary aria-controls=\"detail-{id}\">{}</summary></details></td>\
-             <td class=\"r\">{}</td><td class=\"r\">{}</td><td class=\"r seconds\">{}</td><td>{}</td><td class=\"chart\">{}</td></tr>\
+             <td class=\"r\" data-label=\"Last hour\">{}</td><td class=\"r\" data-label=\"Last 24 hours\">{}</td>\
+             <td class=\"r seconds\" data-label=\"Seconds\">{}</td><td data-label=\"Limit\">{}</td><td class=\"chart\">{}</td></tr>\
              <tr class=\"step-detail\" id=\"detail-{id}\"><td colspan=\"6\">{}</td></tr></tbody>",
             esc(s.label),
             hour_cell(s),
@@ -804,6 +805,33 @@ mod tests {
         assert!(html.contains("aria-controls=\"detail-stage\""));
         assert!(html.contains("id=\"detail-stage\""));
         assert!(crate::html::assets::STYLE.contains("tbody:has(details[open])"));
+    }
+
+    #[test]
+    fn on_a_phone_each_step_is_a_card_whose_counts_keep_their_column_names() {
+        let v = empty();
+        let html = panel(&v);
+        for (header, label) in [
+            ("<th class=\"r\">Last hour</th>", "Last hour"),
+            ("<th class=\"r\">Last 24 hours</th>", "Last 24 hours"),
+            ("<th class=\"r\">Seconds</th>", "Seconds"),
+            ("<th>Limit</th>", "Limit"),
+        ] {
+            assert!(html.contains(header), "{header}");
+            assert_eq!(
+                html.matches(&format!("data-label=\"{label}\"")).count(),
+                v.steps.len(),
+                "{label}"
+            );
+        }
+        let style = crate::html::assets::STYLE;
+        let phone = &style[style.find("@media (max-width: 640px)").unwrap()..];
+        assert!(phone.contains("table.steps { min-width:0; }"));
+        assert!(phone.contains(".steps > colgroup, .steps > thead { display:none; }"));
+        assert!(phone.contains("content:attr(data-label)"));
+        assert!(
+            phone.contains(".steps > tbody:has(details[open]) > .step-detail { display:block; }")
+        );
     }
 
     #[test]
