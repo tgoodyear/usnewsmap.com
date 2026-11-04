@@ -1,38 +1,45 @@
 ---
 title: "GPU studies, November 2026"
-subtitle: "German Fraktur, LoRA adapters, an engine comparison with Japanese, pages per dollar, a loop guard, a Surya retest, an image-token sweep, Yiddish and Xiaomi-OCR-0"
+subtitle: "Which OCR readers to use on the corpus, and what it takes to run them"
 date: "November 2026"
 ---
 
-For Studies 1 to 7, the samples, split, metrics and decision rules were fixed in [`protocol.md`](protocol.md) before the corresponding runs. Seven setup rentals began earlier; none of them read a crop. The Japanese amendment was committed before any reader ran on these crops under this study, though 24 of them were read under #128. Studies 8 and 10 were added later, outside the protocol; their methods and limitations are below. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the earlier scores in [`data/`](data/).
-
-All limits are 95% bootstrap limits, resampling source pages. For Studies 1 to 7, a number from the protocol is the primary result. Anything marked post-hoc was chosen after seeing results.
-
 # Summary
 
-**Review limitation:** The historical LoRA adapter files were not checked for missing tensors, earlier Surya page-mode runners could discard block errors, and earlier Tesseract wrappers could mask failed reads. The affected comparisons are provisional; the retained evidence does not establish whether these problems affected a result. Studies 8 and 10 used separately checked runners.
+## What we learned
 
-Pooled over Study 3's 612 crops, Qwen 8B has a CER of 17.3% and Tesseract 9.0%, a difference of 8.2 points with limits of -4.6 to 25.4, so no difference is called. On the German measured set the protocol's pooled CER is 49.6% for Qwen 8B against 17.9% for `frak2021` PSM 3, a difference that is called, against Qwen. Repetition loops are the visible cause: leaving out the 9 looped crops of 1,060 (post-hoc) brings Qwen to 10.9%. Loops were rarer on some sets than others: 3.9% of pilot crops and 15 of 64 Japanese crops. A loop guard is the first change to make.
+1. **Xiaomi-OCR-0 is the best reader we have tested.** On 612 human-transcribed newspaper crops it has 4.0% CER against Tesseract's 9.0% and ties guarded Qwen 8B (4.5%) at a tenth of its size. On a rented 3090 it reads crops for about $0.02 per 1,000 pages of reading time, against $3.40 for Qwen with boot and idle time included. It also invents less: 7 flagged readings to Qwen's 32. It is being confirmed on held-out pages (Study 11). [Study 9](#study-9-xiaomi-ocr-0-3-november-2026)
+2. **Repetition loops were Qwen's main problem.** Unguarded, Qwen 8B lost to Tesseract on German (49.6% against 17.9%); with the `stop` loop guard it wins (11.1%). The guard is live in `usnm_qwen` 1.17. [Studies 1](#study-1-german-fraktur-926-835) and [5](#study-5-loop-guard-8b-training-and-the-deployed-path)
+3. **Fine-tuning isn't worth it yet.** The 2B adapter's headline gain was the loop guard in disguise. With the guard on both, adapters add a few points on Reichsanzeiger Fraktur and nothing shown on English. They stay untrusted. [Studies 2](#study-2-lora-training-583) and [5](#study-5-loop-guard-8b-training-and-the-deployed-path)
+4. **BOINC's llama.cpp must be upgraded before any new reader ships.** The app's b8799 Vulkan build returns empty text on 72 of 612 crops, 71 of them one-line NZZ crops. The current release fixes it (4.6%, no empty readings). [Study 9](#deployed-runtime)
+5. **Read crops, not whole pages.** Surya's and Xiaomi-OCR-0's whole-page modes either lost column order or read about half the text or less. Crops read well, and aligning crop text onto RapidOCR's word boxes gives search coordinates without losing accuracy. [Studies 3](#reading-order-on-multi-column-pages-925), [6](#page-modes-on-the-reading-order-pages) and [9](#word-boxes)
+6. **Validate replicas by character similarity.** It fails at most 6 of 612 honest crop pairs across cards and runtimes, and flags 95 crops against b8799 Vulkan and every shuffled pair. Word-bag Dice fails 70 of 612 honest CUDA-and-CPU pairs, about one in nine. This supports `crop-consensus-v2` (#1434). [Study 9](#validation-across-cards)
+7. **Retire Surya; drop GOT, Granite and American Stories for crops.** Run as intended, Surya is still worse than Tesseract (23.0% against 9.0%). [Studies 3](#study-3-engine-comparison-968-812-925) and [6](#study-6-a-fair-surya-retest)
+8. **Yiddish: use Jochre for books; newspapers are unsolved.** On hand-corrected book pages Jochre 3 has 1.5% CER, Tesseract 8.7% (4.0% once trained on the corpus, on unseen pages from books it trained on) and Qwen version 4 30%. Don't launch a Yiddish reread at Qwen version 4. No reader is shown to work on our Yiddish newspapers. [Studies 8](#study-8-yiddish-test-set-2-november-2026) and [10](#study-10-tesseract-trained-on-the-yiddish-corpus-3-november-2026)
+9. **Japanese: NDLOCR-Lite agrees best with other readers,** but nothing here measures Japanese accuracy. [Study 3](#japanese-agreement-scores)
+10. **Settings:** keep 1,024 image tokens for Qwen ([Study 7](#study-7-image-token-sweep)); rent 3090s, which are cheaper per page than 4090s ([Study 4](#study-4-pages-per-dollar-296)).
 
-A rank-8 LoRA adapter on Qwen 2B cut held-out Reichsanzeiger CER from 62.0% to 17.3%. Study 5 found that a loop guard alone gives the same gain (-45.0 points against the adapter's -44.7): with the guard on both, the 2B adapter's own gain is -6.9 points on Reichsanzeiger (second use) and -1.0 on unseen Fraktur books, with none on English. An 8B adapter gains -4.5 on Reichsanzeiger and little or nothing on the clean sets. Both lose little or nothing when exported to the GGUF the BOINC app runs. They stay untrusted.
+## What to do next
 
-The guard is `stop`: end the reading when the contract's `tail_repetition` fires and keep the text before the repeat. It costs little real text. Study 7 found no image-token setting better than 1,024.
+| Action | Why | Status |
+| --- | --- | --- |
+| Upgrade `usnm_qwen`'s native llama.cpp from b8799 | Its Vulkan build drops one-line crops | In progress |
+| Ship `crop-consensus-v2` | Fair validation across cards and runtimes | In progress (#1434) |
+| Confirm Xiaomi-OCR-0 on held-out pages | The 612 crops have now been read by every reader | Study 11 running |
+| Package Xiaomi-OCR-0 for BOINC | Best accuracy for the cost | After the three above |
+| Move the word-box aligner into `usnm-alto` | Search highlighting for vision-language text | After #1488 and #1489 |
+| Keep adapters untrusted | Small gains, Fraktur only | Open (#583) |
+| Build a transcribed Yiddish newspaper set | No reader is shown to work there | Open |
 
-Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 was faster than a 3090 and dearer per page. Study 3's Surya scores measured our configuration: in Study 6, line recognition took Surya from 109.2% to 23.0% pooled CER, still behind Tesseract's 9.0% on those crops, and `whole` mode kept column order better but read less than half the text.
+## Reading this report
 
-On Japanese, NDLOCR-Lite, CHURRO and Surya agree most with each other and with the machine references. That is agreement, not accuracy. No human transcription of these crops exists that we could verify.
-
-On Study 3's 612 crops, Xiaomi-OCR-0, a 0.8B reader, has a pooled CER of 4.0% against Tesseract's 9.0%, a difference of -5.0 points (limits -6.4 to -3.8). That passes Study 9's rule, so a deployed-path study comes next. It ties Qwen 8B with the guard (4.5%; difference -0.4, limits -1.4 to 0.5), has 7 major hallucinations flagged to Qwen's 32, and read all 676 crops, Latin and Japanese, in 69 seconds on the local 2060 SUPER. It returns text without coordinates, so it can't make ALTO by itself. Its whole-page mode at 2,048 px misses about half of a newspaper page. BOINC ships llama.cpp b8799, whose Vulkan build drops one-line crops (10.5%, with 72 empty readings); the current release reads the same crops at 4.6% and the CUDA build at 4.3%, so a runtime update comes first. On a rented 3090, Xiaomi-OCR-0 reads crops for about $0.02 per 1,000 pages of reading time.
-
-On 104 hand-corrected Yiddish book pages, mean page CER is 1.52% for Jochre 3, 8.72% for Tesseract `yid` and 30.15% for Qwen request version 4. Qwen was given the corpus's line segmentation and reading order; the page readers were not. The 100 damaged newspaper crops have no transcriptions, so their high disagreement is not a measure of accuracy. Don't launch a full Yiddish reread at version 4 on this evidence.
-
-Study 10 trained Tesseract `yid` on the corpus's 554 training pages. The trained model reads the test pages at 4.03% mean page CER, against 8.72% for stock `yid`, still behind Jochre 3; the test pages come from the books it trained on. In the first run, Latin and Cyrillic letters in the training text made the model's character set left to right by majority, and it read multi-column pages with their columns in the wrong order; the second run left those lines out. On the newspaper crops, the trained model's readings moved no closer to Jochre's, so whether it reads newspapers better is unknown. Nothing is deployed.
+The samples, measures and decision rules for each study were fixed in [`protocol.md`](protocol.md) before its runs, except Studies 8 and 10, which were added later. All limits are 95% bootstrap limits resampling source pages; "post-hoc" marks anything chosen after seeing results. Departures are listed under [Departures from the protocol](#departures-from-the-protocol). Some early comparisons are provisional because the historical runners could hide failed reads and the adapter files weren't checked for missing tensors; see [Reproduction notes](#reproduction-notes). Scripts are in [`scripts/`](scripts/), the scoring tool in [`tools/`](tools/), and the data in [`data/`](data/).
 
 # Study 1: German Fraktur (#926, #835)
 
-Readers: Qwen3-VL 8B Q4_K_M on an RTX 3090, Tesseract 5.5 `frak2021` and `deu_latf+deu`, and LoC's text on the pilot pages.
+**Bottom line.** Unguarded Qwen 8B loses to Tesseract `frak2021` on German, 49.6% CER against 17.9%, and the whole gap is 9 looped crops of 1,060. Without them Qwen wins, 10.9% against 17.7%. So the fix is a loop guard, which Study 5 found and 1.17 ships. No German trust threshold comes out of it; #835 stays open.
 
-The historical Tesseract wrappers could record failed or timed-out reads as text. The retained Study 1 and 3 outputs lack per-read exit receipts, so job-level success and zero missing counts cannot establish that all reads succeeded. Their Tesseract comparisons remain provisional. Updated wrappers record failures separately; no OCR was rerun.
+Readers: Qwen3-VL 8B Q4_K_M on an RTX 3090, Tesseract 5.5 `frak2021` and `deu_latf+deu`, and LoC's text on the pilot pages.
 
 ## Measured CER, on human transcriptions
 
@@ -65,8 +72,6 @@ The invented-text check counts 88 major hallucinations for Qwen and 126 for `fra
 
 100 pages frozen from the pilot list, 1,187 crops. There's no transcription here, so this is agreement, not accuracy. These numbers say how far readers differ, and nothing about which is right. The list records no typeface, so these aren't known to be Fraktur pages.
 
-For future preparation, `scripts/prep-pilot.sh` skips a unit only when both `page.jpg` and `qwen.json` exist. It stages the scan conversion and checks retained page bytes before retrying a page-only unit with `local-unit`'s atomic, synced writer; a manifest without its page is preserved for review. Recovery uses the current ALTO: an orphan cannot prove which ALTO was used before interruption. Failures prevent `PREP-DONE`; don't run concurrent writers against the same work directory. The [offline synthetic tests](../../../scripts/ci/test_gpu_study_prep_pilot.py) do not rerun or verify historical preparation.
-
 | Pair | Symmetric edit rate | 95% limits | Mean word-bag Dice |
 | --- | ---: | ---: | ---: |
 | `frak2021` PSM 3 and `deu_latf` PSM 3 | 20.1% | 18.3 to 21.7 | 0.57 |
@@ -81,11 +86,11 @@ No German trust threshold comes out of this study, and #835 stays open.
 
 # Study 2: LoRA training (#583)
 
+**Bottom line.** A rank-8 adapter on Qwen 2B cut Reichsanzeiger CER from 62.0% to 17.3%, but Study 5 shows that almost all of this was fewer loops: a loop guard alone gives the same gain. The adapter adds nothing shown on English and stays untrusted.
+
 A rank-8 adapter on Qwen3-VL-2B, trained for 2,000 optimizer steps on 4,032 crops from the Austrian newspapers, NewsEye BnF and NewsEye NLF Swedish. Validation was NZZ and NewsEye Finnish (378 crops), test Reichsanzeiger and Overproof (1,000 crops, 38 pages). The split was fixed before training: SHA-256 of [`data/samples/lora-split.json`](data/samples/lora-split.json) is `65fe42a25f9e2ee6f30c975b2c7bc9398c5293493a01ccad165930a51606ff81`.
 
 Training took 61 minutes on an RTX 3090, with 8.8 GB allocated at peak and about 21.7 GB reserved. All 4,032 examples encoded.
-
-For regeneration, `analyze-2.sh` requires `--phase validation` to score checkpoints for selection or `--phase test` to score the held-out split; it has no default phase.
 
 Validation. Used once, to pick a checkpoint.
 
@@ -98,8 +103,6 @@ Validation. Used once, to pick a checkpoint.
 | 2,000 steps | 3.7% | 2.9 to 4.8 | 15.8% |
 
 The 1,000-step adapter was selected, SHA-256 `b6bc8c2a1c6b4e953e10321ebb8bdf27a363840cb7a8b05bf92eb16ed6d77b80`.
-
-The historical loaders did not require a complete adapter tensor-key set. The retained training logs record checkpoint hashes but not tensor keys, and the inspected study data do not contain the checkpoint payloads. Completeness of the 2B and 8B adapters therefore remains unverified, so the adapter comparisons in Studies 2 and 5 are provisional. The updated loaders reject incomplete adapters; no readings were rerun.
 
 Held-out test. Scored once.
 
@@ -127,11 +130,11 @@ Status. The adapter stays `untrusted-requires-held-out-evaluation`. It wasn't ex
 
 # Study 3: engine comparison (#968, #812, #925)
 
+**Bottom line.** On 612 human-transcribed crops, only Qwen 8B, CHURRO and Tesseract are usable readers. Qwen leads on English and French but loops on German, CHURRO is best on Finnish, and Surya, GOT, Granite and American Stories fail on most crops. On Japanese, NDLOCR-Lite agrees best with the others. Tiled Surya loses column order, mostly through our tile stitching (Study 6).
+
 ## Latin-script crops, on human transcriptions
 
 612 crops. Pooled CER by source, with median crop CER in brackets. A reader with no output on a crop scores as empty. Limits and WER are in [`data/s3/compare.jsonl`](data/s3/compare.jsonl).
-
-For regeneration, `analyze-3.sh` decodes the American Stories `as.b64` in `${GPU_STUDY_DEV}/local/out/` (or `AMERICAN_STORIES_B64`), joining nonblank `bboxes[].raw_text` in order as the survey runner does. Alternatively, explicitly set `AMERICAN_STORIES_JSONL` to an existing `{id,text}` JSONL file, such as the [retained readings](data/s3/american-stories.jsonl); do not set it with `AMERICAN_STORIES_B64`. Input and override paths are absolute or relative to `GPU_STUDY_ROOT`. A valid empty reading is present; an absent row is missing. Before scoring, the last selected reading for each ID must match those retained readings, or `AMERICAN_STORIES_REFERENCE` if they are elsewhere. A missing input, malformed result, or mismatch stops regeneration rather than changing the historical scores. The raw batch was unavailable for this review, so its comparison has only been exercised on synthetic data.
 
 | Source (crops, pages) | Qwen 8B | CHURRO | Tesseract | Surya | GOT-OCR | Granite | American Stories |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -211,6 +214,8 @@ Tiled Surya loses column order on most pages. 3 of 12 `frak2021` pages do too, w
 
 # Study 4: pages per dollar (#296)
 
+**Bottom line.** Qwen 8B costs about $3.40 per 1,000 pages on a rented 3090, and tiled Surya about ten times more. The 4090 is faster but dearer per page, so rent 3090s.
+
 The same pages from the frozen sample. Cost is everything paid for the instance, from creation to destruction, at its hourly price.
 
 | Workload | Card | Pages read | Pages per hour, reading | $/hour | Instance minutes | $ per 1,000 pages |
@@ -226,6 +231,8 @@ Pages per hour for Surya compares the first 18 pages on each rented card. The 20
 Qwen at 467 crops and Surya on whole pages are different work: a Surya page costs about ten times a page of Qwen crops. The 4090 is about 1.5 times as fast on Qwen and 1.3 times on Surya, at about 1.9 times the price, so the 3090 is cheaper per page on both. No Study 4 rental failed, so the table holds all its paid time. The 2060 SUPER has no rental cost, and its electricity wasn't measured. Qwen wasn't measured on it, because pulling the image would block the BOINC client.
 
 # Study 5: loop guard, 8B training and the deployed path
+
+**Bottom line.** The `stop` loop guard is the change that matters: it takes Qwen 8B on German from 49.6% to 11.1% CER, ahead of Tesseract, at almost no cost in real text, and it ships in 1.17. Adapters add little on top (8B: 4.5 points on Reichsanzeiger, under a point elsewhere) and survive GGUF export, but stay untrusted.
 
 Study 2's test set was to be scored once. Reusing Reichsanzeiger and Overproof here is a departure, so those results are labelled second use. Two sets no study had used give the clean confirmation: 200 BLN600 English excerpts and 300 GT4HistOCR `dta19` Fraktur lines from 30 books, frozen before any reading. BLN600 is cut from London newspapers, and `dta19` is from books, so it says less about newspaper layout.
 
@@ -306,10 +313,11 @@ Major hallucinations fall from 102 to 45 of 1,500, under-length failures go from
 
 Against BF16, the same adapter lost a little in Q4_K_M on Reichsanzeiger, +0.5 points (-0.1 to 1.1), and Overproof, +0.2 (0.1 to 0.3), with `dta19` and BLN600 within noise. On the deployed path the 8B adapter is slightly worse than stock on BLN600, +0.3 (0.2 to 0.4), so it isn't neutral on English. Peak VRAM was 7.2 GB for 8B Q4_K_M and 18.8 GB for 8B BF16 inference.
 
-
 The adapters stay `untrusted-requires-held-out-evaluation`.
 
 # Study 6: a fair Surya retest
+
+**Bottom line.** Run the way it's meant to be, Surya is still worse than Tesseract on our crops (23.0% against 9.0%), and its best page mode keeps column order but reads under half the text. Retire Surya.
 
 Study 3's Surya rows measure our configuration. This retest ran the same inputs the way Surya is meant to run, on a 12 GB RTX 3060. The crops and pages were already seen, so this is a second use, with no training.
 
@@ -348,6 +356,8 @@ All 50 archived native rows have successful status and nonempty output, and thei
 
 # Study 7: image-token sweep
 
+**Bottom line.** No image-token setting beats Qwen's current 1,024 by a margin worth a new request version, so keep it.
+
 Only default and 1,024 minimum image tokens had been compared (#529), and 1,024 came from llama.cpp's warning. This sweep ran the stock Qwen 8B Q4_K_M GGUF at six values, with the `stop` guard applied to every reading. It ran on a rented RTX 3060 in the `usnm_qwen` image's CUDA build 11610, because the native Vulkan build of the installed app found no device there. So the build differs from the 1.14 to 1.17 Vulkan builds, and agreement between two vendors wasn't measured. The Yiddish crops typed in #529 couldn't be found, so Yiddish has no word recall here.
 
 Crops: the 39 of #529 (34 Yiddish, 3 Serbian, 2 English, no transcriptions), and 112 with human transcriptions (French 24, Finnish 18, Swedish 10, German Austrian newspapers 60). No gold-set crop has a transcription yet, and no Study 5 test set was used. Context size stayed 4,096 up to 1,536, then rose to fit: 4,352 at 2,048 and 5,376 at 3,072.
@@ -369,17 +379,15 @@ The Study 2 and Study 5 adapters trained at 1,024 to 2,048 image tokens (`min_pi
 
 # Study 8: Yiddish test set (2 November 2026)
 
+**Bottom line.** On hand-corrected Yiddish book pages, Jochre 3 reads at 1.52% CER, Tesseract `yid` at 8.72% and Qwen request version 4 at 30.15%. Don't run a Yiddish reread at version 4. Our Yiddish newspapers have no transcriptions, and the readers disagree on 60% to 74% of their text, so newspaper Yiddish is unsolved.
+
 The six typed Yiddish crops from #529 could not be found. This study tests the staged version 4 request against hand-corrected books, then measures agreement on untranscribed newspaper crops. It was added after the earlier studies, not as a preregistered amendment to their protocol.
 
 ## Book accuracy
 
+Whole-page readers found their own layout; Qwen and the Tesseract PSM 7 control were given the corpus's line boxes and reading order, so their scores measure recognition alone (details in [Reproduction notes](#reproduction-notes)).
+
 The [Yiddish OCR Corpus](https://gitlab.com/jochre/corpora/jochre-yiddish-corpus), by Assaf Urieli and the Yiddish Book Center, is [CC BY-NC-SA 4.0](https://gitlab.com/jochre/corpora/jochre-yiddish-corpus/-/blob/bd69b412947e03cca18fdd5c72826207946d777f/LICENSE.md); see [Urieli et al.](https://arxiv.org/abs/2501.08442). We used its test split at commit `bd69b412947e03cca18fdd5c72826207946d777f`: 104 book pages from 60 books, annotated to glyph level and reviewed by a second annotator. No adapter was trained on the corpus in this study. Jochre's previously trained model is not independent of that corpus.
-
-Jochre 3 1.1.4 and Tesseract 5.5.0 `yid` read whole pages, the latter with `tessdata_best`, PSM 3 and 300 dpi. `yid+eng` is a second whole-page setting. Qwen3-VL 8B Q4_K_M ran through the installed `usnm_qwen` 1.17 app and llama-server b8799 on an RTX 2060 SUPER, outside BOINC. Version 1 uses the default image-token minimum without the loop guard; version 3 adds the guard; version 4 combines the guard with a 1,024-token minimum.
-
-Qwen and the Tesseract PSM 7 control read the corpus's 4,011 ALTO line boxes and had their readings joined in ALTO order. They therefore received segmentation and reading order that the whole-page readers had to find themselves; the line readers' page scores measure recognition under that advantage. No page or line results were missing, although Tesseract PSM 7 returned empty text for 139 lines.
-
-The book measure is the mean of page CERs, after Jochre's YIVO simplification on both sides and collapsed paragraph breaks. Our simplifier matched the corpus's simplified text on 103 of 104 pages, with one edit across 167,980 characters. Limits are 95% percentile bootstrap intervals over pages, 2,000 resamples with seed 202611; they do not resample books. CER can exceed 100% when insertions are numerous.
 
 | Reader | Input | Mean page CER | 95% limits |
 | --- | --- | ---: | ---: |
@@ -408,31 +416,13 @@ There is no human transcription for these crops. Distances below are pooled Leve
 
 The book result doesn't establish which reader is best on newspapers. A human-transcribed newspaper test set is needed before choosing one or launching a full version 4 reread.
 
-## Data and provenance
-
-The [aggregate-only Study 8 supplement](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-data-s8-supplement-20261102-b7f7371) includes the complete summary scores, line diagnostics, newspaper agreement and provenance, but no images, transcriptions, OCR text or per-page or per-crop results. Its [archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.tar.gz) has SHA-256 `eff92070058bf0d065e3febcde6f215dc4f2f955e4a1dca002189de1e44e5030`; verify it against the published [checksums](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/SHA256SUMS) before extracting at the repository root. The [member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.members.txt) identifies the files.
-
-The supplement is **not** the cumulative `report-data` set and does not change `ops/data-assets.json`. The normal cumulative packer would also carry forward the earlier release and tracked November study data, including textual reader outputs. Rights review and a safe migration or exclusion plan for that earlier material remain necessary before publishing a cumulative replacement or completing that data step for merge.
-
-The retained test-ID and newspaper-selection digests were recorded after scoring. We did not locate a per-file split hash manifest, so the pinned revision and retained lists do not establish the exact bytes used for each page. This is a byte-level reproducibility limitation, not by itself a blocker for the aggregate supplement.
-
-The checked-in runners were hardened after scoring to retry failed Jochre and Tesseract reads, exclude readings without successful timing receipts, check Jochre ZIP integrity, and stop native workloads before restoring BOINC GPU mode. The native runner supervises its whole batch and publishes a unit's result marker only after its output copies complete. The window supervisor reaps descendants, including detached sessions, and confirms cleanup before restoring GPU mode. If confirmation is missing, it attempts a permanent `never` hold and requires an operator to inspect and manually resume. The native runner and deadline helper require either a BOINC hold expiring at least 60 seconds after their deadline or an explicit `--no-boinc` for a standalone host. They do not themselves establish or verify the initial hold: on a BOINC host, use the window wrapper.
-
-If cleanup approaches the timed suspension's expiry, the supervisor retries extending the hold. A failed BOINC RPC can prevent either extension or the permanent hold; an uncatchable termination of the window wrapper or a standalone supervisor can prevent cleanup or hold extension. In those cases, a surviving workload can outlast a timed suspension and needs operator intervention; inspect the processes before any manual GPU-mode change.
-
-The historical Jochre runs have HTTP 200 receipts and valid text-containing ZIPs for all 104 book pages and 100 newspaper crops. Study 8 calls its own Tesseract runner, not the earlier studies' Tesseract wrappers. Both whole-page settings have 104 of 104 successful receipts, the line setting has 4,011 of 4,011, and the newspaper run has 100 of 100; the scored readings match the retained outputs. The 139 empty line readings are noted above. An exit code alone cannot establish that a reading is semantically complete. No readers were rerun for these changes.
-
-Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.py) from the repository root with `python3 -B -I scripts/ci/test_gpu_study_yiddish.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
-
 # Study 9: Xiaomi-OCR-0 (3 November 2026)
 
-Xiaomi-OCR-0 is a 0.8B reader built on Qwen3.5-0.8B, released under Apache-2.0 on 30 September 2026. The protocol amendment of 3 November fixed the samples, measures and rule before any reading. It ran on the local RTX 2060 SUPER in bounded windows, with BOINC GPU work suspended: vLLM 0.29.0 in FP16 (the card has no BF16, and vLLM fell back to its Triton attention backend), weights at revision `bbd8cf8d21f2`, requests sent through saturate 0.3.0. The first window ended at the 10-minute readiness limit while vLLM was still compiling and read nothing. The second window ran the whole protocol. Scripts are in [`scripts/s9/`](scripts/s9/) and [`analyze-9.sh`](scripts/analyze-9.sh).
+**Bottom line.** Xiaomi-OCR-0, a 0.8B reader, is the best we have tested: 4.0% CER on the 612 crops against Tesseract's 9.0%, level with guarded Qwen 8B, with fewer inventions, at about $0.02 per 1,000 pages of reading time on a rented 3090. It needs a current llama.cpp on BOINC (b8799's Vulkan build drops one-line crops), crops rather than whole pages, and word boxes from another reader, which the aligner below supplies. Study 11 is confirming it on held-out pages.
 
-Xiaomi's training data isn't published, so exposure to Overproof or the NewsEye sets can't be ruled out. The same holds for CHURRO and Chronicling America.
+## Crop accuracy
 
-## Latin-script crops, on human transcriptions
-
-Region prompt, at most 2,048 output tokens. Pooled CER by source, median crop CER in brackets. Qwen 8B is Study 3's reading with Study 5's `stop` guard applied after the fact. The guard changed none of Xiaomi's readings and 3 of Qwen's.
+On the 612 crops, Xiaomi-OCR-0 beats Tesseract by 5.0 points (limits -6.4 to -3.8), which passes the protocol's rule, and CHURRO by 2.4 (-4.2 to -0.7). It ties Qwen 8B with the guard (-0.4, limits -1.4 to 0.5): ahead on English and German, behind on Finnish. Pooled CER by source, median crop CER in brackets:
 
 | Source (crops, pages) | Xiaomi-OCR-0 | Qwen 8B, guard | CHURRO | Tesseract |
 | --- | ---: | ---: | ---: | ---: |
@@ -444,97 +434,44 @@ Region prompt, at most 2,048 output tokens. Pooled CER by source, median crop CE
 | Reichsanzeiger German (100, 20) | 10.4 (5.9) | 13.0 (5.1) | 18.3 (4.6) | 18.6 (3.5) |
 | NZZ German (360, 167) | 5.3 (3.8) | 7.0 (2.0) | 13.4 (5.7) | 13.4 (5.3) |
 
-**Primary.** Against Tesseract the pooled difference is -5.0 points (limits -6.4 to -3.8). The limits exclude zero, so by the protocol's rule Xiaomi-OCR-0 earns a deployed-path study.
+It invents far less than the others: 7 major hallucinations of 612, against 32 for Qwen, 48 for Tesseract and 54 for CHURRO, and no loops, empty readings or token-cap hits. Its median crop CER is higher than Qwen's while its pooled CER is lower: fewer big failures, more small errors. Its training data isn't published, so exposure to these public sets can't be ruled out (the same is true of CHURRO and Chronicling America).
 
-Secondary, all paired by source page:
-
-| Pair | Difference | 95% limits |
-| --- | ---: | ---: |
-| Xiaomi-OCR-0 against Qwen 8B, guard | -0.4 | -1.4 to 0.5 |
-| Xiaomi-OCR-0 against CHURRO | -2.4 | -4.2 to -0.7 |
-
-No difference is called against Qwen 8B. By source, Xiaomi-OCR-0 is ahead of Qwen on Overproof (-0.6, limits -1.3 to -0.1) and behind it on Finnish (+2.7, limits 0.5 to 4.4); elsewhere the limits include zero. Its median crop CER is higher than Qwen's on most sets, while its pooled CER is lower, which fits fewer large failures and more small errors per crop. Folding long s, the double hyphen and superscript e (post-hoc) gives 3.6% for Xiaomi-OCR-0, 4.0% for Qwen and 8.2% for Tesseract.
-
-Invented text, on 612 crops:
-
-| Reader | Major hallucinations | Over-length guard | Under-length guard | Word-overlap guard |
-| --- | ---: | ---: | ---: | ---: |
-| Xiaomi-OCR-0 | 7 | 12 | 4 | 5 |
-| Qwen 8B, guard | 32 | 29 | 2 | 9 |
-| CHURRO | 54 | 53 | 13 | 4 |
-| Tesseract | 48 | 46 | 7 | 17 |
-
-No Xiaomi reading hit the token cap, looped, came back empty or contained Han characters. Nobody has read the flagged crops.
-
-## Japanese agreement scores
-
-The same 64 crops and measures as Study 3. Agreement, not accuracy. Median bigram F1 against the 23 machine references is 0.65 for Xiaomi-OCR-0: 0.51 on typeset crops and 0.78 on camp papers. NDLOCR-Lite has 0.84, CHURRO 0.81 and Qwen 8B 0.74. Its median F1 with NDLOCR-Lite over all 64 crops is 0.55. It looped on 2 crops, against Qwen's 15. On typeset Japanese only `jpn_vert` scores below it.
+On Japanese it is weak (median bigram F1 against the machine references 0.65, against 0.84 for NDLOCR-Lite), though it loops on 2 crops to Qwen's 15.
 
 ## Whole pages
 
-The 20 reading-order pages in whole-page mode, as the `uv-scripts/ocr` saturate recipe runs it: the document prompt, the page fitted to 2,048 px, at most 12,000 output tokens.
+Whole-page mode fits each page into 2,048 px, a fraction of the scan's resolution. The readings look like newspaper text, but they hold half the words of LoC's text and share few of them: only 7 of 20 pages had enough matched words to score column order. Use crops.
 
-| Reader | Pages with 20 or more matched words | Median tau | Lowest | Pages under 0.5 | Matched words a page |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| LoC | 20 | 0.97 | 0.57 | 0 | 1,709 |
-| `frak2021` PSM 3, whole page | 12 | 0.73 | 0.11 | 3 | 205 |
-| Xiaomi-OCR-0, whole page | 7 | 0.66 | 0.22 | 2 | 46 |
+| Reader | Pages with 20 or more matched words | Median tau | Matched words a page |
+| --- | ---: | ---: | ---: |
+| LoC | 20 | 0.97 | 1,709 |
+| `frak2021` PSM 3, whole page | 12 | 0.73 | 205 |
+| Xiaomi-OCR-0, whole page | 7 | 0.66 | 46 |
 
-At 2,048 px a newspaper's body type is a few pixels high. The readings hold a median of about 1,900 words, against about 3,800 in the geometric reference built from LoC's ALTO. They read like newspaper text but share few words with LoC's text. One page hit the 12,000-token cap, and two contained Han characters (7 and 1). This mode doesn't suit our pages. The crop results above are the region stage of upstream's two-stage pipeline, with our crops in place of its layout model's.
+## Deployed runtime
 
-## Speed
-
-On the 2060 SUPER, after a start of about 10 minutes for compilation and graph capture:
-
-| Set | Items | Seconds | Rate | Window saturate settled at |
-| --- | ---: | ---: | ---: | ---: |
-| Crops, Latin and Japanese | 676 | 68.5 | 9.9 crops a second | 32 |
-| Whole pages | 20 | 320.9 | 224 pages an hour | 8 (the cap) |
-
-At Study 4's 12 crops a page, 9.9 crops a second is about 2,900 pages an hour, against 91 for Qwen 8B on a rented 3090 with llama.cpp. The two runs used different engines, batching and crops, so this is a rough comparison and not a measured ratio. BOINC's `usnm_qwen` runs llama.cpp with `--parallel 1`, and nothing here measures Xiaomi-OCR-0 that way. vLLM reserves 88% of the card's memory, so the samples' peak of 6.4 GB says nothing about what the model needs. Its weights are 1.7 GB.
-
-## Output
-
-The model returns text: Markdown for whole pages, plain text for regions. It gives no word, line or block coordinates, so it can't produce ALTO by itself. Upstream's two-stage pipeline gets block boxes from a separate layout model. Using it for search text means aligning its words to Tesseract's or LoC's word boxes, which hasn't been tried here.
-
-## saturate
-
-saturate drove both sets with no errors, retries or circuit-breaker trips. On crops its window settled at 32 after two cuts for queue growth. On pages it stayed at the cap of 8. Its summary flagged that run as input-bound, while 105 of its 106 ticks named the engine as the bottleneck. The crop run finished in 68.5 s, before the planned kill at 90 s, so the kill and resume check only covered a completed run: the rerun skipped all 676 ids and read none twice. A kill mid-run wasn't tested.
-
-## Step 2: the deployed path
-
-The amendment's GGUF is the pinned weights converted with `convert_hf_to_gguf.py` at llama.cpp `e1a9a6dcb`, the build `usnm_qwen` 1.17 ships, to Q8_0 (SHA-256 `61f0667b`) with an F16 vision projector (`77dc7cf2`). That converter didn't know this tokenizer's hash. Its pre-tokenizer is the Qwen2 regex, character for character, so a one-line patch maps the hash to `qwen2` ([`scripts/s9/converter.patch`](scripts/s9/converter.patch)). The 612 crops were read one at a time with the app's flags (`--parallel 1`, temperature 0, seed 42, a 16,384-token context) through saturate with a fixed window of 1.
+In the runtime BOINC ships (llama.cpp b8799, Q8_0 GGUF, the app's flags, one crop at a time), the Vulkan build returns empty text on one-line crops, and the result fails the rule: it no longer beats Tesseract. The CPU build holds it. The current release fixes Vulkan, and the CUDA build comes within 0.3 points of vLLM:
 
 | Runtime, Q8_0 GGUF | Pooled CER | Against Tesseract | 95% limits | NZZ | Empty readings | Seconds a crop |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1.17 Vulkan (b8799), 2060 SUPER | 10.5% | +1.5 | -0.4 to 3.8 | 31.3% | 72 | 0.43 |
-| 1.17 CPU (b8799), 4 threads | 5.8% | -3.2 | -4.6 to -1.9 | 13.6% | 1 | 4.0 |
-| 1.17 Vulkan, `--image-min-tokens 64` (post-hoc) | 6.6% | -2.4 | -4.1 to -0.8 | 13.2% | 14 | 0.50 |
-| b12084 Vulkan (official release), 2060 SUPER | 4.6% | -4.4 | -5.8 to -3.2 | 8.0% | 0 | 0.48 |
-| vLLM, step 1 | 4.0% | -5.0 | -6.4 to -3.8 | 5.3% | 0 | n/a |
+| b8799 Vulkan, 2060 SUPER | 10.5% | +1.5 | -0.4 to 3.8 | 31.3% | 72 | 0.43 |
+| b8799 CPU, 4 threads | 5.8% | -3.2 | -4.6 to -1.9 | 13.6% | 1 | 4.0 |
+| b12084 Vulkan, 2060 SUPER | 4.6% | -4.4 | -5.8 to -3.2 | 8.0% | 0 | 0.48 |
+| `091b6a7fc` CUDA, RTX 3090 | 4.3% | -4.7 | -6.0 to -3.5 | 7.3% | 0 | 0.26 |
+| `091b6a7fc` CUDA, RTX 4090 | 4.3% | -4.8 | -6.2 to -3.6 | 7.1% | 0 | 0.20 |
+| vLLM | 4.0% | -5.0 | -6.4 to -3.8 | 5.3% | 0 | n/a |
 
-The amendment's rule holds on the CPU arm and fails on the 1.17 Vulkan arm. The Vulkan arm's loss is nearly all on NZZ's one-line crops, about 47 px high: 71 of its 72 empty readings are NZZ lines, where the model ends at once. CPU and Vulkan sent the same requests (98,010 prompt tokens each), so this isn't image sizing. A higher image-token floor, chosen after seeing the result, only partly hid it. The current release, b12084 (`f9448cddc`), reads the same requests on the same card at 4.6% with no empty readings, so the fault is in b8799's Vulkan backend. The b12084 arm was added on the maintainer's approval after the 1.17 Vulkan result; its archives matched GitHub's published SHA-256 digests.
+71 of b8799 Vulkan's 72 empty readings are NZZ's one-line crops. CPU and Vulkan sent identical requests, so the fault is the backend, not image sizing; a 64-token image floor (post-hoc) cut the empty readings to 14 but left CER at 6.6%. Rented cards couldn't test Vulkan, because Vast doesn't expose the driver's graphics capability.
 
-## Step 3: rented cards
+## Cost
 
-Six Vast.ai instances, $0.26 in all, rate times time from creation to destruction ([`ledger-s9.csv`](data/s9/runs/ledger-s9.csv)). Two read nothing, from runner faults since fixed (a missing library path for the CUDA build, and no device diagnostics), and one never answered SSH.
-
-**(a) Runtimes on newer cards.** No Vulkan device appeared on either card. Vast set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` whatever the create request asked, so the driver's graphics libraries were present but unusable ([`vulkan-env.txt`](data/s9/runs/results/s9-r3090/vulkan-env.txt)). The local card above answers the Vulkan question. The worker image's CUDA build (`091b6a7fc`), the one the CUDA plan class runs:
-
-| Card | Pooled CER | Against Tesseract | 95% limits | NZZ | Empty readings | Seconds a crop |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| RTX 3090 | 4.3% | -4.7 | -6.0 to -3.5 | 7.3% | 0 | 0.26 |
-| RTX 4090 | 4.3% | -4.8 | -6.2 to -3.6 | 7.1% | 0 | 0.20 |
-
-Export to Q8_0 costs about 0.3 points against vLLM on a sound runtime. The CUDA build is also newer than b8799, so the CUDA rows don't separate the backend from the build.
-
-**(b) Pages per dollar.** Study 9's vLLM job, unchanged, on a $0.20-an-hour RTX 3090: 676 crops in 23.0 s and 20 pages in 67.0 s, after about 4 minutes of startup. At Study 4's 12 crops a page that is about 8,800 pages an hour from crops, or about $0.02 per 1,000 pages of reading time, and about 1,075 whole pages an hour ($0.19 per 1,000). saturate flagged the crop run as input-bound, so the card may not have been the limit ([`vllm-3090-stats.jsonl`](data/s9/runs/vllm-3090-stats.jsonl)). Study 4's $3.40 for Qwen 8B counts all paid time over 40 pages, so the bases differ. Against it, Xiaomi-OCR-0 is about 150 times cheaper per page on crops and about 18 times on whole pages.
+On a $0.20-an-hour rented 3090 with vLLM, 676 crops took 23 s: about 8,800 pages an hour at Study 4's 12 crops a page, or $0.02 per 1,000 pages of reading time. Whole pages run at about 1,075 an hour ($0.19 per 1,000). Study 4's Qwen 8B figure, $3.40 per 1,000 pages, includes boot and idle time, so the bases differ, but the gap is about 150 times on crops. Six rentals cost $0.26 in all.
 
 ## Validation across cards
 
-The `usnm_qwen` validator compares replicas crop by crop: the strict rule by word-bag Dice, `crop-consensus-v2` by character similarity, each with a floor of 0.5. The same two measures on Xiaomi-OCR-0's readings of the 612 crops:
+The `usnm_qwen` validator compares replicas crop by crop, with a floor of 0.5. Character similarity, the measure of `crop-consensus-v2` (#1434), passes nearly every honest pair and catches the faulty Vulkan readings. Word-bag Dice, the strict rule's measure, fails one honest CPU-and-GPU pair in nine. Counts are in [`validation-agreement.json`](data/s9/validation-agreement.json).
 
-| Pair | Identical | Similarity under 0.5 | Dice under 0.5 |
+| Pair, 612 crops | Identical | Similarity under 0.5 | Dice under 0.5 |
 | --- | ---: | ---: | ---: |
 | 3090 and 4090, same CUDA build | 566 | 1 | 1 |
 | CUDA and vLLM | 228 | 3 | 12 |
@@ -542,34 +479,22 @@ The `usnm_qwen` validator compares replicas crop by crop: the strict rule by wor
 | CUDA and b8799 Vulkan | 145 | 95 | 121 |
 | Shuffled control, different crops | 0 | 612 | 612 |
 
-Character similarity passes all but 1 to 6 of the 612 honest crop pairs across cards and runtimes, catches the faulty Vulkan readings and rejects every shuffled pair. Word-bag Dice would fail one honest CPU-and-GPU pair in nine on some crop. The one same-build failure is a small price heading the model misreads differently on each card. This supports `crop-consensus-v2` (#1434) for Xiaomi-OCR-0.
+## Word boxes
 
-## RapidOCR
-
-RapidOCR 3.10.0 with PP-OCRv6 small, its default, on the 612 crops on 4 CPU threads, 1.5 s a crop ([`data/s9/rapid/`](data/s9/rapid/)). This was exploration, not preregistered.
+Xiaomi-OCR-0 returns text without coordinates, so it can't make ALTO by itself. RapidOCR (PP-OCRv6 small, CPU, 1.5 s a crop) supplies them: it ties Tesseract on text (9.6% against 9.0%; better on Roman type, worse on Fraktur) and returns word boxes.
 
 | Source | RapidOCR | Tesseract | Difference | 95% limits |
 | --- | ---: | ---: | ---: | ---: |
 | All (612) | 9.6% | 9.0% | +0.6 | -0.4 to 1.7 |
 | Overproof English | 2.0% | 3.1% | -1.0 | -1.8 to -0.1 |
-| French | 5.7% | 7.2% | -1.5 | -4.1 to 1.5 |
 | Swedish | 7.0% | 11.4% | -4.4 | -6.2 to -2.0 |
 | NZZ German | 18.4% | 13.4% | +5.1 | 2.5 to 7.5 |
-| Reichsanzeiger German | 21.6% | 18.6% | +3.0 | -1.2 to 7.4 |
 
-It ties Tesseract overall, reads Roman type better and Fraktur worse (it has no Fraktur model), and flags 31 major hallucinations to Tesseract's 48. It returns line boxes and word boxes. A PP-OCRv6 medium run stopped unfinished after almost 3 hours.
-
-## Word boxes for vision-language text
-
-Xiaomi-OCR-0 gives text without coordinates. Summaries are in [`data/s9/align/`](data/s9/align/). A prototype aligner (Rust, on `usnm-alto`) maps its words onto RapidOCR's word boxes by a word-level Needleman–Wunsch in reading order, with a rescue pass for reordered segments, and interpolates the words it can't match. On the 612 crops (13,471 words):
-
-- The text survives: pooled CER 4.00% after alignment against 4.04% before; putting lines in the box reader's order instead costs 2.3 points.
-- 94.4% of words get a box from a RapidOCR word, 1.3% share one, 3.1% are placed by interpolation or line fitting, and 1.2% are guesses.
-- Where both readers and the reference agree on a word (11,179 words), the aligned box is RapidOCR's own box 99.97% of the time, mean IoU 0.998.
-
-It can't rescue invented text: on Xiaomi-OCR-0's whole-page readings of the 20 reading-order pages, only 6.7% of words matched LoC's ALTO. A page gate on the share of exact and fuzzy matches (about 88% on these crops, under 30% on whole pages) separates the two. Two issues in `usnm-alto` turned up and are filed: Markdown stripping deletes a leading "31. " (#1488), and same-row segments sort by `y0` alone (#1489).
+A prototype aligner maps Xiaomi-OCR-0's words onto RapidOCR's boxes in reading order ([`data/s9/align/`](data/s9/align/)). On the 612 crops the text keeps its accuracy (4.00% after against 4.04% before), 94.4% of words get a box of their own, and where both readers agree with the reference, the box is the right one 99.97% of the time. It can't rescue invented text: on whole-page readings only 6.7% of words matched LoC's, so a per-page match-share gate (about 88% on crops, under 30% on whole pages) must decide when to fall back. Two `usnm-alto` bugs turned up: #1488 and #1489.
 
 # Study 10: Tesseract trained on the Yiddish corpus (3 November 2026)
+
+**Bottom line.** Training Tesseract `yid` on the corpus halves its book-page CER (8.72% to 4.03%), still behind Jochre 3, and the test pages come from books it trained on. It doesn't move closer to Jochre on newspaper crops, so its value for our newspapers is unknown. Nothing is deployed.
 
 Study 8 put stock Tesseract `yid` at 8.72% mean page CER on the corpus's book pages, against 1.52% for Jochre 3. This study fine-tunes `yid` on the corpus's training split and reads Study 8's test pages, line crops and newspaper crops with the result, scored with Study 8's references, scorer and bootstrap (#1479). It was added after Study 8 and is not preregistered: the second training run, the checkpoint and the dictionary comparison were chosen after seeing the first run's results. It ran on a local CPU.
 
@@ -696,6 +621,38 @@ Of 69 instances, 37 ended with a clean job exit. The others: 20 with no SSH with
 | Tesseract, NDLOCR-Lite, American Stories | Local CPU, after the first Tesseract rental | none | no rental cost |
 
 From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an hour. Readers ran on different cards, which affects speed comparisons.
+
+# Reproduction notes
+
+**Historical runners.** The historical LoRA adapter files were not checked for missing tensors, earlier Surya page-mode runners could discard block errors, and earlier Tesseract wrappers could mask failed reads. The affected comparisons are provisional; the retained evidence does not establish whether these problems affected a result. Studies 8 and 10 used separately checked runners.
+
+**Study 1 preparation.** For future preparation, `scripts/prep-pilot.sh` skips a unit only when both `page.jpg` and `qwen.json` exist. It stages the scan conversion and checks retained page bytes before retrying a page-only unit with `local-unit`'s atomic, synced writer; a manifest without its page is preserved for review. Recovery uses the current ALTO: an orphan cannot prove which ALTO was used before interruption. Failures prevent `PREP-DONE`; don't run concurrent writers against the same work directory. The [offline synthetic tests](../../../scripts/ci/test_gpu_study_prep_pilot.py) do not rerun or verify historical preparation.
+
+**Study 2 regeneration.** For regeneration, `analyze-2.sh` requires `--phase validation` to score checkpoints for selection or `--phase test` to score the held-out split; it has no default phase.
+
+**Study 3 regeneration.** For regeneration, `analyze-3.sh` decodes the American Stories `as.b64` in `${GPU_STUDY_DEV}/local/out/` (or `AMERICAN_STORIES_B64`), joining nonblank `bboxes[].raw_text` in order as the survey runner does. Alternatively, explicitly set `AMERICAN_STORIES_JSONL` to an existing `{id,text}` JSONL file, such as the [retained readings](data/s3/american-stories.jsonl); do not set it with `AMERICAN_STORIES_B64`. Input and override paths are absolute or relative to `GPU_STUDY_ROOT`. A valid empty reading is present; an absent row is missing. Before scoring, the last selected reading for each ID must match those retained readings, or `AMERICAN_STORIES_REFERENCE` if they are elsewhere. A missing input, malformed result, or mismatch stops regeneration rather than changing the historical scores. The raw batch was unavailable for this review, so its comparison has only been exercised on synthetic data.
+
+**Study 1 and 3 Tesseract wrappers.** The historical Tesseract wrappers could record failed or timed-out reads as text. The retained Study 1 and 3 outputs lack per-read exit receipts, so job-level success and zero missing counts cannot establish that all reads succeeded. Their Tesseract comparisons remain provisional. Updated wrappers record failures separately; no OCR was rerun.
+
+**Study 2 and 5 adapter loaders.** The historical loaders did not require a complete adapter tensor-key set. The retained training logs record checkpoint hashes but not tensor keys, and the inspected study data do not contain the checkpoint payloads. Completeness of the 2B and 8B adapters therefore remains unverified, so the adapter comparisons in Studies 2 and 5 are provisional. The updated loaders reject incomplete adapters; no readings were rerun.
+
+**Study 8 method.** Jochre 3 1.1.4 and Tesseract 5.5.0 `yid` read whole pages, the latter with `tessdata_best`, PSM 3 and 300 dpi. `yid+eng` is a second whole-page setting. Qwen3-VL 8B Q4_K_M ran through the installed `usnm_qwen` 1.17 app and llama-server b8799 on an RTX 2060 SUPER, outside BOINC. Version 1 uses the default image-token minimum without the loop guard; version 3 adds the guard; version 4 combines the guard with a 1,024-token minimum. Qwen and the Tesseract PSM 7 control read the corpus's 4,011 ALTO line boxes and had their readings joined in ALTO order. They therefore received segmentation and reading order that the whole-page readers had to find themselves; the line readers' page scores measure recognition under that advantage. No page or line results were missing, although Tesseract PSM 7 returned empty text for 139 lines. The book measure is the mean of page CERs, after Jochre's YIVO simplification on both sides and collapsed paragraph breaks. Our simplifier matched the corpus's simplified text on 103 of 104 pages, with one edit across 167,980 characters. Limits are 95% percentile bootstrap intervals over pages, 2,000 resamples with seed 202611; they do not resample books. CER can exceed 100% when insertions are numerous.
+
+**Study 8 data and provenance.** The [aggregate-only Study 8 supplement](https://github.com/tgoodyear/usnewsmap.com/releases/tag/data-report-data-s8-supplement-20261102-b7f7371) includes the complete summary scores, line diagnostics, newspaper agreement and provenance, but no images, transcriptions, OCR text or per-page or per-crop results. Its [archive](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.tar.gz) has SHA-256 `eff92070058bf0d065e3febcde6f215dc4f2f955e4a1dca002189de1e44e5030`; verify it against the published [checksums](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/SHA256SUMS) before extracting at the repository root. The [member list](https://github.com/tgoodyear/usnewsmap.com/releases/download/data-report-data-s8-supplement-20261102-b7f7371/report-data.members.txt) identifies the files.
+
+The supplement is **not** the cumulative `report-data` set and does not change `ops/data-assets.json`. The normal cumulative packer would also carry forward the earlier release and tracked November study data, including textual reader outputs. Rights review and a safe migration or exclusion plan for that earlier material remain necessary before publishing a cumulative replacement or completing that data step for merge.
+
+The retained test-ID and newspaper-selection digests were recorded after scoring. We did not locate a per-file split hash manifest, so the pinned revision and retained lists do not establish the exact bytes used for each page. This is a byte-level reproducibility limitation, not by itself a blocker for the aggregate supplement.
+
+The checked-in runners were hardened after scoring to retry failed Jochre and Tesseract reads, exclude readings without successful timing receipts, check Jochre ZIP integrity, and stop native workloads before restoring BOINC GPU mode. The native runner supervises its whole batch and publishes a unit's result marker only after its output copies complete. The window supervisor reaps descendants, including detached sessions, and confirms cleanup before restoring GPU mode. If confirmation is missing, it attempts a permanent `never` hold and requires an operator to inspect and manually resume. The native runner and deadline helper require either a BOINC hold expiring at least 60 seconds after their deadline or an explicit `--no-boinc` for a standalone host. They do not themselves establish or verify the initial hold: on a BOINC host, use the window wrapper.
+
+If cleanup approaches the timed suspension's expiry, the supervisor retries extending the hold. A failed BOINC RPC can prevent either extension or the permanent hold; an uncatchable termination of the window wrapper or a standalone supervisor can prevent cleanup or hold extension. In those cases, a surviving workload can outlast a timed suspension and needs operator intervention; inspect the processes before any manual GPU-mode change.
+
+The historical Jochre runs have HTTP 200 receipts and valid text-containing ZIPs for all 104 book pages and 100 newspaper crops. Study 8 calls its own Tesseract runner, not the earlier studies' Tesseract wrappers. Both whole-page settings have 104 of 104 successful receipts, the line setting has 4,011 of 4,011, and the newspaper run has 100 of 100; the scored readings match the retained outputs. The 139 empty line readings are noted above. An exit code alone cannot establish that a reading is semantically complete. No readers were rerun for these changes.
+
+Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.py) from the repository root with `python3 -B -I scripts/ci/test_gpu_study_yiddish.py`. The descendant tests require Linux, `/proc` and pidfd support; they use mock commands rather than BOINC, GPUs or OCR.
+
+**Study 9 setup.** Xiaomi-OCR-0 (Qwen3.5-0.8B base, Apache-2.0, released 30 September 2026) at revision `bbd8cf8d21f2`, on vLLM 0.29.0 in FP16 on the local RTX 2060 SUPER (no BF16 on that card; Triton attention), requests through saturate 0.3.0, in bounded windows with BOINC GPU work suspended. Region prompt, at most 2,048 tokens; Qwen 8B's Study 3 readings were scored with Study 5's guard applied afterwards. Folding long s, the double hyphen and superscript e (post-hoc) gives 3.6% for Xiaomi-OCR-0, 4.0% for Qwen and 8.2% for Tesseract. On vLLM the start took about 10 minutes on this card; crops read at 9.9 a second, whole pages at 224 an hour. saturate drove every run with no errors or retries; its window settled at 32 on crops. The deployed-path GGUF was converted at llama.cpp `e1a9a6dcb` (Q8_0 `61f0667b`, F16 projector `77dc7cf2`) with a one-line patch mapping the tokenizer's hash to the Qwen2 pre-tokenizer, whose regex it matches ([`converter.patch`](scripts/s9/converter.patch)); reads used `--parallel 1`, temperature 0, seed 42 and a 16,384-token context. The b12084 release (`f9448cddc`) archives matched GitHub's published digests. Rental costs are rate times time from creation to destruction ([`ledger-s9.csv`](data/s9/runs/ledger-s9.csv)); Vast set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` whatever the request ([`vulkan-env.txt`](data/s9/runs/results/s9-r3090/vulkan-env.txt)). The aligner is a word-level Needleman–Wunsch over both readings with a rescue pass for reordered segments; of 13,471 words, 94.4% get a direct box, 1.3% share one, 3.1% are interpolated or line-fitted and 1.2% are guesses; boxes checked against 11,179 reference-matched words had mean IoU 0.998.
 
 # Departures from the protocol
 

@@ -1,0 +1,2 @@
+v6-small exit 0 933s
+v6-medium stopped after 2h52m (8h39m CPU), unfinished, to free CT 240 for Study 11; v5-latin and the b12084 CPU arm not run

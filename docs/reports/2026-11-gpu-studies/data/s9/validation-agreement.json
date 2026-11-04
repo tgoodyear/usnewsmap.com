@@ -1,0 +1,43 @@
+{
+ "floor": 0.5,
+ "similarity": "1 - edits / longer length, whitespace collapsed",
+ "dice": "word-bag Dice over lowercased \\\\w+ words",
+ "rows": [
+  {
+   "pair": "cuda3090/cuda4090",
+   "crops": 612,
+   "identical": 566,
+   "similarity_under_0.5": 1,
+   "dice_under_0.5": 1
+  },
+  {
+   "pair": "cuda3090/vllm",
+   "crops": 612,
+   "identical": 228,
+   "similarity_under_0.5": 3,
+   "dice_under_0.5": 12
+  },
+  {
+   "pair": "cuda3090/cpu",
+   "crops": 612,
+   "identical": 198,
+   "similarity_under_0.5": 6,
+   "dice_under_0.5": 70
+  },
+  {
+   "pair": "cuda3090/vulkan2060",
+   "crops": 612,
+   "identical": 145,
+   "similarity_under_0.5": 95,
+   "dice_under_0.5": 121,
+   "empty_side_b_flagged_by_similarity": 72
+  },
+  {
+   "pair": "shuffled control",
+   "crops": 612,
+   "identical": 0,
+   "similarity_under_0.5": 612,
+   "dice_under_0.5": 612
+  }
+ ]
+}
