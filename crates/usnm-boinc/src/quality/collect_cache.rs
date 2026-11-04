@@ -11,7 +11,7 @@ use std::{
 };
 use usnm_ocr_contract::{quality::Job, qwen};
 
-const FORMAT: &[u8] = b"quality-row-part-v3";
+const FORMAT: &[u8] = b"quality-row-part-v4";
 
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -167,6 +167,8 @@ pub(super) struct Cache {
     version: Vec<u8>,
     qwen: BTreeMap<String, Vec<PathBuf>>,
     qwen_dependencies: BTreeMap<PathBuf, Dependency>,
+    /// Each Qwen job's crop-state records as listed: `(dir, job id, records)`.
+    crop_states: Vec<(PathBuf, String, Vec<PathBuf>)>,
     surya: Dependency,
     qwen_root: PathBuf,
     surya_root: Option<PathBuf>,
@@ -300,6 +302,15 @@ impl Cache {
         field(&mut version, opts.campaign.as_bytes());
         // A release/rebuild (including hat or contract changes) invalidates all derived rows.
         file(&mut version, &std::env::current_exe()?)?;
+        // Whether readings join crop for crop changes every row that has one.
+        match &opts.qwen_crop_states {
+            Some(dir) => {
+                field(&mut version, b"qwen-crop-states");
+                field(&mut version, dir.as_os_str().as_encoded_bytes());
+            }
+            None => field(&mut version, b"no-qwen-crop-states"),
+        }
+        let mut crop_states = Vec::new();
         let mut qwen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         let mut qwen_dependencies = BTreeMap::new();
         let mut job_bytes = Vec::new();
@@ -313,6 +324,12 @@ impl Cache {
                 &job.workunit(),
                 &crate::qwen::outputs(),
             ));
+            if let Some(dir) = &opts.qwen_crop_states {
+                // A pair judged later can vouch for more of the same canonical result.
+                let records = crate::qwen::consensus::record_paths(dir, &job.id)?;
+                paths.extend(records.iter().cloned());
+                crop_states.push((dir.clone(), job.id.clone(), records));
+            }
             for doc in std::iter::once(&job.doc_id).chain(job.pages.iter().map(|p| &p.doc_id)) {
                 qwen.entry(doc.clone()).or_default().push(path.clone());
             }
@@ -349,6 +366,7 @@ impl Cache {
             version: version.finalize().to_vec(),
             qwen,
             qwen_dependencies,
+            crop_states,
             surya,
             qwen_root: opts.qwen_root.clone(),
             surya_root: opts.surya_root.clone(),
@@ -479,6 +497,12 @@ impl Cache {
             inventory == self.inventory,
             "reading job inventory changed during collection"
         );
+        for (dir, job, records) in &self.crop_states {
+            ensure!(
+                &crate::qwen::consensus::record_paths(dir, job)? == records,
+                "crop states changed during collection"
+            );
+        }
         for dep in self.qwen_dependencies.values() {
             dep.verify()?;
         }

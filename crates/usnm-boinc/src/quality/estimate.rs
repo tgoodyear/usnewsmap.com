@@ -296,6 +296,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                     readers: &readers,
                     crops: &qwen_job.crops,
                     readings: Some(&readings),
+                    vouch: None,
                     surya: None,
                 });
                 let mut text = String::new();

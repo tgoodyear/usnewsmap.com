@@ -1,10 +1,28 @@
 #!/bin/sh
 # script_validator's compare script for usnm_qwen (#522), called as
 # `usnm_qwen_compare files files2`: two results' files, three each, in output template order.
-# Exit 0 when they agree (usnm-boinc qwen compare: per crop, both read or neither, and the word-bag
-# Dice floor until the threshold is measured). Every pair is appended to
+# Exit 0 when they agree under the rule in force. Every pair is appended to
 # <project>/qwen/pairs.jsonl. Linked into bin/.
+#
+# The rule is `strict-v1` (per crop, both read or neither, and the word-bag Dice floor) unless
+# <project>/qwen/validator-rule holds `crop-consensus-v2`; then each pair's crop states are kept
+# under <project>/qwen/crop-states, where `quality collect --qwen-crop-states` reads which crops a
+# pair vouched for (#1434). Removing the file restores the strict rule. A `usnm-boinc` next to this
+# script's target is used in place of the image's, so a pinned build can validate.
 [ "$#" -eq 6 ] || { echo "usnm_qwen_compare: expected 6 files, got $#" >&2; exit 2; }
-exec /usr/local/bin/usnm-boinc qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
-  --log "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/pairs.jsonl" \
-  --pages "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/pages"
+dir="${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}"
+bin=/usr/local/bin/usnm-boinc
+here="$(dirname "$(readlink -f "$0")")"
+[ -x "$here/usnm-boinc" ] && bin="$here/usnm-boinc"
+rule=strict-v1
+[ -f "$dir/validator-rule" ] && read -r rule < "$dir/validator-rule"
+case "$rule" in
+  crop-consensus-v2)
+    exec "$bin" qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
+      --log "$dir/pairs.jsonl" --pages "$dir/pages" \
+      --rule crop-consensus-v2 --crop-states "$dir/crop-states" ;;
+  strict-v1) ;;
+  *) echo "usnm_qwen_compare: unknown rule '$rule' in $dir/validator-rule; using strict-v1" >&2 ;;
+esac
+exec "$bin" qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
+  --log "$dir/pairs.jsonl" --pages "$dir/pages"

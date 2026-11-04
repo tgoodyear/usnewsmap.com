@@ -17,6 +17,15 @@
 //!   vision-language reader.
 //! - `summary.md`: the campaign in one table.
 //!
+//! A `usnm_qwen` reading joins only where the pairs that agreed on its
+//! canonical result vouch for it. With `--qwen-crop-states`, the directory
+//! `qwen compare --crop-states` writes, a result an agreeing pair judged
+//! under `crop-consensus-v2` keeps only the crops that pair marked `agree`:
+//! the others (looped, no text, or not judged) keep their rows without the
+//! reading, and `vlm_crop_state` says why. A result no agreeing pair judged
+//! crop by crop was accepted by the strict rule, which vouches for every
+//! crop, as before.
+//!
 //! [`crop_rows`] is the crop join on its own, so `estimate` runs it
 //! offline on the same inputs.
 use super::{parse_alto, units, validate, ALTO_FILE, JOB_FILE, PAGE_FILE, TEXTS_FILE};
@@ -65,6 +74,9 @@ pub struct Options {
     /// The `usnm_qwen` staging root and spool.
     pub qwen_root: PathBuf,
     pub qwen_spool: PathBuf,
+    /// Where `qwen compare --crop-states` keeps each judged pair's crop
+    /// states. Without it every canonical crop joins, as the strict rule has it.
+    pub qwen_crop_states: Option<PathBuf>,
     /// The `usnm_surya` staging root and spool (#968): its crop units'
     /// texts join `crops.parquet` as the reader `surya`.
     pub surya_root: Option<PathBuf>,
@@ -116,7 +128,14 @@ pub struct CropRow {
     pub vlm_model: Option<String>,
     pub vlm_device: Option<String>,
     /// None in older exports, whose null text may mean missing or completed empty.
+    /// False too for a reading no agreeing pair vouched for.
     pub vlm_reading_present: Option<bool>,
+    /// Why the reading joins or not: `strict-v1` (the strict rule accepted
+    /// the whole result), `agree` (an agreeing pair vouched for this crop
+    /// under `crop-consensus-v2`), or the crop's best state when none did
+    /// (`looped`, `no_text`, `unjudged`). None without a canonical reading,
+    /// in older exports, and offline.
+    pub vlm_crop_state: Option<String>,
     pub vlm_reference_chars: Option<usize>,
     pub vlm_reference_words: Option<usize>,
     /// The reader as the hypothesis against the vision-language reading.
@@ -144,6 +163,9 @@ pub struct CropInputs<'a> {
     pub readers: &'a [String],
     pub crops: &'a [Crop],
     pub readings: Option<&'a Readings>,
+    /// Which crops of `readings` the agreeing pairs vouched for; None joins
+    /// every crop and says nothing about it.
+    pub vouch: Option<&'a crate::qwen::consensus::Vouch>,
     /// Surya's read of each crop, by crop id, from the crop units.
     pub surya: Option<&'a BTreeMap<String, crate::surya::collect::CropText>>,
 }
@@ -165,7 +187,12 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
         .unwrap_or_default();
     let mut rows = Vec::new();
     for crop in inputs.crops {
-        let reading = readings.get(crop.id.as_str());
+        let vouched = inputs.vouch.is_none_or(|v| v.vouches(&crop.id));
+        let reading = readings.get(crop.id.as_str()).filter(|_| vouched);
+        let vlm_crop_state = inputs
+            .readings
+            .and(inputs.vouch)
+            .map(|v| v.label(&crop.id).to_owned());
         let vlm = reading.filter(|r| !r.text.trim().is_empty());
         let reference_counts = reading.map(|v| {
             let normalized = usnm_ocr_quality::text::normalize(&v.text, false);
@@ -261,6 +288,7 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             vlm_model: inputs.readings.and_then(|r| r.model.clone()),
             vlm_device: inputs.readings.map(|r| r.device.clone()),
             vlm_reading_present: Some(reading.is_some()),
+            vlm_crop_state: vlm_crop_state.clone(),
             vlm_reference_chars: reference_counts.map(|(chars, _)| chars),
             vlm_reference_words: reference_counts.map(|(_, words)| words),
             cer_vs_vlm: None,
@@ -933,11 +961,29 @@ pub(crate) fn gave_up(spool: &Path, workunit: &str) -> bool {
 struct QwenPage {
     crops: Vec<Crop>,
     readings: Option<Readings>,
+    /// What the agreeing pairs vouch for, with crop ids as in `crops`;
+    /// None without crop states.
+    vouch: Option<crate::qwen::consensus::Vouch>,
+}
+
+impl QwenPage {
+    /// The canonical readings, when at least one crop of them is vouched for.
+    fn vouched_readings(&self) -> Option<&Readings> {
+        self.readings.as_ref().filter(|r| {
+            self.vouch
+                .as_ref()
+                .is_none_or(|v| r.readings.iter().any(|x| v.vouches(&x.id)))
+        })
+    }
 }
 
 /// Every submitted `usnm_qwen` unit by doc id (supporting both single-page
 /// and multi-page bundle units), with its readings where the result is in.
-fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, QwenPage>> {
+fn qwen_pages(
+    root: &Path,
+    spool: &Path,
+    crop_states: Option<&Path>,
+) -> anyhow::Result<BTreeMap<String, QwenPage>> {
     let mut out = BTreeMap::new();
     let dir = units(root);
     if !dir.exists() {
@@ -957,16 +1003,22 @@ fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, Qwen
         .with_context(|| format!("{}", unit.display()))?;
         let wu = job.workunit();
         let files = spool_files(spool, &wu, &crate::qwen::outputs());
-        let readings = if files.iter().all(|f| f.exists()) {
+        let (readings, vouch) = if files.iter().all(|f| f.exists()) {
             let got = crate::qwen::validate::load(&files)
                 .with_context(|| format!("canonical result {wu}"))?;
             anyhow::ensure!(
                 got.result.job_id == job.id,
                 "{wu}: result does not belong to its job"
             );
-            Some(got.readings)
+            let vouch = crop_states
+                .map(|dir| {
+                    crate::qwen::consensus::vouched(dir, &job.id, &got.result.readings_sha256)
+                })
+                .transpose()
+                .with_context(|| format!("{wu}: crop states"))?;
+            (Some(got.readings), vouch)
         } else {
-            None
+            (None, None)
         };
         if job.pages.is_empty() {
             out.insert(
@@ -974,6 +1026,7 @@ fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, Qwen
                 QwenPage {
                     crops: job.crops,
                     readings,
+                    vouch,
                 },
             );
         } else {
@@ -995,11 +1048,26 @@ fn qwen_pages(root: &Path, spool: &Path) -> anyhow::Result<BTreeMap<String, Qwen
                         .collect();
                     pr
                 });
+                // A bundle's crop states name its crops `<doc_id>:<crop>`.
+                let page_vouch = vouch.as_ref().map(|v| match v {
+                    crate::qwen::consensus::Vouch::Strict => crate::qwen::consensus::Vouch::Strict,
+                    crate::qwen::consensus::Vouch::Crops(states) => {
+                        crate::qwen::consensus::Vouch::Crops(
+                            states
+                                .iter()
+                                .filter_map(|(id, s)| {
+                                    id.strip_prefix(&prefix).map(|cid| (cid.to_owned(), *s))
+                                })
+                                .collect(),
+                        )
+                    }
+                });
                 out.insert(
                     bp.doc_id.clone(),
                     QwenPage {
                         crops: bp.crops.clone(),
                         readings: page_readings,
+                        vouch: page_vouch,
                     },
                 );
             }
@@ -1148,7 +1216,11 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     let mut summary = Summary::default();
     let mut pages = Vec::new();
     let mut crop_table = Vec::new();
-    let qwen = qwen_pages(&opts.qwen_root, &opts.qwen_spool)?;
+    let qwen = qwen_pages(
+        &opts.qwen_root,
+        &opts.qwen_spool,
+        opts.qwen_crop_states.as_deref(),
+    )?;
     let surya = match (&opts.surya_root, &opts.surya_spool) {
         (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
         (None, None) => BTreeMap::new(),
@@ -1211,7 +1283,9 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             summary.pages += 1;
             let q = qwen.get(&job.doc_id);
             let readings = q.and_then(|q| q.readings.as_ref());
-            if readings.is_some() {
+            let vouch = q.and_then(|q| q.vouch.as_ref());
+            let vouched = q.and_then(QwenPage::vouched_readings).is_some();
+            if vouched {
                 summary.with_readings += 1;
             }
             let surya_crops = surya.get(&job.doc_id);
@@ -1221,7 +1295,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             let texts_opt: Option<Texts> = read(&unit.join(TEXTS_FILE), MAX_TEXTS)
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok());
-            let mut unit_rows = page_rows(&job, &got.result, readings.is_some());
+            let mut unit_rows = page_rows(&job, &got.result, vouched);
             let alto_bytes = read(&unit.join(ALTO_FILE), MAX_ALTO)?;
             let v2 = texts_opt.as_ref().is_some_and(|texts| {
                 enrich_rows_with_damage(&mut unit_rows, texts, None);
@@ -1269,6 +1343,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                     readers: &readers,
                     crops: &crops,
                     readings,
+                    vouch,
                     surya: surya_crops,
                 }));
             }
@@ -1292,20 +1367,17 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 summary.pages += 1;
                 let q = qwen.get(&bp.doc_id);
                 let readings = q.and_then(|q| q.readings.as_ref());
-                if readings.is_some() {
+                let vouch = q.and_then(|q| q.vouch.as_ref());
+                let vouched = q.and_then(QwenPage::vouched_readings).is_some();
+                if vouched {
                     summary.with_readings += 1;
                 }
                 let surya_crops = surya.get(&bp.doc_id);
                 if surya_crops.is_some_and(|c| c.values().any(|t| !t.text.trim().is_empty())) {
                     summary.with_surya += 1;
                 }
-                let mut unit_rows = bundle_page_rows(
-                    &job,
-                    bp,
-                    pr,
-                    got.result.host.plan_class.clone(),
-                    readings.is_some(),
-                );
+                let mut unit_rows =
+                    bundle_page_rows(&job, bp, pr, got.result.host.plan_class.clone(), vouched);
                 let mut v2 = false;
                 if let Ok(t_bytes) = bp.inputs.texts.extract(&bundle_texts, "texts") {
                     if let Ok(page_texts) = serde_json::from_slice::<Texts>(t_bytes) {
@@ -1350,6 +1422,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                         readers: &readers,
                         crops: &crops,
                         readings,
+                        vouch,
                         surya: surya_crops,
                     }));
                 }
@@ -1522,6 +1595,7 @@ pub(super) mod tests {
             readers: &readers,
             crops: &crops,
             readings: Some(&readings),
+            vouch: None,
             surya: None,
         });
         // Three readers plus the vision-language row per crop.
@@ -1559,6 +1633,7 @@ pub(super) mod tests {
             readers: &readers,
             crops: &crops,
             readings: None,
+            vouch: None,
             surya: None,
         });
         assert_eq!(rows.len(), crops.len() * 3);
@@ -1610,6 +1685,7 @@ pub(super) mod tests {
             readers: &readers,
             crops: &crops,
             readings: Some(&readings),
+            vouch: None,
             surya: Some(&surya),
         });
         assert_eq!(rows.len(), crops.len() * 4 + 1);
@@ -1626,6 +1702,7 @@ pub(super) mod tests {
             readers: &readers,
             crops: &crops,
             readings: Some(&readings),
+            vouch: None,
             surya: Some(&other),
         });
         assert_eq!(misaligned.len(), crops.len() * 4);
@@ -1691,6 +1768,7 @@ pub(super) mod tests {
                 readers: &readers,
                 crops: &crops,
                 readings: Some(&readings),
+                vouch: None,
                 surya: None,
             });
             assert!(!rows.is_empty());
@@ -1783,6 +1861,7 @@ pub(super) mod tests {
             spool,
             qwen_root: tmp.path().join("no-qwen"),
             qwen_spool: tmp.path().join("no-qwen"),
+            qwen_crop_states: None,
             surya_root: Some(sroot),
             surya_spool: Some(sspool),
             out_dir: Some(tmp.path().join("out")),
@@ -2001,6 +2080,7 @@ pub(super) mod tests {
             spool: root.join("spool"),
             qwen_root: root.join("qwen"),
             qwen_spool: root.join("qwen-spool"),
+            qwen_crop_states: None,
             surya_root: None,
             surya_spool: None,
             out_dir: Some(root.join("out")),
@@ -2293,5 +2373,347 @@ pub(super) mod tests {
             assert_eq!(after.crops, fresh.crops);
         }
         assert_eq!(parts(&opts).len(), 3);
+    }
+
+    /// A single-page `usnm_qwen` unit for the fixture's page, with a canonical
+    /// result reading `texts` crop by crop. Returns the job and the result's
+    /// readings digest.
+    fn qwen_canonical(
+        opts: &Options,
+        unit: &Path,
+        quality: &Job,
+        texts: &[&str],
+    ) -> (qwen::Job, String) {
+        use usnm_ocr_contract::boinc::sha256;
+        let qunit = units(&opts.qwen_root).join("page");
+        let mut job = crate::qwen::stage::local_unit(
+            &unit.join(PAGE_FILE),
+            &unit.join(ALTO_FILE),
+            &qunit,
+            crate::qwen::stage::tests::engine(),
+            quality.crop_seed,
+            quality.k_crops,
+            600,
+            4,
+        )
+        .unwrap();
+        job.doc_id = quality.doc_id.clone();
+        job.id = job.identity().unwrap();
+        std::fs::write(
+            qunit.join(crate::qwen::JOB_FILE),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        assert!(job.crops.len() >= 2, "the fixture cuts two crops or more");
+        let readings = Readings {
+            v: qwen::VERSION,
+            job_id: job.id.clone(),
+            device: "cuda".into(),
+            diag: Default::default(),
+            model: Some("qwen3-vl-8b-q4km".into()),
+            outcome: qwen::Outcome::Ok,
+            prompt_version: qwen::PROMPT_VERSION,
+            readings: job
+                .crops
+                .iter()
+                .enumerate()
+                .map(|(i, c)| qwen::Reading {
+                    id: c.id.clone(),
+                    ms: 1,
+                    text: texts[i % texts.len()].into(),
+                    tokens: 3,
+                })
+                .collect(),
+        };
+        let bytes = serde_json::to_vec(&readings).unwrap();
+        let digest = sha256(&bytes);
+        let manifest = qwen::ResultManifest {
+            v: qwen::VERSION,
+            job_id: job.id.clone(),
+            completed_at: "2026-11-04T00:00:00Z".into(),
+            crops: job.crops.len() as u32,
+            device: "cuda".into(),
+            diag_bytes: 4,
+            diag_sha256: sha256(b"diag"),
+            engine: job.engine.clone(),
+            engine_ms: 5,
+            gpu_mem_peak_mib: None,
+            host: Default::default(),
+            load_ms: 1,
+            model: Some("qwen3-vl-8b-q4km".into()),
+            outcome: qwen::Outcome::Ok,
+            peak_rss_kib: None,
+            read: job.crops.len() as u32,
+            readings_bytes: bytes.len() as u64,
+            readings_sha256: digest.clone(),
+            unit_error: None,
+        };
+        std::fs::create_dir_all(&opts.qwen_spool).unwrap();
+        for (name, bytes) in [
+            (crate::qwen::READINGS_FILE, bytes),
+            (
+                crate::qwen::RESULT_FILE,
+                serde_json::to_vec(&manifest).unwrap(),
+            ),
+            (crate::qwen::DIAG_FILE, b"diag".to_vec()),
+        ] {
+            std::fs::write(
+                opts.qwen_spool
+                    .join(format!("{}__file_{name}", job.workunit())),
+                bytes,
+            )
+            .unwrap();
+        }
+        (job, digest)
+    }
+
+    /// Writes a crop-state record as `qwen compare --crop-states` does.
+    fn crop_record(
+        dir: &Path,
+        name: &str,
+        job: &qwen::Job,
+        digests: [&str; 2],
+        agree: bool,
+        basis: &str,
+        crops: &[(&str, &str)],
+    ) {
+        let parent = dir.join(&job.id);
+        std::fs::create_dir_all(&parent).unwrap();
+        let record = serde_json::json!({
+            "v": crate::qwen::consensus::RECORD_VERSION,
+            "rule": "crop-consensus-v2",
+            "basis": basis,
+            "job_id": job.id,
+            "results": ["r_a", "r_b"],
+            "readings_sha256": digests,
+            "agree": agree,
+            "crops": crops.iter().map(|(id, state)| serde_json::json!({"id": id, "state": state, "score": null})).collect::<Vec<_>>(),
+            "accuracy_established": false,
+        });
+        std::fs::write(
+            parent.join(format!("{name}.json")),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn vlm_rows(c: &Collected) -> Vec<&CropRow> {
+        c.crops.iter().filter(|r| r.reader == VLM).collect()
+    }
+
+    #[tokio::test]
+    async fn readings_join_only_on_crops_an_agreeing_pair_vouched_for() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        let (job, digest) =
+            qwen_canonical(&opts, &unit, &quality, &["the council reads this crop"]);
+        let crop_ids: Vec<String> = job.crops.iter().map(|c| c.id.clone()).collect();
+        let states = dir.path().join("crop-states");
+        opts.cache = None;
+        // Without crop states, every crop joins and nothing is said about it.
+        let plain = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&plain).len(), crop_ids.len());
+        assert!(plain.crops.iter().all(|r| r.vlm_crop_state.is_none()));
+        // With the directory and no record, the strict rule accepted the result.
+        opts.qwen_crop_states = Some(states.clone());
+        let strict = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&strict).len(), crop_ids.len());
+        assert!(strict
+            .crops
+            .iter()
+            .all(|r| r.vlm_crop_state.as_deref() == Some("strict-v1")));
+        assert_eq!(strict.summary.with_readings, 1);
+        // A disagreeing pair and an agreeing pair of other results vouch for nothing here.
+        let all_agree: Vec<(&str, &str)> = crop_ids.iter().map(|c| (c.as_str(), "agree")).collect();
+        crop_record(
+            &states,
+            "a",
+            &job,
+            [&digest, "other"],
+            false,
+            "crop-consensus-v2",
+            &all_agree,
+        );
+        crop_record(
+            &states,
+            "b",
+            &job,
+            ["other", "else"],
+            true,
+            "crop-consensus-v2",
+            &all_agree,
+        );
+        let still = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&still).len(), crop_ids.len());
+        // An agreeing pair that includes the canonical result vouches for its
+        // `agree` crops only; a looped crop and an unjudged one lose the reading.
+        crop_record(
+            &states,
+            "c",
+            &job,
+            ["peer", &digest],
+            true,
+            "crop-consensus-v2",
+            &[
+                (crop_ids[0].as_str(), "agree"),
+                (crop_ids[1].as_str(), "looped"),
+            ],
+        );
+        let v2 = collect(&opts).unwrap();
+        let vlm = vlm_rows(&v2);
+        assert_eq!(vlm.len(), 1);
+        assert_eq!(vlm[0].crop_id, crop_ids[0]);
+        assert_eq!(v2.summary.with_readings, 1);
+        let state = |c: &Collected, id: &str| {
+            c.crops
+                .iter()
+                .filter(|r| r.crop_id == id)
+                .map(|r| {
+                    (
+                        r.vlm_crop_state.clone(),
+                        r.vlm_text.is_some(),
+                        r.vlm_reading_present,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(state(&v2, &crop_ids[0])
+            .iter()
+            .all(|s| *s == (Some("agree".into()), true, Some(true))));
+        assert!(state(&v2, &crop_ids[1])
+            .iter()
+            .all(|s| *s == (Some("looped".into()), false, Some(false))));
+        for id in &crop_ids[2..] {
+            assert!(state(&v2, id)
+                .iter()
+                .all(|s| *s == (Some("unjudged".into()), false, Some(false))));
+        }
+        // No other reader's row is lost, and none is compared with a withheld reading.
+        assert_eq!(
+            v2.crops.iter().filter(|r| r.reader != VLM).count(),
+            strict.crops.iter().filter(|r| r.reader != VLM).count()
+        );
+        assert!(v2
+            .crops
+            .iter()
+            .filter(|r| r.crop_id != crop_ids[0])
+            .all(|r| r.cer_vs_vlm.is_none()));
+        // A second agreeing pair adds what it vouched for.
+        crop_record(
+            &states,
+            "d",
+            &job,
+            [&digest, "third"],
+            true,
+            "crop-consensus-v2",
+            &[(crop_ids[1].as_str(), "agree")],
+        );
+        assert_eq!(vlm_rows(&collect(&opts).unwrap()).len(), 2);
+        // A pair the strict rule decided (they did not both finish) covers every crop.
+        crop_record(
+            &states,
+            "e",
+            &job,
+            [&digest, "fourth"],
+            true,
+            "strict-v1",
+            &[],
+        );
+        assert_eq!(vlm_rows(&collect(&opts).unwrap()).len(), crop_ids.len());
+        // A record that cannot be read stops the collection rather than guess.
+        std::fs::write(states.join(&job.id).join("f.json"), b"{").unwrap();
+        assert!(collect(&opts).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_page_with_no_vouched_crop_has_no_readings() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        let (job, digest) = qwen_canonical(&opts, &unit, &quality, &["[?]"]);
+        let states = dir.path().join("crop-states");
+        opts.cache = None;
+        opts.qwen_crop_states = Some(states.clone());
+        let crops: Vec<(&str, &str)> = job
+            .crops
+            .iter()
+            .map(|c| (c.id.as_str(), "no_text"))
+            .collect();
+        crop_record(
+            &states,
+            "a",
+            &job,
+            [&digest, "peer"],
+            true,
+            "crop-consensus-v2",
+            &crops,
+        );
+        let c = collect(&opts).unwrap();
+        assert_eq!(c.summary.with_readings, 0);
+        assert!(vlm_rows(&c).is_empty());
+        assert!(c
+            .crops
+            .iter()
+            .all(|r| r.vlm_crop_state.as_deref() == Some("no_text")));
+    }
+
+    #[tokio::test]
+    async fn crop_states_are_part_of_the_row_cache_keys() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        let (job, digest) =
+            qwen_canonical(&opts, &unit, &quality, &["the council reads this crop"]);
+        let states = dir.path().join("crop-states");
+        let without = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+        opts.qwen_crop_states = Some(states.clone());
+        // Turning crop states on changes every key.
+        let empty = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+        assert_ne!(empty, without);
+        let first = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&first).len(), job.crops.len());
+        // A record arriving later changes the key, so the cached rows are not reused.
+        crop_record(
+            &states,
+            "a",
+            &job,
+            [&digest, "peer"],
+            true,
+            "crop-consensus-v2",
+            &[(job.crops[0].id.as_str(), "agree")],
+        );
+        let recorded = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+        assert_ne!(recorded, empty);
+        let cached = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&cached).len(), 1);
+        let fresh = collect(&Options {
+            cache: None,
+            ..opts.clone()
+        })
+        .unwrap();
+        assert_eq!(cached.crops, fresh.crops);
+        assert_eq!(cached.pages, fresh.pages);
+        // A record that changes in place changes the key too.
+        let path = states.join(&job.id).join("a.json");
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["crops"][0]["state"] = "looped".into();
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert_ne!(
+            inventory(&opts, None).unwrap()["page"].fingerprint,
+            recorded
+        );
+        assert!(vlm_rows(&collect(&opts).unwrap()).is_empty());
+        // A record added during collection is caught before publication.
+        let cache =
+            super::super::collect_cache::Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        crop_record(
+            &states,
+            "b",
+            &job,
+            ["x", "y"],
+            false,
+            "crop-consensus-v2",
+            &[],
+        );
+        assert!(cache.verify_readings().is_err());
     }
 }

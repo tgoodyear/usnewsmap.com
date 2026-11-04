@@ -22,6 +22,7 @@ pub mod benchmark;
 pub mod candidates;
 pub mod cli;
 pub mod consensus;
+pub mod grounded;
 pub mod ledger;
 pub mod replay;
 pub mod retain;

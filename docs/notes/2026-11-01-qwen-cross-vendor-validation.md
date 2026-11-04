@@ -84,7 +84,7 @@ Request versions 3 and 4 apply Study 5's `stop` rule to versions 1 and 2. The gu
 
 ## What is left
 
-- The rule's floor has only been measured on agreement between replicas, never against image-grounded transcriptions. Do that before it goes live, along with the collector change (#1434).
+- The rule's floor has only been measured on agreement between replicas, never against image-grounded transcriptions. Do that before it goes live, along with the collector change (#1434). Done on 4 November for five languages, not Yiddish: [floor check](2026-11-04-crop-consensus-floor-check.md).
 - A second Intel host would show whether the gap is Intel or this one host.
 - Yiddish needs request version 2 or 4 more than it needs any validator change. A rule that vouches for half a page still leaves the other half unread.
 - Bundling pages to keep the model loaded is #1435.
