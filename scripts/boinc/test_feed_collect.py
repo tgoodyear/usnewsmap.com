@@ -675,6 +675,53 @@ class CollectionTests(unittest.TestCase):
                 http.shutdown()
                 thread.join()
 
+    def test_unconfigured_clients_and_backlog_are_unknown_never_healthy(self):
+        docs = self.documents()
+        with patch.object(C, "read_source", side_effect=lambda path: docs[path]) as read, \
+                patch.object(C.time, "time", return_value=NOW):
+            for config in ({"server": "/server", "controller": "/controller"},
+                           {"server": "/server", "controller": "/controller", "backlog": None, "clients": []}):
+                with self.subTest(config=config):
+                    facts = C.collect(config)
+                    self.assertEqual(facts["sources"]["backlog"],
+                                     {"observed_at": None, "state": "unknown", "reason": "not_configured"})
+                    self.assertCountEqual(facts["errors"], [
+                        "backlog", "cpu_no_own_clients_configured", "gpu_no_own_clients_configured"])
+                    self.assertNotIn("supply", facts)
+                    document, _ = F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")
+                    checks = {c["code"]: c for c in document["checks"]}
+                    for resource in ("cpu", "gpu"):
+                        check = checks[resource + "_shortage"]
+                        self.assertEqual((check["state"], check["reason"]), ("unknown", "no_own_clients_configured"))
+                    for app in F.APP_NAMES:
+                        self.assertEqual(checks[app + "_no_work"]["state"], "unknown")
+                    self.assertEqual(checks["controller_tick"]["state"], "healthy")
+                    self.assertFalse(document["healthy"])
+            self.assertEqual({call.args[0] for call in read.call_args_list}, {"/server", "/controller"})
+
+    def test_client_bindings_must_match_the_reported_host(self):
+        docs = self.documents()
+        config = {name: "/" + name for name in ("server", "controller", "backlog")}
+        with patch.object(C, "read_source", side_effect=lambda path: docs[path]), \
+                patch.object(C.time, "time", return_value=NOW):
+            config["clients"] = [{"location": "/own", "host_id": 9}]
+            facts = C.collect(config)
+            self.assertEqual(facts["errors"], [])
+            self.assertEqual(facts["supply"]["gpu"], {"idle": 1, "eligible": 1})
+            config["clients"] = [{"location": "/own", "host_id": 12}]
+            facts = C.collect(config)
+            self.assertEqual(facts["sources"]["client_0"],
+                             {"observed_at": None, "state": "unknown", "reason": "host_binding_mismatch"})
+            self.assertEqual(facts["errors"], ["client_0"])
+            self.assertNotIn("supply", facts)
+        for clients in ("/own", [{"location": "/own"}], [{"location": "/own", "host_id": 0}],
+                        [{"location": "/own", "host_id": True}], [{"location": "", "host_id": 9}],
+                        ["/own", {"location": "/own", "host_id": 9}],
+                        [{"location": "/own", "host_id": 9}, {"location": "/cpu-own", "host_id": 9}],
+                        [f"/own-{i}" for i in range(33)]):
+            with self.subTest(clients=clients), self.assertRaises(ValueError):
+                C.own_clients({"clients": clients})
+
     def test_disk_is_shared_between_cpu_and_gpu_allocations(self):
         docs = self.documents()
         docs["/own"].update(cpus=2, idle_cpu=2)

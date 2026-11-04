@@ -27,7 +27,8 @@ The source collectors read:
   working CPU preferences, suspend/no-work flags, detected GPU counts, queued
   tasks, installed app versions and disk allowance. Only configured project-owned
   clients run this collector. Their host IDs come from their existing BOINC
-  attachment, not another hard-coded fleet list. Never install it on volunteers.
+  attachment, not another hard-coded fleet list; the evaluator's optional
+  binding (below) only checks the reported ID. Never install it on volunteers.
 - **controller:** the existing oneshot OCR priority controller's bounded journal
   and `systemctl show` timestamps/result. Both completed and currently running
   ticks are checked. Do not point this adapter at a permanently running Temporal
@@ -291,16 +292,32 @@ and install the health units. Create `/etc/usnm-boinc/feed-monitor.json`:
 {
   "server": "/var/lib/usnm-ocrdash/feed-sources/server.json",
   "controller": "/var/lib/usnm-ocrdash/feed-sources/controller.json",
-  "backlog": "/var/lib/usnm-ocrdash/feed-sources/backlog.json",
-  "clients": [
-    "/var/lib/usnm-ocrdash/feed-sources/client-OWN-INVENTORY-NAME.json"
-  ]
+  "backlog": null,
+  "clients": []
 }
 ```
 
-Repeat the `clients` entry for every own source. The file paths, or existing
-private HTTP mirror URLs, are deployment configuration—not CLI-supplied metric
-values. Set `USNM_OCRDASH_FEED_HEALTH=/var/lib/usnm-boinc-feed-health/feed-health.json`.
+`backlog` and `clients` may be left out, and that is the default: an empty
+allowlist. Until the backlog source publishes, `sources.backlog` is unknown
+(`not_configured`) and both no-work checks are unknown. With no own clients,
+both shortage checks are unknown (`no_own_clients_configured`), never zero idle
+slots. Either way `collection` fires. When the backlog source publishes, set
+`backlog` to `/var/lib/usnm-ocrdash/feed-sources/backlog.json`.
+
+Add an own client only after verifying its binding read-only. Once its source
+publishes, `jq .host_id /var/lib/usnm-ocrdash/feed-sources/client-<name>.json`
+must be the project-owned BOINC host the inventory names, never 5 or 13. Then
+allowlist it with that ID:
+`{"location": "/var/lib/usnm-ocrdash/feed-sources/client-<name>.json", "host_id": <id>}`.
+If the client later reports another host (a reattach, or the wrong data
+directory), that source is unknown (`host_binding_mismatch`) and supply isn't
+judged. A plain path is still accepted without the check. Up to 32 clients;
+locations and bound host IDs must be distinct. Each change to the file resets
+the evaluator's durations, because its hash is part of their state. The paths,
+or existing private HTTP mirror URLs, and the host IDs are private deployment
+configuration, not CLI-supplied metric values; don't commit them.
+
+Set `USNM_OCRDASH_FEED_HEALTH=/var/lib/usnm-boinc-feed-health/feed-health.json`.
 
 ```sh
 sudo install -m 0644 scripts/boinc/onprem/usnm-boinc-feed-health.{service,timer} /etc/systemd/system/
@@ -315,9 +332,9 @@ sudo systemctl enable --now usnm-boinc-feed-health.timer
 sudo journalctl -u usnm-boinc-feed-health.service -n 2 --no-pager
 ```
 
-Verify every `sources.*.state` is `fresh`, the reported own idle capacities
-match the actual clients, the second tick has no reset warning, and the dashboard
-shows the same state. Do not waive unknown eligibility or stale request coverage.
+Verify every configured source's `sources.*.state` is `fresh`, the reported own
+idle capacities match the actual clients, the second tick has no reset warning,
+and the dashboard shows the same state. Do not waive unknown eligibility or stale request coverage.
 
 ### Existing alert route and deployment gate
 
