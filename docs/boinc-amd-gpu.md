@@ -85,17 +85,18 @@ readings.
 
 ## Operator publication and general admission
 
-Use the unchanged `ocr/boinc/qwen/llama.lock` b8799
+Use the unchanged `ocr/boinc/qwen/llama.lock` b12084
 `ubuntu-vulkan-x64` or `win-vulkan-x64` asset, verified by its pinned SHA-256.
 Do not substitute the CPU or CUDA archive. Bundle `llama-server[.exe]`, all its
 runtime shared libraries, `llama.lock`, `weights.lock`, and the matching native
 CI artifact's `usnm-amd-device-map[.exe]` as signed native extra files. The helper
-is required for AMD only and uses the unchanged b8799 ggml device-properties ABI
+is required for AMD only and uses the unchanged b12084 ggml device-properties ABI
 to verify PCI identity. On Windows drivers without `VK_EXT_pci_bus_info`, the
-baseline runtime is **not sufficient**: use the identity-only patched b8799
+baseline runtime is **not sufficient**: use the identity-only patched b12084
 Vulkan DLL described below, together with the corrected signed helper. Windows requires
 `ggml-vulkan.dll`, the common llama/ggml/mtmd DLLs,
-`ggml-cpu-x64.dll`, `libomp140.x86_64.dll`, and the Microsoft CRT enforced by
+`ggml-cpu-x64.dll`, `libomp.dll`, the launcher's `llama-server-impl.dll` and
+`llama-common.dll`, and the Microsoft CRT enforced by
 `scripts/boinc/install.py`. Keep the complete pinned Linux library set as well.
 Verify that the bundled server launches and lists the real AMD Vulkan device
 before admission. Retain checksums and the signed publication/readback receipt.
@@ -107,6 +108,9 @@ OpenCL `????:03:00.0` and Vulkan `[]`. In baseline b8799, ggml exports no
 `device_id` when `VK_EXT_pci_bus_info` is absent, even when the adapter supports
 Vulkan inference. Re-signing the helper alone cannot fix that runtime limitation.
 Neither a successful build nor a device listing is hardware acceptance.
+Upstream b12084 still returns an empty identity in that case (its
+`ggml_backend_vk_get_device_pci_id` is unchanged apart from line numbers), so the
+patch is still needed and applies to the same block.
 
 The pinned source patch exports `luid:` followed by the **same physical Vulkan
 device's eight LUID bytes** only when PCI information is unavailable on Windows.
@@ -119,13 +123,13 @@ domain zero. Duplicate matches, invalid/zero LUIDs, unavailable adapter APIs or
 failed address queries remain refusals. Linux and extension-provided PCI
 identities retain their existing path.
 
-Build on Windows with MSVC, CMake, Python, and the upstream b8799 Vulkan SDK
-version **1.4.313.2** installed (`VULKAN_SDK` set). Use an operator build
+Build on Windows with MSVC, CMake, Python, and the upstream b12084 Vulkan SDK
+version **1.4.357.0** installed (`VULKAN_SDK` set). Use an operator build
 directory, not an installed BOINC slot. From this reviewed repository checkout:
 
 ```powershell
 git clone --config core.autocrlf=false --no-checkout https://github.com/ggml-org/llama.cpp.git amd-llama-source
-git -C amd-llama-source checkout e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
+git -C amd-llama-source checkout f9448cddc48c129a4abc7ff9c2a84c2b4c101c61
 .\scripts\boinc\build_amd_vulkan_runtime.ps1 `
   -Source "$PWD/amd-llama-source" -Build "$PWD/amd-llama-build" `
   -Output "$PWD/amd-llama-identity"

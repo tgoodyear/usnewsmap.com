@@ -1273,6 +1273,19 @@ QWEN_FEED_ARGS="--yiddish-budget 40"
 
 A new root needs the refill and the collector told about it: add the root to `CAMPAIGN_ARGS` in the refill's env, and to `NATIVE_QWEN_ARGS` once its quality root exists. The version 1 root stays out of the refill, so its backlog goes only to the classes open to it.
 
+### Changing the llama.cpp release
+
+A unit names its runtime in `engine.llama`: the digest of the `ubuntu-vulkan-x64` archive in `ocr/boinc/qwen/llama.lock`. The app refuses a unit whose digest isn't in its own lock, so a new release is a new engine, and the two never meet in one quorum. With `app.min_version` at 0 the feeder loads only the newest version of each class, so once the new version is published every unsent replica of an old-engine unit would go to an app that refuses it. The cut-over drains first:
+
+1. Stop the Qwen feed's submissions and let the unsent old-engine replicas run out (`server_state=2` for `appid=6`). Keep the refill window renewing so Intel keeps reading.
+2. Publish the new version for every class that is open, on every platform, through the [release path](../contrib-compute/docs/app-release.md). A class left on the old version can't read new units.
+3. Point the feed at a new engine plan (the old one with `engine.llama` replaced) and at new roots; a root keeps one engine. Set the refill's `APP_VERSION_NUM`, `NVIDIA_APP_VERSION`, `INTEL_APP_VERSION` and `CAMPAIGN_ARGS` to match. `qwen-auto-cohort.py` admits the engine of the llama.lock its `--app-version-num` ships (`engine_for`).
+4. Submit a small batch first and check each class's first results (exit status, `USNM_QWEN_FAILURE`, empty readings) before the feed resumes at its normal rate.
+
+A replica of an old-engine unit that is resent after step 2 (a timeout or an error) fails on the new app with `unit is for llama ...`, so publish only once almost nothing old is in flight.
+
+1.18 moved from b8799 to b12084 (#1428, Study 9). On the RTX 2060 SUPER, reading with the Xiaomi OCR model, b8799's Vulkan `llama-server` returned no text for 72 of 612 Study 3 crops (mostly single lines) and 10.5% CER; b12084's Vulkan build read every crop at 4.6% CER with the same model, requests and flags. From b12084, `llama-server` is a small launcher for `libllama-server-impl` and `libllama-common` (`.so`, `.dylib` or `.dll`), and the Windows OpenMP runtime is `libomp.dll`; `scripts/boinc/install.py` refuses a bundle without them. `MTMD_BACKEND_DEVICE` is now read by the common argument parser as `--mmproj-device`, with the same effect. Windows drivers without `VK_EXT_pci_bus_info` still get no device identity upstream, so the [AMD identity patch](boinc-amd-gpu.md#windows-drivers-without-vulkan-pci-bus-information) is still applied, to the same unchanged block.
+
 ### OCR's prefetch manifests (#1055)
 
 The scan fetcher (home-infra `usnm-loc-fetch`) takes OCR's manifests before the quality

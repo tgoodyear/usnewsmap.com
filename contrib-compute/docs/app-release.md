@@ -274,7 +274,7 @@ Microsoft Authenticode signatures and records versions and hashes in
 `VC_REDIST_SOURCE.json` and `SHA256SUMS`. Stage these DLLs as signed
 `--extra-file` members too; staging rejects a missing mandatory CUDA or CRT
 dependency, including the portable `ggml-cpu-x64.dll` backend and its
-`libomp140.x86_64.dll` dependency from the pinned llama archive (CPU backend
+`libomp.dll` dependency from the pinned llama archive (CPU backend
 discovery is required even for CUDA offload; optimized CPU variants are optional).
 No volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
 driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.
