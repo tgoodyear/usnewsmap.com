@@ -42,8 +42,8 @@ def utc(text):
 
 def job_facts(job):
     pages = job.get("pages") or []
-    langs = sorted({p.get("language") for p in pages}) or [job.get("language")]
-    return {"language": "+".join(str(x) for x in langs), "prompt_version": job.get("prompt_version"), "pages": len(pages) or 1}
+    langs = sorted({p["language"] for p in pages if p.get("language")}) or ([job["language"]] if job.get("language") else [])
+    return {"language": "+".join(langs) or None, "prompt_version": job.get("prompt_version"), "pages": len(pages) or 1}
 
 
 def download_path(root, name, fanout):
@@ -80,10 +80,11 @@ def collect(args):
         snapshot = cur.fetchone()[0].strftime("%Y-%m-%dT%H:%M:%SZ")
         cur.execute("SELECT id FROM app WHERE name='usnm_qwen'")
         appid = cur.fetchone()[0]
+        window = (appid, int(args.since.timestamp()), int(args.until.timestamp()))
         cur.execute(
             "SELECT id,name,create_time,canonical_resultid,error_mask,target_nresults,max_total_results "
             "FROM workunit WHERE appid=%s AND create_time>=%s AND create_time<%s ORDER BY id LIMIT %s",
-            (appid, int(args.since.timestamp()), int(args.until.timestamp()), args.limit),
+            (*window, args.limit),
         )
         cols = [c[0] for c in cur.description]
         units = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -91,22 +92,24 @@ def collect(args):
             sys.exit(f"--limit {args.limit} reached; narrow the window")
         results = []
         if units:
+            # The id range lets MySQL walk the primary key; the window keeps the rows to the units read above.
             cur.execute(
                 "SELECT r.id,r.workunitid,r.server_state,r.outcome,r.validate_state,r.hostid,r.sent_time,"
-                "r.received_time,r.elapsed_time,av.plan_class FROM result r "
+                "r.received_time,r.elapsed_time,av.plan_class FROM workunit w JOIN result r ON r.workunitid=w.id "
                 "LEFT JOIN app_version av ON av.id=r.app_version_id "
-                "WHERE r.appid=%s AND r.workunitid BETWEEN %s AND %s LIMIT %s",
-                (appid, units[0]["id"], units[-1]["id"], 8 * args.limit),
+                "WHERE w.appid=%s AND w.create_time>=%s AND w.create_time<%s AND w.id BETWEEN %s AND %s LIMIT %s",
+                (*window, units[0]["id"], units[-1]["id"], 8 * args.limit),
             )
             cols = [c[0] for c in cur.description]
             rows = cur.fetchall()
             if len(rows) >= 8 * args.limit:
                 sys.exit(f"{len(rows)} results reached the result limit; narrow the window")
-            ids = {u["id"] for u in units}
-            results = [r for r in (dict(zip(cols, row)) for row in rows) if r["workunitid"] in ids]
-        db.rollback()
+            results = [dict(zip(cols, row)) for row in rows]
     finally:
-        db.close()
+        try:
+            db.rollback()
+        finally:
+            db.close()
     jobs = {}
     for path in glob.glob(f"{args.qwen_root}/*/units/*/qwen.json"):
         job = read_job(path)

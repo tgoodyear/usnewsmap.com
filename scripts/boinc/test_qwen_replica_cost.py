@@ -140,12 +140,12 @@ class FakeCursor:
             self.rows = [(dt.datetime(2026, 11, 4, 22, 0, 0),)]
         elif "FROM app" in sql:
             self.rows = [(6,)]
+        elif "JOIN result" in sql:
+            self.description = [(c,) for c in ("id", "workunitid", "server_state", "outcome", "validate_state", "hostid", "sent_time", "received_time", "elapsed_time", "plan_class")]
+            self.rows = self.results
         elif "FROM workunit" in sql:
             self.description = [(c,) for c in ("id", "name", "create_time", "canonical_resultid", "error_mask", "target_nresults", "max_total_results")]
             self.rows = self.units
-        elif "FROM result" in sql:
-            self.description = [(c,) for c in ("id", "workunitid", "server_state", "outcome", "validate_state", "hostid", "sent_time", "received_time", "elapsed_time", "plan_class")]
-            self.rows = self.results
 
     def fetchone(self):
         return self.rows[0]
@@ -163,7 +163,9 @@ class Collect(unittest.TestCase):
         (units / "a/qwen.json").write_text(json.dumps({"id": "aa", "language": "yid", "prompt_version": 1}))
         (units / "b").mkdir()
         (units / "b/qwen.json").write_text(json.dumps({"id": "bb", "language": "", "prompt_version": 4,
-                                                       "pages": [{"language": "srp"}, {"language": "deu"}]}))
+                                                       "pages": [{"language": "srp"}, {"language": "deu"}, {"language": None}]}))
+        (units / "c").mkdir()
+        (units / "c/qwen.json").write_text(json.dumps({"id": "dd", "language": "", "prompt_version": 1, "pages": [{}]}))
         (self.dir / "config.xml").write_text(
             "<boinc><config><db_host>h</db_host><db_user>u</db_user><db_passwd>p</db_passwd><db_name>n</db_name></config></boinc>")
         self.log, self.closed = [], []
@@ -190,25 +192,32 @@ class Collect(unittest.TestCase):
         return json.loads(out.getvalue())
 
     def test_reads_in_one_read_only_transaction_and_joins_inputs(self):
-        units = [(1, "usnm_qwen_aa", 5, 0, 0, 2, 4), (2, "usnm_qwen_bb", 6, 0, 0, 2, 4), (3, "usnm_qwen_cc", 7, 0, 0, 2, 4)]
-        results = [(9, 1, 5, 1, 0, 1, 1, 2, 30.0, "x"), (10, 99, 5, 1, 0, 1, 1, 2, 30.0, "x")]
+        units = [(1, "usnm_qwen_aa", 5, 0, 0, 2, 4), (2, "usnm_qwen_bb", 6, 0, 0, 2, 4), (3, "usnm_qwen_cc", 7, 0, 0, 2, 4),
+                 (4, "usnm_qwen_dd", 8, 0, 0, 2, 4)]
+        results = [(9, 1, 5, 1, 0, 1, 1, 2, 30.0, "x")]
         snap = self.run_collect(units, results)
         sql = [s for s, _ in self.log]
+        since, until = (int(dt.datetime(2026, m, d, tzinfo=dt.timezone.utc).timestamp()) for m, d in ((10, 21), (11, 4)))
+        query, params = next((s, p) for s, p in self.log if "FROM workunit w JOIN result" in s)
+        self.assertIn("w.create_time>=%s AND w.create_time<%s", query)
+        self.assertEqual(params, (6, since, until, 1, 4, 80))
         self.assertLess(sql.index("START TRANSACTION READ ONLY"), min(i for i, s in enumerate(sql) if "FROM workunit" in s))
         self.assertEqual(sql[-1], "ROLLBACK")
         self.assertEqual(self.closed, [True])
-        self.assertTrue(all("LIMIT" in s for s in sql if "FROM workunit" in s or "FROM result" in s))
+        self.assertTrue(all("LIMIT" in s for s in sql if "FROM workunit" in s))
         self.assertFalse([s for s in sql if s.split()[0].upper() in ("INSERT", "UPDATE", "DELETE", "REPLACE")])
         langs = {u["id"]: (u["language"], u["prompt_version"], u["pages"]) for u in snap["units"]}
-        self.assertEqual(langs, {1: ("yid", 1, 1), 2: ("deu+srp", 4, 2), 3: (None, None, None)})
+        self.assertEqual(langs, {1: ("yid", 1, 1), 2: ("deu+srp", 4, 3), 3: (None, None, None), 4: (None, 1, 1)})
         self.assertEqual([r["id"] for r in snap["results"]], [9])
         self.assertEqual((snap["snapshot"], snap["since"]), ("2026-11-04T22:00:00Z", "2026-10-21T00:00:00Z"))
 
-    def test_refuses_a_window_at_the_limit(self):
+    def test_refuses_a_window_at_the_limit_and_still_rolls_back(self):
         with self.assertRaises(SystemExit):
             self.run_collect([(1, "usnm_qwen_aa", 5, 0, 0, 2, 4)], [], limit="1")
         with self.assertRaises(SystemExit):
             self.run_collect([(1, "usnm_qwen_aa", 5, 0, 0, 2, 4)], [(i, 1, 5, 1, 0, 1, 1, 2, 3.0, "x") for i in range(16)], limit="2")
+        self.assertEqual([s for s, _ in self.log].count("ROLLBACK"), 2)
+        self.assertEqual(self.closed, [True, True])
 
 
 if __name__ == "__main__":
