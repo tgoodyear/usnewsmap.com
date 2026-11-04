@@ -32,9 +32,9 @@ class PinnedIdentityPatch(unittest.TestCase):
             shutil.copyfile(os.environ["AMD_PINNED_VULKAN_SOURCE"], source)
             patch(source)
             text = source.read_text()
-            function = text[text.index("static std::string ggml_backend_vk_get_device_pci_id("):
-                            text.index("//////////////////////////",
-                                       text.index("static std::string ggml_backend_vk_get_device_pci_id("))]
+            start = text.index("static std::string ggml_backend_vk_get_device_pci_id(")
+            # The function ends at its first closing brace in column zero.
+            function = text[start:text.index("\n}\n", start) + 3]
             # Compile the exact patched function with deterministic Vulkan API responses.
             probe = Path(folder) / "probe.cpp"
             probe.write_text(r'''
