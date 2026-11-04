@@ -572,6 +572,80 @@ class DecodeQuarantineTest(unittest.TestCase):
         self.assertFalse((self.root / "state/cpu-test" / feed.scan_quarantine.DB_NAME).exists())
 
 
+class ScanGoneTest(unittest.TestCase):
+    """A buffer scan read and deleted by an OCR worker after selection (#1457); no Pillow needed."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.state = self.root / "state" / "qwen-test"
+        (self.root / "curated" / "pages").mkdir(parents=True)
+
+    @staticmethod
+    def page(seq, store="buffer"):
+        raw = f"scan {seq}".encode()
+        return {"doc_id": f"sn1_1900-01-02_ed-1_seq-{seq}", "batch": "xx_test", "batch_version": 1,
+                "lccn": "sn1", "date": "1900-01-02", "edition": 1, "seq": seq, "lang": "rus",
+                "damage_rate": 0.8, "scan": f"{store}/xx_test/sn1/1900-01-02/1/{seq}.jpg",
+                "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, raw
+
+    @staticmethod
+    def texts():
+        texts = mock.Mock()
+        texts.loc.side_effect = lambda batch, version, docs: ({doc: "LoC text" for doc in docs}, True)
+        texts.american_stories.return_value = {}
+        texts.ours.return_value = {}
+        texts.ours_alto.return_value = None
+        return texts
+
+    def test_a_buffer_scan_gone_since_selection_does_not_fail_the_run(self):
+        (good, good_raw), (gone, _) = self.page(1), self.page(2)
+        pages = self.root / "pages.jsonl"
+        pages.write_text(json.dumps(good) + "\n" + json.dumps(gone) + "\n")
+        args = types.SimpleNamespace(campaign="qwen-test", curated=str(self.root / "curated"),
+                                     state=str(self.root / "state"), outbox=str(self.root / "outbox"),
+                                     pages=str(pages), scan_server="http://scan", chunk_pages=2,
+                                     max_pending=4, workers=1, once=True, alto_cache=None,
+                                     quarantine_decode=True)
+
+        def fetch(request, timeout):
+            if request.full_url.endswith(gone["scan"]):
+                raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+            return io.BytesIO(good_raw)
+
+        with mock.patch.object(feed, "Texts", return_value=self.texts()), \
+                mock.patch.object(feed.urllib.request, "urlopen", side_effect=fetch), \
+                mock.patch.object(feed, "page_jpeg", return_value=(good_raw, (64, 64))), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            feed.cmd_run(args)
+        self.assertIn("scan gone; left for a later selection", output.getvalue())
+        self.assertNotIn("page failed; will retry", output.getvalue())
+        self.assertEqual(feed.read_lines(self.state / "done.txt"), {good["doc_id"]})
+        self.assertFalse((self.state / "skipped.txt").exists())
+        self.assertTrue((self.root / "outbox/qwen-test/c00001/READY").exists())
+        self.assertEqual(feed.scan_quarantine.quarantined(self.state), [])
+        self.assertEqual(feed.scan_quarantine.retryable_ids(self.state), {feed.scan_quarantine.source_id(gone)})
+
+    def test_a_missing_keep_scan_or_another_http_error_is_still_retried(self):
+        self.state.mkdir(parents=True)
+        camp = self.root / "campaign"
+        camp.mkdir()
+        args = types.SimpleNamespace(workers=1, scan_server="http://scan", alto_cache=None,
+                                     quarantine_decode=True)
+        for (page, _), code, retry in ((self.page(1), 404, 0), (self.page(1, "keep"), 404, 1),
+                                       (self.page(1), 500, 1)):
+            error = urllib.error.HTTPError("http://scan/scans/" + page["scan"], code, "error", {}, None)
+            with self.subTest(scan=page["scan"], code=code), \
+                    mock.patch.object(feed.urllib.request, "urlopen", side_effect=error), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(feed.process_chunk(args, self.texts(), [page], str(camp), str(self.state), 1,
+                                                    str(self.state / "done.txt"),
+                                                    str(self.state / "skipped.txt")), (0, retry, 1))
+        self.assertFalse((self.state / "done.txt").exists())
+        self.assertFalse((self.state / "skipped.txt").exists())
+
+
 class FollowTest(unittest.TestCase):
     def test_a_busy_feeder_waits_only_until_the_shipper_takes_a_chunk(self):
         with tempfile.TemporaryDirectory() as d:

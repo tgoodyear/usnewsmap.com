@@ -295,11 +295,21 @@ class Texts:
         return os.path.join(self.curated, "ocr-local/alto", name) if name else None
 
 
+class ScanGone(Exception):
+    """The scan server no longer has a buffer scan: a worker read it and deleted it after the
+    page was selected."""
+
+
 def fetch_scan(server, p, timeout=120):
     url = f"{server.rstrip('/')}/scans/{p['scan']}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and p["scan"].startswith("buffer/"):
+            raise ScanGone(f"{p['scan']}: no longer on the scan server") from e
+        raise
     if len(raw) != p["bytes"] or hashlib.sha256(raw).hexdigest() != p["sha256"]:
         raise ValueError("scan doesn't match its index line")
     return raw
@@ -467,6 +477,12 @@ def process_chunk(a, texts, chunk, camp_dir, state, seq, done_path, skip_path):
             p = futs[fut]
             try:
                 result = fut.result()
+            except ScanGone as e:
+                # Not a failure of this run: selection takes the page again only if its scan
+                # is available again.
+                log("scan gone; left for a later selection", doc_id=p["doc_id"], error=str(e)[:200])
+                if getattr(a, "quarantine_decode", False):
+                    scan_quarantine.record_retryable(state, p, e)
             except ScanDecodeError as e:
                 log("scan decode failed", doc_id=p["doc_id"], sha256=p["sha256"],
                     error_type=e.original_type, error=str(e)[:200])
