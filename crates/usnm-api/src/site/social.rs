@@ -45,6 +45,11 @@ fn clean(value: &str, limit: usize) -> String {
         .collect()
 }
 
+fn clean_view_value(key: &str, value: &str) -> String {
+    // The UI accepts 60 LCCNs of up to 16 characters each.
+    clean(value, if key == "lccn" { 60 * 17 - 1 } else { 256 })
+}
+
 fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -61,7 +66,11 @@ impl Card {
             let query = form_urlencoded::Serializer::new(String::new())
                 .extend_pairs(
                     form_urlencoded::parse(query.as_bytes())
-                        .filter(|(key, _)| key != "q" && VIEW_KEYS.contains(&key.as_ref())),
+                        .filter(|(key, _)| key != "q" && VIEW_KEYS.contains(&key.as_ref()))
+                        .map(|(key, value)| {
+                            let value = clean_view_value(&key, &value);
+                            (key, value)
+                        }),
                 )
                 .finish();
             card.url = format!(
@@ -100,9 +109,8 @@ impl Card {
         }
         for (key, value) in form_urlencoded::parse(query.as_bytes()) {
             if VIEW_KEYS.contains(&key.as_ref()) && !params.iter().any(|(k, _)| k == &key) {
-                // The UI accepts 60 LCCNs of up to 16 characters each.
-                let limit = if key == "lccn" { 60 * 17 - 1 } else { 256 };
-                params.push((key.into_owned(), clean(&value, limit)));
+                let value = clean_view_value(&key, &value);
+                params.push((key.into_owned(), value));
             }
         }
         let get = |key: &str| {
@@ -949,16 +957,35 @@ mod tests {
         let query = form_urlencoded::Serializer::new(String::new())
             .append_pair("lccn", &lccns)
             .finish();
-        let card = Card::new("/search/gold", &query).unwrap();
-        for url in [&card.url, &card.image] {
-            let query = url.split_once('?').unwrap().1;
-            let filter = form_urlencoded::parse(query.as_bytes())
-                .find(|(k, _)| k == "lccn")
-                .unwrap()
-                .1
-                .into_owned();
-            assert_eq!(filter, lccns);
+        for path in ["/search/gold", "/examples/whigs"] {
+            let card = Card::new(path, &query).unwrap();
+            for url in [&card.url, &card.image] {
+                let query = url.split_once('?').unwrap().1;
+                let filter = form_urlencoded::parse(query.as_bytes())
+                    .find(|(k, _)| k == "lccn")
+                    .unwrap()
+                    .1
+                    .into_owned();
+                assert_eq!(filter, lccns);
+            }
         }
+    }
+
+    #[test]
+    fn bounded_example_image_keys_capture_the_same_bounded_view() {
+        let prefix = "eng,".repeat(64);
+        let card = |suffix| {
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("lang", &format!("{prefix}{suffix}"))
+                .finish();
+            Card::new("/examples/whigs", &query).unwrap()
+        };
+        let a = card("ger");
+        let b = card("fre");
+        assert_eq!(a.image, b.image);
+        assert_eq!(a.url, b.url);
+        let query = a.url.split_once('?').unwrap().1;
+        assert_eq!(Card::new("/examples/whigs", query).unwrap().image, a.image);
     }
 
     #[test]
