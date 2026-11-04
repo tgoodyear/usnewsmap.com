@@ -149,7 +149,8 @@ the real-page receipt for #866 is recorded below.
 The service runs whatever `/opt/usnm` holds, so moving that checkout deploys the
 controller. A tick runs three things from it: `scripts/boinc/batch_scheduler.py`, the push
 command `scripts/ocr-node/push-boinc-scan.sh`, and `scripts/boinc/start-boinc-bridge.sh`
-with `scripts/lib/` for any step not sent to `step_command`. The step host's
+with `scripts/lib/` for any step not sent to `step_command`. That launcher also reads the
+checkout's settings, `infra/env/` and `contrib-compute/infra/boinc/env/`. The step host's
 `usnm-boinc-step` (`onprem-step.sh`) and the server, bridge and hand-off images are
 deployed on their own; moving the checkout doesn't change them. Keep the checkout at one
 commit of main with no local edits, and move it only as below. Until #1412 is closed, the
@@ -163,7 +164,8 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    git fetch origin
    git status --short   # anything listed is a local edit or stray file: step 3 saves it
    git log --oneline HEAD..<commit> -- scripts/boinc/batch_scheduler.py \
-     scripts/ocr-node/push-boinc-scan.sh scripts/boinc/start-boinc-bridge.sh scripts/lib/
+     scripts/ocr-node/push-boinc-scan.sh scripts/boinc/start-boinc-bridge.sh scripts/lib/ \
+     infra/env/ contrib-compute/infra/boinc/env/
    ```
 
    Read each listed commit's rollout notes. If one changes what the controller sends to
