@@ -55,6 +55,15 @@ describe("view URL", () => {
     expect(parseViewUrl("https://usnewsmap.com/search/gold?lang=ger")).toEqual(parseView("?q=gold&lang=ger"));
   });
 
+  it("does not restore the preset title when an example's dates are cleared", () => {
+    window.history.replaceState(null, "", "/examples/cross-of-gold?from=&to=");
+    const { result, unmount } = renderHook(() => useView());
+    expect(result.current[0]).toMatchObject({ from: "", to: "" });
+    expect(document.title).toBe('Newspaper coverage of "cross of gold" · US News Map');
+    unmount();
+    window.history.replaceState(null, "", "/");
+  });
+
   it("round-trips States without changing search parameters or old layer defaults", () => {
     const v = parseView("?q=gold&layer=states");
     expect(v.layer).toBe("states");

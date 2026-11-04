@@ -332,13 +332,13 @@ fn shell_for(path: &str, query: &str, index: Vec<u8>) -> Vec<u8> {
         &format!(r#"<link rel="canonical" href="{canonical}" />"#),
         1,
     );
-    if let Some(example) = example {
+    if example.is_some() {
         html = html.replacen(
             r#"<main class="empty">"#,
             &format!(
                 r#"<main class="empty"><h1>{}</h1><p>{}</p>"#,
-                escape_html(&example.title),
-                escape_html(&example.blurb)
+                escape_html(head.title.trim_end_matches(head::SUFFIX)),
+                escape_html(&head.description)
             ),
             1,
         );

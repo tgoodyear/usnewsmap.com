@@ -10,7 +10,7 @@ use super::{
 };
 use crate::prewarm::{examples, Example};
 
-const SUFFIX: &str = " · US News Map";
+pub(super) const SUFFIX: &str = " · US News Map";
 /// The longest title, in characters, suffix included.
 const TITLE_LIMIT: usize = 60;
 /// The longest description, in characters.
@@ -39,7 +39,7 @@ const NEWSPAPERS: &str = "American newspapers from the Library of Congress";
 const MAPPED: &str = "mapped by where and when each page was printed";
 
 /// URL parameters that change which pages a search finds. An example's title
-/// only fits a URL with its filters or none: the others (the timeline, the
+/// only fits a preset with its filters: the others (the timeline, the
 /// map's position, the open tab) show the same search another way.
 const FILTERS: [&str; 9] = [
     "source", "mode", "near", "from", "to", "state", "lang", "lccn", "series",
@@ -60,8 +60,8 @@ impl Head {
     }
 }
 
-/// The example searches by canonical path. Examples and the sitemap name a
-/// search by that path, so `"Mexican war"` and `/search/mexican-war` are one.
+/// The example searches by legacy search path, so `"Mexican war"` and
+/// `/search/mexican-war` retain the same title.
 static EXAMPLES: LazyLock<HashMap<String, &'static Example>> = LazyLock::new(|| {
     examples()
         .iter()
@@ -97,7 +97,12 @@ pub(super) fn for_page(path: &str, query: &str) -> Option<Head> {
     let q = search_query_in_mode(path, phrase_mode)?;
     let example = EXAMPLES
         .get(&search_path_in_mode(&q, phrase_mode))
-        .filter(|example| same_filters(example, query));
+        .filter(|example| {
+            FILTERS
+                .iter()
+                .all(|key| normalized(key, &param(query, key).unwrap_or_default()).is_empty())
+                || same_filters(example, query)
+        });
     Some(match example {
         Some(example) => for_example(example),
         None => for_search(path, query, &q),
@@ -140,7 +145,7 @@ fn normalized(key: &str, value: &str) -> String {
     }
 }
 
-/// Whether a URL's filters are the example's, or absent as in the sitemap.
+/// Whether a URL's effective filters are exactly the example's.
 fn same_filters(example: &Example, query: &str) -> bool {
     let wanted = |key: &str| match example.view.get(key) {
         Some(serde_json::Value::Array(values)) => values
@@ -152,10 +157,9 @@ fn same_filters(example: &Example, query: &str) -> bool {
         None => String::new(),
     };
     let requested = |key: &str| normalized(key, &param(query, key).unwrap_or_default());
-    FILTERS.iter().all(|key| requested(key).is_empty())
-        || FILTERS
-            .iter()
-            .all(|key| requested(key) == normalized(key, &wanted(key)))
+    FILTERS
+        .iter()
+        .all(|key| requested(key) == normalized(key, &wanted(key)))
 }
 
 fn for_example(example: &Example) -> Head {
@@ -545,11 +549,10 @@ mod tests {
         assert!(!html.contains("<script>\""));
     }
 
-    /// The sitemap holds the static pages, the examples, and searches promoted
-    /// from the search log; the last are generated like any other search.
+    /// Static pages, examples and legacy searches retain distinct metadata.
     #[test]
-    fn the_sitemaps_pages_have_unique_titles_and_descriptions() {
-        let promoted = [
+    fn pages_have_unique_titles_and_descriptions() {
+        let other_searches = [
             "\"gold diggings\" OR \"gold mines\" OR \"gold region\"",
             "ꮳꮃꭹ",
             "abolitionists",
@@ -567,7 +570,7 @@ mod tests {
         for path in crate::site::CURATED_SEARCHES
             .iter()
             .cloned()
-            .chain(promoted.into_iter().map(search_path))
+            .chain(other_searches.into_iter().map(search_path))
         {
             let head = for_page(&path, "").unwrap();
             pages.push((path, head));

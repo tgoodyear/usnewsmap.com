@@ -877,6 +877,17 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
         assert!(!body.contains(r#"id="search-landing""#), "{dynamic}");
         assert!(body.contains(r#"<div id="root">"#), "{dynamic}");
     }
+    for query in ["from=1900-01-01&to=1901-12-31", "from=&to="] {
+        let (status, _, body) =
+            get_site(&s, &format!("/examples/cross-of-gold?{query}"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(
+            "<title>Newspaper coverage of &quot;cross of gold&quot; · US News Map</title>"
+        ));
+        assert!(body.contains("<h1>Newspaper coverage of &quot;cross of gold&quot;</h1>"));
+        assert!(body.contains("<p>Search results for &quot;cross of gold&quot;"));
+        assert!(!body.contains("<h1>Cross of Gold, 1896</h1>"));
+    }
     let resp = app(s.clone())
         .oneshot(
             Request::builder()

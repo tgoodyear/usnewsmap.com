@@ -303,12 +303,13 @@ function shorten(text: string, limit: number): string {
  * (crates/usnm-api/src/site/head.rs). fixtures/page-titles.json holds the two
  * to the same results, so a page keeps its title when the app starts.
  */
-export function searchTitle(view: ViewState): string {
+export function searchTitle(view: ViewState, path = ""): string {
   if (!view.q) return TITLES.search;
-  const example = EXAMPLE_BY_PATH.get(searchPath(view.q, view.mode));
+  const preset = exampleForPath(path);
+  const example = preset ?? EXAMPLE_BY_PATH.get(searchPath(view.q, view.mode));
   if (example) {
-    // An example's title fits a view with its filters, or none as in the sitemap.
-    const plain = FILTERS.every((key) => same(view[key], DEFAULTS[key]));
+    // Only legacy search paths keep example titles without the preset filters.
+    const plain = !preset && FILTERS.every((key) => same(view[key], DEFAULTS[key]));
     const matches = FILTERS.every((key) => same(view[key], example.view[key] ?? DEFAULTS[key]));
     if (plain || matches) return `${example.title}${TITLE_SUFFIX}`;
   }
@@ -335,8 +336,9 @@ const getUrl = () => window.location.pathname + window.location.search;
 export function useView(): [ViewState, (patch: Partial<ViewState>, push?: boolean) => void] {
   const url = useSyncExternalStore(subscribe, getUrl, getUrl);
   const view = parseViewUrl(url);
-  const title = searchTitle(view);
-  const example = exampleForPath(url.split("?")[0]!);
+  const path = url.split("?")[0]!;
+  const title = searchTitle(view, path);
+  const example = exampleForPath(path);
   const canonical = `https://usnewsmap.com${example ? examplePath(example) : searchPath(view.q, view.mode)}`;
   useEffect(() => {
     document.title = title;

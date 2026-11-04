@@ -3,6 +3,16 @@
   { "title": "Privacy and data handling · US News Map", "url": "/privacy" },
   { "title": "Dataset details and index status · US News Map", "url": "/datasets" },
   { "title": "OCR engine and model credits · US News Map", "url": "/credits" },
+  { "title": "Cross of Gold, 1896 · US News Map", "url": "/examples/cross-of-gold" },
+  { "title": "Cross of Gold, 1896 · US News Map", "url": "/examples/cross-of-gold?tab=table&z=4" },
+  {
+    "title": "Newspaper coverage of \"cross of gold\" · US News Map",
+    "url": "/examples/cross-of-gold?from=1900-01-01&to=1901-12-31"
+  },
+  {
+    "title": "Newspaper coverage of \"cross of gold\" · US News Map",
+    "url": "/examples/cross-of-gold?from=&to="
+  },
   { "title": "Mexican-American War · US News Map", "url": "/search/mexican-war" },
   {
     "title": "Mexican-American War · US News Map",

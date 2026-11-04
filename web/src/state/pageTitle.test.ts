@@ -14,8 +14,9 @@ const cases: { title: string; url: string }[] = JSON.parse(
 
 describe("searchTitle", () => {
   it.each(cases)("matches the API for $url", ({ title, url }) => {
-    const page = pageFor(url.split("?")[0]!);
-    expect(page === "search" ? searchTitle(parseViewUrl(url)) : TITLES[page]).toBe(title);
+    const path = url.split("?")[0]!;
+    const page = pageFor(path);
+    expect(page === "search" ? searchTitle(parseViewUrl(url), path) : TITLES[page]).toBe(title);
   });
 
   it("gives every example its own title", () => {
