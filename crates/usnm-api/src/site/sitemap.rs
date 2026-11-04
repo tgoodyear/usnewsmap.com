@@ -600,6 +600,7 @@ pub(super) fn response(state: &AppState, req: &Request) -> Response {
             .web_at
             .load_full()
             .is_some_and(|web_at| checkpoint.web_at == *web_at);
+    let content_identity = content_identity(&checkpoint);
     let headers = [
         (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
         (header::CACHE_CONTROL, "no-cache"),
@@ -607,6 +608,10 @@ pub(super) fn response(state: &AppState, req: &Request) -> Response {
         (
             HeaderName::from_static("x-usnm-sitemap-build-current"),
             if build_current { "true" } else { "false" },
+        ),
+        (
+            HeaderName::from_static("x-usnm-sitemap-content-identity"),
+            content_identity.as_str(),
         ),
     ];
     (
@@ -629,6 +634,16 @@ fn xml(checkpoint: &Checkpoint) -> String {
     }
     xml.push_str(XML_END);
     xml
+}
+
+fn content_identity(checkpoint: &Checkpoint) -> String {
+    let pages: BTreeMap<_, _> = checkpoint
+        .pages
+        .iter()
+        .filter(|(path, _)| valid_url(path) && listed_path(path))
+        .map(|(path, page)| (path, &page.fingerprint))
+        .collect();
+    fingerprint(serde_json::to_vec(&pages).expect("sitemap page fingerprints serialize"))
 }
 
 fn xml_entry(path: &str, page: &Page) -> String {
@@ -760,6 +775,33 @@ mod tests {
         assert_eq!(next.pages["/search/whigs"].lastmod, at(8));
         assert_eq!(next.pages["/search/new-example"].lastmod, at(8));
         assert!(!next.pages.contains_key("/search/no-results"));
+    }
+
+    #[test]
+    fn content_identity_ignores_origin_local_dates_and_detects_page_changes() {
+        let original = generation().checkpoint(None).unwrap();
+        let mut observed_elsewhere = original.clone();
+        observed_elsewhere.sequence += 1;
+        observed_elsewhere.build_at += chrono::Duration::days(1);
+        observed_elsewhere.web_at += chrono::Duration::days(1);
+        observed_elsewhere.observed_at += chrono::Duration::days(1);
+        for page in observed_elsewhere.pages.values_mut() {
+            page.lastmod += chrono::Duration::days(1);
+        }
+        assert_eq!(
+            content_identity(&original),
+            content_identity(&observed_elsewhere)
+        );
+
+        observed_elsewhere
+            .pages
+            .get_mut("/privacy")
+            .unwrap()
+            .fingerprint = "changed page".into();
+        assert_ne!(
+            content_identity(&original),
+            content_identity(&observed_elsewhere)
+        );
     }
 
     #[test]
@@ -1714,6 +1756,10 @@ mod tests {
             .unwrap();
         let response = response(&spare, &request);
         assert_eq!(response.headers()["x-usnm-sitemap-build-current"], "true");
+        assert_eq!(
+            response.headers()["x-usnm-sitemap-content-identity"],
+            content_identity(&first)
+        );
     }
 
     #[tokio::test]

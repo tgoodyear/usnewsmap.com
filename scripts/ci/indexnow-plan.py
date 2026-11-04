@@ -63,26 +63,10 @@ def plan(xml, host, key, previous):
     return state, changed
 
 
-def current_enough(public_xml, deployed_xml, host):
+def same_urls(public_xml, deployed_xml, host):
     public = sitemap_urls(public_xml, host)
     deployed = sitemap_urls(deployed_xml, host)
-    if public.keys() != deployed.keys():
-        return False
-
-    def instant(value):
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-            return dt.datetime.combine(dt.date.fromisoformat(value), dt.time(), dt.timezone.utc)
-        return dt.datetime.fromisoformat(value)
-
-    for url, deployed_date in deployed.items():
-        public_date = public[url]
-        if not deployed_date:
-            continue
-        if not public_date:
-            return False
-        if instant(public_date) < instant(deployed_date):
-            return False
-    return True
+    return public.keys() == deployed.keys()
 
 
 if __name__ == "__main__":
@@ -91,11 +75,11 @@ if __name__ == "__main__":
     parser.add_argument("--key")
     parser.add_argument("--state", type=Path)
     parser.add_argument("--output-state", type=Path)
-    parser.add_argument("--compare", type=Path, help="require stdin sitemap to catch up with this deployed sitemap")
+    parser.add_argument("--compare", type=Path, help="require stdin sitemap to have the same URLs as this deployed sitemap")
     args = parser.parse_args()
     xml = sys.stdin.read()
     if args.compare:
-        if not current_enough(xml, args.compare.read_text(), args.host):
+        if not same_urls(xml, args.compare.read_text(), args.host):
             sys.exit(1)
         sys.exit(0)
     if not args.key or not args.state or not args.output_state:

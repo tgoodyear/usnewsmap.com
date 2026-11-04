@@ -47,15 +47,25 @@ payload="$work/request.json"
 next_state="$work/state.json"
 expected="$work/deployed-sitemap.xml"
 expected_headers="$work/deployed-sitemap-headers"
+public_headers="$work/public-sitemap-headers"
 encoded_state="$work/state.b64"
-trap 'rm -f "$body" "$payload" "$next_state" "$expected" "$expected_headers" "$encoded_state"; rmdir "$work"' EXIT
+trap 'rm -f "$body" "$payload" "$next_state" "$expected" "$expected_headers" "$public_headers" "$encoded_state"; rmdir "$work"' EXIT
+
+read_header() {
+  local name
+  name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]') || return 1
+  awk -v name="$name:" 'tolower($1) == name {gsub("\r", "", $2); value=$2} END {print value}' "$2"
+}
 
 # Read the deployed build's generated sitemap, not a stale source-tree list.
-sitemap=$(curl -fsS -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
+sitemap=$(curl -fsS -D "$public_headers" -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
   skip "$sitemap_url could not be fetched"
+public_content_identity=$(read_header x-usnm-sitemap-content-identity "$public_headers") ||
+  skip "could not read the public sitemap content identity"
 
 # A deployment notification waits for Azure to generate the deployed build's
-# checkpoint, then for the on-prem origin to switch before acknowledging it.
+# checkpoint, then for the on-prem origin to serve the same page content before
+# acknowledging it. Origin-local lastmod dates are not comparable.
 # The hourly job retries if either bounded wait expires.
 if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
   [[ $INDEXNOW_EXPECTED_SITEMAP_URL =~ ^https://[a-z0-9.-]+/sitemap\.xml$ ]] ||
@@ -73,8 +83,8 @@ if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
       skip "$INDEXNOW_EXPECTED_SITEMAP_URL could not be fetched"
     fi
     if [ "$status" = 200 ]; then
-      build_current=$(awk 'tolower($1) == "x-usnm-sitemap-build-current:" {gsub("\r", "", $2); value=$2} END {print value}' \
-        "$expected_headers")
+      build_current=$(read_header x-usnm-sitemap-build-current "$expected_headers") ||
+        skip "could not read Azure's sitemap build status"
     elif [ "$status" != 503 ]; then
       skip "$INDEXNOW_EXPECTED_SITEMAP_URL returned HTTP $status"
     fi
@@ -85,15 +95,22 @@ if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
     echo "IndexNow: waiting for Azure to generate the deployed build's sitemap checkpoint"
     sleep "$poll_secs"
   done
-  while ! python3 scripts/ci/indexnow-plan.py --host "$host" --compare "$expected" <<< "$sitemap"; do
+  deployed_content_identity=$(read_header x-usnm-sitemap-content-identity "$expected_headers") ||
+    skip "could not read Azure's sitemap content identity"
+  [ -n "$deployed_content_identity" ] ||
+    skip "Azure response is missing its sitemap content identity"
+  while ! python3 scripts/ci/indexnow-plan.py --host "$host" --compare "$expected" <<< "$sitemap" ||
+      [ "$public_content_identity" != "$deployed_content_identity" ]; do
     now=$(date +%s)
     [ "$now" -lt "$deadline" ] ||
       skip "public sitemap has not caught up with the deployed Azure sitemap"
     echo "IndexNow: waiting for the public sitemap to reflect the deployed sitemap"
     sleep "$poll_secs"
-    sitemap=$(curl -fsS -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 \
+    sitemap=$(curl -fsS -D "$public_headers" -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 \
       --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
       skip "$sitemap_url could not be fetched while waiting for the public sitemap"
+    public_content_identity=$(read_header x-usnm-sitemap-content-identity "$public_headers") ||
+      skip "could not read the public sitemap content identity"
   done
 fi
 

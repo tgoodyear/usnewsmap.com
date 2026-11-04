@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLAN_SPEC = importlib.util.spec_from_file_location("indexnow_plan", ROOT / "scripts/ci/indexnow-plan.py")
 PLAN = importlib.util.module_from_spec(PLAN_SPEC)
 PLAN_SPEC.loader.exec_module(PLAN)
-current_enough = PLAN.current_enough
+same_urls = PLAN.same_urls
 
 HOST = "usnewsmap.com"
 KEY = "0123456789abcdef0123456789abcdef"
@@ -113,17 +113,34 @@ elif args[-1].endswith("/sitemap.xml"):
     file = "deployed-sitemap.xml" if args[-1] == os.environ.get("EXPECTED_SITEMAP_URL") else "live-sitemap.xml"
     xml = (root / file).read_text()
     if "-D" in args:
-        count_path = root / "azure-sitemap-count"
-        count = int(count_path.read_text()) + 1 if count_path.exists() else 1
-        count_path.write_text(str(count))
-        ready_after = int(os.environ.get("STUB_BUILD_READY_AFTER", "1"))
-        ready = "true" if count >= ready_after else "false"
-        Path(args[args.index("-D") + 1]).write_text(
-            "HTTP/1.1 200 OK\\r\\n" +
-            f"X-USNM-Sitemap-Build-Current: {ready}\\r\\n\\r\\n"
-        )
-        Path(args[args.index("-o") + 1]).write_text(xml)
-        print("200", end="")
+        headers = Path(args[args.index("-D") + 1])
+        if "-o" in args:
+            count_path = root / "azure-sitemap-count"
+            count = int(count_path.read_text()) + 1 if count_path.exists() else 1
+            count_path.write_text(str(count))
+            ready_after = int(os.environ.get("STUB_BUILD_READY_AFTER", "1"))
+            ready = "true" if count >= ready_after else "false"
+            identity = os.environ.get("STUB_AZURE_CONTENT_ID", "shared-content")
+            headers.write_text(
+                "HTTP/1.1 200 OK\\r\\n" +
+                f"X-USNM-Sitemap-Build-Current: {ready}\\r\\n" +
+                f"X-USNM-Sitemap-Content-Identity: {identity}\\r\\n\\r\\n"
+            )
+            Path(args[args.index("-o") + 1]).write_text(xml)
+            print("200", end="")
+        else:
+            count_path = root / "public-sitemap-count"
+            count = int(count_path.read_text()) + 1 if count_path.exists() else 1
+            count_path.write_text(str(count))
+            ready_after = int(os.environ.get("STUB_PUBLIC_CONTENT_READY_AFTER", "1"))
+            identity = (os.environ.get("STUB_PUBLIC_CONTENT_ID", "shared-content")
+                        if count >= ready_after
+                        else os.environ.get("STUB_PUBLIC_OLD_CONTENT_ID", "old-content"))
+            headers.write_text(
+                "HTTP/1.1 200 OK\\r\\n" +
+                f"X-USNM-Sitemap-Content-Identity: {identity}\\r\\n\\r\\n"
+            )
+            print(xml)
     else:
         print(xml)
 elif args[-1].endswith(".txt"):
@@ -346,15 +363,41 @@ else:
         posts, _ = self.submit(xml, expected=deployed)
         self.assertEqual(posts[-1]["body"]["urlList"], urls)
 
+    def test_deploy_waits_for_matching_content_identity_even_when_urls_match(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/examples/gold"]
+        xml = sitemap(urls)
+        self.env.update(
+            INDEXNOW_PUBLIC_WAIT_SECS="0",
+            STUB_PUBLIC_CONTENT_ID="old-content",
+            STUB_AZURE_CONTENT_ID="new-content",
+        )
+        posts, output = self.submit(xml, expected=xml)
+        self.assertEqual(posts, [])
+        self.assertIn("public sitemap has not caught up", output)
+
+    def test_deploy_waits_until_content_identity_matches(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/examples/gold"]
+        xml = sitemap(urls)
+        self.env.update(
+            STUB_PUBLIC_CONTENT_READY_AFTER="2",
+            STUB_AZURE_CONTENT_ID="new-content",
+            STUB_PUBLIC_CONTENT_ID="new-content",
+            STUB_PUBLIC_OLD_CONTENT_ID="old-content",
+        )
+        posts, output = self.submit(xml, expected=xml)
+        self.assertEqual(posts[-1]["body"]["urlList"], urls)
+        self.assertIn("waiting for the public sitemap", output)
+        self.assertEqual((self.root / "public-sitemap-count").read_text(), "2")
+
 
 class SitemapComparison(unittest.TestCase):
-    def test_requires_exact_urls_and_public_lastmod_at_least_as_new(self):
+    def test_requires_exact_urls_and_ignores_origin_local_lastmod(self):
         url = f"https://{HOST}/examples/gold"
         later = sitemap([url], {url: "2026-11-04T12:00:00Z"})
         earlier = sitemap([url], {url: "2026-11-04T11:00:00Z"})
-        self.assertTrue(current_enough(later, earlier, HOST))
-        self.assertFalse(current_enough(earlier, later, HOST))
-        self.assertFalse(current_enough(sitemap([f"https://{HOST}/"]), earlier, HOST))
+        self.assertTrue(same_urls(later, earlier, HOST))
+        self.assertTrue(same_urls(earlier, later, HOST))
+        self.assertFalse(same_urls(sitemap([f"https://{HOST}/"]), earlier, HOST))
 
 
 if __name__ == "__main__":
