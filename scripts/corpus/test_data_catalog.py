@@ -244,17 +244,18 @@ class CatalogTests(unittest.TestCase):
         reader.execute("SELECT count(*) FROM events").fetchone()  # The commit waits for this reader,
         writer = sqlite3.connect(self.db, check_same_thread=False)
         self.addCleanup(writer.close)
-        writer.execute("BEGIN IMMEDIATE")  # and BEGIN IMMEDIATE for this writer, for 1.2 s.
-        release = threading.Timer(1.2, writer.rollback)
+        writer.execute("BEGIN IMMEDIATE")  # and BEGIN IMMEDIATE for this writer, for 2 s.
+        release = threading.Timer(2, writer.rollback)
         release.start()
         self.addCleanup(release.join)
         before = self.committed_batches()
         started = time.monotonic()
-        with mock.patch.object(c, "REFRESH_SECONDS", 2):
+        with mock.patch.object(c, "REFRESH_SECONDS", 3):
             with self.assertRaises(sqlite3.OperationalError) as caught:
                 self.refresh(path, "2026-11-01T19:55:00.000000Z")
-        # About 2 s in all, not 1.2 s for the writer and another 2 s for the reader.
-        self.assertLess(time.monotonic() - started, 2.6)
+        # About 3 s in all, not 2 s for the writer and another 3 s for the reader; a second either
+        # way of slack.
+        self.assertLess(time.monotonic() - started, 4)
         self.assertEqual(c.failure_cause(caught.exception), "SQLITE_BUSY")
         self.assertEqual(self.committed_batches(), before)
 

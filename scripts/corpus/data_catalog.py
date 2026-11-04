@@ -650,7 +650,9 @@ def wait_until(conn, deadline):
 
 
 def connect(path, writable=False, deadline=None):
-    """`deadline` (time.monotonic()) bounds the lock wait and schema checks; QUERY_SECONDS by default."""
+    """`deadline` (time.monotonic()) bounds the lock wait and schema checks; QUERY_SECONDS by default.
+    It bounds only this function's own work: the returned connection has no progress handler, so a
+    caller whose later statements share the deadline installs it again with interrupt_after."""
     path = Path(path)
     require(not path.is_symlink(), "catalog cannot be a symlink")
     require(writable or path.is_file(), "catalog not found; ingest evidence first")
@@ -1173,6 +1175,8 @@ def ingest_search_provenance(db, input_path, evidence_out, batch_id, source, pag
 
 
 def bounded_query(db, action, deadline=None):
+    """Without a `deadline`, connect and the query transaction each get QUERY_SECONDS, as they
+    always have; with one, they share it."""
     conn = connect(db, deadline=deadline)
     if deadline is None:
         deadline = time.monotonic() + QUERY_SECONDS
@@ -1808,7 +1812,6 @@ def refresh_live(db, throughput, evidence_dir, out):
     """One bounded refresh: the dashboard's kept counts -> one immutable batch -> snapshot.
     Besides the catalog it reads one local file: no Postgres or cloud access. Its SQLite work
     shares one REFRESH_SECONDS deadline rather than QUERY_SECONDS each."""
-    deadline = time.monotonic() + REFRESH_SECONDS
     at = now()
     with Path(throughput).open("rb") as stream:
         require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "throughput input must be a regular file")
@@ -1819,6 +1822,7 @@ def refresh_live(db, throughput, evidence_dir, out):
             isinstance(stored.get("sources"), dict) and isinstance(stored.get("series"), dict),
             "unsupported throughput history")
     batch_id = "live-" + re.sub(r"[-:]", "", at)[:15] + "Z"
+    deadline = time.monotonic() + REFRESH_SECONDS
     events = []
     for spec in LIVE_STAGES:
         found = live_stage(stored, spec, at)
