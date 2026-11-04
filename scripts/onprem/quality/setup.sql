@@ -9,7 +9,8 @@
 -- Roles log in only with a client certificate whose CN is the role (ADR-0025); none has a
 -- password. What each may do is its row in README.md, checked by test_roles.sql:
 --   quality_loader       the loaders (load.py): writes pages, damage, campaigns, readers,
---                        unit results, OCR outputs and staging; refreshes page_summary.
+--                        unit results, OCR outputs, staging, LoC's word confidence and
+--                        software; refreshes page_summary.
 --   quality_text_writer  the text-only comparisons (LoC against American Stories, #962):
 --                        writes text_compare and its own campaign rows; reads the rest.
 --   quality_reader       dashboards and the OCR ranking queries (rank.sql): reads only.
@@ -254,6 +255,36 @@ CREATE TABLE IF NOT EXISTS quality.loc_alto (
   PRIMARY KEY (doc_id, batch, batch_version)
 );
 
+-- Which software made LoC's OCR, one row per bulk OCR archive (batch version): the first
+-- page's ALTO header, read by `usnm-ocr-worker loc-software` and loaded by `load.py locsw`.
+-- LoC's software is per batch. software is every processingSoftware in document order,
+-- [{block, step, creator, name, version, description}], each version beside its own name;
+-- agencies, steps and settings_engines are the distinct processingAgency,
+-- processingStepDescription and engines named in an OCR step's processingStepSettings.
+-- engine_family (abbyy, tesseract, primeocr, omnipage, newpah, iarchives-unknown,
+-- unknown), engine_name, engine_version, wrapper, wrapper_version and vendor are derived
+-- by the rules in crates/usnm-ocr-worker/src/loc_software.rs. A page's row is its own
+-- batch's: join on (batch, batch_version) from quality.pages or quality.page_summary.
+CREATE TABLE IF NOT EXISTS quality.loc_software (
+  batch            text NOT NULL,
+  batch_version    smallint NOT NULL,
+  archive          text NOT NULL,
+  header_doc       text,
+  software         jsonb NOT NULL CHECK (jsonb_typeof(software) = 'array'),
+  agencies         jsonb NOT NULL CHECK (jsonb_typeof(agencies) = 'array'),
+  steps            jsonb NOT NULL CHECK (jsonb_typeof(steps) = 'array'),
+  settings_engines jsonb NOT NULL CHECK (jsonb_typeof(settings_engines) = 'array'),
+  engine_family    text NOT NULL CHECK (engine_family ~ '^[a-z][a-z-]{0,31}$'),
+  engine_name      text,
+  engine_version   text,
+  wrapper          text,
+  wrapper_version  text,
+  vendor           text,
+  read_at          timestamptz NOT NULL,
+  PRIMARY KEY (batch, batch_version)
+);
+CREATE INDEX IF NOT EXISTS loc_software_family ON quality.loc_software (engine_family, engine_version);
+
 -- One row a page, joining every signal: the newest unit result, LoC's own estimate there,
 -- the best of our readers, and the newest LoC-against-American-Stories comparison.
 -- page_signals is the join; page_summary is its stored copy (23.8M rows), which the
@@ -385,6 +416,7 @@ GRANT TEMPORARY ON DATABASE usnm_quality TO quality_loader;
 GRANT INSERT, UPDATE, DELETE ON quality.pages, quality.damage, quality.campaigns, quality.unit_pages,
   quality.reader_scores, quality.ocr_outputs, quality.staging, quality.loc_alto TO quality_loader;
 GRANT INSERT ON quality.readers TO quality_loader;
+GRANT INSERT, UPDATE ON quality.loc_software TO quality_loader;
 GRANT EXECUTE ON FUNCTION quality.refresh_summary() TO quality_loader;
 
 -- quality_text_writer: its comparisons and the campaign rows that name them.

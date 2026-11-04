@@ -11,6 +11,7 @@ table, then INSERT ... ON CONFLICT), so a rerun replaces what it loaded before.
   load.py staging --dsn DSN --campaign NAME --docs FILE --image-source S --alto-source S
   load.py agreement --dsn DSN --dir DIR [--campaign text-agreement-v1] [--state FILE]
   load.py locwc --dsn DSN --dir DIR [--state FILE]
+  load.py locsw --dsn DSN --file FILE [--state FILE]
   load.py refresh --dsn DSN
 
 damage   every audit/damage/v2/<batch>_verNN.parquet: the page rows (quality.pages) and the
@@ -27,6 +28,9 @@ agreement  the text agreement of LoC against American Stories (usnm-ingest ocr-a
          rerun loads only new or rewritten batches.
 locwc    LoC's own word confidence per page (usnm-ocr-worker loc-alto-stats' Parquet, one file
          per bulk OCR archive) into quality.loc_alto; --state skips files already loaded.
+locsw    which software made LoC's OCR, one row per bulk OCR archive (usnm-ocr-worker
+         loc-software's Parquet file) into quality.loc_software; --state skips the file
+         while its size and mtime are unchanged.
 refresh  rebuilds quality.page_summary (quality_loader only).
 
 DSN is a libpq connection string with the client certificate, for example
@@ -69,6 +73,11 @@ STAGING_COLS = ["campaign", "doc_id", "image_source", "alto_source"]
 LOCWC_COLS = [
     "doc_id", "batch", "batch_version", "words", "words_with_wc", "wc_mean", "wc_median", "wc_below",
     "wc_threshold", "software", "archive",
+]
+LOCSW_COLS = [
+    "batch", "batch_version", "archive", "header_doc", "software", "agencies", "steps",
+    "settings_engines", "engine_family", "engine_name", "engine_version", "wrapper",
+    "wrapper_version", "vendor", "read_at",
 ]
 AGREE_COLS = [
     "campaign", "doc_id", "reader_a", "reader_b", "batch", "batch_version", "metric_version",
@@ -377,6 +386,39 @@ def cmd_locwc(a):
     log("LoC word confidence loaded", files=loaded, rows=rows_n, known=len(state))
 
 
+def locsw_rows(table):
+    """quality.loc_software rows from loc-software's file; a batch version once."""
+    rows = {}
+    for x in table:
+        if not x.get("batch") or integer(x.get("batch_version")) is None or not x.get("engine_family"):
+            continue
+        key = (x["batch"], integer(x["batch_version"]))
+        rows[key] = (
+            x["batch"], key[1], x.get("archive"), x.get("header_doc"),
+            *(jsonb(x.get(c)) or "[]" for c in ("software", "agencies", "steps", "settings_engines")),
+            x["engine_family"], x.get("engine_name"), x.get("engine_version"), x.get("wrapper"),
+            x.get("wrapper_version"), x.get("vendor"), x.get("read_at"),
+        )
+    return list(rows.values())
+
+
+def cmd_locsw(a):
+    import pyarrow.parquet as pq
+
+    state = load_state(a.state)
+    st = os.stat(a.file)
+    sig = f"{st.st_size}:{int(st.st_mtime)}"
+    name = os.path.basename(a.file)
+    if state.get(name) == sig:
+        log("LoC software unchanged", file=name)
+        return
+    rows = locsw_rows(pq.read_table(a.file).to_pylist())
+    psql(a.dsn, upsert_sql("loc_software", LOCSW_COLS, ["batch", "batch_version"], rows))
+    state[name] = sig
+    save_state(a.state, state)
+    log("LoC software loaded", file=name, rows=len(rows))
+
+
 def cmd_agreement(a):
     import pyarrow.parquet as pq
 
@@ -445,8 +487,11 @@ def main(argv=None):
     w.add_argument("--dir", required=True)
     w.add_argument("--state")
     w.add_argument("--limit", type=int, default=0)
+    v = sub.add_parser("locsw")
+    v.add_argument("--file", required=True)
+    v.add_argument("--state")
     f = sub.add_parser("refresh")
-    for p in (d, r, o, s, g, w, f):
+    for p in (d, r, o, s, g, w, v, f):
         p.add_argument("--dsn", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "refresh":
@@ -454,7 +499,7 @@ def main(argv=None):
         log("page_summary refreshed")
         return
     {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging,
-     "agreement": cmd_agreement, "locwc": cmd_locwc}[a.cmd](a)
+     "agreement": cmd_agreement, "locwc": cmd_locwc, "locsw": cmd_locsw}[a.cmd](a)
 
 
 if __name__ == "__main__":
