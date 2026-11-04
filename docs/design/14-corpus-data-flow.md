@@ -349,14 +349,17 @@ and 35 MB of memory.
 Its SQLite work, from the schema checks to the snapshot, has 60 seconds in all
 (`REFRESH_SECONDS`), not the two-second query deadline that bounds `serve` and the
 other subcommands; the unit's two-minute `TimeoutStartSec` still bounds the
-process. Two seconds was too short once deployed (#1436). On CT 212 the first run
-failed after 2.5 seconds and the two runs in the next 10 minutes passed in about
-1.5 seconds, but from the next hour every hourly run failed after 2.3 to 2.5
-seconds with about 0.5 seconds of CPU. The error named no cause; a missed deadline
-on a cold page cache, which each hourly run starts on, fits those timings. A failed
-run now prints a fixed `cause` beside the error, such as `SQLITE_INTERRUPT` for a
-missed deadline, `SQLITE_BUSY` or an errno name, and never the message, which can
-hold a path or SQL.
+process. The 60 seconds cover the ingest transaction and each wait for a lock,
+including the commit's: before each wait the busy timeout is set to what is left,
+and once none is left the run fails with `catalog deadline exceeded`. Two seconds
+was too short once deployed (#1436). On CT 212 the first run failed after 2.5
+seconds and the two runs in the next 10 minutes passed in about 1.5 seconds, but
+from the next hour every hourly run failed after 2.3 to 2.5 seconds with about 0.5
+seconds of CPU. The error named no cause; a missed deadline on a cold page cache,
+which each hourly run starts on, fits those timings. A failed run now prints a
+fixed `cause` beside the error, such as `SQLITE_INTERRUPT` for a query still
+running at the deadline, `SQLITE_BUSY` for a lock still held or an errno name, and
+never the message, which can hold a path or SQL.
 
 | Panel row        | Source       | Evidence                                                                                                                                                      |
 | ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |

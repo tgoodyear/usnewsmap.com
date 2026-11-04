@@ -631,6 +631,24 @@ def migrate_indexed_keys(conn):
         conn.execute(f"PRAGMA user_version={INDEXED_KEY_SCOPE_VERSION}")
 
 
+def remaining(deadline):
+    """Seconds left before `deadline` (time.monotonic()). Once it has passed, fail rather than try."""
+    left = deadline - time.monotonic()
+    require(left > 0, "catalog deadline exceeded")
+    return left
+
+
+def interrupt_after(conn, deadline):
+    """A statement still running at `deadline` fails with SQLITE_INTERRUPT."""
+    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+
+
+def wait_until(conn, deadline):
+    """SQLite's busy timeout applies afresh to each lock wait, so before each one that a deadline
+    bounds, set it to what is left."""
+    conn.execute(f"PRAGMA busy_timeout={math.ceil(remaining(deadline) * 1000)}")
+
+
 def connect(path, writable=False, deadline=None):
     """`deadline` (time.monotonic()) bounds the lock wait and schema checks; QUERY_SECONDS by default."""
     path = Path(path)
@@ -639,9 +657,9 @@ def connect(path, writable=False, deadline=None):
     if deadline is None:
         deadline = time.monotonic() + QUERY_SECONDS
     conn = sqlite3.connect(path.resolve().as_uri() + ("?mode=rwc" if writable else "?mode=ro"),
-                           uri=True, timeout=max(0.0, deadline - time.monotonic()))
+                           uri=True, timeout=remaining(deadline))
     conn.row_factory = sqlite3.Row
-    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+    interrupt_after(conn, deadline)
     try:
         if writable:
             # The schema transaction also makes first creation recoverable.
@@ -675,7 +693,8 @@ def connect(path, writable=False, deadline=None):
 
 
 def ingest(db, batch, deadline=None):
-    """Validate the entire bounded batch before one durable transaction."""
+    """Validate the entire bounded batch before one durable transaction. A `deadline` also bounds
+    that transaction, its lock waits and its commit; without one only each lock wait is bounded."""
     with Path(batch).open("rb") as stream:
         file_stat = os.fstat(stream.fileno())
         require(stat.S_ISREG(file_stat.st_mode) and file_stat.st_size <= MAX_BATCH,
@@ -696,6 +715,9 @@ def ingest(db, batch, deadline=None):
     batch_hash = hashlib.sha256(raw).hexdigest()
     conn = connect(db, writable=True, deadline=deadline)
     try:
+        if deadline is not None:
+            interrupt_after(conn, deadline)  # connect clears it.
+            wait_until(conn, deadline)
         with conn:
             conn.execute("BEGIN IMMEDIATE")
             previous = conn.execute("SELECT sha256 FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
@@ -737,6 +759,8 @@ def ingest(db, batch, deadline=None):
                               data.get("engine_id"), data.get("status") or data.get("decision"),
                               data.get("run_id"), data.get("stage"), data.get("state")))
             conn.execute("INSERT INTO batches VALUES(?,?,?)", (batch_id, batch_hash, len(parsed)))
+            if deadline is not None:
+                wait_until(conn, deadline)  # The commit waits for readers to let go.
         return {"batch_id": batch_id, "inserted": inserted, "replayed": False}
     finally:
         conn.close()
@@ -1152,8 +1176,9 @@ def bounded_query(db, action, deadline=None):
     conn = connect(db, deadline=deadline)
     if deadline is None:
         deadline = time.monotonic() + QUERY_SECONDS
-    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
     try:
+        interrupt_after(conn, deadline)
+        wait_until(conn, deadline)
         conn.execute("BEGIN")  # Consistent multi-query snapshot, including source freshness.
         result = action(conn)
         require(len(canonical(result).encode()) <= MAX_RESULT, "response exceeds 1 MiB; narrow query")
