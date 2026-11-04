@@ -1,4 +1,4 @@
-// Native boundary for the pinned b8799 ggml ABI and the OpenCL ICD API.
+// Native boundary for the pinned b12084 ggml ABI and the OpenCL ICD API.
 // No GPU inference or ordinal fallback: emit one PCI-verified Vulkan device or fail.
 #include <algorithm>
 #include <array>
@@ -73,13 +73,14 @@ static Pci parse_pci(const char *text) {
     return value;
 }
 
-// Layout of ggml_backend_dev_props/caps in the unchanged b8799 ggml-backend.h.
+// Layout of ggml_backend_dev_props/caps in the unchanged b12084 ggml-backend.h
+// (b12084 added caps.mmap_support after events).
 struct Props {
     const char *name, *description;
     size_t memory_free, memory_total;
     int type;
     const char *device_id;
-    struct { bool async, host_buffer, buffer_from_host_ptr, events; } caps;
+    struct { bool async, host_buffer, buffer_from_host_ptr, events, mmap_support; } caps;
 };
 struct Adapter { std::string name; Pci pci; };
 

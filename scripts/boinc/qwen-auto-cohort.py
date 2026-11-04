@@ -19,6 +19,18 @@ ENGINE = {
     "llama": "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309",
     "weights": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
 }
+# The llama.cpp identity a unit names: the ubuntu-vulkan-x64 archive digest in the llama.lock of
+# the app versions that read it. Apps read only units of their own lock, so the reviewed engine
+# follows --app-version-num: b8799 up to 1.17, b12084 from 1.18.
+LLAMA_BY_FIRST_APP = (
+    (118, "sha256:692bdad8c7743779ed89615472e2863005a12feabbe0b2d8225f5b4b38b12afd"),
+    (0, ENGINE["llama"]),
+)
+
+
+def engine_for(app_version_num):
+    llama = next(value for first, value in LLAMA_BY_FIRST_APP if app_version_num >= first)
+    return dict(ENGINE, llama=llama)
 MODEL = {"file": "Qwen3VL-8B-Instruct-Q4_K_M.gguf", "min_gpu_mb": 7000,
          "mmproj": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf", "name": "qwen3-vl-8b-q4km"}
 MODELS = [MODEL, {"file": "Qwen3-VL-2B-Instruct-Q8_0.gguf", "min_gpu_mb": 0,
@@ -679,8 +691,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     require(all(re.fullmatch("[a-z]{3}", language) for language in args.cohort_language),
             "--cohort-language takes an ISO 639-3 code")
-    global EXTRA_LANGUAGES
+    global EXTRA_LANGUAGES, ENGINE
     EXTRA_LANGUAGES = tuple(sorted(set(args.cohort_language) - set(COHORT_LANGUAGES)))
+    ENGINE = engine_for(args.app_version_num)
     args.campaigns = parse_campaigns(args.campaign, args.prompt_version)
     require(args.app_version_num >= 114 and args.nvidia_app_version > 0 and args.intel_app_version > 0
             and args.nvidia_app_version != args.intel_app_version, "Expected reviewed app versions")

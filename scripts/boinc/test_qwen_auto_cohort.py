@@ -129,6 +129,14 @@ class BoincDb {
             "assignments": 0,
         }
 
+    def test_reviewed_engine_follows_the_llama_lock_of_the_admitted_app_version(self):
+        lock = json.loads((ROOT / "ocr/boinc/qwen/llama.lock").read_text())
+        b8799 = "sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309"
+        self.assertEqual(R.engine_for(117)["llama"], b8799)
+        self.assertEqual(R.engine_for(118)["llama"], "sha256:" + lock["assets"]["ubuntu-vulkan-x64"]["sha256"])
+        self.assertEqual({k: v for k, v in R.engine_for(118).items() if k != "llama"},
+                         {k: v for k, v in R.engine_for(117).items() if k != "llama"})
+
     def test_selects_oldest_contiguous_pristine_prefix_without_crossing_reservation(self):
         rows = [self.input(i) for i in range(100, 115)]
         self.assertEqual(len(R.choose(rows, 100, None, 500)), 10)

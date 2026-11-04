@@ -1,13 +1,13 @@
-# Requires MSVC, CMake and an installed Vulkan SDK (as in upstream b8799).
+# Requires MSVC, CMake and an installed Vulkan SDK (as in upstream b12084).
 param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Build,
     [Parameter(Mandatory = $true)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
-$pin = 'e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd'
+$pin = 'f9448cddc48c129a4abc7ff9c2a84c2b4c101c61'
 $head = & git -C $Source rev-parse HEAD
-if ($LASTEXITCODE -ne 0 -or $head -ne $pin) { throw 'Expected pinned llama.cpp b8799 source checkout' }
+if ($LASTEXITCODE -ne 0 -or $head -ne $pin) { throw 'Expected pinned llama.cpp b12084 source checkout' }
 $dirty = & git -C $Source status --porcelain
 if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Expected clean pinned llama.cpp source checkout' }
 if (!$env:VULKAN_SDK) { throw 'Install the Vulkan SDK and set VULKAN_SDK first' }
@@ -15,7 +15,7 @@ if ((Test-Path $Build) -or (Test-Path $Output)) { throw 'Use new build and outpu
 $patch = Join-Path $PSScriptRoot 'patch_amd_vulkan_identity.py'
 & python $patch --source (Join-Path $Source 'ggml/src/ggml-vulkan/ggml-vulkan.cpp')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned identity patch failed' }
-& cmake -S $Source -B $Build -A x64 -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+& cmake -S $Source -B $Build -A x64 -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_OPENSSL=OFF
 if ($LASTEXITCODE -ne 0) { throw 'Vulkan runtime configuration failed' }
 & cmake --build $Build --config Release --target ggml-vulkan --parallel 2
 if ($LASTEXITCODE -ne 0) { throw 'Vulkan runtime build failed' }

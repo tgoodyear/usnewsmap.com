@@ -280,19 +280,26 @@ def install(
             if plan_class in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b"):
                 required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if platform == "windows_x86_64"
                                     else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
+            # Since b12084 llama-server is a small launcher for the server library, which links
+            # the shared common library; without either it can't start.
+            required_extras += {
+                "windows_x86_64": ("llama-server-impl.dll", "llama-common.dll"),
+                "arm64-apple-darwin": ("libllama-server-impl.dylib", "libllama-common.0.dylib"),
+                "x86_64-apple-darwin": ("libllama-server-impl.dylib", "libllama-common.0.dylib"),
+            }.get(platform, ("libllama-server-impl.so", "libllama-common.so.0"))
             if platform == "windows_x86_64":
                 required_extras += ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
                 if plan_class in ("nvidia_cuda_2b", "nvidia_cuda_8b"):
                     required_extras += (
                         "ggml-cuda.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
-                        "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
+                        "ggml-cpu-x64.dll", "libomp.dll",
                         "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll",
                     )
                 if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b"):
                     # vulkan-1.dll, the Vulkan loader, comes with the GPU driver.
                     required_extras += (
                         "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
-                        "ggml-cpu-x64.dll", "libomp140.x86_64.dll",
+                        "ggml-cpu-x64.dll", "libomp.dll",
                     )
             missing_extras = [name for name in required_extras if name not in present_extras]
             if missing_extras:

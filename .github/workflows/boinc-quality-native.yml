@@ -140,10 +140,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
           mkdir .amd-pinned-archives
           trap 'rm -rf .amd-pinned-archives' EXIT
-          gh release download b8799 --repo ggml-org/llama.cpp \
+          gh release download b12084 --repo ggml-org/llama.cpp \
             --pattern '*bin-ubuntu-vulkan-x64.tar.gz' --pattern '*bin-win-vulkan-x64.zip' \
             --dir .amd-pinned-archives
-          gh api repos/ggml-org/llama.cpp/contents/ggml/src/ggml-vulkan/ggml-vulkan.cpp?ref=e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd \
+          gh api repos/ggml-org/llama.cpp/contents/ggml/src/ggml-vulkan/ggml-vulkan.cpp?ref=f9448cddc48c129a4abc7ff9c2a84c2b4c101c61 \
             -H 'Accept: application/vnd.github.raw+json' > .amd-pinned-archives/ggml-vulkan.cpp
           AMD_PINNED_LLAMA_ARCHIVES="$PWD/.amd-pinned-archives" \
             AMD_PINNED_VULKAN_SOURCE="$PWD/.amd-pinned-archives/ggml-vulkan.cpp" \

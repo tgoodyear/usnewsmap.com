@@ -41,7 +41,8 @@ class CheckAppver(unittest.TestCase):
             kind="native", binary=payload,
             extra_files=[f"{name}={payload}" for name in
                          ("llama-server", "llama.lock", "weights.lock", "usnm-amd-device-map",
-                          "libggml.so", "libggml-base.so", "libggml-vulkan.so")])
+                          "libggml.so", "libggml-base.so", "libggml-vulkan.so",
+                          "libllama-server-impl.so", "libllama-common.so.0")])
         signatures = self.root / "amd-sigs"
         signatures.mkdir()
         for path in directory.iterdir():
@@ -171,6 +172,8 @@ class CheckAppver(unittest.TestCase):
                 f"llama-server={llama}",
                 f"llama.lock={llama_lock}",
                 f"weights.lock={weights_lock}",
+                f"libllama-server-impl.dylib={llama}",
+                f"libllama-common.0.dylib={llama}",
             ],
         )
         native_sigs = self.root / "native_sigs"
@@ -187,6 +190,8 @@ class CheckAppver(unittest.TestCase):
             ca.check(native_dir, native_sigs, self.key, str(self.crypt), kind="native"),
             [
                 "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b",
+                "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_libllama-common.0.dylib",
+                "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_libllama-server-impl.dylib",
                 "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_llama-server",
                 "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_llama.lock",
                 "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_weights.lock",
@@ -218,6 +223,8 @@ class CheckAppver(unittest.TestCase):
                 f"llama-server={llama}",
                 f"llama.lock={llama_lock}",
                 f"weights.lock={weights_lock}",
+                f"libllama-server-impl.dylib={llama}",
+                f"libllama-common.0.dylib={llama}",
             ],
         )
         # Strip llama-server from disk and version.xml
@@ -259,7 +266,8 @@ class CheckAppver(unittest.TestCase):
         binary = self.root / "native"
         binary.write_bytes(b"native fixture")
         extras = ["llama-server", "llama.lock", "weights.lock",
-                  "libggml.so", "libggml-base.so", "libggml-vulkan.so"]
+                  "libggml.so", "libggml-base.so", "libggml-vulkan.so",
+                  "libllama-server-impl.so", "libllama-common.so.0"]
         directory = install.install(
             project, version="1.0", app="usnm_qwen", plan_class="nvidia_vulkan_6gb_8b",
             kind="native", binary=binary, extra_files=[f"{name}={binary}" for name in extras])

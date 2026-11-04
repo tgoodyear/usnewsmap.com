@@ -20,7 +20,7 @@ class PinnedIdentityPatch(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix=".amd-patch-", dir=ROOT) as folder:
             source = Path(folder) / "ggml-vulkan.cpp"
             source.write_text("unreviewed runtime")
-            with self.assertRaisesRegex(ValueError, "unchanged pinned b8799"):
+            with self.assertRaisesRegex(ValueError, "unchanged pinned b12084"):
                 patch(source)
             self.assertEqual(source.read_text(), "unreviewed runtime")
 
@@ -94,7 +94,7 @@ int main() {
                 subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                                 *flags, str(probe), "-o", str(binary)], check=True)
                 subprocess.run([str(binary)], check=True)
-            with self.assertRaisesRegex(ValueError, "unchanged pinned b8799"):
+            with self.assertRaisesRegex(ValueError, "unchanged pinned b12084"):
                 patch(source)
 
 
@@ -118,7 +118,7 @@ class PinnedLibraries(unittest.TestCase):
                 else:
                     with tarfile.open(archive) as packed:
                         for name in ("libggml.so", "libggml-base.so", "libggml-vulkan.so"):
-                            member = packed.getmember("llama-b8799/" + name)
+                            member = packed.getmember("llama-b12084/" + name)
                             (out / name).write_bytes(packed.extractfile(member).read())
                     registry, base, flags = out / "libggml.so", out / "libggml-base.so", ["-T"]
                 def exports(path):
@@ -132,18 +132,18 @@ class PinnedLibraries(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "actual Linux Vulkan loader required")
     def test_actual_linux_registry_and_backend_load_with_helper_code(self):
-        archive = Path(os.environ["AMD_PINNED_LLAMA_ARCHIVES"]) / "llama-b8799-bin-ubuntu-vulkan-x64.tar.gz"
+        archive = Path(os.environ["AMD_PINNED_LLAMA_ARCHIVES"]) / "llama-b12084-bin-ubuntu-vulkan-x64.tar.gz"
         lock = json.loads((ROOT / "ocr/boinc/qwen/llama.lock").read_text())
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(),
                          lock["assets"]["ubuntu-vulkan-x64"]["sha256"])
         with tempfile.TemporaryDirectory(prefix=".amd-runtime-", dir=ROOT) as folder:
             out = Path(folder)
-            bundle = out / "llama-b8799"
+            bundle = out / "llama-b12084"
             bundle.mkdir()
             with tarfile.open(archive) as packed:
                 for name in ("libggml.so", "libggml.so.0", "libggml-base.so",
                              "libggml-base.so.0", "libggml-vulkan.so"):
-                    member = packed.getmember("llama-b8799/" + name)
+                    member = packed.getmember("llama-b12084/" + name)
                     (bundle / name).write_bytes(packed.extractfile(member).read())
             source = out / "probe.cpp"
             source.write_text('#define main helper_main\n#include "' +
@@ -163,7 +163,7 @@ class PinnedLibraries(unittest.TestCase):
 @unittest.skipUnless(os.name == "posix" and shutil.which("c++"), "POSIX C++ compiler required")
 class AmdDeviceMap(unittest.TestCase):
     def test_pci_mapping_uses_opencl_index_not_vendor_or_vulkan_ordinal(self):
-        self.assertEqual(json.loads((ROOT / "ocr/boinc/qwen/llama.lock").read_text())["tag"], "b8799",
+        self.assertEqual(json.loads((ROOT / "ocr/boinc/qwen/llama.lock").read_text())["tag"], "b12084",
                          "Re-audit the helper's ggml device-properties ABI before changing the runtime pin")
         with tempfile.TemporaryDirectory(prefix=".amd-map-", dir=ROOT) as folder:
             root = Path(folder)

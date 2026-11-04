@@ -280,6 +280,16 @@ class InstallTest(unittest.TestCase):
                 f"llama.lock={llama_lock}",
                 f"weights.lock={weights_lock}",
             ]
+            server_libraries = {
+                "windows_x86_64": ("llama-server-impl.dll", "llama-common.dll"),
+                "arm64-apple-darwin": ("libllama-server-impl.dylib", "libllama-common.0.dylib"),
+            }.get(platform, ("libllama-server-impl.so", "libllama-common.so.0"))
+            extras.extend(f"{name}={srv_src}" for name in server_libraries)
+            for missing in server_libraries:
+                with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, missing):
+                    module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
+                                   platform=platform, kind="native", binary=bin_for_plat,
+                                   extra_files=[e for e in extras if not e.startswith(missing + "=")])
             if plan_class == "amd_vulkan_8b":
                 with self.assertRaisesRegex(ValueError, "requires --extra-file.*usnm-amd-device-map"):
                     module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
@@ -296,7 +306,7 @@ class InstallTest(unittest.TestCase):
                                            extra_files=[e for e in extras if not e.startswith(missing + "=")])
             runtime = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
             llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
-                          "ggml-cpu-x64.dll", "libomp140.x86_64.dll")
+                          "ggml-cpu-x64.dll", "libomp.dll")
             backend = (
                 ("ggml-vulkan.dll",) if plan_class in ("intel_vulkan_8b", "amd_vulkan_8b")
                 else ("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")

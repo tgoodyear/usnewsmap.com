@@ -23,13 +23,13 @@ permissions:
 jobs:
   # Unsigned build input for the reviewed Windows AMD release. It is not hardware acceptance.
   windows:
-    name: patched b8799 Vulkan runtime (Windows x64)
+    name: patched b12084 Vulkan runtime (Windows x64)
     runs-on: windows-2025
     timeout-minutes: 120
     env:
-      VULKAN_VERSION: 1.4.313.2
-      VULKAN_SHA256: 34a921d951858274ca8e470e9d0a3b7624db41216b3908ccea9f73c8a1b7500e
-      LLAMA_COMMIT: e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd
+      VULKAN_VERSION: 1.4.357.0
+      VULKAN_SHA256: 81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d
+      LLAMA_COMMIT: f9448cddc48c129a4abc7ff9c2a84c2b4c101c61
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +68,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $asset = (Get-Content ocr\boinc\qwen\llama.lock -Raw | ConvertFrom-Json).assets.'win-vulkan-x64'
-          gh release download b8799 --repo ggml-org/llama.cpp --pattern $asset.file --dir amd-pinned
+          gh release download b12084 --repo ggml-org/llama.cpp --pattern $asset.file --dir amd-pinned
           if ($LASTEXITCODE -ne 0) { throw 'Pinned release download failed' }
           $zip = Join-Path amd-pinned $asset.file
           if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset.sha256) { throw 'Pinned release digest mismatch' }
