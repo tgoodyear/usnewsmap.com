@@ -17,8 +17,8 @@
 //!   every load so a release shows up at once. The app's pages carry an
 //!   `ETag` for that, as `ServeDir` gives the home page, so an unchanged page
 //!   costs a `304`.
-//! - Legacy search links redirect to `/search/<query>`. Curated and promoted base searches
-//!   are indexable; other searches and filter variants carry `noindex`.
+//! - Legacy search links redirect to `/search/<query>`. Curated `/examples/<id>`
+//!   pages render their saved searches directly; other searches carry `noindex`.
 //! - Requests for `www.` + the site's host are redirected to the host itself.
 
 use std::path::PathBuf;
@@ -37,6 +37,7 @@ use tower_http::services::ServeDir;
 use crate::error::ApiError;
 use crate::AppState;
 
+mod examples;
 mod head;
 pub(crate) mod sitemap;
 pub(crate) mod social;
@@ -117,7 +118,8 @@ pub fn router(dir: PathBuf, state: Arc<AppState>) -> Router {
             }
             // Search terms can contain dots, encoded slashes or long segments;
             // they are routes, never files in the static directory.
-            if search_query(req.uri().path()).is_some()
+            if examples::for_path(req.uri().path()).is_some()
+                || search_query(req.uri().path()).is_some()
                 || matches!(req.uri().path(), "/" | "/index.html")
                 || req
                     .uri()
@@ -167,7 +169,8 @@ fn decoded_len(segment: &str) -> usize {
 /// `ServeDir` serves directly; since tower-http 0.7 it no longer serves a
 /// file at a path with a trailing slash, so `/index.html/` comes here.
 fn is_app_page(path: &str) -> bool {
-    search_query(path).is_some()
+    examples::for_path(path).is_some()
+        || search_query(path).is_some()
         || matches!(
             path.trim_end_matches('/'),
             "" | "/datasets" | "/privacy" | "/credits" | "/index.html"
@@ -290,20 +293,9 @@ fn search_redirect(uri: &Uri) -> Option<String> {
 
 pub(crate) static CURATED_SEARCHES: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
-        #[derive(serde::Deserialize)]
-        struct Example {
-            view: Query,
-        }
-        #[derive(serde::Deserialize)]
-        struct Query {
-            q: String,
-        }
-        let examples: Vec<Example> =
-            serde_json::from_str(include_str!("../../../web/src/examples.json"))
-                .expect("valid curated examples");
-        examples
-            .into_iter()
-            .map(|e| search_path(&e.view.q))
+        crate::prewarm::examples()
+            .iter()
+            .map(examples::path)
             .collect()
     });
 
@@ -320,6 +312,7 @@ fn datasets_redirect(uri: &Uri) -> Option<String> {
 
 /// Indexable pages name themselves in the head, even without JavaScript.
 fn shell_for(path: &str, query: &str, index: Vec<u8>) -> Vec<u8> {
+    let example = examples::for_path(path);
     let search = search_query(path);
     let Some(head) = head::for_page(path, query) else {
         return index;
@@ -339,7 +332,17 @@ fn shell_for(path: &str, query: &str, index: Vec<u8>) -> Vec<u8> {
         &format!(r#"<link rel="canonical" href="{canonical}" />"#),
         1,
     );
-    if let Some(q) = search {
+    if let Some(example) = example {
+        html = html.replacen(
+            r#"<main class="empty">"#,
+            &format!(
+                r#"<main class="empty"><h1>{}</h1><p>{}</p>"#,
+                escape_html(&example.title),
+                escape_html(&example.blurb)
+            ),
+            1,
+        );
+    } else if let Some(q) = search {
         html = html.replacen(
             r#"<main class="empty">"#,
             &format!(
@@ -425,15 +428,15 @@ fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
     }
 }
 
-fn search_landing(body: Vec<u8>, preview: &str, query: &str) -> Vec<u8> {
+fn search_landing(body: Vec<u8>, preview: &str, example: &crate::prewarm::Example) -> Vec<u8> {
     let body = insert_content(body, preview);
     let image_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("q", query)
+        .append_pair("example", &example.id)
         .finish();
     let map = format!(
         "<figure class=\"static-search-map\"><img src=\"/search-map.png?{}\" width=\"1200\" height=\"630\" alt=\"Map and timeline of newspaper matches for {}\" loading=\"lazy\" decoding=\"async\"><figcaption>The map and timeline for this search. Interactive controls load automatically when available.</figcaption></figure>",
         escape_html(&image_query),
-        escape_html(query),
+        escape_html(&example.title),
     );
     match String::from_utf8(body) {
         Ok(html) => html
@@ -471,17 +474,19 @@ fn search_links(sitemap: &sitemap::Service) -> String {
         .search_paths()
         .into_iter()
         .map(|path| {
-            let q = search_query(&path).expect("sitemap search path");
+            let example = examples::for_path(&path).expect("sitemap example path");
             format!(
-                r#"<li><a class="example" href="{}"><strong>{}</strong><span>Explore matching newspaper pages on the map.</span></a></li>"#,
+                r#"<li><a class="example" href="{}"><strong>{}</strong><span>{}</span></a></li>"#,
                 escape_html(&path),
-                escape_html(&q)
+                escape_html(&example.title),
+                escape_html(&example.blurb)
             )
         })
         .collect();
     format!("<nav id=\"common-searches\" aria-label=\"Common newspaper searches\"><details><summary>Show newspaper searches</summary><ul class=\"examples\">{links}</ul></details></nav>")
 }
 
+#[cfg(test)]
 fn preview_query(q: &str) -> String {
     let mut params = form_urlencoded::Serializer::new(String::new());
     params.append_pair("q", q);
@@ -491,10 +496,6 @@ fn preview_query(q: &str) -> String {
     params.finish()
 }
 
-async fn search_preview(state: &Arc<AppState>, q: &str) -> Result<String, ApiError> {
-    search_preview_snapshot(state, state.snapshot.load_full(), q, false).await
-}
-
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(super) struct SearchPreview {
     html: String,
@@ -502,19 +503,24 @@ pub(super) struct SearchPreview {
     sample_hits: usize,
 }
 
+#[cfg(test)]
 pub(crate) async fn search_preview_snapshot(
     state: &Arc<AppState>,
     snap: Arc<crate::Snapshot>,
     q: &str,
     background: bool,
 ) -> Result<String, ApiError> {
-    Ok(search_preview_data(state, snap, q, background).await?.html)
+    Ok(
+        search_preview_data(state, snap, &preview_query(q), background)
+            .await?
+            .html,
+    )
 }
 
 async fn search_preview_data(
     state: &Arc<AppState>,
     snap: Arc<crate::Snapshot>,
-    q: &str,
+    raw: &str,
     background: bool,
 ) -> Result<SearchPreview, ApiError> {
     use crate::routes::{cached_body, with_timeout, Job};
@@ -524,8 +530,7 @@ async fn search_preview_data(
     use usnm_core::time::date_from_day;
     use usnm_search::HitsQuery;
 
-    let raw = preview_query(q);
-    let search = snap.refdata.search_request(&RawParams::parse(&raw)?)?;
+    let search = snap.refdata.search_request(&RawParams::parse(raw)?)?;
     let canonical = search.canonical();
     let version = snap.refdata.version().to_owned();
     let key = snap.refdata.search_key(
@@ -715,11 +720,18 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
         }
     };
     if status == StatusCode::OK {
-        if let Some(q) = search_query(path) {
-            // Only admitted base searches add backend work on a page load.
+        if let Some(example) = examples::for_path(path) {
+            // Only admitted examples add backend work on a page load.
             if !noindex(req.uri(), &state.sitemap) {
-                match search_preview(&state, &q).await {
-                    Ok(preview) => body = search_landing(body, &preview, &q),
+                match search_preview_data(
+                    &state,
+                    state.snapshot.load_full(),
+                    &example.aggregate,
+                    false,
+                )
+                .await
+                {
+                    Ok(preview) => body = search_landing(body, &preview.html, example),
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
                         return error.into_response();
@@ -848,12 +860,14 @@ async fn cache_control(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Only curated or promoted, unfiltered searches are indexable. Legacy search links
-/// and the old dataset path keep their noindex policy.
+/// Only admitted example pages are indexable; parameter variants are not.
 fn noindex(uri: &Uri, sitemap: &sitemap::Service) -> bool {
-    if let Some(q) = search_query(uri.path()) {
-        let path = search_path(&q);
-        return !sitemap.contains(&path) || uri.query().is_some_and(|q| !q.is_empty());
+    if let Some(example) = examples::for_path(uri.path()) {
+        return !sitemap.contains(&examples::path(example))
+            || uri.query().is_some_and(|q| !q.is_empty());
+    }
+    if uri.path().starts_with("/examples/") || search_query(uri.path()).is_some() {
+        return true;
     }
     match uri.path().trim_end_matches('/') {
         OLD_DATASETS_PATH => true,

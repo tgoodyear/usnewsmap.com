@@ -56,6 +56,31 @@ fn escape(value: &str) -> String {
 
 impl Card {
     fn new(path: &str, query: &str) -> Option<Self> {
+        if let Some(example) = super::examples::for_path(path) {
+            let mut card = Self::new("/", &super::examples::view_query(example, query))?;
+            let query = form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(
+                    form_urlencoded::parse(query.as_bytes())
+                        .filter(|(key, _)| key != "q" && VIEW_KEYS.contains(&key.as_ref())),
+                )
+                .finish();
+            card.url = format!(
+                "{SITE}{}{}{}",
+                super::examples::path(example),
+                if query.is_empty() { "" } else { "?" },
+                query
+            );
+            // Image requests must capture this route too, not a legacy URL that
+            // normalizes the query's case or quotes before the browser reads it.
+            let mut image_query = form_urlencoded::Serializer::new(String::new());
+            image_query.append_pair("page", &super::examples::path(example));
+            image_query.extend_pairs(
+                form_urlencoded::parse(card.image.split_once('?')?.1.as_bytes())
+                    .filter(|(key, _)| key != "page"),
+            );
+            card.image = format!("{SITE}{IMAGE}?{}", image_query.finish());
+            return Some(card);
+        }
         let phrase_mode =
             form_urlencoded::parse(query.as_bytes()).all(|(k, v)| k != "mode" || v == "phrase");
         let search = super::search_query_in_mode(path, phrase_mode);
@@ -398,10 +423,20 @@ pub(super) async fn search_map(OriginalUri(uri): OriginalUri, state: Arc<AppStat
     let [(key, query)] = params.as_slice() else {
         return (StatusCode::BAD_REQUEST, "search map requires one query").into_response();
     };
-    if key != "q" || query.len() > 2048 {
+    if query.len() > 2048 {
         return (StatusCode::BAD_REQUEST, "invalid search map query").into_response();
     }
-    let path = super::search_path(query);
+    let path = if key == "example" {
+        let path = format!("/examples/{query}");
+        if super::examples::for_path(&path).is_none() {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        path
+    } else if key == "q" {
+        return StatusCode::NOT_FOUND.into_response();
+    } else {
+        return (StatusCode::BAD_REQUEST, "search map requires an example").into_response();
+    };
     let page: Uri = match path.parse() {
         Ok(page) => page,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -515,25 +550,7 @@ static EXAMPLE_CARDS: LazyLock<Vec<(String, Card)>> = LazyLock::new(|| {
     crate::prewarm::examples()
         .iter()
         .filter_map(|example| {
-            let mut query = form_urlencoded::Serializer::new(String::new());
-            for (key, value) in &example.view {
-                let value = match value {
-                    serde_json::Value::String(value) => value.clone(),
-                    serde_json::Value::Array(values) => values
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    _ => {
-                        tracing::error!(example = example.id, "unsupported example preview view");
-                        return None;
-                    }
-                };
-                query.append_pair(key, &value);
-            }
-            let phrase = example.view.get("q")?.as_str()?;
-            let path = super::search_path_in_mode(phrase, true);
-            Card::new(&path, &query.finish()).map(|card| (example.id.clone(), card))
+            Card::new(&super::examples::path(example), "").map(|card| (example.id.clone(), card))
         })
         .collect()
 });
@@ -544,7 +561,8 @@ async fn cached(
     background: bool,
 ) -> Result<Vec<u8>, Arc<RenderError>> {
     let browser = card.url.starts_with(&format!("{SITE}/?"))
-        || card.url.starts_with(&format!("{SITE}/search/"));
+        || card.url.starts_with(&format!("{SITE}/search/"))
+        || card.url.starts_with(&format!("{SITE}/examples/"));
     if !browser {
         return state
             .previews
@@ -569,7 +587,7 @@ async fn cached(
         .strip_prefix(SITE)
         .and_then(|path| path.parse::<Uri>().ok())
         .is_some_and(|uri| {
-            uri.path().starts_with("/search/") && !super::noindex(&uri, &state.sitemap)
+            super::examples::for_path(uri.path()).is_some() && !super::noindex(&uri, &state.sitemap)
         });
     let persistent = (admitted_base
         || EXAMPLE_CARDS
@@ -723,6 +741,11 @@ mod tests {
             ),
             ("/search-map.png?q=whigs&state=NY", StatusCode::BAD_REQUEST),
             ("/search-map.png?q=whigs&q=gold", StatusCode::BAD_REQUEST),
+            ("/search-map.png?example=unknown", StatusCode::NOT_FOUND),
+            (
+                "/search-map.png?example=whigs&state=NY",
+                StatusCode::BAD_REQUEST,
+            ),
         ] {
             let response = search_map(OriginalUri(uri.parse().unwrap()), state.clone()).await;
             assert_eq!(response.status(), status, "{uri}");
@@ -779,7 +802,7 @@ mod tests {
             .iter()
             .find(|example| example.id == "whigs")
             .unwrap();
-        let path = super::super::search_path(preset.view["q"].as_str().unwrap());
+        let path = super::super::examples::path(preset);
         assert_eq!(
             overview_key(&example.1.image),
             overview_key(&Card::new(&path, &preset.aggregate).unwrap().image)
@@ -792,16 +815,10 @@ mod tests {
             .iter()
             .find(|example| example.id == "abolitionists")
             .unwrap();
-        let path = super::super::search_path(preset.view["q"].as_str().unwrap());
-        let without_bucket = form_urlencoded::Serializer::new(String::new())
-            .extend_pairs(
-                form_urlencoded::parse(preset.aggregate.as_bytes())
-                    .filter(|(key, _)| key != "bucket"),
-            )
-            .finish();
+        let path = super::super::examples::path(preset);
         assert_ne!(
             overview_key(&abolitionists.1.image),
-            overview_key(&Card::new(&path, &without_bucket).unwrap().image)
+            overview_key(&Card::new(&path, "bucket=auto").unwrap().image)
         );
     }
 
@@ -970,6 +987,31 @@ mod tests {
         assert!(card.details.contains("Series: globe"));
         assert!(!card.details.contains("States"));
         assert!(card.url.starts_with("https://usnewsmap.com/?"));
+    }
+
+    #[test]
+    fn example_cards_keep_the_simple_url_and_capture_the_saved_filters() {
+        for example in crate::prewarm::examples() {
+            let path = super::super::examples::path(example);
+            let card = Card::new(&path, "").unwrap();
+            assert_eq!(card.url, format!("{SITE}{path}"));
+            let saved = Card::new("/", &super::super::examples::view_query(example, "")).unwrap();
+            assert_eq!(card.details, saved.details, "{path}");
+            let query = card.image.split_once('?').unwrap().1;
+            let params: std::collections::BTreeMap<_, _> =
+                form_urlencoded::parse(query.as_bytes()).collect();
+            assert_eq!(params["page"], path);
+            let captured = Card::new(&params["page"], query).unwrap();
+            assert_eq!(captured.image, card.image);
+            assert_eq!(captured.details, card.details);
+        }
+        let card = Card::new("/examples/cross-of-gold", "q=wrong&tab=table").unwrap();
+        assert_eq!(card.url, format!("{SITE}/examples/cross-of-gold?tab=table"));
+        assert!(card.image.contains("from=1896-06-01"));
+        assert!(card.image.contains("to=1896-12-31"));
+        assert!(card.image.contains("tab=table"));
+        assert!(!card.image.contains("wrong"));
+        assert!(Card::new("/examples/unknown", "").is_none());
     }
 
     #[test]

@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
-import { examplesShown, type Example } from "../examples";
-import { searchPath } from "../route";
-import { DEFAULTS, viewUrl, type ViewState } from "../state/url";
+import { examplePath, examplesShown, type Example } from "../examples";
+import { DEFAULTS, type ViewState } from "../state/url";
 
 interface Props {
   /** Every example, in the order to show them. */
@@ -23,9 +22,9 @@ export function Examples({ order, clicks, onMore, onPick, searchLinks }: Props) 
   const cards = order
     .map((ex) => {
       const view = { ...DEFAULTS, ...ex.view };
-      return { title: ex.title, blurb: ex.blurb, href: viewUrl(view), view };
+      return { title: ex.title, blurb: ex.blurb, href: examplePath(ex), view };
     })
-    .filter((card) => eligible === null || eligible.has(searchPath(card.view.q)));
+    .filter((card) => eligible === null || eligible.has(card.href));
   const linked = new Set(cards.map((card) => card.href));
   const additional = (searchLinks ?? [])
     .filter(({ href }) => !linked.has(href))

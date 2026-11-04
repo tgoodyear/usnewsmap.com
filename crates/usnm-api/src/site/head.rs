@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use super::{escape_html, search_path, search_path_in_mode, search_query_in_mode, social};
+use super::{
+    escape_html, examples as routes, search_path, search_path_in_mode, search_query_in_mode, social,
+};
 use crate::prewarm::{examples, Example};
 
 const SUFFIX: &str = " · US News Map";
@@ -75,6 +77,18 @@ pub(super) fn for_page(path: &str, query: &str) -> Option<Head> {
         "/datasets" => return Some(Head::fixed(DATASETS)),
         "/credits" => return Some(Head::fixed(CREDITS)),
         _ => {}
+    }
+    if let Some(example) = routes::for_path(path) {
+        let query = routes::view_query(example, query);
+        return Some(if same_filters(example, &query) {
+            for_example(example)
+        } else {
+            for_search(
+                path,
+                &query,
+                example.view["q"].as_str().expect("example query"),
+            )
+        });
     }
     let phrase_mode = !matches!(
         param(query, "mode").as_deref(),

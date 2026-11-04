@@ -1,8 +1,53 @@
 import { describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { DEFAULTS, isIsoDate, parseView, parseViewUrl, searchParams, serializeView, useView, viewUrl } from "./url";
+import { EXAMPLES, examplePath } from "../examples";
 
 describe("view URL", () => {
+  it("resolves exact presets, keeps display overrides and leaves the preset when search filters change", () => {
+    const example = EXAMPLES.find((ex) => ex.view.norm === "skew")!;
+    const path = examplePath(example);
+    const preset = { ...DEFAULTS, ...example.view };
+    expect(parseViewUrl(path)).toEqual(preset);
+    const changed = { ...preset, norm: DEFAULTS.norm, tab: "table" as const, z: 4 };
+    const url = viewUrl(changed);
+    expect(url).toMatch(new RegExp(`^${path}\\?`));
+    expect(parseViewUrl(url)).toEqual(changed);
+    expect(parseViewUrl(`${path}?q=unrelated&tab=table`)).toEqual({ ...preset, tab: "table" });
+    const filtered = { ...preset, from: "1900-01-01" };
+    expect(viewUrl(filtered)).toMatch(/^\/search\//);
+    expect(parseViewUrl(viewUrl(filtered))).toEqual({
+      ...filtered,
+      q: parseViewUrl(viewUrl({ ...DEFAULTS, q: filtered.q })).q,
+    });
+  });
+
+  it("keeps the example address and canonical through mounting, panning and history restoration", () => {
+    const path = "/examples/whigs";
+    window.history.replaceState(null, "", path);
+    const canonical = document.createElement("link");
+    canonical.rel = "canonical";
+    document.head.append(canonical);
+    const { result, unmount } = renderHook(() => useView());
+    expect(window.location.pathname + window.location.search).toBe(path);
+    expect(result.current[0]).toMatchObject({ q: "Whig OR Whigs", from: "1834-01-01", to: "1856-12-31" });
+    expect(canonical.href).toBe(`https://usnewsmap.com${path}`);
+    act(() => result.current[1]({ z: 4, c: [-90, 40] }));
+    expect(window.location.pathname).toBe(path);
+    expect(parseViewUrl(window.location.href)).toMatchObject({ z: 4, c: [-90, 40] });
+    act(() => result.current[1]({ q: "gold" }, true));
+    expect(window.location.pathname).toBe("/search/gold");
+    act(() => {
+      window.history.replaceState(null, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(result.current[0].q).toBe("Whig OR Whigs");
+    expect(canonical.href).toBe(`https://usnewsmap.com${path}`);
+    unmount();
+    canonical.remove();
+    window.history.replaceState(null, "", "/");
+  });
+
   it("treats repeated leading slashes as paths, not URL authorities", () => {
     expect(parseViewUrl("//")).toEqual(DEFAULTS);
     expect(parseViewUrl("///?q=gold&lang=ger")).toEqual(parseView("?q=gold&lang=ger"));
