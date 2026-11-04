@@ -313,7 +313,7 @@ Check the identity again immediately before signalling, then send one `SIGHUP`:
 
 ```sh
 lines=$(wc -l < "log_$host/feeder.log")
-date -u +%FT%TZ | tee "$evidence/stop-time.txt"
+date -u +%FT%TZ | tee -a "$evidence/stop-time.txt"
 [ "$(cat "pid_$host/feeder.pid")" = "$pid" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$ticks" ] && kill -HUP "$pid"
 ```
 
@@ -492,7 +492,7 @@ As soon as a start has failed, hold the loop so that it makes no attempts of its
 
 ```sh
 touch stop_maintenance
-date -u +%FT%TZ | tee "$evidence/hold-time.txt"
+echo "hold $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
 ```
 
 `boinc-daemons.sh` checks the marker before each `bin/start --cron` and skips the run while it
@@ -505,15 +505,27 @@ the feeder log after `$lines` that your `bin/start --cron` didn't make. There ar
 loop runs every five minutes and the hold follows the failure at once.
 
 Release the hold only once a feeder passes step 4 after the hold: run step 4 up to the guard
-check, release with `rm stop_maintenance`, then run the guard check (it reports `maintenance` while
-the hold is in place) and finish step 4. If any check fails, or the failure needs the maintainer, the hold stays
-until they decide.
+check, then release it and run the guard check, which reports `maintenance` while the hold is in
+place:
+
+```sh
+rm stop_maintenance
+echo "release $(date -u +%FT%TZ)" | tee -a "$evidence/hold-time.txt"
+```
+
+If the guard then reports anything but `match`, or the rest of step 4 fails, put the hold back at
+once with the hold commands above and escalate. If a check fails before the release, or the failure
+needs the maintainer, the hold stays until they decide.
 
 ### The rules
 
 - One refresh allows at most **one** operator retry: one more `bin/start --cron`, run once with
-  `attempt=2` and the hold in place, and only after the cause is fixed and confirmed (for the
-  database, it answers the guard's query). Then repeat step 4. If a feeder is already running by
+  `attempt=2` and the hold in place, and only after the cause is fixed and confirmed. For the
+  database, confirm it with a read-only query such as `SELECT COUNT(*) FROM app WHERE deprecated=0`
+  over step 1's verified-TLS connection, saved to `$evidence/db-check.txt`. The guard can't confirm
+  it: during the hold it reports `maintenance` before it queries anything
+  ([`feeder-slot-guard.py` L164-L167](../../contrib-compute/images/server/feeder-slot-guard.py#L164-L167)).
+  Then repeat step 4. If a feeder is already running by
   then (the loop started it before the hold), don't retry: verify that feeder with step 4 and
   `attempt=2`. Never script a retry, loop, or watch and restart.
 - A deterministic failure is never retried as it is. If the registry is the cause, apply
@@ -521,8 +533,19 @@ until they decide.
   maintainer at once, because the project sends no work while the feeder is down. A whole-server
   restart and an image rollback are the maintainer's decisions.
 - A feeder that stayed up after a deterministic failure (the census case) is stopped with one
-  `SIGHUP` as in step 2, after the registry is restored and before the retry. If it does not exit,
-  escalate as in step 2.
+  `SIGHUP` as in step 2, after the registry is restored and before the retry. Step 2 checks `$pid`
+  and `$ticks`, which still name the original feeder, so first capture the failed feeder's identity
+  and check that it is `$newpid` and the only feeder:
+
+  ```sh
+  pid=$(cat "pid_$host/feeder.pid")
+  ticks=$(awk '{print $22}' "/proc/$pid/stat")
+  echo "$pid $ticks" | tee "$evidence/feeder-failed.txt"
+  [ "$pid" = "$newpid" ] && pgrep -u boincadm -x feeder
+  ```
+
+  Then run step 2. If it does not exit, escalate as in step 2.
+
 - If the retry fails too, keep the hold and escalate.
 - So during a refresh the feeder is started only by step 3, by the loop's attempts before the
   hold and by the one retry. Nothing else starts it until the hold is released.
