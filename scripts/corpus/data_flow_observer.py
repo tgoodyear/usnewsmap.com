@@ -33,6 +33,14 @@ LIVE_ROWS = {
 # Those rows cover whole hours and the catalog refreshes hourly, so a healthy one reaches about 90
 # minutes old. One missed refresh stays inside three hours; a second doesn't.
 LIVE_MAX_AGE_SECS = 3 * 3600
+# After a start the dashboard answers at once but reads the fetcher's files for some minutes, about
+# seven with a queue of 2,000 manifests (#1436), and its view says so (`warming`). Its counts are
+# partial until then, so they are left out without failing the run; a warm-up older than this fails.
+WARMING_GRACE = timedelta(minutes=30)
+
+
+class Warming(ValueError):
+    """The dashboard is still reading the fetcher's files after a start."""
 
 
 def timestamp(value):
@@ -121,6 +129,12 @@ def local_stages(payload, now):
     """
     payload = object_value(payload)
     fetch = object_value(payload["fetch"])
+    warming = payload.get("warming")
+    if warming is not None:
+        since = timestamp(observed(object_value(warming)["since"], now))
+        if now - since <= WARMING_GRACE:
+            raise Warming("The dashboard's counts are partial while it starts")
+        raise ValueError("The dashboard has been starting for too long")
     if fetch.get("index_error") or fetch.get("queue_error"):
         raise ValueError("Local fetch evidence reports an error")
     if fetch.get("queue_configured") is not True:
@@ -263,6 +277,10 @@ def collect(ocr_url, boinc_url, now=None, api_status_url=None):
         try:
             stages = parse(fetch(url))
             events.extend({"source": source, "stage": item} for item in stages)
+        except Warming:
+            failures.append({"code": f"{source}-warming",
+                             "detail": f"{source} has just started and is still reading its files; "
+                                       "its partial counts are left out until it is done."})
         except (OSError, HTTPException, ValueError, KeyError, TypeError, RecursionError, ET.ParseError):
             # Keep remote bodies, URL strings and diagnostic details out of telemetry.
             failures.append({"code": f"{source}-unavailable",
@@ -505,9 +523,12 @@ def main():
                              "detail": "Page-evidence catalog snapshot could not be read or validated."})
             value["issues"].append(failures[-1])
     atomic_json(args.snapshot, value)
+    # A source that is starting up is reported in the snapshot but doesn't fail the run.
+    failed = [item for item in failures if not item["code"].endswith("-warming")]
     print(json.dumps({"event": "data_flow_observation", "stages": len(events),
-                      "failed_sources": len(failures)}))
-    return 1 if failures else 0
+                      "failed_sources": len(failed),
+                      "warming_sources": len(failures) - len(failed)}))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

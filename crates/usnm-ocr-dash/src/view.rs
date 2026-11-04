@@ -35,6 +35,9 @@ pub struct View {
     pub throughput: crate::throughput::ThroughputView,
     pub generated_at: DateTime<Utc>,
     pub refresh_secs: u64,
+    /// While the dashboard's first read of the fetcher's files after a
+    /// start is under way, how far it has got; null once it is over.
+    pub warming: Option<crate::fetch::Warming>,
     pub hosts: Vec<HostView>,
     pub fetch: FetchView,
     pub nodes: Vec<NodeView>,
@@ -438,9 +441,12 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
     }
     let fresh = f.status_error.is_none() && status_fresh(f.status.as_ref(), now);
     let state = f.status.as_ref().map(|s| s.state.as_str());
+    // Until the first poll is over the totals are short, as with a manifest
+    // that can't be read.
+    let queue_error = f.queue_error.clone().or_else(|| f.warming_note());
     let activity = if fresh && state != Some("done") {
         "running"
-    } else if f.manifests.is_none() || f.queue_error.is_some() {
+    } else if f.manifests.is_none() || queue_error.is_some() {
         if fresh {
             "idle"
         } else {
@@ -468,7 +474,7 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         queue,
         queue_summary: qs,
         queue_configured: f.manifests.is_some(),
-        queue_error: f.queue_error.clone(),
+        queue_error,
         bulk: FileView::of(&f.bulk),
         pacer: FileView::of(&f.pacer),
         publish: FileView::of(&f.publish),
@@ -665,6 +671,7 @@ pub fn build(
         throughput: crate::throughput::ThroughputView::default(),
         generated_at: now,
         refresh_secs: s.refresh_secs,
+        warming: fetch.warming.clone(),
         hosts: host_views(hosts, s, now),
         fetch: fv,
         nodes: node_views,

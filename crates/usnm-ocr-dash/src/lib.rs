@@ -66,10 +66,12 @@ pub struct App {
 
 impl App {
     /// Read the files: the fetcher's, the hosts', the seed plan. Blocking.
+    /// One call at a time: the fetcher's files are read with the lock let
+    /// go, so views aren't held up ([`Fetch::poll_locked`]).
     pub fn poll_files(&self) {
         let now = Utc::now();
         self.pipeline.lock().expect("pipeline lock").poll(now);
-        self.fetch.lock().expect("fetch lock").poll(now);
+        Fetch::poll_locked(&self.fetch, now);
         self.hosts.lock().expect("hosts lock").poll(now);
         if let Some(p) = &self.seed_plan_path {
             let plan = match std::fs::read(p) {
@@ -385,10 +387,25 @@ async fn put_feed_source(
     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+/// 503 until the first read of the fetcher's files after a start is over,
+/// while the counts are partial; `/healthz` says only that it answers.
+async fn readyz(State(app): State<Arc<App>>) -> Response {
+    let warming = tokio::task::spawn_blocking(move || {
+        app.fetch.lock().expect("fetch lock").warming.is_some()
+    })
+    .await;
+    match warming {
+        Ok(false) => (StatusCode::OK, "ready\n").into_response(),
+        Ok(true) => (StatusCode::SERVICE_UNAVAILABLE, "warming\n").into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
         .route("/healthz", get(|| async { "ok\n" }))
+        .route("/readyz", get(readyz))
         .route("/api/{part}", get(api))
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
@@ -761,6 +778,43 @@ mod tests {
             .map(|v| v.to_str().unwrap().to_owned());
         let b = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         ((status, String::from_utf8_lossy(&b).into_owned()), location)
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_for_the_first_read_of_the_files_and_health_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let get = |uri: &'static str| call(a.clone(), "198.51.100.50", "GET", uri, "");
+        let view = || async {
+            serde_json::from_str::<serde_json::Value>(&get("/api/view.json").await.1).unwrap()
+        };
+        let warming = (StatusCode::SERVICE_UNAVAILABLE, "warming\n".to_owned());
+        assert_eq!(get("/readyz").await, warming);
+        assert_eq!(get("/healthz").await, (StatusCode::OK, "ok\n".to_owned()));
+        assert!(view().await["warming"]["since"].is_string());
+        assert!(get("/")
+            .await
+            .1
+            .contains("<section class=\"wide\" id=\"warming\">"));
+        // The public listener has no readiness route.
+        let ((s, _), _) = call_on(
+            public_router(a.clone()),
+            "203.0.113.3",
+            "GET",
+            "/readyz",
+            "",
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+
+        let polled = a.clone();
+        tokio::task::spawn_blocking(move || polled.poll_files())
+            .await
+            .unwrap();
+        assert_eq!(get("/readyz").await, (StatusCode::OK, "ready\n".to_owned()));
+        assert_eq!(get("/healthz").await, (StatusCode::OK, "ok\n".to_owned()));
+        assert!(view().await["warming"].is_null());
+        assert!(!get("/").await.1.contains("id=\"warming\""));
     }
 
     #[tokio::test]
