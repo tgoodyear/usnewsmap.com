@@ -810,6 +810,7 @@ mod tests {
     #[test]
     fn on_a_phone_each_step_is_a_card_whose_counts_keep_their_column_names() {
         let v = empty();
+        assert!(!v.steps.is_empty());
         let html = panel(&v);
         for (header, label) in [
             ("<th class=\"r\">Last hour</th>", "Last hour"),
@@ -827,7 +828,9 @@ mod tests {
         let style = crate::html::assets::STYLE;
         let phone = &style[style.find("@media (max-width: 640px)").unwrap()..];
         assert!(phone.contains("table.steps { min-width:0; }"));
-        assert!(phone.contains(".steps > colgroup, .steps > thead { display:none; }"));
+        assert!(phone.contains(".steps > colgroup { display:none; }"));
+        assert!(!phone.contains(".steps > thead { display:none"));
+        assert!(phone.contains(".steps > thead { position:absolute;"));
         assert!(phone.contains("content:attr(data-label)"));
         assert!(
             phone.contains(".steps > tbody:has(details[open]) > .step-detail { display:block; }")

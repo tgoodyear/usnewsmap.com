@@ -161,7 +161,9 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
      labels, then its week of bars the width of the card. */
   table.steps { min-width:0; }
   table.steps, .steps > tbody, .steps > tbody > tr, .steps > tbody > tr > td { display:block; }
-  .steps > colgroup, .steps > thead { display:none; }
+  .steps > colgroup { display:none; }
+  /* Hidden as .sr is, so screen readers still have the column names. */
+  .steps > thead { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
   .steps > tbody { padding:6px 0; border-bottom:1px solid var(--grid); }
   .steps > tbody > tr:first-child { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:4px 12px; }
   .steps > tbody > tr > td { padding:0; border-bottom:none; text-align:left; white-space:normal; }
