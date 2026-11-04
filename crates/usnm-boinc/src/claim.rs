@@ -633,11 +633,12 @@ pub async fn dead_letter_superseding(
     };
     // Receipts are named by the message's digest as the ledger records its dead letter, so a
     // later attempt can find the one this sent for the attempt before it.
-    let digest = |m: &OcrMessage| -> anyhow::Result<String> {
+    let message_digest = |m: &OcrMessage| -> anyhow::Result<String> {
         Ok(usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(m)?))
     };
     let receipt_path = |digest: &str| format!("dispatch/jobs/{id}/superseding/{digest}.json");
-    let path = receipt_path(&digest(&new)?);
+    let new_digest = message_digest(&new)?;
+    let path = receipt_path(&new_digest);
     let sent = format!("{path}.sent");
     let was_sent = handoff.get(&sent).await?;
     match claim.ended.as_deref() {
@@ -656,9 +657,8 @@ pub async fn dead_letter_superseding(
     }
     // Once its dead letter went, the ledger may have settled the newer message too; only the
     // delete is left, and the receipt holds what was checked.
+    let mut drained = false;
     if was_sent.is_none() {
-        // The latest outcome is the failed job's own dead letter, or the one this sent for an
-        // attempt queued after it, so each later attempt can be settled the same way.
         let settled = ledger
             .outcomes
             .get(&doc_id)
@@ -667,24 +667,31 @@ pub async fn dead_letter_superseding(
                     && o.cause.as_deref() == Some("permanent")
             })
             .and_then(|o| o.message_sha256.as_deref());
-        let failed_digest = digest(old)?;
-        let ours = match settled {
-            Some(s) if s == failed_digest => true,
-            Some(s) if usnm_ocr_contract::boinc::is_sha256(s) => {
-                handoff.exists(&format!("{}.sent", receipt_path(s))).await?
-            }
-            _ => false,
-        };
-        ensure!(
-            ours,
-            "job {id} is not dead-lettered: the ledger's latest outcome for {doc_id} isn't its permanent dead letter or one this sent for a later attempt"
-        );
-        ensure!(
-            ledger
-                .outstanding(&doc_id)
-                .is_some_and(|row| LedgerRow::from_queued(row) == claim.ledger),
-            "the claim for {doc_id} isn't the page's outstanding ledger row; leave it to `claim pull`"
-        );
+        // The dead letter went but its marker wasn't written, and `ocr-sync` has drained it:
+        // the ledger names this message, and its receipt is there.
+        drained = settled == Some(new_digest.as_str()) && handoff.exists(&path).await?;
+        if !drained {
+            // The latest outcome is the failed job's own dead letter, or the one this sent for
+            // an attempt queued after it, so each later attempt can be settled the same way.
+            let failed_digest = message_digest(old)?;
+            let ours = match settled {
+                Some(s) if s == failed_digest => true,
+                Some(s) if usnm_ocr_contract::boinc::is_sha256(s) => {
+                    handoff.exists(&format!("{}.sent", receipt_path(s))).await?
+                }
+                _ => false,
+            };
+            ensure!(
+                ours,
+                "job {id} is not dead-lettered: the ledger's latest outcome for {doc_id} isn't its permanent dead letter or one this sent for a later attempt"
+            );
+            ensure!(
+                ledger
+                    .outstanding(&doc_id)
+                    .is_some_and(|row| LedgerRow::from_queued(row) == claim.ledger),
+                "the claim for {doc_id} isn't the page's outstanding ledger row; leave it to `claim pull`"
+            );
+        }
     }
     if confirm.is_none() {
         return Ok(report);
@@ -749,7 +756,9 @@ pub async fn dead_letter_superseding(
     if let Some(receipt) = was_sent {
         ensure!(receipt == digest, "{sent} changed");
     } else {
-        queue.send(DEADLETTER, &text).await?;
+        if !drained {
+            queue.send(DEADLETTER, &text).await?;
+        }
         if !handoff.put_new(&sent, digest.clone(), "text/plain").await? {
             ensure!(
                 handoff.get(&sent).await?.as_ref() == Some(&digest),

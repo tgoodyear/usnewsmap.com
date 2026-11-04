@@ -881,7 +881,11 @@ A rerun prints `already ended` and sends nothing. If the message's lease had alr
 the dead letter still goes, the step fails, and the claim is marked `dead_letter_lease_lost`.
 Run it again after the next tick's claim pull has taken the message back. That rerun deletes the
 message without a second dead letter. If `ocr-sync` has drained the dead letter first, the pull
-deletes the message as answered.
+deletes the message as answered. If the dead letter went but its `.sent` marker wasn't written,
+the step fails. Run it again. If `ocr-sync` has drained the letter by then, the ledger names the
+message, and the rerun writes the marker and deletes the message without sending again. If it
+hasn't, the rerun can't tell whether the letter went, so it sends it again. Both copies settle the
+same attempt.
 
 Once the message is gone, no pull returns the page, and the next tick goes on. Nothing on the
 controller changes. A later attempt of the page is a new message and needs the same step again,

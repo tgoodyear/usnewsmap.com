@@ -802,6 +802,8 @@ struct ObservedStore {
     inner: Arc<dyn ObjectStore>,
     calls: Mutex<Vec<String>>,
     lose_write_response: AtomicBool,
+    /// Fail to write `.sent` markers.
+    refuse_sent: AtomicBool,
 }
 impl ObservedStore {
     fn new(inner: Arc<dyn ObjectStore>) -> Self {
@@ -809,6 +811,7 @@ impl ObservedStore {
             inner,
             calls: Mutex::new(Vec::new()),
             lose_write_response: AtomicBool::new(false),
+            refuse_sent: AtomicBool::new(false),
         }
     }
     fn count(&self, call: &str) -> usize {
@@ -833,6 +836,9 @@ impl ObjectStore for ObservedStore {
         content_type: &str,
     ) -> Result<bool, usnm_store::StoreError> {
         self.calls.lock().unwrap().push(format!("put_new:{path}"));
+        if path.ends_with(".sent") && self.refuse_sent.load(Ordering::SeqCst) {
+            return Err(usnm_store::StoreError::Io("marker not written".into()));
+        }
         let written = self.inner.put_new(path, body, content_type).await?;
         if path.starts_with("ocr-local/queued/")
             && written
@@ -3204,6 +3210,55 @@ mod queue_feed {
             Some(claim::DeadLettered::Done)
         );
         assert_eq!(letters().await.unwrap().len(), 1);
+        assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
+        assert_eq!(
+            handoff_claim(&f).await.ended.as_deref(),
+            Some("dead_lettered")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dead_letter_whose_marker_was_not_written_is_settled_once_drained() {
+        let (f, failed, newer) = superseded(true, Duration::from_secs(3600)).await;
+        let q = f.fx.stores.queue.as_ref();
+        let curated = f.fx.stores.curated.as_ref();
+        let sha = usnm_ocr_contract::boinc::sha256(newer.encode().as_bytes());
+        let handoff = ObservedStore::new(f.handoff.clone());
+        handoff.refuse_sent.store(true, Ordering::SeqCst);
+        let ledger = ledger::load(curated).await.unwrap();
+        assert!(
+            claim::dead_letter_superseding(&handoff, q, &failed, &ledger, Some(&sha))
+                .await
+                .is_err()
+        );
+        // The dead letter went, and ocr-sync drains it before the rerun.
+        let letter = q
+            .receive(usnm_store::queue::DEADLETTER, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        q.delete(&letter).await.unwrap();
+        settle(
+            &f,
+            &newer,
+            letter.id,
+            f.queued.queued_at + chrono::Duration::seconds(1),
+        )
+        .await;
+        handoff.refuse_sent.store(false, Ordering::SeqCst);
+        let ledger = ledger::load(curated).await.unwrap();
+        assert_eq!(
+            claim::dead_letter_superseding(&handoff, q, &failed, &ledger, Some(&sha))
+                .await
+                .unwrap()
+                .done,
+            Some(claim::DeadLettered::Done)
+        );
+        assert!(q
+            .peek(usnm_store::queue::DEADLETTER, 32)
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(q.approximate_count(BULK).await.unwrap(), 0);
         assert_eq!(
             handoff_claim(&f).await.ended.as_deref(),
