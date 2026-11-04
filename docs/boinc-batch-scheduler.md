@@ -830,6 +830,62 @@ state and passes over its journal after that; the journal stays in `dispatch/`. 
 drains the dead letter into the ledger. The flag needs the on-prem host's Message Sender role
 on `ocr-deadletter`.
 
+### A retried page claimed after its dead letter
+
+Once a page's dead letter is in the ledger, the page can be queued again as its next attempt,
+with a new `queued_at` (#1417). `claim pull` takes that message and its claim replaces the
+dead-lettered one in `claims/`. But the controller still holds the old claim for the page, so it
+stops the tick ("claimed a page already in this plan with a different message"). The new message
+stays hidden for its lease, then comes back and stops another tick. None of the usual tools
+settle it:
+
+- `JOB_IDS` refuses it, because the claim isn't the failed job's message.
+- `usnm-boinc retry` needs the failed job's own claim, which was replaced.
+- `release` would only put the message back.
+
+An operator settles it as root on the BOINC host, with the hand-off `dead-letter` step's
+`SUPERSEDES_FAILED_JOB` (the controller's ssh key can't set it):
+
+```sh
+# Dry run: checks, prints the newer message's sha256 and changes nothing.
+usnm-boinc-step --env prod --target handoff --step dead-letter \
+  --var SUPERSEDES_FAILED_JOB=<the dead-lettered job's id> --wait-mins 10
+# Compare the sha256 with the claim summary's message_sha256 for the page, then confirm it.
+usnm-boinc-step --env prod --target handoff --step dead-letter \
+  --var SUPERSEDES_FAILED_JOB=<the dead-lettered job's id> \
+  --var CONFIRM_MESSAGE_SHA256=<the newer message's sha256> --wait-mins 10
+```
+
+(`usnm-boinc claim dead-letter --supersedes-failed-job <id> --curated-url <curated>
+[--confirm-message-sha256 <sha256>]`.) Before it changes anything, it checks all of these:
+
+- The failed job's journal in `dispatch/` is a failed, queue-fed, non-retry job.
+- The claim is that job's page, batch and language, with a later `queued_at`.
+- The claim is still live, and it's the page's outstanding ledger row.
+- The ledger's latest outcome for the page is the failed job's own `permanent` dead letter,
+  bound to that job's message digest.
+- The confirmation is the claim's message sha256.
+
+When all of them pass, it does four things:
+
+1. Writes the dead letter as a receipt at
+   `dispatch/jobs/<failed job>/superseding/<message sha256>.json`.
+2. Sends the dead letter once, as a v2 `permanent` letter that names the failed job and keeps
+   its error. A `.sent` marker beside the receipt records the send.
+3. Deletes the message with the claim's pop receipt.
+4. Marks the claim `ended: dead_lettered`.
+
+A rerun prints `already ended` and sends nothing. If the message's lease had already run out,
+the dead letter still goes, the step fails, and the claim is marked `dead_letter_lease_lost`.
+Run it again after the next tick's claim pull has taken the message back. That rerun deletes the
+message without a second dead letter. If `ocr-sync` has drained the dead letter first, the pull
+deletes the message as answered.
+
+Once the message is gone, no pull returns the page, and the next tick goes on. Nothing on the
+controller changes. A later attempt of the page is a new message and needs the same step again.
+This settles the newer attempt as failed without running it. Running it instead, with a longer
+page deadline, would need a controller change (#1417).
+
 ### The queue message's life
 
 | What happens                                               | The message                                                                                                                                                                                                                                 |
@@ -863,7 +919,9 @@ provisioned. `claims/` expires after 30 days.
   are unchanged, so nothing changes for them meanwhile.
 - A message queued again after its claim lapsed (the seeder re-queues a page outstanding
   for 14 days) is a different message and so a different job. The controller then sees two
-  jobs on one page and stops for an operator to reconcile, as it does for any two.
+  jobs on one page and stops for an operator to reconcile, as it does for any two. A page
+  queued again after its job was dead-lettered stops it the same way; settle it as
+  [above](#a-retried-page-claimed-after-its-dead-letter).
 - A claim can lapse while the job is pending, and a node can then import the page. When
   the BOINC result arrives, `collect` finds the page answered by another producer and marks
   the job `published` with a `superseded` note, without publishing anything, so the feed

@@ -1478,6 +1478,27 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn("--job " + "a" * 64 + " --job " + "b" * 64, call)
         self.assertNotEqual(self.handoff("dead-letter", JOB_IDS="a_b").returncode, 0)
 
+    def test_handoff_dead_letter_superseding_is_a_dry_run_unless_confirmed(self):
+        # #1417: an operator settles a page claimed again after its job was dead-lettered.
+        queue = "https://usnmst.queue.core.windows.net"
+        r = self.handoff("dead-letter", QUEUE_URL=queue, SUPERSEDES_FAILED_JOB="a" * 64)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (call,) = self.calls()
+        self.assertIn("--supersedes-failed-job " + "a" * 64, call)
+        self.assertIn("--curated-url ", call)
+        self.assertNotIn("--confirm-message-sha256", call)
+        self.assertNotIn("--job ", call)
+        r = self.handoff("dead-letter", QUEUE_URL=queue, SUPERSEDES_FAILED_JOB="a" * 64,
+                         CONFIRM_MESSAGE_SHA256="c" * 64)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--confirm-message-sha256 " + "c" * 64, self.calls()[-1])
+        for bad in (dict(SUPERSEDES_FAILED_JOB="a" * 63),
+                    dict(SUPERSEDES_FAILED_JOB="a" * 64, JOB_IDS="b" * 64),
+                    dict(SUPERSEDES_FAILED_JOB="a" * 64, CONFIRM_MESSAGE_SHA256="C" * 64),
+                    dict(JOB_IDS="b" * 64, CONFIRM_MESSAGE_SHA256="c" * 64)):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.handoff("dead-letter", QUEUE_URL=queue, **bad).returncode, 0)
+
     def test_handoff_export_with_claims_downloads_each_claim_first(self):
         self.stub(self.COPY_STUB)
         r = self.handoff(
