@@ -7,9 +7,10 @@
 // usnm-boinc-feed-health. The evaluator host's Arc machine (machineName, in
 // the environment's resource group; a private setting) is associated with
 // the rule below by hand, as onboard.sh associates the nodes with theirs.
-// The rule collects only local0 at Info and above into the OCR nodes'
-// workspace: no counters or system facilities, about 2.6 MB a day (one line
-// of about 1.8 KB a minute with five own clients). The nodes' rule would also
+// The rule collects only local0 at Info and above, and its transformation
+// keeps only the evaluator's lines, into the OCR nodes' workspace: no
+// counters or system facilities, about 2.6 MB a day (one line of about
+// 1.8 KB a minute with five own clients). The nodes' rule would also
 // send the host's counters and VM insights, 20 to 45 MB a day, against the
 // workspace's 0.1 GB cap.
 //
@@ -77,6 +78,10 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
       {
         streams: ['Microsoft-Syslog']
         destinations: ['workspace']
+        // Anything else on local0 is dropped before ingestion, so it can't
+        // fill the workspace's cap.
+        transformKql: 'source | where ProcessName == \'usnm-boinc-feed-health\''
+        outputStream: 'Microsoft-Syslog'
       }
     ]
   }

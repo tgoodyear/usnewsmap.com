@@ -336,7 +336,8 @@ The route, from the evaluator to an email:
    clients).
 2. `usnm-boinc-feed-dcr-<env>`, a data collection rule associated only with the
    evaluator host's Arc machine, sends `local0` at Info and above to the OCR
-   nodes' workspace, `usnm-ocr-log-<env>`: about 2.6 MB a day. It is not the
+   nodes' workspace, `usnm-ocr-log-<env>`, and its transformation drops every
+   line but the evaluator's: about 2.6 MB a day. It is not the
    nodes' rule, which would also send the host's counters and VM insights (20
    to 45 MB a day) against the workspace's 0.1 GB cap.
 3. Two stateful scheduled-query rules (`infra/modules/boinc-feed-alerts.bicep`)
@@ -380,8 +381,9 @@ this repository does them.
   `extensions/AzureMonitorLinuxAgent`).
 - rsyslog runs and receives the journal's syslog; the agent reads syslog from
   it.
-- Nothing but the evaluator logs to `local0`; this must list only
-  `usnm-boinc-feed-health`:
+- Nothing but the evaluator logs to `local0`. The rule drops other lines
+  before ingestion, but Azure can still bill for processing data a
+  transformation drops. This must list only `usnm-boinc-feed-health`:
 
   ```sh
   journalctl SYSLOG_FACILITY=16 --since -1h -o json | jq -r .SYSLOG_IDENTIFIER | sort | uniq -c

@@ -11,7 +11,7 @@ let machines = "/providers/microsoft.hybridcompute/machines/";
 let node_of = (id: string) { tolower(extract(@"(?i)/machines/([^/]+)$", 1, id)) };
 union isfuzzy=true
     (Syslog
-    | where _ResourceId has machines and ProcessName == "usnm-boinc-feed-health"
+    | where _ResourceId contains machines and ProcessName == "usnm-boinc-feed-health"
     | extend Feed = parse_json(SyslogMessage)
     | project TimeGenerated, Machine = node_of(_ResourceId), Event = tostring(Feed.event),
         Observed = unixtime_seconds_todatetime(tolong(Feed.observed_at))),
