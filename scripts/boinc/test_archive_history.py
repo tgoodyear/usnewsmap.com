@@ -155,6 +155,7 @@ class DispatchTests(unittest.TestCase):
         self.config_path.write_text(json.dumps(config()))
         self.state_dir = root / "state"
         self.state_dir.mkdir()
+        (self.state_dir / "controller.lock").touch()  # as the controller's first tick left it
         self.archive_dir = root / "archive"
         now = time.time()
         self.container = FakeContainer()
@@ -258,6 +259,10 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("lease is leased", errors[-1]["error"])
         self.container.lease_blob_state = "available"
+        (self.state_dir / "controller.lock").unlink()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("controller.lock is missing", errors[-1]["error"])
         with open(self.state_dir / "controller.lock", "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             before = self.snapshot()
@@ -450,6 +455,7 @@ class BridgeTests(unittest.TestCase):
         self.handoff, self.results = root / "project/handoff", root / "project/usnmocr/results"
         self.batch = root / "archive/0001"
         (self.handoff / "jobs").mkdir(parents=True)
+        (self.handoff / ".lock").touch()  # as the bridge left it
         (self.results / "0").mkdir(parents=True)
         self.locks = [root / "step.lock"]
         bundle_x, bundle_y = "b" * 64, "c" * 64
@@ -538,9 +544,7 @@ class BridgeTests(unittest.TestCase):
         code, _, errors = run(self.argv("--apply", "--confirm-controller-paused"))
         self.assertEqual(code, 1)
         self.assertIn("not drained", errors[-1]["error"])
-        after = self.snapshot()
-        after[0].pop(".lock")  # the bridge's own lock file, taken as its steps take it
-        self.assertEqual(before[:2], after[:2])
+        self.assertEqual(before[:2], self.snapshot()[:2])
 
     def test_a_stale_partial_link_never_writes_through_to_the_source(self):
         source = self.handoff / "jobs" / job_id(1) / "page"

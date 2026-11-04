@@ -911,7 +911,8 @@ changed blob, resumes when it's run again with the same arguments. It finishes
 the planned batch and doesn't plan another one. A blob or file that changed
 since the plan stops the step: reconcile it by hand. The `dispatch` apply holds
 the controller's lock file and its `scheduler/controller.lock` blob lease
-throughout. A killed apply leaves that lease held, like a crashed controller.
+throughout. It refuses if the lock file is missing, since the controller
+creates it on its first tick, so a missing one means a wrong `--state-dir`. A killed apply leaves that lease held, like a crashed controller.
 Once the process is confirmed gone, the operator breaks it as above.
 
 The maintainer approves each live run. To archive:

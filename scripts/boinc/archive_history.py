@@ -131,7 +131,7 @@ def write_json(path, payload):
 
 
 def read_json(path):
-    require(path.is_file() and not path.is_symlink(), f"{path} is missing")
+    require(path.is_file() and not path.is_symlink(), f"{path} must be a regular file, not missing or a symlink")
     return json.loads(path.read_text())
 
 
@@ -158,10 +158,15 @@ def progress(message):
 
 
 @contextlib.contextmanager
-def flocked(paths):
-    """Holds a non-blocking exclusive flock on every path: a running holder makes this refuse."""
+def flocked(paths, existing=()):
+    """Holds a non-blocking exclusive flock on every path: a running holder makes this refuse.
+    Every holder creates its lock file as it takes it, so a missing one is created, except one
+    in `existing`: its absence means the path isn't the one its holder uses."""
     with contextlib.ExitStack() as stack:
         for path in paths:
+            require(path.parent.is_dir(), f"{path.parent} is missing: is {path} the right lock?")
+            require(path not in existing or path.is_file(),
+                    f"{path} is missing: its holder would have created it; is the path right?")
             handle = stack.enter_context(open(path, "a"))
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -314,17 +319,16 @@ def leased(container, name):
 
 def in_parallel(function, items):
     errors = []
-    results = []
     with concurrent.futures.ThreadPoolExecutor(REQUESTS) as pool:
         futures = [pool.submit(function, item) for item in items]
-        for future in futures:
+        for future in concurrent.futures.as_completed(futures):
             try:
-                results.append(future.result())
+                future.result()
             except Exception as error:  # every worker finishes; the first failure is raised
                 errors.append(error)
     if errors:
         raise errors[0]
-    return results
+    return [future.result() for future in futures]
 
 
 def list_job_blobs(container):
@@ -616,10 +620,14 @@ def verified_copy(path, digest_path, blob):
     if not path.is_file() or path.is_symlink() or path.stat().st_size != blob["size"] \
             or not digest_path.is_file():
         return False
-    data = path.read_bytes()
-    if blob.get("md5") and base64.b64encode(hashlib.md5(data).digest()).decode() != blob["md5"]:
+    md5, sha256 = hashlib.md5(), hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            md5.update(chunk)
+            sha256.update(chunk)
+    if blob.get("md5") and base64.b64encode(md5.digest()).decode() != blob["md5"]:
         return False
-    return sha256_bytes(data) == digest_path.read_text().strip()
+    return sha256.hexdigest() == digest_path.read_text().strip()
 
 
 def handoff_step(manifest, container, batch):
@@ -705,7 +713,8 @@ def dispatch(args):
     require_apply(args, units)
     require(archive is not None, "--apply needs --archive-dir")
     require(lease in FREE_LEASE_STATES, f"the controller lease is {lease}: a tick may be running")
-    with flocked([args.state_dir / "controller.lock"]), leased(container, LEASE_BLOB):
+    lock = args.state_dir / "controller.lock"
+    with flocked([lock], existing=[lock]), leased(container, LEASE_BLOB):
         state = read_json(state_path)
         batch, planned = open_batch(archive)
         if planned:
@@ -895,7 +904,8 @@ def bridge(args):
         return 0
     require_apply(args)
     locks = [Path(path) for path in (args.lock_file or DEFAULT_BRIDGE_LOCKS)] + [handoff_dir / ".lock"]
-    with flocked(locks):
+    # /run is emptied at boot, but the bridge has created its state directory's lock.
+    with flocked(locks, existing=[handoff_dir / ".lock"]):
         if plan_path.is_file():
             plan = read_json(plan_path)
             progress(f"resuming bridge step of batch {batch.name}")
