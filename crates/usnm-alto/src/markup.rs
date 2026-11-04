@@ -184,34 +184,49 @@ fn block_body(line: &str) -> Option<&str> {
 /// `-`, `*`, `+` and a space, before an item whose text, without its
 /// markup, starts with neither a number nor a currency sign and a number.
 fn bullet(body: &str) -> Option<char> {
-    let (b, item) = bullet_item(body)?;
+    let (marker, item) = list_marker(body)?;
+    let b = marker
+        .chars()
+        .next()
+        .filter(|b| matches!(b, '-' | '*' | '+'))?;
     let text = inline(item);
     let mut t = text.chars();
     let first = t.next()?;
     let currency = matches!(first, '$' | '¢' | '£' | '€' | '¥' | '₤' | 'ℳ');
-    let numeric = first.is_numeric() || (currency && t.next().is_some_and(char::is_numeric));
+    let numeric =
+        first.is_numeric() || (currency && t.as_str().trim_start().starts_with(char::is_numeric));
     (!numeric).then_some(b)
 }
 
-/// The bullet at the start of `body` and its item, after the item's own
-/// heading and quote prefixes.
-fn bullet_item(body: &str) -> Option<(char, &str)> {
-    let mut c = body.chars();
-    let b = c.next().filter(|b| matches!(b, '-' | '*' | '+'))?;
-    let item = c.as_str().strip_prefix(' ')?.trim_start();
-    Some((b, block_body(item).unwrap_or(item)))
+/// The list marker at the start of `body` (a bullet, or a number and a
+/// period) and its item, after the item's own heading and quote prefixes.
+fn list_marker(body: &str) -> Option<(&str, &str)> {
+    let digits = body.bytes().take_while(u8::is_ascii_digit).count();
+    let n = if digits > 0 && body[digits..].starts_with(". ") {
+        digits + 1
+    } else if body.starts_with(['-', '*', '+']) && body[1..].starts_with(' ') {
+        1
+    } else {
+        return None;
+    };
+    let item = body[n + 1..].trim_start();
+    Some((&body[..n], block_body(item).unwrap_or(item)))
 }
 
 /// One line of Markdown as plain text; `None` for a line that is only
-/// markup. `list_item` removes the line's bullet ([`strip_markdown`]).
+/// markup. `list_item` removes the line's bullet ([`strip_markdown`]);
+/// any other list marker stays, before its item's text.
 fn strip_markdown_line(line: &str, list_item: bool) -> Option<String> {
-    let mut s = block_body(line)?;
-    if list_item {
-        if let Some((_, item)) = bullet_item(s) {
-            s = item;
-        }
-    }
-    Some(inline(s))
+    let s = block_body(line)?;
+    let Some((marker, item)) = list_marker(s) else {
+        return Some(inline(s));
+    };
+    let text = inline(item);
+    Some(match (list_item, text.is_empty()) {
+        (true, _) => text,
+        (false, true) => marker.to_owned(),
+        (false, false) => format!("{marker} {text}"),
+    })
 }
 
 /// Text without its inline Markdown, spaces collapsed. Only markup is
@@ -358,10 +373,14 @@ mod tests {
         assert_eq!(md("1. Wheat\n2. Corn"), "1. Wheat\n2. Corn");
         // Prices and dates never count towards a list.
         assert_eq!(md("- 5 Cents\n- $1.50"), "- 5 Cents\n- $1.50");
+        assert_eq!(md("- $ 1.50\n- € 2"), "- $ 1.50\n- € 2");
         assert_eq!(
             md("- 31. Dezember\n- Wheat rose"),
             "- 31. Dezember\n- Wheat rose"
         );
+        // A kept marker's item still loses its own heading and quote.
+        assert_eq!(md("1. # Wheat\n2. > Corn"), "1. Wheat\n2. Corn");
+        assert_eq!(md("- # Wheat"), "- Wheat");
         // Different bullets, or a blank line between, make no list.
         assert_eq!(md("- Wheat\n* Corn"), "- Wheat\n* Corn");
         assert_eq!(md("- Wheat\n\n- Corn"), "- Wheat\n\n- Corn");
