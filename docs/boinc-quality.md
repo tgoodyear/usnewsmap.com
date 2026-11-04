@@ -1356,6 +1356,23 @@ to the fetcher's buffer set.
 
 `quality_campaign.py` builds a worst-first re-OCR list from the stored summary ([#1415](https://github.com/tgoodyear/usnewsmap.com/issues/1415)): every page the [damage ranking report](https://github.com/tgoodyear/usnewsmap.com/pull/1401) calls worth re-OCRing, and an OCR-then-compare sample of the moderate band as its own campaign, `<campaign>-moderate`. It reads the database in a read-only transaction and writes only to its `--out-dir`, so it stages, queues and ships nothing. Each campaign gets `plan.jsonl` (every page in order), `pages.jsonl` (the ones `--index` has a scan for, which `quality_feed.py run` reads) and prefetch manifests for the rest (`manifests/m00001.parquet`, marked `eng` like the image pass's). The file's header has the ordering and sampling rules.
 
+The bands are named arguments whose defaults are the report's: `--worst-above 0.25` (the re-OCR list), `--moderate-above 0.1` (the sample's band, up to `--worst-above`) and `--min-occurrences 50` (word occurrences, `head + near`, for both). The export cuts at the last two in SQL; each row is tested again as it is read, with the rate rounded to a `real` first, so a page Postgres stores as 0.1 is over 0.1 as it is in the report. `--dsn-file` keeps the export as `input.csv` with its cut in `input.json`; `--input` replays it, and can narrow the cut but not widen it. `--cell-pages` (default 400) caps each language and decade cell of the sample: a paired test in one cell then detects a mean drop of 0.02 in damage rate at 80% power and two-sided 5%, from the SD of 0.138 measured on 353 paired English pages ([#1416](https://github.com/tgoodyear/usnewsmap.com/pull/1416)). `summary.json`, also printed, has the filters and the counts by band, language and decade.
+
+To build the lists in CT 215 (`usnm-batch`) on pve-laptop, with copies of the OCR state and the scan index kept beside them for a rebuild:
+
+```sh
+set -a; . /etc/usnm/quality-feed.env; set +a
+out=/var/tmp/usnm-worst-first-$(date -u +%Y%m%d)
+mkdir -p "$out.in"
+cp -a /var/lib/usnm-ocr-manifest "$out.in/ocr-state"
+curl -fsS "$SCAN_SERVER/index/full.jsonl" -o "$out.in/index.jsonl"
+/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/quality_campaign.py \
+  --campaign worst-first-1415 --seed worst-first-1415 --out-dir "$out" \
+  --dsn-file /etc/usnm/quality-db/dsn --ocr-state "$out.in/ocr-state" --index "$out.in/index.jsonl"
+```
+
+A rebuild from the same export takes `--input "$out/input.csv"` in place of `--dsn-file`, and a new `--out-dir`.
+
 Only pages our OCR has done or is about to do are left out: rows in `quality.ocr_outputs`, and pages `--ocr-state` shows outstanding or imported. Pages in a quality campaign stay in, because a `usnm_quality` unit compares the texts a page already has and doesn't read the page. `--campaign-exclusions` (off by default) leaves those out too, and enables `--exclude-list`.
 
 **The moderate sample shows nothing until its pages are OCRed.** A quality unit on a page our OCR hasn't read gives image features and LoC's agreement with American Stories. A gain needs a `quality.ocr_outputs` row for the page, compared with LoC's damage score.
