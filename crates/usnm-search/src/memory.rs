@@ -452,7 +452,10 @@ impl SearchBackend for MemoryBackend {
                 .take(page.limit)
                 .map(|(_, d)| {
                     let (snippets, snippet_source) = match &d.printed {
-                        Some(printed) => (ja_snippets(printed, query, indexes.analyzer()), None),
+                        Some(printed) => (
+                            ja_snippets(printed, query, indexes.analyzer(), page.snippet_length),
+                            None,
+                        ),
                         None => page_snippets(
                             &d.text,
                             d.text_as.as_deref(),
@@ -460,6 +463,7 @@ impl SearchBackend for MemoryBackend {
                             query,
                             indexes.american_stories(),
                             indexes.text_layout(),
+                            page.snippet_length,
                         ),
                     };
                     let matched_in =

@@ -366,6 +366,7 @@ pub async fn hits(
             limit,
             // The first page says on how many days the pages appeared (#127).
             days: offset == 0,
+            ..HitsQuery::default()
         };
         let t = Instant::now();
         let result = with_timeout(
@@ -638,6 +639,7 @@ async fn browse(
             offset: 0,
             limit,
             days: after.is_none(),
+            ..HitsQuery::default()
         };
         let t = Instant::now();
         let result = with_timeout(

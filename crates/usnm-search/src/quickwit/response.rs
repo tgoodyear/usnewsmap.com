@@ -9,7 +9,7 @@ use super::error::{aggregation_limit, failure_cause, splits_named};
 use crate::snippet::{matched_in, opening_snippet, page_snippets};
 use crate::{
     ja_snippets, rank, CubeCell, Hit, HitsPage, IndexSet, KeyCount, PlaceSummary, SearchError,
-    Summary,
+    SnippetLength, Summary,
 };
 
 #[derive(Debug, Deserialize)]
@@ -253,12 +253,14 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
 /// `indexes`: whether the search covered American Stories' text, whose
 /// snippets stand in when LoC's text has no match (05 §5.5.4), and the
 /// analyzer that folded a Japanese page's text, for its snippets (#168).
+/// `length`: how much text the snippets show around their matches.
 pub fn parse_hits(
     resp: SearchResponse,
     query: &Node,
     indexes: &IndexSet,
+    length: SnippetLength,
 ) -> Result<HitsPage, SearchError> {
-    hits_page(resp, Some(query), indexes)
+    hits_page(resp, Some((query, length)), indexes)
 }
 
 /// The pages of a [`browse_request`] (#274): each with the opening of its
@@ -270,11 +272,11 @@ pub fn parse_browse(resp: SearchResponse, indexes: &IndexSet) -> Result<HitsPage
     hits_page(resp, None, indexes)
 }
 
-/// The hits of `resp`, with snippets of `query`, or without one the
-/// opening of each page's text.
+/// The hits of `resp`, with snippets of `query` as long as it asks, or
+/// without one the opening of each page's text.
 fn hits_page(
     resp: SearchResponse,
-    query: Option<&Node>,
+    query: Option<(&Node, SnippetLength)>,
     indexes: &IndexSet,
 ) -> Result<HitsPage, SearchError> {
     let american_stories = indexes.american_stories();
@@ -306,9 +308,9 @@ fn hits_page(
                 None,
                 None,
             ),
-            Some(query) => {
+            Some((query, length)) => {
                 let (snippets, snippet_source) = match &d.printed {
-                    Some(printed) => (ja_snippets(printed, query, analyzer), None),
+                    Some(printed) => (ja_snippets(printed, query, analyzer, length), None),
                     None => page_snippets(
                         text,
                         d.text_as.as_deref(),
@@ -316,6 +318,7 @@ fn hits_page(
                         query,
                         american_stories,
                         layout,
+                        length,
                     ),
                 };
                 // Which texts match, from the same stored texts: no extra query.
@@ -407,6 +410,7 @@ mod tests {
             resp,
             &usnm_core::query::parse("gold").unwrap(),
             &stories(false),
+            SnippetLength::Standard,
         )
         .unwrap();
         assert_eq!(
@@ -425,7 +429,9 @@ mod tests {
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
         assert_eq!(
-            parse_hits(first, &q, &stories(false)).unwrap().days,
+            parse_hits(first, &q, &stories(false), SnippetLength::Standard)
+                .unwrap()
+                .days,
             Some(2)
         );
     }
@@ -441,6 +447,7 @@ mod tests {
             offset: 0,
             limit: 20,
             days: true,
+            ..HitsQuery::default()
         };
         let mut f = filters();
         f.lccns = vec!["sn99000001".into()];
@@ -534,7 +541,9 @@ mod tests {
         }))
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
-        let hit = &parse_hits(resp, &q, &stories(false)).unwrap().hits[0];
+        let hit = &parse_hits(resp, &q, &stories(false), SnippetLength::Standard)
+            .unwrap()
+            .hits[0];
         assert!(!hit.front_page);
         assert_eq!((hit.seq, hit.place_id.as_str()), (1, "PC001"));
         assert_eq!(hit.congress.series.as_deref(), Some("globe"));
@@ -566,7 +575,7 @@ mod tests {
             .unwrap()
         };
         let q = usnm_core::query::parse("gold").unwrap();
-        let on = parse_hits(resp(), &q, &stories(true)).unwrap();
+        let on = parse_hits(resp(), &q, &stories(true), SnippetLength::Standard).unwrap();
         let matched: Vec<_> = on.hits.iter().map(|h| h.matched_in.clone()).collect();
         assert_eq!(
             matched,
@@ -576,7 +585,7 @@ mod tests {
                 Some(vec!["loc"]),
             ]
         );
-        let off = parse_hits(resp(), &q, &stories(false)).unwrap();
+        let off = parse_hits(resp(), &q, &stories(false), SnippetLength::Standard).unwrap();
         assert!(off.hits.iter().all(|h| h.matched_in.is_none()));
     }
 
@@ -603,7 +612,7 @@ mod tests {
         };
         let kept = stories(false).with_text_layout(TextLayout::SingleWithLoc);
         let q = usnm_core::query::parse(r#""Wege nach Mailand""#).unwrap();
-        let page = parse_hits(resp(), &q, &kept).unwrap();
+        let page = parse_hits(resp(), &q, &kept, SnippetLength::Standard).unwrap();
         assert_eq!(
             page.hits[0].snippets,
             ["Die Frauen waren auf dem <mark>Wege nach Mailand</mark> begriffen"]
@@ -614,7 +623,7 @@ mod tests {
         assert_eq!(page.hits[1].matched_in, Some(vec!["loc"]));
         // Layout 2 has no such field; a document that has it is read as before.
         let single = stories(false).with_text_layout(TextLayout::Single);
-        let page = parse_hits(resp(), &q, &single).unwrap();
+        let page = parse_hits(resp(), &q, &single, SnippetLength::Standard).unwrap();
         assert!(page.hits[0].snippets.is_empty());
         assert!(page.hits.iter().all(|h| h.matched_in.is_none()));
     }

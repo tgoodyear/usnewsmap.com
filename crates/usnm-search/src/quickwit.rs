@@ -262,7 +262,7 @@ impl SearchBackend for QuickwitBackend {
         let resp = self
             .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
-        parse_hits(resp, query, indexes)
+        parse_hits(resp, query, indexes, page.snippet_length)
     }
 
     async fn browse(
