@@ -117,14 +117,17 @@ A refresh is warranted only when all of these hold:
    scheduler requests are told to come back in an hour
    ([below](#what-the-scheduler-does-during-the-restart)).
 
-A feeder started before the guarded image was deployed has no snapshot, so the guard can only
-report `unknown` for it. Refreshing that feeder needs the maintainer's explicit approval on other
-evidence: either `show_shmem`'s `apps:` list differs from the active rows (the feeder has not read
-the change), or the feeder log shows `Found trigger file reread_db` after the feeder's last
-`Starting` line and the change's own record puts an active-registry change between the two. In
-the second case, cached results whose app differs from the slot's app in the current registry's
-interleave confirm it; the [proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented)
-would compute that. Without such evidence, treat it as unknown.
+This procedure covers only a feeder from the guarded image. A feeder started before that image was
+deployed has no snapshot, so the guard can only report `unknown` for it and steps 1 and 4 cannot
+pass. Restarting it with `bin/start --cron` would also start the same unguarded `bin/feeder`, which
+the server replaces only when the container starts ([Before first use](#before-first-use)). Such a
+feeder is not refreshed with this procedure: it is replaced when the guarded image is deployed,
+which is the maintainer's rollout decision. Evidence that it is stale can support that decision:
+`show_shmem`'s `apps:` list differs from the active rows, or the feeder log shows
+`Found trigger file reread_db` after its last `Starting` line and the change's own record puts an
+active-registry change between the two. Cached results whose app differs from the slot's app in the
+current registry's interleave confirm the second case; the
+[proposed helper](#proposed-a-dry-run---plan-refresh-mode-not-implemented) would compute that.
 
 ## Preconditions
 
@@ -604,9 +607,9 @@ command. The proposal:
 - **Computes:** the expected slot map and per-app counts, by reproducing `weighted_interleave`
   exactly, including its handling of zero weights; the `enum_sizes`; the table limits; the sizing
   invariant; the segment size. From `show_shmem`, it lists every cached result whose app differs
-  from the expected map for its slot. That comparison also works for a feeder started before the
-  guarded image, which has no snapshot. Mapping 12-character app names back to IDs must fail
-  closed when two names share a prefix.
+  from the expected map for its slot. That comparison also gives rollout evidence for a feeder
+  started before the guarded image, which has no snapshot. Mapping 12-character app names back to
+  IDs must fail closed when two names share a prefix.
 - **Prints** one JSON report and the exact commands of steps 2 to 4 with the verified PID and start
   ticks filled in.
 - **Exits** 0 only if a refresh is warranted and every precondition holds, otherwise non-zero with
