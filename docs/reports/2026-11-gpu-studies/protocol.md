@@ -190,6 +190,15 @@ Added after Study 9's crop result passed its rule, before any step 2 reading. Th
 
 **Rule.** The deployed path holds Study 9's result if its guarded pooled CER is still below Tesseract's with limits excluding zero. That would make Xiaomi-OCR-0 a candidate reader for `usnm_qwen`, still untrusted until a held-out set no study has used confirms it. Nothing is signed, published or sent to BOINC.
 
+## Amendment, 4 November 2026: Study 9 step 3, rented cards
+
+Added on the maintainer's approval after step 2, before any step 3 rental. Step 2 found that the 1.17 Vulkan build on the 2060 SUPER returns empty text on 72 of the 612 crops, against 1 on CPU with the same requests. Step 3 asks whether that is specific to this card, and what Xiaomi-OCR-0 costs per page on a rented card.
+
+- **(a) Runtimes on newer cards.** One RTX 3090 (Ampere) and one RTX 4090 (Ada). On each, the step 2 GGUF reads the 612 crops one at a time with the step 2 requests and the app's flags, twice: with the 1.17 Vulkan build if the container exposes a Vulkan device, and with the worker image's CUDA build, the one the CUDA plan class runs. A missing Vulkan device is recorded, not worked around beyond enabling the driver's graphics capability. Measures as in step 2, with empty readings counted.
+- **(b) Pages per dollar.** One RTX 3090 runs Study 9's vLLM job unchanged: the 676 crops and the 20 pages. Cost is everything paid for the instance, as in Study 4. Pages per dollar for crops use Study 4's 12 crops a page.
+
+Nothing is signed, published or sent to BOINC. Step 3 runs under the remaining budget, with a cap of $3.
+
 ## Budget
 
 Total at most $40, from about $49.89. Study caps: Fraktur $8, LoRA $14, comparison $10, pages per dollar $8. A study that would pass its cap stops and keeps partial results.
