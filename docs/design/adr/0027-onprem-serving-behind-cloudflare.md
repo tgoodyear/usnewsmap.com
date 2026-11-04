@@ -205,7 +205,7 @@ The maintainer chose these on 24 October 2026. Decision 6 waits for a Phase 2 te
 
 ## Measurements
 
-Before the gates that need them:
+Before the gates that need them. The [Phase 2 checklist](../../operations/onprem-serving-phase2.md) maps each one, and the gates moved from #955, to its method, evidence and status (#1101):
 
 - cold-search latency on the NVMe, idle, during a rebuild and during a publish, against p95 ≤ 2 seconds (09 §9.1), with the same scripts run against Azure on the same day. The evidence that `file://` beats Blob comes from SSD-backed NFS, not from this host;
 - time to first byte, asset load and LCP, today and through the tunnel, from several regions;
