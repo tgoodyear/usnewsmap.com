@@ -42,23 +42,25 @@ def spool_candidates(results, jobs, bundles=(), counted=None):
     dict, is given the number of entries walked as "entries"."""
     count = 0
     stack = [results]
-    while stack:
-        with os.scandir(stack.pop()) as entries:
-            for entry in entries:
-                count += 1
-                if count > MAX_FILES:
-                    raise ValueError("inventory spool limit reached; archive drained results")
-                if counted is not None:
-                    counted["entries"] = count
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append(entry.path)
-                elif entry.is_file(follow_symlinks=False):
-                    match = SPOOL_FILE.fullmatch(entry.name)
-                    if match and match[1] in jobs:
-                        yield Path(entry.path), match
-                    match = BUNDLE_SPOOL_FILE.fullmatch(entry.name)
-                    if match and match[1] in bundles:
-                        yield Path(entry.path), match
+    try:
+        while stack:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    count += 1
+                    if count > MAX_FILES:
+                        raise ValueError("inventory spool limit reached; archive drained results")
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        match = SPOOL_FILE.fullmatch(entry.name)
+                        if match and match[1] in jobs:
+                            yield Path(entry.path), match
+                        match = BUNDLE_SPOOL_FILE.fullmatch(entry.name)
+                        if match and match[1] in bundles:
+                            yield Path(entry.path), match
+    finally:
+        if counted is not None:
+            counted["entries"] = count
 
 
 def _ids(values, message):
@@ -152,6 +154,7 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         "jobs": jobs,
         # Towards MAX_FILES, so the controller can warn before the limit stops it (#1483).
         "spool_entries": counted["entries"],
+        "spool_entries_limit": MAX_FILES,
     }
 
 

@@ -139,7 +139,7 @@ class SchedulerTests(unittest.TestCase):
         extra = {format(n, "064x") for n in range(0x100, 0x108)}
         quiet.extra_existing = warned.extra_existing = extra
         inventory = warned.inventory
-        warned.inventory = lambda: {**inventory(), "spool_entries": 80001}
+        warned.inventory = lambda: {**inventory(), "spool_entries": 72001, "spool_entries_limit": 90000}
 
         def run(fake, state, limit):
             stderr = io.StringIO()
@@ -153,7 +153,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual((warned_event, warned.actions, warned_state), (quiet_event, quiet.actions, quiet_state))
         self.assertEqual({line["event"] for line in warned_lines}, {"boinc_batch_cap_warning"})
         self.assertEqual({line["cap"]: (line["count"], line["limit"]) for line in warned_lines},
-                         {"existing_workunits": (10, 12), "spool_entries": (80001, 100000)})
+                         {"existing_workunits": (10, 12), "spool_entries": (72001, 90000)})
         with contextlib.redirect_stderr(io.StringIO()) as stderr:
             batch.warn_near_cap("claims", 8000, 10000)
             batch.warn_near_cap("claims", 8001, 10000)

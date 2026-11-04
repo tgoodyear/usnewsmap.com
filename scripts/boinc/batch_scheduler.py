@@ -59,16 +59,14 @@ def raise_transport_errors(errors):
     raise errors[0]
 
 
-# The bridge inventory's own limit on entries under the project's results (batch-inventory.py).
-MAX_SPOOL_ENTRIES = 100000
-# The share of a lifetime cap at which a tick warns that history needs archiving (#1483).
-CAP_WARNING_SHARE = 0.8
+# The percentage of a lifetime cap past which a tick warns that history needs archiving (#1483).
+CAP_WARNING_PERCENT = 80
 
 
 def warn_near_cap(cap, count, limit):
     """One event on stderr while a count that stops the tick at `limit` is past 80% of it, so
     the cap is a warning before it is an outage (#1483). The tick itself is unchanged."""
-    if count <= limit * CAP_WARNING_SHARE:
+    if count * 100 <= limit * CAP_WARNING_PERCENT:
         return
     try:
         print(json.dumps({
@@ -1691,10 +1689,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(ID.fullmatch(job_id) and isinstance(job, dict) and job.get("stage") in STAGES
                 and (job.get("spool") is None or isinstance(job["spool"], str)),
                 "invalid server job record")
-    warn_near_cap("server_journals", len(server), MAX_JOBS)
+    warn_near_cap("bridge_journals", len(server), MAX_JOBS)
     warn_near_cap("existing_workunits", len(existing_jobs), MAX_JOBS)
-    if type(snapshot.get("spool_entries")) is int:
-        warn_near_cap("spool_entries", snapshot["spool_entries"], MAX_SPOOL_ENTRIES)
+    spool = snapshot.get("spool_entries"), snapshot.get("spool_entries_limit")
+    if all(type(value) is int for value in spool) and spool[1] > 0:
+        warn_near_cap("spool_entries", *spool)
     records = transport.records()
     owned = owned_records(config, records)
     for record in owned.values():
