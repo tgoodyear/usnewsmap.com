@@ -196,12 +196,24 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    ```sh
    cp -a /var/lib/usnm-priority-controller /root/usnm-pin-state-<date>
    python3 -B - /opt/usnm /root/usnm-pin-<commit> /root/usnm-pin-state-<date> <<'PY'
-   import importlib.util, json, sys
+   import hashlib, importlib.util, json, sys
    from pathlib import Path
 
    *trees, state_dir = sys.argv[1:]
    config_path = Path("/etc/usnm/boinc-priority-controller.json")
-   records = [json.loads(path.read_text()) for path in Path(state_dir, "journal-cache").rglob("record.json")]
+   # A tick writes journal-snapshot.json only after a complete download, and removes it first
+   # when it downloads again, so the cache must hold exactly the files it lists.
+   snapshot = Path(state_dir, "journal-snapshot.json")
+   assert snapshot.exists(), "no complete journal snapshot; copy the state again after a clean tick"
+   expected = json.loads(snapshot.read_text())["files"]
+   cache = Path(state_dir, "journal-cache")
+   files = {str(path.relative_to(cache)): path for path in cache.rglob("*") if path.is_file()}
+   assert set(files) == set(expected), "journal cache doesn't match its snapshot"
+   records = []
+   for name, path in sorted(files.items()):
+       data = path.read_bytes()
+       assert hashlib.sha256(data).hexdigest() == expected[name], f"journal cache changed: {name}"
+       records.append(json.loads(data))
    seen = []
    for tree in trees:
        spec = importlib.util.spec_from_file_location("controller", f"{tree}/scripts/boinc/batch_scheduler.py")
@@ -231,8 +243,8 @@ checkout is an older commit with a hand-placed `batch_scheduler.py`.
    cd /opt/usnm
    git rev-parse HEAD                                            # the previous pin
    sha256sum scripts/boinc/batch_scheduler.py                    # the previous file
-   git diff --binary > /root/usnm-checkout-<date>.diff           # local edits, if any
-   git checkout -- .
+   git diff --binary HEAD > /root/usnm-checkout-<date>.diff \
+     && git reset -q --hard                                      # staged and unstaged edits, if any
    mkdir /root/usnm-checkout-<date>.untracked                    # move each `??` path here
    git checkout --detach <commit>
    git status --short                                            # must print nothing
