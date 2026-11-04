@@ -108,14 +108,14 @@ test("the interactive homepage links every sitemap search after React mounts", a
   await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toBeVisible();
   await expect(page.locator("#site-fallback")).toHaveCount(0);
   const cards = page.locator("ul.examples a.example");
-  await expect(cards).toHaveCount(3);
+  const xml = await (await request.get("/sitemap.xml")).text();
+  const searches = [...xml.matchAll(/<loc>https:\/\/usnewsmap\.com(\/examples\/[^<]+)<\/loc>/g)].map((match) =>
+    match[1]!.replaceAll("&amp;", "&"),
+  );
+  await expect(cards).toHaveCount(xml.includes("<lastmod>") ? Math.min(3, searches.length) : 3);
   while (await page.getByRole("button", { name: "Show more examples" }).count()) {
     await page.getByRole("button", { name: "Show more examples" }).click();
   }
-  const xml = await (await request.get("/sitemap.xml")).text();
-  const searches = [...xml.matchAll(/<loc>https:\/\/usnewsmap\.com(\/search\/[^<]+)<\/loc>/g)].map((match) =>
-    match[1]!.replaceAll("&amp;", "&"),
-  );
   if (xml.includes("<lastmod>")) expect(searches.length).toBeGreaterThan(0);
   for (const href of searches) {
     await expect(page.locator(`ul.examples a.example[href="${href}"]`)).toBeVisible();
@@ -136,15 +136,15 @@ test("curated searches expose top-city results and homepage links without JavaSc
     const home = page.getByRole("navigation", { name: "Common newspaper searches" });
     await expect(home.locator("details")).not.toHaveAttribute("open", "");
     await home.locator("summary").click();
-    const gold = home.locator('a.example[href="/search/cross-of-gold"]');
-    await expect(gold).toContainText("cross of gold");
+    const gold = home.locator('a.example[href="/examples/cross-of-gold"]');
+    await expect(gold).toContainText("Cross of Gold, 1896");
     await gold.click();
     const samples = page.getByRole("region", { name: "Sample results" });
     await expect(samples).toContainText("has the most hits");
     await expect(samples.locator("ol > li")).toHaveCount(10);
     await expect(samples).toContainText("cross of gold");
     await expect(samples).toContainText("1896-07-18");
-    const map = page.getByRole("img", { name: "Map and timeline of newspaper matches for cross of gold" });
+    const map = page.getByRole("img", { name: "Map and timeline of newspaper matches for Cross of Gold, 1896" });
     await expect(map).toBeVisible();
     await expect
       .poll(() => map.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth === 1200), {
@@ -163,10 +163,10 @@ test("sitemap searches remain readable with JavaScript enabled and API access bl
     apiRequests.push(route.request().url());
     return route.abort();
   });
-  await page.goto("/search/cross-of-gold");
+  await page.goto("/examples/cross-of-gold");
   const landing = page.locator("#search-landing");
   const samples = landing.getByRole("region", { name: "Sample results" });
-  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Newspaper results for cross of gold");
+  await expect(landing.getByRole("heading", { level: 1 })).toHaveText("Cross of Gold, 1896");
   await expect(samples).toBeVisible();
   await expect(samples.locator("ol > li")).toHaveCount(10);
   await expect(samples).toContainText("1896-07-18");
@@ -206,7 +206,7 @@ test("JavaScript browsers skip the static view before the bundle loads and show 
     imageRequests.push(route.request().url());
     return route.abort();
   });
-  await page.goto("/search/cross-of-gold", { waitUntil: "commit" });
+  await page.goto("/examples/cross-of-gold", { waitUntil: "commit" });
   const landing = page.locator("#search-landing");
   await expect(landing).toHaveCount(1);
   await expect(landing).toBeHidden();
@@ -221,7 +221,7 @@ test("JavaScript browsers skip the static view before the bundle loads and show 
   await expect(page.getByTestId("map")).toHaveAttribute("data-basemap-ready", "true");
   await expect(page.getByTestId("map")).toHaveAttribute("data-overlay-ready", "true");
   await expect(page.getByRole("main")).toHaveCount(1);
-  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue("cross of gold");
+  await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue('"cross of gold"');
   expect(imageRequests).toEqual([]);
 });
 
@@ -318,7 +318,9 @@ test("sitemap.xml lists canonical static pages and only evaluated search pages",
   } else {
     expect(locs).toEqual(expect.arrayContaining(staticPages));
     expect(new Set(locs).size).toBe(locs.length);
-    expect(locs.every((url) => staticPages.includes(url) || url.startsWith(`${SITE}/search/`))).toBe(true);
+    expect(
+      locs.every((url) => staticPages.includes(url) || /^https:\/\/usnewsmap\.com\/examples\/[a-z0-9-]+$/.test(url)),
+    ).toBe(true);
   }
   if (withApi) {
     for (const loc of locs) {
@@ -327,7 +329,7 @@ test("sitemap.xml lists canonical static pages and only evaluated search pages",
       expect(page.headers()["x-robots-tag"], loc).toBeUndefined();
       const html = await page.text();
       expect(html, loc).toContain(`<link rel="canonical" href="${loc}" />`);
-      if (loc.startsWith(`${SITE}/search/`)) {
+      if (loc.startsWith(`${SITE}/examples/`)) {
         expect(html, loc).not.toContain("No matching newspaper pages.");
         expect(html, loc).toContain('aria-label="Sample results"');
         expect(html, loc).toContain("<ol>");
@@ -385,7 +387,7 @@ test.describe("what the API tells crawlers", () => {
   });
 
   test("uncurated searches and filtered permalinks are noindex; site pages are not", async ({ request }) => {
-    for (const url of ["/search/x", "/search/whigs?tab=table"]) {
+    for (const url of ["/search/x", "/search/cross-of-gold", "/examples/whigs?tab=table"]) {
       const res = await request.get(url);
       expect(res.status(), url).toBe(200);
       expect(res.headers()["x-robots-tag"], url).toBe("noindex");
@@ -394,6 +396,44 @@ test.describe("what the API tells crawlers", () => {
       const page = await request.get(url);
       expect(page.headers()["x-robots-tag"], url).toBeUndefined();
     }
+  });
+
+  test("example URLs render saved searches directly and keep their address on reload", async ({ page, request }) => {
+    const path = "/examples/cross-of-gold";
+    const response = await request.get(path, { maxRedirects: 0 });
+    expect(response.status()).toBe(200);
+    expect(response.headers()["location"]).toBeUndefined();
+    if (withApi) {
+      const html = await response.text();
+      expect(html).toContain(`<link rel="canonical" href="${SITE}${path}" />`);
+      expect(html).toContain('<meta property="og:url" content="https://usnewsmap.com/examples/cross-of-gold" />');
+    }
+    const searches: URL[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/v1/aggregate") searches.push(url);
+    });
+    await page.goto(path);
+    for (let load = 0; load < 2; load++) {
+      await expect(page.getByRole("searchbox", { name: "Word or phrase" })).toHaveValue('"cross of gold"');
+      await expect(page).toHaveURL(/\/examples\/cross-of-gold(?:\?|$)/);
+      await expect(page).toHaveTitle("Cross of Gold, 1896 · US News Map");
+      await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `${SITE}${path}`);
+      await expect.poll(() => searches.length).toBeGreaterThan(0);
+      for (const url of searches) {
+        expect(url.searchParams.get("q")).toBe('"cross of gold"');
+        expect(url.searchParams.get("from")).toBe("1896-06-01");
+        expect(url.searchParams.get("to")).toBe("1896-12-31");
+        expect(url.searchParams.get("bucket")).toBe("week");
+      }
+      if (load === 0) {
+        searches.length = 0;
+        await page.reload();
+      }
+    }
+    const unknown = await page.goto("/examples/not-a-curated-example");
+    if (withApi) expect(unknown?.status()).toBe(404);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Page not found");
   });
 
   test("legacy searches redirect without losing filters", async ({ request }) => {

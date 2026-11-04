@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { SearchParams } from "../api/client";
 import type { BucketUnit, HitSort, Mode } from "../api/types";
-import { EXAMPLES } from "../examples";
+import { exampleForPath, examplePath, EXAMPLES } from "../examples";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { queryForPath, searchPath, TITLES } from "../route";
 
@@ -219,12 +219,30 @@ export function serializeView(v: ViewState): string {
 export function parseViewUrl(url: string): ViewState {
   const origin = "https://usnewsmap.com";
   const { pathname, search } = new URL(url.startsWith("/") ? `${origin}${url}` : url, origin);
+  const example = exampleForPath(pathname);
+  if (example) {
+    const params = new URLSearchParams(serializeView({ ...DEFAULTS, ...example.view }));
+    // Like /search/, the path owns the query; other URL values override the preset.
+    for (const [key, value] of new URLSearchParams(search)) if (key !== "q") params.set(key, value);
+    return parseView(params.toString());
+  }
   const view = parseView(search);
   return { ...view, q: queryForPath(pathname, view.mode) ?? view.q };
 }
 
-/** Search text belongs in the path; optional filters remain query parameters. */
+/** Presets have stable paths; other searches put their text in the path. */
 export function viewUrl(v: ViewState): string {
+  const example = exampleForView(v);
+  if (example) {
+    const defaults = new URLSearchParams(serializeView({ ...DEFAULTS, ...example.view }));
+    const params = new URLSearchParams(serializeView(v));
+    for (const key of new Set([...defaults.keys(), ...params.keys()])) {
+      if (defaults.get(key) === params.get(key)) params.delete(key);
+      else if (!params.has(key)) params.set(key, "");
+    }
+    const search = params.toString();
+    return `${examplePath(example)}${search ? `?${search}` : ""}`;
+  }
   const path = searchPath(v.q, v.mode);
   const params = new URLSearchParams(serializeView(v));
   if (path !== "/") params.delete("q");
@@ -263,6 +281,12 @@ const EXAMPLE_BY_PATH = new Map(EXAMPLES.map((example) => [searchPath(example.vi
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+function exampleForView(view: ViewState) {
+  return EXAMPLES.find((example) =>
+    (["q", ...FILTERS] as const).every((key) => same(view[key], example.view[key] ?? DEFAULTS[key])),
+  );
+}
+
 /** `text` in at most `limit` characters, cut at a space if its second half has one. */
 function shorten(text: string, limit: number): string {
   const chars = [...text];
@@ -279,12 +303,13 @@ function shorten(text: string, limit: number): string {
  * (crates/usnm-api/src/site/head.rs). fixtures/page-titles.json holds the two
  * to the same results, so a page keeps its title when the app starts.
  */
-export function searchTitle(view: ViewState): string {
+export function searchTitle(view: ViewState, path = ""): string {
   if (!view.q) return TITLES.search;
-  const example = EXAMPLE_BY_PATH.get(searchPath(view.q, view.mode));
+  const preset = exampleForPath(path);
+  const example = preset ?? EXAMPLE_BY_PATH.get(searchPath(view.q, view.mode));
   if (example) {
-    // An example's title fits a view with its filters, or none as in the sitemap.
-    const plain = FILTERS.every((key) => same(view[key], DEFAULTS[key]));
+    // Only legacy search paths keep example titles without the preset filters.
+    const plain = !preset && FILTERS.every((key) => same(view[key], DEFAULTS[key]));
     const matches = FILTERS.every((key) => same(view[key], example.view[key] ?? DEFAULTS[key]));
     if (plain || matches) return `${example.title}${TITLE_SUFFIX}`;
   }
@@ -311,14 +336,16 @@ const getUrl = () => window.location.pathname + window.location.search;
 export function useView(): [ViewState, (patch: Partial<ViewState>, push?: boolean) => void] {
   const url = useSyncExternalStore(subscribe, getUrl, getUrl);
   const view = parseViewUrl(url);
-  const title = searchTitle(view);
+  const path = url.split("?")[0]!;
+  const title = searchTitle(view, path);
+  const example = exampleForPath(path);
+  const canonical = `https://usnewsmap.com${example ? examplePath(example) : searchPath(view.q, view.mode)}`;
   useEffect(() => {
     document.title = title;
-    const canonical = `https://usnewsmap.com${searchPath(view.q, view.mode)}`;
     document.querySelector('link[rel="canonical"]')?.setAttribute("href", canonical);
     document.querySelector('meta[property="og:url"]')?.setAttribute("content", canonical);
     document.querySelector('meta[property="og:title"]')?.setAttribute("content", title);
-  }, [title, view.q, view.mode]);
+  }, [title, canonical]);
   const set = useCallback((patch: Partial<ViewState>, push = false) => {
     const next = { ...parseViewUrl(getUrl()), ...patch };
     const url = viewUrl(next);

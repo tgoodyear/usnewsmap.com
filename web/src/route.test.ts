@@ -17,6 +17,8 @@ describe("pageFor", () => {
     expect(pageFor("/privacy")).toBe("privacy");
     expect(pageFor("/privacy/")).toBe("privacy");
     expect(pageFor("/search/gold")).toBe("search");
+    expect(pageFor("/examples/whigs")).toBe("search");
+    expect(pageFor("/examples/whigs/")).toBe("search");
     expect(pageFor("/search/%22cross%20of%20gold%22/")).toBe("search");
   });
 
@@ -33,6 +35,11 @@ describe("pageFor", () => {
       "/search/%",
       "/privacy/x",
       "/credits/x",
+      "/examples/",
+      "/examples/missing-example",
+      "/examples/whigs/extra",
+      "/examples/Whigs",
+      "/examples/%77higs",
     ]) {
       expect(pageFor(path)).toBe("not-found");
     }

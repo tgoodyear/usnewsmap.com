@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 31 October 2026.</p>
+        <p className="privacy-updated">Last updated 4 November 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
           runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
@@ -70,11 +70,9 @@ export default function PrivacyPage() {
           at least five times.
         </p>
         <p>
-          Search terms may also become public, indexable search pages listed in the sitemap after searches on at least
-          two different UTC days, if the unfiltered search currently finds more than 50 newspaper pages. Searches with
-          different filters are counted separately. Only unfiltered, full-date-range newspaper search pages are
-          published; the sitemap does not publish search counts, search dates or chosen filters. Once added, a search
-          page may remain listed even if its result count later falls.
+          The sitemap lists site information and curated example pages, not searches taken from visitor logs. Each
+          example has a descriptive URL and predefined search terms and filters. Previously published search links still
+          work, but are no longer listed for indexing.
         </p>
         <p>
           To prioritize pages for improved OCR, the server may also keep the IDs of eligible newspaper pages shown in
