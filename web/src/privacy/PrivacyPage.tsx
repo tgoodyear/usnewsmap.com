@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 31 October 2026.</p>
+        <p className="privacy-updated">Last updated 4 November 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
           runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
