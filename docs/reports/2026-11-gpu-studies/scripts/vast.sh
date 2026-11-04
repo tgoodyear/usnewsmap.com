@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Thin Vast.ai API helper. Named flags only. The API key is read from --key-file and never printed.
 # --key-file overrides VAST_KEY_FILE, which overrides GPU_STUDY_SECRETS/vast.key; all must resolve under GPU_STUDY_SECRETS.
-# Actions: credit | list | search | create | attach-key | destroy
+# Actions: credit | list | search | create | attach-key | destroy. create takes --graphics for Vulkan workloads.
 set -euo pipefail
 ACTION=""; KEY_FILE="${VAST_KEY_FILE:-}"
 if [ -z "$KEY_FILE" ] && [ -n "${GPU_STUDY_SECRETS:-}" ]; then KEY_FILE="$GPU_STUDY_SECRETS/vast.key"; fi
 GPU="RTX 3090"; MIN_DISK=80; MIN_RAM_MB=23000; LIMIT=10; MAX_DPH=0.40
-ASK=""; IMAGE=""; DISK=80; LABEL=""; INSTANCE=""; PUBKEY=""
+ASK=""; IMAGE=""; DISK=80; LABEL=""; INSTANCE=""; PUBKEY=""; GRAPHICS=0
 while [ $# -gt 0 ]; do case "$1" in
   --action) ACTION=$2; shift 2;; --key-file) KEY_FILE=$2; shift 2;;
   --gpu) GPU=$2; shift 2;; --min-disk) MIN_DISK=$2; shift 2;; --min-gpu-ram-mb) MIN_RAM_MB=$2; shift 2;;
   --limit) LIMIT=$2; shift 2;; --max-dph) MAX_DPH=$2; shift 2;;
   --ask) ASK=$2; shift 2;; --image) IMAGE=$2; shift 2;; --disk) DISK=$2; shift 2;;
-  --label) LABEL=$2; shift 2;; --instance) INSTANCE=$2; shift 2;; --pubkey-file) PUBKEY=$2; shift 2;;
+  --label) LABEL=$2; shift 2;; --graphics) GRAPHICS=1; shift;; --instance) INSTANCE=$2; shift 2;; --pubkey-file) PUBKEY=$2; shift 2;;
   *) echo "unknown flag: $1" >&2; exit 2;; esac; done
 API=https://console.vast.ai/api
 call() { # METHOD PATH [JSON]
@@ -39,10 +39,10 @@ call() { # METHOD PATH [JSON]
     echo "Vast.ai API key has an invalid format" >&2; return 2;
   }
   if [ -n "$d" ]; then
-    printf 'header = "Authorization: %s"\n' "$api_key" |
+    printf 'header = "Authorization: Bearer %s"\n' "$api_key" |
       curl -fsS --max-time 60 -K - -X "$m" -H 'Content-Type: application/json' -d "$d" "$API$p"
   else
-    printf 'header = "Authorization: %s"\n' "$api_key" |
+    printf 'header = "Authorization: Bearer %s"\n' "$api_key" |
       curl -fsS --max-time 60 -K - -X "$m" "$API$p"
   fi
 }
@@ -59,9 +59,11 @@ case "$ACTION" in
       type:"on-demand", order:[["dph_total","asc"]], limit:$l}')
     call POST /v0/bundles/ "$q" | jq -c '.offers[]|{id,machine_id,gpu_name,dph_total,geolocation,reliability2,inet_down,inet_up,inet_down_cost,inet_up_cost,cpu_cores_effective,disk_space,storage_cost,cuda_max_good}';;
   create)
-    b=$(jq -nc --arg i "$IMAGE" --arg l "$LABEL" --argjson d "$DISK" '{
+    # --graphics asks the NVIDIA container runtime for every driver capability, so Vulkan finds the card.
+    ENV="-e HOME=/root"; [ "$GRAPHICS" -eq 1 ] && ENV="$ENV -e NVIDIA_DRIVER_CAPABILITIES=all"
+    b=$(jq -nc --arg i "$IMAGE" --arg l "$LABEL" --argjson d "$DISK" --arg e "$ENV" '{
       client_id:"me", image:$i, disk:$d, label:$l, runtype:"ssh_direc ssh_proxy",
-      env:"-e HOME=/root", onstart:"touch /root/.no_auto_tmux /tmp/.no_auto_tmux \"$HOME/.no_auto_tmux\""}')
+      env:$e, onstart:"touch /root/.no_auto_tmux /tmp/.no_auto_tmux \"$HOME/.no_auto_tmux\""}')
     call PUT "/v0/asks/$ASK/" "$b" | jq -r '.new_contract';;
   attach-key) call POST "/v0/instances/$INSTANCE/ssh/" "$(jq -nc --rawfile k "$PUBKEY" '{ssh_key:$k}')" >/dev/null;;
   destroy) call DELETE "/v0/instances/$INSTANCE/" >/dev/null;;

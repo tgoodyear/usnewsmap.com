@@ -7,13 +7,13 @@ set -uo pipefail
 HERE=$(dirname "$(readlink -f "$0")")
 STUDY=""; IMAGE=""; GPU="RTX 3090"; MAX_DPH=0.30; MAX_HOURS=2; CAP=1; DISK=80; PUSH=""; JOB=""; OUT=""
 LEDGER=${GPU_STUDY_ROOT}/ledger.csv; KEY=${GPU_STUDY_SECRETS}/rental_ed25519
-SSH_WAIT=600; MAX_HOSTS=5; MAX_FILE_MB=4096; EXCLUDE=""; ONLY=""; MINRAM=23000
+SSH_WAIT=600; MAX_HOSTS=5; MAX_FILE_MB=4096; EXCLUDE=""; ONLY=""; MINRAM=23000; GFX=()
 while [ $# -gt 0 ]; do case "$1" in
   --study) STUDY=$2; shift 2;; --image) IMAGE=$2; shift 2;; --gpu) GPU=$2; shift 2;;
   --max-dph) MAX_DPH=$2; shift 2;; --max-hours) MAX_HOURS=$2; shift 2;; --cap-dollars) CAP=$2; shift 2;;
   --disk) DISK=$2; shift 2;; --push-dir) PUSH=$2; shift 2;; --job) JOB=$2; shift 2;; --out) OUT=$2; shift 2;;
   --ledger) LEDGER=$2; shift 2;; --ssh-wait) SSH_WAIT=$2; shift 2;; --max-hosts) MAX_HOSTS=$2; shift 2;;
-  --max-file-mb) MAX_FILE_MB=$2; shift 2;; --exclude-offers) EXCLUDE=$2; shift 2;; --prefer-machine) ONLY=$2; shift 2;; --min-gpu-ram-mb) MINRAM=$2; shift 2;;
+  --max-file-mb) MAX_FILE_MB=$2; shift 2;; --exclude-offers) EXCLUDE=$2; shift 2;; --prefer-machine) ONLY=$2; shift 2;; --min-gpu-ram-mb) MINRAM=$2; shift 2;; --graphics) GFX=(--graphics); shift;;
   *) echo "unknown flag: $1" >&2; exit 2;; esac; done
 for v in STUDY IMAGE JOB OUT; do [ -n "${!v}" ] || { echo "--${v,,} required" >&2; exit 2; }; done
 [ -e "$OUT" ] && { echo "--out must not exist" >&2; exit 2; }
@@ -59,7 +59,7 @@ while [ $hosts -lt "$MAX_HOSTS" ]; do
   row=$(echo "$offers" | jq -c --argjson o "$offer" 'select(.id==$o)'); DPH=$(echo "$row"|jq -r .dph_total); GEO=$(echo "$row"|jq -r .geolocation)
   tried="$tried m$(echo "$row"|jq -r .machine_id) "
   T_CREATE=$(date +%s); DL=$(( T_CREATE + $(awk -v h="$MAX_HOURS" 'BEGIN{printf "%d", h*3600}') ))
-  ID=$(V --action create --ask "$offer" --image "$IMAGE" --disk "$DISK" --label "usnm-gpu-$STUDY-d$DL") || { log "create failed on $offer"; ID=""; continue; }
+  ID=$(V --action create --ask "$offer" --image "$IMAGE" --disk "$DISK" --label "usnm-gpu-$STUDY-d$DL" "${GFX[@]}") || { log "create failed on $offer"; ID=""; continue; }
   [ "$ID" != null ] && [ -n "$ID" ] || { ID=""; continue; }
   log "instance $ID on offer $offer dph=$DPH geo=$GEO"
   V --action attach-key --instance "$ID" --pubkey-file "$KEY.pub" || log "attach-key failed, retrying below"
