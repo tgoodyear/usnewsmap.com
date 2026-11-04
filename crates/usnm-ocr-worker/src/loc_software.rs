@@ -103,7 +103,9 @@ enum Open {
 }
 
 /// Reads the `<Description>` of one ALTO stream, stopping at its end (or at `<Layout>`, for
-/// a file with none). A file with no description gives an empty header.
+/// a file with none). A file with no description gives an empty header; a stream with no ALTO
+/// root, or one that ends inside `<Description>`, is an error, so a truncated `ocr.xml` never
+/// passes for a batch with no software.
 pub fn read_header<R: BufRead>(xml: R) -> anyhow::Result<Header> {
     let mut reader = quick_xml::Reader::from_reader(xml);
     let mut buf = Vec::new();
@@ -113,6 +115,7 @@ pub fn read_header<R: BufRead>(xml: R) -> anyhow::Result<Header> {
     let mut in_software = false;
     let mut open = Open::None;
     let mut text = String::new();
+    let (mut saw_root, mut in_description) = (false, false);
     loop {
         let event = reader
             .read_event_into(&mut buf)
@@ -122,6 +125,8 @@ pub fn read_header<R: BufRead>(xml: R) -> anyhow::Result<Header> {
                 text.clear();
                 open = Open::None;
                 match e.local_name().as_ref() {
+                    n if n.eq_ignore_ascii_case("alto") => saw_root = true,
+                    "Description" => in_description = true,
                     "Layout" => break,
                     "OCRProcessing" => block += 1,
                     "preProcessingStep" => step = "pre",
@@ -196,7 +201,11 @@ pub fn read_header<R: BufRead>(xml: R) -> anyhow::Result<Header> {
                     _ => {}
                 }
             }
-            Event::Eof => break,
+            Event::Eof => {
+                anyhow::ensure!(saw_root, "no ALTO root");
+                anyhow::ensure!(!in_description, "ALTO ends inside <Description>");
+                break;
+            }
             _ => {}
         }
         buf.clear();
@@ -666,6 +675,15 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         .file_name()
         .context("--out: a file name")?
         .to_string_lossy();
+    // A scan with any failed archive publishes nothing: the loader would take the partial file
+    // as complete, dropping or leaving stale the rows of the batches that failed.
+    anyhow::ensure!(
+        s.failed == 0,
+        "{} of {} archives failed; {} left unchanged",
+        s.failed,
+        s.archives,
+        opts.out.display()
+    );
     let part = opts.out.with_file_name(format!(".{file}.part"));
     std::fs::write(&part, encode(&rows)?)?;
     std::fs::rename(&part, &opts.out)?;
@@ -824,6 +842,16 @@ mod tests {
             None,
             Some("iArchives"),
         );
+    }
+
+    #[test]
+    fn an_empty_or_truncated_header_is_an_error() {
+        assert!(read_header(&b""[..]).is_err());
+        assert!(read_header(&b"<?xml version=\"1.0\"?>"[..]).is_err());
+        let cut = r#"<alto><Description><OCRProcessing><ocrProcessingStep><processingSoftware><softwareName>ABBYY"#;
+        assert!(read_header(cut.as_bytes()).is_err());
+        let none = r#"<alto><Layout><Page/></Layout></alto>"#;
+        assert_eq!(read_header(none.as_bytes()).unwrap(), Header::default());
     }
 
     #[test]
@@ -1160,5 +1188,20 @@ mod tests {
             .unwrap();
         assert_eq!(docs.value(0), "sn1_1900-01-02_ed-1_seq-1");
         assert!(docs.is_null(1));
+
+        // A batch archive that can't be read fails the run, and the published file stays.
+        let before = std::fs::read(&out).unwrap();
+        let arch = dir.path().join("in");
+        std::fs::write(arch.join("b_z_ver01.tar.bz2"), b"not bzip2").unwrap();
+        let err = run(&Options {
+            archives: arch,
+            out: out.clone(),
+            workers: 2,
+            limit: None,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("1 of 3 archives failed"), "{err}");
+        assert_eq!(std::fs::read(&out).unwrap(), before);
+        assert!(!dir.path().join("out/.loc-software.parquet.part").exists());
     }
 }
