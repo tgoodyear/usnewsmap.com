@@ -31,6 +31,8 @@ MAX_PROFILE_CHECKS = 1000000
 TIMEOUT = 15
 NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
 SOURCE_UNKNOWN_REASONS = ("task_resource_usage_unavailable", "active_task_resource_usage_unavailable")
+# An own client reporting another BOINC host than its configured binding.
+BINDING_MISMATCH = "host_binding_mismatch"
 SYSTEMD_FAILURE_FIELDS = {
     # UNIT_FAILURE_RESULT and UNIT_FAILED (failed start job), not free-text messages.
     "d9b373ed55a64feb8242e02dbe79a49c": "UNIT_RESULT",
@@ -927,14 +929,45 @@ def supply(database, hosts, resource, resource_usage=None):
     return {"idle": sum(host_capacity.values()), "eligible": flow}
 
 
-def collect(config):
-    locations = {"server": config["server"], "controller": config["controller"],
-                 "backlog": config["backlog"]}
-    clients = config["clients"]
-    if not isinstance(clients, list) or not 1 <= len(clients) <= 32 or len(set(clients)) != len(clients):
+def own_clients(config):
+    """The allowlist of own-client observations: {source name: (location, expected host id or None)}.
+
+    Empty by default. An entry is a location, or {"location": ..., "host_id": N} once its
+    binding to that BOINC host has been verified; volunteer hosts never belong here.
+    """
+    clients = config.get("clients", [])
+    if not isinstance(clients, list) or len(clients) > 32:
+        raise ValueError("configure at most 32 project-owned client observations")
+    allowed = {}
+    for i, entry in enumerate(clients):
+        if isinstance(entry, dict) and set(entry) == {"location", "host_id"}:
+            location, host_id = entry["location"], natural(entry["host_id"])
+            if host_id == 0:
+                raise ValueError("invalid client binding")
+        else:
+            location, host_id = entry, None
+        if not isinstance(location, str) or not location:
+            raise ValueError("invalid client location")
+        allowed[f"client_{i}"] = (location, host_id)
+    bound = [host_id for _, host_id in allowed.values() if host_id is not None]
+    if (len({location for location, _ in allowed.values()}) != len(allowed)
+            or len(set(bound)) != len(bound)):
         raise ValueError("configure only distinct project-owned client observations")
-    locations.update({f"client_{i}": value for i, value in enumerate(clients)})
+    return allowed
+
+
+def collect(config):
+    locations = {"server": config["server"], "controller": config["controller"]}
+    # The backlog source is optional until it is deployed: unknown, never healthy.
+    if config.get("backlog") is not None:
+        locations["backlog"] = config["backlog"]
+    allowed = own_clients(config)
+    clients = list(allowed)
+    locations.update({name: location for name, (location, _) in allowed.items()})
     facts, documents = {"sources": {}, "errors": []}, {}
+    if "backlog" not in locations:
+        facts["sources"]["backlog"] = {"observed_at": None, "state": "unknown", "reason": "not_configured"}
+        facts["errors"].append("backlog")
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {name: executor.submit(read_source, url) for name, url in locations.items()}
         wait(futures.values())
@@ -942,18 +975,25 @@ def collect(config):
         for name, future in futures.items():
             try:
                 document = fresh(future.result(), completed, name.split("_")[0])
+                expected = allowed.get(name, (None, None))[1]
+                if expected is not None and document["host_id"] != expected:
+                    raise SupplyUnknown(BINDING_MISMATCH)
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
                 documents[name] = document
             except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
-                if isinstance(error, SupplyUnknown) and str(error) in SOURCE_UNKNOWN_REASONS:
+                if isinstance(error, SupplyUnknown) and str(error) in (*SOURCE_UNKNOWN_REASONS, BINDING_MISMATCH):
                     reason = str(error)
                 else:
                     reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
                 facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
                 facts["errors"].append(name)
     database = documents.get("server")
-    hosts = [documents.get(f"client_{i}") for i in range(len(clients))]
-    if database and all(hosts):
+    hosts = [documents.get(name) for name in clients]
+    if not clients:
+        # No own capacity to judge is unknown, not zero idle slots.
+        facts["supply_errors"] = {resource: "no_own_clients_configured" for resource in ("cpu", "gpu")}
+        facts["errors"] += ["cpu_no_own_clients_configured", "gpu_no_own_clients_configured"]
+    elif database and all(hosts):
         facts["supply"] = {}
         usage = {"cpu": {}, "gpu": {}}
         for resource in ("cpu", "gpu"):
@@ -1021,7 +1061,7 @@ def collect(config):
         facts["tick"] = documents["controller"]["tick"]
     if "backlog" in documents:
         facts["backlogs"] = documents["backlog"]["backlogs"]
-    if "server" not in documents or any(f"client_{i}" not in documents for i in range(len(clients))):
+    if "server" not in documents or not clients or any(name not in documents for name in clients):
         facts.pop("supply", None)
     facts["observed_at"] = completed
     return facts
