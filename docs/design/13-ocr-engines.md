@@ -455,6 +455,7 @@ Cgroup files are world-readable, and `ProtectControlGroups=yes` leaves them read
 | `ocr/engines/engines.lock.json`  | CI, in a PR    | Per engine id: image reference and digest, adapter version, model hashes, profiles |
 | `ocr/engines/models.lock`        | Hand, reviewed | Model files: name, source URL, sha256 (moved from the survey, same format)         |
 | `ocr/routing/routes.golden.toml` | Hand, reviewed | Page attributes and the route each must hit; `cargo test` checks them              |
+| `ocr/engines/profiles.lock`      | `routes check` | Per engine and profile id: the digest of its model files, append-only (§13.7.2)    |
 
 The routing bundle is `engines.toml`, `routes.toml` and `engines.lock.json`. Its digest is the sha256 of the lines `<file name> <sha256 of its bytes>`, sorted.
 
@@ -576,6 +577,12 @@ languages = ["deu"]
 defaults = { psm = 3 }
 tunable = ["psm"]
 ```
+
+**One model set per profile id ([#1481](https://github.com/tgoodyear/usnewsmap.com/issues/1481)).** A row's tag records its models' digest (§13.8.1), but the engine index, the API and the credits page key engines by the short key, which has none. So a different model file gets a new profile id: Yiddish read with Jochre's model instead of `tessdata/yid.traineddata` is a new profile such as `yid_jochre`, not a new file under `yid`. A retrained or re-downloaded file is a different file too.
+
+- `ocr/engines/profiles.lock` holds, for each engine and profile whose models are all in the engine's `models.lock`, the sha256 of the sorted lines `<name> <sha256>`; a tag's `models=` is its first 12 hex digits. `routes check` fails when a profile's digest differs from its entry, with a message to add a new profile id, and when a pinned profile has no entry. `routes check --update-lock` adds entries for new profiles; it never changes or removes one, so a dropped profile's id isn't reused. CI runs `routes check` on the committed files.
+- The release fails when one short key has two `models=` digests among the rows it gives in place of LoC's text that were read on or after 2026-11-05 00:00 UTC (`ONE_MODEL_SET_SINCE_MICROS` in `usnm-core`). The remedy is to revoke the wrong rows and read the pages again under a new profile id. An incremental release checks the batches it rebuilds; a full release checks every row it publishes.
+- Rows written before the rule stay as they are: rows read before the cutoff, the older tag forms and `models=local` are exempt. No pin had changed in either `models.lock` when the rule took effect.
 
 An excluded model's entry looks like this:
 
@@ -788,7 +795,8 @@ min_word_overlap = 0.6           # share of the first reading's dictionary words
   - a `batch` pattern ending in `_verNN`;
   - `score_*` keys or a cascade on a route that matches `jpn` or `und`;
   - timeouts over the page budget;
-  - a changed file without a new `version`.
+  - a changed file without a new `version`;
+  - a profile whose model digest differs from its `profiles.lock` entry, or a pinned profile with no entry (§13.7.2).
 
   `routes.golden.toml` includes a page on the default route and checks its resolved request: profile, merged options and `image.dpi` 300. With `--survey-results` it warns when a production route's locked image and model digests have no survey result. CI runs it.
 
@@ -821,7 +829,7 @@ tesseract/5.5.3 profile=deu_latf+deu image=sha256:3f9a0c1d2e4b models=sha256:8c2
 - `models` is the sha256 of the profile's model files, as sorted lines `<name> <sha256>`.
 - The short digests resolve to full ones through the runs record and the git history of `engines.lock.json`.
 - A run on an image the lock doesn't pin (a local build for an experiment) writes `image=local`. The worker refuses such images in production, and `ocr-sync` (12 Step 8) refuses rows that carry it.
-- `OcrEngineTag` also gives a short key, `<family>/<engine version> <profile>` (`tesseract/5.5.3 deu_latf+deu`). The release's engine index (`ocr_local_pages.bin`, 12 Step 9) and the API's `ocr.engine` use the short key, so their table of engines doesn't grow with every routing version. The full tag stays in the rows and the runs record.
+- `OcrEngineTag` also gives a short key, `<family>/<engine version> <profile>` (`tesseract/5.5.3 deu_latf+deu`). The release's engine index (`ocr_local_pages.bin`, 12 Step 9) and the API's `ocr.engine` use the short key, so their table of engines doesn't grow with every routing version. The full tag stays in the rows and the runs record. A profile id names one model set (§13.7.2), so the short key doesn't hide a model swap.
 - The parser also accepts the forms on main, `tesseract-<version>/<models>` and `ndlocr-lite <commit>`, so existing rows still parse. The API keeps passing the string through.
 
 ### 13.8.2 Stored ALTO

@@ -214,6 +214,9 @@ rust="$rust|^contrib-compute/images/server/bridge-job\.sh$|^scripts/ci/rust-test
 rust="$rust|^scripts/onprem/queue/"
 # The OCR-quality results database (#962): its schema and loader, checked in the queue job.
 rust="$rust|^scripts/onprem/quality/"
+# The profile lock and the NDLOCR-Lite pins it hashes: `routes check`'s
+# tests read them (#1481).
+rust="$rust|^ocr/engines/(profiles|ndlocr-lite/models)\.lock$"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's EL9 build, RHEL 10 check and release, and the LAN dashboard's

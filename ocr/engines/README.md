@@ -32,6 +32,44 @@ repeats the Tesseract entries and Surya's weights as they were run. The pins an
 engine needs in more than one place are checked by
 `scripts/ci/check-engine-pins.py`.
 
+## One model set per profile id
+
+Overlay rows carry the full `ocr_engine` tag, `models=sha256:<12 hex>`
+included. The release's engine index (`ocr_local_pages.bin`), the API's
+`ocr.engine` and the credits page use the short key
+`<family>/<version> <profile>`, which leaves the model digest out. So **a
+different model file gets a new profile id**: Yiddish read with Jochre's
+model instead of `tessdata/yid.traineddata` is a new profile such as
+`yid_jochre`, never a new file under `yid`. That holds for a retrained or
+re-downloaded file too. Two checks enforce it (#1481):
+
+- `profiles.lock` records each pinned profile's model digest: the sha256 of
+  the sorted lines `<name> <sha256>` from its engine's `models.lock`, whose
+  first 12 hex digits rows record as `models=`. A profile with a model that
+  isn't pinned has no entry; no image can carry that model. `routes check`
+  fails when a profile's digest differs from its entry, and says to add a new
+  profile id. It also fails when a pinned profile has no entry yet; run
+  `usnm-ocr-worker routes check --update-lock` and commit the file. Entries
+  are never changed or removed: `--update-lock` adds new profiles only and
+  still refuses a changed one, and a profile dropped from the catalog keeps
+  its entry so its id isn't reused. A production engine with profiles needs
+  its `models.lock` listed in `usnm_ocr_route::lock::MODEL_LOCKS`. CI runs
+  `routes check` on the committed files in the worker's `routes_check` test.
+- The release fails when one short key has two `models=` digests among the
+  rows it gives in place of LoC's text that were read (`ocred_at`) on or
+  after 2026-11-05 00:00 UTC (`usnm_core::ocr_engine::ONE_MODEL_SET_SINCE_MICROS`).
+  The error names both tags. Revoke the rows read with the wrong models
+  (`ocr-local/revoked/` matches a full tag) and read those pages again under a
+  new profile id. An incremental release checks only the batches it rebuilds,
+  because the pages it carries forward keep only their short key; a full
+  release checks every row it publishes.
+
+Rows written before the rule stay as they are, under the short key they were
+published with: rows read before the cutoff, older tag forms (such as the
+Japanese overlay's `ndlocr-lite <commit>`) and `models=local` are exempt. No pin
+in either `models.lock` has changed in the repository's history, so the first
+`profiles.lock` records the only digest each profile has had.
+
 ## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the
@@ -45,7 +83,8 @@ engine needs in more than one place are checked by
   web catalog test checks them. These pins don't prove which revision read a
   served page: short engine keys omit model digests, so release credits and the
   web's legacy fallbacks leave those model revisions unrecorded rather than
-  labelling old text with today's pin.
+  labelling old text with today's pin. A profile id names one model set from
+  2026-11-05 (see above), but older rows carry no such promise.
 - `[[engine.profile]]`: `id` (unique within its engine), nonempty `models`
   (exact model names), and nonempty `languages` (ISO 639-3 strings). File order
   is the preference order for the current minimal Tesseract route.
@@ -100,11 +139,14 @@ from a model's training data or from its engine's code licence. Future limits
 on engine builds or runtimes can be added as further engine or profile keys;
 they do not change this gate.
 
-`usnm-ocr-worker routes check [--engines PATH] [--routes PATH]` validates the
-licences of every candidate and cascade target in the route file; `auto`
-checks every profile of that engine. The default route file is
-`ocr/routing/routes.toml`. Full matching and the validation of node
-capabilities and locks are later design steps; this command doesn't do them yet.
+`usnm-ocr-worker routes check [--engines PATH] [--routes PATH] [--lock PATH] [--update-lock]`
+validates the licences of every candidate and cascade target in the route
+file; `auto` checks every profile of that engine. It then checks
+`profiles.lock` (above), reading each engine's `models.lock` from the lock's
+directory. The defaults, `ocr/routing/routes.toml` and
+`ocr/engines/profiles.lock`, are relative, so run it from the repository root.
+Full matching and the validation of node capabilities and the engine lock are
+later design steps; this command doesn't do them yet.
 
 Tesseract modes `--psm 0`, `1` and `12` implicitly read `osd.traineddata`.
 Both the direct worker and text adapter refuse these modes until OSD is
