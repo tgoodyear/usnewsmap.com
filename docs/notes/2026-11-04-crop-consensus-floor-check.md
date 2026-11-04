@@ -24,13 +24,13 @@
 
 `cuda-3090` and `cuda-4090` are one build on two cards, `vllm` the reference vLLM run, `cpu` and `vulkan-b8799` the b8799 build on CPU and on Vulkan (the Vulkan run has the known bug), `qwen8b` Qwen 8B's readings. "Good" is within 10% CER of the transcription, "bad" 50% or worse.
 
-| Pair                   | Crops | Similarity < 0.5 | Dice < 0.5 | Both good: agree | One bad: agree (Dice passes) | Only the rule passes (a reading > 25% CER) | Shuffled: agree |
-| ---------------------- | ----: | ---------------: | ---------: | ---------------: | ---------------------------: | -----------------------------------------: | --------------: |
-| cuda-3090 + cuda-4090  |   612 |                1 |          1 |       529 of 529 |                     0 of 0 (0) |                                      0 (0) |        0 of 612 |
-| cuda-3090 + vllm       |   612 |                3 |         12 |       514 of 514 |                     1 of 3 (2) |                                     11 (4) |        0 of 612 |
-| cuda-3090 + cpu        |   612 |                6 |         70 |       391 of 391 |                     3 of 6 (4) |                                    66 (34) |        0 of 612 |
-| cuda-3090 + vulkan-b8799 |   612 |             95 |        121 |       370 of 370 |                   2 of 68 (3) |                                     30 (9) |        0 of 612 |
-| vllm + qwen8b          |   612 |               13 |         27 |       511 of 511 |                   4 of 12 (8) |                                     19 (3) |        0 of 612 |
+| Pair                     | Crops | Similarity < 0.5 | Dice < 0.5 | Both good: agree | One bad: agree (Dice passes) | Only the rule passes (a reading > 25% CER) | Shuffled: agree |
+| ------------------------ | ----: | ---------------: | ---------: | ---------------: | ---------------------------: | -----------------------------------------: | --------------: |
+| cuda-3090 + cuda-4090    |   612 |                1 |          1 |       529 of 529 |                   0 of 0 (0) |                                      0 (0) |        0 of 612 |
+| cuda-3090 + vllm         |   612 |                3 |         12 |       514 of 514 |                   1 of 3 (2) |                                     11 (4) |        0 of 612 |
+| cuda-3090 + cpu          |   612 |                6 |         70 |       391 of 391 |                   3 of 6 (4) |                                    66 (34) |        0 of 612 |
+| cuda-3090 + vulkan-b8799 |   612 |               95 |        121 |       370 of 370 |                  2 of 68 (3) |                                     30 (9) |        0 of 612 |
+| vllm + qwen8b            |   612 |               13 |         27 |       511 of 511 |                  4 of 12 (8) |                                     19 (3) |        0 of 612 |
 
 Outside German, the CUDA, vLLM, CPU and Qwen pairs have no crop under the floor on either measure. The buggy Vulkan run has two, both English.
 
@@ -38,25 +38,25 @@ Outside German, the CUDA, vLLM, CPU and Qwen pairs have no crop under the floor 
 
 Each page's crops judged as one pair. The strict rule joins every crop of a page it passes; the rule joins the `agree` crops of a page it passes. Error is the worse of the two readings.
 
-| Pair                   | Pages passed, strict / rule | Crops joined, strict / rule | Over 25% CER, strict / rule | 50% or more, strict / rule |
-| ---------------------- | --------------------------: | --------------------------: | --------------------------: | -------------------------: |
-| cuda-3090 + cuda-4090  |                   222 / 154 |                   610 / 475 |                     21 / 16 |                      6 / 5 |
-| cuda-3090 + vllm       |                   212 / 151 |                   588 / 462 |                     18 / 11 |                      6 / 4 |
-| cuda-3090 + cpu        |                   166 / 149 |                   487 / 463 |                     29 / 31 |                      7 / 4 |
-| cuda-3090 + vulkan-b8799 |                 132 / 116 |                   402 / 370 |                     26 / 18 |                      9 / 3 |
-| vllm + qwen8b          |                   196 / 147 |                   532 / 448 |                     21 / 16 |                     10 / 5 |
+| Pair                     | Pages passed, strict / rule | Crops joined, strict / rule | Over 25% CER, strict / rule | 50% or more, strict / rule |
+| ------------------------ | --------------------------: | --------------------------: | --------------------------: | -------------------------: |
+| cuda-3090 + cuda-4090    |                   222 / 154 |                   610 / 475 |                     21 / 16 |                      6 / 5 |
+| cuda-3090 + vllm         |                   212 / 151 |                   588 / 462 |                     18 / 11 |                      6 / 4 |
+| cuda-3090 + cpu          |                   166 / 149 |                   487 / 463 |                     29 / 31 |                      7 / 4 |
+| cuda-3090 + vulkan-b8799 |                   132 / 116 |                   402 / 370 |                     26 / 18 |                      9 / 3 |
+| vllm + qwen8b            |                   196 / 147 |                   532 / 448 |                     21 / 16 |                     10 / 5 |
 
 ## Other floors
 
 The rule at other floors, on the same crops and pairs, with the strict rule held at Dice 0.5. The last column is from the 4 November replay: the share of true Yiddish crop pairs between replicas that fall under the floor. The strict rule's Dice drops 13.4% of them.
 
-| Rule floor | Both good: agree | One bad: agree | Only the rule passes (a reading > 25% CER) | Crops joined (over 25% CER) | Yiddish replica crops under the floor |
-| ---------: | ---------------: | -------------: | -----------------------------------------: | --------------------------: | ------------------------------------: |
-|        0.5 |   2,315 of 2,315 |       10 of 89 |                                   126 (50) |                 2,218 (92) |                                  2.5% |
-|        0.6 |   2,315 of 2,315 |        3 of 89 |                                   115 (39) |                 2,202 (83) |                                  5.0% |
-|        0.7 |   2,315 of 2,315 |        0 of 89 |                                   108 (32) |                 2,174 (75) |                                  9.1% |
-|        0.8 |   2,315 of 2,315 |        0 of 89 |                                    64 (4)  |                 2,071 (49) |                                 15.9% |
-| strict, Dice 0.5 |        n/a |            n/a |                                        n/a |                2,619 (115) |                                 13.4% |
+|       Rule floor | Both good: agree | One bad: agree | Only the rule passes (a reading > 25% CER) | Crops joined (over 25% CER) | Yiddish replica crops under the floor |
+| ---------------: | ---------------: | -------------: | -----------------------------------------: | --------------------------: | ------------------------------------: |
+|              0.5 |   2,315 of 2,315 |       10 of 89 |                                   126 (50) |                  2,218 (92) |                                  2.5% |
+|              0.6 |   2,315 of 2,315 |        3 of 89 |                                   115 (39) |                  2,202 (83) |                                  5.0% |
+|              0.7 |   2,315 of 2,315 |        0 of 89 |                                   108 (32) |                  2,174 (75) |                                  9.1% |
+|              0.8 |   2,315 of 2,315 |        0 of 89 |                                     64 (4) |                  2,071 (49) |                                 15.9% |
+| strict, Dice 0.5 |              n/a |            n/a |                                        n/a |                 2,619 (115) |                                 13.4% |
 
 At 0.7 the rule passes no crop where one reading is far off, keeps every good pair, and still drops fewer true Yiddish crop pairs than the strict rule does.
 
@@ -64,13 +64,13 @@ At 0.7 the rule passes no crop where one reading is far off, keeps every good pa
 
 `qwen replay` over 4,843 retained 8B results, 2,222 jobs and 3,138 pairs, against the 824 pairs of the validation note:
 
-| Measure                                    |       Strict | `crop-consensus-v2` |
-| ------------------------------------------ | -----------: | ------------------: |
-| Yiddish pairs agreeing, of 1,613           |          214 |                 644 |
-| Other pairs agreeing, of 1,525             |        1,384 |               1,438 |
-| Units resolved, of 2,222                   |        1,594 |               1,770 |
-| Units resolved by their first two replicas |        1,528 |               1,722 |
-| Extra replicas not needed                  |            0 |                 139 |
+| Measure                                    | Strict | `crop-consensus-v2` |
+| ------------------------------------------ | -----: | ------------------: |
+| Yiddish pairs agreeing, of 1,613           |    214 |                 644 |
+| Other pairs agreeing, of 1,525             |  1,384 |               1,438 |
+| Units resolved, of 2,222                   |  1,594 |               1,770 |
+| Units resolved by their first two replicas |  1,528 |               1,722 |
+| Extra replicas not needed                  |      0 |                 139 |
 
 | Control                        | Pairs | Strict passes | Rule passes |
 | ------------------------------ | ----: | ------------: | ----------: |
