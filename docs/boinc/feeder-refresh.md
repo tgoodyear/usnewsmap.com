@@ -13,7 +13,8 @@ In short:
 - Refresh only on a confirmed `drift` from the guard, onto a registry that is the intended one, with
   the maintainer's approval. Never on `unknown`, `maintenance`, a failed check or `match`.
 - One `SIGHUP` to the verified feeder PID, one `bin/start --cron`, and at most one retry after a
-  transient cause is fixed. No loops, no `SIGKILL`, no whole-server restart.
+  transient cause is fixed, with the supervisor loop held once a start fails. No loops, no
+  `SIGKILL`, no whole-server restart.
 - While no feeder is ready, every new scheduler request is told to come back in an hour.
 - Verify with readbacks: the new process, `show_shmem`'s apps and weights against the database, the
   guard, slot shares, bounded replicas in the cache and a natural assignment to an eligible host.
@@ -64,7 +65,8 @@ The guarded feeder from #1464 records the app IDs and weights it allocated from 
   ([`boinc-daemons.sh` L35-L50](../../contrib-compute/images/server/boinc-daemons.sh#L35-L50)).
   That loop is the feeder's supervisor: a feeder that exits is started again within five minutes,
   as BOINC expects from cron ([feeder.cpp L269-L277][feeder-269-277], [start L14-L17][start-14-17]).
-  The loop is rate-limited but has no retry count. This procedure adds no loop to it.
+  The loop is rate-limited but has no retry count. This procedure adds no loop to it, and holds it
+  once a start fails ([Hold the supervisor loop](#hold-the-supervisor-loop)).
 - `pid_<host>` is on the container's own disk and linked into the project
   ([`boinc-daemons.sh` L16-L33](../../contrib-compute/images/server/boinc-daemons.sh#L16-L33)). The
   guard's snapshot, `usnm-feeder-slots.json`, is in the same directory.
@@ -110,8 +112,10 @@ A refresh is warranted only when all of these hold:
    refresh even after the rows are restored.
 3. The current registry meets the [preconditions](#preconditions), because it is what the new
    feeder will allocate from.
-4. The maintainer has approved the window. While the feeder is down, scheduler requests are told
-   to come back in an hour ([below](#what-the-scheduler-does-during-the-restart)).
+4. The maintainer has approved the window, including the
+   [supervisor hold](#hold-the-supervisor-loop) if a start fails. While the feeder is down,
+   scheduler requests are told to come back in an hour
+   ([below](#what-the-scheduler-does-during-the-restart)).
 
 A feeder started before the guarded image was deployed has no snapshot, so the guard can only
 report `unknown` for it. Refreshing that feeder needs the maintainer's explicit approval on other
@@ -166,7 +170,8 @@ The registry the new feeder will load (`WHERE deprecated=0`,
 [sched_shmem.cpp L112-L264][sched-shmem-112-264]):
 
 - At most 10 active apps; an 11th stops the feeder at startup. The other tables are capped as
-  well: at most 49 active platforms, 99 loaded app versions and 9 multi-host assignments
+  well: at most 49 active platforms, 99 loaded app versions (counted from the database as in
+  step 1) and 9 multi-host assignments
   ([sched_shmem.h L37-L48][sched-shmem-h-37-48], [sched_shmem.cpp L99-L108][sched-shmem-99-108],
   [L119-L261][sched-shmem-119-261]).
 - Every active app has `homogeneous_redundancy = 0` and `n_size_classes` of at most 1. An HR
@@ -174,6 +179,10 @@ The registry the new feeder will load (`WHERE deprecated=0`,
   census file ends the table scan early, a failure that the startup path ignores ([sched_shmem.cpp
   L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887]). The project uses no HR ([Feeder
   visibility](../../contrib-compute/docs/app-release.md#feeder-visibility)).
+- No unsent result belongs to a workunit with a nonzero `hr_class` (step 1's last query returns 0).
+  Without HR there should be none. The feeder's stale purge, which runs all the time, clears such a
+  class and adds a replica ([feeder.cpp L436-L454][feeder-436-454]), which would change replication
+  while step 5 is judging it.
 - The sizing invariant in [Feeder
   visibility](../../contrib-compute/docs/app-release.md#feeder-visibility) holds for the current
   weights: every positive-weight app's `floor(0.5 + feeder_query_size × weight / sum)` ([feeder.cpp
@@ -278,11 +287,25 @@ password on a command line, and delete the option file afterwards. Save the outp
 SELECT id, name, deprecated, weight, homogeneous_redundancy, n_size_classes, min_version FROM app ORDER BY id;
 SELECT COUNT(*) FROM platform WHERE deprecated=0;
 SELECT COUNT(*) FROM assignment WHERE multi<>0;
+-- The app versions the new feeder will load, selected as scan_tables does.
+SELECT COUNT(*) FROM app_version v
+  JOIN app a ON a.id = v.appid AND a.deprecated = 0
+  JOIN platform p ON p.id = v.platformid AND p.deprecated = 0
+  WHERE v.deprecated = 0 AND (
+    (a.min_version <> 0 AND v.version_num >= a.min_version)
+    OR (a.min_version = 0 AND NOT EXISTS (
+      SELECT 1 FROM app_version newer
+        WHERE newer.appid = v.appid AND newer.platformid = v.platformid AND newer.deprecated = 0
+          AND newer.plan_class = BINARY v.plan_class AND newer.version_num > v.version_num)));
+SELECT COUNT(*) FROM result r JOIN workunit w ON w.id = r.workunitid
+  WHERE r.server_state = 2 AND w.hr_class <> 0;
 ```
 
-Check the active rows against the preconditions and against the reviewed change. The
-`app versions:` section of `shmem-before.txt` is the set the running feeder loaded; if an app was
-added since its last reread, add that app's newest version for each platform and plan class.
+Check the active rows against the preconditions and against the reviewed change. The app-version
+count follows `scan_tables` ([sched_shmem.cpp L173-L235][sched-shmem-173-235]): on active
+platforms, every version at or above an app's nonzero `min_version`, otherwise the newest in each
+plan class. It must be at most 99. Don't count from `shmem-before.txt`: that is the old feeder's
+last scan, which misses later changes.
 
 ### 2. Stop the feeder
 
@@ -312,7 +335,8 @@ maintainer's approval.
 ### 3. Start the feeder once
 
 ```sh
-bin/start --cron 2>&1 | tee "$evidence/start.txt"
+attempt=1
+bin/start --cron 2>&1 | tee "$evidence/start-$attempt.txt"
 ```
 
 Expect exactly one `Starting daemon: feeder -d 2 --allapps --purge_stale 5` line and no other
@@ -333,17 +357,20 @@ Within two minutes:
 newpid=$(cat "pid_$host/feeder.pid"); echo "$newpid"
 pgrep -u boincadm -x feeder
 tr '\0' ' ' < "/proc/$newpid/cmdline"; echo
-tail -n +"$((lines + 1))" "log_$host/feeder.log" > "$evidence/feeder-log-after.txt"
-grep -E 'Starting|read [0-9]+ platforms|Using [0-9]+ job slots' "$evidence/feeder-log-after.txt"
-grep -F '[CRITICAL]' "$evidence/feeder-log-after.txt"
-bin/show_shmem > "$evidence/shmem-after.txt"
-grep -E '^(ready|max_wu_results):' "$evidence/shmem-after.txt"
-sed -n '/^apps:/,/^app versions:/p' "$evidence/shmem-after.txt"
-ipcs -m | tee "$evidence/ipcs-after.txt"
-bin/status --verbose | tee "$evidence/status-after.txt"
+# From the last Starting line since the stop: only the feeder running now, whoever started it.
+from=$(awk -v after="$lines" 'NR > after && / Starting$/ {n = NR} END {print n ? n : after + 1}' "log_$host/feeder.log")
+tail -n +"$from" "log_$host/feeder.log" > "$evidence/feeder-log-after-$attempt.txt"
+grep -E 'Starting|read [0-9]+ platforms|Using [0-9]+ job slots' "$evidence/feeder-log-after-$attempt.txt"
+grep -F '[CRITICAL]' "$evidence/feeder-log-after-$attempt.txt"
+bin/show_shmem > "$evidence/shmem-after-$attempt.txt"
+grep -E '^(ready|max_wu_results):' "$evidence/shmem-after-$attempt.txt"
+sed -n '/^apps:/,/^app versions:/p' "$evidence/shmem-after-$attempt.txt"
+ipcs -m | tee "$evidence/ipcs-after-$attempt.txt"
+bin/status --verbose | tee "$evidence/status-after-$attempt.txt"
 ```
 
-Expect:
+Each attempt keeps its own files, and an earlier failed attempt's log lines stay out of a later
+attempt's readback. Expect:
 
 - A new PID, different from `$pid`, as the only feeder, with the same command line.
 - `Starting`, then `read P platforms, A apps, V app_versions, N assignments` with `A` equal to the
@@ -356,8 +383,8 @@ Expect:
   ([L130][sched-shmem-130]), normally giving ascending `id`; any other order is a finding.
 - One segment with key `0x1111aaaa` in `ipcs -m`. The old segment may linger with key
   `0x00000000` and status `dest` until its last request finishes; it must be gone within minutes.
-- In `status-after.txt`, the feeder `running` and `locked` with the new PID, and every other daemon
-  with the same PID as in `status-before.txt`: only the feeder restarted.
+- In `status-after-$attempt.txt`, the feeder `running` and `locked` with the new PID, and every
+  other daemon with the same PID as in `status-before.txt`: only the feeder restarted.
 
 At least two minutes after the start (the snapshot is refreshed about once a minute and is
 accepted for three):
@@ -371,18 +398,39 @@ cat "pid_$host/feeder.pid"
 
 Expect `match` with `allocation_matches_registry`, a snapshot naming `$newpid`, and the same
 `$newpid` still running: a feeder whose first `update_av_scales` fails exits after it has set
-`ready` ([feeder.cpp L595-L605][feeder-595-605]). Then leave the shell to release the mutex. The
-host's guard unit may have recorded failed runs (`unknown`) during the window; that is expected, so
-note them in the evidence.
+`ready` ([feeder.cpp L595-L605][feeder-595-605]). Then record the PID and leave the shell to release
+the mutex:
+
+```sh
+echo "$newpid" | tee "$evidence/feeder-after.txt"
+exit
+```
+
+The host's guard unit may have recorded failed runs (`unknown`) during the window; that is
+expected, so note them in the evidence.
 
 If anything in this step fails, go to [Failed start and retry](#failed-start-and-retry).
 
 ### 5. Verify visibility and assignment
 
-The mutex is released, but the registry writers stay paused until this step is done. Allow at least
-two purge rotations before judging the cache (`--purge_stale 5` is five minutes: [feeder.cpp
-L779-L780][feeder-779-780], [L484-L491][feeder-484-491]), and at least `maintenance_delay`, an hour,
-for clients that hit the window to come back.
+The mutex is released, but the registry writers stay paused until this step is done. Run these
+checks in a new shell without the lock, restoring the values from steps 1 and 4:
+
+```sh
+# CT 230, as root. No lock this time.
+podman exec -it --user boincadm usnm-boinc-server bash
+```
+
+```sh
+cd /project/usnmocr
+host=$(python3 -c 'import socket; print(socket.gethostname().split(".")[0])')
+evidence=/project/ops/feeder-refresh-<the time stamp from step 1>
+newpid=$(cat "$evidence/feeder-after.txt")
+```
+
+Allow at least two purge rotations before judging the cache (`--purge_stale 5` is five minutes:
+[feeder.cpp L779-L780][feeder-779-780], [L484-L491][feeder-484-491]), and at least
+`maintenance_delay`, an hour, for clients that hit the window to come back.
 
 1. **Slot shares.** Count the cached results per app:
 
@@ -424,8 +472,8 @@ the feeder log has a `[CRITICAL]` line, the `read ... apps` count is not the num
 or the new PID disappears or changes before the guard reports `match`. Every error below ends the
 feeder, except perhaps the census one. One that gets past creating the segment removes it on the
 way out ([feeder.cpp L869][feeder-869]), so no ready segment is left, every request gets the
-one-hour reply, and the supervisor loop tries `bin/start --cron` again every five minutes for as
-long as the feeder keeps failing.
+one-hour reply, and the supervisor loop tries `bin/start --cron` again every five minutes until it
+is held.
 
 | Feeder log                                                 | Source                                                                                                       | Kind                                                                                                                                                                    |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -438,24 +486,46 @@ long as the feeder keeps failing.
 | `can't create shmem`                                       | [feeder.cpp L860-L865][feeder-860-865]                                                                       | Deterministic: memory or kernel limits.                                                                                                                                 |
 | `Missing size census file`, then `read ... 0 apps`         | [sched_shmem.cpp L145-L171][sched-shmem-145-171], [feeder.cpp L887][feeder-887], [L904-L933][feeder-904-933] | Deterministic: the registry. The scan stops before any app is counted, and allocating slots over no apps is undefined: the feeder may crash or stay up serving nothing. |
 
-The rules:
+### Hold the supervisor loop
 
-- One refresh allows at most **one** operator retry: one more `bin/start --cron`, run once, and
-  only after the transient cause is fixed and confirmed (the database answers the guard's query).
-  Never script a retry, loop, or watch and restart.
+As soon as a start has failed, hold the loop so that it makes no attempts of its own:
+
+```sh
+touch stop_maintenance
+date -u +%FT%TZ | tee "$evidence/hold-time.txt"
+```
+
+`boinc-daemons.sh` checks the marker before each `bin/start --cron` and skips the run while it
+exists, and a container start waits for it
+([`boinc-daemons.sh` L38-L50](../../contrib-compute/images/server/boinc-daemons.sh#L38-L50)). It
+stops nothing that is running. While it is in place, the loop starts no daemon and runs no periodic
+task, and the guard reports `maintenance`, which doesn't fail the host unit. The hold is part of
+the approved window. Record the loop's own attempts made before the hold: every `Starting` line in
+the feeder log after `$lines` that your `bin/start --cron` didn't make. There are few, because the
+loop runs every five minutes and the hold follows the failure at once.
+
+Release the hold only once a feeder passes step 4 after the hold: run step 4 up to the guard
+check, release with `rm stop_maintenance`, then run the guard check (it reports `maintenance` while
+the hold is in place) and finish step 4. If any check fails, or the failure needs the maintainer, the hold stays
+until they decide.
+
+### The rules
+
+- One refresh allows at most **one** operator retry: one more `bin/start --cron`, run once with
+  `attempt=2` and the hold in place, and only after the cause is fixed and confirmed (for the
+  database, it answers the guard's query). Then repeat step 4. If a feeder is already running by
+  then (the loop started it before the hold), don't retry: verify that feeder with step 4 and
+  `attempt=2`. Never script a retry, loop, or watch and restart.
 - A deterministic failure is never retried as it is. If the registry is the cause, apply
-  [Rollback](#rollback); the retry follows that. Otherwise stop and tell the maintainer at once,
-  because the project sends no work while the feeder is down. Holding the supervisor loop with
-  `stop_maintenance` (which also stops a container start from starting the project,
-  [`boinc-daemons.sh` L48](../../contrib-compute/images/server/boinc-daemons.sh#L48)), a
-  whole-server restart and an image rollback are each the maintainer's decision.
+  [Rollback](#rollback) with the hold in place; the retry follows that. Otherwise tell the
+  maintainer at once, because the project sends no work while the feeder is down. A whole-server
+  restart and an image rollback are the maintainer's decisions.
 - A feeder that stayed up after a deterministic failure (the census case) is stopped with one
   `SIGHUP` as in step 2, after the registry is restored and before the retry. If it does not exit,
   escalate as in step 2.
-- If the retry fails too, stop and escalate.
-- The supervisor loop's own five-minute attempts are existing stock behaviour, not retries by this
-  procedure. They are rate-limited but not counted; bounding them would be a separate, reviewed
-  change to `boinc-daemons.sh`.
+- If the retry fails too, keep the hold and escalate.
+- So during a refresh the feeder is started only by step 3, by the loop's attempts before the
+  hold and by the one retry. Nothing else starts it until the hold is released.
 
 ## Rollback
 
@@ -464,10 +534,11 @@ There is no way back to the old process or its stale map, and no reason to want 
 rolled back is the registry the new feeder allocated from:
 
 - If the new allocation is unwanted (the registry change itself was wrong), or the registry made the
-  start fail: restore the `app` rows to what the previous feeder started with. Use the change's own
-  saved rows (for example a retirement's journal, as in
-  [Retiring an app](server-and-apps.md#retiring-an-app)) and check them against the `apps` IDs and
-  weights in `snapshot-before.json`.
+  start fail: restore the `app` rows to what the previous feeder started with. After a failed start,
+  do it with the [hold](#hold-the-supervisor-loop) in place, so that the loop cannot start a feeder
+  on a half-restored registry. Use the change's own saved rows (for example a retirement's journal,
+  as in [Retiring an app](server-and-apps.md#retiring-an-app)) and check them against the `apps`
+  IDs and weights in `snapshot-before.json`.
 - After a failed start, the one retry then starts the feeder on the restored registry. After a
   successful but unwanted refresh, run one more feeder-only refresh with this procedure: the same
   preconditions, readbacks and retry limit, and the maintainer's approval. Touching `reread_db`
@@ -486,8 +557,8 @@ without the maintainer's approval for that occasion:
 - Changing the app table (`deprecated`, `weight`, HR fields), `config.xml` (`feeder_query_size`,
   `shmem_work_items`, `maintenance_delay`) or the `config.xml` SHA-256 the auto-cohort controller
   pins.
-- Creating `stop_maintenance`, `stop_sched` or `stop_daemons`, running `bin/stop`, or disabling the
-  project.
+- Creating or removing `stop_maintenance` (other than the manual failure hold inside an approved
+  window), creating `stop_sched` or `stop_daemons`, running `bin/stop`, or disabling the project.
 - `supervisorctl restart boinc`, restarting `usnm-boinc-server.service`, or changing
   `SERVER_IMAGE`.
 - Cancelling, resetting or reassigning results; widening plan-class bounds; weakening
@@ -601,3 +672,5 @@ and review.
 [feeder-830-836]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L830-L836
 [feeder-854-858]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L854-L858
 [feeder-860-865]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L860-L865
+[feeder-436-454]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/feeder.cpp#L436-L454
+[sched-shmem-173-235]: https://github.com/BOINC/boinc/blob/22bbebe08e2eaac5d5e88a6d93b88e800cb6341c/sched/sched_shmem.cpp#L173-L235
