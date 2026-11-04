@@ -559,8 +559,9 @@ pub struct Superseding {
 }
 
 /// The receipt of a superseding dead letter, at
-/// `dispatch/jobs/<failed job>/superseding/<message sha256>.json`; `.sent` beside it holds the
-/// sha256 of the dead letter's text once it went.
+/// `dispatch/jobs/<failed job>/superseding/<message digest>.json`, the digest being the
+/// sha256 of the message's JSON as the ledger records its dead letter; `.sent` beside it holds
+/// the sha256 of the dead letter's text once it went.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SupersedingReceipt {
@@ -580,7 +581,8 @@ struct SupersedingReceipt {
 ///
 /// It checks that the claim is the failed job's page (page, batch and language), newer than
 /// the failed job's message, still live, and the page's outstanding ledger row; and that the
-/// ledger's latest outcome for the page is the failed job's own `permanent` dead letter. With
+/// ledger's latest outcome for the page is the failed job's own `permanent` dead letter, or
+/// the one this sent for an attempt queued after it. With
 /// no `confirm` it changes nothing (a dry run). `confirm` must be the newer claim's
 /// `message_sha256`. The dead letter is written as a receipt first and sent once, so a rerun
 /// neither sends it twice nor takes another message off its queue.
@@ -629,7 +631,13 @@ pub async fn dead_letter_superseding(
         message_sha256: message_sha256.clone(),
         done: None,
     };
-    let path = format!("dispatch/jobs/{id}/superseding/{message_sha256}.json");
+    // Receipts are named by the message's digest as the ledger records its dead letter, so a
+    // later attempt can find the one this sent for the attempt before it.
+    let digest = |m: &OcrMessage| -> anyhow::Result<String> {
+        Ok(usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(m)?))
+    };
+    let receipt_path = |digest: &str| format!("dispatch/jobs/{id}/superseding/{digest}.json");
+    let path = receipt_path(&digest(&new)?);
     let sent = format!("{path}.sent");
     let was_sent = handoff.get(&sent).await?;
     match claim.ended.as_deref() {
@@ -649,14 +657,27 @@ pub async fn dead_letter_superseding(
     // Once its dead letter went, the ledger may have settled the newer message too; only the
     // delete is left, and the receipt holds what was checked.
     if was_sent.is_none() {
-        let failed_sha256 = usnm_ocr_contract::boinc::sha256(&serde_json::to_vec(old)?);
-        ensure!(
-            ledger.outcomes.get(&doc_id).is_some_and(|o| {
+        // The latest outcome is the failed job's own dead letter, or the one this sent for an
+        // attempt queued after it, so each later attempt can be settled the same way.
+        let settled = ledger
+            .outcomes
+            .get(&doc_id)
+            .filter(|o| {
                 o.outcome == usnm_ocr_local::ledger::DEAD_LETTERED
                     && o.cause.as_deref() == Some("permanent")
-                    && o.message_sha256.as_deref() == Some(failed_sha256.as_str())
-            }),
-            "job {id} is not dead-lettered: the ledger's latest outcome for {doc_id} isn't its permanent dead letter"
+            })
+            .and_then(|o| o.message_sha256.as_deref());
+        let failed_digest = digest(old)?;
+        let ours = match settled {
+            Some(s) if s == failed_digest => true,
+            Some(s) if usnm_ocr_contract::boinc::is_sha256(s) => {
+                handoff.exists(&format!("{}.sent", receipt_path(s))).await?
+            }
+            _ => false,
+        };
+        ensure!(
+            ours,
+            "job {id} is not dead-lettered: the ledger's latest outcome for {doc_id} isn't its permanent dead letter or one this sent for a later attempt"
         );
         ensure!(
             ledger

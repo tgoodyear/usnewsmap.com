@@ -863,13 +863,15 @@ usnm-boinc-step --env prod --target handoff --step dead-letter \
 - The claim is that job's page, batch and language, with a later `queued_at`.
 - The claim is still live, and it's the page's outstanding ledger row.
 - The ledger's latest outcome for the page is the failed job's own `permanent` dead letter,
-  bound to that job's message digest.
+  bound to that job's message digest. After an earlier run of this step for the same job has
+  been drained into the ledger, it can instead be that run's dead letter, found by its receipt.
 - The confirmation is the claim's message sha256.
 
 When all of them pass, it does four things:
 
 1. Writes the dead letter as a receipt at
-   `dispatch/jobs/<failed job>/superseding/<message sha256>.json`.
+   `dispatch/jobs/<failed job>/superseding/<message digest>.json`. The digest is the sha256
+   of the message's JSON, as the ledger records the dead letter.
 2. Sends the dead letter once, as a v2 `permanent` letter that names the failed job and keeps
    its error. A `.sent` marker beside the receipt records the send.
 3. Deletes the message with the claim's pop receipt.
@@ -882,9 +884,9 @@ message without a second dead letter. If `ocr-sync` has drained the dead letter 
 deletes the message as answered.
 
 Once the message is gone, no pull returns the page, and the next tick goes on. Nothing on the
-controller changes. A later attempt of the page is a new message and needs the same step again.
-This settles the newer attempt as failed without running it. Running it instead, with a longer
-page deadline, would need a controller change (#1417).
+controller changes. A later attempt of the page is a new message and needs the same step again,
+with the same `SUPERSEDES_FAILED_JOB`. This settles the newer attempt as failed without running
+it. Running it instead, with a longer page deadline, would need a controller change (#1417).
 
 ### The queue message's life
 
