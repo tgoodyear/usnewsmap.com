@@ -132,6 +132,33 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "branching"):
             batch.owned_records(self.config, [parent, child, branch])
 
+    def test_caps_past_eighty_percent_warn_without_changing_the_tick(self):
+        self.tick()
+        quiet, warned = copy.deepcopy(self.fake), copy.deepcopy(self.fake)
+        quiet_state, warned_state = copy.deepcopy(self.state), copy.deepcopy(self.state)
+        extra = {format(n, "064x") for n in range(0x100, 0x108)}
+        quiet.extra_existing = warned.extra_existing = extra
+        inventory = warned.inventory
+        warned.inventory = lambda: {**inventory(), "spool_entries": 80001}
+
+        def run(fake, state, limit):
+            stderr = io.StringIO()
+            with patch.object(batch, "MAX_JOBS", limit), contextlib.redirect_stderr(stderr):
+                event = batch.tick(self.config, state, fake, lambda: None, NOW)
+            return event, [json.loads(line) for line in stderr.getvalue().splitlines()]
+
+        quiet_event, quiet_lines = run(quiet, quiet_state, 100)
+        self.assertEqual(quiet_lines, [])
+        warned_event, warned_lines = run(warned, warned_state, 12)
+        self.assertEqual((warned_event, warned.actions, warned_state), (quiet_event, quiet.actions, quiet_state))
+        self.assertEqual({line["event"] for line in warned_lines}, {"boinc_batch_cap_warning"})
+        self.assertEqual({line["cap"]: (line["count"], line["limit"]) for line in warned_lines},
+                         {"existing_workunits": (10, 12), "spool_entries": (80001, 100000)})
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            batch.warn_near_cap("claims", 8000, 10000)
+            batch.warn_near_cap("claims", 8001, 10000)
+        self.assertEqual([json.loads(line)["count"] for line in stderr.getvalue().splitlines()], [8001])
+
     def test_drain_does_not_allocate_or_dispatch(self):
         event = self.tick(drain=True)
         self.assertTrue(event["draining"])

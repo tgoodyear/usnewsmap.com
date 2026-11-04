@@ -543,7 +543,13 @@ pages rather than overwriting them, including for historical cohorts.
    active hosts face `0` unsent or `<= low_watermark` runnable `usnm_ocr` work,
    and `zero_work_starvation` when scheduler logs or status report hosts
    receiving zero tasks). Errors emit `boinc_batch_failure` and exit nonzero
-   without dumping command output or credentials. Route stdout/stderr to the
+   without dumping command output or credentials. Past 80% of a lifetime cap
+   (10,000 dispatch journals, claims, bridge journals or existing native
+   workunits, or 100,000 spool entries) the tick also writes a
+   `boinc_batch_cap_warning` line to stderr with `cap`, `count` and `limit`,
+   and otherwise runs unchanged: archive drained history before the cap stops
+   it (#1483). Only server images built with this change report
+   `spool_entries`. Route stdout/stderr to the
    controller's existing log sink; this is controller telemetry, not a claim of
    live workbook ingestion.
 

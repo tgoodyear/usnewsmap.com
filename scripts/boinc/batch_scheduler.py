@@ -59,6 +59,28 @@ def raise_transport_errors(errors):
     raise errors[0]
 
 
+# The bridge inventory's own limit on entries under the project's results (batch-inventory.py).
+MAX_SPOOL_ENTRIES = 100000
+# The share of a lifetime cap at which a tick warns that history needs archiving (#1483).
+CAP_WARNING_SHARE = 0.8
+
+
+def warn_near_cap(cap, count, limit):
+    """One event on stderr while a count that stops the tick at `limit` is past 80% of it, so
+    the cap is a warning before it is an outage (#1483). The tick itself is unchanged."""
+    if count <= limit * CAP_WARNING_SHARE:
+        return
+    try:
+        print(json.dumps({
+            "event": "boinc_batch_cap_warning", "schema_version": 1, "at": int(time.time()),
+            "cap": cap, "count": count, "limit": limit,
+            "message": f"{cap} at {count} of {limit}: archive drained history (#1483) before it stops the tick",
+        }, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # A closed or broken log stream never stops a tick.
+        pass
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -839,6 +861,7 @@ class Transport:
             require(name not in snapshot, "duplicate journal inventory entry")
             snapshot[name] = etag
         names = list(snapshot)
+        warn_near_cap("dispatch_journals", len(names), MAX_JOBS)
         require(len(names) <= MAX_JOBS and len(set(names)) == len(names),
                 "dispatch inventory limit/consistency failure; reconcile drained journals")
         return snapshot
@@ -1268,6 +1291,7 @@ class QueueFeed:
         self.transport = transport
         self.persist = persist
         self.claims = state.setdefault("claims", {})
+        warn_near_cap("claims", len(self.claims), MAX_JOBS)
         require(len(self.claims) <= MAX_JOBS, "too many claimed pages; archive drained history first")
 
     def restore(self):
@@ -1667,6 +1691,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(ID.fullmatch(job_id) and isinstance(job, dict) and job.get("stage") in STAGES
                 and (job.get("spool") is None or isinstance(job["spool"], str)),
                 "invalid server job record")
+    warn_near_cap("server_journals", len(server), MAX_JOBS)
+    warn_near_cap("existing_workunits", len(existing_jobs), MAX_JOBS)
+    if type(snapshot.get("spool_entries")) is int:
+        warn_near_cap("spool_entries", snapshot["spool_entries"], MAX_SPOOL_ENTRIES)
     records = transport.records()
     owned = owned_records(config, records)
     for record in owned.values():
