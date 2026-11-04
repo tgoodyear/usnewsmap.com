@@ -1,6 +1,6 @@
 # The crop rule's floor against human transcriptions
 
-**Status:** measured; the collector change is in, the rule stays off pending a decision on the floor · **Date:** 4 November 2026 · **Measured on:** Study 3's 612 human-transcribed crops (223 pages, five languages, six sources) from the November 2026 GPU studies (PR #1428), with Xiaomi-OCR-0 readings from five builds and Qwen 8B's readings; and a replay of all retained `usnm_qwen` 8B results on 4 November · **Code:** `crates/usnm-boinc/src/qwen/{grounded,consensus,replay}.rs` · **Issues:** #1434, #1420
+**Status:** measured; the floor went from 0.5 to 0.7 on this evidence (#1434) · **Date:** 4 November 2026 · **Measured on:** Study 3's 612 human-transcribed crops (223 pages, five languages, six sources) from the November 2026 GPU studies (PR #1428), with Xiaomi-OCR-0 readings from five builds and Qwen 8B's readings; and a replay of all retained `usnm_qwen` 8B results on 4 November · **Code:** `crates/usnm-boinc/src/qwen/{grounded,consensus,replay}.rs` · **Issues:** #1434, #1420
 
 ## The question
 
@@ -10,17 +10,31 @@
 
 **The floor never fails a good pair and never passes a shuffled one.** On every pair of readers, every crop where both readings are within 10% CER of the transcription agrees: 2,315 of 2,315. No shuffled crop agrees: 0 of 3,060.
 
-**It passes some crops where one reading is far off.** Of 89 crops where one reading is within 10% CER and the other is 50% or worse, 10 agree. The strict rule's Dice passes 17 of the same 89 crops, but the strict rule needs every crop of a page to pass, so it rarely accepts them.
+**At 0.5 it passes some crops where one reading is far off.** Of 89 crops where one reading is within 10% CER and the other is 50% or worse, 10 agree. The strict rule's Dice passes 17 of the same 89 crops, but the strict rule needs every crop of a page to pass, so it rarely accepts them.
 
-**The crops only the rule passes are the weak ones.** 126 crops pass on similarity and fail on Dice. All are German: 124 from NZZ and 2 from the Reichsanzeiger. In 50 of them one reading is over 25% CER against the transcription. On the CPU build against CUDA that's 34 of 66, and the worse reading of those 66 averages 28% CER. Over all the crops the rule agrees on, the worse reading averages 6 to 10%.
+**The crops only the rule passes are the weak ones.** At 0.5, 126 crops pass on similarity and fail on Dice. All are German: 124 from NZZ and 2 from the Reichsanzeiger. In 50 of them one reading is over 25% CER against the transcription. On the CPU build against CUDA that's 34 of 66, and the worse reading of those 66 averages 28% CER. Over all the crops the rule agrees on, the worse reading averages 6 to 10%.
 
-**Page by page, the rule doesn't let in more bad text than the strict rule.** Judging each page's crops as one pair, the rule joins 2,218 crops against the strict rule's 2,619. Of those, 92 have a reading over 25% CER, against 115 under the strict rule, and 21 have one at 50% or more, against 38. Study 3 has about three crops a page, so many pages fall under the rule's 100-character limit. Production pages have 12 crops, so the rule should pass more of them than here.
+**Page by page, the rule doesn't let in more bad text than the strict rule.** Judging each page's crops as one pair, the rule at 0.5 joins 2,218 crops against the strict rule's 2,619. Of those, 92 have a reading over 25% CER, against 115 under the strict rule, and 21 have one at 50% or more, against 38. Study 3 has about three crops a page, so many pages fall under the rule's 100-character limit. Production pages have 12 crops, so the rule should pass more of them than here.
 
 **Neither rule catches errors both readings share.** On crops where Tesseract's error is 20% or more, 27% of the crops the rule joins and 28% of those the strict rule joins have a reading over 25% CER. Two readers that misread the same print agree.
 
 **Yiddish is not in this set.** It's the language where the rule changes the most, and the floor hasn't been checked against a transcription there.
 
-## Crop by crop, at the floor in force (0.5)
+## The floor in force: 0.7
+
+The floor was raised to 0.7 on 4 November. At 0.7 no crop with one good and one far-off reading agrees, every crop whose readings both match still agrees, and fewer true Yiddish replica crop pairs fall under the floor than under the strict rule's Dice.
+
+| Pair                     | Similarity < 0.7 | Both good: agree | One bad: agree | Only the rule passes (a reading > 25% CER) | Shuffled: agree |
+| ------------------------ | ---------------: | ---------------: | -------------: | -----------------------------------------: | --------------: |
+| cuda-3090 + cuda-4090    |                1 |       529 of 529 |         0 of 0 |                                      0 (0) |        0 of 612 |
+| cuda-3090 + vllm         |                5 |       514 of 514 |         0 of 3 |                                     10 (3) |        0 of 612 |
+| cuda-3090 + cpu          |               20 |       391 of 391 |         0 of 6 |                                    54 (22) |        0 of 612 |
+| cuda-3090 + vulkan-b8799 |              105 |       370 of 370 |        0 of 68 |                                     27 (6) |        0 of 612 |
+| vllm + qwen8b            |               22 |       511 of 511 |        0 of 12 |                                     17 (1) |        0 of 612 |
+
+Page by page at 0.7, the rule passes 705 pages against the strict rule's 928 and joins 2,174 crops against 2,619. Of those, 75 have a reading over 25% CER, against 115, and 13 have one at 50% or more, against 38.
+
+## Crop by crop, at 0.5
 
 `cuda-3090` and `cuda-4090` are one build on two cards, `vllm` the reference vLLM run, `cpu` and `vulkan-b8799` the b8799 build on CPU and on Vulkan (the Vulkan run has the known bug), `qwen8b` Qwen 8B's readings. "Good" is within 10% CER of the transcription, "bad" 50% or worse.
 
@@ -64,24 +78,24 @@ At 0.7 the rule passes no crop where one reading is far off, keeps every good pa
 
 `qwen replay` over 4,843 retained 8B results, 2,222 jobs and 3,138 pairs, against the 824 pairs of the validation note:
 
-| Measure                                    | Strict | `crop-consensus-v2` |
-| ------------------------------------------ | -----: | ------------------: |
-| Yiddish pairs agreeing, of 1,613           |    214 |                 644 |
-| Other pairs agreeing, of 1,525             |  1,384 |               1,438 |
-| Units resolved, of 2,222                   |  1,594 |               1,770 |
-| Units resolved by their first two replicas |  1,528 |               1,722 |
-| Extra replicas not needed                  |      0 |                 139 |
+| Measure                                    | Strict | Rule at 0.5 | Rule at 0.7 |
+| ------------------------------------------ | -----: | ----------: | ----------: |
+| Yiddish pairs agreeing, of 1,613           |    214 |         644 |         471 |
+| Other pairs agreeing, of 1,525             |  1,384 |       1,438 |       1,390 |
+| Units resolved, of 2,222                   |  1,594 |       1,770 |       1,666 |
+| Units resolved by their first two replicas |  1,528 |       1,722 |       1,596 |
+| Extra replicas not needed                  |      0 |         139 |          80 |
 
-| Control                        | Pairs | Strict passes | Rule passes |
-| ------------------------------ | ----: | ------------: | ----------: |
-| Different pages, same language | 2,000 |             0 |           0 |
-| Crops rotated within a page    | 3,138 |           135 |          93 |
-| Every crop looped              | 3,138 |             0 |           0 |
-| Half the crops looped          | 3,138 |             0 |           0 |
-| One crop replaced              | 2,984 |             0 |           0 |
-| Every crop unread              | 3,138 |            15 |           3 |
+| Control                        | Pairs | Strict passes | Rule at 0.5 | Rule at 0.7 |
+| ------------------------------ | ----: | ------------: | ----------: | ----------: |
+| Different pages, same language | 2,000 |             0 |           0 |           0 |
+| Crops rotated within a page    | 3,138 |           135 |          93 |          82 |
+| Every crop looped              | 3,138 |             0 |           0 |           0 |
+| Half the crops looped          | 3,138 |             0 |           0 |           0 |
+| One crop replaced              | 2,984 |             0 |           0 |           0 |
+| Every crop unread              | 3,138 |            15 |           3 |           3 |
 
-A third replica confirms 98.1% of the crops a rescued pair vouched for (4,128 of 4,210), against 96.1% (414 of 431) for strict pairs.
+A third replica confirms 98.1% of the crops a rescued pair vouched for at 0.5 (4,128 of 4,210), against 96.1% (414 of 431) for strict pairs. At 0.7 the figures are 95.7% (2,678 of 2,799) and 92.0% (344 of 374); the two runs count different pairs as rescued.
 
 ## What the collector does now
 
@@ -105,8 +119,8 @@ usnm-boinc qwen grounded --refs refs.jsonl \
   --reader qwen8b=qwen.jsonl \
   --pair cuda-3090:cuda-4090 --pair cuda-3090:vllm --pair cuda-3090:cpu \
   --pair cuda-3090:vulkan-b8799 --pair vllm:qwen8b \
-  --legibility tesseract.jsonl --floor 0.5 --out grounded.jsonl --crops grounded-crops.jsonl
+  --legibility tesseract.jsonl --out grounded.jsonl --crops grounded-crops.jsonl
 usnm-boinc qwen replay --seen <project>/qwen/seen --out replay.json
 ```
 
-`--floor 0.6`, `0.7` and `0.8` give the other floors. The crop counts under the floor at 0.5 match Study 9's: 1, 3, 6 and 95 on similarity and 1, 12, 70 and 121 on Dice.
+The floor defaults to the rule's, 0.7; `--floor 0.5`, `0.6` and `0.8` give the others. The crop counts under the floor at 0.5 match Study 9's: 1, 3, 6 and 95 on similarity and 1, 12, 70 and 121 on Dice.

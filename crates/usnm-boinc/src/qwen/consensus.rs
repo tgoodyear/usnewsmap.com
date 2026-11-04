@@ -70,13 +70,15 @@ pub struct Params {
 }
 
 impl Params {
-    /// Measured in the November 2026 replay of the retained results
-    /// (docs/notes/2026-11-01-qwen-cross-vendor-validation.md): against Dice at
-    /// the same floor, a fifth as many true Yiddish crop pairs fall short, at
-    /// the same false-accept rate, 0.1% of shuffled pairs.
+    /// 0.7, from the check against human transcriptions
+    /// (docs/notes/2026-11-04-crop-consensus-floor-check.md): no crop whose
+    /// readings are one good and one far off agrees, every crop whose readings
+    /// both match agrees, and fewer true Yiddish replica crop pairs fall short
+    /// than under the strict rule's Dice (9.1% against 13.4%). At 0.5, 10 of
+    /// 89 such crops agreed.
     pub const IN_RULE: Params = Params {
         metric: Metric::Similarity,
-        floor: 0.5,
+        floor: 0.7,
         min_share: 0.5,
         min_agreed_chars: 100,
     };
