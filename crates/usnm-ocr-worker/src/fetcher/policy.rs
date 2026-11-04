@@ -121,6 +121,12 @@ impl Policy {
         if self.requests_per_minute == 0 || self.slow_requests_per_minute == Some(0) {
             bail!("policy {n}: a rate of zero");
         }
+        if self
+            .slow_requests_per_minute
+            .is_some_and(|s| s > self.requests_per_minute)
+        {
+            bail!("policy {n}: a slow rate above the normal rate");
+        }
         if self.slow_for_secs == Some(0) {
             bail!("policy {n}: a slow rate that lasts no time");
         }
@@ -129,6 +135,13 @@ impl Policy {
         }
         if self.concurrency == 0 || self.attempts == 0 {
             bail!("policy {n}: concurrency and attempts start at 1");
+        }
+        let pb = &self.push_back;
+        if pb.default_hold_secs == 0 || pb.default_hold_secs > pb.max_hold_secs {
+            bail!("policy {n}: a push-back hold of zero, or above max_hold_secs");
+        }
+        if let Some(s) = pb.statuses.iter().find(|s| !(400..=599).contains(*s)) {
+            bail!("policy {n}: push-back status {s} isn't an error status");
         }
         if self
             .serving_probe
