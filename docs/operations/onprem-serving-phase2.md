@@ -44,7 +44,7 @@ Don't commit private addresses, private host names, account ids or tokens with t
 Taken between 22:40:55 and 22:42:42 UTC by the agent working #1101.
 
 - **Public checks** ran from the operator's Mac on the home network, which is the origin's own network, through Cloudflare's Atlanta colocation (`cf-ray` suffix `ATL`). A visitor elsewhere takes a different path, so these numbers show the edge and tunnel path from here, not what visitors see. Each request sent `DNT: 1` and a `usnm-phase2-readonly` user agent. No search was sent.
-- **Host inventory** ran over SSH on pve-big with read-only commands only: `lsblk`, `zpool list`, `zpool status -x`, `lspci`, `ip -br link`, `ethtool`, `dmidecode`, `smartctl -A`, `lsusb`, `command -v`, `systemctl is-active`, `journalctl --list-boots`, `journalctl -k` (a count) and `pct list`/`pct config`.
+- **Host inventory** ran over SSH on the serving host with read-only commands only: `lsblk`, `zpool list`, `zpool status -x`, `lspci`, `ip -br link`, `ethtool`, `dmidecode`, `smartctl -A`, `lsusb`, `command -v`, `systemctl is-active`, `journalctl --list-boots`, `journalctl -k` (a count) and `pct list`/`pct config`.
 - Nothing was started, stopped, changed or deployed, and the Azure spare was not contacted.
 
 ### Certificates (edge)
@@ -95,7 +95,7 @@ Every proxied response also carries `strict-transport-security: max-age=300`, `a
 
 The bundle took 70 to 93 ms in total. Three samples from one network give a median, not a p95, and the path differs from Phase 0's ([baselines](https://github.com/tgoodyear/usnewsmap.com/issues/955#issuecomment-6355390978)). They show that the tunnel path answers in under about 150 ms here; they aren't M2's result.
 
-### Host inventory (pve-big)
+### Host inventory (the serving host)
 
 - **Board:** MSI Z170A SLI PLUS (MS-7998), BIOS 1.E0 (15 Jun 2018).
 - **NVMe:** one 2 TB M.2 PCIe drive (DRAM-less MAXIO MAP1202 controller), firmware GTd74529, in its own ZFS pool, `nvme-serving`, 1.86 TiB, ONLINE and healthy. SMART: no critical warning, 0% used, no media errors, 38 °C, 2 unsafe shutdowns. It reports 8 power-on hours, which doesn't fit an install on 30 October, so treat that counter as unreliable.
