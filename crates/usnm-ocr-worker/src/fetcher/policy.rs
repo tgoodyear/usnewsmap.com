@@ -137,8 +137,15 @@ impl Policy {
             bail!("policy {n}: concurrency and attempts start at 1");
         }
         let pb = &self.push_back;
-        if pb.default_hold_secs == 0 || pb.default_hold_secs > pb.max_hold_secs {
-            bail!("policy {n}: a push-back hold of zero, or above max_hold_secs");
+        if pb.default_hold_secs == 0 {
+            bail!("policy {n}: a push-back default_hold_secs of zero holds nothing");
+        }
+        if pb.default_hold_secs > pb.max_hold_secs {
+            bail!(
+                "policy {n}: push-back default_hold_secs {} is above max_hold_secs {}",
+                pb.default_hold_secs,
+                pb.max_hold_secs
+            );
         }
         if let Some(s) = pb.statuses.iter().find(|s| !(400..=599).contains(*s)) {
             bail!("policy {n}: push-back status {s} isn't an error status");
