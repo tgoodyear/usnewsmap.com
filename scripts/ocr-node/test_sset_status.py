@@ -47,5 +47,25 @@ class StatusPushTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text()), {"curated": 3544})
 
 
+class StatusJournalTests(unittest.TestCase):
+    def test_refused_ids_and_package_only_volumes_are_counted(self):
+        listed = {"fields": {
+            "message": "Serial Set volumes", "volumes": 2, "documents": 4, "to_fetch": 2,
+            "rejected": 3, "package_only": 1,
+        }}
+        journal = json.dumps(listed) + "\n"
+        systemctl_show = "ExecMainStartTimestamp=@1700000000\n"
+
+        def run(argv, **_):
+            stdout = {"show": systemctl_show, "is-active": "active\n"}.get(argv[1], journal)
+            return type("Done", (), {"stdout": stdout})()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(status_module.subprocess, "run", side_effect=run):
+            out = status_module.status("usnm-sset.service", str(Path(directory) / "done"),
+                                       str(Path(directory) / "status.json"))
+        self.assertEqual((out["rejected"], out["package_only"], out["finished"]), (3, 1, False))
+
+
 if __name__ == "__main__":
     unittest.main()

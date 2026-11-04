@@ -368,6 +368,7 @@ pub(crate) async fn congress_serialset_command(
             tracing::warn!(
                 left = report.left,
                 incomplete = report.incomplete.len(),
+                rejected = report.bad_ids.len(),
                 "the Serial Set fetch isn't finished; no marker, and the next start fetches what's left"
             );
         }
