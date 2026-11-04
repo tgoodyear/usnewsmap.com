@@ -112,7 +112,7 @@ test("the home page shows three examples, and adds more on request", async ({ pa
   // A card runs its search.
   const title = (await cards.first().locator("strong").textContent()) ?? "";
   await cards.first().click();
-  await expect(page).toHaveURL(/\/search\//);
+  await expect(page).toHaveURL(/\/examples\//);
   // The search ran (most examples match nothing in the fixtures, which still shows a summary).
   await expect(page.locator(".summary")).toContainText("pages");
   // Back returns to the same cards.
@@ -160,7 +160,7 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   await expectAccessible(page);
 
   await (await findExample(page, /Cross of Gold, 1896/)).click();
-  await expect(page).toHaveURL(/\/search\/cross-of-gold/);
+  await expect(page).toHaveURL(/\/examples\/cross-of-gold/);
   await expect(page.locator(".summary")).toContainText("6 places");
 
   // Keyboard playback: Home goes to the first week, where nothing has matched yet.
