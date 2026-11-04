@@ -28,7 +28,7 @@ import xml.etree.ElementTree as ET
 UNSENT, IN_PROGRESS = 2, 4
 SUCCESS = 1
 ERROR_OUTCOMES = {3, 4, 6, 7}  # client error, no reply, validate error, detached
-VALID, INCONCLUSIVE = 1, 4
+VALID, INVALID, INCONCLUSIVE = 1, 2, 4
 # Workunit error_mask bits.
 TOO_MANY_ERRORS, TOO_MANY_SUCCESS, TOO_MANY_TOTAL, CANCELLED = 2, 4, 8, 16
 
@@ -175,6 +175,9 @@ def analyse(snapshot):
         c["hours"] = hours
         if state == "valid":
             disputed = rank is not None and rank > 2
+        elif state == "other failure":
+            # Cancelling a unit needs no verdict, so only the validator's own counts.
+            disputed = any(r["validate_state"] in (INVALID, INCONCLUSIVE) for r in returns)
         else:
             disputed = state != "open: not disputed" and len(returns) >= 2
         c["disputed"] = int(disputed)

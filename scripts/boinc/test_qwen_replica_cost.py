@@ -77,11 +77,13 @@ class Analyse(unittest.TestCase):
 
     def test_a_cancelled_unit_is_not_counted_as_capped(self):
         snap = snapshot()
-        snap["units"].append(unit(7, "yid", 1, error_mask=16))
+        snap["units"] += [unit(7, "yid", 1, error_mask=16), unit(8, "yid", 1, error_mask=16)]
         snap["results"] += [result(71, 7, validate=4, received=10, elapsed=30), result(72, 7, validate=4, received=20, elapsed=30)]
+        # Cancelled before the validator read the pair: no evidence of a dispute.
+        snap["results"] += [result(81, 8, received=10, elapsed=5), result(82, 8, received=20, elapsed=5)]
         yid = R.analyse(snap)["yid v1"]
-        self.assertEqual((yid["no consensus at cap"], yid["disputed at cap"], yid["other failure"], yid["disputed failed"]), (1, 1, 1, 1))
-        self.assertAlmostEqual(yid["hours failed"] * 3600, 60)
+        self.assertEqual((yid["no consensus at cap"], yid["disputed at cap"], yid["other failure"], yid["disputed failed"]), (1, 1, 2, 1))
+        self.assertAlmostEqual(yid["hours failed"] * 3600, 70)
         self.assertAlmostEqual(yid["hours wasted"] * 3600, 340)
 
     def test_a_pair_the_validator_has_not_read_is_not_disputed(self):
