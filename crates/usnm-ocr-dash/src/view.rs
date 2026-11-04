@@ -484,7 +484,16 @@ fn fetch_view(f: &mut Fetch, now: DateTime<Utc>) -> FetchView {
         dead_pages: f.dead.len(),
         cooling_pages,
         cooling_unqueued,
-        recent_failures: f.failures.iter().rev().take(15).cloned().collect(),
+        recent_failures: f
+            .failures
+            .iter()
+            .rev()
+            .take(15)
+            .map(|e| FailureLine {
+                recovered_at: f.fetched_after(&e.doc_id, e.at),
+                ..e.clone()
+            })
+            .collect(),
         keep_eta_secs: keep_eta,
     }
 }
@@ -737,6 +746,44 @@ pub fn read_seed_plan(bytes: &[u8]) -> anyhow::Result<BTreeMap<String, String>> 
 mod tests {
     use super::*;
     use usnm_ocr_contract::status::HostStats;
+
+    #[test]
+    fn a_failure_shows_when_its_page_was_fetched_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let failure = |id: &str| {
+            format!(
+                "{{\"doc_id\":\"{id}\",\"kind\":\"transient\",\"error\":\"e\",\"at\":\"2026-11-03T14:18:07Z\"}}\n"
+            )
+        };
+        std::fs::write(
+            dir.path().join("failures-full.jsonl"),
+            failure("a") + &failure("b") + &failure("c"),
+        )
+        .unwrap();
+        // `a` again after it failed, `b` only before, `c` never.
+        std::fs::write(
+            dir.path().join("index-full.jsonl"),
+            "{\"doc_id\":\"b\",\"fetched_at\":\"2026-11-03T14:00:00Z\",\"bytes\":1}\n\
+             {\"doc_id\":\"a\",\"fetched_at\":\"2026-11-03T14:22:02Z\",\"bytes\":1}\n",
+        )
+        .unwrap();
+        let now = "2026-11-03T15:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.poll(now);
+        let recovered: Vec<_> = fetch_view(&mut f, now)
+            .recent_failures
+            .into_iter()
+            .map(|l| (l.doc_id, l.recovered_at.map(|t| t.to_rfc3339())))
+            .collect();
+        assert_eq!(
+            recovered,
+            [
+                ("c".to_owned(), None),
+                ("b".to_owned(), None),
+                ("a".to_owned(), Some("2026-11-03T14:22:02+00:00".to_owned())),
+            ]
+        );
+    }
 
     #[test]
     fn a_host_is_as_old_as_its_stats_not_the_last_read() {

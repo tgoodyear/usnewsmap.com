@@ -126,6 +126,10 @@ pub use select::{sample, select};
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
 
+/// Characters of an error a failure line keeps: room for a tile.loc.gov
+/// address and the whole error chain after it, the cause last.
+const MAX_FAILURE_CHARS: usize = 1000;
+
 /// What to fetch.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -592,7 +596,7 @@ impl Run {
         self.failures[t].push(&Failure {
             doc_id: row.doc_id.clone(),
             kind: kind.into(),
-            error: error.chars().take(300).collect(),
+            error: error.chars().take(MAX_FAILURE_CHARS).collect(),
             at: now_rfc3339(),
         })?;
         if let Outcome::Deferred(until) = outcome {
@@ -882,7 +886,7 @@ impl Run {
                 self.failures[&t].push(&Failure {
                     doc_id: row.doc_id.clone(),
                     kind: kind.into(),
-                    error: msg.chars().take(300).collect(),
+                    error: msg.chars().take(MAX_FAILURE_CHARS).collect(),
                     at: now_rfc3339(),
                 })?;
                 if kind == "permanent" {

@@ -62,7 +62,7 @@ pub fn render(v: &View) -> String {
 #[cfg(test)]
 mod tests {
     use super::ecosystem::pipeline_panel;
-    use super::fmt::{msg, pct, short_urls};
+    use super::fmt::{failure_msg, msg, pct, short_urls};
     use super::*;
     use chrono::Utc;
 
@@ -512,6 +512,30 @@ mod tests {
             msg("a <b> https://www.loc.gov/item/x/", None),
             "<td class=\"msg\"><details class=\"more\"><summary><span class=\"clamp\">a &lt;b&gt; /item/x/</span></summary>\
              <div>a &lt;b&gt; https://www.loc.gov/item/x/</div></details></td>"
+        );
+    }
+
+    #[test]
+    fn a_fetch_failure_shows_its_cause_before_its_address() {
+        let url = "https://tile.loc.gov/image-services/iiif/service:ndnp:dlc:batch_x:data:0352/full/full/0/default.jpg";
+        let cell = failure_msg(
+            &format!("{url}: the answer's body could not be read (end of file)"),
+            None,
+        );
+        assert!(
+            cell.contains("<span class=\"clamp\">the answer&#39;s body could not be read (end of file) — /image-services/iiif/"),
+            "{cell}"
+        );
+        assert!(
+            cell.contains(&format!(
+                "<div>{url}: the answer&#39;s body could not be read"
+            )),
+            "{cell}"
+        );
+        // An error that doesn't start with an address is as it was.
+        assert_eq!(
+            failure_msg("loc.gov lists no image for sn1/x: seq-2", None),
+            msg("loc.gov lists no image for sn1/x: seq-2", None)
         );
     }
 }
