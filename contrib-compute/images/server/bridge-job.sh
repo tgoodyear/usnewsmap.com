@@ -91,6 +91,8 @@
 #   BRIDGE_STEP=quality-submit  [QUALITY_MAX=500]
 #   BRIDGE_STEP=quality-collect QUALITY_SPOOL=<assimilator results directory>
 #                               [QWEN_CAMPAIGN=... QWEN_SPOOL=...]
+#                               [QWEN_CROP_STATES=<project>/qwen/crop-states] (only the crops an
+#                               agreeing crop-consensus-v2 pair vouched for join, #1434)
 #                               [SURYA_CAMPAIGN=... SURYA_SPOOL=...] (crop units' texts join
 #                               crops.parquet as the reader surya, #968)
 #                               [QUALITY_CURATED_URL=...] (else writes <campaign>/out)
@@ -460,6 +462,7 @@ case "$step" in
     [ -n "${QUALITY_CURATED_URL:-}" ] && out_args=(--curated-url "$QUALITY_CURATED_URL")
     exec usnm-boinc quality collect --campaign "$QUALITY_CAMPAIGN" --root "$QUALITY" \
       --spool "${QUALITY_SPOOL:?set QUALITY_SPOOL}" --qwen-root "$qwen_root" --qwen-spool "$qwen_spool" \
+      ${QWEN_CROP_STATES:+--qwen-crop-states "$QWEN_CROP_STATES"} \
       ${surya_args[@]+"${surya_args[@]}"} "${out_args[@]}" ;;
   quality-summary)
     usnm-boinc quality summary --root "$QUALITY" --seen "$PROJ/quality/seen" --pairs "$PROJ/quality/pairs.jsonl" \

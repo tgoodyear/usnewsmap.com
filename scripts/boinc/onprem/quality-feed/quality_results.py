@@ -105,6 +105,10 @@ def run(args):
         "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
         "--out-dir", root + "/out",
     ]
+    crop_states = getattr(args, "qwen_crop_states", None)
+    if args.qwen_campaign and crop_states:
+        # Only the crops an agreeing crop-consensus-v2 pair vouched for join (#1434).
+        command.extend(["--qwen-crop-states", crop_states])
     if args.incremental:
         command.extend(["--cache", root + "/collected-parts",
                         "--max-dirty-units", str(args.max_dirty_units)])
@@ -170,6 +174,9 @@ def main(argv=None):
                              "results share its name, with its own collector if named")
     parser.add_argument("--engine-image", required=True)
     parser.add_argument("--qwen-campaign", help="join this native Qwen campaign's canonical batch-8 readings")
+    parser.add_argument("--qwen-crop-states", metavar="DIR",
+                        help="the server's `qwen compare --crop-states` directory, passed to collectors "
+                             "joining Qwen readings so only vouched crops join (needs a collector from #1434 on)")
     parser.add_argument("--incremental", action="store_true",
                         help="reuse native content-addressed rows; incomplete warming never loads")
     parser.add_argument("--max-dirty-units", type=int, default=8)
@@ -192,6 +199,8 @@ def main(argv=None):
         parser.error("invalid campaign, engine image, server host, container id, dirty-unit or lock-wait bound")
     if args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign):
         parser.error("invalid native Qwen campaign")
+    if args.qwen_crop_states and not re.fullmatch(r"/[A-Za-z0-9._/-]+", args.qwen_crop_states):
+        parser.error("--qwen-crop-states must be an absolute path")
     with args.lock.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.native_campaign:

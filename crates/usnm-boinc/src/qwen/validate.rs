@@ -107,14 +107,27 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         pages,
         crop_states,
     } = opts;
+    // The collector reads the kept states to learn which crops a pair vouched for.
+    anyhow::ensure!(
+        rule != Rule::CropConsensusV2 || crop_states.is_some(),
+        "--rule crop-consensus-v2 needs --crop-states"
+    );
     let (la, lb) = (load(a)?, load(b)?);
     let (crops, strict) = qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, min_dice);
     let consensus = (rule == Rule::CropConsensusV2).then(|| {
         super::consensus::judge(&la, &lb, super::consensus::Params::IN_RULE, strict.clone())
     });
-    let verdict = consensus
+    let mut verdict = consensus
         .as_ref()
-        .map_or_else(|| strict.clone(), |(_, v)| v.clone());
+        .map_or_else(|| strict.clone(), |j| j.verdict.clone());
+    if let (Some(judged), Some(dir)) = (&consensus, crop_states) {
+        // Without its record the collector would take the result as the strict
+        // rule accepted it, crop for crop, so the strict verdict decides instead.
+        if let Err(e) = super::consensus::record(dir, a, b, &la, &lb, judged, verdict.is_ok()) {
+            eprintln!("crop states not written, the strict rule decides: {e:#}");
+            verdict = strict.clone();
+        }
+    }
     let page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
     let names = pages.filter(|_| !page_verdicts.is_empty()).and_then(|dir| {
         match (
@@ -155,10 +168,11 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             "pages": page_verdicts.iter().map(|p| serde_json::json!({"doc_id": p.doc_id, "agree": p.agree, "reason": p.reason})).collect::<Vec<_>>(),
             "reason": verdict.as_ref().err(),
         });
-        if let Some((states, _)) = &consensus {
+        if let Some(judged) = &consensus {
             line["rule"] = "crop-consensus-v2".into();
+            line["basis"] = serde_json::to_value(judged.basis)?;
             line["strict_reason"] = serde_json::json!(strict.as_ref().err());
-            line["crop_states"] = serde_json::to_value(states)?;
+            line["crop_states"] = serde_json::to_value(&judged.crops)?;
         }
         if let Some(parent) = log.parent() {
             std::fs::create_dir_all(parent)?;
@@ -169,12 +183,6 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             .open(log)?;
         // One write, so two validators appending at once cannot interleave a line.
         f.write_all(format!("{line}\n").as_bytes())?;
-    }
-    if let (Some((states, _)), Some(dir)) = (&consensus, crop_states) {
-        // Like a page record: one that cannot be written leaves the verdict as it is.
-        if let Err(e) = super::consensus::record(dir, a, b, &la, &lb, states, verdict.is_ok()) {
-            eprintln!("crop states not written: {e:#}");
-        }
     }
     verdict.map_err(|e| anyhow::anyhow!(e))
 }

@@ -205,6 +205,19 @@ class ResultsTest(unittest.TestCase):
             load = run.call_args_list[2].args[0][-1]
             self.assertIn("--campaign qwen-nonenglish-v1", load)
             self.assertIn("/results/qwen-nonenglish-v1/snapshots/", load)
+            self.assertNotIn("--qwen-crop-states", command)
+
+    def test_crop_states_reach_collectors_that_join_readings_only(self):
+        args = self.args()
+        args.qwen_crop_states = "/project/usnmocr/qwen/crop-states"
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+            self.assertNotIn("--qwen-crop-states", run.call_args_list[0].args[0][-1])
+        args.campaign = args.qwen_campaign = "qwen-nonenglish-v1"
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+            self.assertIn("--qwen-crop-states /project/usnmocr/qwen/crop-states",
+                          run.call_args_list[0].args[0][-1])
 
 
 class NativeCampaignsTest(unittest.TestCase):

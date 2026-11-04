@@ -169,6 +169,35 @@ pub enum QwenCommands {
         #[arg(long)]
         crop_states: Option<PathBuf>,
     },
+    /// Measure the crop-consensus-v2 floor on crops with human transcriptions, offline.
+    Grounded {
+        /// JSON Lines of `{id, source, lang, ref}`.
+        #[arg(long)]
+        refs: PathBuf,
+        /// `NAME=PATH`, JSON Lines of `{id, text}`; repeatable.
+        #[arg(long = "reader", required = true, value_parser = named_path)]
+        readers: Vec<(String, PathBuf)>,
+        /// `A:B`, two reader names; repeatable.
+        #[arg(long = "pair", required = true, value_parser = reader_pair)]
+        pairs: Vec<(String, String)>,
+        /// A reader whose error on each crop bands it `clean`, `fair` or `poor`.
+        #[arg(long)]
+        legibility: Option<PathBuf>,
+        #[arg(long, default_value_t = 0.10)]
+        good_cer: f64,
+        #[arg(long, default_value_t = 0.50)]
+        bad_cer: f64,
+        /// Another floor for the rule (and the Dice it is compared with).
+        #[arg(long, default_value_t = super::consensus::Params::IN_RULE.floor)]
+        floor: f64,
+        #[arg(long, default_value_t = 1434)]
+        seed: u64,
+        #[arg(long)]
+        out: PathBuf,
+        /// Also write one JSON line per crop and pair here.
+        #[arg(long)]
+        crops: Option<PathBuf>,
+    },
     /// Measure validator rules against retained results, offline, with negative controls.
     Replay {
         /// The directory `check --keep` writes to.
@@ -346,6 +375,32 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                 crop_states: crop_states.as_deref(),
             },
         )?,
+        QwenCommands::Grounded {
+            refs,
+            readers,
+            pairs,
+            legibility,
+            good_cer,
+            bad_cer,
+            floor,
+            seed,
+            out,
+            crops,
+        } => {
+            let got = x::grounded::run(&x::grounded::Options {
+                refs: &refs,
+                readers: &readers,
+                pairs: &pairs,
+                legibility: legibility.as_deref(),
+                good_cer,
+                bad_cer,
+                floor,
+                seed,
+                out: &out,
+                crops: crops.as_deref(),
+            })?;
+            print!("{}", x::grounded::table(&got));
+        }
         QwenCommands::Replay {
             seen,
             model,
@@ -363,4 +418,20 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn named_path(s: &str) -> Result<(String, PathBuf), String> {
+    let (name, path) = s.split_once('=').ok_or("expected NAME=PATH")?;
+    if name.is_empty() || path.is_empty() {
+        return Err("expected NAME=PATH".into());
+    }
+    Ok((name.to_owned(), PathBuf::from(path)))
+}
+
+fn reader_pair(s: &str) -> Result<(String, String), String> {
+    let (a, b) = s.split_once(':').ok_or("expected A:B")?;
+    if a.is_empty() || b.is_empty() {
+        return Err("expected A:B".into());
+    }
+    Ok((a.to_owned(), b.to_owned()))
 }

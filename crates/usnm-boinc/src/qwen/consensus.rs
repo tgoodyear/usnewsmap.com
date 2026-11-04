@@ -20,7 +20,7 @@
 //! states are logged and kept, and accuracy is not established by either.
 use super::validate::Loaded;
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     io::Write as _,
@@ -29,13 +29,24 @@ use std::{
 use usnm_ocr_contract::qwen::{tail_repetition, Outcome};
 use usnm_ocr_quality::distance;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CropState {
     Agree,
     Disagree,
     Looped,
     NoText,
+}
+
+impl CropState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CropState::Agree => "agree",
+            CropState::Disagree => "disagree",
+            CropState::Looped => "looped",
+            CropState::NoText => "no_text",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,7 +82,7 @@ impl Params {
     };
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CropVerdict {
     pub id: String,
     pub state: CropState,
@@ -241,29 +252,59 @@ pub fn sides(l: &Loaded) -> BTreeMap<&str, Side<'_>> {
         .collect()
 }
 
-/// Judges a pair of results. A pair that did not both finish, or that is for
-/// different jobs or engines, keeps `strict`, the strict rule's verdict.
-pub fn judge(
-    a: &Loaded,
-    b: &Loaded,
-    params: Params,
-    strict: Result<(), String>,
-) -> (Vec<CropVerdict>, Result<(), String>) {
-    let finished = a.result.outcome == Outcome::Ok && b.result.outcome == Outcome::Ok;
-    if !finished || a.result.job_id != b.result.job_id || a.result.engine != b.result.engine {
-        return (Vec::new(), strict);
-    }
-    judge_crops(&sides(a), &sides(b), params)
+/// Which rule decided a pair whose crop states are kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Basis {
+    /// Crop by crop: the pair vouches for its `agree` crops only.
+    CropConsensusV2,
+    /// The pair did not both finish, or is for different jobs or engines, so
+    /// the strict rule's verdict stands and covers every crop, as it always has.
+    StrictV1,
 }
 
-/// Writes a pair's crop states once under `<dir>/<job_id>/<pair>.json`.
+/// A pair as `crop-consensus-v2` decided it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Judged {
+    pub basis: Basis,
+    pub crops: Vec<CropVerdict>,
+    pub verdict: Result<(), String>,
+}
+
+/// Judges a pair of results. A pair that did not both finish, or that is for
+/// different jobs or engines, keeps `strict`, the strict rule's verdict.
+pub fn judge(a: &Loaded, b: &Loaded, params: Params, strict: Result<(), String>) -> Judged {
+    let finished = a.result.outcome == Outcome::Ok && b.result.outcome == Outcome::Ok;
+    if !finished || a.result.job_id != b.result.job_id || a.result.engine != b.result.engine {
+        return Judged {
+            basis: Basis::StrictV1,
+            crops: Vec::new(),
+            verdict: strict,
+        };
+    }
+    let (crops, verdict) = judge_crops(&sides(a), &sides(b), params);
+    Judged {
+        basis: Basis::CropConsensusV2,
+        crops,
+        verdict,
+    }
+}
+
+/// The version of the crop-state records [`record`] writes and the collector
+/// reads (`quality::collect`).
+pub const RECORD_VERSION: u32 = 2;
+/// The largest crop-state record the collector reads.
+pub const MAX_RECORD: usize = 1 << 20;
+
+/// Writes a pair's crop states once under `<dir>/<job_id>/<pair>.json`. The
+/// collector reads them to keep only the crops an agreeing pair vouched for.
 pub fn record(
     dir: &Path,
     a: &[PathBuf],
     b: &[PathBuf],
     la: &Loaded,
     lb: &Loaded,
-    states: &[CropVerdict],
+    judged: &Judged,
     agree: bool,
 ) -> anyhow::Result<()> {
     let mut sides = [
@@ -273,13 +314,14 @@ pub fn record(
     sides.sort_by(|x, y| x.0.cmp(&y.0));
     let names = [sides[0].0.clone(), sides[1].0.clone()];
     let record = serde_json::json!({
-        "v": 1,
+        "v": RECORD_VERSION,
         "rule": "crop-consensus-v2",
+        "basis": judged.basis,
         "job_id": la.result.job_id,
         "results": names,
         "readings_sha256": [sides[0].1.result.readings_sha256, sides[1].1.result.readings_sha256],
         "agree": agree,
-        "crops": states,
+        "crops": judged.crops,
         "accuracy_established": false,
     });
     let bytes = serde_json::to_vec_pretty(&record)?;
@@ -296,6 +338,115 @@ pub fn record(
         Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e.error).context("crop states"),
     }
+}
+
+/// A crop-state record as [`record`] writes it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Record {
+    pub v: u32,
+    pub rule: String,
+    pub basis: Basis,
+    pub job_id: String,
+    pub readings_sha256: [String; 2],
+    pub agree: bool,
+    pub crops: Vec<CropVerdict>,
+}
+
+/// The crop-state records kept for a job, sorted: `<dir>/<job_id>/*.json`.
+/// None are kept for a job no pair was judged for under this rule.
+pub fn record_paths(dir: &Path, job_id: &str) -> anyhow::Result<Vec<PathBuf>> {
+    usnm_ocr_contract::quality::check_doc_id(job_id)?;
+    let entries = match std::fs::read_dir(dir.join(job_id)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).context("reading crop states"),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        // `record` stages through temporary files in the same directory.
+        if path.extension().is_some_and(|x| x == "json") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// What a canonical result's agreeing pairs vouch for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Vouch {
+    /// No agreeing pair was judged crop by crop: the strict rule accepted the
+    /// result, and it vouches for every crop, as it always has.
+    Strict,
+    /// The crops' best states over the agreeing pairs that include the
+    /// result: a crop is vouched for when one of them is `agree`. A crop no
+    /// agreeing pair judged is absent.
+    Crops(BTreeMap<String, CropState>),
+}
+
+impl Vouch {
+    /// Whether the crop's reading may be used.
+    pub fn vouches(&self, crop: &str) -> bool {
+        match self {
+            Vouch::Strict => true,
+            Vouch::Crops(states) => states.get(crop) == Some(&CropState::Agree),
+        }
+    }
+
+    /// What the crop tables say about the crop: `strict-v1`, a crop state, or
+    /// `unjudged`.
+    pub fn label(&self, crop: &str) -> &'static str {
+        match self {
+            Vouch::Strict => "strict-v1",
+            Vouch::Crops(states) => states.get(crop).map_or("unjudged", |s| s.as_str()),
+        }
+    }
+}
+
+/// What the kept records vouch for in the canonical result of `job_id` whose
+/// readings hash to `readings_sha256`. Only agreeing pairs that include that
+/// result count. A record that cannot be read fails the call, so a canonical
+/// result is never used on a guess.
+pub fn vouched(dir: &Path, job_id: &str, readings_sha256: &str) -> anyhow::Result<Vouch> {
+    let rank = |s: CropState| match s {
+        CropState::Agree => 3,
+        CropState::Looped => 2,
+        CropState::NoText => 1,
+        CropState::Disagree => 0,
+    };
+    let mut states: BTreeMap<String, CropState> = BTreeMap::new();
+    let (mut by_crop, mut strict) = (false, false);
+    // Every record is read, so one that can't be is never skipped.
+    for path in record_paths(dir, job_id)? {
+        let bytes = crate::read(&path, MAX_RECORD)?;
+        let r: Record = serde_json::from_slice(&bytes)
+            .with_context(|| format!("crop states {}", path.display()))?;
+        anyhow::ensure!(
+            r.v == RECORD_VERSION && r.rule == "crop-consensus-v2" && r.job_id == job_id,
+            "{}: not a version {RECORD_VERSION} crop-state record for {job_id}",
+            path.display()
+        );
+        if !r.agree || !r.readings_sha256.iter().any(|s| s == readings_sha256) {
+            continue;
+        }
+        if r.basis == Basis::StrictV1 {
+            strict = true;
+            continue;
+        }
+        by_crop = true;
+        for c in r.crops {
+            let best = states.entry(c.id).or_insert(c.state);
+            if rank(c.state) > rank(*best) {
+                *best = c.state;
+            }
+        }
+    }
+    Ok(if by_crop && !strict {
+        Vouch::Crops(states)
+    } else {
+        Vouch::Strict
+    })
 }
 
 #[cfg(test)]
@@ -549,5 +700,122 @@ mod tests {
         assert_eq!(r["results"][0], names.0);
         assert_eq!(r["readings_sha256"][0], load(&a).readings_sha256);
         assert_eq!(r["readings_sha256"][1], load(&b).readings_sha256);
+    }
+
+    #[test]
+    fn crop_states_are_required_and_a_lost_record_leaves_the_strict_verdict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (x, y) = (
+            "alpha betta gamma delta epsilon zeta",
+            "alpho betty gammo delty epsilon zeta",
+        );
+        let (long_a, long_b) = (
+            format!("{LINE_A} {OTHER} {LINE_A}"),
+            format!("{LINE_B} {OTHER} {LINE_B}"),
+        );
+        let a = write(tmp.path(), "a", &[("c01", &long_a), ("c02", x)]);
+        let b = write(tmp.path(), "b", &[("c01", &long_b), ("c02", y)]);
+        let opts = |crop_states| Compare {
+            min_dice: 0.5,
+            rule: Rule::CropConsensusV2,
+            log: None,
+            pages: None,
+            crop_states,
+        };
+        let err = compare_with(&a, &b, opts(None)).unwrap_err().to_string();
+        assert!(err.contains("--crop-states"), "{err}");
+        // A file where the directory should be: the record can't be written,
+        // so the strict rule, which fails c02, decides.
+        let blocked = tmp.path().join("blocked");
+        std::fs::write(&blocked, b"").unwrap();
+        assert!(compare_with(&a, &b, opts(Some(&blocked))).is_err());
+        let states = tmp.path().join("states");
+        compare_with(&a, &b, opts(Some(&states))).unwrap();
+        let la = crate::qwen::validate::load(&a).unwrap();
+        let lb = crate::qwen::validate::load(&b).unwrap();
+        assert_eq!(record_paths(&states, &la.result.job_id).unwrap().len(), 1);
+        // Both results are vouched for on both crops.
+        for l in [&la, &lb] {
+            match vouched(&states, &l.result.job_id, &l.result.readings_sha256).unwrap() {
+                Vouch::Crops(m) => {
+                    assert!(m.values().all(|s| *s == CropState::Agree) && m.len() == 2)
+                }
+                Vouch::Strict => panic!("judged crop by crop"),
+            }
+        }
+        // Another result of the job is not.
+        assert_eq!(
+            vouched(&states, &la.result.job_id, "elsewhere").unwrap(),
+            Vouch::Strict
+        );
+    }
+
+    #[test]
+    fn vouching_takes_the_best_state_over_agreeing_pairs_and_rejects_unknown_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = "job1";
+        let put = |name: &str, v: u32, agree: bool, basis: &str, crops: serde_json::Value| {
+            let dir = tmp.path().join(job);
+            std::fs::create_dir_all(&dir).unwrap();
+            let r = serde_json::json!({
+                "v": v, "rule": "crop-consensus-v2", "basis": basis, "job_id": job,
+                "results": ["x", "y"], "readings_sha256": ["mine", "peer"],
+                "agree": agree, "crops": crops, "accuracy_established": false,
+            });
+            std::fs::write(dir.join(name), serde_json::to_vec(&r).unwrap()).unwrap();
+        };
+        let crop =
+            |id: &str, state: &str| serde_json::json!({"id": id, "state": state, "score": null});
+        assert_eq!(vouched(tmp.path(), job, "mine").unwrap(), Vouch::Strict);
+        put(
+            "1.json",
+            RECORD_VERSION,
+            true,
+            "crop-consensus-v2",
+            serde_json::json!([
+                crop("c01", "agree"),
+                crop("c02", "no_text"),
+                crop("c03", "looped")
+            ]),
+        );
+        put(
+            "2.json",
+            RECORD_VERSION,
+            true,
+            "crop-consensus-v2",
+            serde_json::json!([crop("c01", "looped"), crop("c02", "looped")]),
+        );
+        // A disagreeing pair never vouches, whatever its crops say.
+        put(
+            "3.json",
+            RECORD_VERSION,
+            false,
+            "crop-consensus-v2",
+            serde_json::json!([crop("c03", "agree")]),
+        );
+        // A staged temporary file is not a record.
+        std::fs::write(tmp.path().join(job).join(".tmpXYZ"), b"{").unwrap();
+        let v = vouched(tmp.path(), job, "mine").unwrap();
+        assert!(v.vouches("c01") && !v.vouches("c02") && !v.vouches("c03") && !v.vouches("c04"));
+        assert_eq!(
+            [
+                v.label("c01"),
+                v.label("c02"),
+                v.label("c03"),
+                v.label("c04")
+            ],
+            ["agree", "looped", "looped", "unjudged"]
+        );
+        assert!(Vouch::Strict.vouches("c09"));
+        assert_eq!(Vouch::Strict.label("c09"), "strict-v1");
+        put(
+            "4.json",
+            1,
+            true,
+            "crop-consensus-v2",
+            serde_json::json!([]),
+        );
+        assert!(vouched(tmp.path(), job, "mine").is_err());
+        assert!(record_paths(tmp.path(), "../x").is_err());
     }
 }

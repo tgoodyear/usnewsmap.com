@@ -169,6 +169,10 @@ pub enum QualityCommands {
         qwen_root: PathBuf,
         #[arg(long)]
         qwen_spool: PathBuf,
+        /// The directory `qwen compare --crop-states` writes: a reading joins only on the crops
+        /// an agreeing pair vouched for. Without it every canonical crop joins (`strict-v1`).
+        #[arg(long)]
+        qwen_crop_states: Option<PathBuf>,
         /// Reuse content-addressed per-unit rows; late canonical readings invalidate joins.
         #[arg(long)]
         cache: Option<PathBuf>,
@@ -426,6 +430,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             spool,
             qwen_root,
             qwen_spool,
+            qwen_crop_states,
             cache,
             max_dirty_units,
             inventory_only,
@@ -441,6 +446,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 spool,
                 qwen_root,
                 qwen_spool,
+                qwen_crop_states,
                 cache,
                 max_dirty_units,
                 surya_root,
