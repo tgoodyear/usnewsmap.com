@@ -330,6 +330,12 @@ param backfillOnPrem bool = false
 @description('Alert on the on-prem OCR pickup (#1139, modules/ocr-sync-alerts.bicep): a failed run, no run through the pickup for more than 2 hours, and node output left in ocr-out over 72 hours, from the metrics it sends to the environment\'s Application Insights. With ocrSyncOnPrem and alert emails.')
 param ocrSyncAlerts bool = false
 
+@description('Alert on the live BOINC feed health (#1441, modules/boinc-feed-alerts.bicep): a data collection rule that takes the evaluator host\'s local0 lines into the OCR nodes\' workspace, and two log alerts through the action group (a check firing or unknown, the evaluator\'s events missing). With ocrNodes, alert emails and boincFeedMachine. The host\'s association with the rule is made by hand (docs/boinc/boundaries-and-monitoring.md).')
+param boincFeedAlerts bool = false
+
+@description('Name of the BOINC feed evaluator host\'s Arc machine in the environment\'s resource group, for boincFeedAlerts: the alerts read only its rows. Settings only, never in the repository.')
+param boincFeedMachine string = ''
+
 @description('Deploy the on-prem OCR exchange account (stusnmo<suffix>, #296, ADR-0015): work queues and an output container for OCR nodes outside Azure, behind a firewall that allows nodeIps and the Container Apps subnet.')
 param ocrNodes bool = false
 
@@ -1335,6 +1341,27 @@ module jaOcrAlertRules 'modules/jaocr-alerts.bicep' = if (!empty(emails) && jaOc
   }
 }
 
+// The live BOINC feed health (#1441): the evaluator host's local0 lines into
+// the OCR nodes' workspace, and alerts on them through the action group.
+var boincFeedOn = !empty(emails) && boincFeedAlerts && ocrNodes && !empty(trim(boincFeedMachine))
+
+module boincFeedAlertRules 'modules/boinc-feed-alerts.bicep' = if (boincFeedOn) {
+  scope: rg
+  name: 'boinc-feed-alerts'
+  params: {
+    location: location
+    tags: tags
+    workspaceName: ocrNodeMonitoring!.outputs.workspaceName
+    actionGroupId: monitoring.outputs.actionGroupId
+    machineName: trim(boincFeedMachine)
+    ruleName: n.boincFeedDcr
+    alertNames: {
+      condition: n.boincFeedConditionAlert
+      missing: n.boincFeedMissingAlert
+    }
+  }
+}
+
 // API server errors and latency, from the requests it exports; search
 // capacity (queue wait and replica CPU, #238); availability tests of the
 // site and the API on the custom domain once its certificates are bound.
@@ -1533,6 +1560,9 @@ output SCAN_ARCHIVE_BLOB_ENDPOINT string = ocrNodes ? scanArchive!.outputs.blobE
 output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.
 output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : ''
+// The BOINC feed evaluator's data collection rule (#1441); associate the
+// evaluator host with it by hand (docs/boinc/boundaries-and-monitoring.md).
+output BOINC_FEED_DCR_ID string = boincFeedOn ? boincFeedAlertRules!.outputs.ruleId : ''
 // The nodes' own Application Insights component: onboard.sh passes its
 // ingestion settings (not a credential: local auth is off) to the worker.
 output OCR_NODE_APPINSIGHTS string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsConnectionString : ''

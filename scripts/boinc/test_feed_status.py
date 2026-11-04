@@ -62,6 +62,37 @@ class MainTest(unittest.TestCase):
         self.assertTrue(record["unsent_below_idle"])
         self.assertFalse(record["tick_failed_or_slow"])
 
+    def test_delivery_test_prints_only_the_synthetic_line(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = F.main(["--delivery-test"])
+        self.assertEqual(code, 0)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(set(record), {"schema_version", "event", "observed_at", "test"})
+        self.assertEqual(record["event"], "boinc_feed_delivery_test")
+        self.assertIs(record["test"], True)
+        self.assertIsInstance(record["observed_at"], int)
+        # Never mixed with live collection, which would write state.
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            F.main(["--delivery-test", "--config", "feed.json", "--state-dir", "state"])
+
+    def test_alert_rules_keep_delivery_tests_out_of_health(self):
+        module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        lines = module.split("var lines = '''", 1)[1].split("'''", 1)[0]
+        events = lines.split("let FeedEvents = FeedLines", 1)[1]
+        self.assertIn("| where Feed.event == 'boinc_feed_health';", events)
+        self.assertIn("FeedEvents\n| summarize arg_max(TimeGenerated, *)", events)
+        self.assertIn("| where Feed.schema_version == 1", lines)
+        condition, missing = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)
+        test_branch = condition.rsplit("| union (", 1)[1]
+        self.assertIn(f"Feed.event == '{F.DELIVERY_TEST_EVENT}' and tobool(Feed.test)", test_branch)
+        self.assertIn("Observed between (ago(10m) .. now())", test_branch)
+        self.assertIn("| project Check = 'delivery_test'", test_branch)
+        self.assertNotIn("FeedLines", missing.split("]", 1)[0])
+        self.assertNotIn("delivery", missing.split("]", 1)[0])
+
 
 class DurationTest(unittest.TestCase):
     def setUp(self):

@@ -321,44 +321,139 @@ shows the same state. Do not waive unknown eligibility or stale request coverage
 
 ### Existing alert route and deployment gate
 
-The on-prem BOINC stack's former `modules/monitor.bicep` declares a workspace
-and log readers, **not an action group**; it is removed with the Azure server.
-The current reusable route is the main environment's existing action group
-(`infra/modules/monitoring.bicep`, `actionGroupId`), already passed to the OCR
-node alerts. `infra/modules/boinc-feed-alerts.bicep` takes that **existing ID**
-and the **existing OCR node workspace**; it creates no destination or workspace.
-Do not invent an email/webhook or change daily caps to deploy this feature.
+The on-prem BOINC stack's former `modules/monitor.bicep` declared a workspace
+and log readers, **not an action group**; it was removed with the Azure server.
+The only notification route is the main environment's action group
+(`infra/modules/monitoring.bicep`, `actionGroupId`, emailing the private
+`USNM_ALERT_EMAILS`), which the OCR node and pickup alerts already use. Do not
+add an email, webhook or second action group for this feature, and do not
+change the OCR workspace's daily cap.
 
-The evaluator logs one bounded JSON line/minute as `local0.info`, with
-`SyslogIdentifier=usnm-boinc-feed-health`. The existing OCR node DCR already
-collects local0 Info. Confirm the evaluator host already forwards that facility
-to the existing workspace before enabling the rules. An Arc/DCR association or
-existing forwarding path must be established through the normal approved
-onboarding process if it does not; membership alone is not proof of ingestion.
+The route, from the evaluator to an email:
 
-Use private deployment outputs for `OCR_RESOURCE_GROUP`, `OCR_WORKSPACE`,
-`EXISTING_ACTION_GROUP_ID`, `EVALUATOR_COMPUTER`, and `AZURE_LOCATION`. The
-standalone module avoids applying unrelated main-stack drift:
+1. `usnm-boinc-feed-health.service` logs one JSON line a minute to
+   `local0.info` as `usnm-boinc-feed-health` (about 1.8 KB with five own
+   clients).
+2. `usnm-boinc-feed-dcr-<env>`, a data collection rule associated only with the
+   evaluator host's Arc machine, sends `local0` at Info and above to the OCR
+   nodes' workspace, `usnm-ocr-log-<env>`: about 2.6 MB a day. It is not the
+   nodes' rule, which would also send the host's counters and VM insights (20
+   to 45 MB a day) against the workspace's 0.1 GB cap.
+3. Two stateful scheduled-query rules (`infra/modules/boinc-feed-alerts.bicep`)
+   run every five minutes on that machine's rows only (`_ResourceId`, which a
+   node can't set) and email through the existing action group:
+   - `usnm-boinc-feed-condition-alert-<env>`: a check that is firing or unknown
+     in the latest line of the last three minutes, or firing in any line of the
+     last ten. A `boinc_feed_delivery_test` line of the last ten minutes fires
+     it with `Check=delivery_test` (below); that line never counts as health.
+   - `usnm-boinc-feed-missing-alert-<env>`: no health line observed in the last
+     five minutes (`Check=collector_heartbeat`): the evaluator, its timer, the
+     host, the agent or the association stopped, or the workspace reached its
+     cap.
+
+Both rules split by `Check`, so each check is its own alert. Azure deduplicates
+and recovers them (`autoMitigate`): one email when a check starts firing, none
+while it stays firing, and a resolved email once it has stayed clear, typically
+about 30 minutes or more later. The evaluator sends no transitions of its own.
+The rules are billed by frequency and by the number of `Check` series.
+
+`main.bicep` deploys the rule and the alerts with `USNM_BOINC_FEED_ALERTS=true`,
+`USNM_OCR_NODES`, alert emails and the private `USNM_BOINC_FEED_MACHINE`; the
+stack (ADR-0011) owns them, so changes go through `provision.sh`, not
+`az deployment`. Both settings are off until the maintainer sets them. Turn them
+on only after the panel shows the sources the alerts should judge: every check
+that is firing or unknown at that moment emails at once (today
+`controller_tick`, #1483, and `collection` while own-client and backlog sources
+are missing).
+
+**Prerequisites on the evaluator host.** These are maintainer steps; nothing in
+this repository does them.
+
+- The host is an Azure Arc machine in the environment's resource group, named
+  as ADR-0017 says (`usnm-<role>-arcs-<env>`), connected like the other on-prem
+  containers. Don't use `scripts/ocr-node/onboard.sh`: it adds the machine to
+  the OCR nodes' group with their queue roles and associates the nodes' rule.
+  The evaluator needs no role assignment.
+- Its extension allow list holds only `Microsoft.Azure.Monitor/AzureMonitorLinuxAgent`,
+  and that agent is installed with automatic upgrades, as `onboard.sh` does for
+  a node (`az rest --method put` on the machine's
+  `extensions/AzureMonitorLinuxAgent`).
+- rsyslog runs and receives the journal's syslog; the agent reads syslog from
+  it.
+- Nothing but the evaluator logs to `local0`; this must list only
+  `usnm-boinc-feed-health`:
+
+  ```sh
+  journalctl SYSLOG_FACILITY=16 --since -1h -o json | jq -r .SYSLOG_IDENTIFIER | sort | uniq -c
+  ```
+
+The machine has Heartbeat and Syslog rows in the nodes' workspace, so
+`ocr-node-health` lists it beside the nodes, without counters. Its volume is far
+below the node volume alert's threshold.
+
+**Deploy.**
 
 ```sh
-bicep build infra/modules/boinc-feed-alerts.bicep --stdout >/dev/null
-az deployment group what-if --resource-group "$OCR_RESOURCE_GROUP" \
-  --template-file infra/modules/boinc-feed-alerts.bicep \
-  --parameters workspaceName="$OCR_WORKSPACE" actionGroupId="$EXISTING_ACTION_GROUP_ID" \
-    computer="$EVALUATOR_COMPUTER" location="$AZURE_LOCATION"
-# After review of exactly the two scheduled-query rules:
-az deployment group create --resource-group "$OCR_RESOURCE_GROUP" \
-  --template-file infra/modules/boinc-feed-alerts.bicep \
-  --parameters workspaceName="$OCR_WORKSPACE" actionGroupId="$EXISTING_ACTION_GROUP_ID" \
-    computer="$EVALUATOR_COMPUTER" location="$AZURE_LOCATION"
+scripts/azure/settings.sh --env prod --key USNM_BOINC_FEED_MACHINE --value '<Arc machine name>'
+# Set "USNM_BOINC_FEED_ALERTS": true in infra/env/prod.json through a PR, then:
+scripts/azure/provision.sh --env prod --what-if   # one DCR and two scheduled-query rules
+scripts/azure/provision.sh --env prod
+DCR_ID=$(scripts/azure/settings.sh --env prod --key BOINC_FEED_DCR_ID)
+MACHINE=/subscriptions/<subscription>/resourceGroups/<resource group>/providers/Microsoft.HybridCompute/machines/<Arc machine name>
+az rest --method put \
+  --url "https://management.azure.com$MACHINE/providers/Microsoft.Insights/dataCollectionRuleAssociations/${DCR_ID##*/}?api-version=2022-06-01" \
+  --body "{\"properties\": {\"dataCollectionRuleId\": \"$DCR_ID\", \"description\": \"usnewsmap BOINC feed evaluator (#1441)\"}}" \
+  -o none
 ```
 
-Both rules reuse that destination: one for evaluated failures/unknowns and one
-for missing/future/stale monitor heartbeat after five minutes. Confirm delivery
-through the existing action group before declaring live acceptance. Workspace
-ingestion caps still apply; the existing cap alert is unchanged. Rollback stops
-only the new observation timers, disables these two rules, and removes the
-dashboard feed settings. Never restart a retired feed timer as rollback.
+The association takes the rule's name (ADR-0017). Until the first lines
+arrive, a few minutes after it, the missing rule fires; expect one
+`collector_heartbeat` email and its resolution.
+
+**Check ingestion.** After about ten minutes:
+
+```sh
+scripts/azure/logs.sh --env prod --query-name ocr-node-boinc-feed --span 1h
+```
+
+It should show the machine with `boinc_feed_health` lines about once a minute
+and a recent `LastObserved`. No rows means the association, the agent or rsyslog
+is missing; the agent's own log is under `/var/opt/microsoft/azuremonitoragent/log/`.
+
+**End-to-end notification check.** On the evaluator host, log one synthetic
+line. `feed_status.py --delivery-test` prints it and touches no state; the
+dashboard never reads it.
+
+```sh
+logger --priority local0.info --tag usnm-boinc-feed-health \
+  "$(python3 /opt/usnm-feed-monitor/feed_status.py --delivery-test)"
+```
+
+Then confirm, in order:
+
+1. `ocr-node-boinc-feed` shows a `boinc_feed_delivery_test` row for the machine.
+2. Within about 5 to 15 minutes, the alert addresses get an email from
+   `usnm-boinc-feed-condition-alert-prod` with `Check=delivery_test`.
+3. A resolved email for it follows, usually 30 or more minutes after the line
+   leaves the ten-minute window.
+
+If the row arrives but no email does, check the rule's history in the portal
+and the action group's emails; if no row arrives, check ingestion as above. The
+check proves the whole route and leaves the health checks unchanged.
+
+**Rollback.** To silence the alerts at once, disable the two rules (the stack
+denies deletes, not changes; the next provision enables them again). To remove
+them, delete the association first, because Azure won't delete a rule that is
+still associated and provision would fail:
+
+```sh
+az rest --method delete \
+  --url "https://management.azure.com$MACHINE/providers/Microsoft.Insights/dataCollectionRuleAssociations/${DCR_ID##*/}?api-version=2022-06-01"
+```
+
+Then set `USNM_BOINC_FEED_ALERTS` back to `false` through a PR and provision;
+the stack deletes the rule and both alerts. Stop the observation timers only if
+they are the problem, and never restart a retired feed timer as rollback.
 
 Local validation:
 `python3 -m unittest scripts/boinc/test_feed_status.py scripts/boinc/test_feed_collect.py`
@@ -366,6 +461,11 @@ and `CARGO_BUILD_JOBS=2 cargo test -p usnm-ocr-dash --lib`. Tests include actual
 loopback RPC/HTTP and PHP subprocess fixtures, shared-stock eligibility,
 duration thresholds/recovery/restarts/clocks, and dashboard route/privacy/
 freshness contracts; they are not claims of live ingestion or alert delivery.
+`test_feed_status.py` also checks the alert queries' contract: only
+`boinc_feed_health` lines are health events, so a delivery test line can't
+change a check or quiet the missing rule. For the Bicep, run `scripts/ci/lint-bicep.sh`,
+`scripts/ci/build-bicep.sh` and `python3 scripts/ci/check-names.py`; the KQL
+runs only in Azure.
 For the optional Python→dashboard-process→HTTP→durable-evaluator rehearsal,
 build `cargo build -p usnm-ocr-dash --bin usnm-ocrdash` with
 `CARGO_BUILD_JOBS=2`, then run the Python tests with

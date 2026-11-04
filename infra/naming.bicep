@@ -150,6 +150,9 @@ var nameTypes = {
   backfillStalledAlert: 'alert'
   boincBridgeIdentity: 'id'
   boincControllerRole: 'role'
+  boincFeedConditionAlert: 'alert'
+  boincFeedDcr: 'dcr'
+  boincFeedMissingAlert: 'alert'
   boincHandoffIdentity: 'id'
   boincHandoffJob: 'caj'
   boincLedgerRole: 'role'
@@ -262,6 +265,9 @@ type Names = {
   @description('The BOINC stack\'s app and bridge identity (contrib-compute/infra/boinc/main.bicep names it the same way).')
   boincBridgeIdentity: string
   boincControllerRole: string
+  boincFeedConditionAlert: string
+  boincFeedDcr: string
+  boincFeedMissingAlert: string
   boincHandoffIdentity: string
   @description('A Container Apps job name is under 32 characters.')
   boincHandoffJob: string
@@ -366,6 +372,9 @@ func names(env string, sfx string, pinned bool) Names => {
   backfillStalledAlert: usnmName('backfill-stalled', 'alert', env)
   boincBridgeIdentity: usnmName('boinc', 'id', env)
   boincControllerRole: usnmName('boinc-controller', 'role', env)
+  boincFeedConditionAlert: usnmName('boinc-feed-condition', 'alert', env)
+  boincFeedDcr: usnmName('boinc-feed', 'dcr', env)
+  boincFeedMissingAlert: usnmName('boinc-feed-missing', 'alert', env)
   boincHandoffIdentity: usnmName('boinc-handoff', 'id', env)
   boincHandoffJob: usnmName('boinc-handoff', 'caj', env)
   boincLedgerRole: usnmName('boinc-ledger', 'role', env)

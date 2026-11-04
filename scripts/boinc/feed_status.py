@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Read-only BOINC feed monitor; --config runs live collection and durable evaluation.
 
+--delivery-test prints one synthetic line for the end-to-end notification check
+(infra/modules/boinc-feed-alerts.bicep); it reads and writes no state.
 The original explicit-input CLI remains an offline diagnostic, not monitoring.
 """
 import argparse
@@ -16,6 +18,7 @@ TICK_LIMIT_S = 15 * 60
 MAX_AGE = 180
 MAX_GAP = 180
 APP_NAMES = ("usnm_ocr", "usnm_qwen")
+DELIVERY_TEST_EVENT = "boinc_feed_delivery_test"
 
 
 def atomic_text(path, value):
@@ -157,6 +160,11 @@ def monitor(config_path, state_dir):
         return document
 
 
+def delivery_test(now):
+    """The synthetic line the alert's delivery_test branch reads; never a health event."""
+    return {"schema_version": 1, "event": DELIVERY_TEST_EVENT, "observed_at": now, "test": True}
+
+
 def snapshot(now, enabled_until, backlog_open, seconds_since_workunit,
              unsent, idle_slots, last_tick_ok, last_tick_seconds):
     """Return the snapshot dict. Pure: all inputs are passed in."""
@@ -179,7 +187,15 @@ def snapshot(now, enabled_until, backlog_open, seconds_since_workunit,
 def main(argv=None):
     mode = argparse.ArgumentParser(add_help=False)
     mode.add_argument("--config", type=Path)
+    mode.add_argument("--delivery-test", action="store_true")
     selected, _ = mode.parse_known_args(argv)
+    if selected.delivery_test:
+        parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+        parser.add_argument("--delivery-test", action="store_true", required=True,
+                            help="print one boinc_feed_delivery_test line and exit")
+        parser.parse_args(argv)
+        print(json.dumps(delivery_test(int(time.time())), sort_keys=True), flush=True)
+        return 0
     if selected.config is not None:
         parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
         parser.add_argument("--config", type=Path, required=True)
