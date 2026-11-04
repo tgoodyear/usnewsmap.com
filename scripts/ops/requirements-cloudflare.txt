@@ -1,0 +1,2 @@
+# Only the manual YAML exporter needs this; its offline unit tests use the stdlib.
+PyYAML==6.0.3

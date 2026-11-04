@@ -2,6 +2,61 @@
 
 Part of the [operations guide](README.md).
 
+## Cloudflare API schema
+
+The upload artifact is
+[`ops/api/usnewsmap-cloudflare-api-schema.yaml`](../../ops/api/usnewsmap-cloudflare-api-schema.yaml).
+It is a reviewed OpenAPI 3.0.3 **snapshot**, not an automatically deployed policy.
+The authoritative public contract is
+[`/v1/openapi.json`](https://api.usnewsmap.com/v1/openapi.json), generated as OpenAPI
+3.1 by `crates/usnm-api/src/openapi.rs`.
+
+The upload lists both public hosts and both `/v1` and `/api/v1` prefixes, including
+the two internal POST routes omitted from the public document. Its `x-source`
+records the source checkout revision, router hash, source URL and SHA-256 of the
+source JSON serialized with sorted keys and compact separators. The revision is
+the code used to check route coverage, **not** an attestation of the deployed
+binary.
+
+Regenerate from a checkout whose API code matches the intended release, then
+review and commit the diff:
+
+```sh
+python3 -m venv /tmp/usnm-cloudflare-schema-venv
+/tmp/usnm-cloudflare-schema-venv/bin/python -m pip install -r scripts/ops/requirements-cloudflare.txt
+/tmp/usnm-cloudflare-schema-venv/bin/python scripts/ops/export-cloudflare-schema.py \
+  --checkout . \
+  --source https://api.usnewsmap.com/v1/openapi.json \
+  --output ops/api/usnewsmap-cloudflare-api-schema.yaml
+python3 -m unittest -v scripts/ops/test_export_cloudflare_schema.py
+git diff -- ops/api/usnewsmap-cloudflare-api-schema.yaml
+```
+
+`--source` also accepts a saved public OpenAPI JSON file. The exporter refuses
+dirty API code, an unsupported router layout, mismatched routes/methods/hosts or
+changed internal POST coverage, and replaces the output only after conversion
+succeeds. It does not prove that the live parameter semantics match the source
+revision. The offline unit tests run in the existing script-test suite; they
+exercise conversion, not the live service or Cloudflare's evaluator.
+
+Regenerate and review after API route, parameter, parser or deployment-configuration
+changes (for example, whether queryless browsing is enabled). Committing this file
+does not upload it, register endpoints or enable enforcement. Upload the reviewed
+file manually under Cloudflare's **Web Assets > Schema validation**, with relevant
+blocking rules disabled, and inspect **Profile Analysis** before enforcing it.
+See Cloudflare's [schema-validation documentation](https://developers.cloudflare.com/api-shield/security/schema-validation/).
+
+**Deliberate limits:** comma lists are represented as strings because Cloudflare
+does not support their `explode: false` encoding. Empty optional values, signed
+integers and unpadded dates follow the origin's permissive parsing; query lengths,
+list counts, membership, repeated/unknown keys and cross-parameter rules remain
+origin checks. POST bodies are not edge-validated: the origin accepts JSON sent
+as `text/plain` or `application/json`, with limits above the Free plan's 1 KiB
+validation limit. Responses are not validated by Cloudflare. Health probes,
+static pages, implicit `HEAD` and CORS `OPTIONS` are outside this inventory:
+**do not use it as a whole-host fallthrough allowlist**. Review encoding and
+legitimate-traffic violations before adding any block rule.
+
 ## Sitemap eligibility
 
 The durable sitemap publishes the four canonical application pages and only
