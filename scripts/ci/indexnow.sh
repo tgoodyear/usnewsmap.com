@@ -49,7 +49,7 @@ expected="$work/deployed-sitemap.xml"
 expected_headers="$work/deployed-sitemap-headers"
 public_headers="$work/public-sitemap-headers"
 encoded_state="$work/state.b64"
-trap 'rm -f "$body" "$payload" "$next_state" "$expected" "$expected_headers" "$public_headers" "$encoded_state"; rmdir "$work"' EXIT
+trap 'rm -f "$body" "$payload" "$next_state" "$expected" "$expected_headers" "$public_headers" "$encoded_state" "$work/github.err"; rmdir "$work"' EXIT
 
 read_header() {
   local name

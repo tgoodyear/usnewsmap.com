@@ -168,6 +168,7 @@ else:
         result = subprocess.run(["bash", "scripts/ci/indexnow.sh"], cwd=self.root,
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Directory not empty", result.stderr)
         posts = self.root / "posts.jsonl"
         return ([json.loads(line) for line in posts.read_text().splitlines()]
                 if posts.exists() else []), result.stdout
