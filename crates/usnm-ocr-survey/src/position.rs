@@ -407,7 +407,9 @@ fn centre_in(r: &Rect, crop: &Rect) -> bool {
 
 /// The page with only the words whose box's centre is in `crop`, in the page's reading order.
 /// Lines and blocks left with no word are dropped, and a line keeps its hyphen only when it keeps
-/// its last word.
+/// its last word. A kept hyphen joins the next kept line's first word even when the box cut off
+/// the word that followed it on the page: the crop's image shows the same two lines, so its own
+/// text joins the same pair when normalized.
 pub fn clip(page: &Page, crop: &Rect) -> Page {
     let mut blocks = Vec::new();
     for b in page.blocks.iter().filter(|b| b.kind.is_text()) {
@@ -819,6 +821,30 @@ mod tests {
             usnm_alto::text(&clip(&p, &Rect::new(0.0, 0.0, 300.0, 200.0))),
             "The qui-"
         );
+    }
+
+    #[test]
+    fn a_kept_hyphen_joins_the_next_kept_line_as_the_crops_text_does() {
+        let lines: [(&[W<'_>], bool); 2] = [
+            (&[("inter", [100, 100, 200, 130])], true),
+            (
+                &[
+                    ("national", [100, 140, 180, 170]),
+                    ("today", [300, 140, 400, 170]),
+                ],
+                false,
+            ),
+        ];
+        // "national" (centre x 140) is cut off, so the crop shows "inter-" above "today".
+        let s = crop(
+            &page(&[&lines[..]]),
+            &Rect::new(145.0, 90.0, 500.0, 180.0),
+            "inter-\ntoday",
+            false,
+        );
+        assert_eq!(s.clipped_words, 2);
+        assert_eq!(s.text_order.cer, Some(0.0));
+        assert_eq!(s.bag.dice, 1.0);
     }
 
     #[test]
