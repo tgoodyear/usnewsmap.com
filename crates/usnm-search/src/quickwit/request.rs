@@ -403,6 +403,7 @@ mod tests {
             offset: 50,
             limit: 25,
             days: false,
+            ..HitsQuery::default()
         };
         let r = hits_request(&parse("gold").unwrap(), &filters(), &none(), &page).unwrap();
         // A leading `-` is ascending in Quickwit 0.9 (S-2): oldest first.

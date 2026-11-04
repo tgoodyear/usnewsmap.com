@@ -440,6 +440,30 @@ pub struct HitsQuery {
     /// Also count the days the selected pages appeared on (#127): for the
     /// first page of a list a visitor asked for, not the internal lookups.
     pub days: bool,
+    /// How much text each snippet shows around its matches.
+    pub snippet_length: SnippetLength,
+}
+
+/// How much of a page's text a snippet shows around its matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SnippetLength {
+    /// About a line of print either side, as `/v1/hits` returns them.
+    #[default]
+    Standard,
+    /// Three times as much, for the server-rendered sample results that
+    /// readers without the app see in place of the full list.
+    Long,
+}
+
+impl SnippetLength {
+    /// Characters of context either side of a match, from a standard
+    /// snippet's `standard`.
+    pub fn context(self, standard: usize) -> usize {
+        match self {
+            Self::Standard => standard,
+            Self::Long => 3 * standard,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -676,7 +700,12 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
 ///
 /// The page's Latin runs are folded by `analyzer`, the one the Japanese
 /// index was built with (#168).
-pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<String> {
+pub fn ja_snippets(
+    printed: &str,
+    query: &Node,
+    analyzer: Analyzer,
+    length: SnippetLength,
+) -> Vec<String> {
     const CONTEXT: usize = 40;
     let tokens = usnm_core::ja::tokenize(printed, analyzer);
     let mut phrases: Vec<Vec<String>> = Vec::new();
@@ -702,7 +731,7 @@ pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<Strin
     }
     phrases.sort();
     phrases.dedup();
-    usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1, analyzer)
+    usnm_core::ja::snippets(printed, &phrases, length.context(CONTEXT), 1, analyzer)
         .into_iter()
         .map(|pieces| {
             let borrowed: Vec<(bool, &str)> =

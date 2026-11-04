@@ -958,6 +958,35 @@ async fn search_previews_preserve_escaped_snippet_text_without_double_escaping()
 }
 
 #[tokio::test]
+async fn search_previews_show_long_snippets() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("search-long-snippets"));
+    std::fs::write(
+        cfg.site_dir.as_ref().unwrap().join("index.html"),
+        include_str!("../../../../web/index.html"),
+    )
+    .unwrap();
+    let mut doc = load_docs("pages-base-fixture").remove(0);
+    // About 150 characters either side of the match: past a standard
+    // snippet's context, within a long one's.
+    let filler = "and so on ".repeat(15);
+    doc.text = format!("Convention opens. {filler}cross of gold {filler}Delegates adjourn.");
+    doc.day = usnm_core::time::day_number(chrono::NaiveDate::from_ymd_opt(1896, 7, 18).unwrap());
+    doc.year = 1896;
+    doc.ym = 1896 * 12 + 6;
+    let mut backend = MemoryBackend::new();
+    backend.add_index("pages-base-fixture", vec![doc]);
+    backend.add_index("pages-delta-fixture-1", vec![]);
+    let s = Arc::new(AppState::new(cfg, Arc::new(backend), refdata().await));
+    let (status, _, body) = get_site(&s, "/examples/cross-of-gold", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("<p>Convention opens.") && body.contains("Delegates adjourn.</p>"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn static_searches_explain_alternate_ocr_and_empty_demo_results() {
     for source in ["american_stories", "loc_original", "empty"] {
         let mut cfg = config();

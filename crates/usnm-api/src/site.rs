@@ -528,7 +528,7 @@ async fn search_preview_data(
     use usnm_core::ids::PageKey;
     use usnm_core::params::RawParams;
     use usnm_core::time::date_from_day;
-    use usnm_search::HitsQuery;
+    use usnm_search::{HitsQuery, SnippetLength};
 
     let search = snap.refdata.search_request(&RawParams::parse(raw)?)?;
     let canonical = search.canonical();
@@ -577,6 +577,8 @@ async fn search_preview_data(
         let page = HitsQuery {
             place_id: Some(top.place_id.clone()),
             limit: 10,
+            // Readers here see these pages' text, not the full list's.
+            snippet_length: SnippetLength::Long,
             ..HitsQuery::default()
         };
         let result = with_timeout(
