@@ -962,12 +962,20 @@ pages remain eligible immediately; only confirmed missing sources get the daily 
 Preparation forwards the feeder's captured stdout to the journal even when the child
 exits unsuccessfully or times out; its stderr remains inherited. READY counts report
 pages actually written, not merely selected. A scan must match its indexed byte count
-and SHA256 before decoding. With Qwen's `--quarantine-decode`, only a known Pillow
-unidentified/truncated/broken-stream error, with the expected codec available, counts
-toward quarantine. Missing codecs, format disagreements, network errors, scan/index
-mismatches and other errors remain visible, retryable failures and do not increment
-the decoder-failure count. A successfully prepared page resets earlier, pre-quarantine
-failures. Three decoder failures of the same
+and SHA256 before decoding. The fetcher computes both from the bytes it downloaded (a
+batch JP2 is first MD5-checked against LoC's bag manifest), so they prove the scan
+server returned what was fetched, not that the image is complete: LoC's own copy of a
+JP2 can lack its codestream end and still match. With Qwen's `--quarantine-decode`,
+only a known Pillow unidentified/truncated/broken-stream error, with the expected codec
+available, counts toward quarantine. Missing codecs, format disagreements, network
+errors, scan/index mismatches and other errors remain visible, retryable failures and
+do not increment the decoder-failure count. A buffer scan the scan server answers 404
+for (an OCR worker read and deleted it after selection; the original-ALTO phase can
+take an hour) is logged and left out without failing the run. It stays out of
+`done.txt` and, with `--quarantine-decode`, is recorded as retryable, so selection
+takes it again once its scan is back. A missing keep scan remains a failure. A
+successfully prepared page resets earlier, pre-quarantine failures. Three decoder
+failures of the same
 `(doc_id, batch, batch_version, bytes, sha256)` record quarantine it; the ordinary
 selector excludes that fingerprint, not every future version of the document. Other
 successfully prepared pages keep their READY chunks.
