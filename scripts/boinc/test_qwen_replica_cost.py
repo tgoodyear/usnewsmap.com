@@ -67,6 +67,23 @@ class Analyse(unittest.TestCase):
         results = [r for r in snapshot()["results"] if r["workunitid"] == 2]
         self.assertEqual(R.classify(units[2], results), ("valid", 3))
 
+    def test_a_third_valid_return_leaves_the_resolver_unknown(self):
+        # A late return that agreed after the first pair settled the unit.
+        snap = snapshot()
+        snap["units"].append(unit(7, "srp", 1, canonical=71))
+        snap["results"] += [result(70 + i, 7, validate=1, received=10 * i, elapsed=1) for i in range(1, 4)]
+        srp = R.analyse(snap)["srp v1"]
+        self.assertEqual((srp["valid"], srp["resolver unknown"], srp["resolved by 3"], srp["disputed"]), (3, 1, 0, 0))
+
+    def test_a_cancelled_unit_is_not_counted_as_capped(self):
+        snap = snapshot()
+        snap["units"].append(unit(7, "yid", 1, error_mask=16))
+        snap["results"] += [result(71, 7, validate=4, received=10, elapsed=30), result(72, 7, validate=4, received=20, elapsed=30)]
+        yid = R.analyse(snap)["yid v1"]
+        self.assertEqual((yid["no consensus at cap"], yid["disputed at cap"], yid["other failure"], yid["disputed failed"]), (1, 1, 1, 1))
+        self.assertAlmostEqual(yid["hours failed"] * 3600, 60)
+        self.assertAlmostEqual(yid["hours wasted"] * 3600, 340)
+
     def test_a_pair_the_validator_has_not_read_is_not_disputed(self):
         snap = snapshot()
         snap["units"].append(unit(7, "srp", 1))
@@ -110,7 +127,7 @@ class Report(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("| yid v1 | 1 | 0 | 1 | 0 | 3.00 | 7.00 |", text)
         self.assertIn("| srp v1 | 2 | 2 | 0 | 0 | 2.50 | 2.50 |", text)
-        self.assertIn("| yid v1 | 3 | 2 | 1 | 1 | 0 | 1 | 1 | 0 |", text)
+        self.assertIn("| yid v1 | 3 | 2 | 1 | 1 | 0 | 1 | 0 | 1 | 0 |", text)
 
 
 class FakeCursor:

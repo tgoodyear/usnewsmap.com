@@ -29,6 +29,8 @@ UNSENT, IN_PROGRESS = 2, 4
 SUCCESS = 1
 ERROR_OUTCOMES = {3, 4, 6, 7}  # client error, no reply, validate error, detached
 VALID, INCONCLUSIVE = 1, 4
+# Workunit error_mask bits.
+TOO_MANY_ERRORS, TOO_MANY_SUCCESS, TOO_MANY_TOTAL, CANCELLED = 2, 4, 8, 16
 
 
 def utc(text):
@@ -132,13 +134,19 @@ def in_order(results):
 
 def classify(unit, results):
     """A unit's state and, when it ended valid, which return resolved it:
-    2 for the first pair, 3 or 4 for a later replica."""
+    2 for the first pair, 3 or 4 for a later replica. The resolver is unknown
+    (None) unless exactly two returns are valid: a late return that agreed
+    after the first pair, and a third that agreed with both of a disputed
+    pair, leave the same record."""
     returns = in_order(results)
+    mask = unit["error_mask"]
     if unit["canonical_resultid"]:
-        rank = max((i for i, r in enumerate(returns, 1) if r["validate_state"] == VALID), default=len(returns))
-        return "valid", rank
-    if unit["error_mask"]:
+        valid = [i for i, r in enumerate(returns, 1) if r["validate_state"] == VALID]
+        return "valid", (valid[-1] if len(valid) == 2 else None)
+    if mask & (TOO_MANY_SUCCESS | TOO_MANY_TOTAL) and not mask & (TOO_MANY_ERRORS | CANCELLED):
         return "no consensus at cap", None
+    if mask:
+        return "other failure", None
     if any(r["validate_state"] == INCONCLUSIVE for r in returns):
         return "open: disputed", None
     return "open: not disputed", None
@@ -162,14 +170,17 @@ def analyse(snapshot):
         ran = [r for r in rs if r["outcome"] == SUCCESS or r["outcome"] in ERROR_OUTCOMES]
         hours = sum(r["elapsed_time"] or 0 for r in ran) / 3600
         c["hours"] = hours
-        disputed = state != "open: not disputed" and len(returns) >= 2 and rank != 2
+        if state == "valid":
+            disputed = rank is not None and rank > 2
+        else:
+            disputed = state != "open: not disputed" and len(returns) >= 2
         c["disputed"] = int(disputed)
         if disputed:
             for n in (3, 4):
                 if len(returns) >= n and (rank is None or rank >= n):
                     c[f"replica {n} returned"] = 1
         if state == "valid":
-            c[f"resolved by {rank}"] = 1
+            c[f"resolved by {rank}" if rank else "resolver unknown"] = 1
             c["sent on valid"] = c["sent"]
             pair = [r for r in returns if r["validate_state"] == VALID][:2]
             useful = sum(r["elapsed_time"] or 0 for r in pair) / 3600
@@ -180,6 +191,9 @@ def analyse(snapshot):
             c["hours wasted"] = hours
             c["replicas wasted"] = len(ran)
             c["disputed at cap"] = int(disputed)
+        elif state == "other failure":
+            c["hours failed"] = hours
+            c["disputed failed"] = int(disputed)
         elif state == "open: disputed":
             c["hours disputed open"] = hours
             c[f"waiting for replica {len(returns) + 1}"] = 1
@@ -212,28 +226,32 @@ def report(args):
         order.append("other")
     print(f"Units created {snapshot['since']} to {snapshot['until']}; database read {snapshot['snapshot']}.\n")
     print(table(
-        ("Language, request version", "Units", "Created", "Sent", "Unsent now", "Valid", "No consensus at cap", "Open: disputed", "Open: not disputed"),
+        ("Language, request version", "Units", "Created", "Sent", "Unsent now", "Valid", "No consensus at cap", "Other failure", "Open: disputed", "Open: not disputed"),
         [(k, r["units"], ratio(r["created"], r["units"]), ratio(r["sent"], r["units"]), r["unsent"], r["valid"],
-          r["no consensus at cap"], r["open: disputed"], r["open: not disputed"]) for k, r in ((k, rows[k]) for k in order)],
+          r["no consensus at cap"], r["other failure"], r["open: disputed"], r["open: not disputed"]) for k, r in ((k, rows[k]) for k in order)],
     ))
-    print("\nCreated, Sent: replicas per unit.\n")
+    print("\nCreated, Sent: replicas per unit. Other failure: cancelled, or too many errors.\n")
     print(table(
         ("Language, request version", "Valid", "On first pair", "By replica 3", "By replica 4", "Sent per valid unit", "Ran per valid unit, settled"),
         [(k, r["valid"], r["resolved by 2"], r["resolved by 3"], r["resolved by 4"], ratio(r["sent on valid"], r["valid"]),
           ratio(r["replicas wasted"] + 2 * r["valid"], r["valid"])) for k, r in ((k, rows[k]) for k in order)],
     ))
-    print("\nRan per valid unit, settled: returns and errors on valid and capped units, per valid unit; a unit needs 2.\n")
+    print("\nRan per valid unit, settled: returns and errors on valid and capped units, per valid unit; a unit needs 2.")
+    if rows["all"]["resolver unknown"]:
+        print(f"{rows['all']['resolver unknown']} valid units don't have exactly two valid returns, so which one resolved them is unknown; "
+              "the resolution columns and the disputed counts leave them out.")
+    print()
     print(table(
-        ("Language, request version", "First pair disagreed", "Replica 3 returned", "It resolved", "Replica 4 returned", "It resolved", "No consensus at cap", "Waiting for 3", "Waiting for 4"),
+        ("Language, request version", "First pair disagreed", "Replica 3 returned", "It resolved", "Replica 4 returned", "It resolved", "No consensus at cap", "Other failure", "Waiting for 3", "Waiting for 4"),
         [(k, r["disputed"], r["replica 3 returned"], r["resolved by 3"], r["replica 4 returned"], r["resolved by 4"], r["disputed at cap"],
-          r["waiting for replica 3"], r["waiting for replica 4"])
+          r["disputed failed"], r["waiting for replica 3"], r["waiting for replica 4"])
          for k, r in ((k, rows[k]) for k in order)],
     ))
     print()
     print(table(
-        ("Language, request version", "GPU-hours", "On the valid pair", "Resolved nothing", "Share", "Disputed, still open", "First return, waiting"),
+        ("Language, request version", "GPU-hours", "On the valid pair", "Resolved nothing", "Share", "Other failure", "Disputed, still open", "First return, waiting"),
         [(k, f"{r['hours']:.1f}", f"{r['hours needed']:.1f}", f"{r['hours wasted']:.1f}", f"{r['hours wasted'] / r['hours']:.0%}" if r["hours"] else "–",
-          f"{r['hours disputed open']:.1f}", f"{r['hours pending']:.1f}") for k, r in ((k, rows[k]) for k in order)],
+          f"{r['hours failed']:.1f}", f"{r['hours disputed open']:.1f}", f"{r['hours pending']:.1f}") for k, r in ((k, rows[k]) for k in order)],
     ))
     print("\nResolved nothing: the losing replicas and errors on units that ended valid, and every replica on units that hit the cap.")
 
