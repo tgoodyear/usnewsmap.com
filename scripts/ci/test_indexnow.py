@@ -302,11 +302,12 @@ else:
     def test_key_rotation_resubmits_current_urls(self):
         urls = [f"https://{HOST}/", f"https://{HOST}/search/gold"]
         self.submit(sitemap(urls))
-        state = Path(self.env["INDEXNOW_STATE_FILE"])
+        state = self.root / "durable-state.json"
         previous = json.loads(state.read_text())
         previous["key"] = "previous-key"
         state.write_text(json.dumps(previous))
         posts, _ = self.submit(sitemap(urls))
+        self.assertEqual(len(posts), 2)
         self.assertEqual(posts[-1]["body"]["urlList"], urls)
 
     def test_scheduled_main_runs_notify_without_a_deploy(self):
