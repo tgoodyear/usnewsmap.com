@@ -39,7 +39,8 @@ def spool_candidates(results, jobs, bundles=(), counted=None):
     tens of thousands of other apps' results (usnm_quality's, mostly) cost no stat each, which
     over the SMB project share made the inventory take minutes (#932). Symlinks are neither
     followed nor yielded, as with rglob, and every entry counts towards MAX_FILES. `counted`, a
-    dict, is given the number of entries walked as "entries"."""
+    dict, is given the number of entries walked as "entries" once the walk ends, so read it after
+    the loop that exhausts this generator."""
     count = 0
     stack = [results]
     try:
