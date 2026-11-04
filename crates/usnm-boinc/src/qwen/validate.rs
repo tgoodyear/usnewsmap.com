@@ -7,7 +7,9 @@
 //! looks at two results of one unit (per-crop word-bag Dice of at least
 //! the threshold, both read or neither) and, with `--log`, appends what it
 //! found to a JSON Lines file, so the threshold can be measured from every
-//! compared pair. A bundle unit's pair is also judged page by page
+//! compared pair. The log line's `wordless` lists the crops that pass only
+//! because neither reading has a letter or digit ([`wordless`], #1463); no
+//! verdict reads it. A bundle unit's pair is also judged page by page
 //! (`qwen::agree_pages`); with `--pages`, each page's verdict and both
 //! hosts' readings of it are written once under
 //! `<pages>/<job_id>/<doc_id>/<pair>.json`, so a page both hosts agree on is
@@ -170,6 +172,7 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             "outcomes": [la.result.outcome, lb.result.outcome],
             "pages": page_verdicts.iter().map(|p| serde_json::json!({"doc_id": p.doc_id, "agree": p.agree, "reason": p.reason})).collect::<Vec<_>>(),
             "reason": verdict.as_ref().err(),
+            "wordless": wordless(&crops, &la, &lb),
         });
         if let Some(judged) = &consensus {
             line["rule"] = "crop-consensus-v2".into();
@@ -188,6 +191,41 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         f.write_all(format!("{line}\n").as_bytes())?;
     }
     verdict.map_err(|e| anyhow::anyhow!(e))
+}
+
+/// The crops both results read where neither reading has a letter or digit
+/// (#1463): both word bags are empty, so the strict rule's Dice is 1.0
+/// whatever the two readings say. Each names the crop, whether the readings
+/// are the same once whitespace is collapsed, and whether each side looped
+/// as `crop-consensus-v2` marks it (the result's loop-guard bit, or a
+/// repeated run ending the reading). For the pair log only.
+fn wordless(crops: &[qwen::CropAgreement], a: &Loaded, b: &Loaded) -> Vec<serde_json::Value> {
+    let no_word = |l: &Loaded, id: &str| {
+        l.readings
+            .readings
+            .iter()
+            .find(|r| r.id == id)
+            .is_some_and(|r| !r.text.chars().any(char::is_alphanumeric))
+    };
+    let ids: Vec<&str> = crops
+        .iter()
+        .filter(|c| c.read == (true, true) && no_word(a, &c.id) && no_word(b, &c.id))
+        .map(|c| c.id.as_str())
+        .collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let (sa, sb) = (super::consensus::sides(a), super::consensus::sides(b));
+    ids.into_iter()
+        .filter_map(|id| {
+            let (x, y) = (sa.get(id)?, sb.get(id)?);
+            Some(serde_json::json!({
+                "id": id,
+                "identical": x.text.split_whitespace().eq(y.text.split_whitespace()),
+                "looped": [x.looped, y.looped],
+            }))
+        })
+        .collect()
 }
 
 /// What a page record says: `page_agreed` when both hosts read the page
@@ -478,5 +516,127 @@ pub(crate) mod tests {
         assert!(error
             .downcast_ref::<super::super::retain::CaptureError>()
             .is_none());
+    }
+
+    // #1463 characterisation tests: they pin what the strict rule does today
+    // with crops that hold no word. They are not a rule anyone has chosen.
+    const WORDS: &str = "the ship sailed for england";
+
+    /// A pair whose `c01` both read alike and whose `c02` is `c02`.
+    fn wordless_pair(dir: &Path, c02: (&str, &str)) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        (
+            write(dir, "a", &[("c01", WORDS), ("c02", c02.0)]),
+            write(dir, "b", &[("c01", WORDS), ("c02", c02.1)]),
+        )
+    }
+
+    /// Re-seals a written result as a loop-guarded run with these
+    /// `repetition_loop_crop_bits`.
+    fn loop_bits(files: &[PathBuf], bits: &str) {
+        let mut r: Readings = serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+        r.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD;
+        r.diag
+            .insert("repetition_loop_crop_bits".into(), bits.into());
+        let rb = serde_json::to_vec(&r).unwrap();
+        let mut m: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
+        m.readings_bytes = rb.len() as u64;
+        m.readings_sha256 = sha256(&rb);
+        std::fs::write(&files[0], rb).unwrap();
+        std::fs::write(&files[1], serde_json::to_vec(&m).unwrap()).unwrap();
+    }
+
+    fn last_line(log: &Path) -> serde_json::Value {
+        let text = std::fs::read_to_string(log).unwrap();
+        serde_json::from_str(text.lines().last().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn characterise_1463_differing_punctuation_only_readings_pass_strict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = wordless_pair(tmp.path(), (". , ;", "* * * —"));
+        let log = tmp.path().join("pairs.jsonl");
+        compare(&a, &b, 0.5, Some(&log), None).unwrap();
+        // Two empty word bags score 1.0, so no floor fails them.
+        compare(&a, &b, 1.0, None, None).unwrap();
+        let line = last_line(&log);
+        assert_eq!(line["crops"][1]["read"], serde_json::json!([true, true]));
+        assert_eq!(line["crops"][1]["dice"], 1.0);
+        // A pair with no word on any crop passes as well.
+        let (a, b) = (
+            write(tmp.path(), "c", &[("c01", "[?]"), ("c02", ". ,")]),
+            write(tmp.path(), "d", &[("c01", "* *"), ("c02", "--")]),
+        );
+        compare(&a, &b, 0.5, None, None).unwrap();
+    }
+
+    #[test]
+    fn characterise_1463_whitespace_only_pair_passes_strict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = wordless_pair(tmp.path(), (" \n ", "\t"));
+        let log = tmp.path().join("pairs.jsonl");
+        compare(&a, &b, 0.5, Some(&log), None).unwrap();
+        let line = last_line(&log);
+        // Neither host read the crop, so it is not compared.
+        assert_eq!(line["crops"][1]["read"], serde_json::json!([false, false]));
+        assert!(line["crops"][1]["dice"].is_null());
+    }
+
+    #[test]
+    fn characterise_1463_whitespace_only_against_nonempty_fails_strict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = wordless_pair(tmp.path(), ("  ", "* * *"));
+        let err = compare(&a, &b, 0.5, None, None).unwrap_err().to_string();
+        assert_eq!(err, "c02: read by one host only");
+    }
+
+    #[test]
+    fn characterise_1463_loop_flagged_wordless_crop_passes_strict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = wordless_pair(tmp.path(), ("[?] [?]", "[?]"));
+        loop_bits(&a, "02");
+        loop_bits(&b, "00");
+        let looped =
+            |f: &[PathBuf]| super::super::consensus::sides(&load(f).unwrap())["c02"].looped;
+        assert!(looped(&a) && !looped(&b));
+        // The strict rule does not read the loop guard's flags.
+        compare(&a, &b, 0.5, None, None).unwrap();
+    }
+
+    #[test]
+    fn pair_log_marks_wordless_crops_and_leaves_every_verdict_as_it_was() {
+        let crop = |identical, looped: [bool; 2]| {
+            vec![serde_json::json!({"id": "c02", "identical": identical, "looped": looped})]
+        };
+        let cases = [
+            ((". , ;", "* * * —"), None, crop(false, [false, false])),
+            (
+                ("[?] [?]", "[?]\n [?]"),
+                Some("02"),
+                crop(true, [true, false]),
+            ),
+            (("[?] [?]", "[?]"), Some("02"), crop(false, [true, false])),
+            ((" \n ", "\t"), None, vec![]),
+            (("  ", "* * *"), None, vec![]),
+            (("one two", "* * *"), None, vec![]),
+        ];
+        for (c02, bits, wordless) in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let (a, b) = wordless_pair(tmp.path(), c02);
+            if let Some(bits) = bits {
+                loop_bits(&a, bits);
+                loop_bits(&b, "00");
+            }
+            let (la, lb) = (load(&a).unwrap(), load(&b).unwrap());
+            let strict = qwen::agree(&la.result, &la.readings, &lb.result, &lb.readings, 0.5).1;
+            let log = tmp.path().join("pairs.jsonl");
+            let logged = compare(&a, &b, 0.5, Some(&log), None).map_err(|e| e.to_string());
+            let unlogged = compare(&a, &b, 0.5, None, None).map_err(|e| e.to_string());
+            assert_eq!(logged, strict, "{c02:?}");
+            assert_eq!(unlogged, strict, "{c02:?}");
+            let line = last_line(&log);
+            assert_eq!(line["agree"], strict.is_ok(), "{c02:?}");
+            assert_eq!(line["wordless"], serde_json::json!(wordless), "{c02:?}");
+        }
     }
 }
