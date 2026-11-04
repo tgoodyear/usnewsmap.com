@@ -85,6 +85,9 @@ class MainTest(unittest.TestCase):
         self.assertIn("| where Feed.event == 'boinc_feed_health';", events)
         self.assertIn("FeedEvents\n| summarize arg_max(TimeGenerated, *)", events)
         self.assertIn("| where Feed.schema_version == 1", lines)
+        # Without a Syslog table the missing rule must still count zero events.
+        self.assertIn("(datatable(TimeGenerated: datetime, SyslogMessage: string)[])",
+                      lines.split("let FeedEvents", 1)[0])
         condition, missing = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)
         test_branch = condition.rsplit("| union (", 1)[1]
         self.assertIn(f"Feed.event == '{F.DELIVERY_TEST_EVENT}' and tobool(Feed.test)", test_branch)

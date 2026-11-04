@@ -82,10 +82,15 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
   }
 }
 
+// The empty fallback keeps the missing rule working before the workspace
+// has a Syslog table: no table counts as no health events, not an error.
 var lines = '''
-let FeedLines = Syslog
-| where TimeGenerated > ago(10m)
-| where _ResourceId =~ '__MACHINE_ID__' and ProcessName == 'usnm-boinc-feed-health'
+let FeedLines = union isfuzzy=true
+    (Syslog
+    | where TimeGenerated > ago(10m)
+    | where _ResourceId =~ '__MACHINE_ID__' and ProcessName == 'usnm-boinc-feed-health'
+    | project TimeGenerated, SyslogMessage),
+    (datatable(TimeGenerated: datetime, SyslogMessage: string)[])
 | extend Feed = parse_json(SyslogMessage)
 | where Feed.schema_version == 1
 | extend Observed = unixtime_seconds_todatetime(tolong(Feed.observed_at));
