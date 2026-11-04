@@ -1254,27 +1254,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: env.APP != ''
+      - id: azure_login
+        if: env.APP != ''
+        continue-on-error: true
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Defer notification if Azure authentication fails
+        if: env.APP != '' && steps.azure_login.outcome != 'success'
+        run: echo "::warning::Azure authentication failed; IndexNow notification will be retried hourly"
       - name: Find the deployed Azure sitemap
-        if: env.APP != ''
+        id: deployed_sitemap
+        if: env.APP != '' && steps.azure_login.outcome == 'success'
+        continue-on-error: true
         env:
           APP: ${{ vars.USNM_API_APP }}
           RG: ${{ vars.USNM_RESOURCE_GROUP }}
         run: |
-          fqdn=$(az containerapp show --name "$APP" --resource-group "$RG" \
-            --query properties.configuration.ingress.fqdn --output tsv)
-          [[ $fqdn =~ ^[a-z0-9.-]+$ ]] || { echo "::error::invalid Azure app FQDN"; exit 1; }
+          if ! fqdn=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn --output tsv); then
+            echo "::warning::could not discover Azure sitemap; IndexNow notification will be retried hourly"
+            exit 1
+          fi
+          [[ $fqdn =~ ^[a-z0-9.-]+$ ]] || {
+            echo "::warning::invalid Azure app FQDN; IndexNow notification will be retried hourly"
+            exit 1
+          }
           echo "INDEXNOW_EXPECTED_SITEMAP_URL=https://$fqdn/sitemap.xml" >> "$GITHUB_ENV"
       # Submit added/removed URLs and existing URLs whose lastmod changed. Record
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: env.APP != ''
+        if: env.APP != '' && steps.deployed_sitemap.outcome == 'success'
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
