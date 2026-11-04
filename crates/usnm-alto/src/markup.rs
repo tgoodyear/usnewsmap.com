@@ -192,7 +192,11 @@ fn bullet(body: &str) -> Option<char> {
     let text = inline(item);
     let mut t = text.chars();
     let first = t.next()?;
-    let currency = matches!(first, '$' | '¢' | '£' | '€' | '¥' | '₤' | 'ℳ');
+    // The Latin-1 signs, the Currency Symbols block (`€`, `₤`, `₱`, …) and `ℳ` (Mark).
+    let currency = matches!(
+        first,
+        '$' | '¢' | '£' | '¤' | '¥' | '\u{20A0}'..='\u{20CF}' | 'ℳ'
+    );
     let numeric =
         first.is_numeric() || (currency && t.as_str().trim_start().starts_with(char::is_numeric));
     (!numeric).then_some(b)
@@ -374,6 +378,7 @@ mod tests {
         // Prices and dates never count towards a list.
         assert_eq!(md("- 5 Cents\n- $1.50"), "- 5 Cents\n- $1.50");
         assert_eq!(md("- $ 1.50\n- € 2"), "- $ 1.50\n- € 2");
+        assert_eq!(md("- ₱5\n- ₹10"), "- ₱5\n- ₹10");
         assert_eq!(
             md("- 31. Dezember\n- Wheat rose"),
             "- 31. Dezember\n- Wheat rose"
