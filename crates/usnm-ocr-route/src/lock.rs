@@ -176,8 +176,8 @@ pub fn verify(lock_text: &str, current: &Entries) -> anyhow::Result<()> {
     let missing = changed_and_missing(&parse(lock_text)?, current)?;
     if !missing.is_empty() {
         bail!(
-            "profiles.lock has no entry for {}; run `usnm-ocr-worker routes check --update-lock` \
-             and commit profiles.lock",
+            "the profile lock has no entry for {}; run `usnm-ocr-worker routes check \
+             --update-lock` and commit the lock file",
             missing
                 .keys()
                 .map(|(e, p)| format!("{e} {p}"))

@@ -293,7 +293,7 @@ pub const ONE_MODEL_SET_SINCE_MICROS: i64 = 1_793_836_800_000_000;
 /// Two rows with one short key and two `models=` digests.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "ocr_engine {key:?} names two model sets, {first:?} and {second:?}; the engine index, \
+    "ocr_engine `{key}` names two model sets, `{first}` and `{second}`; the engine index, \
      API and credits page can't tell them apart. A different model file needs a new \
      profile id (13 §13.7.2, #1481)"
 )]
