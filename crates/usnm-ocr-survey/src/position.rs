@@ -46,18 +46,16 @@ const GRID: usize = 64;
 /// [`slot::parse_alto`]. Matching compares boxes by proportion, so LoC's 1/1200 inch needs no dpi.
 /// The page must have a box for every word.
 pub fn load(xml: &[u8], frame: Option<(f64, f64)>) -> anyhow::Result<Page> {
+    let xml = slot::normalize_alto_ns(xml);
     let (width, height) = match frame {
         Some(f) => f,
         None => {
-            let p = usnm_alto::check(
-                &slot::normalize_alto_ns(xml),
-                &ParseOptions::default().limits,
-            )
-            .map_err(|e| anyhow!("ALTO refused: {e}"))?;
+            let p = usnm_alto::check(&xml, &ParseOptions::default().limits)
+                .map_err(|e| anyhow!("ALTO refused: {e}"))?;
             (p.width, p.height)
         }
     };
-    let page = slot::parse_alto(xml, width, height)?;
+    let page = slot::parse_alto(&xml, width, height)?;
     ensure!(
         page.granularity == Granularity::Word,
         "the ALTO has no box for every word (granularity {})",
@@ -171,18 +169,20 @@ pub fn match_words(reference: &[PageWord], hypothesis: &[PageWord]) -> Vec<(usiz
     };
     let grid = Grid::new(&hyp, extent);
     let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
-    let mut near: Vec<usize> = Vec::new();
+    // The last reference word (plus one) each hypothesis word was compared with, so a word in
+    // several cells is compared once.
+    let mut seen = vec![0; hypothesis.len()];
     for (i, r) in reference.iter().enumerate() {
-        near.clear();
         for c in grid.span(&r.rect) {
-            near.extend_from_slice(&grid.cells[c]);
-        }
-        near.sort_unstable();
-        near.dedup();
-        for &j in &near {
-            let v = iou(&r.rect, &hyp[j]);
-            if v >= MIN_IOU {
-                candidates.push((v, i, j));
+            for &j in &grid.cells[c] {
+                if seen[j] == i + 1 {
+                    continue;
+                }
+                seen[j] = i + 1;
+                let v = iou(&r.rect, &hyp[j]);
+                if v >= MIN_IOU {
+                    candidates.push((v, i, j));
+                }
             }
         }
     }
