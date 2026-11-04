@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use axum::extract::Request;
-use axum::http::{header, Method, StatusCode};
+use axum::http::{header, HeaderName, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ const XML_END: &str = "</urlset>\n";
 #[derive(Default)]
 pub(crate) struct Service {
     committed: ArcSwapOption<Checkpoint>,
+    web_at: ArcSwapOption<DateTime<Utc>>,
 }
 
 impl Service {
@@ -407,10 +408,20 @@ type Identity = (String, DateTime<Utc>, String, chrono::NaiveDate, u32);
 const SPARE_CHECKPOINT_DAYS: i64 = 7;
 
 /// Whether a spare can keep serving this checkpoint: it's for the published
-/// version and recent enough. With none, or a stale one, a spare generates once.
-fn spare_can_serve(checkpoint: &Checkpoint, state: &AppState, now: DateTime<Utc>) -> bool {
+/// version, current API/web build and snapshot, and recent enough.
+fn spare_can_serve(
+    checkpoint: &Checkpoint,
+    state: &AppState,
+    now: DateTime<Utc>,
+    web_at: DateTime<Utc>,
+    snapshot: &str,
+) -> bool {
     checkpoint.example_routes
         && checkpoint.version == state.snapshot.load_full().refdata.version()
+        && checkpoint.build_at == build_at()
+        && checkpoint.web_at == web_at
+        && checkpoint.renderer == renderer()
+        && checkpoint.snapshot == snapshot
         && now.signed_duration_since(checkpoint.observed_at)
             < chrono::Duration::days(SPARE_CHECKPOINT_DAYS)
 }
@@ -444,12 +455,30 @@ async fn refresh_from(
     if let Some(checkpoint) = latest(store).await? {
         state.sitemap.committed.store(Some(Arc::new(checkpoint)));
     }
+    let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
+        .await
+        .map_err(backend)?;
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(backend)?;
+    state
+        .sitemap
+        .web_at
+        .store(Some(Arc::new(manifest.generated_at)));
+    let snap = state.snapshot.load_full();
+    let snapshot = snapshot_identity(&snap)?;
     if !state.config.sitemap_generate {
         if state
             .sitemap
             .committed
             .load_full()
-            .is_some_and(|checkpoint| spare_can_serve(&checkpoint, state, Utc::now()))
+            .is_some_and(|checkpoint| {
+                spare_can_serve(
+                    &checkpoint,
+                    state,
+                    Utc::now(),
+                    manifest.generated_at,
+                    &snapshot,
+                )
+            })
         {
             return Ok(());
         }
@@ -457,12 +486,6 @@ async fn refresh_from(
         // to commit: a checkpoint that stays expired would regenerate hourly.
         *finished = None;
     }
-    let bytes = tokio::fs::read(dir.join("sitemap-pages.json"))
-        .await
-        .map_err(backend)?;
-    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(backend)?;
-    let snap = state.snapshot.load_full();
-    let snapshot = snapshot_identity(&snap)?;
     let identity = (
         snap.refdata.version().to_owned(),
         manifest.generated_at,
@@ -566,10 +589,30 @@ pub(super) fn response(state: &AppState, req: &Request) -> Response {
     };
     let body = xml(&checkpoint);
     let length = body.len().to_string();
+    let snapshot = state.snapshot.load_full();
+    let build_current = checkpoint.example_routes
+        && checkpoint.version == snapshot.refdata.version()
+        && checkpoint.build_at == build_at()
+        && checkpoint.renderer == renderer()
+        && snapshot_identity(&snapshot).is_ok_and(|identity| checkpoint.snapshot == identity)
+        && state
+            .sitemap
+            .web_at
+            .load_full()
+            .is_some_and(|web_at| checkpoint.web_at == *web_at);
+    let content_identity = content_identity(&checkpoint);
     let headers = [
         (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
         (header::CACHE_CONTROL, "no-cache"),
         (header::CONTENT_LENGTH, length.as_str()),
+        (
+            HeaderName::from_static("x-usnm-sitemap-build-current"),
+            if build_current { "true" } else { "false" },
+        ),
+        (
+            HeaderName::from_static("x-usnm-sitemap-content-identity"),
+            content_identity.as_str(),
+        ),
     ];
     (
         headers,
@@ -591,6 +634,16 @@ fn xml(checkpoint: &Checkpoint) -> String {
     }
     xml.push_str(XML_END);
     xml
+}
+
+fn content_identity(checkpoint: &Checkpoint) -> String {
+    let pages: BTreeMap<_, _> = checkpoint
+        .pages
+        .iter()
+        .filter(|(path, _)| valid_url(path) && listed_path(path))
+        .map(|(path, page)| (path, &page.fingerprint))
+        .collect();
+    fingerprint(serde_json::to_vec(&pages).expect("sitemap page fingerprints serialize"))
 }
 
 fn xml_entry(path: &str, page: &Page) -> String {
@@ -722,6 +775,33 @@ mod tests {
         assert_eq!(next.pages["/search/whigs"].lastmod, at(8));
         assert_eq!(next.pages["/search/new-example"].lastmod, at(8));
         assert!(!next.pages.contains_key("/search/no-results"));
+    }
+
+    #[test]
+    fn content_identity_ignores_origin_local_dates_and_detects_page_changes() {
+        let original = generation().checkpoint(None).unwrap();
+        let mut observed_elsewhere = original.clone();
+        observed_elsewhere.sequence += 1;
+        observed_elsewhere.build_at += chrono::Duration::days(1);
+        observed_elsewhere.web_at += chrono::Duration::days(1);
+        observed_elsewhere.observed_at += chrono::Duration::days(1);
+        for page in observed_elsewhere.pages.values_mut() {
+            page.lastmod += chrono::Duration::days(1);
+        }
+        assert_eq!(
+            content_identity(&original),
+            content_identity(&observed_elsewhere)
+        );
+
+        observed_elsewhere
+            .pages
+            .get_mut("/privacy")
+            .unwrap()
+            .fingerprint = "changed page".into();
+        assert_ne!(
+            content_identity(&original),
+            content_identity(&observed_elsewhere)
+        );
     }
 
     #[test]
@@ -1670,6 +1750,95 @@ mod tests {
             first.sequence
         );
         assert!(finished.is_none());
+        let request = Request::builder()
+            .uri("/sitemap.xml")
+            .body(Body::empty())
+            .unwrap();
+        let response = response(&spare, &request);
+        assert_eq!(response.headers()["x-usnm-sitemap-build-current"], "true");
+        assert_eq!(
+            response.headers()["x-usnm-sitemap-content-identity"],
+            content_identity(&first)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spare_regenerates_when_checkpoint_build_identity_is_stale() {
+        let dir = Directory::new();
+        write_manifest(&dir);
+        let producer = state(&dir, Some(Vec::new())).await;
+        let store = LocalStore::new(dir.0.join("checkpoints"));
+        refresh(&producer, &store, &dir.0, &mut None).await.unwrap();
+
+        let mut spare = state(&dir, Some(Vec::new())).await;
+        Arc::get_mut(&mut spare).unwrap().config.sitemap_generate = false;
+        let mut finished = None;
+        refresh_from(&spare, &store, &dir.0, &mut finished, true)
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .uri("/sitemap.xml")
+            .body(Body::empty())
+            .unwrap();
+        let mut old_build = latest(&store).await.unwrap().unwrap();
+        old_build.sequence += 1;
+        old_build.build_at -= chrono::Duration::seconds(1);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", old_build.sequence),
+                serde_json::to_vec(&old_build).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        spare
+            .sitemap
+            .committed
+            .store(Some(Arc::new(old_build.clone())));
+        assert_eq!(
+            response(&spare, &request).headers()["x-usnm-sitemap-build-current"],
+            "false"
+        );
+        refresh_from(&spare, &store, &dir.0, &mut finished, true)
+            .await
+            .unwrap();
+        let current = latest(&store).await.unwrap().unwrap();
+        assert!(current.sequence > old_build.sequence);
+        assert_eq!(current.build_at, build_at());
+        assert_eq!(
+            response(&spare, &request).headers()["x-usnm-sitemap-build-current"],
+            "true"
+        );
+
+        let mut old_web = current;
+        old_web.sequence += 1;
+        old_web.web_at -= chrono::Duration::seconds(1);
+        assert!(store
+            .put_new(
+                &format!("{PREFIX}/{:020}.json", old_web.sequence),
+                serde_json::to_vec(&old_web).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap());
+        spare
+            .sitemap
+            .committed
+            .store(Some(Arc::new(old_web.clone())));
+        assert_eq!(
+            response(&spare, &request).headers()["x-usnm-sitemap-build-current"],
+            "false"
+        );
+        refresh_from(&spare, &store, &dir.0, &mut finished, true)
+            .await
+            .unwrap();
+        let current = latest(&store).await.unwrap().unwrap();
+        assert!(current.sequence > old_web.sequence);
+        assert_eq!(
+            response(&spare, &request).headers()["x-usnm-sitemap-build-current"],
+            "true"
+        );
     }
 
     #[tokio::test]
@@ -1729,7 +1898,13 @@ mod tests {
             .unwrap();
         let fresh = latest(&store).await.unwrap().unwrap();
         assert!(fresh.sequence > old.sequence);
-        assert!(spare_can_serve(&fresh, &spare, Utc::now()));
+        assert!(spare_can_serve(
+            &fresh,
+            &spare,
+            Utc::now(),
+            fresh.web_at,
+            &fresh.snapshot
+        ));
 
         refresh(&spare, &store, &dir.0, &mut finished)
             .await

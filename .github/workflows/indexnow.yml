@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     permissions:
-      contents: read
+      contents: write
       id-token: write
     # Serialize acknowledgements, never deployments: a pending notification
     # may replace another notification, but must not cancel a queued rollout.
@@ -33,18 +33,10 @@ jobs:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/indexnow/sitemap.sha256
-          key: indexnow-v1-prod-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: indexnow-v1-prod-
       - name: Notify added, changed and removed URLs
         id: indexnow
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
+          INDEXNOW_ENVIRONMENT: prod
+          GH_TOKEN: ${{ github.token }}
         run: scripts/ci/indexnow.sh
-      - if: steps.indexnow.outputs.submitted == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/indexnow/sitemap.sha256
-          key: indexnow-v1-prod-${{ github.run_id }}-${{ github.run_attempt }}

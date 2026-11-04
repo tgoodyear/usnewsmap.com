@@ -617,7 +617,7 @@ serving sets a shared, non-expiring local directory instead. The API needs only
 the container's existing list/read/create access. An Azure app that scales to
 zero sets `USNM_SITEMAP_GENERATE=false`, because each generation searches for
 every sitemap page. It serves its last checkpoint, and generates only with none,
-for a new index version, when migrating a legacy search-URL checkpoint, or when the checkpoint is a week old. Azure and on-prem
+for a new index version or API/web build, when migrating a legacy search-URL checkpoint, or when the checkpoint is a week old. Azure and on-prem
 keep separate checkpoints, and a checkpoint also decides which search pages are
 indexed and rendered on the server, so during a failover a newly admitted example
 can be `noindex` until Azure generates. Only curated `/examples/<id>` searches with

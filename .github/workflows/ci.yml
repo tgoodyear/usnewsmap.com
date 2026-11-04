@@ -1242,7 +1242,7 @@ jobs:
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
     concurrency:
       group: indexnow-${{ matrix.environment }}
@@ -1254,33 +1254,43 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: env.APP != ''
+      - id: azure_login
+        if: env.APP != ''
+        continue-on-error: true
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Restore the last successful IndexNow submission
-        if: env.APP != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Defer notification if Azure authentication fails
+        if: env.APP != '' && steps.azure_login.outcome != 'success'
+        run: echo "::warning::Azure authentication failed; IndexNow notification will be retried hourly"
+      - name: Find the deployed Azure sitemap
+        id: deployed_sitemap
+        if: env.APP != '' && steps.azure_login.outcome == 'success'
         continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/indexnow/sitemap.sha256
-          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: indexnow-v1-${{ matrix.environment }}-
+        env:
+          APP: ${{ vars.USNM_API_APP }}
+          RG: ${{ vars.USNM_RESOURCE_GROUP }}
+        run: |
+          if ! fqdn=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn --output tsv); then
+            echo "::warning::could not discover Azure sitemap; IndexNow notification will be retried hourly"
+            exit 1
+          fi
+          [[ $fqdn =~ ^[a-z0-9.-]+$ ]] || {
+            echo "::warning::invalid Azure app FQDN; IndexNow notification will be retried hourly"
+            exit 1
+          }
+          echo "INDEXNOW_EXPECTED_SITEMAP_URL=https://$fqdn/sitemap.xml" >> "$GITHUB_ENV"
       # Submit added/removed URLs and existing URLs whose lastmod changed. Record
       # state only after all batches succeed, so failures are retried later.
       - name: Submit the sitemap to IndexNow
         id: indexnow
-        if: env.APP != ''
+        if: env.APP != '' && steps.deployed_sitemap.outcome == 'success'
         continue-on-error: true
         env:
           INDEXNOW_STATE_FILE: ${{ runner.temp }}/indexnow/sitemap.sha256
+          INDEXNOW_ENVIRONMENT: ${{ matrix.environment }}
+          GH_TOKEN: ${{ github.token }}
         run: scripts/ci/indexnow.sh
-      - name: Save the successful IndexNow submission
-        if: steps.indexnow.outputs.submitted == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/indexnow/sitemap.sha256
-          key: indexnow-v1-${{ matrix.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
