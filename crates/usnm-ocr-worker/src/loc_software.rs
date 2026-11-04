@@ -210,10 +210,7 @@ const SETTINGS_ENGINES: [&str; 6] = [
 
 fn engine_token(raw: &str) -> Option<String> {
     let low = raw.to_ascii_lowercase();
-    let at = SETTINGS_ENGINES
-        .iter()
-        .filter_map(|p| low.rfind(p))
-        .max()?;
+    let at = SETTINGS_ENGINES.iter().filter_map(|p| low.rfind(p)).max()?;
     let t = &low[at..];
     (!t.is_empty()).then(|| t.to_owned())
 }
@@ -239,7 +236,14 @@ pub fn settings_engines(s: &str) -> Vec<String> {
             .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
             .unwrap_or(rest.len());
         let v = &rest[..end];
-        found.push((at, if v.is_empty() { name } else { format!("{name} {v}") }));
+        found.push((
+            at,
+            if v.is_empty() {
+                name
+            } else {
+                format!("{name} {v}")
+            },
+        ));
     }
     for (at, _) in s.match_indices("Engine:") {
         // `Engine:` itself, not the end of `OCREngine:` or a longer key.
@@ -327,7 +331,10 @@ fn is_named(s: &Software) -> bool {
 pub fn vendor_name(raw: &str) -> String {
     const KNOWN: [(&str, &str); 8] = [
         ("apex", "Apex CoVantage"),
-        ("ccs content conversion", "CCS Content Conversion Specialists"),
+        (
+            "ccs content conversion",
+            "CCS Content Conversion Specialists",
+        ),
         ("htc global", "HTC Global Services"),
         ("nmt corporation", "NMT Corporation"),
         ("iarchives", "iArchives"),
@@ -373,11 +380,7 @@ fn is_engine_maker(creator: &str) -> bool {
 ///    engine's creator unless that is the engine's maker (ABBYY, Google, Prime), shortened by
 ///    [`vendor_name`].
 pub fn derive(h: &Header) -> Derived {
-    let ocr_named = || {
-        h.software
-            .iter()
-            .filter(|s| s.step == "ocr" && is_named(s))
-    };
+    let ocr_named = || h.software.iter().filter(|s| s.step == "ocr" && is_named(s));
     let engine = ocr_named().find(|s| s.name.as_deref().and_then(family_of_name).is_some());
     let mut d = Derived {
         engine_family: "unknown",
@@ -390,7 +393,11 @@ pub fn derive(h: &Header) -> Derived {
     let mut wrapper_sw: Option<&Software> = None;
     let mut engine_creator: Option<&str> = None;
     if let Some(e) = engine {
-        d.engine_family = e.name.as_deref().and_then(family_of_name).unwrap_or("unknown");
+        d.engine_family = e
+            .name
+            .as_deref()
+            .and_then(family_of_name)
+            .unwrap_or("unknown");
         d.engine_name = e.name.clone();
         d.engine_version = e.version.clone();
         engine_creator = e.creator.as_deref();
@@ -430,7 +437,13 @@ pub fn derive(h: &Header) -> Derived {
                     .find_map(|s| s.split_once(' ').map(|(_, v)| v.to_owned()))
                     .or_else(|| version_of_setting(s));
             }
-            [] => d.engine_family = if iarchives { "iarchives-unknown" } else { "unknown" },
+            [] => {
+                d.engine_family = if iarchives {
+                    "iarchives-unknown"
+                } else {
+                    "unknown"
+                }
+            }
             _ => {
                 let l = name.to_ascii_lowercase();
                 d.engine_family = if l == "newpah" || l == "forepah" {
@@ -661,7 +674,9 @@ mod tests {
         let v = version.map_or(String::new(), |v| {
             format!("<softwareVersion>{v}</softwareVersion>")
         });
-        format!("<processingSoftware>{c}<softwareName>{name}</softwareName>{v}</processingSoftware>")
+        format!(
+            "<processingSoftware>{c}<softwareName>{name}</softwareName>{v}</processingSoftware>"
+        )
     }
 
     fn of(desc: &str) -> (Header, Derived) {
@@ -682,7 +697,11 @@ mod tests {
         assert_eq!(d.engine_name.as_deref(), name, "{d:?}");
         assert_eq!(d.engine_version.as_deref(), version, "{d:?}");
         assert_eq!(d.wrapper.as_deref(), wrapper.map(|w| w.0), "{d:?}");
-        assert_eq!(d.wrapper_version.as_deref(), wrapper.and_then(|w| w.1), "{d:?}");
+        assert_eq!(
+            d.wrapper_version.as_deref(),
+            wrapper.and_then(|w| w.1),
+            "{d:?}"
+        );
         assert_eq!(d.vendor.as_deref(), vendor, "{d:?}");
     }
 
@@ -802,17 +821,49 @@ mod tests {
             "abbyy9.version:9.0.0.7394-3Abbyy9.cache-check.image-CRC:ef19Lang:eng spaabbyy9.option.ocr-auto-pictures:trueConf:0.991Engine:Abbyy9",
         ));
         assert_eq!(h.settings_engines, ["abbyy9 9.0.0.7394-3"]);
-        check(&d, "abbyy", Some("abbyy9"), Some("9.0.0.7394-3"), wrapper, Some("iArchives"));
+        check(
+            &d,
+            "abbyy",
+            Some("abbyy9"),
+            Some("9.0.0.7394-3"),
+            wrapper,
+            Some("iArchives"),
+        );
         // Run on from the setting before it.
-        let (h, _) = of(&step("ocr-auto-pictures:trueabbyy9.version:9.0.0.7394-3Lang:eng"));
+        let (h, _) = of(&step(
+            "ocr-auto-pictures:trueabbyy9.version:9.0.0.7394-3Lang:eng",
+        ));
         assert_eq!(h.settings_engines, ["abbyy9 9.0.0.7394-3"]);
         // A blank page names the engine only as `Engine:`.
-        let (_, d) = of(&step("Predicted Word Accuracy:0% Lang:ja Engine:Abbyy8 Word Count:0"));
-        check(&d, "abbyy", Some("abbyy8"), Some("8"), wrapper, Some("iArchives"));
+        let (_, d) = of(&step(
+            "Predicted Word Accuracy:0% Lang:ja Engine:Abbyy8 Word Count:0",
+        ));
+        check(
+            &d,
+            "abbyy",
+            Some("abbyy8"),
+            Some("8"),
+            wrapper,
+            Some("iArchives"),
+        );
         let (_, d) = of(&step("omnipage155.version:1550 Lang:en"));
-        check(&d, "omnipage", Some("omnipage155"), Some("1550"), wrapper, Some("iArchives"));
+        check(
+            &d,
+            "omnipage",
+            Some("omnipage155"),
+            Some("1550"),
+            wrapper,
+            Some("iArchives"),
+        );
         let (_, d) = of(&step("Lang:en xdpi:300"));
-        check(&d, "iarchives-unknown", None, None, wrapper, Some("iArchives"));
+        check(
+            &d,
+            "iarchives-unknown",
+            None,
+            None,
+            wrapper,
+            Some("iArchives"),
+        );
     }
 
     #[test]
@@ -951,9 +1002,20 @@ mod tests {
         // CCS once named Google as the creator of ABBYY's engine: the name decides.
         let (_, d) = of(&format!(
             "<OCRProcessing><ocrProcessingStep>{}</ocrProcessingStep></OCRProcessing>",
-            sw("Google Inc. Apache License, Version 2.0", "ABBYY FineReader Engine", Some("8.1"))
+            sw(
+                "Google Inc. Apache License, Version 2.0",
+                "ABBYY FineReader Engine",
+                Some("8.1")
+            )
         ));
-        check(&d, "abbyy", Some("ABBYY FineReader Engine"), Some("8.1"), None, None);
+        check(
+            &d,
+            "abbyy",
+            Some("ABBYY FineReader Engine"),
+            Some("8.1"),
+            None,
+            None,
+        );
     }
 
     #[test]
@@ -1006,8 +1068,11 @@ mod tests {
         std::io::Write::write_all(&mut bz, &t.into_inner().unwrap()).unwrap();
         std::fs::write(arch.join("b_x_ver02.tar.bz2"), bz.finish().unwrap()).unwrap();
         let mut bz = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
-        std::io::Write::write_all(&mut bz, &tar::Builder::new(Vec::new()).into_inner().unwrap())
-            .unwrap();
+        std::io::Write::write_all(
+            &mut bz,
+            &tar::Builder::new(Vec::new()).into_inner().unwrap(),
+        )
+        .unwrap();
         std::fs::write(arch.join("b_y_ver01.tar.bz2"), bz.finish().unwrap()).unwrap();
         std::fs::write(arch.join("not-a-batch.tar.bz2"), b"x").unwrap();
         let out = dir.path().join("out/loc-software.parquet");
