@@ -115,6 +115,38 @@ class DaemonConfig(unittest.TestCase):
             self.assertEqual(before, [(project / name).lstat().st_ino for name in ("keys", "config.xml")])
             self.assertEqual((secrets / "keys/upload_public").read_text(), "public fixture")
 
+    def test_retired_apps_get_no_daemons_or_validator_links(self):
+        # #1449: the apps retired in "Retiring an app" (docs/boinc/server-and-apps.md) leave the
+        # status page; every other app keeps one validator and one assimilator.
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            work = Path(directory)
+            for name in ("path", "secrets", "share/usnmocr/bin"):
+                (work / name).mkdir(parents=True)
+            (work / "path/usnm-boinc").write_text("#!/bin/sh\n")
+            (work / "path/usnm-boinc").chmod(0o755)
+            (work / "secrets/db-runtime").write_text("fixture")
+            subprocess.run(
+                ["bash", "-eu", "-c", '. "$1"; SECRETS=$2 TEMPLATES=$3; chown() { :; }; render_config', "_",
+                 str(root / "contrib-compute/images/server/lib.sh"), str(work / "secrets"), str(Path(__file__).parent)],
+                check=True,
+                env={**os.environ, "PATH": f"{work / 'path'}{os.pathsep}{os.environ['PATH']}",
+                     "KEY_VAULT_NAME": "kv", "DB_HOST": "db", "DB_NAME": "usnmocr", "MASTER_HOST": "boinc.example",
+                     "PROJECT_DIR": str(work / "share"), "PROJECT_HOST_OVERRIDE": "server"},
+            )
+            commands = [shlex.split(cmd.text) for cmd in
+                        ET.parse(work / "secrets/config.xml").findall("./daemons/daemon/cmd")]
+            daemons = sorted((cmd[0], cmd[cmd.index("--app") + 1]) for cmd in commands if "--app" in cmd)
+            links = sorted(path.name for path in (work / "share/usnmocr/bin").iterdir())
+        live = ("usnm_gold", "usnm_ndlocr", "usnm_quality", "usnm_qwen")
+        self.assertEqual(daemons, sorted([("sample_trivial_validator", "usnm_ocr"),
+                                          ("batch_collect_assimilator", "usnm_ocr"),
+                                          *(("script_validator", app) for app in live),
+                                          *(("batch_collect_assimilator", app) for app in live)]))
+        self.assertEqual(links, ["usnm_gold_check", "usnm_ndlocr_check", "usnm_ndlocr_compare",
+                                 "usnm_quality_check", "usnm_quality_compare", "usnm_qwen_check",
+                                 "usnm_qwen_compare"])
+
     def test_db_purge_runs_continuously_with_thirty_day_retention(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         commands = [

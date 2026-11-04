@@ -57,9 +57,9 @@ The steps, in the server container:
 2. Set `deprecated=1` on the app and on each version not already deprecated: 1.4, 1.5 and 1.6 (app versions 58, 59 and 60). 1.2 and 1.3 were already deprecated.
 3. Touch `reread_db` in the project directory so the feeder reloads its tables. `server_status.php` stops listing the app.
 
-The `usnm_surya` validator and assimilator keep running, with nothing to do. The bridge steps (`surya-stage`, `surya-stage-crops`, `surya-submit`, `surya-collect`), the `usnm_surya` plan kind in `batch_scheduler.py`, the image workflow and `scripts/boinc/surya-benchmark.py` stay in the repo, so the studies can be rerun.
+The `usnm_surya` validator and assimilator keep running, with nothing to do, until the server runs an image built from #1449, which drops them from `render_config`. The bridge steps (`surya-stage`, `surya-stage-crops`, `surya-submit`, `surya-collect`), the `usnm_surya` plan kind in `batch_scheduler.py`, the image workflow and `scripts/boinc/surya-benchmark.py` stay in the repo, so the studies can be rerun.
 
-Rollback: put back the saved `deprecated` values (0 on the app and on app versions 58, 59 and 60) and touch `reread_db`. The 4 unsent results become sendable again. To start a new campaign, follow [Running a campaign](#running-a-campaign).
+Rollback: put back the saved `deprecated` values (0 on the app and on app versions 58, 59 and 60) and touch `reread_db`. The 4 unsent results become sendable again. On an image built from #1449, also put the validator, the assimilator and the `usnm_surya_check` and `usnm_surya_compare` links back in `render_config`, and deploy a new image, before any result is sent. To start a new campaign, follow [Running a campaign](#running-a-campaign).
 
 ### How the GPU reaches the container
 

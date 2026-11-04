@@ -155,6 +155,19 @@ Run a dry invocation under the same normal mutex before enabling the timer.
 Verify the real ordinary timer's immutable input receipt and actual signed
 assignments/returns afterwards; a policy change alone is not throughput.
 
+`CONFIG_SHA256` is the SHA-256 of the live `/project/usnmocr/config.xml`. `render_config`
+rewrites that file at every container start, and so do the submit, reconcile and
+`register-apps` bridge steps (`bridge-job.sh`), with the `SERVER_IMAGE` in `/etc/usnm-boinc/server.env`. A tick that
+finds a different hash releases its window and publishes `--stop`. A server image that
+renders a different `config.xml` therefore needs the timer disabled before `SERVER_IMAGE`
+changes. After the restart, take the new hash from the running server
+(`podman exec usnm-boinc-server sha256sum /project/usnmocr/config.xml`), and check the diff
+against the previous config. Then set `CONFIG_SHA256`, run a dry invocation, and enable the
+timer again. #1449's image is such an image: it drops eight retired daemons. Don't predict the
+hash from the repository, because the rendered file carries the host's secrets and paths. An
+app-version image prepared on the old `SERVER_IMAGE` renders the old file when it publishes,
+so prepare it again on the new one.
+
 The helper rechecks pristine DB state **inside the policy lock** and accepts an
 expected policy SHA and `--admit-until` deadline (checked under the lock and again
 just before the atomic rename; closing remains allowed), so a stale preview cannot overwrite a concurrent operator.

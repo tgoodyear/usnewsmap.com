@@ -16,6 +16,9 @@
 #     [--qwen-yiddish-root NAME --yiddish-prompt-version 4] (a chunk of only Yiddish pages goes
 #     here. With --prompt-version 3 or 4, a chunk that holds Yiddish and has no root to go to
 #     stays READY, as does one that mixes Yiddish with anything else)
+#     [--qwen-submit-binary usnm-boinc] (native only: submit every request version with this
+#     binary, the image's own once it is from #1437 on. Without it, qwen_submit.py submits
+#     versions 3 and 4 with its stage binary, #1449)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
@@ -59,7 +62,7 @@ READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=200 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
-PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4
+PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY=""
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -84,6 +87,7 @@ while [ $# -gt 0 ]; do
     --qwen-root) QWEN_ROOT=${2:-}; shift 2 ;;
     --qwen-yiddish-root) YIDDISH_ROOT=${2:-}; shift 2 ;;
     --yiddish-prompt-version) YIDDISH_PROMPT=${2:-}; shift 2 ;;
+    --qwen-submit-binary) SUBMIT_BINARY=${2:-}; shift 2 ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -106,8 +110,11 @@ QWEN_ROOT=${QWEN_ROOT:-$CAMPAIGN}
 for root in "$QWEN_ROOT" "$YIDDISH_ROOT"; do
   [[ -z $root || $root =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--qwen-root, --qwen-yiddish-root: 1-41 of [a-z0-9-]"
 done
-if [ -z "$QWEN_PLAN" ] && { [ "$PROMPT" != 1 ] || [ "$QWEN_ROOT" != "$CAMPAIGN" ] || [ -n "$YIDDISH_ROOT" ]; }; then
-  die "--prompt-version and the root flags need --qwen-engine-plan"
+[[ -z $SUBMIT_BINARY || $SUBMIT_BINARY =~ ^(/[A-Za-z0-9._/-]+|[A-Za-z0-9][A-Za-z0-9._-]*)$ ]] ||
+  die "--qwen-submit-binary: an absolute path or a command name"
+if [ -z "$QWEN_PLAN" ] && { [ "$PROMPT" != 1 ] || [ "$QWEN_ROOT" != "$CAMPAIGN" ] || [ -n "$YIDDISH_ROOT" ] ||
+  [ -n "$SUBMIT_BINARY" ]; }; then
+  die "--prompt-version, the root flags and --qwen-submit-binary need --qwen-engine-plan"
 fi
 if [ -n "$QWEN_PLAN" ]; then
   # Migration-safe: old inline and new independent ship units cannot copy/clean one chunk concurrently.
@@ -322,7 +329,8 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       'echo "quality-ship: native project mutex acquired" >&2; exec "$@"' sh \
       podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version"; then
+      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
+      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"}; then
       :
     else
       rc=$?
