@@ -339,9 +339,9 @@ remain unknown.
 as the observer's service user. It reads `throughput.json`, the two weeks of hourly
 counts the dashboard already keeps from its collectors
 ([throughput sources](../operations/onprem-ocr.md)). It writes those counts as one
-immutable evidence batch of aggregate stages under
-`/var/lib/usnm-data-flow/live-evidence/`, imports the batch, and regenerates
-`catalog.json`. A batch is about 4 KB, so a year of them is about 35 MB. Besides
+immutable evidence batch of aggregate stages and [BOINC result counts](#boinc-results)
+under `/var/lib/usnm-data-flow/live-evidence/`, imports the batch, and regenerates
+`catalog.json`. A batch is about 10 KB, so a year of them is about 85 MB. Besides
 the catalog, it reads only that file: no Postgres, cloud access or new credential.
 On a copy of the deployed catalog under the unit's limits, a run took 2.3 seconds
 and 35 MB of memory.
@@ -375,8 +375,51 @@ not the quality database.
 Hand-off collection is not that decision, so it has its own row. Release decisions
 reach the catalog only through `ingest-release`, and no scheduled export feeds it
 yet. Engine runs and per-file verified locations have no current source either:
-BOINC results are not cataloged as run records, and no job verifies scans file by
-file on a schedule.
+BOINC results are counted by app and status below, but not cataloged as run
+records, and no job verifies scans file by file on a schedule.
+
+### BOINC results
+
+The same run records the BOINC results the dashboard's collector counted as
+`boinc_results` evidence, one row per app and status:
+
+```json
+{"app":"usnm_ocr","status":"valid","count":1200,"window_hours":336,"reported_hours":72}
+```
+
+- `app` is `usnm_ocr`, `usnm_quality` or `usnm_qwen`, the apps the collector
+  counts. Other apps, such as `usnm_surya` or `usnm_iris`, are not counted.
+- `status` sorts a result by its validation state: `valid`, `inconclusive`,
+  `invalid` (also too late, cancelled or not checked) or `waiting` (not validated
+  yet). A result whose outcome was not success is `error`, whatever its state.
+- `count` is result replicas the server received in the window's reported hours,
+  not pages or workunits: every replica of a workunit counts, and a bundled one
+  holds several pages.
+- `reported_hours` is how many of the window's 336 hours the series covers. Each
+  status keeps its own hours and time, the end of its newest known hour, so a
+  count is never padded with hours its series did not report.
+
+The `boinc` collector recounts the last 72 hours on every run
+(`USNM_THROUGHPUT_HOURS=72`), so a replica still `waiting` when its hour leaves
+that span stays `waiting` in the count. An unchanged count reuses its event, as a
+stage does, and a recount of the same hour wins. At most 64 rows are kept, and
+the batch fails rather than drop one.
+
+The rows are in the catalog database, not in `catalog.json`: the dashboard
+rejects unknown snapshot fields, and it already shows these series from the same
+history. List them with:
+
+```bash
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite query boinc_results --status waiting
+```
+
+The adapter reads no result files. The assimilators' outputs and the trees the
+quality and Qwen loaders collect into (`ops/quality-results/`) are on the BOINC
+host, which the refresh unit cannot reach (it has no network), and are large
+unordered directories with no validation state, so counting them would mean
+listing them every hour. The collector's query is bounded and incremental
+instead: it aggregates the `result` table over its recount window only, and the
+dashboard keeps the older hours.
 
 ### Overall evidence age
 
