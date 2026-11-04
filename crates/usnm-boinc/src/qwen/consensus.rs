@@ -334,10 +334,15 @@ pub fn record(
     f.write_all(&bytes)?;
     f.as_file().sync_all()?;
     match f.persist_noclobber(&path) {
-        Ok(_) => Ok(()),
-        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e.error).context("crop states"),
+        Ok(_) => {}
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.error).context("crop states"),
     }
+    // The record, and the job directory holding it, outlive a crash before
+    // the verdict is reported; otherwise the strict verdict decides.
+    std::fs::File::open(&parent)?.sync_all()?;
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// A crop-state record as [`record`] writes it.
@@ -728,7 +733,23 @@ mod tests {
         // so the strict rule, which fails c02, decides.
         let blocked = tmp.path().join("blocked");
         std::fs::write(&blocked, b"").unwrap();
-        assert!(compare_with(&a, &b, opts(Some(&blocked))).is_err());
+        let log = tmp.path().join("pairs.jsonl");
+        assert!(compare_with(
+            &a,
+            &b,
+            Compare {
+                log: Some(&log),
+                ..opts(Some(&blocked))
+            }
+        )
+        .is_err());
+        // The pair log names the rule that decided.
+        let line: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(&log).unwrap().trim()).unwrap();
+        assert_eq!(
+            (&line["basis"], &line["agree"]),
+            (&"strict-v1".into(), &false.into())
+        );
         let states = tmp.path().join("states");
         compare_with(&a, &b, opts(Some(&states))).unwrap();
         let la = crate::qwen::validate::load(&a).unwrap();

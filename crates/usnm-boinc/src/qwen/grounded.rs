@@ -132,7 +132,8 @@ pub struct Tally {
     rule_only_worse_sum: f64,
     /// Crops only the Dice passes.
     pub dice_only: usize,
-    /// Each page's crops judged as one pair by both rules: the pages that
+    /// Each page both readers read in full, judged as one pair by both rules
+    /// (a page with a crop missing on either side is not counted): the pages that
     /// pass (counted in their first crop's language and source groups), and
     /// the crops each rule would join, with their worse reading's error. The
     /// strict rule joins every crop of a page it passes; the rule joins the
@@ -280,7 +281,16 @@ pub fn run(opts: &Options<'_>) -> anyhow::Result<BTreeMap<(String, String), Tall
             pages.entry(page_of(r)).or_default().push(i);
         }
         let mut verdicts: HashMap<String, (bool, bool)> = HashMap::new();
+        // Only pages both readers read in full are judged as pairs: a missing
+        // crop would change either verdict.
+        let total: HashMap<String, usize> = refs.iter().fold(HashMap::new(), |mut m, r| {
+            *m.entry(page_of(r)).or_default() += 1;
+            m
+        });
         for (page, idx) in &pages {
+            if idx.len() != total[page] {
+                continue;
+            }
             let strict = idx
                 .iter()
                 .all(|&i| strict_crop(&crops[i].1 .0, &crops[i].2 .0, STRICT_DICE));
@@ -307,7 +317,8 @@ pub fn run(opts: &Options<'_>) -> anyhow::Result<BTreeMap<(String, String), Tall
         }
         for (r, ta, tb, groups) in &crops {
             let (ca, cb) = (cer(&ta.0, &r.text), cer(&tb.0, &r.text));
-            let (page_strict, page_rule) = verdicts[&page_of(r)];
+            let (page_strict, page_rule) =
+                verdicts.get(&page_of(r)).copied().unwrap_or((false, false));
             let (good, bad) = (opts.good_cer, opts.bad_cer);
             let (state, _) = consensus::crop_state(side(ta), side(tb), p);
             let sim = consensus::similarity(&ta.0, &tb.0);

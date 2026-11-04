@@ -120,12 +120,15 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
     let mut verdict = consensus
         .as_ref()
         .map_or_else(|| strict.clone(), |j| j.verdict.clone());
+    // The rule that decided the pair, as the pair log reports it.
+    let mut basis = consensus.as_ref().map(|j| j.basis);
     if let (Some(judged), Some(dir)) = (&consensus, crop_states) {
         // Without its record the collector would take the result as the strict
         // rule accepted it, crop for crop, so the strict verdict decides instead.
         if let Err(e) = super::consensus::record(dir, a, b, &la, &lb, judged, verdict.is_ok()) {
             eprintln!("crop states not written, the strict rule decides: {e:#}");
             verdict = strict.clone();
+            basis = Some(super::consensus::Basis::StrictV1);
         }
     }
     let page_verdicts = qwen::agree_pages(&la.result, &lb.result, &crops, min_dice);
@@ -170,7 +173,7 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         });
         if let Some(judged) = &consensus {
             line["rule"] = "crop-consensus-v2".into();
-            line["basis"] = serde_json::to_value(judged.basis)?;
+            line["basis"] = serde_json::to_value(basis.unwrap_or(judged.basis))?;
             line["strict_reason"] = serde_json::json!(strict.as_ref().err());
             line["crop_states"] = serde_json::to_value(&judged.crops)?;
         }
