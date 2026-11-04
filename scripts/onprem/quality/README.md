@@ -93,10 +93,10 @@ Where each source comes in:
   archive in `/tank/locbulk/ocr` into one Parquet file in `tank/locstats`, which CT215 mounts
   read-only at `/srv/locstats`; `load.py locwc` (hourly, `usnm-quality-locwc-load.timer`) loads
   them into `loc_alto`. Ranking averages the damage score with `1 - wc_mean`.
-- **LoC's OCR software:** `usnm-ocr-worker loc-software --archives /tank/locbulk/ocr --out
-/tank/locstats/software/loc-software.parquet` reads the first page's ALTO header of each
-  archive (about a minute for all 3,011) into one row per batch version. The same timer then
-  loads it with `load.py locsw` into `loc_software` when the file changes. Software is
+- **LoC's OCR software:** `usnm-ocr-worker loc-software`, run with
+  `--archives /tank/locbulk/ocr` and `--out /tank/locstats/software/loc-software.parquet`,
+  reads the first page's ALTO header of each archive (about a minute for all 3,011) into one
+  row per batch version. The same timer then loads it with `load.py locsw` into `loc_software` when the file changes. Software is
   recorded per batch: `software` keeps every `processingSoftware` in document order with its
   own version, and `engine_family`, `engine_version`, `wrapper` and `vendor` come from the rules
   in `crates/usnm-ocr-worker/src/loc_software.rs`. `page_summary` doesn't carry them, because a
