@@ -60,6 +60,8 @@ read_header() {
 # Read the deployed build's generated sitemap, not a stale source-tree list.
 sitemap=$(curl -fsS -D "$public_headers" -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
   skip "$sitemap_url could not be fetched"
+public_build_current=$(read_header x-usnm-sitemap-build-current "$public_headers") ||
+  skip "could not read the public sitemap build status"
 public_content_identity=$(read_header x-usnm-sitemap-content-identity "$public_headers") ||
   skip "could not read the public sitemap content identity"
 
@@ -99,7 +101,8 @@ if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
     skip "could not read Azure's sitemap content identity"
   [ -n "$deployed_content_identity" ] ||
     skip "Azure response is missing its sitemap content identity"
-  while ! python3 scripts/ci/indexnow-plan.py --host "$host" --compare "$expected" <<< "$sitemap" ||
+  while [ "$public_build_current" != true ] ||
+      ! python3 scripts/ci/indexnow-plan.py --host "$host" --compare "$expected" <<< "$sitemap" ||
       [ "$public_content_identity" != "$deployed_content_identity" ]; do
     now=$(date +%s)
     [ "$now" -lt "$deadline" ] ||
@@ -109,6 +112,8 @@ if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
     sitemap=$(curl -fsS -D "$public_headers" -H 'DNT: 1' -H 'Cache-Control: no-cache' --max-time 20 \
       --retry 3 --retry-delay 5 --retry-all-errors "$sitemap_url") ||
       skip "$sitemap_url could not be fetched while waiting for the public sitemap"
+    public_build_current=$(read_header x-usnm-sitemap-build-current "$public_headers") ||
+      skip "could not read the public sitemap build status"
     public_content_identity=$(read_header x-usnm-sitemap-content-identity "$public_headers") ||
       skip "could not read the public sitemap content identity"
   done

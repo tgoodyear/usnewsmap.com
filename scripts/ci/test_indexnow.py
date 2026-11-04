@@ -136,8 +136,11 @@ elif args[-1].endswith("/sitemap.xml"):
             identity = (os.environ.get("STUB_PUBLIC_CONTENT_ID", "shared-content")
                         if count >= ready_after
                         else os.environ.get("STUB_PUBLIC_OLD_CONTENT_ID", "old-content"))
+            build_ready_after = int(os.environ.get("STUB_PUBLIC_BUILD_READY_AFTER", "1"))
+            build_current = "true" if count >= build_ready_after else "false"
             headers.write_text(
                 "HTTP/1.1 200 OK\\r\\n" +
+                f"X-USNM-Sitemap-Build-Current: {build_current}\\r\\n" +
                 f"X-USNM-Sitemap-Content-Identity: {identity}\\r\\n\\r\\n"
             )
             print(xml)
@@ -386,6 +389,15 @@ else:
             STUB_PUBLIC_CONTENT_ID="new-content",
             STUB_PUBLIC_OLD_CONTENT_ID="old-content",
         )
+        posts, output = self.submit(xml, expected=xml)
+        self.assertEqual(posts[-1]["body"]["urlList"], urls)
+        self.assertIn("waiting for the public sitemap", output)
+        self.assertEqual((self.root / "public-sitemap-count").read_text(), "2")
+
+    def test_deploy_waits_for_public_build_even_when_shared_content_matches(self):
+        urls = [f"https://{HOST}/", f"https://{HOST}/examples/gold"]
+        xml = sitemap(urls)
+        self.env["STUB_PUBLIC_BUILD_READY_AFTER"] = "2"
         posts, output = self.submit(xml, expected=xml)
         self.assertEqual(posts[-1]["body"]["urlList"], urls)
         self.assertIn("waiting for the public sitemap", output)
