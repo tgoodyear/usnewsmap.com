@@ -94,7 +94,7 @@ Where each source comes in:
   read-only at `/srv/locstats`; `load.py locwc` (hourly, `usnm-quality-locwc-load.timer`) loads
   them into `loc_alto`. Ranking averages the damage score with `1 - wc_mean`.
 - **LoC's OCR software:** `usnm-ocr-worker loc-software --archives /tank/locbulk/ocr --out
-  /tank/locstats/software/loc-software.parquet` reads the first page's ALTO header of each
+/tank/locstats/software/loc-software.parquet` reads the first page's ALTO header of each
   archive (about a minute for all 3,011) into one row per batch version. The same timer then
   loads it with `load.py locsw` into `loc_software` when the file changes. Software is
   recorded per batch: `software` keeps every `processingSoftware` in document order with its
@@ -111,6 +111,7 @@ Where each source comes in:
   A few batches mix engines across pages (Apex batches with both PrimeOCR and FineReader
   pages, such as `vi_White_ver01`), and their row names only the first page's engine. The
   page-level `loc_alto.software` shows those pages.
+
 - **OCR readers:** `load.py ocr` records each published `ocr-local` run; their scores against
   the other readers arrive with the next quality unit of the page.
 
