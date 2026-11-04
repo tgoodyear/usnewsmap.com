@@ -663,6 +663,19 @@ QWEN_SHIP_ARGS="--prompt-version 3 --qwen-root NAME --qwen-yiddish-root NAME --y
 
 The crop rule changes every root's key anyway (`CROP_STATES_ARGS`) and needs a collector from #1434 (#1490) on, which `request-guard-44465088` predates. If it is close, make one move: install such a build at a new path, warm all three roots with it and `--qwen-crop-states /project/usnmocr/qwen/crop-states`, then set `QUALITY_COLLECTOR` and `CROP_STATES_ARGS` together.
 
+### Changing the llama.cpp release
+
+A unit names its runtime in `engine.llama`: the digest of the `ubuntu-vulkan-x64` archive in `boinc/apps/qwen/llama.lock`. The app refuses a unit whose digest isn't in its own lock, so a new release is a new engine, and the two never meet in one quorum. With `app.min_version` at 0 the feeder loads only the newest version of each class, so once the new version is published every unsent replica of an old-engine unit would go to an app that refuses it. The cut-over drains first:
+
+1. Stop the Qwen feed's submissions and let the unsent old-engine replicas run out (`server_state=2` for `appid=6`). Keep the refill window renewing so Intel keeps reading.
+2. Publish the new version for every class that is open, on every platform, through the [release path](app-release.md). A class left on the old version can't read new units.
+3. Point the feed at a new engine plan (the old one with `engine.llama` replaced) and at new roots; a root keeps one engine. Set the refill's `APP_VERSION_NUM`, `NVIDIA_APP_VERSION`, `INTEL_APP_VERSION` and `CAMPAIGN_ARGS` to match. `qwen-auto-cohort.py` admits the engine of the llama.lock its `--app-version-num` ships (`engine_for`).
+4. Submit a small batch first and check each class's first results (exit status, `USNM_QWEN_FAILURE`, empty readings) before the feed resumes at its normal rate.
+
+A replica of an old-engine unit that is resent after step 2 (a timeout or an error) fails on the new app with `unit is for llama ...`, so publish only once almost nothing old is in flight.
+
+1.20 moves from b8799 to b12084 (1.18 and 1.19 shipped on b8799) (#1428, Study 9). On the RTX 2060 SUPER, reading with the Xiaomi OCR model, b8799's Vulkan `llama-server` returned no text for 72 of 612 Study 3 crops (mostly single lines) and 10.5% CER; b12084's Vulkan build read every crop at 4.6% CER with the same model, requests and flags. From b12084, `llama-server` is a small launcher for `libllama-server-impl` and `libllama-common` (`.so`, `.dylib` or `.dll`), and the Windows OpenMP runtime is `libomp.dll`; `boinc/scripts/install.py` refuses a bundle without them. `MTMD_BACKEND_DEVICE` is now read by the common argument parser as `--mmproj-device`, with the same effect. Windows drivers without `VK_EXT_pci_bus_info` still get no device identity upstream, so the [AMD identity patch](amd-gpu.md#windows-drivers-without-vulkan-pci-bus-information) is still applied, to the same unchanged block.
+
 ### OCR's prefetch manifests (#1055)
 
 The scan fetcher (home-infra `usnm-loc-fetch`) serves OCR's manifests before the quality pass's. `boinc/scripts/onprem/ocr-feed/ocr_manifest.py` builds OCR's hourly (`usnm-ocr-manifest.timer`): pages queued in curated `ocr-local/queued/` (read live with the container's Arc identity) with no outcome in `ocr-local/outcomes/` and no scan on the scan server, users' requests first, at most 1,000 per manifest, PUT through the scan server as `/manifests/queue-ocr-<stamp>/manifest.parquet`. The next one waits until the last is 90% fetched or a day old.
