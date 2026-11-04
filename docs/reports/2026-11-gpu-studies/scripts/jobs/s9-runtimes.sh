@@ -27,6 +27,7 @@ run_arm() { # NAME SERVER LIBPATH EXTRA...
   echo "$name seconds $(( $(date +%s)-t1 )) items $n" >> $O/timing.txt
   kill $lp 2>/dev/null; wait $lp 2>/dev/null; sleep 3
 }
+{ env | grep -E '^NVIDIA_' | sort; ls /usr/lib/x86_64-linux-gnu | grep -i -E 'libGLX_nvidia|libnvidia-(gl|vulkan)'; ls /etc/vulkan/icd.d /usr/share/vulkan/icd.d 2>&1; } > $O/vulkan-env.txt 2>&1
 apt-get install -y -qq libvulkan1 >/dev/null 2>&1
 mkdir -p /etc/vulkan/icd.d; [ -f /etc/vulkan/icd.d/nvidia_icd.json ] || printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}\n' >/etc/vulkan/icd.d/nvidia_icd.json
 chmod +x $I/rt/llama-server
@@ -35,7 +36,7 @@ if LD_LIBRARY_PATH=$I/rt:/usr/lib/x86_64-linux-gnu $I/rt/llama-server --list-dev
 else
   echo "no Vulkan device" >> $O/progress.txt
 fi
-if /app/llama-server --list-devices 2>&1 | tee $O/cuda-devices.txt | grep -q CUDA0; then
+if LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/app /app/llama-server --list-devices 2>&1 | tee $O/cuda-devices.txt | grep -q CUDA0; then
   run_arm cuda /app/llama-server /usr/lib/x86_64-linux-gnu:/app
 else
   echo "no CUDA device" >> $O/progress.txt

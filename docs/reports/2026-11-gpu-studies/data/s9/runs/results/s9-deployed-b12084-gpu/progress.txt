@@ -1,0 +1,2 @@
+2026-11-04T01:41:51+00:00 serve ready, arm gpu
+2026-11-04T01:46:47+00:00 read exit 0 after 296s

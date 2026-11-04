@@ -1,0 +1,199 @@
+{
+  "drop_test": {
+    "all": {
+      "iou_ge_0.5": 0.3096,
+      "iou_ge_0.9": 0.0038,
+      "mean_iou": 0.2882,
+      "median_iou": 0.1861,
+      "n": 1066,
+      "same_box_word": 0.8002
+    },
+    "by_src": {
+      "exact": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0485,
+        "median_iou": 0.0,
+        "n": 11,
+        "same_box_word": 0.0909
+      },
+      "interp": {
+        "iou_ge_0.5": 0.1919,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.1524,
+        "median_iou": 0.0,
+        "n": 99,
+        "same_box_word": 0.4343
+      },
+      "interp_gap": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0,
+        "median_iou": 0.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "interp_line": {
+        "iou_ge_0.5": 0.5673,
+        "iou_ge_0.9": 0.0067,
+        "mean_iou": 0.4983,
+        "median_iou": 0.5523,
+        "n": 446,
+        "same_box_word": 0.9865
+      },
+      "line_fit": {
+        "iou_ge_0.5": 0.175,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.1353,
+        "median_iou": 0.0,
+        "n": 40,
+        "same_box_word": 0.275
+      },
+      "no_box": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.1083,
+        "median_iou": 0.0821,
+        "n": 53,
+        "same_box_word": 1.0
+      },
+      "no_line": {
+        "iou_ge_0.5": 0.1304,
+        "iou_ge_0.9": 0.0026,
+        "mean_iou": 0.1473,
+        "median_iou": 0.0,
+        "n": 391,
+        "same_box_word": 0.7545
+      },
+      "reorder": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0,
+        "median_iou": 0.0,
+        "n": 1,
+        "same_box_word": 0.0
+      },
+      "slot": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0254,
+        "median_iou": 0.0,
+        "n": 23,
+        "same_box_word": 0.3913
+      },
+      "split": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0,
+        "median_iou": 0.0,
+        "n": 1,
+        "same_box_word": 0.0
+      }
+    },
+    "note": "same_box_word here means the placed box overlaps the true word's line (vertical IoU >= 0.5)"
+  },
+  "ref_pivot": {
+    "all": {
+      "iou_ge_0.5": 0.998,
+      "iou_ge_0.9": 0.9955,
+      "mean_iou": 0.9977,
+      "median_iou": 1.0,
+      "n": 11179,
+      "same_box_word": 0.9997
+    },
+    "by_case": {
+      "both_exact": {
+        "iou_ge_0.5": 0.999,
+        "iou_ge_0.9": 0.9966,
+        "mean_iou": 0.9985,
+        "median_iou": 1.0,
+        "n": 9767,
+        "same_box_word": 0.9998
+      },
+      "box_misread": {
+        "iou_ge_0.5": 0.9895,
+        "iou_ge_0.9": 0.986,
+        "mean_iou": 0.9905,
+        "median_iou": 1.0,
+        "n": 1146,
+        "same_box_word": 0.9991
+      },
+      "vlm_misread": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 0.9962,
+        "mean_iou": 0.9993,
+        "median_iou": 1.0,
+        "n": 266,
+        "same_box_word": 1.0
+      }
+    },
+    "by_src": {
+      "exact": {
+        "iou_ge_0.5": 0.9998,
+        "iou_ge_0.9": 0.9998,
+        "mean_iou": 0.9998,
+        "median_iou": 1.0,
+        "n": 9734,
+        "same_box_word": 0.9998
+      },
+      "fuzzy": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 1279,
+        "same_box_word": 1.0
+      },
+      "hyphen": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "join": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.8131,
+        "median_iou": 0.8131,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "line_fit": {
+        "iou_ge_0.5": 0.5918,
+        "iou_ge_0.9": 0.0612,
+        "mean_iou": 0.5311,
+        "median_iou": 0.6216,
+        "n": 49,
+        "same_box_word": 0.9796
+      },
+      "reorder": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "slot": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 113,
+        "same_box_word": 1.0
+      },
+      "split": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.5714,
+        "median_iou": 0.5714,
+        "n": 1,
+        "same_box_word": 1.0
+      }
+    },
+    "pivot_words": 11179,
+    "ref_words": 13814
+  }
+}

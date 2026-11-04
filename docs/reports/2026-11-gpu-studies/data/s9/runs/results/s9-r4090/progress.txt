@@ -1,0 +1,8 @@
+no Vulkan device
+cuda 100 29s
+cuda 200 50s
+cuda 300 89s
+cuda 400 100s
+cuda 500 111s
+cuda 600 122s
+done

@@ -1,0 +1,2 @@
+2026-11-03T23:36:38+00:00 serve ready, arm cpu
+2026-11-04T00:17:25+00:00 read exit 0 after 2447s

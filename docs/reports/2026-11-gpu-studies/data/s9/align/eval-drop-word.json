@@ -1,0 +1,191 @@
+{
+  "drop_test": {
+    "all": {
+      "iou_ge_0.5": 0.7697,
+      "iou_ge_0.9": 0.0627,
+      "mean_iou": 0.6092,
+      "median_iou": 0.6964,
+      "n": 1181,
+      "same_box_word": 0.9568
+    },
+    "by_src": {
+      "exact": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0,
+        "median_iou": 0.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "fuzzy": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0,
+        "median_iou": 0.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "interp": {
+        "iou_ge_0.5": 0.8757,
+        "iou_ge_0.9": 0.0705,
+        "mean_iou": 0.6893,
+        "median_iou": 0.7223,
+        "n": 1022,
+        "same_box_word": 0.9843
+      },
+      "interp_gap": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0424,
+        "median_iou": 0.0,
+        "n": 4,
+        "same_box_word": 0.5
+      },
+      "interp_line": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0312,
+        "median_iou": 0.0236,
+        "n": 12,
+        "same_box_word": 0.0
+      },
+      "line_fit": {
+        "iou_ge_0.5": 0.4828,
+        "iou_ge_0.9": 0.069,
+        "mean_iou": 0.4762,
+        "median_iou": 0.4993,
+        "n": 29,
+        "same_box_word": 0.8966
+      },
+      "no_line": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0008,
+        "median_iou": 0.0,
+        "n": 64,
+        "same_box_word": 0.8906
+      },
+      "reorder": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0,
+        "median_iou": 0.0,
+        "n": 3,
+        "same_box_word": 0.3333
+      },
+      "slot": {
+        "iou_ge_0.5": 0.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.0149,
+        "median_iou": 0.0,
+        "n": 45,
+        "same_box_word": 0.8
+      }
+    },
+    "note": "same_box_word here means the placed box overlaps the true word's line (vertical IoU >= 0.5)"
+  },
+  "ref_pivot": {
+    "all": {
+      "iou_ge_0.5": 0.998,
+      "iou_ge_0.9": 0.9955,
+      "mean_iou": 0.9977,
+      "median_iou": 1.0,
+      "n": 11179,
+      "same_box_word": 0.9997
+    },
+    "by_case": {
+      "both_exact": {
+        "iou_ge_0.5": 0.999,
+        "iou_ge_0.9": 0.9966,
+        "mean_iou": 0.9985,
+        "median_iou": 1.0,
+        "n": 9767,
+        "same_box_word": 0.9998
+      },
+      "box_misread": {
+        "iou_ge_0.5": 0.9895,
+        "iou_ge_0.9": 0.986,
+        "mean_iou": 0.9905,
+        "median_iou": 1.0,
+        "n": 1146,
+        "same_box_word": 0.9991
+      },
+      "vlm_misread": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 0.9962,
+        "mean_iou": 0.9993,
+        "median_iou": 1.0,
+        "n": 266,
+        "same_box_word": 1.0
+      }
+    },
+    "by_src": {
+      "exact": {
+        "iou_ge_0.5": 0.9998,
+        "iou_ge_0.9": 0.9998,
+        "mean_iou": 0.9998,
+        "median_iou": 1.0,
+        "n": 9734,
+        "same_box_word": 0.9998
+      },
+      "fuzzy": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 1279,
+        "same_box_word": 1.0
+      },
+      "hyphen": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "join": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.8131,
+        "median_iou": 0.8131,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "line_fit": {
+        "iou_ge_0.5": 0.5918,
+        "iou_ge_0.9": 0.0612,
+        "mean_iou": 0.5311,
+        "median_iou": 0.6216,
+        "n": 49,
+        "same_box_word": 0.9796
+      },
+      "reorder": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 1,
+        "same_box_word": 1.0
+      },
+      "slot": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 1.0,
+        "mean_iou": 1.0,
+        "median_iou": 1.0,
+        "n": 113,
+        "same_box_word": 1.0
+      },
+      "split": {
+        "iou_ge_0.5": 1.0,
+        "iou_ge_0.9": 0.0,
+        "mean_iou": 0.5714,
+        "median_iou": 0.5714,
+        "n": 1,
+        "same_box_word": 1.0
+      }
+    },
+    "pivot_words": 11179,
+    "ref_words": 13814
+  }
+}

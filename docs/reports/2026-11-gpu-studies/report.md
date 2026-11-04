@@ -22,7 +22,7 @@ Tiled full-page Surya costs about ten times Qwen's crop read per page. A 4090 wa
 
 On Japanese, NDLOCR-Lite, CHURRO and Surya agree most with each other and with the machine references. That is agreement, not accuracy. No human transcription of these crops exists that we could verify.
 
-On Study 3's 612 crops, Xiaomi-OCR-0, a 0.8B reader, has a pooled CER of 4.0% against Tesseract's 9.0%, a difference of -5.0 points (limits -6.4 to -3.8). That passes Study 9's rule, so a deployed-path study comes next. It ties Qwen 8B with the guard (4.5%; difference -0.4, limits -1.4 to 0.5), has 7 major hallucinations flagged to Qwen's 32, and read all 676 crops, Latin and Japanese, in 69 seconds on the local 2060 SUPER. It returns text without coordinates, so it can't make ALTO by itself. Its whole-page mode at 2,048 px misses about half of a newspaper page.
+On Study 3's 612 crops, Xiaomi-OCR-0, a 0.8B reader, has a pooled CER of 4.0% against Tesseract's 9.0%, a difference of -5.0 points (limits -6.4 to -3.8). That passes Study 9's rule, so a deployed-path study comes next. It ties Qwen 8B with the guard (4.5%; difference -0.4, limits -1.4 to 0.5), has 7 major hallucinations flagged to Qwen's 32, and read all 676 crops, Latin and Japanese, in 69 seconds on the local 2060 SUPER. It returns text without coordinates, so it can't make ALTO by itself. Its whole-page mode at 2,048 px misses about half of a newspaper page. BOINC ships llama.cpp b8799, whose Vulkan build drops one-line crops (10.5%, with 72 empty readings); the current release reads the same crops at 4.6% and the CUDA build at 4.3%, so a runtime update comes first. On a rented 3090, Xiaomi-OCR-0 reads crops for about $0.02 per 1,000 pages of reading time.
 
 On 104 hand-corrected Yiddish book pages, mean page CER is 1.52% for Jochre 3, 8.72% for Tesseract `yid` and 30.15% for Qwen request version 4. Qwen was given the corpus's line segmentation and reading order; the page readers were not. The 100 damaged newspaper crops have no transcriptions, so their high disagreement is not a measure of accuracy. Don't launch a full Yiddish reread at version 4 on this evidence.
 
@@ -500,6 +500,75 @@ The model returns text: Markdown for whole pages, plain text for regions. It giv
 ## saturate
 
 saturate drove both sets with no errors, retries or circuit-breaker trips. On crops its window settled at 32 after two cuts for queue growth. On pages it stayed at the cap of 8. Its summary flagged that run as input-bound, while 105 of its 106 ticks named the engine as the bottleneck. The crop run finished in 68.5 s, before the planned kill at 90 s, so the kill and resume check only covered a completed run: the rerun skipped all 676 ids and read none twice. A kill mid-run wasn't tested.
+
+## Step 2: the deployed path
+
+The amendment's GGUF is the pinned weights converted with `convert_hf_to_gguf.py` at llama.cpp `e1a9a6dcb`, the build `usnm_qwen` 1.17 ships, to Q8_0 (SHA-256 `61f0667b`) with an F16 vision projector (`77dc7cf2`). That converter didn't know this tokenizer's hash. Its pre-tokenizer is the Qwen2 regex, character for character, so a one-line patch maps the hash to `qwen2` ([`scripts/s9/converter.patch`](scripts/s9/converter.patch)). The 612 crops were read one at a time with the app's flags (`--parallel 1`, temperature 0, seed 42, a 16,384-token context) through saturate with a fixed window of 1.
+
+| Runtime, Q8_0 GGUF | Pooled CER | Against Tesseract | 95% limits | NZZ | Empty readings | Seconds a crop |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.17 Vulkan (b8799), 2060 SUPER | 10.5% | +1.5 | -0.4 to 3.8 | 31.3% | 72 | 0.43 |
+| 1.17 CPU (b8799), 4 threads | 5.8% | -3.2 | -4.6 to -1.9 | 13.6% | 1 | 4.0 |
+| 1.17 Vulkan, `--image-min-tokens 64` (post-hoc) | 6.6% | -2.4 | -4.1 to -0.8 | 13.2% | 14 | 0.50 |
+| b12084 Vulkan (official release), 2060 SUPER | 4.6% | -4.4 | -5.8 to -3.2 | 8.0% | 0 | 0.48 |
+| vLLM, step 1 | 4.0% | -5.0 | -6.4 to -3.8 | 5.3% | 0 | n/a |
+
+The amendment's rule holds on the CPU arm and fails on the 1.17 Vulkan arm. The Vulkan arm's loss is nearly all on NZZ's one-line crops, about 47 px high: 71 of its 72 empty readings are NZZ lines, where the model ends at once. CPU and Vulkan sent the same requests (98,010 prompt tokens each), so this isn't image sizing. A higher image-token floor, chosen after seeing the result, only partly hid it. The current release, b12084 (`f9448cddc`), reads the same requests on the same card at 4.6% with no empty readings, so the fault is in b8799's Vulkan backend. The b12084 arm was added on the maintainer's approval after the 1.17 Vulkan result; its archives matched GitHub's published SHA-256 digests.
+
+## Step 3: rented cards
+
+Six Vast.ai instances, $0.26 in all, rate times time from creation to destruction ([`ledger-s9.csv`](data/s9/runs/ledger-s9.csv)). Two read nothing, from runner faults since fixed (a missing library path for the CUDA build, and no device diagnostics), and one never answered SSH.
+
+**(a) Runtimes on newer cards.** No Vulkan device appeared on either card. Vast set `NVIDIA_DRIVER_CAPABILITIES=compute,utility` whatever the create request asked, so the driver's graphics libraries were present but unusable ([`vulkan-env.txt`](data/s9/runs/results/s9-r3090/vulkan-env.txt)). The local card above answers the Vulkan question. The worker image's CUDA build (`091b6a7fc`), the one the CUDA plan class runs:
+
+| Card | Pooled CER | Against Tesseract | 95% limits | NZZ | Empty readings | Seconds a crop |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RTX 3090 | 4.3% | -4.7 | -6.0 to -3.5 | 7.3% | 0 | 0.26 |
+| RTX 4090 | 4.3% | -4.8 | -6.2 to -3.6 | 7.1% | 0 | 0.20 |
+
+Export to Q8_0 costs about 0.3 points against vLLM on a sound runtime. The CUDA build is also newer than b8799, so the CUDA rows don't separate the backend from the build.
+
+**(b) Pages per dollar.** Study 9's vLLM job, unchanged, on a $0.20-an-hour RTX 3090: 676 crops in 23.0 s and 20 pages in 67.0 s, after about 4 minutes of startup. At Study 4's 12 crops a page that is about 8,800 pages an hour from crops, or about $0.02 per 1,000 pages of reading time, and about 1,075 whole pages an hour ($0.19 per 1,000). saturate flagged the crop run as input-bound, so the card may not have been the limit ([`vllm-3090-stats.jsonl`](data/s9/runs/vllm-3090-stats.jsonl)). Study 4's $3.40 for Qwen 8B counts all paid time over 40 pages, so the bases differ. Against it, Xiaomi-OCR-0 is about 150 times cheaper per page on crops and about 18 times on whole pages.
+
+## Validation across cards
+
+The `usnm_qwen` validator compares replicas crop by crop: the strict rule by word-bag Dice, `crop-consensus-v2` by character similarity, each with a floor of 0.5. The same two measures on Xiaomi-OCR-0's readings of the 612 crops:
+
+| Pair | Identical | Similarity under 0.5 | Dice under 0.5 |
+| --- | ---: | ---: | ---: |
+| 3090 and 4090, same CUDA build | 566 | 1 | 1 |
+| CUDA and vLLM | 228 | 3 | 12 |
+| CUDA and b8799 CPU | 198 | 6 | 70 |
+| CUDA and b8799 Vulkan | 145 | 95 | 121 |
+| Shuffled control, different crops | 0 | 612 | 612 |
+
+Character similarity passes all but 1 to 6 of the 612 honest crop pairs across cards and runtimes, catches the faulty Vulkan readings and rejects every shuffled pair. Word-bag Dice would fail one honest CPU-and-GPU pair in nine on some crop. The one same-build failure is a small price heading the model misreads differently on each card. This supports `crop-consensus-v2` (#1434) for Xiaomi-OCR-0.
+
+## RapidOCR
+
+RapidOCR 3.10.0 with PP-OCRv6 small, its default, on the 612 crops on 4 CPU threads, 1.5 s a crop ([`data/s9/rapid/`](data/s9/rapid/)). This was exploration, not preregistered.
+
+| Source | RapidOCR | Tesseract | Difference | 95% limits |
+| --- | ---: | ---: | ---: | ---: |
+| All (612) | 9.6% | 9.0% | +0.6 | -0.4 to 1.7 |
+| Overproof English | 2.0% | 3.1% | -1.0 | -1.8 to -0.1 |
+| French | 5.7% | 7.2% | -1.5 | -4.1 to 1.5 |
+| Swedish | 7.0% | 11.4% | -4.4 | -6.2 to -2.0 |
+| NZZ German | 18.4% | 13.4% | +5.1 | 2.5 to 7.5 |
+| Reichsanzeiger German | 21.6% | 18.6% | +3.0 | -1.2 to 7.4 |
+
+It ties Tesseract overall, reads Roman type better and Fraktur worse (it has no Fraktur model), and flags 31 major hallucinations to Tesseract's 48. It returns line boxes and word boxes. A PP-OCRv6 medium run stopped unfinished after almost 3 hours.
+
+## Word boxes for vision-language text
+
+Xiaomi-OCR-0 gives text without coordinates. Summaries are in [`data/s9/align/`](data/s9/align/). A prototype aligner (Rust, on `usnm-alto`) maps its words onto RapidOCR's word boxes by a word-level Needleman–Wunsch in reading order, with a rescue pass for reordered segments, and interpolates the words it can't match. On the 612 crops (13,471 words):
+
+- The text survives: pooled CER 4.00% after alignment against 4.04% before; putting lines in the box reader's order instead costs 2.3 points.
+- 94.4% of words get a box from a RapidOCR word, 1.3% share one, 3.1% are placed by interpolation or line fitting, and 1.2% are guesses.
+- Where both readers and the reference agree on a word (11,179 words), the aligned box is RapidOCR's own box 99.97% of the time, mean IoU 0.998.
+
+It can't rescue invented text: on Xiaomi-OCR-0's whole-page readings of the 20 reading-order pages, only 6.7% of words matched LoC's ALTO. A page gate on the share of exact and fuzzy matches (about 88% on these crops, under 30% on whole pages) separates the two. Two issues in `usnm-alto` turned up and are filed: Markdown stripping deletes a leading "31. " (#1488), and same-row segments sort by `y0` alone (#1489).
+
 # Study 10: Tesseract trained on the Yiddish corpus (3 November 2026)
 
 Study 8 put stock Tesseract `yid` at 8.72% mean page CER on the corpus's book pages, against 1.52% for Jochre 3. This study fine-tunes `yid` on the corpus's training split and reads Study 8's test pages, line crops and newspaper crops with the result, scored with Study 8's references, scorer and bootstrap (#1479). It was added after Study 8 and is not preregistered: the second training run, the checkpoint and the dictionary comparison were chosen after seeing the first run's results. It ran on a local CPU.
@@ -653,6 +722,10 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Study 8 was added after the original protocol. Its line readers used corpus segmentation and order, unlike the page readers; its book results do not establish newspaper accuracy.
 - Study 10 was added after Study 8, without a protocol amendment. Its second training run, checkpoint and dictionary comparison were chosen after seeing the first run's results, and its test pages come from the books it trained on.
 
+- Study 9's first window read nothing: it ended at the 10-minute readiness limit while vLLM was still compiling. Its kill and resume check only covered a finished run, as the crop run ended before the planned kill.
+- Study 9 step 2 added, after seeing the 1.17 Vulkan result, a Vulkan arm with `--image-min-tokens 64` (post-hoc) and an arm on llama.cpp b12084 (on the maintainer's approval). A planned arm with the vision encoder on CPU was cancelled once b12084 had placed the fault in b8799's Vulkan backend.
+- Study 9 step 3 found no Vulkan device on the rented cards, so its Vulkan arms didn't run. Two of its six instances read nothing because of runner faults, fixed and rerun.
+
 # Findings about the rental
 
 - Vast puts a per-instance key in `/root/.vast_api_key` on the rental we inspected, readable by the host. It isn't our account key. It got 401 from the account endpoint and 200 from the instance list. Nothing of ours was on the hosts. We didn't test what else that key can do.
@@ -675,5 +748,5 @@ From Study 5 on, jobs that fit in 12 GB ran on RTX 3060s at $0.058 to $0.078 an 
 - Whether Study 10's trained model reads Yiddish newspapers better than stock `yid` needs a transcribed newspaper sample; it isn't deployed (#1479).
 - The public provenance key names a Tesseract profile but not its model's digest, so a changed model needs a new profile id (#1481).
 - MinerU and dots.ocr remain unrun.
-- Study 9's deployed path: Xiaomi-OCR-0 as a GGUF in the `usnm_qwen` llama.cpp runtime, on GPU and CPU, scored against these vLLM readings. Community GGUFs exist; upstream hasn't checked them.
-- Xiaomi-OCR-0 returns no coordinates. Using it for search text means aligning its words to Tesseract's or LoC's word boxes.
+- `usnm_qwen`'s native runtime is llama.cpp b8799, whose Vulkan build drops one-line crops; moving to a current release comes before any Xiaomi-OCR-0 rollout. Qwen reads on that runtime may be affected too; this study didn't measure them.
+- The word-box aligner is a prototype outside the repo. It goes into `usnm-alto` as a fusion step, after #1488 and #1489.

@@ -1,0 +1,6 @@
+2026-11-04T00:51:09+00:00 serve start
+2026-11-04T00:55:09+00:00 serve ready
+2026-11-04T00:56:39+00:00 crops killed after 90s
+2026-11-04T00:56:39+00:00 crops exit 0 after 90s
+2026-11-04T00:57:47+00:00 pages exit 0 after 68s
+2026-11-04T00:57:49+00:00 done
