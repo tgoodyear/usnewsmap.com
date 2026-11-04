@@ -69,6 +69,9 @@ public_content_identity=$(read_header x-usnm-sitemap-content-identity "$public_h
 # checkpoint, then for the on-prem origin to serve the same page content before
 # acknowledging it. Origin-local lastmod dates are not comparable.
 # The hourly job retries if either bounded wait expires.
+if [ -z "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ] && [ "$public_build_current" != true ]; then
+  skip "public sitemap checkpoint is not current for the serving build"
+fi
 if [ -n "${INDEXNOW_EXPECTED_SITEMAP_URL:-}" ]; then
   [[ $INDEXNOW_EXPECTED_SITEMAP_URL =~ ^https://[a-z0-9.-]+/sitemap\.xml$ ]] ||
     skip "INDEXNOW_EXPECTED_SITEMAP_URL must be an absolute Azure sitemap URL"

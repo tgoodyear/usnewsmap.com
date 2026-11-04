@@ -318,6 +318,13 @@ else:
         posts, _ = self.submit(sitemap([f"https://{HOST}/"]))
         self.assertEqual(len(posts), 1)
 
+    def test_scheduled_main_skips_a_noncurrent_public_checkpoint(self):
+        self.env.update(GITHUB_EVENT_NAME="schedule", STUB_PUBLIC_BUILD_READY_AFTER="2")
+        posts, output = self.submit(sitemap([f"https://{HOST}/"]))
+        self.assertEqual(posts, [])
+        self.assertIn("public sitemap checkpoint is not current", output)
+        self.assertFalse((self.root / "durable-state.json").exists())
+
     def test_failed_submission_is_retried(self):
         xml = sitemap([f"https://{HOST}/"])
         self.env["STUB_STATUS"] = "429"
