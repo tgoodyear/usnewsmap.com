@@ -28,6 +28,7 @@ CapabilityBoundingSet=
 TimeoutStartSec=2min
 Nice=10
 MemoryMax=128M
-# The snapshot query has a two-second deadline, which a 10% quota misses (14: Retired worker evidence
-# transport).
+# refresh-live gives its SQLite work 60 s in all, inside TimeoutStartSec: each hourly run starts on a
+# cold page cache, and the two-second query deadline failed them (14: Current evidence). A 10% quota
+# misses even a warm one (14: Retired worker evidence transport).
 CPUQuota=50%

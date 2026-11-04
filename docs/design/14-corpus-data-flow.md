@@ -346,6 +346,18 @@ the catalog, it reads only that file: no Postgres, cloud access or new credentia
 On a copy of the deployed catalog under the unit's limits, a run took 2.3 seconds
 and 35 MB of memory.
 
+Its SQLite work, from the schema checks to the snapshot, has 60 seconds in all
+(`REFRESH_SECONDS`), not the two-second query deadline that bounds `serve` and the
+other subcommands; the unit's two-minute `TimeoutStartSec` still bounds the
+process. Two seconds was too short once deployed (#1436). On CT 212 the first run
+failed after 2.5 seconds and the two runs in the next 10 minutes passed in about
+1.5 seconds, but from the next hour every hourly run failed after 2.3 to 2.5
+seconds with about 0.5 seconds of CPU. The error named no cause; a missed deadline
+on a cold page cache, which each hourly run starts on, fits those timings. A failed
+run now prints a fixed `cause` beside the error, such as `SQLITE_INTERRUPT` for a
+missed deadline, `SQLITE_BUSY` or an errno name, and never the message, which can
+hold a path or SQL.
+
 | Panel row        | Source       | Evidence                                                                                                                                                      |
 | ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `queued`         | `batch`      | `ocr-bulk`'s approximate depth at ocr-sync's last run in the hour, leased messages included. `ocr-priority`'s depth is not logged, so it is not in this count |

@@ -1,6 +1,8 @@
 """Offline catalog contract, replay, provenance, CLI and HTTP tests (stdlib only)."""
 
+import contextlib
 import copy
+import io
 import json
 from pathlib import Path
 import re
@@ -197,6 +199,42 @@ class CatalogTests(unittest.TestCase):
         with mock.patch.object(c, "now", return_value="2026-11-01T19:55:00.000000Z"):
             result = c.refresh_live(self.db, path, evidence, self.work / "catalog.json")
         self.assertEqual(result["inserted"], 0)
+
+    def many_artifacts(self, n=200):
+        """Enough rows that the snapshot's queries reach SQLite's progress handler, so its deadline."""
+        self.ingest(*(event("e" + str(i), page_id=f"loc:sn123_1900-01-01_ed-1_seq-{i}") for i in range(n)))
+
+    def test_refresh_has_its_own_deadline_not_the_query_one(self):
+        # The hourly run starts on a cold cache, where the snapshot outlasted QUERY_SECONDS (#1436).
+        self.many_artifacts()
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        with mock.patch.object(c, "QUERY_SECONDS", -1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.snapshot(self.db)
+            catalog = self.refresh(path)
+        self.assertEqual(catalog["artifacts"]["locations"], 200)
+        with mock.patch.object(c, "REFRESH_SECONDS", -1):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.refresh(path, "2026-11-01T19:55:00.000000Z")
+
+    def test_a_failed_refresh_names_its_cause_but_no_path(self):
+        self.many_artifacts()
+        path = self.throughput(ocr_import_pages=[1, 2, 3])
+        (self.work / "evidence").mkdir()
+        stderr = io.StringIO()
+        with mock.patch.object(c, "REFRESH_SECONDS", -1), contextlib.redirect_stderr(stderr):
+            code = c.main(["--db", str(self.db), "refresh-live", "--throughput", str(path),
+                           "--evidence-dir", str(self.work / "evidence"), "--out", str(self.work / "catalog.json")])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(stderr.getvalue()),
+                         {"error": "local catalog I/O or query failure", "cause": "SQLITE_INTERRUPT"})
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = c.main(["--db", str(self.db), "refresh-live", "--throughput", str(self.work / "absent.json"),
+                           "--evidence-dir", str(self.work / "evidence"), "--out", str(self.work / "catalog.json")])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(stderr.getvalue())["cause"], "ENOENT")
+        self.assertNotIn(str(self.work), stderr.getvalue())
 
     def test_refresh_rejects_bad_histories(self):
         good = self.throughput(ocr_import_pages=[1, 2, 3])
