@@ -110,7 +110,8 @@ subscription, for the stacks' outputs, and a custom role on the main and BOINC
 groups that reads, updates and starts the hand-off and bridge jobs (with the
 environment join and identity assign checks an update makes). That role can
 change those jobs, so the host can act as their identities; this was accepted
-for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, the non-secret
+for CT 211. CT 211 holds a checkout of main at `/opt/usnm`, pinned to one commit
+([Moving the controller checkout](#moving-the-controller-checkout-1412)), the non-secret
 outputs in `/root/.config/usnewsmap/prod/.env`, the configuration in
 `/etc/usnm/boinc-priority-controller.json` (`claim_queues ["ocr-priority"]`,
 `claim_languages ["eng"]`, `lease_hours` 36), its state in
@@ -142,6 +143,145 @@ for any active service to finish before changing its configuration or performing
 exclusive lifecycle maintenance. Each tick takes the shared controller lease.
 Successful empty-queue ticks are not end-to-end priority-page acceptance:
 the real-page receipt for #866 is recorded below.
+
+### Moving the controller checkout (#1412)
+
+The service runs whatever `/opt/usnm` holds, so moving that checkout deploys the
+controller. A tick runs three things from it: `scripts/boinc/batch_scheduler.py`, the push
+command `scripts/ocr-node/push-boinc-scan.sh`, and `scripts/boinc/start-boinc-bridge.sh`
+with `scripts/lib/` for any step not sent to `step_command`. That launcher also reads the
+checkout's settings, `infra/env/` and `contrib-compute/infra/boinc/env/`. The step host's
+`usnm-boinc-step` (`onprem-step.sh`) and the server, bridge and hand-off images are
+deployed on their own; moving the checkout doesn't change them. Keep the checkout at one
+commit of main with no local edits, and move it only as below. Until #1412 is closed, the
+checkout is an older commit with a hand-placed `batch_scheduler.py`.
+
+1. **Read the range.** Fetch, which leaves the working tree alone, and list what the
+   controller would run differently:
+
+   ```sh
+   cd /opt/usnm
+   git fetch origin
+   git status --short   # anything listed is a local edit or stray file: step 3 saves it
+   git log --oneline HEAD..<commit> -- scripts/boinc/batch_scheduler.py \
+     scripts/ocr-node/push-boinc-scan.sh scripts/boinc/start-boinc-bridge.sh scripts/lib/ \
+     infra/env/ contrib-compute/infra/boinc/env/
+   ```
+
+   Read each listed commit's rollout notes. If one changes what the controller sends to
+   `step_command`, or needs a newer image, deploy that first as the commit says. Note
+   whether any changes what `state.json` or the journals hold: that decides step 5.
+
+2. **Test with no publishing.** The timer keeps running the old checkout meanwhile.
+   Export the commit to a scratch directory, run its tests on the host's Python, and run
+   it with the drop-in's flags but without `--apply`:
+
+   ```sh
+   mkdir /root/usnm-pin-<commit>
+   git -C /opt/usnm archive <commit> | tar -x -C /root/usnm-pin-<commit>
+   cd /root/usnm-pin-<commit>
+   python3 -m unittest scripts/boinc/test_batch_scheduler.py \
+     contrib-compute/images/server/test_batch_inventory.py
+   python3 scripts/boinc/batch_scheduler.py --config /etc/usnm/boinc-priority-controller.json \
+     --state-dir /nonexistent <the drop-in's other flags, without --apply>
+   ```
+
+   Without `--apply` the controller reads only its configuration: no Azure or SSH call
+   and no state. Its `config_sha256` must equal the one in
+   `/var/lib/usnm-priority-controller/state.json`; otherwise the new commit stops with
+   "immutable allocation changed".
+
+   Then compare what the two versions make of the live state. Copy the state directory
+   between two ticks, and load both versions' `batch_scheduler.py` to read the copy. This
+   reads files only. Both must own the same jobs in the same stages:
+
+   ```sh
+   cp -a /var/lib/usnm-priority-controller /root/usnm-pin-state-<date>
+   python3 -B - /opt/usnm /root/usnm-pin-<commit> /root/usnm-pin-state-<date> <<'PY'
+   import hashlib, importlib.util, json, sys
+   from pathlib import Path
+
+   *trees, state_dir = sys.argv[1:]
+   config_path = Path("/etc/usnm/boinc-priority-controller.json")
+   # A tick writes journal-snapshot.json only after a complete download, and removes it first
+   # when it downloads again, so the cache must hold exactly the files it lists.
+   snapshot = Path(state_dir, "journal-snapshot.json")
+   assert snapshot.exists(), "no complete journal snapshot; copy the state again after a clean tick"
+   expected = json.loads(snapshot.read_text())["files"]
+   cache = Path(state_dir, "journal-cache")
+   files = {str(path.relative_to(cache)): path for path in cache.rglob("*") if path.is_file()}
+   assert set(files) == set(expected), "journal cache doesn't match its snapshot"
+   records = []
+   for name, path in sorted(files.items()):
+       data = path.read_bytes()
+       assert hashlib.sha256(data).hexdigest() == expected[name], f"journal cache changed: {name}"
+       records.append(json.loads(data))
+   seen = []
+   for tree in trees:
+       spec = importlib.util.spec_from_file_location("controller", f"{tree}/scripts/boinc/batch_scheduler.py")
+       controller = importlib.util.module_from_spec(spec)
+       spec.loader.exec_module(controller)
+       config = controller.load_config(config_path)
+       state = json.loads(Path(state_dir, "state.json").read_text())
+       assert state["config_sha256"] == controller.digest(config), "configuration digest differs"
+       controller.QueueFeed(config, state, None, None).restore()
+       owned = controller.owned_records(config, json.loads(json.dumps(records)))
+       seen.append(sorted((record["job"]["id"], record["stage"]) for record in owned.values()))
+   print(len(records), "journals,", len(seen[0]), "owned:", "same" if seen[0] == seen[1] else "DIFFERENT")
+   PY
+   ```
+
+   The journal cache is the last full listing a tick made, not the container now. Don't
+   run a tick against the copy, not even with `--drain`: a tick takes the hand-off
+   container's lease (`scheduler/controller.lock`), runs `batch-inventory`, and collects
+   and publishes, so it would act on the live feed from stale state.
+
+3. **Move.** Stop the timer and wait for a running tick to end. Save any local edit and
+   stray file, then check out the commit detached, so that a `git pull` can't move it:
+
+   ```sh
+   systemctl stop usnm-boinc-priority-controller.timer
+   systemctl is-active usnm-boinc-priority-controller.service   # repeat until neither active nor activating
+   cd /opt/usnm
+   git rev-parse HEAD                                            # the previous pin
+   sha256sum scripts/boinc/batch_scheduler.py                    # the previous file
+   git diff --binary HEAD > /root/usnm-checkout-<date>.diff \
+     && git reset -q --hard                                      # staged and unstaged edits, if any
+   mkdir /root/usnm-checkout-<date>.untracked                    # move each `??` path here
+   git checkout --detach <commit>
+   git status --short                                            # must print nothing
+   sha256sum scripts/boinc/batch_scheduler.py
+   systemctl start usnm-boinc-priority-controller.service        # one tick by hand
+   journalctl -u usnm-boinc-priority-controller.service -n 50 --no-pager
+   systemctl start usnm-boinc-priority-controller.timer
+   ```
+
+   Start the timer only after a clean tick; otherwise roll back (step 5).
+
+4. **Record.** On the issue for the move, post the previous and new commit, both
+   `sha256sum` lines, the saved diff's path, the empty `git status --short` and the first
+   tick's result. Add a comment line to the service's drop-in, as for its flags, then
+   `systemctl daemon-reload`:
+
+   ```ini
+   # /opt/usnm at <commit> since <date> (#<issue>). Revert: <previous commit>, /root/usnm-checkout-<date>.diff.
+   ```
+
+5. **Roll back.** Stop the timer and wait as in step 3, then put the previous checkout
+   back and check that the file matches the recorded sum:
+
+   ```sh
+   cd /opt/usnm
+   git checkout --detach <previous commit>
+   git apply /root/usnm-checkout-<date>.diff                     # if the previous checkout had local edits
+   sha256sum scripts/boinc/batch_scheduler.py                    # must match the recorded previous file
+   systemctl start usnm-boinc-priority-controller.timer
+   ```
+
+   Never roll back the state directory: claims, journals and state move forward together
+   ([recovery](#validation-scheduling-and-recovery)). So a rollback is only a checkout
+   change when the range from step 1 changed nothing that `state.json` or the journals
+   hold. If it did, the rollback needs its own reconcile plan before the move.
 
 ### Batched steps (#932)
 
